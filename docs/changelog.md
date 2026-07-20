@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Kept GitHub readiness checks compatible with older GitHub CLI releases while retaining structured checks on current releases.
 - Added concise, setting-specific guidance to Configuration documentation-link tooltips.
 - Simplified inherited Git-hook and Manual QA controls with detailed hover guidance and lifecycle-organized Advanced settings.
 - Made model configuration load quickly by requesting the full OpenCode catalog only when **Show all providers** is selected.
@@ -117,6 +118,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Pre-flight GitHub authentication now falls back to `gh auth status --hostname github.com` only when an older GitHub CLI rejects the JSON status flag, so valid older installations can proceed while current installations retain structured account validation.
 - Fixed npm 12 dependency maintenance incorrectly holding releases whose publish-time metadata was returned as a one-element JSON array; both the legacy object and npm 12 array shapes now participate in the seven-day release-age check.
 - Fixed native dependency builds (like better-sqlite3 and esbuild) failing or being skipped on npm v12+ by adding them to the allowScripts allowlist in package.json.
 - Prevented generated and cache outputs from inflating implementation change totals or blocking final testing, Manual QA preparation, and integration when they are not delivery candidates.

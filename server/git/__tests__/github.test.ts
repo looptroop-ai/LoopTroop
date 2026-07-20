@@ -117,6 +117,23 @@ describe('server/git/github', () => {
     })
   })
 
+  it('falls back to the non-JSON auth-status command when the installed gh CLI does not support --json', async () => {
+    spawnSyncMock
+      .mockReturnValueOnce(makeSpawnResult({
+        status: 1,
+        stderr: 'unknown flag: --json',
+      }))
+      .mockReturnValueOnce(makeSpawnResult())
+
+    const github = await import('../github')
+
+    expect(github.getGhAuthStatus()).toEqual({ ok: true })
+    expect(spawnSyncMock.mock.calls).toEqual([
+      ['gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'], expect.any(Object)],
+      ['gh', ['auth', 'status', '--hostname', 'github.com'], expect.any(Object)],
+    ])
+  })
+
   it('omits an oversized patch instead of throwing during PR diff capture', async () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('--stat')) {

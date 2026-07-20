@@ -358,6 +358,10 @@ export function isGhInstalled(): boolean {
 export function getGhAuthStatus(): { ok: true } | { ok: false; error: string } {
   const result = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
   if (!result.ok) {
+    if (isUnsupportedGhAuthStatusJsonFlag(result.error)) {
+      const fallback = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com'])
+      return fallback.ok ? { ok: true } : { ok: false, error: fallback.error }
+    }
     return { ok: false, error: result.error }
   }
 
@@ -389,6 +393,10 @@ export function getGhAuthStatus(): { ok: true } | { ok: false; error: string } {
       error: error instanceof Error ? `Failed to parse gh auth status JSON: ${error.message}` : 'Failed to parse gh auth status JSON.',
     }
   }
+}
+
+function isUnsupportedGhAuthStatusJsonFlag(error: string): boolean {
+  return /unknown flag:\s*--json/i.test(error)
 }
 
 export function getGitHubRepoAccess(projectPath: string): { ok: true; repo: GitHubRepoRef } | { ok: false; error: string } {

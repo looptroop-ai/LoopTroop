@@ -2478,6 +2478,25 @@ describe.concurrent('structured output normalization', () => {
     expect(result.value.followUpQuestions[0]?.id).toBe('FU1')
   })
 
+  it('adds missing list markers to quoted coverage gaps without changing their text', () => {
+    const result = normalizeCoverageResultOutput([
+      'status: gaps',
+      'gaps:',
+      '  "Q04 answer is truncated to only \'Use\' — no color specifications were provided by the source."',
+      '  "The done criterion lacks concrete verification guidance."',
+      'follow_up_questions: []',
+    ].join('\n'))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.repairApplied).toBe(true)
+    expect(result.repairWarnings).toContain('Repaired malformed coverage gap list items before reparsing.')
+    expect(result.value.gaps).toEqual([
+      "Q04 answer is truncated to only 'Use' — no color specifications were provided by the source.",
+      'The done criterion lacks concrete verification guidance.',
+    ])
+  })
+
   it('trims orphan trailing closing fences from coverage results recovered via top-level hints', () => {
     const result = normalizeCoverageResultOutput([
       'Coverage result:',

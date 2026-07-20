@@ -427,7 +427,7 @@ The durable `interview.yaml` artifact also applies a few root-level canonicaliza
 
 **Coverage gap string list quoting**
 
-When the coverage checker returns a list of gap strings, each item is wrapped in double quotes to prevent YAML from coercing values like `true`, `null`, or values containing `: `.
+When the coverage checker returns a list of gap strings, each item is wrapped in double quotes to prevent YAML from coercing values like `true`, `null`, or values containing `: `. If the checker omits only the `- ` list markers from direct, complete quoted entries under `gaps:` or `issues:`, LoopTroop restores those markers without changing the quoted text. This coverage-only repair never applies to mappings, plain prose, nested content, or follow-up questions.
 
 Coverage revision metadata must reference each provided gap. PRD and beads coverage accept exact references first; if a model only changes harmless formatting such as quote style, escaped quote/backtick spelling, or whitespace, the reference is canonicalized back to the provided gap text and a repair warning is recorded.
 

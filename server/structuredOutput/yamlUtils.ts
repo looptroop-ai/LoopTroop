@@ -985,6 +985,13 @@ export function repairCoverageGapStringList(content: string): {
         activeGapIndent = -1
         directItemIndent = -1
       } else {
+        if (indent === directItemIndent && /^(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*(?:#.*)?$/.test(trimmed)) {
+          const repairedLine = `${' '.repeat(directItemIndent)}- ${trimmed}`
+          repairedLines.push(repairedLine)
+          repairApplied = repairApplied || repairedLine !== line
+          continue
+        }
+
         if (indent === directItemIndent && trimmed.startsWith('- ')) {
           const itemValue = trimmed.slice(2).trim()
           if (itemValue && !/^(["']|[>|])/.test(itemValue)) {
@@ -1013,7 +1020,7 @@ export function repairCoverageGapStringList(content: string): {
     content: repairedLines.join('\n'),
     repairApplied,
     repairWarnings: repairApplied
-      ? ['Quoted coverage gap strings to recover malformed YAML scalars.']
+      ? ['Repaired malformed coverage gap list items before reparsing.']
       : [],
   }
 }

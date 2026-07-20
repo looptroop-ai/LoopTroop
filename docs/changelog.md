@@ -30,6 +30,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added the active execution setup attempt count (e.g. attempt 2 of 5) to the Preparing Workspace Runtime status title when running subsequent attempts.
 - Made workspace setup recoverable when isolated worktrees need approved ignored or untracked inputs, including one direct same-session manual retry after the automatic budget ends.
 - Made blocked errors immediately actionable and recovered safely wrapped YAML list prose across structured-output phases.
+- Recovered PRD and interview coverage responses when quoted gap entries omit only their YAML list markers, preventing otherwise valid coverage findings from blocking a ticket.
 - Prevented automatic development maintenance from installing peer-incompatible npm dependency graphs.
 - Preserved eligible same-session Continue recovery across backend, OpenCode, WSL, OS, and machine restarts.
 - Restored one-click recovery for blocked tickets when Retry sends an empty request body.

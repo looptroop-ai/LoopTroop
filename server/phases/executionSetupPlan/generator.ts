@@ -24,7 +24,7 @@ import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../.
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
 import type { StructuredOutputMetadata } from '../../structuredOutput/types'
 import { parseExecutionSetupPlanResult } from './parser'
-import type { ExecutionSetupPlanGenerationResult } from './types'
+import type { ExecutionSetupPlan, ExecutionSetupPlanGenerationResult, ExecutionSetupPlanParseResult } from './types'
 
 const EXECUTION_SETUP_PLAN_SCHEMA_REMINDER = [
   'Return exactly one <EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN> block and nothing else.',
@@ -47,6 +47,21 @@ type ExecutionSetupPlanTemplate =
   | typeof PROM_EXECUTION_SETUP_PLAN
   | typeof PROM_EXECUTION_SETUP_PLAN_REGENERATE
 
+async function applyExecutionSetupPlanValidation(
+  parsed: ExecutionSetupPlanParseResult,
+  validatePlan: ((plan: ExecutionSetupPlan) => Promise<string[]> | string[]) | undefined,
+): Promise<ExecutionSetupPlanParseResult> {
+  if (!parsed.plan || !validatePlan) return parsed
+  const errors = await validatePlan(parsed.plan)
+  if (errors.length === 0) return parsed
+  return {
+    ...parsed,
+    plan: null,
+    errors,
+    validationError: errors.join('; '),
+  }
+}
+
 export async function generateExecutionSetupPlan(
   adapter: OpenCodeAdapter,
   ticketContext: PromptPart[],
@@ -60,6 +75,7 @@ export async function generateExecutionSetupPlan(
     structuredRetryCount?: number
     phaseAttempt?: number
     promptTemplate?: ExecutionSetupPlanTemplate
+    validatePlan?: (plan: ExecutionSetupPlan) => Promise<string[]> | string[]
     onSessionCreated?: (sessionId: string) => void
     onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
     onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void
@@ -128,7 +144,10 @@ export async function generateExecutionSetupPlan(
   activeSessionId = result.session.id
 
   let response = result.response
-  let parsed = parseExecutionSetupPlanResult(response)
+  let parsed = await applyExecutionSetupPlanValidation(
+    parseExecutionSetupPlanResult(response),
+    callbacks?.validatePlan,
+  )
   const rawAttempts: RawAttempt[] = []
   const retryDiagnostics: NonNullable<StructuredOutputMetadata['retryDiagnostics']> = []
   const structuredRetryCount = normalizeStructuredRetryCount(callbacks?.structuredRetryCount)
@@ -258,7 +277,10 @@ export async function generateExecutionSetupPlan(
       throw error
     }
 
-    parsed = parseExecutionSetupPlanResult(response)
+    parsed = await applyExecutionSetupPlanValidation(
+      parseExecutionSetupPlanResult(response),
+      callbacks?.validatePlan,
+    )
     structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
       repairApplied: Boolean(parsed.repairApplied),
       repairWarnings: parsed.repairWarnings ?? [],

@@ -114,6 +114,53 @@ function buildToolingFailureReport(
   }
 }
 
+function buildBackendValidationFailureReport(
+  attempt: number,
+  receipt?: {
+    status: 'failed' | 'timed_out'
+    exitCode: number | null
+    outputExcerpt: string
+  },
+): ExecutionSetupReport {
+  const report = buildToolingFailureReport(attempt)
+  return {
+    ...report,
+    summary: 'The prepared workspace failed independent validation.',
+    profile: report.profile
+      ? {
+          ...report.profile,
+          summary: 'Workspace validation did not pass.',
+          workspaceProbes: [{
+            id: 'workspace',
+            command: 'project-test',
+            purpose: 'Validate the prepared workspace.',
+          }],
+          ...(receipt
+            ? {
+                workspaceProbeReceipts: [{
+                  id: 'workspace',
+                  command: 'project-test',
+                  status: receipt.status,
+                  exitCode: receipt.exitCode,
+                  durationMs: 12,
+                  outputExcerpt: receipt.outputExcerpt,
+                }],
+              }
+            : {}),
+          toolRequirements: [],
+          cautions: [],
+        }
+      : null,
+    checks: {
+      workspace: 'fail',
+      tooling: 'pass',
+      tempScope: 'pass',
+      policy: 'pass',
+    },
+    errors: ['Execution setup workspace validation failed.'],
+  }
+}
+
 describe('executeExecutionSetupWithRetries', () => {
   beforeEach(() => {
     generateExecutionSetupMock.mockReset()
@@ -292,5 +339,180 @@ describe('executeExecutionSetupWithRetries', () => {
     expect(beforeRetry).not.toHaveBeenCalled()
     expect(report.attempt).toBe(nextAttempt)
     expect(report.maxIterations).toBe(maxIterations)
+  })
+
+  it.each([
+    { label: 'empty output', output: '' },
+    { label: 'progress-only output', output: 'Preparing the workspace now.' },
+  ])('uses a deterministic note for $label without calling the retry-note model', async ({ output }) => {
+    generateExecutionSetupMock.mockResolvedValueOnce({
+      ...buildGeneration(1),
+      output,
+      parse: {
+        markerFound: false,
+        result: null,
+        errors: ['No execution setup result marker found'],
+      },
+    })
+    const generateRetryNote = vi.fn().mockResolvedValue('Model-generated retry note')
+    const onRetryAnalysisStart = vi.fn()
+
+    const report = await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildBackendValidationFailureReport(attempt),
+        generateRetryNote,
+        onRetryAnalysisStart,
+      },
+    )
+
+    expect(onRetryAnalysisStart).toHaveBeenCalledOnce()
+    expect(generateRetryNote).not.toHaveBeenCalled()
+    expect(report.retryNotes).toEqual([
+      expect.stringContaining('Execution setup workspace validation failed.'),
+    ])
+  })
+
+  it.each([
+    {
+      label: 'command-not-found receipt',
+      receipt: {
+        status: 'failed' as const,
+        exitCode: 127,
+        outputExcerpt: 'project-test: command not found',
+      },
+    },
+    {
+      label: 'complete backend validation receipt',
+      receipt: {
+        status: 'failed' as const,
+        exitCode: 4,
+        outputExcerpt: 'independent workspace validation failed',
+      },
+    },
+    {
+      label: 'complete backend timeout receipt',
+      receipt: {
+        status: 'timed_out' as const,
+        exitCode: null,
+        outputExcerpt: 'independent workspace validation timed out',
+      },
+    },
+  ])('uses a deterministic note for a $label', async ({ receipt }) => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+    const generateRetryNote = vi.fn().mockResolvedValue('Model-generated retry note')
+
+    await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildBackendValidationFailureReport(attempt, receipt),
+        generateRetryNote,
+      },
+    )
+
+    expect(generateRetryNote).not.toHaveBeenCalled()
+  })
+
+  it('uses a deterministic note for command-not-found evidence without a stored receipt', async () => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+    const generateRetryNote = vi.fn().mockResolvedValue('Model-generated retry note')
+
+    await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => ({
+          ...buildBackendValidationFailureReport(attempt),
+          errors: ['Execution setup tooling probe failed: project-test (exit code 126)'],
+        }),
+        generateRetryNote,
+      },
+    )
+
+    expect(generateRetryNote).not.toHaveBeenCalled()
+  })
+
+  it('invokes retry analysis before generating a note for an ambiguous failure', async () => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+    const order: string[] = []
+
+    const report = await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildBackendValidationFailureReport(attempt),
+        onRetryAnalysisStart: () => {
+          order.push('analysis')
+        },
+        generateRetryNote: async () => {
+          order.push('note')
+          return 'Model-generated retry note'
+        },
+      },
+    )
+
+    expect(order).toEqual(['analysis', 'note'])
+    expect(report.retryNotes).toEqual(['Model-generated retry note'])
+  })
+
+  it('retains model-generated guidance for tooling-persistence failures', async () => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+    const generateRetryNote = vi.fn().mockResolvedValue('Try the repository toolchain manager.')
+
+    const report = await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 60_000,
+        additionalManualIterations: 1,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildToolingFailureReport(attempt, [{
+          strategy: 'official archive',
+          commands: ['./install-go'],
+          result: 'failed',
+          reason: 'download failed',
+        }]),
+        generateRetryNote,
+      },
+    )
+
+    expect(generateRetryNote).toHaveBeenCalledOnce()
+    expect(report.retryNotes?.[0]).toContain('Try the repository toolchain manager.')
+    expect(report.retryNotes?.[0]).toContain('must not repeat the same provisioning command unchanged')
   })
 })

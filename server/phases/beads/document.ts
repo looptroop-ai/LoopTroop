@@ -4,6 +4,7 @@ import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
+import { validateRepositoryCommand } from '../commandEvidence'
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
@@ -51,7 +52,12 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     throw new Error('Beads artifact is empty')
   }
 
-  // Validate that all lines are valid JSON objects with required fields
+  const worktreePath = getTicketPaths(ticketId)?.worktreePath
+  if (!worktreePath) throw new Error('Ticket worktree not initialized')
+
+  // Parse the complete JSONL document before semantic validation so a
+  // malformed later line remains the primary error.
+  const parsedRecords: Array<Record<string, unknown>> = []
   for (const [index, line] of lines.entries()) {
     let parsed: unknown
     try {
@@ -62,12 +68,36 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`Bead at line ${index + 1} is not a JSON object`)
     }
-    const record = parsed as Record<string, unknown>
+    parsedRecords.push(parsed as Record<string, unknown>)
+  }
+
+  for (const [index, record] of parsedRecords.entries()) {
     if (typeof record.id !== 'string' || !record.id.trim()) {
       throw new Error(`Bead at line ${index + 1} is missing a valid "id" field`)
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new Error(`Bead at line ${index + 1} is missing a valid "title" field`)
+    }
+    if (!Array.isArray(record.testCommands) || record.testCommands.length === 0) {
+      throw new Error(`Bead ${record.id} is missing test commands`)
+    }
+    for (const command of record.testCommands) {
+      if (typeof command !== 'string' || !command.trim()) {
+        throw new Error(`Bead ${record.id} contains an invalid test command`)
+      }
+      const evidence = validateRepositoryCommand({
+        repositoryRoot: worktreePath,
+        command,
+        commandKind: 'bead-test',
+      })
+      if (!evidence.valid) {
+        const expected = evidence.expectedEvidence?.length
+          ? ` Expected evidence: ${evidence.expectedEvidence.join(', ')}.`
+          : ''
+        throw new Error(
+          `Bead ${record.id} test command "${command}" is not supported by repository evidence: ${evidence.message ?? evidence.code ?? 'unknown command compatibility failure'}.${expected}`,
+        )
+      }
     }
   }
 

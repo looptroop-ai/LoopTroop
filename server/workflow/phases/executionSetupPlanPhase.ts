@@ -38,6 +38,7 @@ import {
   PROM_EXECUTION_SETUP_PLAN_REGENERATE,
 } from '../../prompts/index'
 import { enrichGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/hookEvidence'
+import { validateGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/commandValidation'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
 
 function buildExecutionSetupPlanReport(input: {
@@ -190,6 +191,11 @@ async function generateAndPersistExecutionSetupPlan(input: {
       promptTemplate: input.source === 'regenerate'
         ? PROM_EXECUTION_SETUP_PLAN_REGENERATE
         : PROM_EXECUTION_SETUP_PLAN,
+      validatePlan: (plan) => validateGeneratedExecutionSetupPlan({
+        plan,
+        worktreePath: paths.worktreePath,
+        beadsPath: paths.beadsPath,
+      }),
       onSessionCreated: (sessionId) => {
         emitAiMilestone(
           input.ticketId,

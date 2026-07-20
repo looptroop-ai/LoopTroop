@@ -793,6 +793,125 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'EXECUTION_SETUP_FAILED' }))
   })
 
+  it.runIf(process.platform !== 'win32')('discovers, applies, and persists an omitted canonical setup wrapper', async () => {
+    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+      title: 'Execution setup canonical wrapper fallback',
+    })
+    const bareProbeCommand = 'workspace-probe-tool'
+    upsertLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL', JSON.stringify({
+      schema_version: 1,
+      ticket_id: ticket.externalId,
+      artifact: 'execution_setup_plan',
+      status: 'draft',
+      summary: 'Validate the prepared workspace tool.',
+      readiness: {
+        status: 'partial',
+        actions_required: true,
+        evidence: ['The repository is present.'],
+        gaps: ['The workspace probe tool requires the prepared runtime.'],
+      },
+      temp_roots: ['.ticket/runtime/execution-setup'],
+      workspace_probes: [{
+        id: 'prepared-workspace-probe',
+        command: bareProbeCommand,
+        purpose: 'Prove that the prepared runtime is applied to an approved bare command.',
+      }],
+      steps: [{
+        id: 'prepare-probe-tool',
+        title: 'Prepare workspace probe tool',
+        purpose: 'Provide the repository workspace probe through the private runtime.',
+        required: true,
+        rationale: 'Exercise the private runtime handoff.',
+        commands: [],
+        cautions: [],
+      }],
+      project_commands: {
+        prepare: [],
+        test_full: [],
+        lint_full: [],
+        typecheck_full: [],
+      },
+      quality_gate_policy: {
+        tests: 'bead-test-commands-first',
+        lint: 'impacted-or-package',
+        typecheck: 'impacted-or-package',
+        full_project_fallback: 'never-block-on-unrelated-baseline',
+      },
+      cautions: [],
+    }, null, 2))
+
+    const toolDirectory = join(paths.executionSetupDir, 'tools')
+    mkdirSync(toolDirectory, { recursive: true })
+    writeExecutableSetupWrapper(
+      join(toolDirectory, bareProbeCommand),
+      '#!/usr/bin/env sh\nprintf prepared-workspace\n',
+    )
+    writeExecutableSetupWrapper(
+      join(paths.executionSetupDir, 'run'),
+      '#!/usr/bin/env sh\nRUNTIME_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexport PATH="$RUNTIME_DIR/tools:$PATH"\nexec "$@"\n',
+    )
+
+    const profile = {
+      ...readyExecutionSetupProfile(ticket.externalId),
+      reusableArtifacts: [],
+      toolingProbeCommands: [bareProbeCommand],
+    }
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: { attempt: number; generation: unknown }) => Promise<unknown>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({ profile }),
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      {
+        ...context,
+        lockedMainImplementer: TEST.implementer,
+      },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+    expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'EXECUTION_SETUP_FAILED' }))
+
+    const profileArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_profile', 'PREPARING_EXECUTION_ENV')
+    const persistedProfile = JSON.parse(profileArtifact?.content ?? '{}') as {
+      reusable_artifacts?: Array<{ path: string; kind: string }>
+      cautions?: string[]
+      workspace_probe_receipts?: Array<{
+        command: string
+        status: string
+        setupWrapperApplied?: boolean
+        effectiveCommand?: string
+        outputExcerpt?: string
+      }>
+    }
+    expect(persistedProfile.reusable_artifacts).toEqual(expect.arrayContaining([{
+      path: '.ticket/runtime/execution-setup/run',
+      kind: 'command-wrapper',
+      purpose: expect.any(String),
+    }]))
+    expect(persistedProfile.reusable_artifacts?.filter(
+      (artifact) => artifact.path === '.ticket/runtime/execution-setup/run',
+    )).toHaveLength(1)
+    expect(persistedProfile.cautions).toEqual(expect.arrayContaining([
+      expect.stringContaining('detected and recorded'),
+    ]))
+    expect(persistedProfile.workspace_probe_receipts).toEqual([expect.objectContaining({
+      command: bareProbeCommand,
+      status: 'passed',
+      setupWrapperApplied: true,
+      effectiveCommand: expect.stringContaining('.ticket/runtime/execution-setup/run'),
+      outputExcerpt: 'prepared-workspace',
+    })])
+  })
+
   it('rejects a ready setup result when setup leaves committable project changes', async () => {
     const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
       title: 'Execution setup dirty worktree gate',

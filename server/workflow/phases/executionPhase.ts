@@ -60,13 +60,13 @@ function resolveCodingCommandWrapper(ticketId: string, worktreePath: string): st
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
-  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content)
+  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content, worktreePath)
   if (artifactWrapper) return artifactWrapper
 
   const profileMirrorPath = resolve(worktreePath, EXECUTION_SETUP_PROFILE_MIRROR)
   if (!existsSync(profileMirrorPath)) return undefined
   try {
-    return getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf8')) ?? undefined
+    return getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf8'), worktreePath) ?? undefined
   } catch {
     return undefined
   }

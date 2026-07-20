@@ -23,7 +23,7 @@ import type { ExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
-import { StaleArtifactApprovalError } from '../../lib/artifactApproval'
+import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
@@ -38,6 +38,7 @@ import {
 import { approvalRequestSchema, rawPrdSaveSchema, structuredPrdSaveSchema } from './schemas'
 import { isCoverageFixInProgress } from './coverageFixHandlers'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
+import { validateGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/commandValidation'
 
 function countPrdItems(document: PrdDocument): number {
   return document.epics.reduce((count, epic) => count + 1 + epic.user_stories.length, 0)
@@ -437,6 +438,11 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
     if (!current.raw) {
       return c.json({ error: 'Execution setup plan is not ready yet' }, 409)
     }
+    assertExpectedContentSha256({
+      artifactType: 'execution_setup_plan',
+      currentContent: current.raw,
+      expectedContentSha256,
+    })
 
     const paths = getTicketPaths(ticketId)
     if (!paths) return c.json({ error: 'Ticket workspace could not be resolved' }, 409)
@@ -445,6 +451,17 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
       worktreePath: paths.worktreePath,
       workspaceInputs: plan.workspaceInputs,
     })
+    const planErrors = validateGeneratedExecutionSetupPlan({
+      plan,
+      worktreePath: paths.worktreePath,
+      beadsPath: paths.beadsPath,
+    })
+    if (planErrors.length > 0) {
+      return c.json({
+        error: 'Execution setup plan is inconsistent with repository command evidence',
+        details: planErrors,
+      }, 409)
+    }
 
     approveExecutionSetupPlan(ticketId, plan, current.raw, expectedContentSha256)
     ensureActorForTicket(ticketId)

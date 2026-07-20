@@ -35,6 +35,16 @@ import { handleBeadsExpansion, handleCoverageVerification } from '../phases/veri
 
 const repoManager = createTestRepoManager('beads-refine')
 
+function writeNodeCommandEvidence(worktreePath: string) {
+  writeFileSync(resolve(worktreePath, 'package.json'), JSON.stringify({
+    private: true,
+    scripts: {
+      test: 'vitest run',
+      'test:server': 'vitest run --project server-pure --project server-integration',
+    },
+  }, null, 2))
+}
+
 function buildPrdContent() {
   return [
     'schema_version: 1',
@@ -337,6 +347,7 @@ describe('handleBeadsRefine', () => {
       secondBeadTitle: 'Adopt losing-draft telemetry',
     })
 
+    writeNodeCommandEvidence(paths.worktreePath)
     writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
 
     phaseIntermediate.set(`${ticket.id}:beads`, {
@@ -420,6 +431,7 @@ describe('handleBeadsRefine', () => {
     const coverageGap = 'Missing a bead that surfaces unresolved coverage warnings during approval.'
     const initialBlueprint = buildBeadSubsetContent({ includeSecondBead: true })
 
+    writeNodeCommandEvidence(paths.worktreePath)
     writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
 
     insertPhaseArtifact(ticket.id, {
@@ -580,6 +592,7 @@ describe('handleBeadsRefine', () => {
     const coverageGap = 'Missing a final beads warning state that stays version-aware during approval.'
     const initialBlueprint = buildBeadSubsetContent({ includeSecondBead: true })
 
+    writeNodeCommandEvidence(paths.worktreePath)
     writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
 
     insertPhaseArtifact(ticket.id, {
@@ -813,6 +826,7 @@ describe('handleBeadsRefine', () => {
     const coverageGap = 'Missing a bead that surfaces unresolved coverage warnings during approval.'
     const initialBlueprint = buildBeadSubsetContent({ includeSecondBead: true })
 
+    writeNodeCommandEvidence(paths.worktreePath)
     writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
 
     insertPhaseArtifact(ticket.id, {

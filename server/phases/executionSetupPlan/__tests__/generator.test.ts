@@ -107,6 +107,47 @@ describe('generateExecutionSetupPlan', () => {
     expect(retryPrompt).toContain('steps and workspace_inputs must both be empty when readiness says the environment is ready')
   })
 
+  it('uses the structured retry loop to replace a semantically incompatible plan', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', buildReadyPlanResponse())
+    adapter.mockResponses.set('mock-session-1#2', buildReadyPlanResponse().replace(
+      'summary: Workspace setup is ready for review.',
+      'summary: Repository command evidence is now satisfied.',
+    ))
+    let validationCount = 0
+
+    const result = await generateExecutionSetupPlan(
+      adapter,
+      [{ type: 'text', content: 'Execution setup plan context' }],
+      '/tmp/test',
+      undefined,
+      {
+        validatePlan: () => {
+          validationCount += 1
+          return validationCount === 1
+            ? ['project_commands.test_full command "npm test" has no package.json evidence']
+            : []
+        },
+      },
+    )
+
+    expect(result.plan?.summary).toBe('Repository command evidence is now satisfied.')
+    expect(result.structuredOutput.autoRetryCount).toBe(1)
+    expect(result.rawAttempts).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'rejected',
+        validationError: expect.stringContaining('has no package.json evidence'),
+      }),
+      expect.objectContaining({ attempt: 2, outcome: 'accepted' }),
+    ])
+    const messages = adapter.messages.get('mock-session-1') ?? []
+    expect(messages.some((message) => (
+      typeof message.content === 'string'
+      && message.content.includes('project_commands.test_full command "npm test" has no package.json evidence')
+    ))).toBe(true)
+  })
+
   it('completes owned setup-plan sessions after a ready plan is parsed', async () => {
     resetTestDb()
     const { ticket } = createInitializedTestTicket(repoManager, {

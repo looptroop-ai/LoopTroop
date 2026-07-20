@@ -38,6 +38,7 @@ import {
 import {
   getExecutionSetupCommandWrapper,
   hasExecutionSetupProjectCommands,
+  repairExecutionSetupCommandWrapper,
 } from '../../phases/executionSetup/runtimeProfile'
 import {
   EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
@@ -156,6 +157,8 @@ function toCommandReceipt(id: string, command: string, result: Awaited<ReturnTyp
   return {
     id,
     command,
+    ...(result.effectiveCommand ? { effectiveCommand: result.effectiveCommand } : {}),
+    setupWrapperApplied: result.setupWrapperApplied,
     status: result.timedOut ? 'timed_out' : result.exitCode === 0 ? 'passed' : 'failed',
     exitCode: result.exitCode,
     durationMs: result.durationMs,
@@ -173,7 +176,7 @@ async function validateExecutionSetupRuntimeProfile(input: {
   const errors: string[] = []
   const workspaceProbeReceipts: ExecutionSetupCommandReceiptPayload[] = []
   const hookValidationReceipts: ExecutionSetupCommandReceiptPayload[] = []
-  const wrapperPath = getExecutionSetupCommandWrapper(input.profile)
+  const wrapperPath = getExecutionSetupCommandWrapper(input.profile, input.worktreePath)
   const declaresReusableExecution = Boolean(wrapperPath) || hasExecutionSetupProjectCommands(input.profile)
 
   if (declaresReusableExecution && input.profile.toolingProbeCommands.length === 0) {
@@ -212,6 +215,7 @@ async function validateExecutionSetupRuntimeProfile(input: {
       command: probeCommand,
       cwd: input.worktreePath,
       timeoutMs: SETUP_PROBE_TIMEOUT_MS,
+      ...(wrapperPath ? { commandWrapper: wrapperPath } : {}),
     })
     if (result.exitCode !== 0 || result.timedOut) {
       errors.push(summarizeSetupCommandFailure({
@@ -494,6 +498,7 @@ export async function handleExecutionSetup(
             let profile = result?.profile ?? null
 
             if (profile) {
+              profile = repairExecutionSetupCommandWrapper(profile, paths.worktreePath).profile
               const hookDiscovery = discoverGitHooks(paths.worktreePath)
               profile = {
                 ...profile,
@@ -636,6 +641,21 @@ export async function handleExecutionSetup(
               await sessionManager.completeSession(generation.session.id)
             }
           },
+          onRetryAnalysisStart: ({ attempt }) => {
+            emitPhaseLog(
+              ticketId,
+              context.externalId,
+              'PREPARING_EXECUTION_ENV',
+              'info',
+              `Analyzing execution setup attempt ${attempt} failure before the retry decision.`,
+              {
+                source: 'system',
+                audience: 'all',
+                kind: 'milestone',
+                attempt,
+              },
+            )
+          },
           onSessionCreated: (sessionId, attempt) => {
             emitAiMilestone(
               ticketId,
@@ -684,6 +704,23 @@ export async function handleExecutionSetup(
               event.response,
               event.messages,
               streamStates.get(event.session.id),
+            )
+          },
+          onStructuredRetryStart: ({ attempt, retryAttempt, sessionId }) => {
+            emitPhaseLog(
+              ticketId,
+              context.externalId,
+              'PREPARING_EXECUTION_ENV',
+              'info',
+              `Correcting the structured execution setup result for attempt ${attempt} (correction ${retryAttempt}).`,
+              {
+                source: 'system',
+                audience: 'all',
+                kind: 'milestone',
+                attempt,
+                retryAttempt,
+                sessionId,
+              },
             )
           },
           onFailedAttempt: async ({ note, notes, canRetry }) => {

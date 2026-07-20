@@ -130,6 +130,46 @@ function buildDeterministicExecutionSetupRetryNote(input: {
   ].join(' ').trim()
 }
 
+function hasCompleteFailedCommandReceipt(report: ExecutionSetupReport): boolean {
+  const receipts = [
+    ...(report.profile?.workspaceProbeReceipts ?? []),
+    ...(report.profile?.gitHooks.validationReceipts ?? []),
+  ]
+
+  return receipts.some((receipt) => (
+    (receipt.status === 'failed' || receipt.status === 'timed_out')
+    && receipt.command.trim().length > 0
+    && Number.isFinite(receipt.durationMs)
+    && (receipt.status === 'timed_out' || Number.isInteger(receipt.exitCode))
+  ))
+}
+
+function hasCommandNotFoundEvidence(report: ExecutionSetupReport): boolean {
+  const receiptExitCodes = [
+    ...(report.profile?.workspaceProbeReceipts ?? []),
+    ...(report.profile?.gitHooks.validationReceipts ?? []),
+  ].map((receipt) => receipt.exitCode)
+  if (receiptExitCodes.some((exitCode) => exitCode === 126 || exitCode === 127)) return true
+
+  const failureText = [
+    ...report.errors,
+    report.summary,
+    report.profile?.summary,
+    ...(report.profile?.cautions ?? []),
+  ].filter((value): value is string => typeof value === 'string').join('\n')
+
+  return /\bexit(?:ed with)?(?: code)?\s+(?:126|127)\b|command not found|not recognized as (?:an internal or external )?command/i.test(failureText)
+}
+
+function hasDeterministicRetryEvidence(
+  report: ExecutionSetupReport,
+  generation: ExecutionSetupGenerationResult,
+): boolean {
+  if (!generation.parse.markerFound || generation.output.trim().length === 0) return true
+  if (hasCommandNotFoundEvidence(report)) return true
+  return hasCompleteFailedCommandReceipt(report)
+}
+
 function withToolingPersistenceGuidance(note: string, report: ExecutionSetupReport): string {
   if (!needsToolingPersistenceRetry(report)) return note
   const guidance = 'Next attempt must not repeat the same provisioning command unchanged; try another distinct safe, repository-appropriate provisioning strategy under approved temp roots before returning checks.tooling=fail.'
@@ -187,10 +227,16 @@ export async function executeExecutionSetupWithRetries(
       report: ExecutionSetupReport
       generation: GenerateExecutionSetupResult
     }) => void | Promise<void>
+    onRetryAnalysisStart?: (input: {
+      attempt: number
+      report: ExecutionSetupReport
+      generation: GenerateExecutionSetupResult
+    }) => void | Promise<void>
     onSessionCreated?: (sessionId: string, attempt: number) => void
     onOpenCodeStreamEvent?: (entry: { sessionId: string; attempt: number; event: StreamEvent }) => void
     onPromptDispatched?: (entry: { sessionId: string; attempt: number; event: OpenCodePromptDispatchEvent }) => void
     onPromptCompleted?: (entry: { attempt: number; stage: string; event: OpenCodePromptCompletedEvent }) => void
+    onStructuredRetryStart?: (entry: { attempt: number; sessionId: string; retryAttempt: number }) => void
     onFailedAttempt?: (input: {
       attempt: number
       report: ExecutionSetupReport
@@ -272,6 +318,9 @@ export async function executeExecutionSetupWithRetries(
         onPromptCompleted: ({ stage, event }) => {
           callbacks.onPromptCompleted?.({ attempt, stage, event })
         },
+        onStructuredRetryStart: ({ sessionId, retryAttempt }) => {
+          callbacks.onStructuredRetryStart?.({ attempt, sessionId, retryAttempt })
+        },
       },
     )
     throwIfAborted(signal)
@@ -300,16 +349,26 @@ export async function executeExecutionSetupWithRetries(
       })
     }
 
+    await callbacks.onRetryAnalysisStart?.({
+      attempt,
+      report: finalReport,
+      generation,
+    })
+
     let note: string | null | undefined
-    try {
-      note = await callbacks.generateRetryNote?.({
-        attempt,
-        report: finalReport,
-        generation,
-        notes: [...notes],
-      })
-    } catch {
-      note = null
+    const useDeterministicRetryNote = hasDeterministicRetryEvidence(finalReport, generation)
+      && !needsToolingPersistenceRetry(finalReport)
+    if (!useDeterministicRetryNote) {
+      try {
+        note = await callbacks.generateRetryNote?.({
+          attempt,
+          report: finalReport,
+          generation,
+          notes: [...notes],
+        })
+      } catch {
+        note = null
+      }
     }
 
     const resolvedNote = withToolingPersistenceGuidance(note?.trim() || buildDeterministicExecutionSetupRetryNote({

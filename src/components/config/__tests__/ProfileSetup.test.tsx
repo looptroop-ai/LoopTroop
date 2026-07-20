@@ -13,7 +13,9 @@ const createProfileMutate = vi.fn()
 const existingProfile = {
   id: 1,
   mainImplementer: 'opencode/big-pickle',
+  mainImplementerVariant: null as string | null,
   councilMembers: JSON.stringify(['opencode/big-pickle', 'openai/gpt-5.1-codex']),
+  councilMemberVariants: null as string | null,
   minCouncilQuorum: 1,
   perIterationTimeout: 1_200_000,
   executionSetupTimeout: 1_500_000,

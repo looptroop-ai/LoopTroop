@@ -88,7 +88,7 @@ export async function runExplicitGitHookValidation(input: {
       fileAudit: noMutation,
     }
   }
-  const wrapper = getExecutionSetupCommandWrapperFromContent(input.profileContent)
+  const wrapper = getExecutionSetupCommandWrapperFromContent(input.profileContent, input.worktreePath)
   const receipts: ExecutionSetupCommandReceiptPayload[] = []
   const errors: string[] = []
   const beforeFingerprint = worktreeFingerprint(input.worktreePath)
@@ -105,6 +105,8 @@ export async function runExplicitGitHookValidation(input: {
     receipts.push({
       id: validation.id,
       command: validation.command,
+      ...(result.effectiveCommand ? { effectiveCommand: result.effectiveCommand } : {}),
+      setupWrapperApplied: result.setupWrapperApplied,
       status,
       exitCode: result.exitCode,
       durationMs: result.durationMs,

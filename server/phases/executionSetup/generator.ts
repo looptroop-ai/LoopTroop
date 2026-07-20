@@ -41,6 +41,15 @@ type ExecutionSetupPromptStage =
   | 'execution_setup_main'
   | 'execution_setup_structured_retry'
 
+function isProgressOnlyExecutionSetupResponse(response: string, markerFound: boolean): boolean {
+  if (markerFound) return false
+  const trimmed = response.trim()
+  if (!trimmed) return true
+  if (trimmed.length > 500) return false
+  return !/[{[]/.test(trimmed)
+    && !/^\s*(?:status|profile|checks|summary)\s*:/im.test(trimmed)
+}
+
 export type GenerateExecutionSetupResult = ExecutionSetupGenerationResult
 
 function errorMessage(error: unknown): string {
@@ -109,6 +118,7 @@ export async function generateExecutionSetup(
     onOpenCodeStreamEvent?: (entry: { sessionId: string; event: StreamEvent }) => void
     onPromptDispatched?: (entry: { sessionId: string; event: OpenCodePromptDispatchEvent }) => void
     onPromptCompleted?: (entry: { stage: ExecutionSetupPromptStage; event: OpenCodePromptCompletedEvent }) => void
+    onStructuredRetryStart?: (entry: { sessionId: string; retryAttempt: number }) => void
   },
 ): Promise<GenerateExecutionSetupResult> {
   const promptContent = buildPromptFromTemplate(PROM_EXECUTION_SETUP, ticketContext)
@@ -245,12 +255,22 @@ export async function generateExecutionSetup(
     if (!shouldRetryStructuredOutput(retryAttemptsUsed, structuredRetryCount)) {
       break
     }
+    if (
+      (retryDecision.failureClass === 'empty_response' || retryDecision.failureClass === 'validation_error')
+      && isProgressOnlyExecutionSetupResponse(response, parsed.markerFound)
+    ) {
+      break
+    }
     retryAttemptsUsed += 1
     structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
       autoRetryCount: retryAttemptsUsed,
     })
 
     try {
+      callbacks?.onStructuredRetryStart?.({
+        sessionId: result.session.id,
+        retryAttempt: retryAttemptsUsed,
+      })
       if (retryDecision.reuseSession) {
         const retryParts = buildStructuredRetryPrompt([], {
           validationError,

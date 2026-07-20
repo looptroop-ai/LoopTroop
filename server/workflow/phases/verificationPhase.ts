@@ -41,6 +41,7 @@ import {
   EXECUTION_SETUP_PROFILE_MIRROR,
 } from '../../phases/executionSetup/types'
 import { getExecutionSetupCommandWrapperFromContent } from '../../phases/executionSetup/runtimeProfile'
+import { validateRepositoryCommand } from '../../phases/commandEvidence'
 import {
   buildFinalTestFileEffectsAudit,
   captureFinalTestDirtyFiles,
@@ -2182,6 +2183,39 @@ async function handleBeadsCoverageVerificationLoop(params: {
       signal: params.signal,
     })
 
+    const parsedCandidate = normalizeBeadSubsetYamlOutput(currentCandidateContent)
+    if (!parsedCandidate.ok) {
+      throw new Error(`Cannot validate bead command evidence: ${parsedCandidate.error}`)
+    }
+    const commandCompatibilityGaps = parsedCandidate.value.flatMap((bead) => (
+      bead.testCommands.flatMap((command) => {
+        const evidence = validateRepositoryCommand({
+          repositoryRoot: params.worktreePath,
+          command,
+          commandKind: 'bead-test',
+        })
+        if (evidence.valid) return []
+        const expected = evidence.expectedEvidence?.length
+          ? ` Expected evidence: ${evidence.expectedEvidence.join(', ')}.`
+          : ''
+        return [
+          `Bead ${bead.id} test command \`${command}\` is not supported by repository evidence: ${evidence.message ?? evidence.code ?? 'unknown command compatibility failure'}.${expected}`,
+        ]
+      })
+    ))
+    if (commandCompatibilityGaps.length > 0) {
+      auditResult.envelope = {
+        ...auditResult.envelope,
+        status: 'gaps',
+        gaps: [...new Set([...auditResult.envelope.gaps, ...commandCompatibilityGaps])],
+      }
+      auditResult.normalizedContent = buildYamlDocument({
+        status: 'gaps',
+        gaps: auditResult.envelope.gaps,
+        follow_up_questions: [],
+      })
+    }
+
     insertPhaseArtifact(params.ticketId, {
       phase: params.stateLabel,
       artifactType: 'beads_coverage_input',
@@ -2263,6 +2297,40 @@ async function handleBeadsCoverageVerificationLoop(params: {
     }
 
     if (!gapDisposition.shouldLoopBack) {
+      if (commandCompatibilityGaps.length > 0) {
+        persistVersionedCoverageArtifact({
+          ticketId: params.ticketId,
+          stateLabel: params.stateLabel,
+          phase: 'beads',
+          winnerId: params.winnerId,
+          response: auditResult.response,
+          normalizedContent: auditResult.normalizedContent,
+          parsed: auditResult.envelope,
+          structuredOutput: auditResult.structuredMeta,
+          attemptEntry,
+          attempts: nextAttempts,
+          transitions,
+          coverageRunNumber,
+          maxCoveragePasses,
+          limitReached: true,
+          terminationReason: gapDisposition.terminationReason,
+          finalCandidateVersion: currentCandidateVersion,
+          hasRemainingGaps: true,
+          remainingGaps: auditResult.envelope.gaps,
+        })
+        const message = `Beads command compatibility validation failed after ${coverageRunNumber} coverage pass${coverageRunNumber === 1 ? '' : 'es'}: ${commandCompatibilityGaps.join(' ')}`
+        emitPhaseLog(params.ticketId, params.context.externalId, params.stateLabel, 'error', message, {
+          source: 'system',
+          audience: 'all',
+          kind: 'error',
+        })
+        params.sendEvent({
+          type: 'ERROR',
+          message,
+          codes: ['BEADS_COMMAND_COMPATIBILITY_FAILED'],
+        })
+        return
+      }
       persistVersionedCoverageArtifact({
         ticketId: params.ticketId,
         stateLabel: params.stateLabel,
@@ -4304,13 +4372,13 @@ function resolveFinalTestSetupEnvironment(ticketId: string, worktreePath: string
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
-  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content)
+  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content, worktreePath)
   if (artifactWrapper) return { commandWrapper: artifactWrapper }
 
   const profileMirrorPath = resolve(worktreePath, EXECUTION_SETUP_PROFILE_MIRROR)
   if (existsSync(profileMirrorPath)) {
     try {
-      const mirrorWrapper = getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf-8'))
+      const mirrorWrapper = getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf-8'), worktreePath)
       if (mirrorWrapper) return { commandWrapper: mirrorWrapper }
     } catch {
       return undefined

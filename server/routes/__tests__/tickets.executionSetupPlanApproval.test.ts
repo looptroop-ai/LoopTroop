@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
@@ -41,17 +41,17 @@ function buildPlan(ticketId: string, summary = 'Prepare the workspace runtime.')
         id: 'bootstrap-workspace',
         title: 'Bootstrap workspace',
         purpose: 'Prepare the runtime for later beads.',
-        commands: ['project bootstrap'],
+        commands: ['npm run bootstrap'],
         required: true,
         rationale: 'Repository-native setup is required before later execution can reuse the workspace.',
         cautions: ['May take a while on the first run.'],
       },
     ],
     project_commands: {
-      prepare: ['project bootstrap'],
-      test_full: ['project test'],
-      lint_full: ['project lint'],
-      typecheck_full: ['project typecheck'],
+      prepare: ['npm run bootstrap'],
+      test_full: ['npm test'],
+      lint_full: ['npm run lint'],
+      typecheck_full: ['npm run typecheck'],
     },
     quality_gate_policy: {
       tests: 'bead-test-commands-first',
@@ -86,17 +86,17 @@ function buildStructuredPlan(ticketId: string, summary = 'Prepare the workspace 
         id: 'bootstrap-workspace',
         title: 'Bootstrap workspace',
         purpose: 'Prepare the runtime for later beads.',
-        commands: ['project bootstrap'],
+        commands: ['npm run bootstrap'],
         required: true,
         rationale: 'Repository-native setup is required before later execution can reuse the workspace.',
         cautions: ['May take a while on the first run.'],
       },
     ],
     projectCommands: {
-      prepare: ['project bootstrap'],
-      testFull: ['project test'],
-      lintFull: ['project lint'],
-      typecheckFull: ['project typecheck'],
+      prepare: ['npm run bootstrap'],
+      testFull: ['npm test'],
+      lintFull: ['npm run lint'],
+      typecheckFull: ['npm run typecheck'],
     },
     qualityGatePolicy: {
       tests: 'bead-test-commands-first',
@@ -167,17 +167,17 @@ vi.mock('../../workflow/phases/executionSetupPlanPhase', async () => {
               id: 'bootstrap-workspace',
               title: 'Bootstrap workspace',
               purpose: 'Prepare the runtime for later beads.',
-              commands: ['project bootstrap'],
+              commands: ['npm run bootstrap'],
               required: true,
               rationale: 'Repository-native setup is required before later execution can reuse the workspace.',
               cautions: ['May take a while on the first run.'],
             },
           ],
           projectCommands: {
-            prepare: ['project bootstrap'],
-            testFull: ['project test'],
-            lintFull: ['project lint'],
-            typecheckFull: ['project typecheck'],
+            prepare: ['npm run bootstrap'],
+            testFull: ['npm test'],
+            lintFull: ['npm run lint'],
+            typecheckFull: ['npm run typecheck'],
           },
           qualityGatePolicy: {
             tests: 'bead-test-commands-first',
@@ -250,6 +250,15 @@ const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-execution-setup-plan-',
   files: {
     'README.md': '# LoopTroop Execution Setup Plan Test\n',
+    'package.json': JSON.stringify({
+      private: true,
+      scripts: {
+        bootstrap: 'echo bootstrap',
+        test: 'echo test',
+        lint: 'echo lint',
+        typecheck: 'echo typecheck',
+      },
+    }, null, 2),
   },
 })
 
@@ -275,6 +284,14 @@ function setupExecutionSetupPlanTicket() {
     status: 'WAITING_EXECUTION_SETUP_APPROVAL',
     branchName: init.branchName,
   })
+  const paths = getTicketPaths(ticket.id)
+  if (!paths) throw new Error('Ticket workspace not initialized')
+  mkdirSync(dirname(paths.beadsPath), { recursive: true })
+  writeFileSync(paths.beadsPath, `${JSON.stringify({
+    id: 'bead-1',
+    title: 'Run repository tests',
+    testCommands: ['npm test'],
+  })}\n`)
 
   const app = new Hono()
   app.route('/api', ticketRouter)
@@ -367,17 +384,17 @@ describe('ticketRouter execution setup plan approval routes', () => {
               id: 'bootstrap-workspace',
               title: 'Bootstrap workspace',
               purpose: 'Prepare the runtime for later beads.',
-              commands: ['project bootstrap'],
+              commands: ['npm run bootstrap'],
               required: true,
               rationale: 'Repository-native setup is required.',
               cautions: [],
             },
           ],
           projectCommands: {
-            prepare: ['project bootstrap'],
-            testFull: ['project test'],
-            lintFull: ['project lint'],
-            typecheckFull: ['project typecheck'],
+            prepare: ['npm run bootstrap'],
+            testFull: ['npm test'],
+            lintFull: ['npm run lint'],
+            typecheckFull: ['npm run typecheck'],
           },
           qualityGatePolicy: {
             tests: 'bead-test-commands-first',

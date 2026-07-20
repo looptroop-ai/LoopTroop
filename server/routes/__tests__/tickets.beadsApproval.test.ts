@@ -44,6 +44,10 @@ const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-beads-approval-',
   files: {
     'README.md': '# LoopTroop Beads Approval Test\n',
+    'package.json': JSON.stringify({
+      private: true,
+      scripts: { test: 'echo test' },
+    }, null, 2),
   },
 })
 

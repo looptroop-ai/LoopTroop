@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made workspace setup preserve prepared tool environments, reject repository-incompatible commands, and begin deterministic retries without avoidable AI-note delays.
 - Expanded OpenCode session-scoped permission rules to match absolute paths, preventing workspace setup and tool provisioning from blocking on system read commands.
 - Added an explicit default None choice to model effort controls so providers keep their native effort behavior until you select an override.
 - Kept GitHub readiness checks compatible with older GitHub CLI releases while retaining structured checks on current releases.
@@ -60,6 +61,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added repository-evidence validation for bead test commands, setup-plan probes, hook checks, and project command families, with automatic Beads coverage correction for unsupported commands and approval-time safeguards.
 - Added ticket-level Git-hook policy overrides, start-time inheritance locks, and contextual documentation links in Configuration, Project Advanced settings, new-ticket Advanced settings, and the Draft workspace.
 - Added three explicit existing-project attachment actions: restore all state, retain project settings while clearing every ticket, or delete `.looptroop` and start fresh. Destructive actions include active-ticket warnings, a keep/delete comparison, and a required confirmation.
 - Added support for OpenRouter routing modifiers (such as `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`) in model configuration and validation, with a dedicated selector in the configuration profile setup.
@@ -85,6 +87,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Preparing Workspace Runtime now detects and records its canonical command wrapper, applies it consistently to independent probes and later commands, and reports visible failure-analysis and structured-correction milestones.
+- Execution setup planning and Beads prompts now require commands to match actual manifests, scripts, build files, task declarations, or repository-local executables instead of assuming a familiar ecosystem.
 - Model effort pickers now include **None** as the selected default whenever no named override is set, including legacy saved `none` selections; choosing it clears the override for both the main implementer and council members.
 - Added a shared autosave indicator to Interviewing and the Interview, Specs, Blueprint, and Workspace Setup approval editors, including pending, saving, saved, conflict, and failure feedback plus relative and exact last-save timestamps. Approval autosave preserves only the draft; **Save** still updates the authoritative artifact and applies downstream workflow effects.
 - Configuration documentation-link tooltips now explain each setting's effect and available range or choice before linking to the detailed documentation.
@@ -121,6 +125,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.
+- Removed the avoidable retry delay for deterministic setup failures by generating local retry notes for missing structured results and complete backend command failures.
 - Fixed workspace setup (`PREPARING_EXECUTION_ENV`) blocking and timing out when setup commands run system diagnostics (such as checking CPU architecture or reading `/etc/os-release` to provision toolchains) by adding absolute path glob patterns (`*`, `/*`, `/**/*`, `**`, and `**/.*`) to the default allow-all OpenCode permission rules.
 - Pre-flight GitHub authentication now falls back to `gh auth status --hostname github.com` only when an older GitHub CLI rejects the JSON status flag, so valid older installations can proceed while current installations retain structured account validation.
 - Fixed npm 12 dependency maintenance incorrectly holding releases whose publish-time metadata was returned as a one-element JSON array; both the legacy object and npm 12 array shapes now participate in the seven-day release-age check.

@@ -723,6 +723,10 @@ Plans carry `workspace_inputs` entries with a repository-relative `path`, `kind`
 
 Both artifacts carry ordered `workspace_probes` entries with required `id`, `command`, and `purpose`. Their `git_hooks` object contains a strict policy enum, read-only detected-hook records (`name`, normalized `path`, `source`, `executable`, optional `manager_hint`), and ordered validation commands (`id`, `hook`, `command`, `purpose`). An empty validation-command list is valid and preserved exactly; the parser never synthesizes a command for an unknown hook.
 
+After parsing, command compatibility is validated separately against the effective workspace directory. Manifest-bound launchers require their matching repository manifest and task, while repository-local executables and checked-in scripts provide direct evidence. A launcher found globally is not enough to authorize an unrelated ecosystem. Missing launchers with valid repository evidence remain setup requirements; commands with contradictory or absent evidence are rejected.
+
+The canonical executable `.ticket/runtime/execution-setup/run` may be recovered from disk when a valid setup result omitted its reusable-artifact declaration. This backend repair upgrades or adds one `command-wrapper` artifact without duplicates and records a caution. Independent command receipts may include `setupWrapperApplied` and `effectiveCommand` so the UI can distinguish the approved bare command from the actual routed command.
+
 **Status normalization**
 
 - Execution setup plan status accepts `draft`, `planned`, `plan`, `review` and normalizes to `draft`.

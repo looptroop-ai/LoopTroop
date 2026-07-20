@@ -1,5 +1,7 @@
 import type { ExecutionSetupProfile } from './types'
 import { EXECUTION_SETUP_RUNTIME_DIR } from './types'
+import { accessSync, constants, lstatSync, realpathSync } from 'node:fs'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 export const EXECUTION_SETUP_RUN_WRAPPER = `${EXECUTION_SETUP_RUNTIME_DIR}/run`
 
@@ -13,11 +15,38 @@ export function commandMentionsExecutionSetupWrapper(command: string, wrapperPat
   return normalizedCommand.includes(normalizedWrapper)
 }
 
-export function getExecutionSetupCommandWrapper(profile: ExecutionSetupProfile | null | undefined): string | null {
+function isPathContainedBy(parentPath: string, candidatePath: string): boolean {
+  const relativePath = relative(parentPath, candidatePath)
+  return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+}
+
+export function findCanonicalExecutionSetupCommandWrapper(worktreePath: string): string | null {
+  try {
+    const worktreeRealPath = realpathSync(worktreePath)
+    const wrapperPath = resolve(worktreePath, EXECUTION_SETUP_RUN_WRAPPER)
+    const wrapperStat = lstatSync(wrapperPath)
+    if (!wrapperStat.isFile()) return null
+    if (process.platform !== 'win32') accessSync(wrapperPath, constants.X_OK)
+    const wrapperRealPath = realpathSync(wrapperPath)
+    if (!isPathContainedBy(worktreeRealPath, wrapperRealPath)) return null
+    return EXECUTION_SETUP_RUN_WRAPPER
+  } catch {
+    return null
+  }
+}
+
+function getExplicitExecutionSetupCommandWrapper(profile: ExecutionSetupProfile | null | undefined): string | null {
   if (!profile) return null
 
   const explicitWrapper = profile.reusableArtifacts.find((artifact) => artifact.kind === 'command-wrapper' && artifact.path.trim())
-  if (explicitWrapper) return explicitWrapper.path
+  return explicitWrapper?.path ?? null
+}
+
+function getDeclaredExecutionSetupCommandWrapper(profile: ExecutionSetupProfile | null | undefined): string | null {
+  if (!profile) return null
+
+  const explicitWrapper = getExplicitExecutionSetupCommandWrapper(profile)
+  if (explicitWrapper) return explicitWrapper
 
   const wrapperArtifact = profile.reusableArtifacts.find((artifact) => (
     artifact.path.trim()
@@ -34,6 +63,57 @@ export function getExecutionSetupCommandWrapper(profile: ExecutionSetupProfile |
   return projectCommands.some((command) => commandMentionsExecutionSetupWrapper(command))
     ? EXECUTION_SETUP_RUN_WRAPPER
     : null
+}
+
+export function getExecutionSetupCommandWrapper(
+  profile: ExecutionSetupProfile | null | undefined,
+  worktreePath?: string,
+): string | null {
+  return getDeclaredExecutionSetupCommandWrapper(profile)
+    ?? (worktreePath ? findCanonicalExecutionSetupCommandWrapper(worktreePath) : null)
+}
+
+const DISCOVERED_WRAPPER_PURPOSE = 'Preserves the execution setup environment for later project commands.'
+const DISCOVERED_WRAPPER_CAUTION = 'LoopTroop detected and recorded the canonical execution setup command wrapper.'
+
+export function repairExecutionSetupCommandWrapper(
+  profile: ExecutionSetupProfile,
+  worktreePath: string,
+): { profile: ExecutionSetupProfile; repaired: boolean } {
+  if (getExplicitExecutionSetupCommandWrapper(profile)) return { profile, repaired: false }
+  const wrapper = findCanonicalExecutionSetupCommandWrapper(worktreePath)
+  if (!wrapper) return { profile, repaired: false }
+
+  let wrapperRecorded = false
+  const reusableArtifacts = profile.reusableArtifacts.flatMap((artifact) => {
+    if (normalizeExecutionSetupCommandPath(artifact.path) !== wrapper) return [artifact]
+    if (wrapperRecorded) return []
+    wrapperRecorded = true
+    return [{
+      ...artifact,
+      path: wrapper,
+      kind: 'command-wrapper',
+      purpose: artifact.purpose.trim() || DISCOVERED_WRAPPER_PURPOSE,
+    }]
+  })
+  if (!wrapperRecorded) {
+    reusableArtifacts.push({
+      path: wrapper,
+      kind: 'command-wrapper',
+      purpose: DISCOVERED_WRAPPER_PURPOSE,
+    })
+  }
+
+  return {
+    repaired: true,
+    profile: {
+      ...profile,
+      reusableArtifacts,
+      cautions: profile.cautions.includes(DISCOVERED_WRAPPER_CAUTION)
+        ? profile.cautions
+        : [...profile.cautions, DISCOVERED_WRAPPER_CAUTION],
+    },
+  }
 }
 
 export function hasExecutionSetupProjectCommands(profile: ExecutionSetupProfile | null | undefined): boolean {
@@ -73,7 +153,10 @@ function getRawProjectCommands(record: Record<string, unknown>): string[] {
   ]
 }
 
-export function getExecutionSetupCommandWrapperFromRecord(record: Record<string, unknown>): string | null {
+export function getExecutionSetupCommandWrapperFromRecord(
+  record: Record<string, unknown>,
+  worktreePath?: string,
+): string | null {
   const profileRecord = isRecord(getValueByAliases(record, ['profile']))
     ? getValueByAliases(record, ['profile']) as Record<string, unknown>
     : record
@@ -92,17 +175,25 @@ export function getExecutionSetupCommandWrapperFromRecord(record: Record<string,
     }
   }
 
-  return getRawProjectCommands(profileRecord).some((command) => commandMentionsExecutionSetupWrapper(command))
+  const declaredWrapper = getRawProjectCommands(profileRecord).some((command) => commandMentionsExecutionSetupWrapper(command))
     ? EXECUTION_SETUP_RUN_WRAPPER
     : null
+  return declaredWrapper ?? (worktreePath ? findCanonicalExecutionSetupCommandWrapper(worktreePath) : null)
 }
 
-export function getExecutionSetupCommandWrapperFromContent(content: string | undefined | null): string | null {
-  if (!content) return null
+export function getExecutionSetupCommandWrapperFromContent(
+  content: string | undefined | null,
+  worktreePath?: string,
+): string | null {
+  if (!content) return worktreePath ? findCanonicalExecutionSetupCommandWrapper(worktreePath) : null
   try {
     const parsed = JSON.parse(content) as unknown
-    return isRecord(parsed) ? getExecutionSetupCommandWrapperFromRecord(parsed) : null
+    return isRecord(parsed)
+      ? getExecutionSetupCommandWrapperFromRecord(parsed, worktreePath)
+      : worktreePath
+        ? findCanonicalExecutionSetupCommandWrapper(worktreePath)
+        : null
   } catch {
-    return null
+    return worktreePath ? findCanonicalExecutionSetupCommandWrapper(worktreePath) : null
   }
 }

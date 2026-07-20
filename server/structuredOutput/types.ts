@@ -168,6 +168,8 @@ export interface ExecutionSetupCommandProbePayload {
 export interface ExecutionSetupCommandReceiptPayload {
   id: string
   command: string
+  effectiveCommand?: string
+  setupWrapperApplied?: boolean
   status: 'passed' | 'failed' | 'timed_out' | 'skipped'
   exitCode: number | null
   durationMs: number

@@ -38,6 +38,14 @@ export function getCommandShell(): CommandShell {
   }
 }
 
+function getWrappedCommandShell(shell: CommandShell): CommandShell {
+  if (process.platform === 'win32') return shell
+  return {
+    ...shell,
+    args: ['-c'],
+  }
+}
+
 export function quoteShellArg(value: string): string {
   if (process.platform === 'win32') {
     return `"${value.replace(/"/g, '""')}"`
@@ -94,12 +102,15 @@ function buildMissingWrapperResult(input: {
   effectiveCommand?: string
 }): ShellCommandResult {
   const shell = getCommandShell()
+  const wrappedShell = getWrappedCommandShell(shell)
   return {
     command: input.command,
     ...(input.effectiveCommand ? { effectiveCommand: input.effectiveCommand } : {}),
     setupWrapperApplied: input.setupWrapperApplied,
     bin: input.setupWrapperApplied ? resolveWrapperPath(input.cwd, input.commandWrapper) : shell.bin,
-    args: input.setupWrapperApplied ? [shell.bin, ...shell.args, input.command] : [...shell.args, input.command],
+    args: input.setupWrapperApplied
+      ? [wrappedShell.bin, ...wrappedShell.args, input.command]
+      : [...shell.args, input.command],
     exitCode: null,
     signal: null,
     stdout: '',
@@ -118,6 +129,7 @@ export async function runShellCommand(input: {
 }): Promise<ShellCommandResult> {
   const startedAt = Date.now()
   const shell = getCommandShell()
+  const wrappedShell = getWrappedCommandShell(shell)
   const commandAlreadyUsesWrapper = Boolean(
     input.commandWrapper && commandIncludesWrapper(input.command, input.commandWrapper),
   )
@@ -127,7 +139,7 @@ export async function runShellCommand(input: {
   )
   const resolvedWrapperPath = input.commandWrapper ? resolveWrapperPath(input.cwd, input.commandWrapper) : null
   const wrapperEffectiveCommand = shouldApplyWrapper && input.commandWrapper
-    ? `${input.commandWrapper} ${shell.bin} ${shell.args.map(quoteShellArg).join(' ')} ${quoteShellArg(input.command)}`
+    ? `${input.commandWrapper} ${wrappedShell.bin} ${wrappedShell.args.map(quoteShellArg).join(' ')} ${quoteShellArg(input.command)}`
     : undefined
 
   if (input.commandWrapper && resolvedWrapperPath) {
@@ -172,7 +184,9 @@ export async function runShellCommand(input: {
   }
 
   const bin = shouldApplyWrapper && resolvedWrapperPath ? resolvedWrapperPath : shell.bin
-  const args = shouldApplyWrapper ? [shell.bin, ...shell.args, input.command] : [...shell.args, input.command]
+  const args = shouldApplyWrapper
+    ? [wrappedShell.bin, ...wrappedShell.args, input.command]
+    : [...shell.args, input.command]
   const effectiveCommand = wrapperEffectiveCommand
 
   return await new Promise<ShellCommandResult>((resolveCommand) => {

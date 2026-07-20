@@ -29,7 +29,10 @@ function intensityColor(intensity: number, selected: boolean): string {
 export function EffortPicker({ variants, value, onChange, disabled }: EffortPickerProps) {
   const sortedVariants = useMemo(() => {
     if (!variants || Object.keys(variants).length === 0) return []
-    return EFFORT_ORDER.filter(k => k in variants)
+    return [
+      'none',
+      ...EFFORT_ORDER.filter(k => k !== 'none' && k in variants),
+    ]
   }, [variants])
 
   if (sortedVariants.length === 0) return null
@@ -40,30 +43,32 @@ export function EffortPicker({ variants, value, onChange, disabled }: EffortPick
       <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted/30 p-0.5">
         {sortedVariants.map(variant => {
           const meta = EFFORT_META[variant] ?? { label: variant, shortLabel: variant, icon: '●', description: variant, intensity: 3 }
-          const selected = value === variant
+          const selected = variant === 'none'
+            ? value === undefined || value === 'none'
+            : value === variant
           return (
-            <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                            key={variant}
-                            type="button"
-                            disabled={disabled}
-                            onClick={() => onChange(selected ? undefined : variant)}
-                            className={cn(
-                              'relative px-2 py-0.5 text-xs font-medium rounded-md transition-all duration-200 cursor-pointer select-none',
-                              'disabled:opacity-40 disabled:cursor-not-allowed',
-                              intensityColor(meta.intensity, selected),
-                              selected && 'shadow-sm scale-[1.02]',
-                            )}
-                          >
-                            <span className="flex items-center gap-1">
-                              <span className="text-[10px] leading-none">{meta.icon}</span>
-                              <span>{meta.shortLabel}</span>
-                            </span>
-                          </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-center text-balance">{meta.description}</TooltipContent>
-              </Tooltip>
+            <Tooltip key={variant}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  aria-pressed={selected}
+                  onClick={() => onChange(variant === 'none' ? undefined : selected ? undefined : variant)}
+                  className={cn(
+                    'relative px-2 py-0.5 text-xs font-medium rounded-md transition-all duration-200 cursor-pointer select-none',
+                    'disabled:opacity-40 disabled:cursor-not-allowed',
+                    intensityColor(meta.intensity, selected),
+                    selected && 'shadow-sm scale-[1.02]',
+                  )}
+                >
+                  <span className="flex items-center gap-1">
+                    <span className="text-[10px] leading-none">{meta.icon}</span>
+                    <span>{meta.shortLabel}</span>
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs text-center text-balance">{meta.description}</TooltipContent>
+            </Tooltip>
           )
         })}
       </div>

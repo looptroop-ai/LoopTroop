@@ -202,11 +202,11 @@ Up to 9 council slots are available in addition to the main implementer, for a m
 
 **Type:** variant selector (per model, optional)
 
-Some models expose multiple effort or thinking modes (for example, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). When a selected model advertises variants, an effort picker appears below that slot's model selector. If a model exposes no variants, the control stays hidden.
+Some models expose multiple effort or thinking modes (for example, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). When a selected model advertises variants, an effort picker appears below that slot's model selector. The **None** choice is always available and selected by default; it leaves the provider's effort behavior unmodified. If a model exposes no variants, the control stays hidden.
 
 **What it does:**
 
-The selected variant is passed as part of the model configuration when LoopTroop calls that model. Higher-effort variants generally produce better reasoning at the cost of slower responses and higher token usage.
+The selected named variant is passed as part of the model configuration when LoopTroop calls that model. Choosing **None** clears any saved override instead of sending a literal `none` variant. Higher-effort variants generally produce better reasoning at the cost of slower responses and higher token usage.
 
 **How to choose:**
 

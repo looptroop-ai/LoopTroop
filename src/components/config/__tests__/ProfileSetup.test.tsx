@@ -35,9 +35,10 @@ const existingProfile = {
   createdAt: '2026-03-08T14:28:53.309Z',
   updatedAt: '2026-03-11T10:49:38.623Z',
 }
+let profileForTest = existingProfile
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: existingProfile }),
+  useProfile: () => ({ data: profileForTest }),
   useCreateProfile: () => ({
     mutate: createProfileMutate,
     isPending: false,
@@ -86,6 +87,7 @@ describe('ProfileSetup', () => {
   beforeEach(() => {
     updateProfileMutate.mockReset()
     createProfileMutate.mockReset()
+    profileForTest = existingProfile
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string'
         ? input
@@ -173,6 +175,47 @@ describe('ProfileSetup', () => {
 
     expect(screen.getByText('Council member 10…')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add Council Member' })).not.toBeInTheDocument()
+  })
+
+  it('normalizes legacy None effort selections to unset configuration overrides on save', async () => {
+    profileForTest = {
+      ...existingProfile,
+      mainImplementerVariant: 'none',
+      councilMemberVariants: JSON.stringify({ 'openai/gpt-5.1-codex': 'none' }),
+    }
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          models: [
+            { fullId: 'opencode/big-pickle', variants: { low: {}, high: {} } },
+            { fullId: 'openai/gpt-5.1-codex', variants: { low: {}, high: {} } },
+          ],
+          connectedProviders: ['opencode', 'openai'],
+          defaultModels: {},
+        }),
+      } as Response
+    })
+
+    await renderProfileSetup()
+
+    const noneButtons = await screen.findAllByRole('button', { name: /None/ })
+    expect(noneButtons).toHaveLength(2)
+    noneButtons.forEach(button => expect(button).toHaveAttribute('aria-pressed', 'true'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mainImplementerVariant: '',
+        councilMemberVariants: '',
+      }),
+      expect.anything(),
+    ))
   })
 
   it('renders documentation links for configuration descriptions', async () => {

@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Added an explicit default None choice to model effort controls so providers keep their native effort behavior until you select an override.
 - Kept GitHub readiness checks compatible with older GitHub CLI releases while retaining structured checks on current releases.
 - Added concise, setting-specific guidance to Configuration documentation-link tooltips.
 - Simplified inherited Git-hook and Manual QA controls with detailed hover guidance and lifecycle-organized Advanced settings.
@@ -83,6 +84,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Model effort pickers now include **None** as the selected default whenever no named override is set, including legacy saved `none` selections; choosing it clears the override for both the main implementer and council members.
 - Added a shared autosave indicator to Interviewing and the Interview, Specs, Blueprint, and Workspace Setup approval editors, including pending, saving, saved, conflict, and failure feedback plus relative and exact last-save timestamps. Approval autosave preserves only the draft; **Save** still updates the authoritative artifact and applies downstream workflow effects.
 - Configuration documentation-link tooltips now explain each setting's effect and available range or choice before linking to the detailed documentation.
 - Consolidated the three separate chat roadmap items (Log AI Chat, Chat during execution, Chat in dashboard) into a single unified **Ticket Chat & Action Assistant** roadmap entry. The unified item preserves all read-only Q&A capabilities (log-scoped, execution-scoped, dashboard-scoped) and adds a new **Actionable Chat** sub-item with write capabilities: approve/reject planning artifacts, edit artifact content, edit project files, and trigger workflow actions via natural language. Write actions use a full auto-execute safety model with an append-only audit journal (`chat-action-audit.jsonl`) and per-action undo/rollback.

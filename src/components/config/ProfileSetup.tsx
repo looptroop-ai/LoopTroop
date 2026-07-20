@@ -263,12 +263,12 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     for (const modelId of uniqueCouncil) {
       if (modelId === validatedData.mainImplementer) continue
       const v = councilVariants[cleanModelId(modelId)]
-      if (v) variantsMap[modelId] = v
+      if (v && v !== 'none') variantsMap[modelId] = v
     }
     const payload: CreateProfileInput = {
       ...validatedData,
       councilMembers: JSON.stringify(uniqueCouncil),
-      mainImplementerVariant: mainVariant ?? '',
+      mainImplementerVariant: mainVariant && mainVariant !== 'none' ? mainVariant : '',
       councilMemberVariants: Object.keys(variantsMap).length > 0 ? JSON.stringify(variantsMap) : '',
     }
     const handleSuccess = () => {

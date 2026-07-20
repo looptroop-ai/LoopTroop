@@ -13,6 +13,7 @@ import {
   getTicketContext,
   getTicketByRef,
   getTicketPaths,
+  isDisplayOnlyMockTicket,
   insertPhaseArtifact,
   listPhaseAttempts,
   listTickets,
@@ -111,6 +112,16 @@ function runGitText(worktreePath: string, args: string[]): string {
 }
 
 export function detectManualQaWorkspaceDrift(ticketId: string, version: number): ManualQaWorkspaceDrift {
+  const ticket = getTicketByRef(ticketId)
+  if (ticket && isDisplayOnlyMockTicket(ticket)) {
+    return {
+      drifted: false,
+      headChanged: false,
+      baselineHead: '0000000000000000000000000000000000000000',
+      currentHead: '0000000000000000000000000000000000000000',
+      files: [],
+    }
+  }
   const paths = getTicketPaths(ticketId)
   if (!paths) throw new Error(`Ticket storage was not found: ${ticketId}`)
   const baselinePath = getManualQaStoragePaths(paths.ticketDir, version).baselinePath

@@ -73,6 +73,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added a new high-priority roadmap item for optional skip reasons to improve auditability of user skips across the workflow.
 - Added Show/Hide Mock Tickets option to the Kanban triage filter bar.
 - Consolidated the three separate chat roadmap items (Log AI Chat, Chat during execution, Chat in dashboard) into a unified **Ticket Chat & Action Assistant** with actionable write capabilities (approve/reject artifacts, edit artifacts and project files, trigger workflow actions) and full auto-execute with undo/rollback.
+- Modified workspace drift detection to gracefully bypass Git checks and avoid throwing baseline-missing errors for display-only mock tickets.
 
 ### Detailed Changes
 
@@ -155,6 +156,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Strengthened generic ticket UI state to serialized server-owned compare-and-set revisions with idempotent action IDs and latest-state `409` conflicts; existing approval autosave consumers retain debounce and unload keepalive behavior.
 - Changed post-QA failure recovery to archive the current final-test/generation/wait attempts, schedule normal QA-fix beads, run fresh final tests, and allocate a new checklist version before integration.
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
+- Changed Manual QA workspace drift detection to bypass Git worktree checks and return no drift for display-only mock tickets, resolving baseline-missing errors when loading mock tickets in the UI.
 
 #### Fixed
 - Fixed the ALL tab appearing empty after a hard refresh when the newest projected rows were all commands by excluding command-classified rows before applying overview pagination.

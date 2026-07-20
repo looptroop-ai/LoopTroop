@@ -6,4 +6,24 @@ export const OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS: ReadonlyArray<OpenCodePer
     pattern: '*',
     action: 'allow',
   },
+  {
+    permission: '*',
+    pattern: '/*',
+    action: 'allow',
+  },
+  {
+    permission: '*',
+    pattern: '/**/*',
+    action: 'allow',
+  },
+  {
+    permission: '*',
+    pattern: '**',
+    action: 'allow',
+  },
+  {
+    permission: '*',
+    pattern: '**/.*',
+    action: 'allow',
+  },
 ])

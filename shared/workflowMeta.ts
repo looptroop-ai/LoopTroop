@@ -152,7 +152,7 @@ const WORKFLOW_PHASE_DETAILS = {
     overview: 'The interview council creates competing interview/question drafts so the system can compare multiple approaches before asking you anything. This is the first multi-model phase in the workflow — each configured council member works independently and in parallel, producing their own interview strategy without seeing what the others are doing. The diversity of approaches is intentional: it ensures the final interview covers angles that any single model might miss.',
     steps: [
       'Context Loading: LoopTroop loads the ticket details (saved title and description only) and the relevant-files artifact (file paths, excerpts, rationales) as the shared prompt context that every council member receives identically.',
-      'Parallel Draft Generation: Each configured council model receives the same context but drafts its own interview approach independently. Models are not allowed to see or influence each other\'s outputs — this independence is key to producing genuinely diverse interview strategies.',
+      'Parallel Draft Generation: Each configured council model receives the same context but drafts its own interview approach independently. When that context cannot confirm a discoverable repository fact, it may inspect the smallest relevant repository area read-only. Models are not allowed to see or influence each other\'s outputs — this independence is key to producing genuinely diverse interview strategies.',
       'Draft Content: Each draft typically includes a set of interview questions, their types (free-text, choice-based), ordering rationale, and a strategy explanation for why these particular questions would best clarify the implementation intent.',
       'Progress Tracking: LoopTroop tracks per-model progress in real time, streaming model logs to the UI so you can see how each council member is progressing. It also monitors quorum — the minimum number of successful drafts needed to proceed.',
       'Quorum Check: If too many models fail (insufficient successful drafts to meet quorum), the phase fails fast rather than waiting for all models to finish. This prevents wasted time when the council cannot produce enough valid drafts to vote on.',
@@ -173,7 +173,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'This is the first multi-model phase in the workflow — all phases before this used only the single main implementer.',
       'Council member independence is enforced: no model can see another\'s draft during this phase.',
       'Rejected or uncorrectable model output is diagnostic-only in artifacts: the structured view shows outcome, model, validation error, retry count, and excerpts, while the full malformed response stays in Raw and execution logs.',
-      'Context available: Relevant Files + Ticket Details. The council does not yet have interview answers, PRD, or beads — it is creating the interview that will gather those answers.',
+      'Context available: Relevant Files + Ticket Details, with focused read-only repository inspection available only when necessary to confirm a discoverable technical fact. The council does not yet have interview answers, PRD, or beads — it is creating the interview that will gather those answers.',
       'Why multiple drafts? A single model might focus narrowly on one aspect of the ticket. By having multiple models independently draft interview approaches, the system captures a wider range of relevant questions and perspectives.',
     ],
     equivalents: [
@@ -217,7 +217,7 @@ const WORKFLOW_PHASE_DETAILS = {
     overview: 'LoopTroop turns the winning interview draft into the normalized, interactive interview session that you will actually answer. This is a single-model phase using the winning model from the vote. The refinement step standardizes question formats, sets up batch state tracking, and produces the UI-ready interview artifact that the interview screen renders.',
     steps: [
       'Winning Draft Ingestion: The winning interview draft (selected by council vote) is loaded along with its question set, ordering rationale, and any strategic notes the winning model included.',
-      'Question Normalization: LoopTroop normalizes all questions into a standardized format — each question gets a unique identifier, a question type (free-text, single-choice, multi-choice), display text, optional context/hints, and ordering metadata. This ensures the interview UI can render any question regardless of how the original model formatted it.',
+      'Question Normalization: LoopTroop normalizes all questions into a standardized format — each question gets a unique identifier, a question type (free-text, single-choice, multi-choice), display text, optional context/hints, and ordering metadata. When needed to confirm a discoverable repository fact, the refiner may inspect the smallest relevant area read-only. This ensures the interview UI can render any question regardless of how the original model formatted it.',
       'Structured Retry Policy: If the winning draft cannot be normalized into the required interactive schema, the configured structured retry count applies. Retry prompts run in fresh sessions by design for council refinement, and Raw diagnostics preserve the rejected outputs.',
       'Session Snapshot Creation: LoopTroop builds the interview session snapshot, which tracks batch state (which questions are in the current batch vs. future batches), completion bookkeeping (answered, skipped, pending), question ordering, and overall session progress.',
       'Artifact Writing: The canonical interview YAML is written into the ticket workspace. This becomes the authoritative interview artifact that downstream phases (coverage check, approval, PRD drafting) reference.',
@@ -237,7 +237,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'This phase produces the first user-facing interactive artifact in the planning flow — everything before this was AI-only work.',
       'The refinement is done by the winning model (from the vote), not the main implementer or all council members.',
       'Earlier draft artifacts inspected here show the validated draft content that refinement consumed in Raw, not the original drafting model response.',
-      'Context available: Relevant Files + Ticket Details + Competing Drafts (used for reference during normalization).',
+      'Context available: Relevant Files + Ticket Details + Competing Drafts (used for reference during normalization), plus focused read-only repository inspection only when needed to confirm a discoverable technical fact.',
       'The session snapshot is designed to support multiple interview rounds — if coverage later adds follow-up questions, the same snapshot structure accommodates them.',
     ],
     equivalents: [
@@ -251,7 +251,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Question Presentation: The workspace presents the current interview batch with all pending questions. Each question shows its type (free-text or choice-based), any context/hints provided by the AI, and whether it has been previously answered or skipped.',
       'Answering Questions And Autosave: You can answer questions in any order. Free-text questions accept open-ended responses; choice-based questions present the available options. Draft changes autosave while you work, and the visible Autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time.',
       'Skipping Questions: If a question is not relevant or you don\'t have the information, you can skip it. Skipped questions are tracked separately — during PRD drafting, the AI will attempt to fill in reasonable answers for skipped questions based on the ticket context. You can also unskip a previously skipped question to answer it after all.',
-      'Batch Submission: When you submit the current batch, LoopTroop normalizes your answers and skip decisions into the canonical interview state. This persists your responses into the interview session snapshot and updates the interview YAML artifact. If the interview session has another batch ready, the ticket stays in this phase with the new questions; when the interview is complete, it advances to coverage.',
+      'Batch Submission: When you submit the current batch, LoopTroop normalizes your answers and skip decisions into the canonical interview state. This persists your responses into the interview session snapshot and updates the interview YAML artifact. If a checkable repository fact affects the next batch or follow-up, the interview model may inspect only the relevant repository area read-only; it still asks you for preferences, scope, priorities, desired behavior, and acceptance decisions. If the interview session has another batch ready, the ticket stays in this phase with the new questions; when the interview is complete, it advances to coverage.',
       'Follow-Up Rounds: After the interview is complete, coverage may determine that more information is needed and return here with a new targeted batch of follow-up questions. These follow-ups are generated based on gaps in your previous answers, not by repeating the same questions.',
       'Skip All: You can skip all remaining unanswered questions at once. This finalizes the current answers, marks all remaining questions as skipped, and advances the workflow directly to interview approval — bypassing the real coverage evaluation. A synthetic clean coverage record is written under the VERIFYING_INTERVIEW_COVERAGE phase label so audit history remains complete.',
     ],
@@ -269,7 +269,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'This is primarily a user-input phase — the workflow is intentionally paused while you answer questions. AI processing resumes only after submission to prepare the next batch or complete the interview.',
       'This phase may repeat during initial interview batching and later during coverage-generated follow-up rounds.',
-      'AI context available: Ticket Details only. The compiled question set, answered/skipped/pending state, and configured question limits are appended explicitly by the interview session logic when needed.',
+      'AI context available: Ticket Details only. The compiled question set, answered/skipped/pending state, and configured question limits are appended explicitly by the interview session logic when needed. Focused read-only inspection is available only to confirm repository facts relevant to the next batch or follow-up, never to replace stakeholder decisions.',
       'Tip: Detailed, specific answers lead to better PRDs. If you\'re unsure about a question, it\'s better to answer with your best understanding and note any uncertainty than to skip it entirely.',
       'Tip: Skipping is fine for truly irrelevant questions — the AI will fill in reasonable defaults during PRD drafting. But skipping core architecture or business logic questions may result in a PRD that needs more manual editing later.',
     ],
@@ -278,7 +278,7 @@ const WORKFLOW_PHASE_DETAILS = {
     overview: 'The interview winner re-checks the ticket description and all recorded answers against the current interview results to decide whether enough information has been gathered, or if follow-up questions are still needed. This is a budgeted loop — LoopTroop tracks how many follow-up rounds have been used and will not exceed the configured maximum, ensuring the interview process eventually converges rather than looping indefinitely.',
     steps: [
       'Context Assembly: LoopTroop loads the canonical interview artifact, the ticket description, and a normalized answer summary. This gives the coverage model the full picture: what was asked, what was answered, what was skipped, and what the ticket is trying to accomplish.',
-      'Coverage Evaluation: The winning interview model analyzes the collected answers against the ticket requirements and returns a structured coverage result. The result is either "clean" (all needed information has been collected) or "gaps found" (specific areas need more clarification).',
+      'Coverage Evaluation: The winning interview model analyzes the collected answers against the ticket requirements and returns a structured coverage result. It may inspect the smallest relevant repository area read-only to confirm a discoverable technical fact, but it must not infer stakeholder intent from existing code. The result is either "clean" (all needed information has been collected) or "gaps found" (specific areas need more clarification).',
       'Gap Analysis (if gaps found): When gaps are identified, the model specifies exactly what information is missing and why it matters for downstream PRD generation. Each gap includes a description, the reason it is important, and a suggested follow-up question.',
       'Follow-Up Generation (if budget allows): If gaps remain and the follow-up budget has not been exhausted, LoopTroop generates targeted follow-up questions based on the identified gaps. These questions are added to the session snapshot as a new interview batch and the workflow returns to the Interviewing phase.',
       'Budget Enforcement: The follow-up budget tracks how many rounds of follow-up questions have been generated. Once the budget is exhausted, coverage will finalize the interview regardless of remaining gaps — the PRD phase will work with whatever information is available.',
@@ -300,7 +300,7 @@ const WORKFLOW_PHASE_DETAILS = {
     notes: [
       'The coverage loop is budgeted — it cannot run indefinitely. The maximum number of follow-up rounds is configured per project.',
       'Coverage is performed by the winning interview model (from the vote), ensuring consistency with the original interview strategy.',
-      'Context available: Ticket Details + User Answers + Interview Results.',
+      'Context available: Ticket Details + User Answers + Interview Results, with focused read-only repository inspection available only when necessary to confirm a discoverable technical fact.',
       'Why budget the loop? Without a budget, a model could theoretically keep finding minor gaps and generating follow-up questions forever. The budget ensures the interview converges to a usable state within a reasonable number of rounds.',
     ],
     equivalents: [
@@ -1217,7 +1217,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COUNCIL_DELIBERATING',
     label: 'Council Drafting Questions',
-    description: 'Each council member independently drafts interview questions in parallel; accepted drafts become artifacts, while invalid outputs keep only diagnostics and raw-attempt history.',
+    description: 'Each council member independently drafts interview questions in parallel and may confirm missing repository facts through focused read-only inspection; accepted drafts become artifacts, while invalid outputs keep only diagnostics and raw-attempt history.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_DELIBERATING,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1241,7 +1241,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COMPILING_INTERVIEW',
     label: 'Refining Interview',
-    description: 'The winning interview draft is normalized into an interactive session; previous draft Raw views stay aligned to the validated content consumed by refinement.',
+    description: 'The winning interview draft is normalized into an interactive session and may use focused read-only inspection to confirm repository facts; previous draft Raw views stay aligned to the validated content consumed by refinement.',
     details: WORKFLOW_PHASE_DETAILS.COMPILING_INTERVIEW,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1253,7 +1253,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_INTERVIEW_ANSWERS',
     label: 'Interviewing',
-    description: 'Answer the interview questions that will shape the PRD. Draft answers autosave with visible state and last-save time. Non-final submissions can keep you here with another batch; completed interviews move to coverage, and coverage follow-ups can return here later.',
+    description: 'Answer the interview questions that will shape the PRD. The live model may confirm relevant repository facts read-only when preparing a next batch, while your decisions remain authoritative. Draft answers autosave with visible state and last-save time. Non-final submissions can keep you here with another batch; completed interviews move to coverage, and coverage follow-ups can return here later.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_ANSWERS,
     kanbanPhase: 'needs_input',
     groupId: 'interview',
@@ -1266,7 +1266,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_INTERVIEW_COVERAGE',
     label: 'Coverage Check (Interview)',
-    description: 'Coverage check for interview completeness; may add targeted follow-up questions before approval. The live workspace title shows the current pass when known.',
+    description: 'Coverage check for interview completeness; may confirm repository facts through focused read-only inspection and add targeted follow-up questions before approval. The live workspace title shows the current pass when known.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_INTERVIEW_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'interview',

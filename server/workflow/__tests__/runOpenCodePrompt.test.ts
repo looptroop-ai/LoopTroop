@@ -25,6 +25,7 @@ import {
   OPENCODE_DEFAULT_TOOLS,
   OPENCODE_DISABLED_TOOLS,
   OPENCODE_EXECUTION_SETUP_ONLINE_TOOLS,
+  OPENCODE_READ_ONLY_TOOLS,
 } from '../../opencode/toolPolicy'
 import {
   runOpenCodePrompt,
@@ -1125,6 +1126,7 @@ describe('runOpenCodePrompt', () => {
     expect(dispatchedEntries[0]!.event.promptText).toContain('## System Role')
     expect(dispatchedEntries[0]!.event.promptText).toContain('Build a ticket dashboard.')
     expect(dispatchedEntries[0]!.event.promptText).toContain('max_initial_questions: 3')
+    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_READ_ONLY_TOOLS)
   })
 
   it('returns snapshot content when stream done arrives before SDK prompt resolves', async () => {

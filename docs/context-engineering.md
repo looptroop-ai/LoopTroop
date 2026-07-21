@@ -218,11 +218,11 @@ The table below describes what the model receives during each status. "No model 
 | --- | --- |
 | `DRAFT` | No model prompt. The saved title and description become future `ticket_details`. |
 | `SCANNING_RELEVANT_FILES` | `ticket_details`. The scan may inspect the repository through tools, but the inline prompt does not receive a full source dump. |
-| `COUNCIL_DELIBERATING` | `relevant_files`, `ticket_details`. Each council member drafts interview questions independently from the same bounded context. |
+| `COUNCIL_DELIBERATING` | `relevant_files`, `ticket_details`. Each council member drafts interview questions independently from the same bounded context and may use focused read-only inspection only when it needs to confirm a discoverable repository fact. |
 | `COUNCIL_VOTING_INTERVIEW` | `relevant_files`, `ticket_details`, `drafts`. The drafts are the only prior model outputs brought into the vote. |
-| `COMPILING_INTERVIEW` | `relevant_files`, `ticket_details`, `drafts`. The winner is normalized into the interactive interview. |
-| `WAITING_INTERVIEW_ANSWERS` | Usually no background model work while waiting for the user. When the interview assistant needs to continue or resume, it receives `ticket_details` plus the compiled question/session state appended explicitly by the interview flow. |
-| `VERIFYING_INTERVIEW_COVERAGE` | `ticket_details`, `user_answers`, `interview`. Follow-up questions are generated only from the current interview and collected answers. |
+| `COMPILING_INTERVIEW` | `relevant_files`, `ticket_details`, `drafts`. The winner is normalized into the interactive interview and may use focused read-only inspection only when it needs to confirm a discoverable repository fact. |
+| `WAITING_INTERVIEW_ANSWERS` | Usually no background model work while waiting for the user. When the interview assistant needs to continue or resume, it receives `ticket_details` plus the compiled question/session state appended explicitly by the interview flow; it may inspect a focused repository area only when confirmation affects the next batch or follow-up. |
+| `VERIFYING_INTERVIEW_COVERAGE` | `ticket_details`, `user_answers`, `interview`. The model may use focused read-only inspection to confirm discoverable repository facts, but follow-up questions remain based on the current interview and collected answers. |
 | `WAITING_INTERVIEW_APPROVAL` | No model prompt while waiting for approval. The user reviews the interview artifact. |
 | `DRAFTING_PRD` | Split phase. Part 1 Full Answers receives `relevant_files`, `ticket_details`, `interview` plus a small runtime checklist; if no skipped answers need filling, Full Answers can be synthesized without a model call. Part 2 PRD drafts receive `relevant_files`, `ticket_details`, and that member's `full_answers`; they may use focused read-only repository inspection only when this context cannot support a concrete repository-specific claim. |
 | `COUNCIL_VOTING_PRD` | `relevant_files`, `ticket_details`, `interview`, `drafts`. The vote evaluates PRD drafts without inheriting Full Answers attempts or earlier chat history. |

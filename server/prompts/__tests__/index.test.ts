@@ -64,13 +64,9 @@ describe.concurrent('structured prompt hardening', () => {
     }
   })
 
-  it('uses read-only tools only for planning prompts that need conditional repository inspection', () => {
+  it('grants focused read-only tools to planning and interview prompts that need conditional repository inspection', () => {
     for (const prompt of [
-      PROM1,
       PROM2,
-      PROM3,
-      PROM4,
-      PROM5,
       PROM10a,
       PROM11,
       PROM21,
@@ -82,6 +78,10 @@ describe.concurrent('structured prompt hardening', () => {
     }
 
     for (const prompt of [
+      PROM1,
+      PROM3,
+      PROM4,
+      PROM5,
       PROM10b,
       PROM12,
       PROM13,
@@ -112,6 +112,10 @@ describe.concurrent('structured prompt hardening', () => {
 
   it('grounds conditional repository inspection in supplied evidence before targeted reads', () => {
     for (const prompt of [
+      PROM1,
+      PROM3,
+      PROM4,
+      PROM5,
       PROM10b,
       PROM12,
       PROM13,
@@ -126,6 +130,16 @@ describe.concurrent('structured prompt hardening', () => {
       expect(rendered).toContain('Conditional Repository Inspection:')
       expect(rendered).toContain('Review the repository evidence already supplied in context, including `relevant_files` when available.')
     }
+  })
+
+  it('keeps interview repository inspection focused on discoverable technical facts rather than stakeholder decisions', () => {
+    for (const prompt of [PROM1, PROM3, PROM4, PROM5]) {
+      const rendered = buildPromptFromTemplate(prompt, [])
+      expect(rendered).toContain('Interview Repository Boundary:')
+      expect(rendered).toContain('Never infer stakeholder preferences, desired behavior, scope, priorities, acceptance decisions, or product requirements from repository contents')
+    }
+
+    expect(buildPromptFromTemplate(PROM2, [])).not.toContain('Conditional Repository Inspection:')
   })
 
   it('uses same-session rules for prompts that continue an existing session', () => {

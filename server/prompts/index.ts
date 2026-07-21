@@ -46,6 +46,7 @@ const STRICT_VOTE_OUTPUT_FORMAT = 'YAML with top-level `draft_scores` mapping ke
 const STRUCTURED_SELF_CHECK = 'Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.'
 
 const CONDITIONAL_REPOSITORY_INSPECTION = 'Conditional Repository Inspection: Review the repository evidence already supplied in context, including `relevant_files` when available. If you need extra context to confirm a repository-specific claim, use focused read-only inspection. Inspect only the smallest useful set of manifests, build files, task definitions, CI configuration, and directly relevant source locations; do not survey the repository broadly. Never infer exact commands, file paths, frameworks, package managers, build systems, or test runners solely from ticket or PRD prose, file-extension examples, or common conventions.'
+const INTERVIEW_REPOSITORY_BOUNDARY = 'Interview Repository Boundary: Use repository inspection only to confirm discoverable technical facts or decide whether a technical follow-up is needed. Never infer stakeholder preferences, desired behavior, scope, priorities, acceptance decisions, or product requirements from repository contents; ask the user whenever a human decision is needed.'
 const COVERAGE_OUTPUT_FORMAT = 'YAML with exactly these top-level keys: `status`, `gaps`, `follow_up_questions`. `status` must be `clean` or `gaps`. `gaps` must be a YAML list of double-quoted strings. Quote every `gaps` item even when it contains code identifiers, file paths, flags, backticks, or punctuation. `follow_up_questions` must be a YAML list (empty when status is `clean`).'
 const INTERVIEW_COVERAGE_OUTPUT_FORMAT = 'YAML with exactly these top-level keys: `status`, `gaps`, `follow_up_questions`. `status` must be `clean` or `gaps`. `gaps` must be a YAML list of double-quoted strings. Quote every `gaps` item even when it contains code identifiers, file paths, flags, backticks, or punctuation. When `status` is `clean`, `follow_up_questions` must be `[]`. When `status` is `gaps`, `follow_up_questions` must be a YAML list of objects with these fields: `id`, `question`, `phase`, `priority`, `rationale`, `answer_type` (required: free_text|single_choice|multiple_choice|yes_no), and optionally `options` (list of {id, label}) when answer_type is single_choice or multiple_choice. Do not return plain strings in `follow_up_questions`.'
 const PRD_OUTPUT_FORMAT = [
@@ -176,6 +177,9 @@ export const PROM1: PromptTemplate = {
     INTERVIEW_PHASE_ORDER_RULE,
     'Question Limit: Treat `max_initial_questions` as a hard upper bound, never a target. Ask only as many questions as are genuinely needed to remove meaningful ambiguity and gather enough detail for PRD generation. Returning well under `max_initial_questions` is fully acceptable when coverage is already strong. Do not add low-value or redundant questions just because budget remains.',
     'Single Response Completeness: Return one complete final `questions` list in this single response. Do not stop after only the `foundation` phase, do not emit a partial subset or phased draft, and do not split the list across multiple messages. Whatever number of questions you decide is necessary, include that entire final set in the one YAML artifact.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    INTERVIEW_REPOSITORY_BOUNDARY,
+    'Question Grounding: When the supplied repository context is insufficient to make a technical question precise, inspect only the relevant repository area before drafting it. Keep product and stakeholder choices as questions for the user.',
     `Output Format: Output strict machine-readable YAML. The top-level key MUST be \`questions\` containing a list. Each entry MUST have exactly three fields: \`id\`, \`phase\`, and \`question\`.
     Example:
     \`\`\`yaml
@@ -191,7 +195,7 @@ export const PROM1: PromptTemplate = {
   ],
   outputFormat: 'YAML with top-level `questions` list. Each item: {id, phase, question}. No other fields.',
   contextInputs: ['relevant_files', 'ticket_details'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM2: PromptTemplate = {
@@ -229,12 +233,15 @@ export const PROM3: PromptTemplate = {
     'Changes Coverage: The top-level `changes` list must fully account for the differences between the winning draft and the final refined draft. Use `type` values `modified`, `replaced`, `added`, or `removed`. For each entry, include `before` and `after` question records (or `null` when appropriate for added/removed changes).',
     'Optional Inspiration Attribution: When a change was directly inspired by an alternative draft, include `inspiration` with `alternative_draft` and the inspiring `question`. If a change was not directly inspired by a losing draft, omit `inspiration` or set it to null.',
     INTERVIEW_PHASE_ORDER_RULE,
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    INTERVIEW_REPOSITORY_BOUNDARY,
+    'Question Refinement Grounding: Before adding or sharpening a technical question based on an unsupported repository-specific assumption, inspect only the smallest relevant repository area. Keep stakeholder choices as questions for the user.',
     'Formatting: Output the final refined draft and the top-level `changes` list using the exact structural format required for this phase. Output only this single artifact.',
     STRUCTURED_SELF_CHECK,
   ],
   outputFormat: 'YAML with top-level `questions` list and top-level `changes` list. Each `questions` item: {id, phase, question}. Each `changes` item: {type, before, after, inspiration?}. `type` must be one of {modified, replaced, added, removed}. `before` and `after` use the same question shape or null when appropriate. Optional `inspiration` uses {alternative_draft, question}. No extra wrapper object.',
   contextInputs: ['relevant_files', 'ticket_details', 'drafts'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM4_FINAL_INTERVIEW_SCHEMA = [
@@ -289,6 +296,9 @@ export const PROM4: PromptTemplate = {
     'Adaptation and IDs: You may reorder, rephrase, merge, or lightly split compiled questions when it improves coherence, but keep them tied to the original compiled agenda. When adapting a compiled question, preserve its original compiled question ID whenever possible; use new follow-up IDs only for genuinely new follow-up questions you introduce.',
     'Auto-Skipping: Do not silently drop compiled questions just because earlier answers seem broadly sufficient. Auto-skip a compiled question only when the user has already answered it implicitly, when a prior answer fully resolves that question, or when it has become clearly redundant or no longer useful to ask, and keep that question accounted for in the final interview results under its compiled ID.',
     'Adaptive Iteration: After each batch, analyze answers and adjust only upcoming questions when needed. Treat `max_follow_ups` as a hard cap derived from the configured coverage follow-up budget percent. Add follow-up questions only when they are necessary to resolve meaningful ambiguities, update/delete now-redundant questions, and accept skipped answers without re-asking unless the missing answer is critical. Follow-up questions may interleave with compiled questions when they materially improve coherence or unblock later compiled questions. Do not use the follow-up budget unless it materially improves coverage.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    INTERVIEW_REPOSITORY_BOUNDARY,
+    'Interactive Repository Grounding: If the user mentions an existing component, behavior, limitation, command, path, or architecture detail, inspect only the directly relevant repository area when confirmation would affect the next batch or a follow-up. Do not explore broadly or delay the interview to inspect the repository.',
     "Final Free-Form Question: Do not move to the final free-form question just because coverage feels good enough. First work through or explicitly account for the remaining compiled questions, including future compiled questions made unnecessary by earlier answers, and only after the compiled checklist has been answered, skipped, or rendered redundant and no major ambiguity remains, present one final free-form question. Keep the question anchored to 'Anything else to add before PRD generation?' but explicitly tell the user that the next step is interview coverage check, that coverage check may still create targeted follow-up questions if gaps are found, and that there is still an interview approval step before PRD drafting begins.",
     'Final Output: After the final free-form question is answered or skipped, output the final interview results file in a strict machine-readable format.',
     `Structured Batch Output: Wrap each intermediate batch response in <INTERVIEW_BATCH> tags containing YAML with these fields:
@@ -323,7 +333,7 @@ export const PROM4: PromptTemplate = {
   ],
   outputFormat: 'YAML — complete interview results file with schema_version, ticket_id, artifact, status, generated_by, questions, follow_up_rounds, summary, approval',
   contextInputs: ['ticket_details'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM5: PromptTemplate = {
@@ -334,6 +344,9 @@ export const PROM5: PromptTemplate = {
   instructions: [
     'Coverage Check: Detect unresolved ambiguity, missing constraints, missing edge cases, missing non-goals, and inconsistent answers.',
     'Identify Gaps: List any specific gaps or discrepancies found between the source material and the Interview Results.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    INTERVIEW_REPOSITORY_BOUNDARY,
+    'Coverage Grounding: Inspect only the relevant repository area when needed to determine whether a technical fact is discoverable or whether a technical follow-up is necessary. Do not use repository contents to resolve a stakeholder decision.',
     'Coverage Limits: Treat `coverage_run_number` and `max_coverage_passes` from the context as hard limits. Coverage can run once or at most `max_coverage_passes` times in total. If `is_final_coverage_run` is true, report any unresolved gaps clearly without assuming another retry exists.',
     'Follow-up Budget: Treat `coverage_follow_up_budget_percent`, `follow_up_budget_total`, `follow_up_budget_used`, and `follow_up_budget_remaining` from the context as hard limits. If gaps exist, generate only the targeted follow-up questions strictly necessary to resolve them and never exceed `follow_up_budget_remaining`. If `follow_up_budget_remaining` is `0`, you must return `follow_up_questions: []`.',
     'Coverage Follow-up ID Rule: Every generated follow-up question must use a new ID that does not reuse any existing canonical interview question ID or `QFF1`. When you need a new coverage-specific ID, prefer the `CFU<n>` form.',
@@ -346,7 +359,7 @@ export const PROM5: PromptTemplate = {
   ],
   outputFormat: INTERVIEW_COVERAGE_OUTPUT_FORMAT,
   contextInputs: ['ticket_details', 'user_answers', 'interview'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 // PRD Phase Prompts

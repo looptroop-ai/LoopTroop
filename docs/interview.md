@@ -28,7 +28,7 @@ That means the interview is not a single prompt. It is a small workflow with its
 
 ## 3. How Questions Are Designed
 
-Interview planning starts with the LLM council. Each council member receives the ticket details and relevant-file scan, then independently drafts a candidate question set.
+Interview planning starts with the LLM council. Each council member receives the ticket details and relevant-file scan, then independently drafts a candidate question set. When that bounded context cannot confirm a discoverable repository fact, drafting and refinement may inspect the smallest relevant repository area read-only; voting remains limited to the supplied anonymized drafts and context.
 
 The drafted questions follow a three-part structure:
 
@@ -103,6 +103,8 @@ While a batch is open:
 
 After submit, LoopTroop persists the batch into the session snapshot, updates the canonical interview state, and either prepares the next batch or advances to coverage.
 
+When a user mentions an existing component, behavior, path, command, limitation, or architecture detail, the live interview model may inspect the relevant repository area read-only before deciding whether the next batch needs a follow-up. It does not perform a broad survey or use repository contents to decide stakeholder intent: desired behavior, scope, priorities, preferences, and acceptance decisions remain questions for the user.
+
 The progress counter is an estimate, not a hard promise. The current batch number is real, but the total can change because later questions may become unnecessary, be merged, be lightly split, or be replaced by targeted follow-ups.
 
 ## 6. Skips, Final Free-Form, And Coverage
@@ -121,6 +123,8 @@ After that, the winning interview model runs coverage. Coverage checks for:
 - missing non-goals or out-of-scope boundaries
 - inconsistent answers
 - gaps that would force PRD drafting to guess
+
+Coverage may use the same focused read-only inspection to confirm technical facts, but it cannot infer product decisions from existing code.
 
 If real gaps remain and the follow-up budget allows it, coverage generates targeted follow-up questions and sends the ticket back to `WAITING_INTERVIEW_ANSWERS`.
 

@@ -36,7 +36,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Preserved eligible same-session Continue recovery across backend, OpenCode, WSL, OS, and machine restarts.
 - Restored one-click recovery for blocked tickets when Retry sends an empty request body.
 - Added language-agnostic workspace and Git-hook validation, backend-enforced bead test commands, and separate append-only implementation note histories.
-- Made PRD and beads planning inspect repository evidence read-only only when supplied context cannot support a project-specific claim.
+- Made planning and interview prompts inspect repository evidence read-only only when supplied context cannot support a project-specific claim, while keeping council voting tool-disabled.
 - Added a copy button next to the ticket description tab in the backlog workspace when clicking on the "Raw" view.
 - Made ticket cancellation confirmation mandatory in every state, including Draft and Blocked Error, preventing accidental one-click cancellation.
 - Added optional user guidance when retrying a blocked implementation bead, so the next fresh attempt can act on extra context without replacing existing notes.
@@ -91,7 +91,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
-- PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; Full Answers, interviews, and council voting remain tool-disabled.
+- PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; Full Answers and council voting remain tool-disabled.
+- Interview drafting, refinement, live batched conversations, and coverage now have focused read-only repository inspection available after reviewing supplied context. They may confirm discoverable technical facts or decide whether a follow-up is necessary, but cannot infer stakeholder preferences, scope, priorities, desired behavior, or acceptance decisions; interview council voting remains tool-disabled.
 - Structured coverage parsing now preserves a complete, schema-valid YAML artifact when only an orphan closing code fence and trailing commentary follow it; the UI records the exact lossless repair.
 - Preparing Workspace Runtime now detects and records its canonical command wrapper, applies it consistently to independent probes and later commands, and reports visible failure-analysis and structured-correction milestones.
 - Execution setup planning and Beads prompts now require commands to match actual manifests, scripts, build files, task declarations, or repository-local executables instead of assuming a familiar ecosystem.

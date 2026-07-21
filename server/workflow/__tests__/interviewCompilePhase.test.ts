@@ -358,6 +358,7 @@ describe('interview workflow phases', () => {
     expect(compiledPayload.refinedContent).toContain('Refined winner question?')
     expect(compiledPayload.refinedContent).toContain('Replacement target question?')
     expect('changes' in compiledPayload).toBe(false)
+    expect(refineDraftMock.mock.calls[0]?.[15]).toBe('read_only')
 
     expect(readExecutionLogEntries(ticket.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({

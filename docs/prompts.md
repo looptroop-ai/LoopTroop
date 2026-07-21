@@ -32,7 +32,7 @@ Tool policies are deliberately small:
 | --- | --- |
 | `default` | Normal OpenCode tool access for phases that need repository inspection or implementation. |
 | `disabled` | Runtime tools are disabled; the model must answer only from supplied context. |
-| `read_only` | Read-only probing/planning access for setup checks that must not change the workspace. |
+| `read_only` | Focused read-only repository inspection for planning and setup checks that must not change the workspace. |
 | `execution_setup_online` | Workspace setup access, including online lookup when configured for setup-only tooling discovery. |
 
 Context parts are assembled by `server/opencode/contextBuilder.ts`. See [Context Engineering](context-engineering.md) for the per-status context contract and why prompts receive only the smallest useful artifact slice.
@@ -74,11 +74,11 @@ All built-in prompts in this section are exported from `server/prompts/index.ts`
 
 | Prompt | Used in / status | Session / tools | Context inputs | Purpose | Full text |
 | --- | --- | --- | --- | --- | --- |
-| `PROM1` | `COUNCIL_DELIBERATING` | Fresh council draft / `disabled` | `relevant_files`, `ticket_details` | Drafts candidate interview questions from ticket and repo context. | [Full content here](#full-prompt-prom1) |
+| `PROM1` | `COUNCIL_DELIBERATING` | Fresh council draft / `read_only` | `relevant_files`, `ticket_details` | Drafts candidate interview questions from ticket and repo context, using focused inspection only when repository facts need confirmation. | [Full content here](#full-prompt-prom1) |
 | `PROM2` | `COUNCIL_VOTING_INTERVIEW` | Fresh council vote / `disabled` | `relevant_files`, `ticket_details`, `drafts` | Scores interview drafts with the strict `draft_scores` YAML schema. | [Full content here](#full-prompt-prom2) |
-| `PROM3` | `COMPILING_INTERVIEW` | Fresh refinement / `disabled` | `relevant_files`, `ticket_details`, `drafts` | Refines the winning interview draft using selected improvements from alternatives. | [Full content here](#full-prompt-prom3) |
-| `PROM4` | `WAITING_INTERVIEW_ANSWERS` | Conversational / `disabled` | `ticket_details` | Runs the adaptive interview batch loop and returns tagged batch or completion artifacts. | [Full content here](#full-prompt-prom4) |
-| `PROM5` | `VERIFYING_INTERVIEW_COVERAGE` | Fresh coverage audit / `disabled` | `ticket_details`, `user_answers`, `interview` | Checks whether collected interview answers cover the ticket and can emit targeted follow-up questions. | [Full content here](#full-prompt-prom5) |
+| `PROM3` | `COMPILING_INTERVIEW` | Fresh refinement / `read_only` | `relevant_files`, `ticket_details`, `drafts` | Refines the winning interview draft using selected improvements from alternatives and focused inspection only when repository facts need confirmation. | [Full content here](#full-prompt-prom3) |
+| `PROM4` | `WAITING_INTERVIEW_ANSWERS` | Conversational / `read_only` | `ticket_details` | Runs the adaptive interview batch loop, inspecting a focused repository area only when a checkable fact affects the next batch or follow-up. | [Full content here](#full-prompt-prom4) |
+| `PROM5` | `VERIFYING_INTERVIEW_COVERAGE` | Fresh coverage audit / `read_only` | `ticket_details`, `user_answers`, `interview` | Checks whether collected interview answers cover the ticket and can inspect repository facts before emitting targeted follow-up questions. | [Full content here](#full-prompt-prom5) |
 
 ### PRD
 

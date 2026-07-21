@@ -245,11 +245,11 @@ The state machine metadata directly drives the React user interface. Developers 
 - **`SCANNING_RELEVANT_FILES`:** The Main Implementer scans the project folder under AI Response Timeout and registers target files, writing results to `.ticket/relevant-files.yaml`.
 
 ### Interview Loop
-- **`COUNCIL_DELIBERATING`:** All configured council members draft interview strategies in parallel, producing candidate question lists.
+- **`COUNCIL_DELIBERATING`:** All configured council members draft interview strategies in parallel, producing candidate question lists; they may use focused read-only inspection when supplied context cannot confirm a repository fact.
 - **`COUNCIL_VOTING_INTERVIEW`:** Council models rate the anonymized questionnaires using a structural rubric to select the best intake framework.
-- **`COMPILING_INTERVIEW`:** LoopTroop normalizes the selected plan into the canonical `interview.yaml` session file.
-- **`WAITING_INTERVIEW_ANSWERS`:** The dashboard pauses for user answers. Questions are presented in adaptive, dynamic batches of 1 to 3 to optimize cognitive load. Skip and "skip all" choices are supported. The active draft shows that autosave is on, reports pending/saving/saved/conflict/failure state, and displays the last acknowledged save as a relative time with the exact local timestamp on hover.
-- **`VERIFYING_INTERVIEW_COVERAGE`:** The winner checks the answers for ambiguities or gaps, spawning targeted follow-up rounds if budget permits.
+- **`COMPILING_INTERVIEW`:** LoopTroop normalizes the selected plan into the canonical `interview.yaml` session file and may use focused read-only inspection to confirm repository facts.
+- **`WAITING_INTERVIEW_ANSWERS`:** The dashboard pauses for user answers. Questions are presented in adaptive, dynamic batches of 1 to 3 to optimize cognitive load. Skip and "skip all" choices are supported. The active draft shows that autosave is on, reports pending/saving/saved/conflict/failure state, and displays the last acknowledged save as a relative time with the exact local timestamp on hover. When a checkable repository fact affects a next batch, the interview model may inspect only the relevant area read-only; user intent remains a user decision.
+- **`VERIFYING_INTERVIEW_COVERAGE`:** The winner checks the answers for ambiguities or gaps, spawning targeted follow-up rounds if budget permits, and may use focused read-only inspection to confirm technical facts rather than guessing them.
 - **`WAITING_INTERVIEW_APPROVAL`:** Gatekeeper review. The user approves the structured YAML specs with content-hash protection (`expectedContentSha256` matching check). The editable draft visibly autosaves across reloads, but the user must click **Save** to apply it to the authoritative interview artifact and trigger downstream effects.
 
 ### Specs Loop (PRD)

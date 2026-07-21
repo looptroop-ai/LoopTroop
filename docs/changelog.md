@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
 - Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
 - Made workspace setup preserve prepared tool environments, reject repository-incompatible commands, and begin deterministic retries without avoidable AI-note delays.
 - Expanded OpenCode session-scoped permission rules to match absolute paths, preventing workspace setup and tool provisioning from blocking on system read commands.
@@ -91,6 +92,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Standardized visible AI log headers as `PROMPT`, `THINKING`, `TOOL`, and `OUTPUT`, each carrying the complete model ID while keeping persisted log tags compatible with existing diagnostics.
 - Full Answers, PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; council voting remains tool-disabled.
 - Interview drafting, refinement, live batched conversations, and coverage now have focused read-only repository inspection available after reviewing supplied context. They may confirm discoverable technical facts or decide whether a follow-up is necessary, but cannot infer stakeholder preferences, scope, priorities, desired behavior, or acceptance decisions; interview council voting remains tool-disabled.
 - Structured coverage parsing now preserves a complete, schema-valid YAML artifact when only an orphan closing code fence and trailing commentary follow it; the UI records the exact lossless repair.

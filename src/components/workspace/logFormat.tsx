@@ -173,26 +173,39 @@ export function getEntryModelDisplayName(entry: LogEntry): string | null {
 
 function formatTaggedSegment(tag: string, entry: LogEntry, showModelName: boolean): Pick<FormattedLogLine, 'tagText' | 'tagTitle'> {
   const bareTag = tag.slice(1, -1)
-  const modelDisplayName = getEntryModelDisplayName(entry)
   const fullModelId = getEntryFullModelId(entry)
-  const shouldShowModelName = Boolean(modelDisplayName) && (
-    bareTag === 'ERROR'
-    || (showModelName && (bareTag === 'MODEL' || bareTag === 'THINKING'))
-  )
+  const visibleTag = bareTag === 'MODEL' ? 'OUTPUT' : bareTag
+  const isStandardAiHeader = bareTag === 'MODEL' || bareTag === 'PROMPT' || bareTag === 'THINKING' || bareTag === 'TOOL'
+  const modelName = bareTag === 'ERROR' ? getEntryModelDisplayName(entry) : fullModelId
+  const shouldShowModelName = Boolean(modelName) && (bareTag === 'ERROR' || (showModelName && isStandardAiHeader))
 
   if (!shouldShowModelName) {
-    return { tagText: tag }
+    return { tagText: `[${visibleTag}]` }
   }
 
   return {
-    tagText: `[${bareTag}-${modelDisplayName}]`,
+    tagText: `[${visibleTag}-${modelName}]`,
     ...(fullModelId ? { tagTitle: fullModelId } : {}),
   }
 }
 
+function removeDuplicatedPromptModel(bodyText: string, entry: LogEntry): string {
+  const fullModelId = getEntryFullModelId(entry)
+  if (!fullModelId) return bodyText
+
+  const duplicatedPrefix = ` ${fullModelId} prompt #`
+  return bodyText.startsWith(duplicatedPrefix)
+    ? ` Prompt #${bodyText.slice(duplicatedPrefix.length)}`
+    : bodyText
+}
+
 function formatCopyText(visibleText: string, entry: LogEntry): string {
   const fullModelId = getEntryFullModelId(entry)
-  return fullModelId ? `${visibleText} [model: ${fullModelId}]` : visibleText
+  const closingBracket = visibleText.indexOf(']')
+  const visibleHeaderContainsModel = fullModelId && closingBracket >= 0
+    ? visibleText.slice(0, closingBracket + 1).includes(`-${fullModelId}]`)
+    : false
+  return fullModelId && !visibleHeaderContainsModel ? `${visibleText} [model: ${fullModelId}]` : visibleText
 }
 
 export function formatVisibleTag(tag: string, entry: LogEntry, showModelName: boolean): string {
@@ -202,8 +215,11 @@ export function formatVisibleTag(tag: string, entry: LogEntry, showModelName: bo
 export function formatLogLine(entry: LogEntry, showModelName: boolean): FormattedLogLine {
   const tagMatch = entry.line.match(/^(\[[^\]]+\])([\s\S]*)$/)
   if (tagMatch) {
-    const [, rawTag = '', bodyText = ''] = tagMatch
+    const [, rawTag = '', rawBodyText = ''] = tagMatch
     const { tagText, tagTitle } = formatTaggedSegment(rawTag, entry, showModelName)
+    const bodyText = rawTag === '[PROMPT]' && showModelName
+      ? removeDuplicatedPromptModel(rawBodyText, entry)
+      : rawBodyText
     const visibleText = `${tagText}${bodyText}`
     return {
       tagText,

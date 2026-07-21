@@ -628,13 +628,13 @@ describe('PhaseLogPanel', () => {
 
     renderWithTooltipProvider(<PhaseLogPanel phase="COUNCIL_DELIBERATING" logs={logs} />)
 
-    expect(screen.getByText(/\[MODEL-gpt-5-codex\]/i)).toBeInTheDocument()
-    expect(screen.queryByText(/\[THINKING-gpt-5-codex\]/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/\[OUTPUT-openai\/gpt-5-codex\]/i)).toBeInTheDocument()
+    expect(screen.queryByText(/\[THINKING-openai\/gpt-5-codex\]/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'AI' }))
 
-    expect(screen.getAllByText(/\[MODEL-gpt-5-codex\]/i)).toHaveLength(2)
-    expect(screen.getByText(/\[THINKING-gpt-5-codex\]/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/\[OUTPUT-openai\/gpt-5-codex\]/i)).toHaveLength(2)
+    expect(screen.getByText(/\[THINKING-openai\/gpt-5-codex\]/i)).toBeInTheDocument()
     expect(screen.getByText(/Checking whether the interview coverage is balanced/i)).toBeInTheDocument()
   })
 
@@ -840,13 +840,14 @@ describe('PhaseLogPanel', () => {
 
     renderWithTooltipProvider(<PhaseLogPanel phase="COUNCIL_DELIBERATING" logs={logs} />)
 
-    expect(screen.getByText(/openai\/gpt-5-mini prompt #1/i)).toBeInTheDocument()
+    expect(screen.getByText('[PROMPT-openai/gpt-5-mini]')).toBeInTheDocument()
+    expect(screen.getByText(/Prompt #1/i)).toBeInTheDocument()
     expect(screen.getByText(/You are an expert product manager/i)).toBeInTheDocument()
     expect(screen.queryByText(/Session status: running/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'AI' }))
 
-    expect(screen.getByText(/openai\/gpt-5-mini prompt #1/i)).toBeInTheDocument()
+    expect(screen.getByText('[PROMPT-openai/gpt-5-mini]')).toBeInTheDocument()
     expect(screen.getByText(/Session status: running/i)).toBeInTheDocument()
   })
 
@@ -1152,7 +1153,7 @@ describe('PhaseLogPanel', () => {
       />,
     )
 
-    expect(screen.getByText('[TOOL]')).toHaveClass('text-cyan-500')
+    expect(screen.getByText('[TOOL-openai/gpt-5-mini]')).toHaveClass('text-cyan-500')
     expect(screen.getByText('Input:')).toHaveClass('text-sky-700')
     expect(screen.getByText('Output:')).toHaveClass('text-emerald-700')
     expect(screen.getByText('Error:')).toHaveClass('text-rose-700')

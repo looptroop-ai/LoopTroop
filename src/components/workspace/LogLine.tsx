@@ -59,7 +59,7 @@ function renderLogLine(entry: LogEntry, showModelName: boolean) {
   if (!formatted.tagText) return <>{formatted.visibleText}</>
 
   const color = getEntryColor(entry)
-  const isToolEntry = entry.kind === 'tool' || formatted.tagText === '[TOOL]'
+  const isToolEntry = entry.kind === 'tool' || formatted.tagText.startsWith('[TOOL')
   const isCommandEntry = formatted.tagText === '[CMD]'
   if (isToolEntry) {
     return renderToolLogLine(entry, formatted.tagText, formatted.bodyText)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
-import { filterEntries } from '../logFormat'
+import { filterEntries, formatLogLine } from '../logFormat'
 
 function makeLog(overrides: Partial<LogEntry> = {}): LogEntry {
   return {
@@ -100,5 +100,46 @@ describe('logFormat filtering', () => {
 
     expect(filterEntries([legacyAiDetail], 'SYS')).not.toContain(legacyAiDetail)
     expect(filterEntries([legacyAiDetail], 'openai/gpt-5.4')).toContain(legacyAiDetail)
+  })
+})
+
+describe('logFormat AI headers', () => {
+  const modelId = 'nvidia/nvidia/nemotron-3-nano-30b-a3b'
+
+  it.each([
+    ['[MODEL] Result', 'text', `[OUTPUT-${modelId}] Result`],
+    ['Reasoning', 'reasoning', `[THINKING-${modelId}] Reasoning`],
+    ['[TOOL] bash completed', 'tool', `[TOOL-${modelId}] bash completed`],
+  ] as const)('uses the full model ID for %s', (line, kind, expected) => {
+    const entry = makeLog({
+      line,
+      kind,
+      source: `model:${modelId}`,
+      modelId,
+    })
+
+    expect(formatLogLine(entry, true).visibleText).toBe(expected)
+  })
+
+  it('moves the full prompt model ID into the standardized header without duplication', () => {
+    const entry = makeLog({
+      line: '[PROMPT] kilo/openrouter/free prompt #1\nWrite the implementation.',
+      kind: 'prompt',
+      source: 'model:kilo/openrouter/free',
+      modelId: 'kilo/openrouter/free',
+    })
+
+    expect(formatLogLine(entry, true).visibleText).toBe(
+      '[PROMPT-kilo/openrouter/free] Prompt #1\nWrite the implementation.',
+    )
+    expect(formatLogLine(entry, true).copyText).toBe(
+      '[PROMPT-kilo/openrouter/free] Prompt #1\nWrite the implementation.',
+    )
+  })
+
+  it('keeps model-specific tabs compact while using the clearer OUTPUT name', () => {
+    const entry = makeLog({ line: '[MODEL] Result', kind: 'text' })
+
+    expect(formatLogLine(entry, false).visibleText).toBe('[OUTPUT] Result')
   })
 })

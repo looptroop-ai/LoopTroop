@@ -64,7 +64,7 @@ describe.concurrent('structured prompt hardening', () => {
     }
   })
 
-  it('marks in-scope non-execution prompts as runtime no-tool prompts', () => {
+  it('uses read-only tools only for planning prompts that need conditional repository inspection', () => {
     for (const prompt of [
       PROM1,
       PROM2,
@@ -72,16 +72,8 @@ describe.concurrent('structured prompt hardening', () => {
       PROM4,
       PROM5,
       PROM10a,
-      PROM10b,
       PROM11,
-      PROM12,
-      PROM13,
-      PROM13b,
-      PROM20,
       PROM21,
-      PROM22,
-      PROM23,
-      PROM24,
       PROM51,
       PROM53,
     ]) {
@@ -89,7 +81,22 @@ describe.concurrent('structured prompt hardening', () => {
       expect(buildPromptFromTemplate(prompt, [])).not.toContain('Do not use tools.')
     }
 
-    for (const prompt of [PROM0, PROM25, PROM_CODING, PROM52, PROM54]) {
+    for (const prompt of [
+      PROM10b,
+      PROM12,
+      PROM13,
+      PROM13b,
+      PROM20,
+      PROM22,
+      PROM23,
+      PROM24,
+      PROM25,
+    ]) {
+      expect(prompt.toolPolicy).toBe('read_only')
+      expect(buildPromptFromTemplate(prompt, [])).not.toContain('Do not use tools.')
+    }
+
+    for (const prompt of [PROM0, PROM_CODING, PROM52, PROM54]) {
       expect(prompt.toolPolicy).toBe('default')
       expect(buildPromptFromTemplate(prompt, [])).not.toContain('Do not use tools.')
     }
@@ -101,6 +108,24 @@ describe.concurrent('structured prompt hardening', () => {
     expect(PROM_EXECUTION_SETUP_PLAN.toolPolicy).toBe('read_only')
     expect(PROM_EXECUTION_SETUP_PLAN_REGENERATE.toolPolicy).toBe('read_only')
     expect(PROM_MANUAL_QA_FIX_BEADS.toolPolicy).toBe('read_only')
+  })
+
+  it('grounds conditional repository inspection in supplied evidence before targeted reads', () => {
+    for (const prompt of [
+      PROM10b,
+      PROM12,
+      PROM13,
+      PROM13b,
+      PROM20,
+      PROM22,
+      PROM23,
+      PROM24,
+      PROM25,
+    ]) {
+      const rendered = buildPromptFromTemplate(prompt, [])
+      expect(rendered).toContain('Conditional Repository Inspection:')
+      expect(rendered).toContain('Review the repository evidence already supplied in context, including `relevant_files` when available.')
+    }
   })
 
   it('uses same-session rules for prompts that continue an existing session', () => {
@@ -396,7 +421,7 @@ describe.concurrent('structured prompt hardening', () => {
     expect(prompt).toContain('LoopTroop will also execute returned commands through the declared setup wrapper')
   })
 
-  it('keeps PROM25 explicit about expansion-only ownership, preserved order, and tool-assisted target files', () => {
+  it('keeps PROM25 explicit about expansion-only ownership, preserved order, and focused read-only target-file inspection', () => {
     const expandPrompt = buildPromptFromTemplate(PROM25, [])
 
     expect(expandPrompt).toContain('Order Is Mandatory')
@@ -404,8 +429,9 @@ describe.concurrent('structured prompt hardening', () => {
     expect(expandPrompt).toContain('Add only these fields per bead: `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`')
     expect(expandPrompt).toContain('Do not generate or rely on `priority`, `status`, `externalRef`, `dependencies.blocks`')
     expect(expandPrompt).toContain('Use `relevant_files` first as hints for likely `targetFiles`')
-    expect(expandPrompt).toContain('Repository-inspection tools are allowed')
-    expect(expandPrompt).toContain('Do not edit files, run mutating commands, or change the repository')
+    expect(PROM25.toolPolicy).toBe('read_only')
+    expect(expandPrompt).toContain('Conditional Repository Inspection:')
+    expect(expandPrompt).toContain('Do not edit files, run commands, or change the repository')
   })
 
   it('requires Manual QA fix-bead generation to inspect the repository and return every full candidate', () => {

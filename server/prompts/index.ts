@@ -44,6 +44,8 @@ function buildStrictVoteOutputInstruction(categories: string[]): string {
 
 const STRICT_VOTE_OUTPUT_FORMAT = 'YAML with top-level `draft_scores` mapping keyed by exact draft labels. Each draft: rubric integer fields plus `total_score`. No other fields.'
 const STRUCTURED_SELF_CHECK = 'Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.'
+
+const CONDITIONAL_REPOSITORY_INSPECTION = 'Conditional Repository Inspection: Review the repository evidence already supplied in context, including `relevant_files` when available. If you need extra context to confirm a repository-specific claim, use focused read-only inspection. Inspect only the smallest useful set of manifests, build files, task definitions, CI configuration, and directly relevant source locations; do not survey the repository broadly. Never infer exact commands, file paths, frameworks, package managers, build systems, or test runners solely from ticket or PRD prose, file-extension examples, or common conventions.'
 const COVERAGE_OUTPUT_FORMAT = 'YAML with exactly these top-level keys: `status`, `gaps`, `follow_up_questions`. `status` must be `clean` or `gaps`. `gaps` must be a YAML list of double-quoted strings. Quote every `gaps` item even when it contains code identifiers, file paths, flags, backticks, or punctuation. `follow_up_questions` must be a YAML list (empty when status is `clean`).'
 const INTERVIEW_COVERAGE_OUTPUT_FORMAT = 'YAML with exactly these top-level keys: `status`, `gaps`, `follow_up_questions`. `status` must be `clean` or `gaps`. `gaps` must be a YAML list of double-quoted strings. Quote every `gaps` item even when it contains code identifiers, file paths, flags, backticks, or punctuation. When `status` is `clean`, `follow_up_questions` must be `[]`. When `status` is `gaps`, `follow_up_questions` must be a YAML list of objects with these fields: `id`, `question`, `phase`, `priority`, `rationale`, `answer_type` (required: free_text|single_choice|multiple_choice|yes_no), and optionally `options` (list of {id, label}) when answer_type is single_choice or multiple_choice. Do not return plain strings in `follow_up_questions`.'
 const PRD_OUTPUT_FORMAT = [
@@ -396,6 +398,8 @@ export const PROM10b: PromptTemplate = {
     'Epic Completeness: Every epic must include at least one fully populated `user_stories` entry. Never emit an epic shell with `user_stories: []`, omit `user_stories`, or park requirements only at epic level.',
     'Implementation Steps: For each user story, include detailed technical implementation steps decomposed as far as possible — data flows, state changes, component interactions, and integration points.',
     'Technical Requirements: Define architecture constraints, data model, API/contracts, security/performance/reliability constraints, error-handling rules, tooling/environment assumptions, explicit non-goals.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Repository Claim Rule: Before adding an exact command, file path, framework, package manager, build system, or test runner that is not already concretely evidenced by the supplied context, confirm it with focused repository inspection.',
     'Schema Contract: Follow the exact PRD YAML schema in the Expected Output Format section, including all required top-level keys and nested fields.',
     'Output Format: Output a single, comprehensive PRD document covering all of the above in one artifact.',
     'Boundary Rule: Begin the artifact at `schema_version` and end at `approval.approved_at`. Do not prepend or append any prose.',
@@ -406,7 +410,7 @@ export const PROM10b: PromptTemplate = {
   ],
   outputFormat: PRD_OUTPUT_FORMAT,
   contextInputs: ['relevant_files', 'ticket_details', 'full_answers'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM11: PromptTemplate = {
@@ -440,6 +444,8 @@ export const PROM12: PromptTemplate = {
     'Measured Refinement: Do not rewrite from scratch or blend drafts together just for balance. But it is acceptable to improve multiple sections, adjust local structure, or rework content across the draft if that produces a clearly stronger final result.',
     'Restraint: Avoid adding content that merely restates what you already cover. But if genuine gaps exist — missing requirements, unaddressed risks, overlooked error states — add them; completeness matters more than brevity.',
     'Epic Completeness: Every epic in the final PRD must include at least one fully populated `user_stories` entry. Never leave an epic as a shell with `user_stories: []`, omit `user_stories`, or move story-level requirements only into epic-level fields.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Repository Claim Preservation: Before adopting repository-specific architecture, paths, commands, tooling, or framework details from an alternative draft, confirm unsupported details with focused repository inspection.',
     'Single Artifact Contract: Return one YAML artifact that contains both the final refined PRD and a top-level `changes` list. Do not split the refined PRD and change metadata across multiple outputs, wrappers, or separate artifacts.',
     'Changes Coverage: The top-level `changes` list must fully account for the differences between the winning PRD and the final refined PRD using only changed epic and user story items. Use `type` values `modified`, `added`, or `removed`. Include `item_type` (`epic` or `user_story`) plus `before` and `after` item records (or `null` when appropriate).',
     'One-Entry-Per-Item Rule: Every changed epic or user story must appear exactly once in `changes`. Epic changes do not subsume changed user stories. If an existing item keeps the same ID but its content changes, emit exactly one `modified` entry for that item.',
@@ -451,7 +457,7 @@ export const PROM12: PromptTemplate = {
   ],
   outputFormat: `${PRD_OUTPUT_FORMAT}\nAlso include a top-level \`changes\` list. Each change item: {type, item_type, before, after, inspiration?}. \`type\` must be one of {modified, added, removed}. \`item_type\` must be \`epic\` or \`user_story\`. \`before\` and \`after\` use {id, label, detail?} or null when appropriate. Optional \`inspiration\` uses {alternative_draft, item}. Keep everything in one YAML artifact.`,
   contextInputs: ['relevant_files', 'ticket_details', 'full_answers', 'drafts'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM13: PromptTemplate = {
@@ -466,6 +472,8 @@ export const PROM13: PromptTemplate = {
     'Coverage Strictness: Treat weak coverage as a real gap when the PRD mentions a requirement but leaves it materially underspecified. Acceptance criteria must be specific enough to verify, not just broad restatements of the feature title or user story.',
     'Traceability Rule: Every major in-scope requirement, user flow, constraint, non-goal, or explicit edge case captured in the winner Full Answers artifact must be represented somewhere in the PRD by at least one concrete epic, user story, acceptance criterion, scope item, constraint, or risk entry.',
     'Verification Readiness: Flag PRD user stories that have missing or weak verification guidance when the acceptance criteria are not concrete enough to support later implementation verification.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Repository Claim Audit: Use focused repository inspection only when repository evidence is needed to assess a concrete command, path, tooling, or implementation claim in the PRD. Keep the Full Answers artifact as the source of truth for requirements.',
     'Identify Gaps: List any specific gaps or discrepancies found between the winner Full Answers artifact and the PRD.',
     'Coverage Limits: Treat `coverage_run_number` and `max_coverage_passes` from the context as hard limits. Coverage can run once or at most `max_coverage_passes` times in total. If `is_final_coverage_run` is true, report unresolved gaps clearly without assuming another refinement pass exists.',
     'If no gaps exist, confirm that the PRD is complete and ready for PRD approval, and make clear that Beads breakdown begins only after that approval step.',
@@ -479,7 +487,7 @@ export const PROM13: PromptTemplate = {
   ],
   outputFormat: `${COVERAGE_OUTPUT_FORMAT} For PRD coverage, \`follow_up_questions\` must always be \`[]\`.`,
   contextInputs: ['full_answers', 'prd'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM13b: PromptTemplate = {
@@ -495,6 +503,8 @@ export const PROM13b: PromptTemplate = {
     'Preservation Rule: Keep existing epic IDs and user story IDs unless the revised candidate requires a genuinely new item.',
     'Epic Completeness: Every epic in the revised PRD must include at least one fully populated `user_stories` entry. Never leave an epic as a shell with `user_stories: []`, omit `user_stories`, or move story-level requirements only into epic-level fields.',
     'Specificity Rule: When a provided gap says coverage is vague or hard to verify, resolve it by making the affected acceptance criteria, scope language, or verification guidance more concrete and testable instead of adding generic filler prose.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Repository Claim Revision: Before adding or revising repository-specific commands, paths, tooling, or implementation details, confirm unsupported details with focused repository inspection.',
     'Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current PRD candidate and the revised PRD candidate.',
     'Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.',
     'Gap Resolution Actions: Each `gap_resolutions` entry must include `gap`, `action`, `rationale`, and `affected_items`. `action` must be one of `updated_prd`, `already_covered`, or `left_unresolved`.',
@@ -505,7 +515,7 @@ export const PROM13b: PromptTemplate = {
   ],
   outputFormat: `${PRD_OUTPUT_FORMAT}\nAlso include top-level \`changes\` and \`gap_resolutions\` lists. \`changes\` uses the same shape as PROM12 refinement output. Each \`gap_resolutions\` item: {gap, action, rationale, affected_items}. \`action\` must be one of {updated_prd, already_covered, left_unresolved}. Each \`affected_items\` entry: {item_type, id, label}.`,
   contextInputs: ['full_answers', 'prd', 'coverage_gaps'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 // Beads Phase Prompts
@@ -530,7 +540,9 @@ export const PROM20: PromptTemplate = {
     'Dependency Ordering: List beads in dependency order — if bead B depends on bead A, A must appear before B. Do not create circular dependencies or self-references.',
     'PRD Coverage: Every in-scope PRD requirement must map to at least one bead. Each bead\'s `prdRefs` must reference valid PRD epic or user-story IDs (e.g., EPIC-1, US-1-1).',
     'Test Specificity: Each bead\'s `tests` must verify that bead alone — not the entire feature. Each bead must have at least one entry in `testCommands` with the exact command to run.',
-    'Repository-Supported Test Commands: Derive every `testCommands` entry from concrete repository evidence in `relevant_files` or the approved PRD, such as an existing manifest script, build file, checked-in task runner, or repository-local executable. Never substitute a familiar ecosystem command merely because it is common; for example, do not emit npm commands when the relevant workspace has no supporting package manifest and script.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Test Command Evidence Rule: When `relevant_files` and the approved PRD do not provide concrete evidence for an exact `testCommands` entry, inspect the repository before emitting that command.',
+    'Repository-Supported Test Commands: Derive every `testCommands` entry from concrete repository evidence in `relevant_files` or focused repository inspection, such as an existing manifest script, build file, checked-in task runner, or repository-local executable. An approved PRD requirement does not by itself prove an exact repository command. Never substitute a familiar ecosystem command merely because it is common; for example, do not emit npm commands when the relevant workspace has no supporting package manifest and script.',
     'Single Response Completeness: Return one complete final `beads` list in a single response. Do not stop mid-list or emit partial subsets.',
     'Length Safety: If total output risks being cut off, shorten description text instead of omitting later beads. Every planned bead must appear in the output.',
     'Strict Output: Do not add wrappers, markdown fences, prose, or trailing commentary. Begin at `beads:` and end after the final bead item.',
@@ -539,7 +551,7 @@ export const PROM20: PromptTemplate = {
   ],
   outputFormat: BEAD_SUBSET_OUTPUT_FORMAT,
   contextInputs: ['relevant_files', 'ticket_details', 'prd'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM21: PromptTemplate = {
@@ -572,7 +584,9 @@ export const PROM22: PromptTemplate = {
     'Selective Upgrade: For each candidate, decide: does it add genuine value, or is it a variation of something you already cover well? If it fills a real gap, add the bead. If an alternative has a strictly better definition of one of your existing beads — tighter scope, better tests, cleaner dependencies — replace yours with it. Otherwise, discard it.',
     'Measured Refinement: Do not rewrite from scratch or blend drafts together just for balance. But it is acceptable to improve multiple beads, adjust dependency edges, or rework test strategies across the draft if that produces a clearly stronger final result.',
     'Restraint: Avoid adding beads that merely restate work already covered by an existing bead. But if genuine gaps exist — missing work units, uncovered error paths, overlooked dependencies — add them; a complete graph matters more than a short one.',
-    'Repository Command Preservation: Preserve only test commands supported by concrete repository evidence. Replace an unsupported ecosystem command with the exact repository-native command evidenced by the relevant manifest, script, build file, or checked-in task runner, and account for that replacement in `changes`.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Repository Detail Preservation: Before adopting or retaining repository-specific commands, paths, tooling, or framework details from an alternative draft, inspect the repository when the supplied context does not provide concrete evidence.',
+    'Repository Command Preservation: Preserve only test commands supported by concrete repository evidence. An approved PRD or alternative draft does not by itself prove an exact command. Replace an unsupported ecosystem command with the exact repository-native command evidenced by the relevant manifest, script, build file, or checked-in task runner, and account for that replacement in `changes`.',
     'Single Artifact Contract: Return one YAML artifact that contains both the final refined Beads breakdown and a top-level `changes` list. Do not split the refined beads and change metadata across multiple outputs, wrappers, or separate artifacts.',
     'Changes Coverage: The top-level `changes` list must fully account for the differences between the winning bead subset and the final refined bead subset. Use `type` values `modified`, `added`, or `removed`. Include `item_type: bead` plus `before` and `after` bead item records (or `null` when appropriate).',
     'One-Entry-Per-Item Rule: Every changed bead must appear exactly once in `changes`. If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead. Do not split one changed bead across multiple change entries.',
@@ -585,7 +599,7 @@ export const PROM22: PromptTemplate = {
   ],
   outputFormat: `${BEAD_SUBSET_OUTPUT_FORMAT} Also include a top-level \`changes\` list. Each change item: {type, item_type, before, after, inspiration?}. \`type\` must be one of {modified, added, removed}. \`item_type\` must be \`bead\`. \`before\` and \`after\` use {id, label, detail?} or null when appropriate. Optional \`inspiration\` uses {alternative_draft, item}. Keep everything in one YAML artifact.`,
   contextInputs: ['relevant_files', 'ticket_details', 'prd', 'drafts', 'votes'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM23: PromptTemplate = {
@@ -596,6 +610,8 @@ export const PROM23: PromptTemplate = {
   instructions: [
     'Primary Truth: Treat the approved PRD as the sole source of truth for this audit. Every in-scope PRD requirement must be traceable to at least one bead.',
     'Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing verification steps, empty or insufficient acceptance criteria, missing test commands, and beads with no `prdRefs` mapping.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Command Evidence Audit: Use focused repository inspection when the supplied context does not provide enough evidence to assess an exact test command, path, build system, or tooling claim.',
     'Command Compatibility Check: Treat a bead test command as a coverage gap when it does not map to concrete repository evidence for its effective working directory. A globally installed launcher alone is not evidence that the repository uses that ecosystem.',
     'Source Artifact Contradictions: If the approved PRD is internally contradictory in a way the Beads blueprint cannot faithfully satisfy, report the contradiction as an unresolved coverage gap. Do not choose a side or invent implementation requirements to reconcile contradictory source artifacts.',
     'Identify Gaps: List any specific gaps or discrepancies found between the PRD and the Beads breakdown.',
@@ -611,7 +627,7 @@ export const PROM23: PromptTemplate = {
   ],
   outputFormat: `${COVERAGE_OUTPUT_FORMAT} For beads coverage, \`follow_up_questions\` must always be \`[]\`.`,
   contextInputs: ['prd', 'beads'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM24: PromptTemplate = {
@@ -626,7 +642,9 @@ export const PROM24: PromptTemplate = {
     'Source Artifact Contradictions: If a provided gap describes internally contradictory source artifacts, do not choose a side, invent implementation requirements, or revise beads to pretend the contradiction is resolved. Record that gap with `action: left_unresolved` and `affected_items: []`.',
     'Preservation Rule: Keep the existing bead order, IDs, and unaffected fields unless a provided gap requires a concrete change. If you add a new bead, insert it at the minimal valid position that preserves dependency order.',
     'Bead Completeness: Every bead in the revised blueprint must include non-empty `acceptanceCriteria`, `tests`, and `testCommands`. Never leave a bead as a shell with empty verification fields.',
-    'Command Gap Resolution: When a gap identifies an unsupported test command, replace it with a repository-supported command backed by the provided repository context. Do not preserve, wrap, or rephrase an incompatible launcher merely to make the gap appear resolved.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Command Revision Evidence: When replacing an unsupported command or other repository-specific detail, use focused repository inspection if the supplied context does not contain concrete replacement evidence.',
+    'Command Gap Resolution: When a gap identifies an unsupported test command, replace it only with a repository-supported command backed by concrete repository evidence. Do not treat the PRD or previous blueprint as command evidence, and do not preserve, wrap, or rephrase an incompatible launcher merely to make the gap appear resolved.',
     'Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include exactly the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.',
     'Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry must include `type` (added|removed|modified), `id`, `title`, and `summary`.',
     'Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.',
@@ -638,7 +656,7 @@ export const PROM24: PromptTemplate = {
   ],
   outputFormat: `${BEAD_SUBSET_OUTPUT_FORMAT} Also include a top-level \`changes\` list and a top-level \`gap_resolutions\` list. Each \`changes\` item: {type, id, title, summary}. \`type\` must be one of {added, removed, modified}. Each \`gap_resolutions\` item: {gap, action, rationale, affected_items}. \`action\` must be one of {updated_beads, already_covered, left_unresolved}. Each \`affected_items\` entry: {item_type, id, label}, where \`item_type\` must be \`bead\`.`,
   contextInputs: ['prd', 'beads', 'coverage_gaps'],
-  toolPolicy: 'disabled',
+  toolPolicy: 'read_only',
 }
 
 export const PROM25: PromptTemplate = {
@@ -658,14 +676,15 @@ export const PROM25: PromptTemplate = {
     'Dependency Contract: `dependencies.blocked_by` may reference only earlier beads in the existing list order. No self-dependencies. No forward references. Keep the graph acyclic.',
     'Labels: Provide concise, useful labels grounded in the PRD and the refined blueprint. Include epic/story/ticket/domain labels when they are well supported by the provided context.',
     'Target Files: Use `relevant_files` first as hints for likely `targetFiles`. Prefer those hints when they are already sufficient. Use repository-inspection tools only when the hints are insufficient or need confirmation. Return only minimal project-relative file paths that the bead is most likely to touch.',
-    'Tool Policy: Repository-inspection tools are allowed. You may read files and inspect the tree. Do not edit files, run mutating commands, or change the repository.',
+    CONDITIONAL_REPOSITORY_INSPECTION,
+    'Tool Policy: Repository-inspection tools are read-only. You may read files and inspect the tree. Do not edit files, run commands, or change the repository.',
     'Output Discipline: output JSONL only. No surrounding array. No markdown fences. No prose before or after the JSONL.',
     'Expansion Self-Check: Before responding, verify that every preserved Part 1 field is byte-for-byte identical to the matching bead in `### beads_draft`; only the five AI-owned fields may differ.',
     STRUCTURED_SELF_CHECK,
   ],
   outputFormat: BEADS_JSONL_OUTPUT_FORMAT,
   contextInputs: ['relevant_files', 'ticket_details', 'prd', 'beads_draft'],
-  toolPolicy: 'default',
+  toolPolicy: 'read_only',
 }
 
 export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {

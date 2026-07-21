@@ -253,18 +253,18 @@ The state machine metadata directly drives the React user interface. Developers 
 - **`WAITING_INTERVIEW_APPROVAL`:** Gatekeeper review. The user approves the structured YAML specs with content-hash protection (`expectedContentSha256` matching check). The editable draft visibly autosaves across reloads, but the user must click **Save** to apply it to the authoritative interview artifact and trigger downstream effects.
 
 ### Specs Loop (PRD)
-- **`DRAFTING_PRD`:** Models resolve skipped questions into a Full Answers artifact (`answered_by: ai_skip`), then draft comprehensive feature requirements.
+- **`DRAFTING_PRD`:** Models resolve skipped questions into a Full Answers artifact (`answered_by: ai_skip`), then draft comprehensive feature requirements. PRD drafting can use focused read-only inspection only when relevant files cannot substantiate a repository-specific claim.
 - **`COUNCIL_VOTING_PRD`:** Anonymized votes are cast on rival PRD drafts based on completeness, risk, and feasibility metrics.
-- **`REFINING_PRD`:** The winner incorporates the strongest elements from competing drafts into PRD Candidate v1.
-- **`VERIFYING_PRD_COVERAGE`:** The candidate PRD is audited against the approved Full Answers context, revising in-phase until clean or capped.
+- **`REFINING_PRD`:** The winner incorporates the strongest elements from competing drafts into PRD Candidate v1, using focused read-only inspection only when concrete repository evidence is needed.
+- **`VERIFYING_PRD_COVERAGE`:** The candidate PRD is audited against the approved Full Answers context, revising in-phase until clean or capped; audit and revision can inspect the repository read-only when needed to confirm repository-specific claims.
 - **`WAITING_PRD_APPROVAL`:** Gatekeeper review of the PRD requirements spec with content-hash matching, supported by the winning Full Answers reference context. The editor visibly autosaves its draft, while **Save** remains required to update the authoritative PRD and apply downstream effects. If unresolved coverage gaps remain, the user can run one manual extra fix at a time before approving or approving with gaps.
 
 ### Blueprint Loop (Beads)
-- **`DRAFTING_BEADS`:** Council members draft blueprints decomposing the approved spec into semantic dependency graphs of beads.
+- **`DRAFTING_BEADS`:** Council members draft blueprints decomposing the approved spec into semantic dependency graphs of beads, using focused read-only inspection only when relevant files lack needed evidence.
 - **`COUNCIL_VOTING_BEADS`:** Blueprints are rated on graph logic, file target isolation, and testing strategy.
-- **`REFINING_BEADS`:** Winning blueprint merges strong verification steps from alternative drafts.
-- **`VERIFYING_BEADS_COVERAGE`:** Blueprint is verified against the PRD, revising in-phase when missing criteria are found.
-- **`EXPANDING_BEADS`:** LoopTroop expands the blueprint into live execution bead lists, specifying exact file scopes and test suites.
+- **`REFINING_BEADS`:** Winning blueprint merges strong verification steps from alternative drafts, using focused read-only inspection only when concrete repository evidence is needed.
+- **`VERIFYING_BEADS_COVERAGE`:** Blueprint is verified against the PRD, revising in-phase when missing criteria are found; audit and revision can inspect the repository read-only when needed to confirm repository-specific claims.
+- **`EXPANDING_BEADS`:** LoopTroop expands the blueprint into live execution bead lists, specifying exact file scopes and test suites with focused read-only inspection only when supplied context cannot confirm an execution detail.
 - **`WAITING_BEADS_APPROVAL`:** Gatekeeper review of the dependency graph and executable plan before coding starts. The editor visibly autosaves its draft, while **Save** remains required to update the authoritative blueprint and apply downstream effects. If unresolved coverage gaps remain, the user can run one manual extra fix at a time; changed semantic blueprints are expanded again before approval.
 
 ### Pre-Implementation

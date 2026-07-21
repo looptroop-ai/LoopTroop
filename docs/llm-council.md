@@ -42,6 +42,8 @@ This is where LoopTroop deliberately seeks diversity. A single draft tends to en
 
 PRD drafting has an extra first part: each member first produces its own Full Answers artifact from the approved interview, filling skipped answers when needed. The member then drafts its PRD from that completed answer set. After voting and refinement, the winning model's Full Answers artifact is available read-only from the PRD approval screen as supporting context.
 
+PRD and beads drafting, refinement, coverage, and bead expansion can use focused read-only repository inspection when their supplied artifacts do not provide concrete evidence for a repository-specific claim. They review `relevant_files` first and inspect only the smallest useful manifests, build definitions, task configuration, CI files, or source locations needed to confirm a command, path, framework, package manager, build system, or test runner. Full Answers, interviews, and all voting remain tool-disabled.
+
 If a member's Full Answers artifact is invalid after the configured structured retries, that member's PRD draft is not started. LoopTroop records a concise skipped/invalid PRD draft diagnostic instead of copying the Full Answers malformed text into the PRD draft artifact.
 
 Rejected model responses are diagnostic data, not draft bodies. Accepted drafts persist normalized artifact content; invalid, failed, or timed-out outputs show only outcome, model, validation/retry diagnostics, and short excerpts in the structured artifact view. The full malformed responses remain available through Raw attempt views and execution logs.

@@ -85,22 +85,22 @@ All built-in prompts in this section are exported from `server/prompts/index.ts`
 | Prompt | Used in / status | Session / tools | Context inputs | Purpose | Full text |
 | --- | --- | --- | --- | --- | --- |
 | `PROM10a` | `DRAFTING_PRD` full-answers sub-step | Fresh / `disabled` | `relevant_files`, `ticket_details`, `interview` | Resolves skipped interview answers into a complete Full Answers artifact before PRD drafting. | [Full content here](#full-prompt-prom10a) |
-| `PROM10b` | `DRAFTING_PRD` draft sub-step | Fresh council draft / `disabled` | `relevant_files`, `ticket_details`, `full_answers` | Drafts a structured PRD from the completed interview answers. | [Full content here](#full-prompt-prom10b) |
+| `PROM10b` | `DRAFTING_PRD` draft sub-step | Fresh council draft / `read_only` | `relevant_files`, `ticket_details`, `full_answers` | Drafts a structured PRD from the completed interview answers, using focused inspection only when repository evidence is needed. | [Full content here](#full-prompt-prom10b) |
 | `PROM11` | `COUNCIL_VOTING_PRD` | Fresh council vote / `disabled` | `relevant_files`, `ticket_details`, `interview`, `drafts` | Scores PRD drafts with the strict `draft_scores` YAML schema. | [Full content here](#full-prompt-prom11) |
-| `PROM12` | `REFINING_PRD` | Fresh refinement / `disabled` | `relevant_files`, `ticket_details`, `full_answers`, `drafts` | Refines the winning PRD draft and records machine-readable change metadata. | [Full content here](#full-prompt-prom12) |
-| `PROM13` | `VERIFYING_PRD_COVERAGE` | Fresh coverage audit / `disabled` | `full_answers`, `prd` | Compares the PRD against the adopted Full Answers artifact and reports concrete gaps. | [Full content here](#full-prompt-prom13) |
-| `PROM13b` | `VERIFYING_PRD_COVERAGE` revision sub-step and PRD approval extra fix | Fresh revision / `disabled` | `full_answers`, `prd`, `coverage_gaps`, optional previous extra-fix history | Revises the PRD to resolve specific coverage gaps and records gap-resolution metadata. | [Full content here](#full-prompt-prom13b) |
+| `PROM12` | `REFINING_PRD` | Fresh refinement / `read_only` | `relevant_files`, `ticket_details`, `full_answers`, `drafts` | Refines the winning PRD draft and records machine-readable change metadata, using focused inspection only when repository evidence is needed. | [Full content here](#full-prompt-prom12) |
+| `PROM13` | `VERIFYING_PRD_COVERAGE` | Fresh coverage audit / `read_only` | `full_answers`, `prd` | Compares the PRD against the adopted Full Answers artifact, reporting concrete gaps and inspecting the repository only when required to confirm a repository-specific claim. | [Full content here](#full-prompt-prom13) |
+| `PROM13b` | `VERIFYING_PRD_COVERAGE` revision sub-step and PRD approval extra fix | Fresh revision / `read_only` | `full_answers`, `prd`, `coverage_gaps`, optional previous extra-fix history | Revises the PRD to resolve specific coverage gaps, using focused inspection only when repository evidence is needed. | [Full content here](#full-prompt-prom13b) |
 
 ### Beads
 
 | Prompt | Used in / status | Session / tools | Context inputs | Purpose | Full text |
 | --- | --- | --- | --- | --- | --- |
-| `PROM20` | `DRAFTING_BEADS` draft sub-step | Fresh council draft / `disabled` | `relevant_files`, `ticket_details`, `prd` | Drafts the semantic bead blueprint from the approved PRD. | [Full content here](#full-prompt-prom20) |
+| `PROM20` | `DRAFTING_BEADS` draft sub-step | Fresh council draft / `read_only` | `relevant_files`, `ticket_details`, `prd` | Drafts the semantic bead blueprint from the approved PRD, using focused inspection only when repository evidence is needed. | [Full content here](#full-prompt-prom20) |
 | `PROM21` | `COUNCIL_VOTING_BEADS` | Fresh council vote / `disabled` | `relevant_files`, `ticket_details`, `prd`, `drafts` | Scores bead blueprints with the strict `draft_scores` YAML schema. | [Full content here](#full-prompt-prom21) |
-| `PROM22` | `REFINING_BEADS` | Fresh refinement / `disabled` | `relevant_files`, `ticket_details`, `prd`, `drafts`, `votes` | Refines the winning semantic bead blueprint using selected alternative-draft improvements. | [Full content here](#full-prompt-prom22) |
-| `PROM23` | `VERIFYING_BEADS_COVERAGE` | Fresh coverage audit / `disabled` | `prd`, `beads` | Checks whether the bead blueprint fully covers the PRD. | [Full content here](#full-prompt-prom23) |
-| `PROM24` | `VERIFYING_BEADS_COVERAGE` revision sub-step and beads approval extra fix | Fresh revision / `disabled` | `prd`, `beads`, `coverage_gaps`, optional previous extra-fix history | Revises the bead blueprint to address specific coverage gaps. | [Full content here](#full-prompt-prom24) |
-| `PROM25` | `EXPANDING_BEADS` | Fresh / `default` | `relevant_files`, `ticket_details`, `prd`, `beads_draft` | Expands the semantic blueprint into execution-ready bead records. | [Full content here](#full-prompt-prom25) |
+| `PROM22` | `REFINING_BEADS` | Fresh refinement / `read_only` | `relevant_files`, `ticket_details`, `prd`, `drafts`, `votes` | Refines the winning semantic bead blueprint using selected alternative-draft improvements and focused inspection when repository evidence is needed. | [Full content here](#full-prompt-prom22) |
+| `PROM23` | `VERIFYING_BEADS_COVERAGE` | Fresh coverage audit / `read_only` | `prd`, `beads` | Checks whether the bead blueprint fully covers the PRD and inspects the repository only when required to confirm a repository-specific claim. | [Full content here](#full-prompt-prom23) |
+| `PROM24` | `VERIFYING_BEADS_COVERAGE` revision sub-step and beads approval extra fix | Fresh revision / `read_only` | `prd`, `beads`, `coverage_gaps`, optional previous extra-fix history | Revises the bead blueprint to address specific coverage gaps, using focused inspection only when repository evidence is needed. | [Full content here](#full-prompt-prom24) |
+| `PROM25` | `EXPANDING_BEADS` | Fresh / `read_only` | `relevant_files`, `ticket_details`, `prd`, `beads_draft` | Expands the semantic blueprint into execution-ready bead records, using focused inspection only when supplied context cannot confirm an execution detail. | [Full content here](#full-prompt-prom25) |
 
 ### Execution Setup
 

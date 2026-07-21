@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OpenCodeAdapter } from '../../../opencode/adapter'
-import { OPENCODE_DISABLED_TOOLS } from '../../../opencode/toolPolicy'
+import { OPENCODE_DISABLED_TOOLS, OPENCODE_READ_ONLY_TOOLS } from '../../../opencode/toolPolicy'
 import type {
   HealthStatus,
   Message,
@@ -776,7 +776,7 @@ describe.concurrent('draftPRD', () => {
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.messages.get('mock-session-1')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
     expect(adapter.messages.get('mock-session-2')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
-    expect(adapter.promptCalls[1]?.options?.tools).toEqual(OPENCODE_DISABLED_TOOLS)
+    expect(adapter.promptCalls[1]?.options?.tools).toEqual(OPENCODE_READ_ONLY_TOOLS)
   })
 
   it('keeps full answers structured retries inside the same session while starting PRD drafting in a fresh one', async () => {

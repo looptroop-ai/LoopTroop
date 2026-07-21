@@ -125,7 +125,11 @@ describe.concurrent('workflow metadata', () => {
 
       expect(phase?.description).toContain('Draft edits autosave with visible state and last-save time')
       expect(phase?.description).toContain('explicit Save is required to update the authoritative')
-      expect(phase?.details.overview).toContain('Draft edits autosave with a visible last-save status')
+      expect(phase?.details.overview).toContain(
+        phaseId === 'WAITING_BEADS_APPROVAL'
+          ? 'review the full execution plan including task descriptions'
+          : 'Draft edits autosave with a visible last-save status',
+      )
       expect(phase?.details.steps.join(' ')).toContain(
         'visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state',
       )
@@ -139,11 +143,11 @@ describe.concurrent('workflow metadata', () => {
     expect(scanningPhase?.contextSummary).toEqual(['ticket_details'])
   })
 
-  it('uses the simplified description for PRD coverage verification', () => {
+  it('describes conditional repository grounding for PRD coverage verification', () => {
     const prdCoveragePhase = WORKFLOW_PHASES.find((phase) => phase.id === 'VERIFYING_PRD_COVERAGE')
 
     expect(prdCoveragePhase?.description).toContain(
-      'LoopTroop checks the current PRD candidate against the winning model\'s Full Answers artifact, normalizes safe revision metadata, and revises it in-phase until clean or the configured cap is reached.',
+      'using focused read-only repository inspection only when needed to confirm repository-specific claims',
     )
     expect(prdCoveragePhase?.contextSummary).toEqual(['full_answers', 'prd'])
   })
@@ -151,16 +155,14 @@ describe.concurrent('workflow metadata', () => {
   it('describes the two-step beads finalization flow', () => {
     const beadsRefinePhase = WORKFLOW_PHASES.find((phase) => phase.id === 'REFINING_BEADS')
 
-    expect(beadsRefinePhase?.description).toContain(
-      'Winning draft is consolidated into the final semantic beads blueprint using the strongest ideas from losing drafts; previous blueprint Raw views are validated-only.',
-    )
+    expect(beadsRefinePhase?.description).toContain('focused read-only repository inspection')
   })
 
-  it('describes beads coverage as a pure semantic coverage review loop', () => {
+  it('describes beads coverage as a repository-grounded semantic review loop', () => {
     const beadsCoveragePhase = WORKFLOW_PHASES.find((phase) => phase.id === 'VERIFYING_BEADS_COVERAGE')
 
     expect(beadsCoveragePhase?.description).toContain(
-      'LoopTroop checks the current semantic beads blueprint against the approved PRD. If something is missing, it updates the blueprint and checks again.',
+      'LoopTroop checks the semantic beads blueprint against the approved PRD and repository command evidence, using focused read-only inspection when required.',
     )
     expect(beadsCoveragePhase?.contextSummary).toEqual(['prd', 'beads'])
     expect(beadsCoveragePhase?.contextSections).toEqual([
@@ -217,7 +219,7 @@ describe.concurrent('workflow metadata', () => {
     expect(setupApprovalPhase?.label).toBe('Approving Workspace Setup')
     expect(setupApprovalPhase?.reviewArtifactType).toBe('execution_setup_plan')
     expect(setupPhase?.label).toBe('Preparing Workspace Runtime')
-    expect(setupPhase?.description).toContain('functional repository probes, and explicit Git-hook validation commands')
+    expect(setupPhase?.description).toContain('functional repository probes, and explicit Git-hook checks')
     expect(setupPhase?.contextSummary).toEqual(['ticket_details', 'beads', 'execution_setup_plan', 'execution_setup_notes'])
     expect(codingPhase?.contextSummary).toEqual(['bead_data', 'bead_notes'])
   })

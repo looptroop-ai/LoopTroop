@@ -346,11 +346,11 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   DRAFTING_PRD: {
-    overview: 'The PRD council produces competing specification drafts from the approved interview, relevant files, and ticket context. This is a 2-part phase: Part 1 lets each council member create its own Full Answers artifact by filling any skipped interview answers, and Part 2 uses that member-specific complete answer set to generate a full PRD draft. Each council member independently produces both its assumptions and its PRD — they do not collaborate or see each other\'s work.',
+    overview: 'The PRD council produces competing specification drafts from the approved interview, relevant files, and ticket context. This is a 2-part phase: Part 1 lets each council member create its own Full Answers artifact by filling any skipped interview answers, and Part 2 uses that member-specific complete answer set to generate a full PRD draft. Part 2 can perform focused read-only repository inspection when the supplied relevant-files context cannot support a repository-specific claim. Each council member independently produces both its assumptions and its PRD — they do not collaborate or see each other\'s work.',
     steps: [
       'Part 1 — Answering Skipped Questions: LoopTroop loads the relevant files, ticket details, and interview results (including which questions were answered vs. skipped). For each skipped question, each council member generates a reasonable full answer based on the available context. The result is a per-model "Full Answers" artifact where every question has a response — either the user\'s original answer or that model\'s AI-generated fill-in.',
       'Why Keep Per-Model Full Answers? The PRD council benefits from diverse assumptions when the user skipped uncertain areas. Keeping Full Answers per model lets voting evaluate each PRD draft together with the assumptions that produced it, instead of forcing all members through one canonical guess before drafting.',
-      'Part 2 — Generating PRD Drafts: LoopTroop loads the relevant files, ticket details, and that member\'s Full Answers artifact (including AI-filled responses). Each council model independently produces a complete PRD candidate rather than editing a shared draft. This independence ensures diverse specification approaches.',
+      'Part 2 — Generating PRD Drafts: LoopTroop loads the relevant files, ticket details, and that member\'s Full Answers artifact (including AI-filled responses). Each council model independently produces a complete PRD candidate rather than editing a shared draft. When relevant files do not provide concrete evidence for a repository-specific command, path, framework, package manager, build system, or test runner, the model may inspect the smallest useful repository area with read-only tools before making that claim. This independence ensures diverse specification approaches.',
       'Part 2 Gating: If Part 1 does not produce a valid Full Answers artifact for a member, that member\'s PRD draft is not started. The PRD draft row is recorded as skipped/invalid with a concise diagnostic instead of copying Full Answers raw output or retry warnings into the PRD draft artifact.',
       'PRD Content Structure: Each draft follows a consistent structure containing requirements (what the system should do), acceptance criteria (how to verify it works), edge cases (unusual situations to handle), test intent (what should be tested and how), and implementation guidance (suggested approach and constraints).',
       'Output Normalization: LoopTroop normalizes draft output to ensure consistent structure, records draft metrics (requirement count, acceptance criteria count, edge case count), logs structured-output diagnostics, records raw accepted/rejected attempts, and persists only accepted draft bodies for the upcoming voting phase. Full Answers parsing can repair safe YAML scalar formatting around existing free_text answer text and restores approved interview metadata such as follow_up_rounds from the canonical Interview Results artifact; unrecoverable or invented structure still fails validation. Full Answers and PRD draft retry prompts use the configured structured retry count and run in fresh sessions by design.',
@@ -365,7 +365,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Quorum Failure → Blocked Error: Draft generation failures, insufficient valid drafts for quorum, or council member timeouts route the ticket to Blocked Error.',
     ],
     notes: [
-      'This phase has 2 internal parts with different context inputs: Part 1 receives Relevant Files + Ticket Details + Interview Results; Part 2 receives Relevant Files + Ticket Details + Full Answers.',
+      'This phase has 2 internal parts with different context inputs: Part 1 receives Relevant Files + Ticket Details + Interview Results; Part 2 receives Relevant Files + Ticket Details + Full Answers and may perform focused read-only inspection when its supplied context is insufficient for a repository-specific claim.',
       'Rejected or uncorrectable Full Answers and PRD draft text is not rendered as artifact body content. Safe parser repairs correct formatting only; malformed responses that would require inventing questions, metadata, or planning content remain diagnostic-only in Raw attempt views and execution logs.',
       'The PRD phase is the first stage that converts interview intent into a formal implementation specification — it bridges the gap between "what do you want" (interview) and "what should be built" (specification).',
       'Each council member drafts from its own Full Answers artifact, so the PRD vote selects both a specification approach and the assumptions behind it.',
@@ -407,9 +407,9 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   REFINING_PRD: {
-    overview: 'The winning PRD draft is upgraded into PRD Candidate v1 by selectively pulling in useful improvements from the losing drafts — additional requirements, stronger acceptance criteria, edge cases, or test scenarios that the winner missed. The winning model performs this refinement, preserving its own structure while incorporating the best elements from competitors.',
+    overview: 'The winning PRD draft is upgraded into PRD Candidate v1 by selectively pulling in useful improvements from the losing drafts — additional requirements, stronger acceptance criteria, edge cases, or test scenarios that the winner missed. The winning model performs this refinement, preserving its own structure while incorporating the best elements from competitors. It can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim it needs to retain or adopt.',
     steps: [
-      'Context Assembly: LoopTroop gives the winning model its own winning draft plus all the losing drafts, clearly labeled. The prompt instructs the model to keep the winning draft\'s structure and core content intact while selectively merging stronger elements from the losers.',
+      'Context Assembly: LoopTroop gives the winning model its own winning draft plus all the losing drafts, clearly labeled. The prompt instructs it to keep the winning draft\'s structure and core content intact while selectively merging stronger elements from the losers. It reviews relevant files first and may use focused read-only inspection only when concrete repository evidence is missing.',
       'Selective Merging: The model reviews each losing draft for requirements, acceptance criteria, edge cases, or test scenarios that are present in the losing draft but absent from the winner. It incorporates these improvements without duplicating existing content or breaking the winning draft\'s organizational structure.',
       'Output Validation: The refinement output is normalized and validated as a proper PRD document — checking for consistent structure, non-empty requirement sections, valid acceptance criteria format, and overall document integrity. Automatic structured retries use the ticket\'s configured count, run in fresh sessions by design for council refinement, and are preserved as Raw attempt variants; only the accepted normalized PRD becomes canonical downstream context.',
       'Diff Metadata: LoopTroop optionally generates refinement diff metadata that describes what changed between the original winning draft and the refined candidate. This helps you understand what was added during refinement when you review the PRD later.',
@@ -426,7 +426,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     notes: [
       'The refinement is done by the winning model (from the vote), ensuring the refiner understands the winning approach and can merge additions coherently.',
-      'Context available: Relevant Files + Ticket Details + Full Answers + Competing Drafts (the winner is labeled, losers are provided for mining improvements).',
+      'Context available: Relevant Files + Ticket Details + Full Answers + Competing Drafts (the winner is labeled, losers are provided for mining improvements). Focused read-only repository inspection is available only when that context is insufficient for a concrete repository-specific claim.',
       'Competing draft artifacts reviewed here show their validated canonical draft in Raw, matching the content the refinement prompt used. Refinement model retries keep their own Raw attempt diagnostics separately.',
       'PRD Candidate v1 is a versioned identifier — coverage may produce later versions if gaps are found and revisions are needed.',
       'Why refine? The winning draft scored highest overall, but losing drafts often contain individual insights that the winner lacks. Refinement captures those insights without losing the winning structure.',
@@ -437,11 +437,11 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   VERIFYING_PRD_COVERAGE: {
-    overview: 'LoopTroop runs a versioned PRD coverage loop, comparing the current PRD candidate against the winning model\'s Full Answers artifact to find any missing requirements or gaps. Unlike the interview coverage loop (which sends you back to answer more questions), PRD coverage stays inside this same phase — the model revises the PRD directly when gaps are found. Revision metadata is normalized only when it preserves existing text; path/summary-only change notes stay diagnostic while the validated PRD versions provide the visible diff. The loop can produce later PRD candidate versions until the configured cap is reached, and if gaps remain after that, the latest version still advances to approval with warnings.',
+    overview: 'LoopTroop runs a versioned PRD coverage loop, comparing the current PRD candidate against the winning model\'s Full Answers artifact to find any missing requirements or gaps. Unlike the interview coverage loop (which sends you back to answer more questions), PRD coverage stays inside this same phase — the model revises the PRD directly when gaps are found. The audit and revision prompts can use focused read-only repository inspection when supplied context does not substantiate a repository-specific claim. Revision metadata is normalized only when it preserves existing text; path/summary-only change notes stay diagnostic while the validated PRD versions provide the visible diff. The loop can produce later PRD candidate versions until the configured cap is reached, and if gaps remain after that, the latest version still advances to approval with warnings.',
     steps: [
-      'Coverage Evaluation: The winning PRD model compares the current PRD candidate against that model\'s Full Answers artifact. It returns a structured coverage result: either "clean" (the PRD fully covers the canonical completed answers) or "gaps found" (specific requirements or acceptance criteria are missing or incomplete).',
+      'Coverage Evaluation: The winning PRD model compares the current PRD candidate against that model\'s Full Answers artifact. It returns a structured coverage result: either "clean" (the PRD fully covers the canonical completed answers) or "gaps found" (specific requirements or acceptance criteria are missing or incomplete). When deciding a repository-specific assertion needs confirmation, it may inspect the smallest useful set of repository files with read-only tools.',
       'Gap Details: When gaps are found, the coverage result includes specific descriptions of what is missing, which completed answers are not reflected in the PRD, unresolved source-artifact contradictions when present, and why the gap matters for implementation correctness.',
-      'In-Phase Revision: If gaps are found and the coverage cap has not been reached, LoopTroop asks the model to produce a revised PRD that addresses the identified gaps. The revised candidate is validated and promoted to the next version number (for example v1 → v2) within the same phase.',
+      'In-Phase Revision: If gaps are found and the coverage cap has not been reached, LoopTroop asks the model to produce a revised PRD that addresses the identified gaps. Before adding or changing a repository-specific command, path, framework, package manager, build system, or test runner, the model confirms it from supplied or focused read-only repository evidence. The revised candidate is validated and promoted to the next version number (for example v1 → v2) within the same phase.',
       'Safe Change Metadata: Revision outputs may include structured change metadata. LoopTroop accepts harmless key aliases such as `change_type`, but it only keeps change records that contain real semantic before/after item records; path and summary-only notes are dropped as diagnostics so missing item text is never invented.',
       'Version History: Coverage attempts and version transitions are persisted, so you can see what changed between PRD versions and why. Each attempt records the coverage result, identified gaps, revision actions, parser/repair notices, and the resulting candidate version. If validated semantic change records are empty, the approval UI falls back to a structural diff between the validated PRD versions.',
       'Clean Finalization: If the PRD becomes clean (all gaps resolved), the clean result is recorded and the current candidate becomes the approval candidate with a clean status.',
@@ -462,7 +462,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'The maximum number of coverage versions is configuration-driven to ensure convergence without hard-coding a single limit for every project.',
       'While this status is active, the workspace title shows the PRD candidate version being checked and the current coverage pass when those values are available. That live progress text disappears once the ticket leaves this status.',
       'Change metadata repairs are text-preserving only. If a model provides section paths or summaries without concrete before/after item records, LoopTroop records a warning and derives the review diff from the validated PRD documents instead.',
-      'Context available: winning model Full Answers + PRD (current candidate version). The approved interview is not fed to this phase; the winner Full Answers artifact is the canonical coverage source.',
+      'Context available: winning model Full Answers + PRD (current candidate version). The approved interview is not fed to this phase; the winner Full Answers artifact is the canonical coverage source. Focused read-only inspection is available only when that context is insufficient for a repository-specific assertion.',
       'Why cap the loop? Diminishing returns: most meaningful gaps are caught in early revisions. The cap prevents the loop from endlessly polishing minor details while delaying your approval review.',
     ],
     equivalents: [
@@ -512,9 +512,9 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   DRAFTING_BEADS: {
-    overview: 'The beads council decomposes the approved PRD into implementable tasks — called "beads" — that the coding agent will later execute one by one. Each council member independently proposes a semantic beads blueprint: a task-level breakdown with descriptions, acceptance criteria, dependencies, and test intent. The blueprints at this stage are still "semantic" (describing what to do) rather than "execution-ready" (containing exact commands and file paths).',
+    overview: 'The beads council decomposes the approved PRD into implementable tasks — called "beads" — that the coding agent will later execute one by one. Each council member independently proposes a semantic beads blueprint: a task-level breakdown with descriptions, acceptance criteria, dependencies, and test intent. The blueprints at this stage are still "semantic" (describing what to do) rather than "execution-ready" (containing exact commands and file paths). When concrete repository evidence is needed, members can inspect the smallest useful repository area with read-only tools.',
     steps: [
-      'Context Loading: LoopTroop loads the approved PRD, ticket details, and relevant-files context into the beads drafting prompt. This gives each council member the full picture: what needs to be built (PRD), why (ticket), and what code already exists (relevant files).',
+      'Context Loading: LoopTroop loads the approved PRD, ticket details, and relevant-files context into the beads drafting prompt. This gives each council member the full picture: what needs to be built (PRD), why (ticket), and what code already exists (relevant files). Members review this context first and use focused read-only inspection only when it cannot support a concrete repository-specific claim.',
       'Independent Blueprint Drafting: Each council member independently proposes a semantic beads blueprint. A blueprint contains individual bead definitions, each with a description of what the bead should accomplish, acceptance criteria for verifying completion, dependency declarations (which beads must complete before this one can start), and test intent (what tests should verify this bead\'s work).',
       'Task Decomposition Strategy: Models decide how to split the PRD into beads — balancing granularity (each bead should be a meaningful unit of work) against dependency complexity (too many fine-grained beads create complex dependency chains). Different council members may propose very different decomposition strategies.',
       'Validation & Metrics: Draft output is normalized, validated against the expected schema (proper bead structure, valid dependency references, non-empty fields), and stored as council draft artifacts. Draft metrics capture task counts, structure depth, and dependency graph complexity for each blueprint. Invalid, failed, or timed-out blueprint bodies are suppressed from structured artifact views and preserved only as raw attempts/log diagnostics. Beads draft retry prompts use the configured structured retry count and run in fresh sessions by design.',
@@ -529,7 +529,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Quorum Failure → Blocked Error: Drafting failures, insufficient valid blueprints for quorum, or model timeouts route the ticket to Blocked Error.',
     ],
     notes: [
-      'Context available: Relevant Files + Ticket Details + PRD.',
+      'Context available: Relevant Files + Ticket Details + PRD. Focused read-only repository inspection is available only when this context is insufficient for a concrete repository-specific claim.',
       'Blueprints at this stage are semantic — they describe tasks conceptually without execution-specific fields like shell commands or exact file paths. Those are added later during the expansion step.',
       'Rejected or uncorrectable blueprint output is diagnostic-only in artifacts; the structured tab does not render malformed blueprint text as if it were a usable draft.',
       'Why independent drafting? Different models may identify different natural task boundaries. Voting on competing blueprints helps select the most logical and implementable decomposition.',
@@ -570,9 +570,9 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   REFINING_BEADS: {
-    overview: 'The winning beads blueprint stays the backbone while LoopTroop pulls in stronger tasks, tests, constraints, and edge cases from the losing blueprints. The refined output remains a semantic plan — execution-specific fields (shell commands, exact file paths, runtime configuration) are added later during the expansion step in the Expanding Blueprint phase that follows coverage checking.',
+    overview: 'The winning beads blueprint stays the backbone while LoopTroop pulls in stronger tasks, tests, constraints, and edge cases from the losing blueprints. The refined output remains a semantic plan — execution-specific fields (shell commands, exact file paths, runtime configuration) are added later during the expansion step in the Expanding Blueprint phase that follows coverage checking. Focused read-only repository inspection is available when needed to substantiate a repository-specific claim.',
     steps: [
-      'Context Assembly: The winning model receives its own winning blueprint plus all losing blueprints, clearly labeled. The prompt instructs it to preserve the winning structure while selectively merging improvements from the losers.',
+      'Context Assembly: The winning model receives its own winning blueprint plus all losing blueprints, clearly labeled. The prompt instructs it to preserve the winning structure while selectively merging improvements from the losers. It reviews relevant files first and may inspect the smallest useful repository area with read-only tools only when concrete evidence is missing.',
       'Selective Merging: The model reviews each losing blueprint for tasks, acceptance criteria, edge cases, or dependency insights that are present in the loser but absent from the winner. It incorporates these improvements without duplicating content, breaking the dependency graph, or fundamentally restructuring the winning blueprint.',
       'Output Normalization: LoopTroop normalizes the refinement output, validates the bead structure and dependency graph integrity, and stores the refined candidate. The configured structured retry count applies here, with retry prompts running in fresh sessions by design for council refinement. Attribution metadata is preserved where possible so you can see which improvements came from which losing blueprint.',
       'UI Diff Artifacts: Diff artifacts are generated showing what changed between the original winning blueprint and the refined version, helping you understand the refinement impact during later review.',
@@ -589,7 +589,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     notes: [
       'This phase still works on the semantic plan, not execution-ready bead records. Execution fields are added in the Expanding Blueprint phase, after coverage checking.',
-      'Context available: Relevant Files + Ticket Details + PRD + Competing Drafts.',
+      'Context available: Relevant Files + Ticket Details + PRD + Competing Drafts. Focused read-only repository inspection is available only when this context is insufficient for a concrete repository-specific claim.',
       'Competing blueprint artifacts reviewed here show their validated canonical draft in Raw, matching the content the refinement prompt used. Refinement retries keep their own Raw attempt diagnostics separately.',
       'Why refine before expansion? Semantic-level refinement is cheaper and more flexible. It is easier to add or modify task descriptions than to redo execution-specific fields after expansion.',
     ],
@@ -599,11 +599,11 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   VERIFYING_BEADS_COVERAGE: {
-    overview: 'LoopTroop verifies the semantic beads blueprint against the approved PRD and the repository\'s actual command evidence, revising it until it is acceptable. The loop checks requirement coverage and rejects test commands that do not map to the relevant workspace manifests, scripts, build files, or checked-in task runners. Once coverage and command compatibility are clean, the workflow automatically advances to the Expanding Blueprint phase.',
+    overview: 'LoopTroop verifies the semantic beads blueprint against the approved PRD and the repository\'s actual command evidence, revising it until it is acceptable. The audit and revision prompts can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim. The loop checks requirement coverage and rejects test commands that do not map to the relevant workspace manifests, scripts, build files, or checked-in task runners. Once coverage and command compatibility are clean, the workflow automatically advances to the Expanding Blueprint phase.',
     steps: [
-      'Coverage Evaluation: The winning beads model compares the current semantic blueprint against the PRD and returns a structured clean-or-gaps result. "Clean" means every PRD requirement is covered by at least one bead. "Gaps" means specific requirements lack corresponding beads, have insufficient acceptance criteria, or depend on unresolved source-artifact contradictions.',
+      'Coverage Evaluation: The winning beads model compares the current semantic blueprint against the PRD and returns a structured clean-or-gaps result. "Clean" means every PRD requirement is covered by at least one bead. "Gaps" means specific requirements lack corresponding beads, have insufficient acceptance criteria, or depend on unresolved source-artifact contradictions. It may inspect the smallest useful repository area with read-only tools when it needs concrete repository evidence.',
       'Repository Command Evidence: LoopTroop independently checks every bead test command in its effective working directory. A globally installed package manager does not prove that the repository uses it; manifest-bound commands require the matching manifest and task/script, while repository-local executables and checked-in task runners provide direct evidence.',
-      'Gap Resolution: If gaps are found, LoopTroop records the coverage attempt, requests a targeted revision that adds the missing beads or strengthens existing acceptance criteria, validates the revision, and promotes the next blueprint version. This loop can repeat until clean or until the configured beads coverage cap is reached.',
+      'Gap Resolution: If gaps are found, LoopTroop records the coverage attempt, requests a targeted revision that adds the missing beads or strengthens existing acceptance criteria, validates the revision, and promotes the next blueprint version. Before replacing an unsupported repository-specific command or path, the model confirms the replacement from supplied or focused read-only repository evidence. This loop can repeat until clean or until the configured beads coverage cap is reached.',
       'Version Tracking: Each coverage attempt and revision is persisted as coverage history, so you can see the evolution from the initial blueprint through each revision and understand what changed at each step.',
       'Finalization: Once coverage is clean, the workflow advances to Expanding Blueprint. Reaching the configured cap may leave requirement-coverage gaps for human review, but repository-incompatible commands remain a blocking validation error instead of entering the execution plan.',
     ],
@@ -621,7 +621,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'This phase handles only the semantic coverage loop — expansion into execution-ready bead records happens in the separate Expanding Blueprint phase that follows.',
       'The beads coverage cap ensures convergence — the loop cannot run indefinitely.',
       'While this status is active, the workspace title shows the implementation-plan version being checked and the current coverage pass when those values are available. That live progress text disappears once the ticket leaves this status.',
-      'Context available: PRD + Beads (semantic blueprint).',
+      'Context available: PRD + Beads (semantic blueprint). Focused read-only repository inspection is available only when this context is insufficient for a concrete repository-specific assertion.',
       'Why separate coverage from expansion? Coverage at the semantic level is cheaper and faster than expansion. By checking coverage first at the semantic level, LoopTroop avoids wasting expansion effort on a blueprint that would need revision.',
     ],
     equivalents: [
@@ -631,10 +631,10 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   EXPANDING_BEADS: {
-    overview: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records. This expansion step adds execution-specific fields to each bead — shell commands to run, file paths to create or modify, expected test commands, dependency graph with topological ordering, and runtime metadata. The expanded output becomes the approval candidate shown in the beads approval UI.',
+    overview: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records. This expansion step adds execution-specific fields to each bead — shell commands to run, file paths to create or modify, expected test commands, dependency graph with topological ordering, and runtime metadata. It uses focused read-only repository inspection when the supplied context cannot confirm a required execution detail. The expanded output becomes the approval candidate shown in the beads approval UI.',
     steps: [
       'Blueprint Loading: LoopTroop loads the latest semantic blueprint from the coverage phase — either the final coverage revision or the original refined blueprint if no revisions were needed.',
-      'Expansion: The expansion model receives the semantic blueprint along with the relevant files, ticket details, and approved PRD. It produces execution-ready bead records by enriching each bead with shell commands, file targets, test commands, dependency edges, and runtime metadata.',
+      'Expansion: The expansion model receives the semantic blueprint along with the relevant files, ticket details, and approved PRD. It produces execution-ready bead records by enriching each bead with shell commands, file targets, test commands, dependency edges, and runtime metadata. It reviews relevant files first and uses only focused read-only inspection when those hints are insufficient or need confirmation.',
       'Bead Record Writing: The expanded bead records are written to the ticket workspace as the canonical beads data file. This is the file the pre-flight check validates and the coding loop consumes bead-by-bead.',
       'Approval Candidate: The expanded output is persisted as the beads approval candidate artifact. This is what you review in the Approving Blueprint phase before coding starts.',
     ],
@@ -649,7 +649,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     notes: [
       'This is the only planning phase that ends with an explicit semantic-to-execution expansion step — all other phases work at the semantic level only.',
-      'Context available: Relevant Files + Ticket Details + PRD + Semantic Blueprint (beads_draft).',
+      'Context available: Relevant Files + Ticket Details + PRD + Semantic Blueprint (beads_draft), with focused read-only repository inspection available when required to confirm execution details.',
       'Why expand separately from coverage? Expansion is expensive and adds execution-specific detail. By doing coverage at the semantic level first (in Coverage Check (Beads)), LoopTroop avoids wasting expansion effort on a blueprint that would need revision.',
     ],
     equivalents: [
@@ -1291,7 +1291,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'DRAFTING_PRD',
     label: 'Council Drafting Specs',
-    description: 'Models produce per-model Full Answers artifacts and competing PRD drafts. Safe parser repairs preserve approved interview metadata; invalid Full Answers skip that member\'s PRD draft after configured structured retries and malformed bodies stay in Raw diagnostics only.',
+    description: 'Models produce per-model Full Answers artifacts and competing PRD drafts. PRD drafting may use focused read-only repository inspection when relevant files cannot support a concrete repository-specific claim; invalid Full Answers skip that member\'s PRD draft after configured structured retries and malformed bodies stay in Raw diagnostics only.',
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1316,7 +1316,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'REFINING_PRD',
     label: 'Refining Specs',
-    description: 'Winning draft is consolidated into PRD Candidate v1 using useful ideas from losing drafts; previous draft Raw views are validated-only, while refinement retries remain inspectable.',
+    description: 'Winning draft is consolidated into PRD Candidate v1 using useful ideas from losing drafts and, when needed, focused read-only repository inspection; previous draft Raw views are validated-only, while refinement retries remain inspectable.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1328,7 +1328,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_PRD_COVERAGE',
     label: 'Coverage Check (PRD)',
-    description: 'LoopTroop checks the current PRD candidate against the winning model\'s Full Answers artifact, normalizes safe revision metadata, and revises it in-phase until clean or the configured cap is reached. The live workspace title shows candidate version and pass when known.',
+    description: 'LoopTroop checks the current PRD candidate against the winning model\'s Full Answers artifact, using focused read-only repository inspection only when needed to confirm repository-specific claims. It normalizes safe revision metadata and revises in-phase until clean or the configured cap is reached.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_PRD_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1353,7 +1353,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'DRAFTING_BEADS',
     label: 'Council Drafting Blueprint',
-    description: 'Each council member independently decomposes the approved PRD into a semantic beads blueprint; accepted blueprints advance, while invalid bodies are shown only as diagnostics/raw attempts.',
+    description: 'Each council member independently decomposes the approved PRD into a semantic beads blueprint and may use focused read-only repository inspection when relevant files lack needed evidence; accepted blueprints advance, while invalid bodies are shown only as diagnostics/raw attempts.',
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1377,7 +1377,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'REFINING_BEADS',
     label: 'Refining Blueprint',
-    description: 'Winning draft is consolidated into the final semantic beads blueprint using the strongest ideas from losing drafts; previous blueprint Raw views are validated-only.',
+    description: 'Winning draft is consolidated into the final semantic beads blueprint using the strongest ideas from losing drafts and, when needed, focused read-only repository inspection; previous blueprint Raw views are validated-only.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1389,7 +1389,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_BEADS_COVERAGE',
     label: 'Coverage Check (Beads)',
-    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD and repository command evidence. Unsupported test commands become automatic revision gaps alongside missing requirements; unlike ordinary coverage gaps, incompatible commands remain blocking if the revision cap is reached.',
+    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD and repository command evidence, using focused read-only inspection when required. Unsupported test commands become automatic revision gaps alongside missing requirements; unlike ordinary coverage gaps, incompatible commands remain blocking if the revision cap is reached.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_BEADS_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1402,7 +1402,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'EXPANDING_BEADS',
     label: 'Expanding Blueprint',
-    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with commands, file targets, dependency graphs, and runtime metadata.',
+    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with commands, file targets, dependency graphs, and runtime metadata, using focused read-only inspection only when supplied context cannot confirm an execution detail.',
     details: WORKFLOW_PHASE_DETAILS.EXPANDING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',

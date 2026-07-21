@@ -134,6 +134,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Prevented truncated streaming-thinking previews from repeating the model header above their retained tail lines.
 - Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.
 - Removed the avoidable retry delay for deterministic setup failures by generating local retry notes for missing structured results and complete backend command failures.
 - Fixed workspace setup (`PREPARING_EXECUTION_ENV`) blocking and timing out when setup commands run system diagnostics (such as checking CPU architecture or reading `/etc/os-release` to provision toolchains) by adding absolute path glob patterns (`*`, `/*`, `/**/*`, `**`, and `**/.*`) to the default allow-all OpenCode permission rules.

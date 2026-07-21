@@ -249,13 +249,12 @@ function StreamingPreview({ entry, showModelName }: { entry: LogEntry; showModel
   // Build a synthetic entry for the first line to reuse tag/color rendering
   const firstLineEntry = { ...entry, line: lines[0]! }
   const tailText = lines.slice(1).join('\n')
-  const tailEntry = { ...entry, line: tailText }
 
   return (
     <div>
       <div>{renderLogLine(firstLineEntry, showModelName)}</div>
       <div className="text-muted-foreground/50 select-none text-xs py-0.5">{'···'}</div>
-      <div>{renderLogLine(tailEntry, showModelName)}</div>
+      <div>{tailText}</div>
     </div>
   )
 }

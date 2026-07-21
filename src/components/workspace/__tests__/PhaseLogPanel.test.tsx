@@ -638,6 +638,25 @@ describe('PhaseLogPanel', () => {
     expect(screen.getByText(/Checking whether the interview coverage is balanced/i)).toBeInTheDocument()
   })
 
+  it('shows the thinking header only once in a truncated streaming preview', () => {
+    const reasoningLines = Array.from({ length: 8 }, (_, index) => `Reasoning line ${index + 1}`)
+    const logs: LogEntry[] = [
+      makeLog('streaming-thinking', reasoningLines.join('\n'), {
+        source: 'model:opencode/big-pickle',
+        audience: 'ai',
+        kind: 'reasoning',
+        modelId: 'opencode/big-pickle',
+        streaming: true,
+        op: 'upsert',
+      }),
+    ]
+
+    renderWithTooltipProvider(<PhaseLogPanel phase="CODING" defaultTab="AI" logs={logs} />)
+
+    expect(screen.getAllByText('[THINKING-opencode/big-pickle]')).toHaveLength(1)
+    expect(screen.getByText(/Reasoning line 8/)).toBeInTheDocument()
+  })
+
   it('shows model-aware ERROR tags anywhere an AI error row is visible', () => {
     const logs: LogEntry[] = [
       {

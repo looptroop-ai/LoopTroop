@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
-- Scoped each bead's execution log to the selected iteration, added an opt-in all-logs view, and clarified iteration states.
+- Scoped each bead's execution log to the selected iteration, added a distinct all-iterations view, and clarified iteration states.
 - Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
 - Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
 - Kept Beads coverage focused on PRD completeness while allowing project-agnostic verification commands.
@@ -93,7 +93,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
-- Bead detail logs now show only entries from the selected iteration, with an opt-in **Show all logs for bead** view when multiple iterations exist; active iterations show **In progress** while older attempts without an explicit outcome show **Rejected**.
+- Bead detail logs now show only entries from the selected iteration, with an opt-in **Show all logs for bead** view when multiple iterations exist. The all-logs mode visibly deselects the iteration, and each iteration view is bounded by its own session start and the next retry so delayed old-session events cannot leak into another attempt; the list remounts on view changes so rows cannot persist between views. Active iterations show **In progress** while older attempts without an explicit outcome show **Rejected**.
 - Standardized visible AI log headers as `PROMPT`, `THINKING`, `TOOL`, and `OUTPUT`, each carrying the complete model ID while keeping persisted log tags compatible with existing diagnostics.
 - Full Answers, PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; council voting remains tool-disabled.
 - Interview drafting, refinement, live batched conversations, and coverage now have focused read-only repository inspection available after reviewing supplied context. They may confirm discoverable technical facts or decide whether a follow-up is necessary, but cannot infer stakeholder preferences, scope, priorities, desired behavior, or acceptance decisions; interview council voting remains tool-disabled.

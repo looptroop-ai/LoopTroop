@@ -818,6 +818,20 @@ describe('CodingView', () => {
   it('falls back to the current live input while a retry is running and keeps prior log output clickable', () => {
     const beadLogs: LogEntry[] = [
       {
+        id: 'session-1-created',
+        entryId: 'bead-1:1:created',
+        line: '[SYS] Coding session created for bead bead-1 attempt 1 (session=session-1).',
+        source: 'system',
+        status: 'CODING',
+        audience: 'all',
+        kind: 'milestone',
+        sessionId: 'session-1',
+        beadId: 'bead-1',
+        beadIteration: 1,
+        streaming: false,
+        op: 'append',
+      },
+      {
         id: 'prompt-1',
         entryId: 'session-1:prompt:1',
         line: '[PROMPT] openai/gpt-5.4 prompt #1\nprevious failed input',
@@ -848,6 +862,20 @@ describe('CodingView', () => {
         op: 'finalize',
       },
       {
+        id: 'session-2-created',
+        entryId: 'bead-1:2:created',
+        line: '[SYS] Coding session created for bead bead-1 attempt 2 (session=session-2).',
+        source: 'system',
+        status: 'CODING',
+        audience: 'all',
+        kind: 'milestone',
+        sessionId: 'session-2',
+        beadId: 'bead-1',
+        beadIteration: 2,
+        streaming: false,
+        op: 'append',
+      },
+      {
         id: 'prompt-2',
         entryId: 'session-2:prompt:1',
         line: '[PROMPT] openai/gpt-5.4 prompt #1\ncurrent retry input',
@@ -861,6 +889,20 @@ describe('CodingView', () => {
         beadIteration: 2,
         streaming: false,
         op: 'append',
+      },
+      {
+        id: 'late-old-event',
+        entryId: 'session-1:late-event',
+        line: '[SYS] delayed old event',
+        source: 'system',
+        status: 'CODING',
+        audience: 'all',
+        kind: 'milestone',
+        sessionId: 'session-1',
+        beadId: 'bead-1',
+        beadIteration: 1,
+        streaming: false,
+        op: 'finalize',
       },
     ]
     vi.mocked(useLogs).mockReturnValue({
@@ -898,6 +940,25 @@ describe('CodingView', () => {
     expect(screen.getByRole('button', { name: 'Output' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Output' }))
     expect(screen.getByText((content) => content.includes('previous failed output'))).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Iteration 2/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Log' }))
+    expect(screen.getByText((content) => content.includes('current retry input'))).toBeTruthy()
+    expect(screen.queryByText((content) => content.includes('previous failed input'))).toBeNull()
+
+    const showAllLogsButton = screen.getByRole('button', { name: 'Show all logs for bead' })
+    fireEvent.click(showAllLogsButton)
+
+    expect(showAllLogsButton).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /Iteration 1/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: /Iteration 2/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByText((content) => content.includes('previous failed input'))).toBeTruthy()
+    expect(screen.getByText((content) => content.includes('current retry input'))).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Iteration 1/ }))
+    expect(screen.queryByText((content) => content.includes('current retry input'))).toBeNull()
+    expect(screen.getByText((content) => content.includes('previous failed input'))).toBeTruthy()
+    expect(screen.queryByText((content) => content.includes('delayed old event'))).toBeNull()
   })
 
   it('uses log-derived output as a fallback when a persisted attempt only has input', () => {

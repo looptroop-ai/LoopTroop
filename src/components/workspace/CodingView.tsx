@@ -597,6 +597,22 @@ function buildLogDerivedRawAttempts(entries: LogEntry[], fallbackIteration: numb
   return Array.from(byIteration.values())
 }
 
+const CODING_SESSION_START_PATTERN = /Coding session created for bead\s+.+?\s+attempt\s+(\d+)\s+\(session=/i
+
+function getIterationLogBounds(entries: LogEntry[], iteration: number): { start: number; end: number } | null {
+  const start = entries.findIndex((entry) => Number(entry.line.match(CODING_SESSION_START_PATTERN)?.[1]) === iteration)
+  if (start < 0) return null
+
+  const endOffset = entries
+    .slice(start + 1)
+    .findIndex((entry) => Number(entry.line.match(CODING_SESSION_START_PATTERN)?.[1]) > iteration)
+
+  return {
+    start,
+    end: endOffset < 0 ? entries.length : start + 1 + endOffset,
+  }
+}
+
 function mergeRawAttempts(persisted: BeadRawAttempt[], logDerived: BeadRawAttempt[]): BeadRawAttempt[] {
   const byIteration = new Map<number, BeadRawAttempt>()
 
@@ -1227,9 +1243,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const selectedBeadLogEntries = useMemo(() => {
     if (showAllBeadLogs || !activeRawAttempt) return beadLogEntries
 
-    const entriesForIteration = beadLogEntries.filter(
-      (entry) => entry.beadIteration === activeRawAttempt.iteration,
-    )
+    const iterationBounds = getIterationLogBounds(beadLogEntries, activeRawAttempt.iteration)
+    const entriesForIteration = beadLogEntries.filter((entry, index) => {
+      if (entry.beadIteration !== undefined && entry.beadIteration !== activeRawAttempt.iteration) return false
+      return !iterationBounds || (index >= iterationBounds.start && index < iterationBounds.end)
+    })
     // Older logs may not carry iteration metadata. Keep them visible when
     // there is only one known iteration, but do not mix them into a view with
     // multiple iterations where their origin cannot be determined safely.
@@ -1237,6 +1255,9 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     return beadLogEntries
   }, [activeRawAttempt, beadLogEntries, beadRawAttempts.length, showAllBeadLogs])
   const hasMultipleBeadIterations = beadRawAttempts.length > 1
+  const beadLogViewKey = showAllBeadLogs
+    ? `${viewedBead?.id ?? 'none'}:all`
+    : `${viewedBead?.id ?? 'none'}:${activeRawAttempt?.iteration ?? 'none'}`
   const activeIterationForLabel = viewedBead?.status === 'in_progress'
     ? viewedBead.iteration
     : ticket.runtime.activeBeadId === viewedBead?.id
@@ -1414,7 +1435,15 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     <button
                       type="button"
                       aria-pressed={showAllBeadLogs}
-                      onClick={() => setShowAllBeadLogs((current) => !current)}
+                      onClick={() => {
+                        if (showAllBeadLogs) {
+                          setShowAllBeadLogs(false)
+                          setSelectedRawIteration(defaultRawAttemptKey)
+                          return
+                        }
+                        setSelectedRawIteration(null)
+                        setShowAllBeadLogs(true)
+                      }}
                       className={cn(
                         'rounded border px-2 py-1 transition-colors',
                         showAllBeadLogs
@@ -1462,7 +1491,9 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                 <div role="group" aria-label="Bead raw versions" className="flex min-w-0 flex-wrap gap-1">
                   {beadRawAttempts.map((attempt) => {
                     const key = getRawAttemptKey(attempt)
-                    const active = activeRawAttempt ? getRawAttemptKey(activeRawAttempt) === key : false
+                    const active = !showAllBeadLogs && activeRawAttempt
+                      ? getRawAttemptKey(activeRawAttempt) === key
+                      : false
                     const label = `Iteration ${attempt.iteration}`
                     const outcomeLabel = getRawAttemptOutcome(attempt)
                       ? formatRawAttemptOutcome(attempt)
@@ -1500,7 +1531,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
             {detailTab === 'model' ? (
               <div className="relative flex-1 min-h-0 flex flex-col">
-                <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
+                <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
                   <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
                     {selectedBeadLogEntries.length > 0 ? (
                       selectedBeadLogEntries.map((entry, i) => (

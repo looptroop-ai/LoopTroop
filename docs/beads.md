@@ -271,7 +271,7 @@ Important consequences:
 3. **Create or reattach session** - own the OpenCode session for that bead iteration.
 4. **Prompt** - send the coding prompt and watch OpenCode stream/status events.
 5. **Enforce structured completion** - require a valid `<BEAD_STATUS>` marker instead of trusting free-form prose.
-6. **Verify declared commands** - while the session remains open, run every repository-provided `testCommands` entry sequentially through the setup wrapper and within the same iteration deadline. Each failure records its outcome class, effective command, exit/signal state, and bounded output excerpt.
+6. **Verify declared commands** - while the session remains open, run every repository-provided `testCommands` entry sequentially through the setup wrapper and within the same iteration deadline. Each failure records its effective command, exit/signal state, and bounded output excerpt.
 7. **Retry inside the session when safe** - send malformed markers, reported incomplete gates, or deterministic command failures back to the same session while time remains.
 8. **Persist checkpoint** - write `bead_execution:{beadId}` with the execution result, verification receipts, and checkpoint metadata.
 9. **Finalize locally** - create the bead commit when Git-visible project changes exist, or record a true no-op completion.
@@ -320,7 +320,6 @@ That prevents the executor from confusing formatting errors with genuine impleme
 Declared command failures are recorded in the `bead_execution:{beadId}` artifact and included in the corrective prompt with:
 
 - the declared command and effective setup-wrapped command;
-- a generic failure class (`process_start`, `exit`, `signal`, or `timeout`);
 - exit code, signal, and duration where available; and
 - a bounded, ANSI-stripped output excerpt from stdout and stderr.
 

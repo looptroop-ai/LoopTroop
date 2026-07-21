@@ -81,7 +81,6 @@ export interface BeadVerificationCommandReceipt {
   signal: NodeJS.Signals | null
   timedOut: boolean
   passed: boolean
-  failureClass?: 'process_start' | 'timeout' | 'exit' | 'signal'
   outputExcerpt: string
 }
 
@@ -169,7 +168,6 @@ function buildVerificationFailurePrompt(beadId: string, receipt: BeadVerificatio
       `Bead: ${beadId}`,
       `Command: ${receipt.command}`,
       `Result: ${outcome}`,
-      receipt.failureClass ? `Failure class: ${receipt.failureClass}` : '',
       receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
       receipt.signal ? `Signal: ${receipt.signal}` : '',
       '',
@@ -192,13 +190,6 @@ function toVerificationReceipt(
   commandIndex: number,
 ): BeadVerificationCommandReceipt {
   const combinedOutput = stripAnsiSequences([result.stdout, result.stderr].filter(Boolean).join('\n')).trim()
-  const failureClass = result.timedOut
-    ? 'timeout'
-    : result.exitCode !== null
-      ? 'exit'
-      : result.signal
-        ? 'signal'
-        : 'process_start'
   return {
     command: result.command,
     iteration,
@@ -211,7 +202,6 @@ function toVerificationReceipt(
     signal: result.signal,
     timedOut: result.timedOut,
     passed: result.exitCode === 0 && !result.timedOut,
-    ...(!(result.exitCode === 0 && !result.timedOut) ? { failureClass } : {}),
     outputExcerpt: truncateForNote(combinedOutput, EXECUTOR_DETAIL_TRUNCATION_LENGTH),
   }
 }
@@ -226,7 +216,6 @@ function formatVerificationFailure(receipt: BeadVerificationCommandReceipt): str
         : `exited with code ${receipt.exitCode}`
   const details = [
     `Declared test command ${outcome}: ${receipt.command}`,
-    receipt.failureClass ? `Failure class: ${receipt.failureClass}` : '',
     receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
     receipt.outputExcerpt ? `Output excerpt: ${receipt.outputExcerpt}` : 'Output excerpt: no command output was captured.',
   ].filter(Boolean)

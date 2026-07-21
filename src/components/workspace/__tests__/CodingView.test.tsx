@@ -645,11 +645,11 @@ describe('CodingView', () => {
     expect(writeTextMock).toHaveBeenCalled()
     const copiedText = writeTextMock.mock.calls[0]?.[0]
     expect(copiedText).toContain('[CMD] $ git status')
-    expect(copiedText).toContain('[PROMPT] openai/gpt-5.4 prompt #1')
+    expect(copiedText).toContain('[PROMPT-openai/gpt-5.4] Prompt #1')
 
     expect(screen.getByText((content) => content.includes('git status'))).toBeTruthy()
     expect(screen.getByText((content) => content.includes('ok'))).toBeTruthy()
-    expect(screen.getByText((content) => content.includes('prompt #1'))).toBeTruthy()
+    expect(screen.getByText((content) => content.includes('Prompt #1'))).toBeTruthy()
     expect(screen.getByText(/Checking the failing test output/)).toBeTruthy()
     expect(screen.queryByText(/hidden debug row/)).toBeNull()
   })
@@ -680,7 +680,7 @@ describe('CodingView', () => {
     expect(changesTab.parentElement).toHaveAttribute('title', 'Captured code diff for this bead. Available after the bead is done or skipped.')
     expect(logTab.parentElement).toHaveAttribute('title', 'Bead-scoped execution transcript.')
     expect(inputTab.parentElement).toHaveAttribute('title', 'Raw initial prompt sent for the selected bead iteration.')
-    expect(outputTab.parentElement).toHaveAttribute('title', 'Final model response or captured diagnostic for the selected bead iteration.')
+    expect(outputTab.parentElement).toHaveAttribute('title', 'Final model response or diagnostic for the selected bead iteration.')
   })
 
   it('renders bead raw Input with copy and raw stats from execution attempts', () => {
@@ -757,7 +757,7 @@ describe('CodingView', () => {
 
     expect(screen.getByRole('button', { name: 'Output' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Input' }))
-    expect(screen.getByText('No raw input captured for this bead yet.')).toBeTruthy()
+    expect(screen.getByText('No raw input for this bead yet.')).toBeTruthy()
   })
 
   it('defaults to the latest meaningful raw output and keeps failed previous versions clickable', () => {

@@ -414,7 +414,7 @@ const BEAD_TAB_TOOLTIPS: Record<BeadDetailTab, string> = {
   changes: 'Captured code diff for this bead. Available after the bead is done or skipped.',
   model: 'Bead-scoped execution transcript.',
   input: 'Raw initial prompt sent for the selected bead iteration.',
-  output: 'Final model response or captured diagnostic for the selected bead iteration.',
+  output: 'Final model response or diagnostic for the selected bead iteration.',
 }
 
 function normalizeRawAttemptNumber(value: unknown, fallback: number): number {
@@ -432,7 +432,7 @@ function getRawAttemptOutcome(attempt: Pick<BeadRawAttempt, 'outcome' | 'status'
 
 function formatRawAttemptOutcome(attempt: Pick<BeadRawAttempt, 'outcome' | 'status'>): string {
   const outcome = getRawAttemptOutcome(attempt)
-  if (!outcome) return 'Captured'
+  if (!outcome) return 'In progress'
   if (outcome === 'timed_out' || outcome === 'timed-out' || outcome === 'timeout') return 'Timed out'
   if (outcome === 'invalid_output') return 'Rejected'
   return outcome
@@ -954,7 +954,7 @@ function BeadRawAttemptPanel({
         </div>
       ) : (
         <div className="rounded-md border border-dashed border-border bg-background/60 p-4 text-xs text-muted-foreground">
-          {emptyMessage || `No raw ${mode} captured for this bead yet.`}
+          {emptyMessage || `No raw ${mode} for this bead yet.`}
         </div>
       )}
     </div>
@@ -1222,6 +1222,18 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
   const activeRawInput = getRawAttemptInput(activeRawAttempt)
   const activeRawOutput = getRawAttemptOutput(activeRawAttempt)
+  const selectedBeadLogEntries = useMemo(() => {
+    if (!activeRawAttempt) return beadLogEntries
+
+    const entriesForIteration = beadLogEntries.filter(
+      (entry) => entry.beadIteration === activeRawAttempt.iteration,
+    )
+    // Older logs may not carry iteration metadata. Keep them visible when
+    // there is only one known iteration, but do not mix them into a view with
+    // multiple iterations where their origin cannot be determined safely.
+    if (entriesForIteration.length > 0 || beadRawAttempts.length > 1) return entriesForIteration
+    return beadLogEntries
+  }, [activeRawAttempt, beadLogEntries, beadRawAttempts.length])
   const outputContextIsTerminal = isRawAttemptTerminal(activeRawAttempt, viewedBead)
     || ticket.status === 'CANCELED'
     || ticket.status === 'BLOCKED_ERROR'
@@ -1247,19 +1259,19 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
   const [copied, copyToClipboard] = useCopyToClipboard()
   const handleCopyLogs = useCallback(() => {
-    if (!beadLogEntries.length) return
-    const textToCopy = beadLogEntries.map((entry) => {
+    if (!selectedBeadLogEntries.length) return
+    const textToCopy = selectedBeadLogEntries.map((entry) => {
       const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
       return `${ts}${formatLogLine(entry, true).copyText}`
     }).join('\n')
     copyToClipboard(textToCopy)
-  }, [beadLogEntries, copyToClipboard])
+  }, [copyToClipboard, selectedBeadLogEntries])
   
   useEffect(() => {
     if (detailTab === 'model' && autoScrollEnabledRef.current) {
       scheduleScrollToBottom('smooth')
     }
-  }, [beadLogEntries.length, detailTab, scheduleScrollToBottom])
+  }, [detailTab, scheduleScrollToBottom, selectedBeadLogEntries.length])
 
   const isViewingOther = viewedBead !== null
 
@@ -1396,7 +1408,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                         type="button"
                         className="flex items-center cursor-help px-1 py-0.5 rounded hover:bg-muted transition-colors border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
                       >
-                        <span>{beadLogEntries.length} entries</span>
+                        <span>{selectedBeadLogEntries.length} entries</span>
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top" align="end" className="flex flex-col gap-1.5 p-2 bg-popover text-popover-foreground border border-border font-medium shadow-md">
@@ -1409,7 +1421,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                         type="button"
                         aria-label="Copy bead logs"
                         onClick={handleCopyLogs}
-                        disabled={beadLogEntries.length === 0}
+                        disabled={selectedBeadLogEntries.length === 0}
                         className="flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1462,8 +1474,8 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
               <div className="relative flex-1 min-h-0 flex flex-col">
                 <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
                   <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
-                    {beadLogEntries.length > 0 ? (
-                      beadLogEntries.map((entry, i) => (
+                    {selectedBeadLogEntries.length > 0 ? (
+                      selectedBeadLogEntries.map((entry, i) => (
                         <LogEntryRow key={entry.entryId} entry={entry} index={i} showModelName />
                       ))
                     ) : (
@@ -1471,7 +1483,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     )}
                   </div>
                 </ScrollArea>
-                {beadLogEntries.length > 0 && !isAtTop && (
+                {selectedBeadLogEntries.length > 0 && !isAtTop && (
                   <Tooltip delayDuration={300}>
                     <TooltipTrigger asChild>
                       <button
@@ -1485,7 +1497,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     <TooltipContent side="left" className="text-xs">Go to top</TooltipContent>
                   </Tooltip>
                 )}
-                {beadLogEntries.length > 0 && !isAutoScroll && (
+                {selectedBeadLogEntries.length > 0 && !isAutoScroll && (
                   <Tooltip delayDuration={300}>
                     <TooltipTrigger asChild>
                       <button
@@ -1509,14 +1521,14 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                 mode="input"
                 attempt={activeRawAttempt}
                 content={activeRawInput}
-                emptyMessage="No raw input captured for this bead yet."
+                emptyMessage="No raw input for this bead yet."
               />
             ) : detailTab === 'output' ? (
               <BeadRawAttemptPanel
                 mode="output"
                 attempt={activeRawAttempt}
                 content={outputTabEnabled ? activeRawOutput : ''}
-                emptyMessage="No model output captured for this bead yet."
+                emptyMessage="No model output for this bead yet."
               />
             ) : detailTab === 'changes' && changesTabEnabled ? (
               <div className="flex-1 min-h-0 overflow-auto">

@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
 - Made workspace setup preserve prepared tool environments, reject repository-incompatible commands, and begin deterministic retries without avoidable AI-note delays.
 - Expanded OpenCode session-scoped permission rules to match absolute paths, preventing workspace setup and tool provisioning from blocking on system read commands.
 - Added an explicit default None choice to model effort controls so providers keep their native effort behavior until you select an override.
@@ -88,6 +89,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Structured coverage parsing now preserves a complete, schema-valid YAML artifact when only an orphan closing code fence and trailing commentary follow it; the UI records the exact lossless repair.
 - Preparing Workspace Runtime now detects and records its canonical command wrapper, applies it consistently to independent probes and later commands, and reports visible failure-analysis and structured-correction milestones.
 - Execution setup planning and Beads prompts now require commands to match actual manifests, scripts, build files, task declarations, or repository-local executables instead of assuming a familiar ecosystem.
 - Model effort pickers now include **None** as the selected default whenever no named override is set, including legacy saved `none` selections; choosing it clears the override for both the main implementer and council members.

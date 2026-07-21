@@ -396,6 +396,19 @@ describe('repairYamlDoubleQuotedInvalidEscapes', () => {
     ])
   })
 
+  it('preserves grep alternation text while repairing its invalid YAML escape', () => {
+    const input = [
+      'required_commands:',
+      '  - "grep -rn \'rgb\\|rgba\\|#[0-9a-fA-F]\' src/ --include=\'*.css\'"',
+    ].join('\n')
+
+    const repaired = repairYamlDoubleQuotedInvalidEscapes(input)
+
+    expect(jsYaml.load(repaired)).toEqual({
+      required_commands: ["grep -rn 'rgb\\|rgba\\|#[0-9a-fA-F]' src/ --include='*.css'"],
+    })
+  })
+
   it('preserves valid YAML escapes and quoted content that YAML already accepts', () => {
     const input = [
       'values:',

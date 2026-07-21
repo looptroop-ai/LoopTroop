@@ -2518,6 +2518,24 @@ describe.concurrent('structured output normalization', () => {
     expect(result.value.followUpQuestions[0]?.id).toBe('FU1')
   })
 
+  it('recovers a complete coverage artifact before an orphan closing fence and commentary', () => {
+    const result = normalizeCoverageResultOutput([
+      'status: clean',
+      'gaps: []',
+      'follow_up_questions: []',
+      '```',
+      'All source answers are covered by the artifact above.',
+    ].join('\n'))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value).toEqual({ status: 'clean', gaps: [], followUpQuestions: [] })
+    expect(result.repairApplied).toBe(true)
+    expect(result.repairWarnings).toContain(
+      'Trimmed an orphan trailing closing code fence and commentary after the complete coverage artifact.',
+    )
+  })
+
   it('normalizes string-based coverage follow-up questions', () => {
     const result = normalizeCoverageResultOutput([
       'status: gaps',

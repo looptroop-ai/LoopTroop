@@ -1739,10 +1739,36 @@ function parseCoverageResultCandidate(candidate: string): {
   }
 }
 
+const ORPHAN_CLOSING_FENCE_WITH_COMMENTARY_WARNING =
+  'Trimmed an orphan trailing closing code fence and commentary after the complete coverage artifact.'
+
+/**
+ * Some models return a complete coverage envelope, then close a fence they never
+ * opened and continue with prose. The prefix is safe to recover only when the
+ * fence is top-level and there is no earlier opening fence in the candidate.
+ */
+function extractCoverageArtifactBeforeOrphanFence(rawContent: string): string | null {
+  const lines = rawContent.trim().split('\n')
+  const fenceIndex = lines.findIndex((line) => /^```\s*$/.test(line.trim()))
+  if (fenceIndex <= 0) return null
+
+  const prefix = lines.slice(0, fenceIndex)
+  if (prefix.some((line) => /^```(?:yaml|yml|json|jsonl)?\s*$/i.test(line.trim()))) {
+    return null
+  }
+
+  const candidate = prefix.join('\n').trim()
+  return candidate || null
+}
+
 export function normalizeCoverageResultOutput(rawContent: string): StructuredOutputResult<CoverageResultEnvelope> {
-  const candidates = collectStructuredCandidates(rawContent, {
+  const structuredCandidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['status', 'gaps', 'follow_up_questions', 'followUpQuestions'],
   })
+  const orphanFenceCandidate = extractCoverageArtifactBeforeOrphanFence(rawContent)
+  const candidates = orphanFenceCandidate && !structuredCandidates.includes(orphanFenceCandidate)
+    ? [...structuredCandidates, orphanFenceCandidate]
+    : structuredCandidates
   let lastError = 'No coverage result content found'
   let lastErrorCause: unknown = null
 
@@ -1753,6 +1779,9 @@ export function normalizeCoverageResultOutput(rawContent: string): StructuredOut
     try {
       const normalized = parseCoverageResultCandidate(candidate)
       appendStructuredCandidateRecoveryWarning(normalized.repairWarnings, rawContent, candidate)
+      if (candidate === orphanFenceCandidate) {
+        normalized.repairWarnings.push(ORPHAN_CLOSING_FENCE_WITH_COMMENTARY_WARNING)
+      }
 
       return {
         ok: true,

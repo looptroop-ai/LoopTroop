@@ -47,7 +47,7 @@ The Full Answers artifact keeps the approved interview structure intact, includi
 - summary and approval metadata
 - every non-skipped user answer exactly as approved
 
-The model may change only the answer blocks for skipped questions. When it fills one in, LoopTroop marks it with `answered_by: ai_skip`, flips `answer.skipped` to `false`, and stores the inferred answer in the same artifact shape as a real answer. For choice questions, the model must reuse existing option IDs and may add concise free text only when the selected option needs nuance.
+The model may change only the answer blocks for skipped questions. When it fills one in, LoopTroop marks it with `answered_by: ai_skip`, flips `answer.skipped` to `false`, and stores the inferred answer in the same artifact shape as a real answer. For choice questions, the model must reuse existing option IDs and may add concise free text only when the selected option needs nuance. If supplied context cannot confirm a needed technical fact, it may inspect the smallest relevant repository area read-only; it does not use repository contents to overwrite approved user answers or infer stakeholder decisions.
 
 If no skipped answers exist, LoopTroop can synthesize the Full Answers artifact without making another model call.
 

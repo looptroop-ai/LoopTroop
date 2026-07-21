@@ -67,7 +67,6 @@ describe.concurrent('structured prompt hardening', () => {
   it('grants focused read-only tools to planning and interview prompts that need conditional repository inspection', () => {
     for (const prompt of [
       PROM2,
-      PROM10a,
       PROM11,
       PROM21,
       PROM51,
@@ -82,6 +81,7 @@ describe.concurrent('structured prompt hardening', () => {
       PROM3,
       PROM4,
       PROM5,
+      PROM10a,
       PROM10b,
       PROM12,
       PROM13,
@@ -116,6 +116,7 @@ describe.concurrent('structured prompt hardening', () => {
       PROM3,
       PROM4,
       PROM5,
+      PROM10a,
       PROM10b,
       PROM12,
       PROM13,
@@ -193,6 +194,8 @@ describe.concurrent('structured prompt hardening', () => {
   it('keeps PROM10a strict about preserving user answers and outputting only a full interview artifact', () => {
     const gapPrompt = buildPromptFromTemplate(PROM10a, [])
     expect(gapPrompt).toContain('The approved Interview Results artifact is already included in the prompt')
+    expect(gapPrompt).toContain('Conditional Repository Inspection:')
+    expect(gapPrompt).toContain('Use inspection only to confirm a technical fact needed for a skipped answer')
     expect(gapPrompt).toContain('Preserve every existing non-skipped answer exactly as-is')
     expect(gapPrompt).toContain('The only fields you may change are `questions[*].answer`')
     expect(gapPrompt).toContain('provide a concrete `free_text` and/or `selected_option_ids`')

@@ -95,7 +95,7 @@ Prompt templates choose from four OpenCode tool policies:
 
 That policy layer is applied per prompt at the `runOpenCodePrompt()` / `runOpenCodeSessionPrompt()` boundary. For the prompt-to-policy mapping, see [Prompt Inventory](prompts.md).
 
-Planning prompts that can make or preserve repository-specific claims use `read_only` selectively: they review their supplied context first and inspect the repository only when they need concrete evidence. This covers PRD and beads drafting, refinement, and coverage, plus blueprint expansion. Full Answers, interviews, and council voting remain tool-disabled; no planning prompt receives shell execution or mutation tools through this policy.
+Planning prompts that can make or preserve repository-specific claims use `read_only` selectively: they review their supplied context first and inspect the repository only when they need concrete evidence. This covers Full Answers, PRD and beads drafting, refinement, and coverage, plus blueprint expansion and the non-voting interview workflow. Council voting remains tool-disabled; no planning prompt receives shell execution or mutation tools through this policy.
 
 ## 5. Session Ownership
 

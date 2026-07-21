@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OpenCodeAdapter } from '../../../opencode/adapter'
-import { OPENCODE_DISABLED_TOOLS, OPENCODE_READ_ONLY_TOOLS } from '../../../opencode/toolPolicy'
+import { OPENCODE_READ_ONLY_TOOLS } from '../../../opencode/toolPolicy'
 import type {
   HealthStatus,
   Message,
@@ -821,7 +821,7 @@ describe.concurrent('draftPRD', () => {
     expect(fullAnswerRetryMessages[0]?.content).toContain('Stop immediately after the final approval block')
     expect(fullAnswerRetryMessages[0]?.content).not.toContain('Do not change `follow_up_rounds`, `summary`, or approval fields.')
     expect(adapter.messages.get('mock-session-2')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
-    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_DISABLED_TOOLS)
+    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_READ_ONLY_TOOLS)
   })
 
   it('restarts full answers in a fresh session when the model leaves skipped questions unanswered', async () => {

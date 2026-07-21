@@ -253,7 +253,7 @@ The state machine metadata directly drives the React user interface. Developers 
 - **`WAITING_INTERVIEW_APPROVAL`:** Gatekeeper review. The user approves the structured YAML specs with content-hash protection (`expectedContentSha256` matching check). The editable draft visibly autosaves across reloads, but the user must click **Save** to apply it to the authoritative interview artifact and trigger downstream effects.
 
 ### Specs Loop (PRD)
-- **`DRAFTING_PRD`:** Models resolve skipped questions into a Full Answers artifact (`answered_by: ai_skip`), then draft comprehensive feature requirements. PRD drafting can use focused read-only inspection only when relevant files cannot substantiate a repository-specific claim.
+- **`DRAFTING_PRD`:** Models resolve skipped questions into a Full Answers artifact (`answered_by: ai_skip`), then draft comprehensive feature requirements. Full Answers and PRD drafting can use focused read-only inspection only when relevant files cannot substantiate a needed repository-specific technical fact.
 - **`COUNCIL_VOTING_PRD`:** Anonymized votes are cast on rival PRD drafts based on completeness, risk, and feasibility metrics.
 - **`REFINING_PRD`:** The winner incorporates the strongest elements from competing drafts into PRD Candidate v1, using focused read-only inspection only when concrete repository evidence is needed.
 - **`VERIFYING_PRD_COVERAGE`:** The candidate PRD is audited against the approved Full Answers context, revising in-phase until clean or capped; audit and revision can inspect the repository read-only when needed to confirm repository-specific claims.

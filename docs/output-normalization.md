@@ -91,11 +91,13 @@ Model output piped through a terminal or TTY can accumulate ANSI escape sequence
 
 #### Orphan closing code fence
 
-**Trigger:** A candidate ends with a lone ` ``` ` line but has no matching opening ` ```yaml ` / ` ```json ` fence above it.
+**Trigger:** A candidate ends with a lone ` ``` ` line, or a complete coverage YAML artifact is followed by a lone top-level ` ``` ` line and commentary, but has no matching opening ` ```yaml ` / ` ```json ` fence above it.
 
-**Repair:** The orphan closing fence is stripped.
+**Repair:** The orphan closing fence is stripped. For coverage results, LoopTroop may also retain the prefix before that fence when it independently parses as a complete coverage envelope (`status`, `gaps`, and `follow_up_questions`); the following commentary is then removed. This recovery never fills missing fields or changes any parsed artifact value.
 
-**Warning:** *Trimmed orphan trailing closing code fence after the structured artifact.*
+**Warnings:**
+- *Trimmed orphan trailing closing code fence after the structured artifact.*
+- *Trimmed an orphan trailing closing code fence and commentary after the complete coverage artifact.*
 
 ---
 
@@ -427,7 +429,7 @@ The durable `interview.yaml` artifact also applies a few root-level canonicaliza
 
 **Coverage gap string list quoting**
 
-When the coverage checker returns a list of gap strings, each item is wrapped in double quotes to prevent YAML from coercing values like `true`, `null`, or values containing `: `. If the checker omits only the `- ` list markers from direct, complete quoted entries under `gaps:` or `issues:`, LoopTroop restores those markers without changing the quoted text. This coverage-only repair never applies to mappings, plain prose, nested content, or follow-up questions.
+When the coverage checker returns a list of gap strings, each item is wrapped in double quotes to prevent YAML from coercing values like `true`, `null`, or values containing `: `. If the checker omits only the `- ` list markers from direct, complete quoted entries under `gaps:` or `issues:`, LoopTroop restores those markers without changing the quoted text. If a complete coverage envelope is followed only by an orphan closing fence and model commentary, LoopTroop keeps the validated envelope and removes that non-artifact suffix. These coverage-only repairs never apply to mappings, plain prose, nested content, or follow-up questions.
 
 Coverage revision metadata must reference each provided gap. PRD and beads coverage accept exact references first; if a model only changes harmless formatting such as quote style, escaped quote/backtick spelling, or whitespace, the reference is canonicalized back to the provided gap text and a repair warning is recorded.
 

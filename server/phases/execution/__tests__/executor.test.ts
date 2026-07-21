@@ -142,10 +142,12 @@ describe('executeBead', () => {
       expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['mock-session-1', 'mock-session-1'])
       expect(adapter.promptCalls[1]?.parts[0]?.content).toContain('Deterministic Test Verification Failed')
       expect(result.verificationCommands).toMatchObject([
-        { command: statefulCommand, passed: false, exitCode: 1, timedOut: false },
+        { command: statefulCommand, passed: false, exitCode: 1, timedOut: false, failureClass: 'exit' },
         { command: statefulCommand, passed: true, exitCode: 0, timedOut: false },
       ])
       expect(rawVerificationOutputs[0]?.stderr).toContain('full raw verification failure')
+      expect(adapter.promptCalls[1]?.parts[0]?.content).toContain('Failure class: exit')
+      expect(adapter.promptCalls[1]?.parts[0]?.content).toContain('full raw verification failure')
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }

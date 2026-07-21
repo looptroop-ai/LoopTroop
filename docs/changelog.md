@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Improved bead failure diagnostics so command failures and coding timeouts retain actionable execution context.
 - Scoped each bead's execution log to the selected iteration, added a distinct all-iterations view, and clarified iteration states.
 - Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
 - Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
@@ -68,6 +69,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added failure classes, effective commands, and bounded output excerpts to deterministic bead verification diagnostics.
 - Added ticket-level Git-hook policy overrides, start-time inheritance locks, and contextual documentation links in Configuration, Project Advanced settings, new-ticket Advanced settings, and the Draft workspace.
 - Added three explicit existing-project attachment actions: restore all state, retain project settings while clearing every ticket, or delete `.looptroop` and start fresh. Destructive actions include active-ticket warnings, a keep/delete comparison, and a required confirmation.
 - Added support for OpenRouter routing modifiers (such as `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`) in model configuration and validation, with a dedicated selector in the configuration profile setup.
@@ -137,6 +139,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Fixed bead iteration failures that previously surfaced only as a generic missing completion-marker message by recording explicit coding timeouts and command failure details.
 - Prevented truncated streaming-thinking previews from repeating the model header above their retained tail lines.
 - Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.
 - Removed the avoidable retry delay for deterministic setup failures by generating local retry notes for missing structured results and complete backend command failures.

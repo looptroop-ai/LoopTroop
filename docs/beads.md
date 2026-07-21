@@ -271,7 +271,7 @@ Important consequences:
 3. **Create or reattach session** - own the OpenCode session for that bead iteration.
 4. **Prompt** - send the coding prompt and watch OpenCode stream/status events.
 5. **Enforce structured completion** - require a valid `<BEAD_STATUS>` marker instead of trusting free-form prose.
-6. **Verify declared commands** - while the session remains open, run every repository-provided `testCommands` entry sequentially through the setup wrapper and within the same iteration deadline.
+6. **Verify declared commands** - while the session remains open, run every repository-provided `testCommands` entry sequentially through the setup wrapper and within the same iteration deadline. Each failure records its outcome class, effective command, exit/signal state, and bounded output excerpt.
 7. **Retry inside the session when safe** - send malformed markers, reported incomplete gates, or deterministic command failures back to the same session while time remains.
 8. **Persist checkpoint** - write `bead_execution:{beadId}` with the execution result, verification receipts, and checkpoint metadata.
 9. **Finalize locally** - create the bead commit when Git-visible project changes exist, or record a true no-op completion.
@@ -304,7 +304,7 @@ Each bead attempt must end with exactly one `<BEAD_STATUS>...</BEAD_STATUS>` blo
 - `checks.typecheck`
 - `checks.qualitative`
 
-If the output is malformed or missing the marker, LoopTroop does **not** guess. It sends a structured retry reminder that asks for the exact schema again.
+If the output is malformed or missing the marker, LoopTroop does **not** guess. It sends a structured retry reminder that asks for the exact schema again. If the workflow deadline expires before a marker or deterministic verification is complete, the failure is recorded explicitly as an iteration timeout rather than being reduced to a generic missing-marker message.
 
 If the marker shape is valid but the bead is still incomplete, LoopTroop sends a continuation reminder instructing the agent to keep editing, rerun the failing checks, and only return once the bead is actually complete. A valid all-pass marker is still only a candidate: LoopTroop executes the bead's declared test commands itself, records command receipts, and sends the first deterministic failure back into the same session. Verification consumes the same per-iteration deadline, so a session that cannot repair the repository before the deadline follows the normal Ralph reset and fresh-session path.
 
@@ -314,6 +314,17 @@ This two-stage enforcement matters:
 - **keep-working path** for valid-but-incomplete output
 
 That prevents the executor from confusing formatting errors with genuine implementation failure.
+
+### Verification Failure Diagnostics
+
+Declared command failures are recorded in the `bead_execution:{beadId}` artifact and included in the corrective prompt with:
+
+- the declared command and effective setup-wrapped command;
+- a generic failure class (`process_start`, `exit`, `signal`, or `timeout`);
+- exit code, signal, and duration where available; and
+- a bounded, ANSI-stripped output excerpt from stdout and stderr.
+
+This keeps command execution language-agnostic while making project-specific failures—such as unsupported flags, missing tools, or service startup errors—actionable without requiring LoopTroop to infer how the project should be run.
 
 ---
 

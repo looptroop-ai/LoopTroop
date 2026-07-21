@@ -81,6 +81,7 @@ export interface BeadVerificationCommandReceipt {
   signal: NodeJS.Signals | null
   timedOut: boolean
   passed: boolean
+  failureClass?: 'process_start' | 'timeout' | 'exit' | 'signal'
   outputExcerpt: string
 }
 
@@ -168,6 +169,9 @@ function buildVerificationFailurePrompt(beadId: string, receipt: BeadVerificatio
       `Bead: ${beadId}`,
       `Command: ${receipt.command}`,
       `Result: ${outcome}`,
+      receipt.failureClass ? `Failure class: ${receipt.failureClass}` : '',
+      receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
+      receipt.signal ? `Signal: ${receipt.signal}` : '',
       '',
       'LoopTroop ran this declared bead test command independently. The bead is not complete yet.',
       'Inspect this real failure, fix it, rerun the relevant checks, and continue working in this same session.',
@@ -188,6 +192,13 @@ function toVerificationReceipt(
   commandIndex: number,
 ): BeadVerificationCommandReceipt {
   const combinedOutput = stripAnsiSequences([result.stdout, result.stderr].filter(Boolean).join('\n')).trim()
+  const failureClass = result.timedOut
+    ? 'timeout'
+    : result.exitCode !== null
+      ? 'exit'
+      : result.signal
+        ? 'signal'
+        : 'process_start'
   return {
     command: result.command,
     iteration,
@@ -200,8 +211,26 @@ function toVerificationReceipt(
     signal: result.signal,
     timedOut: result.timedOut,
     passed: result.exitCode === 0 && !result.timedOut,
+    ...(!(result.exitCode === 0 && !result.timedOut) ? { failureClass } : {}),
     outputExcerpt: truncateForNote(combinedOutput, EXECUTOR_DETAIL_TRUNCATION_LENGTH),
   }
+}
+
+function formatVerificationFailure(receipt: BeadVerificationCommandReceipt): string {
+  const outcome = receipt.timedOut
+    ? `timed out after ${receipt.durationMs}ms`
+    : receipt.signal
+      ? `terminated by ${receipt.signal}`
+      : receipt.exitCode === null
+        ? 'could not start'
+        : `exited with code ${receipt.exitCode}`
+  const details = [
+    `Declared test command ${outcome}: ${receipt.command}`,
+    receipt.failureClass ? `Failure class: ${receipt.failureClass}` : '',
+    receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
+    receipt.outputExcerpt ? `Output excerpt: ${receipt.outputExcerpt}` : 'Output excerpt: no command output was captured.',
+  ].filter(Boolean)
+  return details.join('\n')
 }
 
 function shouldUseStructuredRetry(result: ReturnType<typeof parseCompletionMarker>): boolean {
@@ -663,9 +692,7 @@ export async function executeBead(
           }
 
           if (failedVerification) {
-            const verificationError = failedVerification.timedOut
-              ? `Declared test command timed out: ${failedVerification.command}`
-              : `Declared test command failed (${failedVerification.exitCode ?? 'no exit code'}): ${failedVerification.command}`
+            const verificationError = formatVerificationFailure(failedVerification)
             if (!iterationErrors.includes(verificationError)) iterationErrors.push(verificationError)
 
             const remainingMs = getRemainingTimeoutMs(deadlineAt)
@@ -835,6 +862,7 @@ export async function executeBead(
       const workflowDeadlineTimedOut = isWorkflowDeadlineTimeoutError(err)
       if (workflowDeadlineTimedOut) {
         contextWipeReason = 'iteration_timeout'
+        iterationErrors.push('Coding iteration timed out before the completion marker or deterministic verification finished.')
       } else {
         rememberOpenCodeDiagnostics(buildOpenCodeBlockedErrorDiagnostics({
           error: err,

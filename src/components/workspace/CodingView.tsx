@@ -1042,6 +1042,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const [rawViewingBeadId, setViewingBeadId] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<BeadDetailTab>('details')
   const [selectedRawIteration, setSelectedRawIteration] = useState<number | null>(null)
+  const [showAllBeadLogs, setShowAllBeadLogs] = useState(false)
   const phaseForView = readOnly ? 'CODING' : ticket.status
   const hasBeadControls = phaseForView === 'CODING'
   const viewingBeadId = hasBeadControls ? rawViewingBeadId : null
@@ -1189,6 +1190,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
   useEffect(() => {
     setSelectedRawIteration(null)
+    setShowAllBeadLogs(false)
   }, [viewedBead?.id])
 
   const beadRawAttempts = useMemo(() => {
@@ -1223,7 +1225,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const activeRawInput = getRawAttemptInput(activeRawAttempt)
   const activeRawOutput = getRawAttemptOutput(activeRawAttempt)
   const selectedBeadLogEntries = useMemo(() => {
-    if (!activeRawAttempt) return beadLogEntries
+    if (showAllBeadLogs || !activeRawAttempt) return beadLogEntries
 
     const entriesForIteration = beadLogEntries.filter(
       (entry) => entry.beadIteration === activeRawAttempt.iteration,
@@ -1233,7 +1235,13 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     // multiple iterations where their origin cannot be determined safely.
     if (entriesForIteration.length > 0 || beadRawAttempts.length > 1) return entriesForIteration
     return beadLogEntries
-  }, [activeRawAttempt, beadLogEntries, beadRawAttempts.length])
+  }, [activeRawAttempt, beadLogEntries, beadRawAttempts.length, showAllBeadLogs])
+  const hasMultipleBeadIterations = beadRawAttempts.length > 1
+  const activeIterationForLabel = viewedBead?.status === 'in_progress'
+    ? viewedBead.iteration
+    : ticket.runtime.activeBeadId === viewedBead?.id
+      ? ticket.runtime.activeBeadIteration
+      : null
   const outputContextIsTerminal = isRawAttemptTerminal(activeRawAttempt, viewedBead)
     || ticket.status === 'CANCELED'
     || ticket.status === 'BLOCKED_ERROR'
@@ -1402,6 +1410,21 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
               {detailTab === 'model' && (
                 <div className="ml-auto flex items-center pr-2 gap-2 text-xs text-muted-foreground">
+                  {hasMultipleBeadIterations && (
+                    <button
+                      type="button"
+                      aria-pressed={showAllBeadLogs}
+                      onClick={() => setShowAllBeadLogs((current) => !current)}
+                      className={cn(
+                        'rounded border px-2 py-1 transition-colors',
+                        showAllBeadLogs
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border bg-background hover:bg-accent hover:text-foreground',
+                      )}
+                    >
+                      {showAllBeadLogs ? 'Show selected iteration logs' : 'Show all logs for bead'}
+                    </button>
+                  )}
                   <Tooltip delayDuration={200}>
                     <TooltipTrigger asChild>
                       <button
@@ -1441,14 +1464,19 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     const key = getRawAttemptKey(attempt)
                     const active = activeRawAttempt ? getRawAttemptKey(activeRawAttempt) === key : false
                     const label = `Iteration ${attempt.iteration}`
-                    const outcomeLabel = formatRawAttemptOutcome(attempt)
+                    const outcomeLabel = getRawAttemptOutcome(attempt)
+                      ? formatRawAttemptOutcome(attempt)
+                      : attempt.iteration === activeIterationForLabel ? 'In progress' : 'Rejected'
                     return (
                       <Tooltip key={`${attempt.iteration}-${attempt.attempt}`}>
                         <TooltipTrigger asChild>
                           <button
                             type="button"
                             aria-pressed={active}
-                            onClick={() => setSelectedRawIteration(key)}
+                            onClick={() => {
+                              setSelectedRawIteration(key)
+                              setShowAllBeadLogs(false)
+                            }}
                             className={cn(
                               'inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-2 py-1 text-[10px] font-medium transition-colors',
                               active

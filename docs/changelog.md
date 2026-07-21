@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
-- Scoped each bead's execution log to the selected iteration and simplified iteration empty-state wording.
+- Scoped each bead's execution log to the selected iteration, added an opt-in all-logs view, and clarified iteration states.
 - Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
 - Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
 - Kept Beads coverage focused on PRD completeness while allowing project-agnostic verification commands.
@@ -93,7 +93,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
-- Bead detail logs now show only entries from the selected iteration, matching the existing iteration-specific Input and Output views; iteration states no longer use the word "Captured".
+- Bead detail logs now show only entries from the selected iteration, with an opt-in **Show all logs for bead** view when multiple iterations exist; active iterations show **In progress** while older attempts without an explicit outcome show **Rejected**.
 - Standardized visible AI log headers as `PROMPT`, `THINKING`, `TOOL`, and `OUTPUT`, each carrying the complete model ID while keeping persisted log tags compatible with existing diagnostics.
 - Full Answers, PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; council voting remains tool-disabled.
 - Interview drafting, refinement, live batched conversations, and coverage now have focused read-only repository inspection available after reviewing supplied context. They may confirm discoverable technical facts or decide whether a follow-up is necessary, but cannot infer stakeholder preferences, scope, priorities, desired behavior, or acceptance decisions; interview council voting remains tool-disabled.

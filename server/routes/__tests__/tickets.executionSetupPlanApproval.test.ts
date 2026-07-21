@@ -250,15 +250,6 @@ const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-execution-setup-plan-',
   files: {
     'README.md': '# LoopTroop Execution Setup Plan Test\n',
-    'package.json': JSON.stringify({
-      private: true,
-      scripts: {
-        bootstrap: 'echo bootstrap',
-        test: 'echo test',
-        lint: 'echo lint',
-        typecheck: 'echo typecheck',
-      },
-    }, null, 2),
   },
 })
 
@@ -296,7 +287,7 @@ function setupExecutionSetupPlanTicket() {
   const app = new Hono()
   app.route('/api', ticketRouter)
 
-  return { app, ticket }
+  return { app, ticket, paths }
 }
 
 async function moveTicketToRuntimeSetup(app: Hono, ticket: ReturnType<typeof createTicket>, summary = 'Approved runtime setup plan.') {
@@ -764,8 +755,9 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(regenerateResponse.status).toBe(409)
   })
 
-  it('approves the execution setup plan, stamps approval receipt, and advances the ticket', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+  it('approves setup commands without requiring an ecosystem manifest', async () => {
+    const { app, ticket, paths } = setupExecutionSetupPlanTicket()
+    expect(existsSync(join(paths.worktreePath, 'package.json'))).toBe(false)
     const raw = serializePlan(ticket.externalId)
     upsertLatestPhaseArtifact(
       ticket.id,

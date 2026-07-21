@@ -217,14 +217,13 @@ Final testing reuses this validated runtime wrapper instead of rediscovering the
 `PREPARING_EXECUTION_ENV` is deliberately narrow:
 
 - it must respect the approved setup plan first
-- it rejects bead, probe, hook, and project command families that lack evidence in the relevant repository manifests, scripts, build files, task declarations, or checked-in executables
 - it may use only the ignored or untracked files and directories listed in the approved workspace inputs
 - it should verify readiness before running bootstrap commands
 - it may prepare temporary-only tooling under LoopTroop-owned runtime paths
 - it must not quietly leave committable project changes behind
 - it may use setup-scoped online lookup (`websearch` / `webfetch`) when local metadata is insufficient to resolve a required launcher or version
 
-Before approval, the Beads coverage loop independently validates each declared `testCommands` entry in its effective working directory. A package manager being installed globally is not repository evidence: for example, an npm task requires the relevant `package.json` and script. Missing launchers remain valid setup requirements when a matching project manifest exists, so a Go command backed by `go.mod` can proceed to user-space Go provisioning. Unsupported commands become deterministic coverage gaps and are sent through the normal automatic Beads revision loop; they cannot be approved unchanged.
+Beads coverage checks whether the semantic blueprint covers the approved PRD. Test commands remain project-agnostic strings and may use repository-native tools, standard platform utilities, or verify files and behavior that an earlier bead creates. Runtime setup separately checks that launchers required by the approved plan are available or provisions them under the temporary setup paths.
 
 When temporary tooling needs a prepared environment, the setup agent creates `.ticket/runtime/execution-setup/env.sh` and `.ticket/runtime/execution-setup/run`. LoopTroop validates or safely recovers that canonical wrapper, records it in the accepted profile, and routes independent tooling probes, workspace probes, Git-hook checks, coding verification, and later project commands through it without reloading a login profile.
 

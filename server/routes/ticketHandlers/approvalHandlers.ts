@@ -38,7 +38,6 @@ import {
 import { approvalRequestSchema, rawPrdSaveSchema, structuredPrdSaveSchema } from './schemas'
 import { isCoverageFixInProgress } from './coverageFixHandlers'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
-import { validateGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/commandValidation'
 
 function countPrdItems(document: PrdDocument): number {
   return document.epics.reduce((count, epic) => count + 1 + epic.user_stories.length, 0)
@@ -451,18 +450,6 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
       worktreePath: paths.worktreePath,
       workspaceInputs: plan.workspaceInputs,
     })
-    const planErrors = validateGeneratedExecutionSetupPlan({
-      plan,
-      worktreePath: paths.worktreePath,
-      beadsPath: paths.beadsPath,
-    })
-    if (planErrors.length > 0) {
-      return c.json({
-        error: 'Execution setup plan is inconsistent with repository command evidence',
-        details: planErrors,
-      }, 409)
-    }
-
     approveExecutionSetupPlan(ticketId, plan, current.raw, expectedContentSha256)
     ensureActorForTicket(ticketId)
 

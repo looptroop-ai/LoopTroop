@@ -14,7 +14,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 #### Summary
 - Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
 - Recovered valid structured coverage results when a model appends an orphan Markdown fence and commentary after the artifact.
-- Made workspace setup preserve prepared tool environments, reject repository-incompatible commands, and begin deterministic retries without avoidable AI-note delays.
+- Kept Beads coverage focused on PRD completeness while allowing project-agnostic verification commands.
+- Made workspace setup preserve prepared tool environments and begin deterministic retries without avoidable AI-note delays.
 - Expanded OpenCode session-scoped permission rules to match absolute paths, preventing workspace setup and tool provisioning from blocking on system read commands.
 - Added an explicit default None choice to model effort controls so providers keep their native effort behavior until you select an override.
 - Kept GitHub readiness checks compatible with older GitHub CLI releases while retaining structured checks on current releases.
@@ -66,7 +67,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
-- Added repository-evidence validation for bead test commands, setup-plan probes, hook checks, and project command families, with automatic Beads coverage correction for unsupported commands and approval-time safeguards.
 - Added ticket-level Git-hook policy overrides, start-time inheritance locks, and contextual documentation links in Configuration, Project Advanced settings, new-ticket Advanced settings, and the Draft workspace.
 - Added three explicit existing-project attachment actions: restore all state, retain project settings while clearing every ticket, or delete `.looptroop` and start fresh. Destructive actions include active-ticket warnings, a keep/delete comparison, and a required confirmation.
 - Added support for OpenRouter routing modifiers (such as `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`) in model configuration and validation, with a dedicated selector in the configuration profile setup.
@@ -97,7 +97,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Interview drafting, refinement, live batched conversations, and coverage now have focused read-only repository inspection available after reviewing supplied context. They may confirm discoverable technical facts or decide whether a follow-up is necessary, but cannot infer stakeholder preferences, scope, priorities, desired behavior, or acceptance decisions; interview council voting remains tool-disabled.
 - Structured coverage parsing now preserves a complete, schema-valid YAML artifact when only an orphan closing code fence and trailing commentary follow it; the UI records the exact lossless repair.
 - Preparing Workspace Runtime now detects and records its canonical command wrapper, applies it consistently to independent probes and later commands, and reports visible failure-analysis and structured-correction milestones.
-- Execution setup planning and Beads prompts now require commands to match actual manifests, scripts, build files, task declarations, or repository-local executables instead of assuming a familiar ecosystem.
+- Beads planning prompts now favor practical bead-scoped verification without restricting commands to a built-in ecosystem list, while continuing to reject unobserved language or framework assumptions.
+- Beads coverage now audits requirement completeness against the approved PRD; launcher availability and command success remain runtime setup and execution concerns.
 - Model effort pickers now include **None** as the selected default whenever no named override is set, including legacy saved `none` selections; choosing it clears the override for both the main implementer and council members.
 - Added a shared autosave indicator to Interviewing and the Interview, Specs, Blueprint, and Workspace Setup approval editors, including pending, saving, saved, conflict, and failure feedback plus relative and exact last-save timestamps. Approval autosave preserves only the draft; **Save** still updates the authoritative artifact and applies downstream workflow effects.
 - Configuration documentation-link tooltips now explain each setting's effect and available range or choice before linking to the detailed documentation.

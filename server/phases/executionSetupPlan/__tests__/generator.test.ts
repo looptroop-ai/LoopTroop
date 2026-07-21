@@ -112,7 +112,7 @@ describe('generateExecutionSetupPlan', () => {
     adapter.mockResponses.set('mock-session-1#1', buildReadyPlanResponse())
     adapter.mockResponses.set('mock-session-1#2', buildReadyPlanResponse().replace(
       'summary: Workspace setup is ready for review.',
-      'summary: Repository command evidence is now satisfied.',
+      'summary: The additional semantic plan check is now satisfied.',
     ))
     let validationCount = 0
 
@@ -125,26 +125,26 @@ describe('generateExecutionSetupPlan', () => {
         validatePlan: () => {
           validationCount += 1
           return validationCount === 1
-            ? ['project_commands.test_full command "npm test" has no package.json evidence']
+            ? ['The generated plan needs one additional semantic correction']
             : []
         },
       },
     )
 
-    expect(result.plan?.summary).toBe('Repository command evidence is now satisfied.')
+    expect(result.plan?.summary).toBe('The additional semantic plan check is now satisfied.')
     expect(result.structuredOutput.autoRetryCount).toBe(1)
     expect(result.rawAttempts).toEqual([
       expect.objectContaining({
         attempt: 1,
         outcome: 'rejected',
-        validationError: expect.stringContaining('has no package.json evidence'),
+        validationError: expect.stringContaining('additional semantic correction'),
       }),
       expect.objectContaining({ attempt: 2, outcome: 'accepted' }),
     ])
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => (
       typeof message.content === 'string'
-      && message.content.includes('project_commands.test_full command "npm test" has no package.json evidence')
+      && message.content.includes('The generated plan needs one additional semantic correction')
     ))).toBe(true)
   })
 

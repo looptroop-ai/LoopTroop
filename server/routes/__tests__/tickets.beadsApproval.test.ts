@@ -44,10 +44,6 @@ const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-ticket-route-beads-approval-',
   files: {
     'README.md': '# LoopTroop Beads Approval Test\n',
-    'package.json': JSON.stringify({
-      private: true,
-      scripts: { test: 'echo test' },
-    }, null, 2),
   },
 })
 
@@ -156,8 +152,10 @@ describe('ticketRouter beads approval routes', () => {
     repoManager.cleanup()
   })
 
-  it('approves beads, stamps approval receipt, and advances the ticket', async () => {
-    const { app, ticket, beadsContent } = setupBeadsApprovalTicket()
+  it('approves project-agnostic bead commands without requiring an ecosystem manifest', async () => {
+    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+
+    expect(existsSync(`${paths.worktreePath}/package.json`)).toBe(false)
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
       method: 'POST',

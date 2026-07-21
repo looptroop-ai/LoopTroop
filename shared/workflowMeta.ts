@@ -599,13 +599,12 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   VERIFYING_BEADS_COVERAGE: {
-    overview: 'LoopTroop verifies the semantic beads blueprint against the approved PRD and the repository\'s actual command evidence, revising it until it is acceptable. The audit and revision prompts can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim. The loop checks requirement coverage and rejects test commands that do not map to the relevant workspace manifests, scripts, build files, or checked-in task runners. Once coverage and command compatibility are clean, the workflow automatically advances to the Expanding Blueprint phase.',
+    overview: 'LoopTroop verifies the semantic beads blueprint against the approved PRD, revising it until the requirements are covered or the configured pass cap is reached. The audit and revision prompts can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim. Once the coverage loop finishes, the workflow automatically advances to the Expanding Blueprint phase.',
     steps: [
       'Coverage Evaluation: The winning beads model compares the current semantic blueprint against the PRD and returns a structured clean-or-gaps result. "Clean" means every PRD requirement is covered by at least one bead. "Gaps" means specific requirements lack corresponding beads, have insufficient acceptance criteria, or depend on unresolved source-artifact contradictions. It may inspect the smallest useful repository area with read-only tools when it needs concrete repository evidence.',
-      'Repository Command Evidence: LoopTroop independently checks every bead test command in its effective working directory. A globally installed package manager does not prove that the repository uses it; manifest-bound commands require the matching manifest and task/script, while repository-local executables and checked-in task runners provide direct evidence.',
-      'Gap Resolution: If gaps are found, LoopTroop records the coverage attempt, requests a targeted revision that adds the missing beads or strengthens existing acceptance criteria, validates the revision, and promotes the next blueprint version. Before replacing an unsupported repository-specific command or path, the model confirms the replacement from supplied or focused read-only repository evidence. This loop can repeat until clean or until the configured beads coverage cap is reached.',
+      'Gap Resolution: If gaps are found, LoopTroop records the coverage attempt, requests a targeted revision that adds the missing beads or strengthens existing acceptance criteria, validates the revision, and promotes the next blueprint version. Repository-specific changes may use focused read-only inspection when the supplied context is insufficient. This loop can repeat until clean or until the configured beads coverage cap is reached.',
       'Version Tracking: Each coverage attempt and revision is persisted as coverage history, so you can see the evolution from the initial blueprint through each revision and understand what changed at each step.',
-      'Finalization: Once coverage is clean, the workflow advances to Expanding Blueprint. Reaching the configured cap may leave requirement-coverage gaps for human review, but repository-incompatible commands remain a blocking validation error instead of entering the execution plan.',
+      'Finalization: Once coverage is clean or the configured cap is reached, the workflow advances to Expanding Blueprint. Any remaining requirement-coverage gaps are preserved for human review.',
     ],
     outputs: [
       'Versioned beads coverage history showing each coverage evaluation and revision.',
@@ -658,7 +657,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   WAITING_BEADS_APPROVAL: {
-    overview: 'The final expanded, repository-validated beads plan is ready for human review before any coding begins. This is the last user-input gate before execution starts; once you approve, the coding agent will begin implementing beads one by one. You can review the full execution plan including task descriptions, dependencies, acceptance criteria, and evidence-backed test commands, edit the plan if needed, and optionally ask AI for one targeted extra fix at a time when coverage warnings still show unresolved gaps. Approval revalidates the saved edits so unsupported command families cannot enter workspace setup.',
+    overview: 'The final expanded beads plan is ready for human review before any coding begins. This is the last user-input gate before execution starts; once you approve, the coding agent will begin implementing beads one by one. You can review the full execution plan including task descriptions, dependencies, acceptance criteria, and test commands, edit the plan if needed, and optionally ask AI for one targeted extra fix at a time when coverage warnings still show unresolved gaps.',
     steps: [
       'Execution Plan Review: LoopTroop shows the execution-ready beads breakdown, including each bead\'s description, acceptance criteria, dependency chain, file targets, test commands, and execution ordering. You can see exactly what the coding agent will do and in what order.',
       'Dependency Visualization: The beads are shown with their dependency relationships, so you can verify that the execution order makes sense — beads that depend on other beads will not run until their dependencies complete.',
@@ -749,7 +748,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   PREPARING_EXECUTION_ENV: {
-    overview: 'LoopTroop runs a dedicated execution setup phase after setup-plan approval and before coding. It materializes approved workspace inputs, verifies the approved readiness assessment, provisions missing runtime tooling only under approved temporary paths, validates and automatically recovers the canonical runtime wrapper, runs tooling and ordered repository-level workspace probes through the prepared environment, and applies the approved Git-hook policy. Detected hooks remain evidence rather than hidden commit behavior: explicit validation commands run through the setup wrapper when selected, while LoopTroop-owned commits and pushes follow the locked policy. A workspace with repository command families is ready only after its commands match repository evidence and at least one functional repository probe succeeds; version-only checks cannot prove readiness. Deterministic failures use immediate local retry notes with visible retry-analysis progress. After automatic retries end, the live blocked view can send one user note to the preserved setup session for one additional manual attempt.',
+    overview: 'LoopTroop runs a dedicated execution setup phase after setup-plan approval and before coding. It materializes approved workspace inputs, verifies the approved readiness assessment, provisions missing runtime tooling only under approved temporary paths, validates and automatically recovers the canonical runtime wrapper, runs tooling and ordered repository-level workspace probes through the prepared environment, and applies the approved Git-hook policy. Detected hooks remain evidence rather than hidden commit behavior: explicit validation commands run through the setup wrapper when selected, while LoopTroop-owned commits and pushes follow the locked policy. A workspace with project commands is ready only after the required launchers are available and at least one functional repository probe succeeds; version-only checks cannot prove readiness. Deterministic failures use immediate local retry notes with visible retry-analysis progress. After automatic retries end, the live blocked view can send one user note to the preserved setup session for one additional manual attempt.',
     steps: [
       'Approved Plan First: The locked main implementer reads the approved setup-plan artifact first, then loads only the focused runtime context — ticket details, beads plan, and any prior setup retry notes. User edits in the approved plan take precedence over the model\'s original draft.',
       'Readiness Verification Before Action: The setup agent must verify the approved readiness assessment first. If the approved plan says no actions are required and that remains true, it should avoid running bootstrap commands and simply emit a reusable profile describing the ready environment.',
@@ -1389,7 +1388,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_BEADS_COVERAGE',
     label: 'Coverage Check (Beads)',
-    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD and repository command evidence, using focused read-only inspection when required. Unsupported test commands become automatic revision gaps alongside missing requirements; unlike ordinary coverage gaps, incompatible commands remain blocking if the revision cap is reached.',
+    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. Missing requirements become automatic revision gaps; once coverage is clean or the pass cap is reached, the workflow advances to expansion.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_BEADS_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1415,7 +1414,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_BEADS_APPROVAL',
     label: 'Approving Blueprint',
-    description: 'Review and approve the full execution-ready beads plan with content-hash protection and repository-command revalidation. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Unsupported test commands are rejected before approval, and the reviewed JSONL hash is recorded before coding begins.',
+    description: 'Review and approve the full execution-ready beads plan with content-hash protection. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. The reviewed JSONL hash is recorded before coding begins.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_BEADS_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'beads',
@@ -1453,7 +1452,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'PREPARING_EXECUTION_ENV',
     label: 'Preparing Workspace Runtime',
-    description: 'Materializing approved workspace inputs, recovering and preserving the prepared runtime wrapper, and verifying evidence-backed commands with tooling probes, functional repository probes, and explicit Git-hook checks. Deterministic retry preparation is immediate and visibly logged; after automatic retries end, the user can send one note to the preserved setup session for one additional manual attempt, or confirm a rewind to edit the setup plan.',
+    description: 'Materializing approved workspace inputs, recovering and preserving the prepared runtime wrapper, and verifying launcher readiness with tooling probes, functional repository probes, and explicit Git-hook checks. Deterministic retry preparation is immediate and visibly logged; after automatic retries end, the user can send one note to the preserved setup session for one additional manual attempt, or confirm a rewind to edit the setup plan.',
     details: WORKFLOW_PHASE_DETAILS.PREPARING_EXECUTION_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',

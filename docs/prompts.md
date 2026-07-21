@@ -107,7 +107,7 @@ All built-in prompts in this section are exported from `server/prompts/index.ts`
 | Prompt | Used in / status | Session / tools | Context inputs | Purpose | Full text |
 | --- | --- | --- | --- | --- | --- |
 | `PROM_EXECUTION_CAPABILITY_PROBE` | `PRE_FLIGHT_CHECK` | Fresh probe / `read_only` | none | Runs a minimal OpenCode capability probe before execution setup. | [Full content here](#full-prompt-prom-execution-capability-probe) |
-| `PROM_EXECUTION_SETUP_PLAN` | `WAITING_EXECUTION_SETUP_APPROVAL` | Fresh planning / `read_only` | `ticket_details`, `relevant_files`, `prd`, `beads`, `execution_setup_profile`, `execution_setup_plan_notes`, original checkout and ticket worktree locations | Drafts a reviewable workspace setup plan, audits bead/project command compatibility, and identifies missing inputs or launchers without modifying the repository. | [Full content here](#full-prompt-prom-execution-setup-plan) |
+| `PROM_EXECUTION_SETUP_PLAN` | `WAITING_EXECUTION_SETUP_APPROVAL` | Fresh planning / `read_only` | `ticket_details`, `relevant_files`, `prd`, `beads`, `execution_setup_profile`, `execution_setup_plan_notes`, original checkout and ticket worktree locations | Drafts a reviewable workspace setup plan and identifies missing inputs or launchers without modifying the repository. | [Full content here](#full-prompt-prom-execution-setup-plan) |
 | `PROM_EXECUTION_SETUP_PLAN_REGENERATE` | `WAITING_EXECUTION_SETUP_APPROVAL` regeneration | Fresh planning / `read_only` | `ticket_details`, `relevant_files`, `prd`, `beads`, `execution_setup_profile`, `execution_setup_plan`, `execution_setup_plan_notes`, cleaned prior setup failure, original checkout and ticket worktree locations | Revises the current setup plan using user commentary and the prior runtime failure. | [Full content here](#full-prompt-prom-execution-setup-plan-regenerate) |
 | `PROM_EXECUTION_SETUP` | `PREPARING_EXECUTION_ENV` | Fresh execution setup / `execution_setup_online` | `ticket_details`, `beads`, `execution_setup_plan`, `execution_setup_notes` | Executes the approved workspace setup plan and declares the canonical wrapper whenever tooling is prepared off-PATH. | [Full content here](#full-prompt-prom-execution-setup) |
 | `PROM_EXECUTION_SETUP_NOTE` | `PREPARING_EXECUTION_ENV` retry-note sub-step | Same session / `disabled` | `ticket_details`, `error_context` | Summarizes a failed runtime setup attempt for the next retry. | [Full content here](#full-prompt-prom-execution-setup-note) |
@@ -1049,7 +1049,7 @@ Create a Beads breakdown (architecture/task graph) based on the final PRD.
 5. Dependency Ordering: List beads in dependency order — if bead B depends on bead A, A must appear before B. Do not create circular dependencies or self-references.
 6. PRD Coverage: Every in-scope PRD requirement must map to at least one bead. Each bead's `prdRefs` must reference valid PRD epic or user-story IDs (e.g., EPIC-1, US-1-1).
 7. Test Specificity: Each bead's `tests` must verify that bead alone — not the entire feature. Each bead must have at least one entry in `testCommands` with the exact command to run.
-8. Repository-Supported Test Commands: Derive every `testCommands` entry from concrete repository evidence in `relevant_files` or the approved PRD, such as an existing manifest script, build file, checked-in task runner, or repository-local executable. Never substitute a familiar ecosystem command merely because it is common; for example, do not emit npm commands when the relevant workspace has no supporting package manifest and script.
+8. Project-Agnostic Test Commands: Use focused repository inspection when the supplied context does not establish an exact test command. Choose the smallest practical verification for the bead, including standard platform utilities or checks for files and behavior the bead will create. Never assume a language, package manager, framework, or test runner merely because it is familiar.
 9. Single Response Completeness: Return one complete final `beads` list in a single response. Do not stop mid-list or emit partial subsets.
 10. Length Safety: If total output risks being cut off, shorten description text instead of omitting later beads. Every planned bead must appear in the output.
 11. Strict Output: Do not add wrappers, markdown fences, prose, or trailing commentary. Begin at `beads:` and end after the final bead item.
@@ -1122,7 +1122,7 @@ Read all provided Beads drafts, compare each draft against the final PRD, and ev
 2. Anti-anchoring: Drafts are presented in randomized order per evaluator. Do not assume the first draft is the baseline or best.
 3. Decomposition Interpretation: Different architectural approaches to the same PRD may legitimately vary in granularity, dependency handling, and sequencing. Score the decomposition quality, coverage, and test isolation as presented, not the identity of the architect.
 4. Scoring Rubric (minimum 0, maximum 20 points per category, total maximum 100): 1) Coverage of PRD requirements. 2) Correctness / feasibility of technical approach. 3) Quality and isolation of bead-scoped tests. 4) Minimal complexity / good dependency management. 5) Risks / edge cases addressed.
-5. Command Feasibility: Treat test commands that are unsupported by the repository evidence as correctness defects. Do not reward generic package-manager commands that do not match the relevant workspace manifests, scripts, or checked-in task runners.
+5. Command Feasibility: Treat test commands that are unrelated to the bead or assume an unobserved project ecosystem as correctness defects. Reward practical, bead-scoped verification that fits the repository or the behavior the bead will create.
 6. Output Format: Output strict machine-readable YAML. The top-level key MUST be `draft_scores`. Under `draft_scores`, include one mapping entry per presented draft using the exact provided draft label as the key (for example: `Draft 1`, `Draft 2`).
 Each draft entry MUST contain exactly 6 integer fields on single lines: `Coverage of PRD requirements`, `Correctness / feasibility of technical approach`, `Quality and isolation of bead-scoped tests`, `Minimal complexity / good dependency management`, `Risks / edge cases addressed`, and `total_score`.
 All category scores MUST be plain integers from 0 to 20. `total_score` MUST be a plain integer from 0 to 100 and MUST equal the sum of the category scores for that draft.
@@ -1188,7 +1188,7 @@ Create the final, definitive version of your Beads breakdown by reviewing the al
 3. Selective Upgrade: For each candidate, decide: does it add genuine value, or is it a variation of something you already cover well? If it fills a real gap, add the bead. If an alternative has a strictly better definition of one of your existing beads — tighter scope, better tests, cleaner dependencies — replace yours with it. Otherwise, discard it.
 4. Measured Refinement: Do not rewrite from scratch or blend drafts together just for balance. But it is acceptable to improve multiple beads, adjust dependency edges, or rework test strategies across the draft if that produces a clearly stronger final result.
 5. Restraint: Avoid adding beads that merely restate work already covered by an existing bead. But if genuine gaps exist — missing work units, uncovered error paths, overlooked dependencies — add them; a complete graph matters more than a short one.
-6. Repository Command Preservation: Preserve only test commands supported by concrete repository evidence. Replace an unsupported ecosystem command with the exact repository-native command evidenced by the relevant manifest, script, build file, or checked-in task runner, and account for that replacement in `changes`.
+6. Test Command Quality: Preserve practical bead-scoped test commands. Replace commands that assume an unobserved project ecosystem or do not verify the bead with a suitable project-agnostic or repository-native check, and account for that replacement in `changes`.
 7. Single Artifact Contract: Return one YAML artifact that contains both the final refined Beads breakdown and a top-level `changes` list. Do not split the refined beads and change metadata across multiple outputs, wrappers, or separate artifacts.
 8. Changes Coverage: The top-level `changes` list must fully account for the differences between the winning bead subset and the final refined bead subset. Use `type` values `modified`, `added`, or `removed`. Include `item_type: bead` plus `before` and `after` bead item records (or `null` when appropriate).
 9. One-Entry-Per-Item Rule: Every changed bead must appear exactly once in `changes`. If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead. Do not split one changed bead across multiple change entries.
@@ -1267,7 +1267,7 @@ Re-read the final PRD as the source of truth and compare it against the current 
 ## Instructions
 1. Primary Truth: Treat the approved PRD as the sole source of truth for this audit. Every in-scope PRD requirement must be traceable to at least one bead.
 2. Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing verification steps, empty or insufficient acceptance criteria, missing test commands, and beads with no `prdRefs` mapping.
-3. Command Compatibility Check: Treat a bead test command as a coverage gap when it does not map to concrete repository evidence for its effective working directory. A globally installed launcher alone is not evidence that the repository uses that ecosystem.
+3. Repository-Specific Claims: Use focused repository inspection when the supplied context does not provide enough evidence to assess a path, build system, or tooling claim. The coverage decision itself remains about whether the blueprint covers the approved PRD.
 4. Source Artifact Contradictions: If the approved PRD is internally contradictory in a way the Beads blueprint cannot faithfully satisfy, report the contradiction as an unresolved coverage gap. Do not choose a side or invent implementation requirements to reconcile contradictory source artifacts.
 5. Identify Gaps: List any specific gaps or discrepancies found between the PRD and the Beads breakdown.
 6. Coverage Limits: Treat `coverage_run_number` and `max_coverage_passes` from the context as hard limits. Coverage can run once or at most `max_coverage_passes` times in total. If `is_final_coverage_run` is true, report unresolved gaps clearly without assuming another refinement pass exists.
@@ -1318,7 +1318,7 @@ Revise the current Beads blueprint to address the provided coverage gaps while p
 4. Source Artifact Contradictions: If a provided gap describes internally contradictory source artifacts, do not choose a side, invent implementation requirements, or revise beads to pretend the contradiction is resolved. Record that gap with `action: left_unresolved` and `affected_items: []`.
 5. Preservation Rule: Keep the existing bead order, IDs, and unaffected fields unless a provided gap requires a concrete change. If you add a new bead, insert it at the minimal valid position that preserves dependency order.
 6. Bead Completeness: Every bead in the revised blueprint must include non-empty `acceptanceCriteria`, `tests`, and `testCommands`. Never leave a bead as a shell with empty verification fields.
-7. Command Gap Resolution: When a gap identifies an unsupported test command, replace it with a repository-supported command backed by the provided repository context. Do not preserve, wrap, or rephrase an incompatible launcher merely to make the gap appear resolved.
+7. Repository-Specific Revisions: When changing a repository-specific detail, use focused repository inspection if the supplied context does not establish the replacement. A verification command may also target files or behavior that the revised bead will create.
 8. Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include exactly the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.
 9. Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry must include `type` (added|removed|modified), `id`, `title`, and `summary`.
 10. Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.
@@ -1392,7 +1392,7 @@ Take the latest validated Beads blueprint and expand each bead into the final ex
 ## Instructions
 1. Fresh Context Contract: This prompt includes only the approved final PRD, the latest validated blueprint, ticket details, and `relevant_files`. Use this refreshed context as your full working set; do not assume any prior conversation state.
 2. Expansion Only: Preserve these Part 1 fields exactly for every bead: `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.
-3. Command Compatibility Invariant: `testCommands` have already passed repository-evidence validation. Preserve them byte-for-byte; do not replace them with commands from another ecosystem during expansion.
+3. Test Command Preservation: Preserve `testCommands` byte-for-byte during expansion; this phase adds execution metadata and must not redesign the semantic blueprint.
 4. Order Is Mandatory: Preserve bead list order exactly. The app executes beads sequentially in this order and derives `priority` from this order. Do not reorder, merge, split, add, or remove beads.
 5. AI-Owned Fields Only: Add only these fields per bead: `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.
 6. Mechanical Copy Rule: For each bead, start from the matching bead in `### beads_draft`, mechanically copy every preserved Part 1 field byte-for-byte, then replace only `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.
@@ -1479,7 +1479,7 @@ Inspect the approved planning context and the current workspace state, decide wh
 2. Read-Only Discovery: Inspect the ticket details, relevant files, PRD, beads plan, any prior setup-plan notes, and any existing execution_setup_profile context. You may inspect repository files, manifests, lockfiles, runtime directories, and generated temp artifacts, but do not edit files, install dependencies, or run mutating commands.
 3. Existing Readiness First: Determine whether the current worktree already has what later coding beads need. Manifests, lockfiles, or scripts prove the project type, but they do not prove readiness unless the command launchers needed by required prepare/test/lint/typecheck commands are available or already prepared. If the environment is already ready, set `readiness.status` to `ready`, set `readiness.actions_required` to `false`, record concrete evidence, leave `readiness.gaps` empty, and return an empty `steps` list.
 4. Missing Work Only: If the environment is not fully ready, set `readiness.status` to `partial` or `missing`, set `readiness.actions_required` to `true`, record concrete gaps, and include only the smallest credible set of setup steps needed to close those gaps. Missing command launchers or toolchains for discovered command families are setup gaps, not cautions on a ready plan.
-5. Bead Command Audit: Cross-check every bead `testCommands` entry against repository manifests, build files, scripts, checked-in task runners, and its effective working directory. Do not copy or legitimize an unsupported bead command. A globally installed launcher alone does not prove that its ecosystem belongs to this repository.
+5. Runtime Command Readiness: Inspect the launchers required by the approved beads and project commands so the setup plan can provision missing runtime tooling without redesigning the approved work.
 6. Readiness Contradictions: Never return `readiness.status: ready` with `actions_required: false` when any workspace probe, bead test command, or project command needs a launcher that is unavailable or still needs provisioning. A caution cannot downgrade a missing required launcher into a ready environment.
 7. Language Agnosticism: Infer tooling from the repository itself. Do not assume Node, npm, pnpm, Python, Cargo, Maven, Gradle, Go, or any other ecosystem unless the repository evidence supports it. Never invent commands for a language or toolchain you did not actually observe.
 8. Workspace Setup Policy: The setup plan may propose repository-native bootstrap commands. Prefer LoopTroop-owned temporary roots under `.ticket/runtime/execution-setup/**`, especially `.ticket/runtime/execution-setup/tool-cache/**`, for execution-only toolchains, dependency caches, build caches, generated outputs, or tool caches. Do not propose ticket feature implementation as part of setup.
@@ -1518,7 +1518,7 @@ JSON or YAML inside `<EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN>` with this
   "git_hooks": {
     "policy": "validate_explicitly",
     "detected": [],
-    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": "<repository-supported validation command>", "purpose": "run the hook check explicitly"}]
+    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": "<project validation command>", "purpose": "run the hook check explicitly"}]
   },
   "steps": [],
   "project_commands": {
@@ -1592,7 +1592,7 @@ Revise the current execution setup plan using the provided user commentary while
 4. When prior workspace-runtime failure context is present, use its cleaned command and error output while checking the original checkout for ignored or untracked inputs that concretely explain the failure.
 5. Preserve good existing steps when the commentary does not require changing them.
 6. Remain language-agnostic. Do not switch ecosystems or invent commands unless the repository evidence supports the change.
-7. Revalidate bead and project command compatibility while revising. Do not retain an unsupported launcher merely because it appeared in the previous plan.
+7. Recheck launcher readiness while revising. Do not report the environment as ready when a command required by the approved work still needs provisioning.
 8. Do not execute commands or mutate the repository while revising the plan.
 9. Return a full replacement setup plan artifact, not a diff or patch note.
 10. Output Discipline: End with exactly one `<EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN>` block and nothing else.
@@ -1617,7 +1617,7 @@ JSON or YAML inside `<EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN>` with this
   "git_hooks": {
     "policy": "validate_explicitly",
     "detected": [],
-    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": "<repository-supported validation command>", "purpose": "run the hook check explicitly"}]
+    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": "<project validation command>", "purpose": "run the hook check explicitly"}]
   },
   "steps": [],
   "project_commands": {

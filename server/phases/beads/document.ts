@@ -4,7 +4,6 @@ import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
-import { validateRepositoryCommand } from '../commandEvidence'
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
@@ -52,9 +51,6 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     throw new Error('Beads artifact is empty')
   }
 
-  const worktreePath = getTicketPaths(ticketId)?.worktreePath
-  if (!worktreePath) throw new Error('Ticket worktree not initialized')
-
   // Parse the complete JSONL document before semantic validation so a
   // malformed later line remains the primary error.
   const parsedRecords: Array<Record<string, unknown>> = []
@@ -84,19 +80,6 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     for (const command of record.testCommands) {
       if (typeof command !== 'string' || !command.trim()) {
         throw new Error(`Bead ${record.id} contains an invalid test command`)
-      }
-      const evidence = validateRepositoryCommand({
-        repositoryRoot: worktreePath,
-        command,
-        commandKind: 'bead-test',
-      })
-      if (!evidence.valid) {
-        const expected = evidence.expectedEvidence?.length
-          ? ` Expected evidence: ${evidence.expectedEvidence.join(', ')}.`
-          : ''
-        throw new Error(
-          `Bead ${record.id} test command "${command}" is not supported by repository evidence: ${evidence.message ?? evidence.code ?? 'unknown command compatibility failure'}.${expected}`,
-        )
       }
     }
   }

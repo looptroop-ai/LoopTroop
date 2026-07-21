@@ -261,6 +261,8 @@ describe.concurrent('structured prompt hardening', () => {
     expect(coveragePrompt).toContain('backticks, or punctuation')
     expect(coveragePrompt).toContain('If the approved PRD is internally contradictory')
     expect(coveragePrompt).toContain('report the contradiction as an unresolved coverage gap')
+    expect(coveragePrompt).toContain('The coverage decision itself remains about whether the blueprint covers the approved PRD')
+    expect(coveragePrompt).not.toContain('Command Compatibility Check')
   })
 
   it('keeps beads coverage resolution explicit about semantic-plan output and gap accounting', () => {
@@ -336,6 +338,8 @@ describe.concurrent('structured prompt hardening', () => {
     expect(setupPlanPrompt).toContain('.ticket/runtime/execution-setup')
     expect(setupPlanPrompt).toContain('Manifests, lockfiles, or scripts prove the project type, but they do not prove readiness')
     expect(setupPlanPrompt).toContain('Missing command launchers or toolchains for discovered command families are setup gaps')
+    expect(setupPlanPrompt).toContain('Runtime Command Readiness')
+    expect(setupPlanPrompt).not.toContain('Bead Command Audit')
     expect(setupPlanPrompt).toContain('.ticket/runtime/execution-setup/tool-cache')
     expect(setupPlanPrompt).toContain('Tracked Change Boundary')
     expect(setupPlanPrompt).not.toContain('.cache/project-tooling')
@@ -354,6 +358,7 @@ describe.concurrent('structured prompt hardening', () => {
     expect(PROM_EXECUTION_SETUP_PLAN.contextInputs).toEqual(['ticket_details', 'relevant_files', 'prd', 'beads', 'execution_setup_profile', 'execution_setup_plan_notes'])
     expect(setupPlanRegeneratePrompt).toContain('current draft baseline')
     expect(setupPlanRegeneratePrompt).toContain('Remain language-agnostic')
+    expect(setupPlanRegeneratePrompt).toContain('Recheck launcher readiness while revising')
     expect(setupPlanRegeneratePrompt).toContain('prior workspace-runtime failure context')
     expect(PROM_EXECUTION_SETUP_PLAN_REGENERATE.contextInputs).toEqual(['ticket_details', 'relevant_files', 'prd', 'beads', 'execution_setup_profile', 'execution_setup_plan', 'execution_setup_plan_notes'])
     expect(setupPrompt).toContain('<EXECUTION_SETUP_RESULT>')

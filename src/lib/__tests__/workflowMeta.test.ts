@@ -158,12 +158,13 @@ describe.concurrent('workflow metadata', () => {
     expect(beadsRefinePhase?.description).toContain('focused read-only repository inspection')
   })
 
-  it('describes beads coverage as a repository-grounded semantic review loop', () => {
+  it('describes beads coverage as a semantic PRD review loop', () => {
     const beadsCoveragePhase = WORKFLOW_PHASES.find((phase) => phase.id === 'VERIFYING_BEADS_COVERAGE')
 
     expect(beadsCoveragePhase?.description).toContain(
-      'LoopTroop checks the semantic beads blueprint against the approved PRD and repository command evidence, using focused read-only inspection when required.',
+      'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required.',
     )
+    expect(beadsCoveragePhase?.description).not.toContain('command evidence')
     expect(beadsCoveragePhase?.contextSummary).toEqual(['prd', 'beads'])
     expect(beadsCoveragePhase?.contextSections).toEqual([
       {

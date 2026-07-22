@@ -2,9 +2,9 @@ import type { LogEvent, LogEventType, LogSource } from './types'
 import { safeAtomicAppend } from '../io/atomicAppend'
 import { getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
+import { queueProjectionAppend, type PersistedLogChannel } from './projection'
 
 type StructuredLogFields = Omit<LogEvent, 'timestamp' | 'type' | 'ticketId' | 'phase' | 'message' | 'source' | 'status' | 'data'>
-type PersistedLogChannel = 'normal' | 'debug' | 'ai'
 
 // Keys that are promoted to top-level LogEvent fields by pickStructuredFields.
 // They are stripped from `data` before serialization to avoid redundant storage.
@@ -192,7 +192,9 @@ function appendEventToChannel(
     return
   }
 
-  safeAtomicAppend(logPath, JSON.stringify(event))
+  const serialized = JSON.stringify(event)
+  const range = safeAtomicAppend(logPath, serialized)
+  queueProjectionAppend(ticketId, channel, event as unknown as Record<string, unknown>, range.offset, range.length)
   if (fingerprint) {
     rememberPersistedFingerprint(ticketId, channel, phase, phaseAttempt, fingerprint)
   }

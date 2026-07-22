@@ -48,6 +48,8 @@ import {
   handleSkipManualQa,
   handleIncludeManualQaDrift,
   handleDiscardManualQaDrift,
+  handleGetTicketLogs,
+  handleExportTicketLogs,
 } from './ticketHandlers'
 
 const ticketRouter = new Hono()
@@ -90,6 +92,8 @@ ticketRouter.post('/tickets/:id/opencode/questions/:requestId/reject', (c) => ha
 ticketRouter.post('/tickets/:id/dev-event', async (c) => handleDevEvent(c))
 ticketRouter.get('/tickets/:id/interview', (c) => handleGetInterview(c))
 ticketRouter.get('/tickets/:id/artifacts', (c) => handleGetArtifacts(c))
+ticketRouter.get('/tickets/:id/logs', (c) => handleGetTicketLogs(c))
+ticketRouter.get('/tickets/:id/logs/export', (c) => handleExportTicketLogs(c))
 ticketRouter.get('/tickets/:id/phases/:phase/attempts', (c) => handleListPhaseAttempts(c))
 ticketRouter.get('/tickets/:id/manual-qa', (c) => handleGetManualQa(c))
 ticketRouter.get('/tickets/:id/manual-qa/versions/:version', (c) => handleGetManualQaVersion(c))

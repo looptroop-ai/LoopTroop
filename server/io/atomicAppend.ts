@@ -1,7 +1,13 @@
 import { closeSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, writeSync } from 'fs'
 import { dirname } from 'path'
 
-export function safeAtomicAppend(filePath: string, line: string): void {
+export interface AtomicAppendRange {
+  offset: number
+  length: number
+}
+
+/** Appends one JSONL line and returns the exact byte range written. */
+export function safeAtomicAppend(filePath: string, line: string): AtomicAppendRange {
   mkdirSync(dirname(filePath), { recursive: true })
 
   const fd = openSync(filePath, 'a+')
@@ -17,8 +23,10 @@ export function safeAtomicAppend(filePath: string, line: string): void {
       }
     }
 
-    writeSync(fd, `${prefix}${line}\n`, undefined, 'utf-8')
+    const written = `${prefix}${line}\n`
+    writeSync(fd, written, undefined, 'utf-8')
     fsyncSync(fd)
+    return { offset: stats.size, length: Buffer.byteLength(written) }
   } finally {
     closeSync(fd)
   }

@@ -72,7 +72,7 @@ describe('useBackendHealth', () => {
     expect(result.current.isOffline).toBe(false)
   })
 
-  it('marks the backend offline after a confirmed failed probe', async () => {
+  it('marks the backend offline only after one grace-delayed retry also fails', async () => {
     pingDevBackendMock
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false)

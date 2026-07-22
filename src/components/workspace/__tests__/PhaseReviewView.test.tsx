@@ -2,7 +2,7 @@ import { beforeAll, afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode, Ref } from 'react'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { LogProvider } from '@/context/LogContext'
-import { LOG_STORAGE_PREFIX, serverLogCache, type LogEntry } from '@/context/logUtils'
+import { serverLogCache } from '@/context/logUtils'
 import { makeTicket } from '@/test/factories'
 import { renderWithProviders, createJsonResponse } from '@/test/renderHelpers'
 import { PhaseReviewView } from '../PhaseReviewView'
@@ -32,10 +32,6 @@ vi.mock('@/hooks/useTicketArtifacts', async () => {
     useTicketArtifacts: () => ({ artifacts: [], isLoading: false }),
   }
 })
-
-function setPersistedDraftLogs(ticketId: string, logs: LogEntry[]) {
-  localStorage.setItem(`${LOG_STORAGE_PREFIX}${ticketId}-DRAFT`, JSON.stringify(logs))
-}
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -76,31 +72,31 @@ afterEach(() => {
 })
 
 describe('PhaseReviewView', () => {
-  it('shows persisted draft logs when revisiting backlog after start', async () => {
+  it('shows projected draft logs when revisiting backlog after start', async () => {
     const ticket = makeTicket({
       status: 'SCANNING_RELEVANT_FILES',
       description: 'Add a planning gate before the interview starts.',
     })
 
-    setPersistedDraftLogs(ticket.id, [
-      {
-        id: 'draft-log-1',
-        entryId: 'draft-log-1',
-        line: '[SYS] Start requested.',
-        source: 'system',
-        status: 'DRAFT',
-        timestamp: '2026-03-10T10:00:00.000Z',
-        audience: 'all',
-        kind: 'milestone',
-        streaming: false,
-        op: 'append',
-      },
-    ])
-
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${ticket.id}/logs`)) {
-        return createJsonResponse([])
+      if (url.startsWith(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?`)) {
+        return createJsonResponse({
+          entries: [{
+            entryId: 'draft-log-1',
+            phase: 'DRAFT',
+            status: 'DRAFT',
+            content: '[SYS] Start requested.',
+            source: 'system',
+            timestamp: '2026-03-10T10:00:00.000Z',
+            audience: 'all',
+            kind: 'milestone',
+            streaming: false,
+            op: 'append',
+          }],
+          olderCursor: null,
+          hasOlder: false,
+        })
       }
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -128,8 +124,8 @@ describe('PhaseReviewView', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${ticket.id}/logs`)) {
-        return createJsonResponse([])
+      if (url.startsWith(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?`)) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
       }
       throw new Error(`Unhandled fetch: ${url}`)
     })
@@ -155,8 +151,8 @@ describe('PhaseReviewView', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${ticket.id}/logs`)) {
-        return createJsonResponse([])
+      if (url.startsWith(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?`)) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
       }
       throw new Error(`Unhandled fetch: ${url}`)
     })

@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made cold ticket and status opens responsive by warming workspace modules and progressively loading projected logs.
 - Made artifact loading responsive by separating lightweight manifests from on-demand, cache-validatable content bodies.
 - Made bead verification lightweight and adaptable while preserving Final Testing as the mandatory automated delivery gate.
 - Improved bead failure diagnostics so command failures and coding timeouts retain actionable execution context.
@@ -97,6 +98,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Changed ticket history restoration to request the newest 250 projected log rows, merge them with bounded live SSE rows by stable identity, virtualize large timelines, and page older rows only when the user scrolls upward. Copy all continues to export the complete matching history, while browser `localStorage` no longer stores full log snapshots.
+- Warmed common ticket workspace modules in development and pre-optimized `react-virtuoso`; selected live workspace modules preload after ticket discovery and the common historical review view prefetches during idle time.
+- Made cold log projection catch-up cooperative and deduplicated, with cached schema/prepared statements, so large JSONL histories do not monopolize the server while health checks are waiting.
 - Beads may now explain why no planned automated command is appropriate, and coding agents may adapt planned commands to repository evidence instead of being blocked by a frozen backend rerun. Planning, refinement, and coverage favor only necessary bead-scoped commands without turning manual behavior, risks, optional alternatives, or broad integration scenarios into mandatory Coding gates; Final Testing remains strict.
 - Bead detail logs now show only entries from the selected iteration, with an opt-in **Show all logs for bead** view when multiple iterations exist. The all-logs mode visibly deselects the iteration, and each iteration view is bounded by its own session start and the next retry so delayed old-session events cannot leak into another attempt; the list remounts on view changes so rows cannot persist between views. Active iterations show **In progress** while older attempts without an explicit outcome show **Rejected**.
 - Standardized visible AI log headers as `PROMPT`, `THINKING`, `TOOL`, and `OUTPUT`, each carrying the complete model ID while keeping persisted log tags compatible with existing diagnostics.

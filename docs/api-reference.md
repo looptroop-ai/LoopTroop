@@ -713,10 +713,14 @@ The outer `answers` array must stay in the same order as the returned `questions
 | `GET` | `/api/tickets/:id/artifacts/:artifactId/content` | Read one ticket-isolated artifact body; supports SHA-256 ETags and `304 Not Modified` |
 | `POST` | `/api/tickets/:id/artifacts/content/batch` | Read up to 20 artifact bodies, capped at approximately 2 MB of content per response |
 | `GET` | `/api/tickets/:id/phases/:phase/attempts` | List phase attempt history |
+| `GET` | `/api/tickets/:id/logs` | Read a projected log page; defaults to the newest 250 rows and accepts an older-page cursor |
+| `GET` | `/api/tickets/:id/logs/export` | Export the complete matching log history as plain text for Copy all |
 
 `GET /api/tickets/:id/artifacts` accepts optional `phase` and `phaseAttempt` query filters. When `phaseAttempt` is omitted, the backend resolves the current active attempt for that phase; supplying `phaseAttempt=1` is how clients intentionally read archived planning generations after an edit/retry/regenerate flow.
 
 The manifest route accepts the same filters and returns `{ "artifacts": [...] }`. Every entry includes its identity, phase and attempt, type, timestamps, `contentByteCount`, lowercase `contentSha256`, availability, and a compact scalar preview. It never includes the raw artifact body. Fetch bodies from the content routes after selecting the artifact; batch requests use `{ "artifactIds": [1, 2] }` and return unavailable or byte-budget-deferred IDs in `omittedIds`.
+
+The projected log route accepts `scope=phase|lifecycle`, `view=overview|system|command|ai|error|debug`, optional `phase`, `phaseAttempt`, and `modelId`, `limit=1..500`, and an opaque `before` cursor. It returns chronological `entries` for that page plus `olderCursor` and `hasOlder`. Projection catch-up reads unindexed JSONL suffixes cooperatively and deduplicates concurrent catch-up requests; it does not change the live SSE or durable log-writing paths.
 
 Example artifact list item:
 

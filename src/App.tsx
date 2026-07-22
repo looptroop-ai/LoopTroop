@@ -24,6 +24,8 @@ import { useStartupStatus } from '@/hooks/useStartupStatus'
 import { useQueryClient } from '@tanstack/react-query'
 import { clearOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
+import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
+import { preloadWorkspaceForView } from '@/components/ticket/workspacePreload'
 
 const ROUTE_ROOT = '/'
 const ROUTE_CONFIG = '/config'
@@ -45,6 +47,7 @@ function App() {
   const queryClient = useQueryClient()
   const ticketsQuery = useTickets()
   const tickets = ticketsQuery.data
+  const { phaseMap } = useWorkflowMeta()
   const ticketsRef = useRef(tickets)
   useEffect(() => { ticketsRef.current = tickets }, [tickets])
   const hasCompletedInitialTicketListLoadRef = useRef(false)
@@ -86,6 +89,13 @@ function App() {
     if (tickets.some(ticket => ticket.id === state.selectedTicketId)) return
     dispatch({ type: 'CLOSE_TICKET' })
   }, [dispatch, state.selectedTicketId, tickets, ticketsQuery.isSuccess])
+
+  useEffect(() => {
+    if (!state.selectedTicketId || !ticketsQuery.isSuccess || !tickets) return
+    const selectedTicket = tickets.find((ticket) => ticket.id === state.selectedTicketId)
+    if (!selectedTicket) return
+    void preloadWorkspaceForView(phaseMap[selectedTicket.status]?.uiView)
+  }, [phaseMap, state.selectedTicketId, tickets, ticketsQuery.isSuccess])
 
   const dismissWelcome = () => {
     try {

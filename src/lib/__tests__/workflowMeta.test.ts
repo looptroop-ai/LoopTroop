@@ -127,7 +127,7 @@ describe.concurrent('workflow metadata', () => {
       expect(phase?.description).toContain('explicit Save is required to update the authoritative')
       expect(phase?.details.overview).toContain(
         phaseId === 'WAITING_BEADS_APPROVAL'
-          ? 'review the full execution plan including task descriptions'
+          ? 'review task descriptions, dependencies, acceptance criteria'
           : 'Draft edits autosave with a visible last-save status',
       )
       expect(phase?.details.steps.join(' ')).toContain(

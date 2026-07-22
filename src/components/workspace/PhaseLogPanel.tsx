@@ -6,7 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
-import { compareTimestamps, isDebugLogEntry } from '@/context/logUtils'
+import { compareTimestamps, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelBadge } from '@/components/shared/ModelBadge'
@@ -20,6 +20,8 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
+import { Virtuoso } from 'react-virtuoso'
+import { useVirtualFirstItemIndex } from './logVirtualization'
 
 interface PhaseLogPanelProps {
   phase: string
@@ -103,7 +105,7 @@ export function PhaseLogPanel({
     }),
     [phase, phaseAttempt],
   )
-  const shouldLoadArchivedLogs = logMode === 'snapshot' && Boolean(ticket?.id) && typeof phaseAttempt === 'number' && phaseAttempt > 0
+  const shouldLoadHistoricalLogs = !propLogs && Boolean(ticket?.id)
   const historicalView: HistoricalLogView = activeTab === 'ALL'
     ? 'overview'
     : activeTab === 'SYS'
@@ -121,30 +123,30 @@ export function PhaseLogPanel({
     phaseAttempt,
     view: historicalView,
     modelId: isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined,
-  }, shouldLoadArchivedLogs)
+  }, shouldLoadHistoricalLogs)
 
   useEffect(() => {
-    if (propLogs || shouldLoadArchivedLogs) return
+    if (propLogs || shouldLoadHistoricalLogs) return
     if (liveLogOptions) {
       logCtx?.loadLogsForPhase?.(phase, liveLogOptions)
     } else {
       logCtx?.loadLogsForPhase?.(phase)
     }
-  }, [liveLogOptions, logCtx, phase, propLogs, shouldLoadArchivedLogs])
+  }, [liveLogOptions, logCtx, phase, propLogs, shouldLoadHistoricalLogs])
 
   useEffect(() => {
-    if (shouldLoadArchivedLogs || activeTab !== 'DEBUG') return
+    if (shouldLoadHistoricalLogs || activeTab !== 'DEBUG') return
     logCtx?.loadLogsForPhase?.(phase, liveDebugLogOptions)
-  }, [activeTab, liveDebugLogOptions, logCtx, phase, shouldLoadArchivedLogs])
+  }, [activeTab, liveDebugLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
 
   useEffect(() => {
-    if (shouldLoadArchivedLogs || !isAiLogTab(activeTab)) return
+    if (shouldLoadHistoricalLogs || !isAiLogTab(activeTab)) return
     logCtx?.loadLogsForPhase?.(phase, liveAiLogOptions)
-  }, [activeTab, liveAiLogOptions, logCtx, phase, shouldLoadArchivedLogs])
+  }, [activeTab, liveAiLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
 
   const isLoadingLogs = propLogs
     ? false
-    : shouldLoadArchivedLogs
+    : shouldLoadHistoricalLogs
       ? historicalLogs.isLoading
       : activeTab === 'DEBUG'
         ? (logCtx?.isLoadingLogScope?.(liveDebugScope) ?? false)
@@ -162,15 +164,19 @@ export function PhaseLogPanel({
           ...debugEntries.filter((entry) => !seenEntryIds.has(entry.entryId)),
         ].sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
       }
-      if (shouldLoadArchivedLogs) {
-        return historicalLogs.entries
+      if (shouldLoadHistoricalLogs) {
+        if (logMode === 'snapshot') return historicalLogs.entries
+        return mergeEntriesBatch(
+          historicalLogs.entries,
+          logCtx?.getLogsForPhase(phase, liveLogOptions) ?? [],
+        )
       }
       return logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []
     },
-    [activeTab, historicalLogs.entries, liveLogOptions, logCtx, phase, propLogs, shouldLoadArchivedLogs],
+    [activeTab, historicalLogs.entries, liveLogOptions, logCtx, logMode, phase, propLogs, shouldLoadHistoricalLogs],
   )
   const isLiveTicketPhase = !ticket || ticket.status === phase
-  const currentActivityEnabled = !shouldLoadArchivedLogs && isLiveTicketPhase
+  const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
   const hasToolbarPrefix = toolbarPrefix != null
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
   const [isSysCollapsed, setIsSysCollapsed] = useState(true)
@@ -181,11 +187,16 @@ export function PhaseLogPanel({
   )
 
   const hasCmdLogs = useMemo(() => {
-    return phaseLogs.some((entry) => isSystem(entry) && isCommand(entry))
-  }, [phaseLogs])
+    return shouldLoadHistoricalLogs || phaseLogs.some((entry) => isSystem(entry) && isCommand(entry))
+  }, [phaseLogs, shouldLoadHistoricalLogs])
 
   // ── Smart auto-scroll ──────────────────────────────────────────────
   const viewportRef = useRef<HTMLDivElement>(null)
+  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null)
+  const setViewportRef = useCallback((node: HTMLDivElement | null) => {
+    viewportRef.current = node
+    setScrollParent(node)
+  }, [])
   const contentRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
@@ -228,23 +239,24 @@ export function PhaseLogPanel({
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const onScroll = () => {
+    const updateScrollState = (allowPagination: boolean) => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD
       autoScrollEnabledRef.current = atBottom
       setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
-      if (atTop && shouldLoadArchivedLogs && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
-        olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+      if (allowPagination && atTop && shouldLoadHistoricalLogs && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
+        if (phaseLogs.length <= 200) olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
         void historicalLogs.fetchOlder()
       }
     }
     // initialize on mount
-    onScroll()
+    updateScrollState(false)
+    const onScroll = () => updateScrollState(true)
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [historicalLogs, shouldLoadArchivedLogs])
+  }, [historicalLogs, phaseLogs.length, shouldLoadHistoricalLogs])
 
   useEffect(() => {
     const anchor = olderPageAnchorRef.current
@@ -367,9 +379,35 @@ export function PhaseLogPanel({
 
   const hasBeadSections = beadSectionsResult !== null && beadSectionsResult.beadSections.length > 0
   const hasLogs = filteredLogs.length > 0
+  const filteredIndexMap = useMemo(
+    () => new Map(filteredLogs.map((entry, index) => [entry.entryId, index])),
+    [filteredLogs],
+  )
+  const virtualItems = useMemo(() => {
+    const items: Array<
+      | { type: 'entry'; key: string; entry: LogEntry }
+      | { type: 'bead'; key: string; ordinal: number; total: number; title: string }
+    > = []
+    if (phase === 'CODING' && hasBeadSections && beadSectionsResult) {
+      for (const entry of beadSectionsResult.preambleEntries) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const section of beadSectionsResult.beadSections) {
+        items.push({ type: 'bead', key: `${section.beadId}-${section.ordinal}`, ordinal: section.ordinal, total: section.total, title: section.title })
+        for (const entry of section.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+      }
+    } else {
+      for (const entry of filteredLogs) items.push({ type: 'entry', key: entry.entryId, entry })
+    }
+    return items
+  }, [beadSectionsResult, filteredLogs, hasBeadSections, phase])
+  const shouldVirtualize = virtualItems.length > 200
+  const virtualFirstItemIndex = useVirtualFirstItemIndex(
+    virtualItems.map(item => item.key),
+    virtualItems.find(item => item.type === 'entry')?.key,
+    `${phase}:${phaseAttempt ?? 'active'}:${effectiveTab}`,
+  )
   const [copied, copyToClipboard] = useCopyToClipboard()
   const handleCopyLogs = useCallback(() => {
-    if (shouldLoadArchivedLogs) {
+    if (shouldLoadHistoricalLogs) {
       void historicalLogs.exportLogs().then(copyToClipboard).catch(() => undefined)
       return
     }
@@ -379,7 +417,7 @@ export function PhaseLogPanel({
       return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
     }).join('\n')
     copyToClipboard(textToCopy)
-  }, [copyToClipboard, filteredLogs, historicalLogs, shouldLoadArchivedLogs, shouldShowModelNameInLogTags])
+  }, [copyToClipboard, filteredLogs, historicalLogs, shouldLoadHistoricalLogs, shouldShowModelNameInLogTags])
 
   const visibleLogTail = useMemo(() => {
     const lastEntry = filteredLogs.at(-1)
@@ -626,10 +664,28 @@ export function PhaseLogPanel({
         activeStatus={ticket?.status ?? phase}
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
-        <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
+        <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
             {hasLogs ? (
-              phase === 'CODING' && hasBeadSections && beadSectionsResult ? (
+              shouldVirtualize && scrollParent ? (
+                <Virtuoso
+                  data={virtualItems}
+                  customScrollParent={scrollParent}
+                  data-testid="virtualized-log-list"
+                  firstItemIndex={virtualFirstItemIndex}
+                  initialTopMostItemIndex={virtualItems.length - 1}
+                  followOutput={isAutoScroll ? 'smooth' : false}
+                  itemContent={(_, item) => item.type === 'bead'
+                    ? <BeadDelimiter ordinal={item.ordinal} total={item.total} title={item.title} />
+                    : (
+                        <LogEntryRow
+                          entry={item.entry}
+                          index={filteredIndexMap.get(item.entry.entryId) ?? 0}
+                          showModelName={shouldShowModelNameInLogTags}
+                        />
+                      )}
+                />
+              ) : phase === 'CODING' && hasBeadSections && beadSectionsResult ? (
                 <>
                   {beadSectionsResult.preambleEntries.map((entry) => (
                     <LogEntryRow

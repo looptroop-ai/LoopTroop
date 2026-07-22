@@ -1,6 +1,7 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { normalizeLogRecord, type LogEntry } from '@/context/logUtils'
+import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 
 export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
 
@@ -70,8 +71,6 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // React Query still requires this callback to calculate result metadata.
     getNextPageParam: () => undefined,
     getPreviousPageParam: firstPage => firstPage.hasOlder ? firstPage.olderCursor ?? undefined : undefined,
-    // Eight pages bounds the historical footprint at 2,000 entries per view.
-    maxPages: 8,
     staleTime: 30_000,
   })
 
@@ -82,8 +81,14 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     for (const page of [...(query.data?.pages ?? [])].reverse()) {
       for (const entry of page.entries) byId.set(entry.entryId, entry)
     }
-    return [...byId.values()]
+    return [...byId.values()].sort((a, b) => {
+      const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN
+      const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN
+      if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0
+      return aTime - bTime
+    })
   }, [query.data?.pages])
+  const refetch = query.refetch
 
   const exportLogs = useCallback(async (signal?: AbortSignal): Promise<string> => {
     if (!ticketId) return ''
@@ -95,6 +100,17 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     if (!response.ok) throw new Error(`Unable to export logs (${response.status})`)
     return response.text()
   }, [scope, ticketId])
+
+  useEffect(() => {
+    if (!ticketId || !enabled) return
+    const handleRefresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ ticketId?: string | null }>).detail
+      if (String(detail?.ticketId ?? '') !== String(ticketId)) return
+      void refetch()
+    }
+    window.addEventListener(SERVER_LOG_REFRESH_EVENT, handleRefresh)
+    return () => window.removeEventListener(SERVER_LOG_REFRESH_EVENT, handleRefresh)
+  }, [enabled, refetch, ticketId])
 
   return {
     ...query,

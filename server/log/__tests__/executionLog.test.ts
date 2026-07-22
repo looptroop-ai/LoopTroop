@@ -16,7 +16,10 @@ const mockGetTicketPaths = vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnV
   beadsPath: '/tmp/test-beads.jsonl',
 })
 
-const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation(() => {})
+const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation((_path, line) => ({
+  offset: 0,
+  length: Buffer.byteLength(`${line}\n`),
+}))
 
 describe('createLogEvent', () => {
   it('preserves a provided timestamp so live and persisted log entries stay aligned', () => {

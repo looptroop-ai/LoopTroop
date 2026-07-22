@@ -34,7 +34,7 @@ async function respondToBackendHealthProbe(req: IncomingMessage, res: ServerResp
         accept: 'application/json',
         ...(apiToken ? { [apiTokenHeader]: apiToken } : {}),
       },
-      signal: AbortSignal.timeout(1_000),
+      signal: AbortSignal.timeout(5_000),
     })
 
     res.statusCode = response.status
@@ -115,6 +115,15 @@ export default defineConfig({
     host: devHostMode.enabled ? devHostMode.bindHost : undefined,
     port: getFrontendPort(),
     strictPort: true,
+    warmup: {
+      clientFiles: [
+        './src/components/ticket/TicketDashboard.tsx',
+        './src/components/ticket/ActiveWorkspace.tsx',
+        './src/components/workspace/PhaseReviewView.tsx',
+        './src/components/workspace/CollapsiblePhaseLogSection.tsx',
+        './src/components/workspace/PhaseLogPanel.tsx',
+      ],
+    },
     watch: {
       usePolling: true,
     },

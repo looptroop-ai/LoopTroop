@@ -5,6 +5,8 @@ import type { LogEntry } from '@/context/LogContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, TEST, type RuntimeBeadInput } from '@/test/factories'
+import { createTestQueryClient } from '@/test/renderHelpers'
+import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({
@@ -125,8 +127,13 @@ function makeTicket(overrides: Omit<Partial<Ticket>, 'runtime'> & { runtime?: Om
 }
 
 function renderWithTooltipProvider(ui: React.ReactElement) {
+  const queryClient = createTestQueryClient()
   return render(ui, {
-    wrapper: ({ children }) => <TooltipProvider>{children}</TooltipProvider>,
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>{children}</TooltipProvider>
+      </QueryClientProvider>
+    ),
   })
 }
 

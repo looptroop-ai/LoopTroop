@@ -18,6 +18,10 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
+import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
+import { mergeEntriesBatch } from '@/context/logUtils'
+import { Virtuoso } from 'react-virtuoso'
+import { useVirtualFirstItemIndex } from './logVirtualization'
 
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
@@ -132,19 +136,40 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const [activeTab, setActiveTab] = useState<string>('ALL')
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
   const [isSysCollapsed, setIsSysCollapsed] = useState(true)
+  const historicalView: HistoricalLogView = activeTab === 'ALL'
+    ? 'overview'
+    : activeTab === 'SYS'
+      ? 'system'
+      : activeTab === 'CMD'
+        ? 'command'
+        : activeTab === 'ERROR'
+          ? 'error'
+          : activeTab === 'DEBUG'
+            ? 'debug'
+            : 'ai'
+  const historicalLogs = useTicketHistoricalLogs(ticket?.id, {
+    scope: 'lifecycle',
+    view: historicalView,
+    modelId: isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined,
+  }, Boolean(ticket?.id))
+  const combinedLogs = useMemo(
+    () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs) : allLogs,
+    [allLogs, historicalLogs.entries, ticket?.id],
+  )
 
   useEffect(() => {
+    if (ticket?.id) return
     loadAllLogs?.()
-  }, [loadAllLogs])
+  }, [loadAllLogs, ticket?.id])
 
   useEffect(() => {
-    if (activeTab !== 'DEBUG') return
+    if (ticket?.id || activeTab !== 'DEBUG') return
     loadAllLogs?.({ channel: 'all' })
-  }, [activeTab, loadAllLogs])
+  }, [activeTab, loadAllLogs, ticket?.id])
 
   const hasCmdLogs = useMemo(() => {
-    return allLogs.some((entry) => isSystem(entry) && isCommand(entry))
-  }, [allLogs])
+    return Boolean(ticket?.id) || combinedLogs.some((entry) => isSystem(entry) && isCommand(entry))
+  }, [combinedLogs, ticket?.id])
 
   const configuredModelIds = useMemo(() => {
     return (ticket?.lockedCouncilMembers ?? []).filter((memberId) => memberId.trim().length > 0)
@@ -152,7 +177,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
   const detectedModelIds = useMemo(() => {
     const ids = new Set<string>()
-    for (const entry of allLogs) {
+    for (const entry of combinedLogs) {
       if (entry.modelId) {
         ids.add(entry.modelId)
         continue
@@ -162,7 +187,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       }
     }
     return Array.from(ids)
-  }, [allLogs])
+  }, [combinedLogs])
 
   const modelTabs = useMemo(() => {
     const seen = new Set<string>()
@@ -195,24 +220,24 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       : 'ALL'
 
   useEffect(() => {
-    if (!isAiLogTab(effectiveTab)) return
+    if (ticket?.id || !isAiLogTab(effectiveTab)) return
     loadAllLogs?.({ channel: 'ai' })
-  }, [effectiveTab, loadAllLogs])
+  }, [effectiveTab, loadAllLogs, ticket?.id])
 
-  const isLoadingLogs = effectiveTab === 'DEBUG'
+  const isLoadingLogs = ticket?.id ? historicalLogs.isLoading : effectiveTab === 'DEBUG'
     ? (isLoadingLogScope?.({ lifecycle: true, channel: 'all' }) ?? false)
     : isAiLogTab(effectiveTab)
       ? ((isLoadingLogScope?.({ lifecycle: true }) ?? false) || (isLoadingLogScope?.({ lifecycle: true, channel: 'ai' }) ?? false))
       : (isLoadingLogScope?.({ lifecycle: true }) ?? (logCtx?.isLoadingLogs ?? false))
 
   const filteredLogs = useMemo(
-    () => filterEntries(allLogs, effectiveTab),
-    [allLogs, effectiveTab],
+    () => filterEntries(combinedLogs, effectiveTab),
+    [combinedLogs, effectiveTab],
   )
 
   const rawPhaseGroups = useMemo(
-    () => groupByPhaseRuns(allLogs),
-    [allLogs],
+    () => groupByPhaseRuns(combinedLogs),
+    [combinedLogs],
   )
 
   const visibleEntryIds = useMemo(
@@ -244,6 +269,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
   // ── Smart auto-scroll ──────────────────────────────────────────────
   const viewportRef = useRef<HTMLDivElement>(null)
+  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null)
+  const setViewportRef = useCallback((node: HTMLDivElement | null) => {
+    viewportRef.current = node
+    setScrollParent(node)
+  }, [])
   const contentRef = useRef<HTMLDivElement>(null)
   const autoScrollEnabledRef = useRef(true)
   const previousVisibleTailRef = useRef<string | null>(null)
@@ -281,18 +311,22 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const onScroll = () => {
+    const updateScrollState = (allowPagination: boolean) => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
       const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD
       autoScrollEnabledRef.current = atBottom
       setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
+      if (allowPagination && atTop && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
+        void historicalLogs.fetchOlder()
+      }
     }
-    onScroll()
+    updateScrollState(false)
+    const onScroll = () => updateScrollState(true)
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [historicalLogs])
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) {
@@ -349,13 +383,17 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   // ── Copy all logs ──────────────────────────────────────────────
   const [copied, copyToClipboard] = useCopyToClipboard()
   const handleCopyLogs = useCallback(() => {
+    if (ticket?.id) {
+      void historicalLogs.exportLogs().then(copyToClipboard).catch(() => undefined)
+      return
+    }
     if (!renderedEntries.length) return
     const textToCopy = renderedEntries.map((entry) => {
       const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
       return `${ts}[${entry.status}] ${formatLogLine(entry, true).copyText}`
     }).join('\n')
     copyToClipboard(textToCopy)
-  }, [renderedEntries, copyToClipboard])
+  }, [renderedEntries, copyToClipboard, historicalLogs, ticket?.id])
 
   // ── Global entry index counter ──────────────────────────────────
   const globalIndexMap = useMemo(() => {
@@ -366,6 +404,29 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     }
     return map
   }, [renderedEntries])
+  const virtualItems = useMemo(() => phaseGroups.flatMap((group, groupIndex) => {
+    const items: Array<
+      | { type: 'phase'; key: string; group: RenderedPhaseGroup }
+      | { type: 'bead'; key: string; section: RenderedBeadSection }
+      | { type: 'entry'; key: string; entry: LogEntry }
+    > = [{ type: 'phase', key: `${group.phase}-${groupIndex}`, group }]
+    if (group.phase === 'CODING' && group.beadSections !== undefined) {
+      for (const entry of group.preambleEntries ?? []) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const section of group.beadSections) {
+        items.push({ type: 'bead', key: `${group.phase}-${groupIndex}-${section.beadId}-${section.ordinal}`, section })
+        for (const entry of section.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+      }
+    } else {
+      for (const entry of group.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+    }
+    return items
+  }), [phaseGroups])
+  const shouldVirtualize = virtualItems.length > 200
+  const virtualFirstItemIndex = useVirtualFirstItemIndex(
+    virtualItems.map(item => item.key),
+    virtualItems.find(item => item.type === 'entry')?.key,
+    `full-log:${effectiveTab}`,
+  )
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
@@ -569,10 +630,30 @@ export function FullLogView({ ticket }: FullLogViewProps) {
         activeStatus={ticket?.status ?? null}
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
-        <ScrollArea className="h-full flex-1 min-h-0" viewportRef={viewportRef} type="always">
+        <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
             {hasLogs ? (
-              phaseGroups.map((group, groupIdx) => (
+              shouldVirtualize && scrollParent ? (
+                <Virtuoso
+                  data={virtualItems}
+                  customScrollParent={scrollParent}
+                  data-testid="virtualized-log-list"
+                  firstItemIndex={virtualFirstItemIndex}
+                  initialTopMostItemIndex={virtualItems.length - 1}
+                  followOutput={isAutoScroll ? 'smooth' : false}
+                  itemContent={(_, item) => item.type === 'phase'
+                    ? (
+                        <PhaseDelimiter
+                          phase={item.group.phase}
+                          label={item.group.phase === 'CODING' ? 'Implementing' : undefined}
+                          labelOptions={item.group.phase === 'BLOCKED_ERROR' ? beadLabelOptions : undefined}
+                        />
+                      )
+                    : item.type === 'bead'
+                      ? <BeadDelimiter ordinal={item.section.ordinal} total={item.section.total} title={item.section.title} qaOrigin={item.section.qaOrigin} />
+                      : <LogEntryRow entry={item.entry} index={globalIndexMap.get(item.entry.entryId) ?? 0} showModelName />}
+                />
+              ) : phaseGroups.map((group, groupIdx) => (
                 <Fragment key={`${group.phase}-${groupIdx}`}>
                   <PhaseDelimiter
                     phase={group.phase}

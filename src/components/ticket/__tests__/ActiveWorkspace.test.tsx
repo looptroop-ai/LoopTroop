@@ -3,6 +3,7 @@ import { screen } from '@testing-library/react'
 import { makeTicket } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { ActiveWorkspace } from '../ActiveWorkspace'
+import { preloadWorkspaceForView } from '../workspacePreload'
 
 vi.mock('@/components/workspace/DraftView', () => ({
   DraftView: () => <div>draft view</div>,
@@ -57,6 +58,11 @@ vi.mock('@/hooks/useTicketArtifacts', async () => {
 })
 
 describe('ActiveWorkspace', () => {
+  it('preloads the module matching the selected ticket workspace', async () => {
+    await expect(preloadWorkspaceForView('approval')).resolves.toMatchObject({ default: expect.any(Function) })
+    await expect(preloadWorkspaceForView('coding')).resolves.toMatchObject({ default: expect.any(Function) })
+  })
+
   it('renders the selected workspace inside a constrained flex container', async () => {
     const { container } = renderWithProviders(
       <ActiveWorkspace

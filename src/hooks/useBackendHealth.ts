@@ -9,7 +9,7 @@ import {
 /**
  * Polls /api/health every BACKEND_HEALTH_POLL_MS ms.
  * Returns { isOffline: true } only after the backend was successfully reached
- * at least once and failed probes are confirmed after short grace delays,
+ * at least once and a failed probe is retried after a short grace delay,
  * preventing false-positive banners during startup and brief proxy stalls.
  */
 export function useBackendHealth(): { isOffline: boolean } {

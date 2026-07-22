@@ -1,14 +1,18 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { Hono } from 'hono'
+import { appendFileSync } from 'node:fs'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
 import { ticketRouter } from '../tickets'
+import { health } from '../health'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
+import { getTicketPaths } from '../../storage/tickets'
 
 const repoManager = createTestRepoManager('log-projection-')
 const app = new Hono()
 app.route('/api', ticketRouter)
+app.route('/api', health)
 
 beforeEach(() => {
   clearProjectDatabaseCache()
@@ -22,6 +26,53 @@ afterAll(() => {
 })
 
 describe('ticket log projection API', () => {
+  it('defaults to the newest 250 projected rows without reading the complete history', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    for (let index = 0; index < 300; index += 1) {
+      appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z` }, 'system', 'CODING')
+    }
+
+    const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
+    expect(response.status).toBe(200)
+    const body = await response.json() as { entries: Array<{ content: string }>; hasOlder: boolean; olderCursor: string }
+    expect(body.entries).toHaveLength(250)
+    expect(body.entries[0]?.content).toBe('row-50')
+    expect(body.entries.at(-1)?.content).toBe('row-299')
+    expect(body.hasOlder).toBe(true)
+    expect(body.olderCursor).toEqual(expect.any(String))
+  })
+
+  it('keeps health responsive and deduplicates readers during a cold projection catch-up', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    const paths = getTicketPaths(ticket.id)
+    expect(paths).not.toBeNull()
+    const lines = Array.from({ length: 2_000 }, (_, index) => JSON.stringify({
+      timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+      type: 'info',
+      ticketId: ticket.id,
+      phase: 'CODING',
+      phaseAttempt: 1,
+      status: 'CODING',
+      source: 'system',
+      message: `cold-${index}`,
+      content: `cold-${index}`,
+    })).join('\n') + '\n'
+    appendFileSync(paths!.executionLogPath, lines)
+
+    const firstHistory = app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
+    const secondHistory = app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
+    const healthResponse = await app.request('/api/health')
+    expect(healthResponse.status).toBe(200)
+    expect(await healthResponse.json()).toEqual(expect.objectContaining({ status: 'ok' }))
+
+    const [first, second] = await Promise.all([firstHistory, secondHistory])
+    const firstBody = await first.json() as { entries: Array<{ content: string }> }
+    const secondBody = await second.json() as { entries: Array<{ content: string }> }
+    expect(firstBody.entries).toHaveLength(250)
+    expect(secondBody.entries).toEqual(firstBody.entries)
+    expect(firstBody.entries.at(-1)?.content).toBe('cold-1999')
+  })
+
   it('returns newest matching rows first, pages older rows, and exports complete history', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     for (let index = 0; index < 4; index += 1) {

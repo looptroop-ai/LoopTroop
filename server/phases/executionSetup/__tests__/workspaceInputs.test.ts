@@ -26,7 +26,7 @@ function createWorkspaceFixture(): WorkspaceFixture {
   const projectRoot = join(fixtureRoot, 'original')
   const worktreePath = join(fixtureRoot, 'ticket-worktree')
   mkdirSync(projectRoot, { recursive: true })
-  runGit(projectRoot, ['init'])
+  runGit(projectRoot, ['init', '--initial-branch=main'])
   runGit(projectRoot, ['config', 'user.email', 'test@example.com'])
   runGit(projectRoot, ['config', 'user.name', 'Test'])
   writeFileSync(join(projectRoot, '.gitignore'), 'ignored-inputs/\nignored-file.json\n')

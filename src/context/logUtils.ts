@@ -105,16 +105,21 @@ export function getServerLogCacheKey(ticketId: string, scope: ServerLogScope = {
 }
 
 export function getServerLogsUrl(ticketId: string, scope: ServerLogScope = {}): string {
-  const params = new URLSearchParams()
-  if (scope.status) params.set('status', scope.status)
+  const params = new URLSearchParams({
+    scope: scope.lifecycle ? 'lifecycle' : 'phase',
+    view: scope.channel === 'debug' || scope.channel === 'all'
+      ? 'debug'
+      : scope.channel === 'ai'
+        ? 'ai'
+        : 'overview',
+    limit: '250',
+  })
+  if (scope.status) params.set('phase', scope.status)
   if (scope.phase) params.set('phase', scope.phase)
   if (typeof scope.phaseAttempt === 'number' && Number.isFinite(scope.phaseAttempt)) {
     params.set('phaseAttempt', String(scope.phaseAttempt))
   }
-  if (scope.channel === 'debug' || scope.channel === 'ai' || scope.channel === 'all') params.set('channel', scope.channel)
-
-  const query = params.toString()
-  return `/api/files/${ticketId}/logs${query ? `?${query}` : ''}`
+  return `/api/tickets/${encodeURIComponent(ticketId)}/logs?${params.toString()}`
 }
 
 export function clearServerLogCache(ticketId: string) {
@@ -367,22 +372,6 @@ export function isDebugLogEntry(entry: Pick<LogEntry, 'audience' | 'source' | 'l
   return entry.audience === 'debug' || entry.source === 'debug' || entry.line.includes('[DEBUG]')
 }
 
-export function isPersistableLogEntry(entry: LogEntry): boolean {
-  return !isDebugLogEntry(entry) && !entry.streaming && entry.op !== 'upsert'
-}
-
-export function hasPersistableLogEntries(entries: LogEntry[]): boolean {
-  return entries.some(isPersistableLogEntry)
-}
-
-export function isBrowserCacheLogEntry(entry: LogEntry): boolean {
-  return !isDebugLogEntry(entry)
-}
-
-export function hasBrowserCacheLogEntries(entries: LogEntry[]): boolean {
-  return entries.some(isBrowserCacheLogEntry)
-}
-
 export function compareTimestamps(a?: string, b?: string): number {
   const at = a ? Date.parse(a) : Number.NaN
   const bt = b ? Date.parse(b) : Number.NaN
@@ -509,16 +498,50 @@ export function mergeEntry(bucket: LogEntry[], entry: LogEntry): LogEntry[] {
   return next
 }
 
-export function persistLogs(ticketId: string | null | undefined, logsByPhase: Record<string, LogEntry[]>) {
-  if (!ticketId || typeof window === 'undefined') return
-  for (const [status, entries] of Object.entries(logsByPhase)) {
-    try {
-      const cacheableEntries = entries.filter(isBrowserCacheLogEntry)
-      localStorage.setItem(`${LOG_STORAGE_PREFIX}${ticketId}-${status}`, JSON.stringify(cacheableEntries))
-    } catch {
-      // Ignore quota failures; server logs remain the durable source of truth.
-    }
+/**
+ * Merges a restored page and live rows in one indexed pass. Incoming rows win
+ * for canonical upserts/finalization, while the original start timestamp is
+ * retained. This function is deliberately side-effect free: restored rows
+ * never pass through the live persistence or broadcast path.
+ */
+export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  if (base.length === 0) return incoming.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+  if (incoming.length === 0) return base.slice().sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
+
+  const result: LogEntry[] = []
+  const indexes = new Map<string, number>()
+  const aliases = (entry: LogEntry) => {
+    const attempt = entry.phaseAttempt ?? 'active'
+    return [
+      `id:${attempt}:${entry.entryId}`,
+      ...(entry.fingerprint ? [`fp:${attempt}:${entry.fingerprint}`] : []),
+    ]
   }
+  const add = (entry: LogEntry, incomingRow: boolean) => {
+    const keys = aliases(entry)
+    const index = keys.map(key => indexes.get(key)).find((value): value is number => value !== undefined)
+    if (index === undefined) {
+      const nextIndex = result.length
+      result.push(entry)
+      for (const key of keys) indexes.set(key, nextIndex)
+      return
+    }
+
+    if (!incomingRow) return
+    const existing = result[index]!
+    const merged: LogEntry = {
+      ...existing,
+      ...entry,
+      timestamp: existing.timestamp ?? entry.timestamp,
+      streaming: entry.op === 'finalize' ? false : entry.streaming,
+    }
+    result[index] = merged
+    for (const key of aliases(merged)) indexes.set(key, index)
+  }
+
+  for (const entry of base) add(entry, false)
+  for (const entry of incoming) add(entry, true)
+  return result.sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
 }
 
 export function formatLogLine(data: Record<string, unknown>): { line: string; source: string } {

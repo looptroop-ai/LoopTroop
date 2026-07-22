@@ -32,22 +32,22 @@ function parseQuery(c: Context, allowCursor: boolean) {
   } as const
 }
 
-export function handleGetTicketLogs(c: Context) {
+export async function handleGetTicketLogs(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const query = parseQuery(c, true)
   if ('error' in query) return c.json({ error: query.error }, 400)
-  const page = queryLogPage(ticketId, query)
+  const page = await queryLogPage(ticketId, query)
   if (!page) return c.json({ error: 'Ticket not found' }, 404)
   return c.json({ ...page, boundary: { phase: query.phase ?? null, phaseAttempt: query.phaseAttempt ?? null } })
 }
 
-export function handleExportTicketLogs(c: Context) {
+export async function handleExportTicketLogs(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
   const query = parseQuery(c, false)
   if ('error' in query) return c.json({ error: query.error }, 400)
-  const entries = exportLogEntries(ticketId, query)
+  const entries = await exportLogEntries(ticketId, query)
   if (!entries) return c.json({ error: 'Ticket not found' }, 404)
   const text = entries.map((entry) => {
     const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : ''

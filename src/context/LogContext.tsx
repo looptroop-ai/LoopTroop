@@ -5,21 +5,13 @@ import {
   type LogChannel,
   type PlainLogOptions,
   type ServerLogScope,
-  LOG_STORAGE_PREFIX,
-  LEGACY_LOG_STORAGE_PREFIX,
   serverLogCache,
-  SERVER_LOG_REFRESH_EVENT,
   getServerLogCacheKey,
   getServerLogsUrl,
-  clearServerLogCache,
   normalizeLogRecord,
-  normalizeStoredEntry,
   isDebugLogEntry,
-  isBrowserCacheLogEntry,
-  hasBrowserCacheLogEntries,
   compareTimestamps,
   mergeEntry,
-  persistLogs,
   clearPersistedTicketLogs,
 } from './logUtils'
 
@@ -33,7 +25,7 @@ interface LogProviderProps {
   children: ReactNode
 }
 
-const LOG_FLUSH_DELAY_MS = 500
+const MAX_LIVE_ROWS_PER_PHASE = 1_000
 
 function mergeLogBuckets(
   current: Record<string, LogEntry[]>,
@@ -121,8 +113,6 @@ function shouldIncludeEntryForScope(entry: LogEntry, scope: ServerLogScope): boo
 export function LogProvider({
   ticketId,
   currentStatus,
-  visiblePhase,
-  fullLogOpen = false,
   children,
 }: LogProviderProps) {
   const [logsByPhase, setLogsByPhase] = useState<Record<string, LogEntry[]>>({})
@@ -133,7 +123,6 @@ export function LogProvider({
   const currentStatusRef = useRef(currentStatus)
   const loadedScopeKeysRef = useRef<Set<string>>(new Set())
   const loadingScopeKeysRef = useRef<Set<string>>(new Set())
-  const scopeByKeyRef = useRef<Map<string, ServerLogScope>>(new Map())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
 
   useEffect(() => {
@@ -146,17 +135,8 @@ export function LogProvider({
     setManualActivePhase(null)
     loadedScopeKeysRef.current = new Set()
     loadingScopeKeysRef.current = new Set()
-    scopeByKeyRef.current = new Map()
     logsByPhaseRef.current = {}
-    pendingLogsRef.current = {}
-    if (flushTimeoutRef.current) {
-      clearTimeout(flushTimeoutRef.current)
-      flushTimeoutRef.current = null
-    }
   }, [ticketId])
-
-  const pendingLogsRef = useRef<Record<string, LogEntry[]>>({})
-  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const mergeLiveEntry = useCallback((entry: LogEntry) => {
     const { logsByPhase: merged, hasChanges } = mergeLogBuckets(logsByPhaseRef.current, {
@@ -164,79 +144,13 @@ export function LogProvider({
     })
     if (!hasChanges) return
 
+    const bucket = merged[entry.status]
+    if (bucket && bucket.length > MAX_LIVE_ROWS_PER_PHASE) {
+      merged[entry.status] = bucket.slice(-MAX_LIVE_ROWS_PER_PHASE)
+    }
     logsByPhaseRef.current = merged
     setLogsByPhase(merged)
   }, [])
-
-  useEffect(() => {
-    return () => {
-      if (flushTimeoutRef.current) {
-        clearTimeout(flushTimeoutRef.current)
-        flushTimeoutRef.current = null
-      }
-      // Flush any pending logs to localStorage before unmounting so they
-      // survive navigation away and back (e.g. during SCANNING_RELEVANT_FILES).
-      const pending = pendingLogsRef.current
-      if (Object.keys(pending).length > 0) {
-        pendingLogsRef.current = {}
-        // We can't rely on setState after unmount, but we can persist directly
-        // to localStorage by reading the latest logsByPhase from a ref-snapshot.
-        try {
-          const snapshot: Record<string, LogEntry[]> = {}
-          for (const [status, entries] of Object.entries(pending)) {
-            if (!hasBrowserCacheLogEntries(entries)) continue
-            const storageKey = `${LOG_STORAGE_PREFIX}${ticketId}-${status}`
-            let bucket: LogEntry[] = []
-            try {
-              const stored = localStorage.getItem(storageKey)
-              if (stored) bucket = JSON.parse(stored) as LogEntry[]
-            } catch { /* use empty */ }
-            for (const entry of entries) {
-              bucket = mergeEntry(bucket, entry)
-            }
-            snapshot[status] = bucket
-          }
-          if (Object.keys(snapshot).length > 0) {
-            persistLogs(ticketId, snapshot)
-          }
-        } catch { /* best-effort */ }
-      }
-    }
-  }, [ticketId])
-
-  const flushPendingLogs = useCallback(() => {
-    if (flushTimeoutRef.current) {
-      clearTimeout(flushTimeoutRef.current)
-      flushTimeoutRef.current = null
-    }
-
-    const pending = pendingLogsRef.current
-    if (Object.keys(pending).length === 0) return
-
-    pendingLogsRef.current = {}
-    const shouldCache = Object.values(pending).some(hasBrowserCacheLogEntries)
-    if (!shouldCache) return
-
-    const { logsByPhase: merged, hasChanges } = mergeLogBuckets(logsByPhaseRef.current, pending)
-    if (hasChanges) {
-      logsByPhaseRef.current = merged
-      setLogsByPhase(merged)
-    }
-
-    persistLogs(ticketId, logsByPhaseRef.current)
-  }, [ticketId])
-
-  const queueCacheEntry = useCallback((entry: LogEntry) => {
-    if (!isBrowserCacheLogEntry(entry)) return
-
-    const bucket = pendingLogsRef.current[entry.status] ?? []
-    bucket.push(entry)
-    pendingLogsRef.current[entry.status] = bucket
-
-    if (!flushTimeoutRef.current) {
-      flushTimeoutRef.current = setTimeout(flushPendingLogs, LOG_FLUSH_DELAY_MS)
-    }
-  }, [flushPendingLogs])
 
   const setScopeLoading = useCallback((scopeKey: string, isLoading: boolean) => {
     const loading = loadingScopeKeysRef.current
@@ -250,37 +164,6 @@ export function LogProvider({
     }
     setLoadingScopeKeys(new Set(loading))
   }, [])
-
-  useEffect(() => {
-    if (!ticketId) return
-
-    const loaded: Record<string, LogEntry[]> = {}
-    const prefixes = [`${LOG_STORAGE_PREFIX}${ticketId}-`, `${LEGACY_LOG_STORAGE_PREFIX}${ticketId}-`]
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (!key) continue
-      const prefix = prefixes.find(candidate => key.startsWith(candidate))
-      if (!prefix) continue
-      const status = key.slice(prefix.length)
-      try {
-        const parsed = JSON.parse(localStorage.getItem(key) || '[]') as Array<Partial<LogEntry>>
-        loaded[status] = parsed
-          .map(entry => normalizeStoredEntry(entry, status))
-          .filter(entry => !isDebugLogEntry(entry))
-      } catch {
-        loaded[status] = []
-      }
-    }
-
-    startTransition(() => {
-      setLogsByPhase(prev => {
-        const { logsByPhase: merged, hasChanges } = mergeLogBuckets(prev, loaded)
-        if (!hasChanges) return prev
-        logsByPhaseRef.current = merged
-        return merged
-      })
-    })
-  }, [ticketId])
 
   const applyServerLogs = useCallback((serverLogs: Array<Record<string, unknown>>, scope: ServerLogScope) => {
     if (!ticketId) return
@@ -336,7 +219,6 @@ export function LogProvider({
 
         if (!hasChanges) return prev
         logsByPhaseRef.current = merged
-        persistLogs(ticketId, merged)
         return merged
       })
     })
@@ -350,8 +232,6 @@ export function LogProvider({
 
     const normalizedScope = normalizeScope(scope)
     const scopeKey = getServerLogCacheKey(ticketId, normalizedScope)
-    scopeByKeyRef.current.set(scopeKey, normalizedScope)
-
     if (!options.force && loadedScopeKeysRef.current.has(scopeKey)) {
       const cached = serverLogCache.get(scopeKey)
       if (cached) applyServerLogs(cached, normalizedScope)
@@ -371,7 +251,10 @@ export function LogProvider({
     fetch(getServerLogsUrl(ticketId, normalizedScope))
       .then(res => res.ok ? res.json() : [])
       .then((raw: unknown) => {
-        const serverLogs = Array.isArray(raw) ? raw as Array<Record<string, unknown>> : []
+        const payload = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+        const serverLogs = Array.isArray(raw)
+          ? raw as Array<Record<string, unknown>>
+          : Array.isArray(payload.entries) ? payload.entries as Array<Record<string, unknown>> : []
         serverLogCache.set(scopeKey, serverLogs)
         loadedScopeKeysRef.current.add(scopeKey)
         applyServerLogs(serverLogs, normalizedScope)
@@ -383,32 +266,6 @@ export function LogProvider({
         setScopeLoading(scopeKey, false)
       })
   }, [applyServerLogs, setScopeLoading, ticketId])
-
-  const requestedPhase = fullLogOpen ? null : (visiblePhase ?? currentStatus ?? null)
-  useEffect(() => {
-    if (!requestedPhase) return
-    requestServerLogs({ status: requestedPhase })
-  }, [requestServerLogs, requestedPhase])
-
-  useEffect(() => {
-    if (!ticketId) return
-
-    const handleServerLogRefresh = (event: Event) => {
-      const detail = (event as CustomEvent<{ ticketId?: string | null }>).detail
-      if (String(detail?.ticketId ?? '') !== String(ticketId)) return
-      const scopes = Array.from(scopeByKeyRef.current.entries())
-      clearServerLogCache(ticketId)
-      for (const [scopeKey, scope] of scopes) {
-        loadedScopeKeysRef.current.delete(scopeKey)
-        requestServerLogs(scope, { showLoading: false, force: true })
-      }
-    }
-
-    window.addEventListener(SERVER_LOG_REFRESH_EVENT, handleServerLogRefresh)
-    return () => {
-      window.removeEventListener(SERVER_LOG_REFRESH_EVENT, handleServerLogRefresh)
-    }
-  }, [requestServerLogs, ticketId])
 
   const addLog = useCallback((phase: string, line: string, options?: PlainLogOptions) => {
     if (!phase) return
@@ -438,16 +295,14 @@ export function LogProvider({
     const entry = normalizeLogRecord(raw, phase)
 
     mergeLiveEntry(entry)
-    queueCacheEntry(entry)
-  }, [mergeLiveEntry, queueCacheEntry])
+  }, [mergeLiveEntry])
 
   const addLogRecord = useCallback((phase: string, data: Record<string, unknown>) => {
     if (!phase) return
     const entry = normalizeLogRecord(data, phase)
 
     mergeLiveEntry(entry)
-    queueCacheEntry(entry)
-  }, [mergeLiveEntry, queueCacheEntry])
+  }, [mergeLiveEntry])
 
   const getLogsForPhase = useCallback(
     (phase: string, options?: { phaseAttempt?: number }) => (logsByPhase[phase] ?? [])
@@ -480,14 +335,8 @@ export function LogProvider({
   const clearLogs = useCallback(() => {
     if (ticketId) clearPersistedTicketLogs(ticketId)
 
-    if (flushTimeoutRef.current) {
-      clearTimeout(flushTimeoutRef.current)
-      flushTimeoutRef.current = null
-    }
-    pendingLogsRef.current = {}
     loadedScopeKeysRef.current.clear()
     loadingScopeKeysRef.current.clear()
-    scopeByKeyRef.current.clear()
     logsByPhaseRef.current = {}
     setLoadingScopeKeys(new Set())
 

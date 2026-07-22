@@ -217,6 +217,14 @@ beforeEach(() => {
 })
 
 describe('PhaseLogPanel', () => {
+  it('virtualizes large historical row sets', () => {
+    const logs = Array.from({ length: 250 }, (_, index) => makeLog(`bulk-${index}`, `[SYS] Bulk row ${index}`))
+    renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={logs} />)
+
+    expect(screen.getByTestId('virtualized-log-list')).toBeInTheDocument()
+    expect(screen.queryAllByText(/Bulk row/).length).toBeLessThan(logs.length)
+  })
+
   it('asks for phase debug logs only after the DEBUG tab is selected', () => {
     const loadLogsForPhase = vi.fn()
     const value: LogContextValue = {

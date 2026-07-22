@@ -1,18 +1,28 @@
-import { Suspense, useMemo } from 'react'
+import { Suspense, useEffect, useMemo } from 'react'
 import type { Ticket } from '@/hooks/useTickets'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 import { getActiveErrorOccurrence, getTicketErrorOccurrences } from '@/lib/errorOccurrences'
 import { isBeforeExecution } from '@shared/workflowMeta'
 import { lazyWithChunkReload } from '@/lib/lazyWithChunkReload'
+import {
+  importApprovalView,
+  importCanceledView,
+  importCodingView,
+  importCouncilView,
+  importDraftView,
+  importErrorView,
+  importInterviewQAView,
+  importPhaseReviewView,
+} from './workspacePreload'
 
-const DraftView = lazyWithChunkReload('DraftView', () => import('@/components/workspace/DraftView').then(m => ({ default: m.DraftView })))
-const CouncilView = lazyWithChunkReload('CouncilView', () => import('@/components/workspace/CouncilView').then(m => ({ default: m.CouncilView })))
-const InterviewQAView = lazyWithChunkReload('InterviewQAView', () => import('@/components/workspace/InterviewQAView').then(m => ({ default: m.InterviewQAView })))
-const ApprovalView = lazyWithChunkReload('ApprovalView', () => import('@/components/workspace/ApprovalView').then(m => ({ default: m.ApprovalView })))
-const CodingView = lazyWithChunkReload('CodingView', () => import('@/components/workspace/CodingView').then(m => ({ default: m.CodingView })))
-const ErrorView = lazyWithChunkReload('ErrorView', () => import('@/components/workspace/ErrorView').then(m => ({ default: m.ErrorView })))
-const CanceledView = lazyWithChunkReload('CanceledView', () => import('@/components/workspace/CanceledView').then(m => ({ default: m.CanceledView })))
-const PhaseReviewView = lazyWithChunkReload('PhaseReviewView', () => import('@/components/workspace/PhaseReviewView').then(m => ({ default: m.PhaseReviewView })))
+const DraftView = lazyWithChunkReload('DraftView', importDraftView)
+const CouncilView = lazyWithChunkReload('CouncilView', importCouncilView)
+const InterviewQAView = lazyWithChunkReload('InterviewQAView', importInterviewQAView)
+const ApprovalView = lazyWithChunkReload('ApprovalView', importApprovalView)
+const CodingView = lazyWithChunkReload('CodingView', importCodingView)
+const ErrorView = lazyWithChunkReload('ErrorView', importErrorView)
+const CanceledView = lazyWithChunkReload('CanceledView', importCanceledView)
+const PhaseReviewView = lazyWithChunkReload('PhaseReviewView', importPhaseReviewView)
 const FullLogView = lazyWithChunkReload('FullLogView', () => import('@/components/workspace/FullLogView').then(m => ({ default: m.FullLogView })))
 const ManualQAView = lazyWithChunkReload('ManualQAView', () => import('@/components/workspace/ManualQAView').then(m => ({ default: m.ManualQAView })))
 
@@ -62,6 +72,15 @@ export function ActiveWorkspace({ ticket, selectedPhase, selectedErrorOccurrence
     && activeErrorOccurrence.id === liveErrorOccurrence.id
     && activeErrorOccurrence.resolvedAt === null,
   )
+  useEffect(() => {
+    const preload = () => { void importPhaseReviewView() }
+    if ('requestIdleCallback' in window) {
+      const id = window.requestIdleCallback(preload, { timeout: 2_000 })
+      return () => window.cancelIdleCallback?.(id)
+    }
+    const id = globalThis.setTimeout(preload, 0)
+    return () => globalThis.clearTimeout(id)
+  }, [])
   let content: React.ReactNode
 
   if (fullLogOpen) {

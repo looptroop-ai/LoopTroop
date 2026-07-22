@@ -447,7 +447,7 @@ describe('TicketDashboard', () => {
 
     await waitFor(() => {
       expect(latestSSEOptions?.ticketId).toBe(selectedTicketId)
-      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('1')
+      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('0')
     })
 
     await act(async () => {
@@ -472,7 +472,7 @@ describe('TicketDashboard', () => {
 
     await waitFor(() => {
       expect(screen.getByText('[SYS] Live coding log arrived.')).toBeInTheDocument()
-      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('2')
+      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('1')
     })
   })
 
@@ -499,7 +499,7 @@ describe('TicketDashboard', () => {
 
     await waitFor(() => {
       expect(latestSSEOptions?.ticketId).toBe(selectedTicketId)
-      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('1')
+      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('0')
     })
 
     await act(async () => {
@@ -516,7 +516,7 @@ describe('TicketDashboard', () => {
 
     await waitFor(() => {
       expect(screen.getByText('[ERROR] Final test failed.')).toBeInTheDocument()
-      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('3')
+      expect(screen.getByTestId('workspace-log-count')).toHaveTextContent('2')
     })
   })
 

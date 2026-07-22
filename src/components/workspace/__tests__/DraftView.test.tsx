@@ -102,6 +102,9 @@ function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Respons
     const url = String(input)
     if (url === '/api/projects') return createJsonResponse([projectData])
     if (url === '/api/profile') return createJsonResponse(profileData)
+    if (url.startsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/logs?`)) {
+      return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+    }
     return handler(url, init as RequestInit | undefined)
   })
 }
@@ -160,7 +163,7 @@ describe('DraftView', () => {
     fireEvent.click(screen.getByRole('button', { name: /start ticket/i }))
 
     expect(screen.getByRole('button', { name: /^Log$/i })).toBeInTheDocument()
-    expect(screen.getByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
+    expect(await screen.findByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
 
     startResponse.resolve()
 
@@ -195,7 +198,7 @@ describe('DraftView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /start ticket/i }))
 
-    expect(screen.getByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
+    expect(await screen.findByText(/No log entries yet\. Logs will stream here during execution\./i)).toBeInTheDocument()
 
     await waitFor(() => {
       expect(latestLogApi).not.toBeNull()

@@ -71,6 +71,13 @@ export default defineConfig({
   base: '/docs/',
   title: 'LoopTroop',
   description: 'Durable repo-scale AI delivery through council planning, isolated worktrees, and explicit approvals.',
+  vite: {
+    build: {
+      // The generated local-search index is intentionally a single searchable
+      // asset and currently sits below this documented docs-only budget.
+      chunkSizeWarningLimit: 850,
+    },
+  },
   head: [
     ['link', { rel: 'icon', href: '/favicon.ico?v=20260429', sizes: 'any' }],
     ['link', { rel: 'icon', type: 'image/png', sizes: '256x256', href: '/favicon.png?v=20260429' }],

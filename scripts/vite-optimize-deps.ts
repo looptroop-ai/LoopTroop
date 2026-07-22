@@ -27,6 +27,7 @@ export const FRONTEND_OPTIMIZED_DEPENDENCIES = [
   'react',
   'react-dom',
   'react-dom/client',
+  'react-virtuoso',
   'react/jsx-dev-runtime',
   'react/jsx-runtime',
   'tailwind-merge',

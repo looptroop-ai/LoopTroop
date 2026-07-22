@@ -8,8 +8,10 @@ export const SSE_RECONNECT_DELAY_MS = 3000
 export const BACKEND_HEALTH_POLL_MS = 3000
 /** Delay before confirming a failed backend health probe */
 export const BACKEND_HEALTH_RECONNECT_GRACE_MS = 1500
-/** Consecutive confirmation probes required after the initial failed health probe */
-export const BACKEND_HEALTH_RECONNECT_CONFIRMATION_PROBES = 2
+/** Grace-delayed retry count after the initial failed health probe */
+export const BACKEND_HEALTH_RECONNECT_CONFIRMATION_PROBES = 1
+/** Dedicated health deadline; normal API calls keep their shorter timeout. */
+export const BACKEND_HEALTH_TIMEOUT_MS = 5000
 /** Cooldown that prevents repeated automatic recovery reloads */
 export const RECOVERY_RELOAD_COOLDOWN_MS = 10_000
 /** Short delay before running an automatic recovery reload */

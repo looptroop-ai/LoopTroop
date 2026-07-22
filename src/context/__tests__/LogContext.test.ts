@@ -1,20 +1,26 @@
 import { createElement, useEffect } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatLogLine, LOG_STORAGE_PREFIX, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT, type LogEntry } from '@/context/logUtils'
+import { formatLogLine, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
 import { useLogs } from '@/context/useLogContext'
 import { createJsonResponse } from '@/test/renderHelpers'
+import type { LogEntry } from '@/context/logUtils'
 
 let latestLogApi: ReturnType<typeof useLogs> = null
 
 function LogHarness() {
   const logApi = useLogs()
+  const loadLogsForPhase = logApi?.loadLogsForPhase
   const logs = logApi?.getLogsForPhase('CODING') ?? []
 
   useEffect(() => {
     latestLogApi = logApi
   }, [logApi])
+
+  useEffect(() => {
+    loadLogsForPhase?.('CODING')
+  }, [loadLogsForPhase])
 
   return createElement('div', { 'data-testid': 'log-count' }, logs.length)
 }
@@ -124,6 +130,30 @@ describe('normalizeStoredEntry', () => {
   })
 })
 
+describe('mergeEntriesBatch', () => {
+  it('overlays live canonical updates on restored rows without duplicating them', () => {
+    const restored = normalizeLogRecord({
+      phase: 'CODING', entryId: 'session:message:text', fingerprint: 'canonical-text',
+      content: 'restored partial', op: 'upsert', streaming: true,
+      timestamp: '2026-03-13T10:00:00.000Z',
+    }, 'CODING')
+    const live = normalizeLogRecord({
+      phase: 'CODING', entryId: 'session:message:text:live', fingerprint: 'canonical-text',
+      content: 'live final', op: 'finalize', streaming: false,
+      timestamp: '2026-03-13T10:00:02.000Z',
+    }, 'CODING')
+
+    expect(mergeEntriesBatch([restored], [live])).toEqual([
+      expect.objectContaining({
+        entryId: 'session:message:text:live',
+        line: expect.stringContaining('live final'),
+        timestamp: '2026-03-13T10:00:00.000Z',
+        streaming: false,
+      }),
+    ])
+  })
+})
+
 describe('LogProvider', () => {
   afterEach(() => {
     latestLogApi = null
@@ -132,10 +162,10 @@ describe('LogProvider', () => {
     vi.restoreAllMocks()
   })
 
-  it('fetches only the visible status on mount and phase changes', async () => {
+  it('fetches only explicitly requested phase scopes', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
 
-    const { rerender } = render(createElement(
+    render(createElement(
       LogProvider,
       {
         ticketId: '1:T-scope',
@@ -146,21 +176,12 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/files/1:T-scope/logs?status=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=250&phase=CODING')
 
-    rerender(createElement(
-      LogProvider,
-      {
-        ticketId: '1:T-scope',
-        currentStatus: 'CODING',
-        visiblePhase: 'DRAFTING_PRD',
-        children: createElement(LogHarness),
-      },
-    ))
+    act(() => latestLogApi?.loadLogsForPhase?.('DRAFTING_PRD'))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/files/1:T-scope/logs?status=DRAFTING_PRD')
-    expect(vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url))).not.toContain('/api/files/1:T-scope/logs')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=250&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
   })
 
@@ -177,7 +198,7 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/files/1:T-debug-phase/logs?status=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=overview&limit=250&phase=CODING')
 
     await act(async () => {
       latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'debug' })
@@ -185,7 +206,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/files/1:T-debug-phase/logs?status=CODING&channel=debug')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=debug&limit=250&phase=CODING')
   })
 
   it('requests phase AI detail logs through the AI channel and merges them into the phase bucket', async () => {
@@ -215,7 +236,7 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/files/1:T-ai-phase/logs?status=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=overview&limit=250&phase=CODING')
 
     await act(async () => {
       latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'ai' })
@@ -223,7 +244,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/files/1:T-ai-phase/logs?status=CODING&channel=ai')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=ai&limit=250&phase=CODING')
     expect(getCodingLogs()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         entryId: 'session-1:thinking',
@@ -326,7 +347,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/files/1:T-persisted-attempt/logs?status=PREPARING_EXECUTION_ENV&phaseAttempt=2')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-persisted-attempt/logs?scope=phase&view=overview&limit=250&phase=PREPARING_EXECUTION_ENV&phaseAttempt=2')
     expect(latestLogApi?.getLogsForPhase('PREPARING_EXECUTION_ENV', { phaseAttempt: 2 })).toEqual([
       expect.objectContaining({
         entryId: 'persisted-attempt-2',
@@ -380,15 +401,14 @@ describe('LogProvider', () => {
       })
 
       expect(screen.getByTestId('log-count')).toHaveTextContent('2')
-      const stored = JSON.parse(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-debug-filter-CODING`) ?? '[]') as LogEntry[]
-      expect(stored.map((entry) => entry.entryId)).toEqual(['normal-row'])
+      expect(localStorage.length).toBe(0)
     } finally {
       vi.clearAllTimers()
       vi.useRealTimers()
     }
   })
 
-  it('renders live SSE log records immediately while delaying localStorage persistence', async () => {
+  it('renders live SSE log records immediately without creating durable browser snapshots', async () => {
     vi.useFakeTimers()
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
     const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
@@ -426,21 +446,17 @@ describe('LogProvider', () => {
       expect(screen.getByTestId('log-count')).toHaveTextContent('2')
       expect(getCodingLogs().map((entry) => entry.entryId)).toContain('log:live-row')
       expect(setItemSpy).not.toHaveBeenCalled()
-      expect(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-live-immediate-CODING`)).toBeNull()
+      expect(localStorage.length).toBe(0)
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(500)
-      })
-
-      const stored = JSON.parse(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-live-immediate-CODING`) ?? '[]') as LogEntry[]
-      expect(stored.map((entry) => entry.entryId)).toContain('log:live-row')
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+      expect(localStorage.length).toBe(0)
     } finally {
       vi.clearAllTimers()
       vi.useRealTimers()
     }
   })
 
-  it('caches streaming AI updates locally and replaces them when a final row arrives', async () => {
+  it('keeps streaming AI upserts live-only and replaces them in memory when finalized', async () => {
     vi.useFakeTimers()
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
     const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
@@ -478,21 +494,13 @@ describe('LogProvider', () => {
       expect(screen.getByTestId('log-count')).toHaveTextContent('2')
       expect(getCodingLogs().find((entry) => entry.entryId === 'session-1:message-1:text')?.line).toContain('partial response')
       expect(setItemSpy).not.toHaveBeenCalled()
-      expect(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-streaming-CODING`)).toBeNull()
+      expect(localStorage.length).toBe(0)
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(500)
       })
 
-      const storedPartial = JSON.parse(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-streaming-CODING`) ?? '[]') as LogEntry[]
-      expect(storedPartial).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          entryId: 'session-1:message-1:text',
-          streaming: true,
-          op: 'upsert',
-          line: expect.stringContaining('partial response'),
-        }),
-      ]))
+      expect(localStorage.length).toBe(0)
       setItemSpy.mockClear()
 
       await act(async () => {
@@ -534,75 +542,36 @@ describe('LogProvider', () => {
         await vi.advanceTimersByTimeAsync(500)
       })
 
-      const stored = JSON.parse(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-streaming-CODING`) ?? '[]') as LogEntry[]
       const finalizedRows = getCodingLogs().filter((entry) => entry.entryId === 'session-1:message-1:text')
       expect(finalizedRows).toHaveLength(1)
       expect(finalizedRows[0]?.line).toContain('final response')
       expect(finalizedRows[0]?.streaming).toBe(false)
-      expect(stored).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          entryId: 'session-1:message-1:text',
-          streaming: false,
-          op: 'finalize',
-        }),
-      ]))
-      expect(stored.some((entry) => entry.streaming || entry.op === 'upsert')).toBe(false)
+      expect(localStorage.length).toBe(0)
     } finally {
       vi.clearAllTimers()
       vi.useRealTimers()
     }
   })
 
-  it('flushes pending streaming cache entries when the provider unmounts', async () => {
-    vi.useFakeTimers()
+  it('bounds live rows per phase without splitting canonical streaming updates', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+    render(createElement(LogProvider, {
+      ticketId: '1:T-bounded', currentStatus: 'CODING', children: createElement(LogHarness),
+    }))
+    await flushMicrotasks()
 
-    try {
-      const rendered = render(createElement(
-        LogProvider,
-        {
-          ticketId: '1:T-close-cache',
-          currentStatus: 'CODING',
-          children: createElement(LogHarness),
-        },
-      ))
-
-      await flushMicrotasks()
-      localStorage.clear()
-
-      await act(async () => {
+    await act(async () => {
+      for (let index = 0; index < 1_005; index++) {
         latestLogApi?.addLogRecord('CODING', {
-          type: 'model_output',
-          phase: 'CODING',
-          status: 'CODING',
-          source: 'model:openai/gpt-5-mini',
-          audience: 'ai',
-          kind: 'text',
-          content: 'partial response before close',
-          entryId: 'session-close:message-1:text',
-          op: 'upsert',
-          streaming: true,
-          timestamp: '2026-03-13T10:00:03.000Z',
+          type: 'info', phase: 'CODING', content: `row ${index}`,
+          entryId: `row-${index}`, timestamp: new Date(index).toISOString(),
         })
-      })
+      }
+    })
 
-      expect(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-close-cache-CODING`)).toBeNull()
-
-      rendered.unmount()
-
-      const stored = JSON.parse(localStorage.getItem(`${LOG_STORAGE_PREFIX}1:T-close-cache-CODING`) ?? '[]') as LogEntry[]
-      expect(stored).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          entryId: 'session-close:message-1:text',
-          streaming: true,
-          op: 'upsert',
-          line: expect.stringContaining('partial response before close'),
-        }),
-      ]))
-    } finally {
-      vi.clearAllTimers()
-      vi.useRealTimers()
-    }
+    expect(getCodingLogs()).toHaveLength(1_000)
+    expect(getCodingLogs()[0]?.entryId).toBe('row-5')
+    expect(localStorage.length).toBe(0)
   })
 
   it('dedupes SSE-delivered logs against the initial server fetch', async () => {
@@ -658,7 +627,7 @@ describe('LogProvider', () => {
     }
   })
 
-  it('remerges server logs when a stream recovery refresh event arrives', async () => {
+  it('does not replay restored rows into the live store on a recovery refresh', async () => {
     vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse([{
         type: 'info',
@@ -705,8 +674,8 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
-    expect(screen.getByTestId('log-count')).toHaveTextContent('2')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('log-count')).toHaveTextContent('1')
   })
 })
 

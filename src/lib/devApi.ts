@@ -1,4 +1,4 @@
-import { API_TIMEOUT_MS } from '@/lib/constants'
+import { BACKEND_HEALTH_TIMEOUT_MS } from '@/lib/constants'
 
 const DEV_BACKEND_HEALTH_PATH = '/api/health'
 const DEV_BACKEND_POLL_MS = 250
@@ -84,7 +84,7 @@ function appendApiTokenQuery(url: URL): URL {
 
 export async function pingDevBackend() {
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+  const timeoutId = window.setTimeout(() => controller.abort(), BACKEND_HEALTH_TIMEOUT_MS)
 
   try {
     // Use same-origin path through the Vite proxy to avoid cross-origin CORS/PNA issues.

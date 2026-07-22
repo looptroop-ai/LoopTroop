@@ -101,6 +101,8 @@ The project database is the operational store for one attached repository. LoopT
 | `ticket_status_history` | Append-only status transition log |
 | `ticket_error_occurrences` | Append-only blocked-error history plus resolution state |
 | `bead_execution_metrics` | One row per completed bead; powers throughput/ETA forecasting |
+| `execution_log_projection` | Rebuildable, query-oriented rows projected from the three durable JSONL log channels |
+| `execution_log_projection_cursors` | Per-ticket/channel byte offsets used for incremental projection catch-up |
 
 ### `projects`
 
@@ -315,6 +317,12 @@ Operational notes:
 - ETA is computed **read-time** in `buildRuntime` from these rows (rich bucketed history with a `(size+effort) -> effort -> any` fallback, current-run samples while the ticket is building its own signal, sparse history before the hardcoded default); nothing about the forecast itself is persisted
 - the reserved token/cost columns let Cost Management extend the same per-bead record later without changing existing readers
 
+### Execution log projection tables
+
+`execution_log_projection` is a rebuildable read model over the ticket's normal, debug, and AI JSONL files. Its composite primary key is `(ticket_id, channel, identity)`; query columns include ordinal, timestamp, phase/attempt, classification, model/bead identifiers, canonical entry JSON, and source byte range. Stable identities fold streaming upserts/finalizations into one projected row without changing what the JSONL writer stores.
+
+`execution_log_projection_cursors` stores the last indexed byte offset for each `(ticket_id, channel)`. A truncated/replaced file resets only that channel. Cold catch-up reads the remaining suffix cooperatively in bounded batches, and concurrent readers share one catch-up promise per ticket. Both tables cascade with ticket deletion and can be reconstructed from the filesystem logs.
+
 ## 5. Relationship Overview
 
 Within a project DB, the relational shape is:
@@ -328,11 +336,13 @@ erDiagram
     tickets ||--o{ ticket_status_history : transitions
     tickets ||--o{ ticket_error_occurrences : records
     tickets ||--o{ bead_execution_metrics : measures
+    tickets ||--o{ execution_log_projection : projects
+    tickets ||--o{ execution_log_projection_cursors : indexes
 ```
 
 Deletion behavior:
 
-- deleting a ticket cascades through `phase_artifacts`, `ticket_phase_attempts`, `ticket_status_history`, `ticket_error_occurrences`, and `bead_execution_metrics`
+- deleting a ticket cascades through `phase_artifacts`, `ticket_phase_attempts`, `ticket_status_history`, `ticket_error_occurrences`, `bead_execution_metrics`, and both execution-log projection tables
 - `opencode_sessions.ticket_id` uses `ON DELETE SET NULL`
 - app DB rows and project DB rows are linked **logically** by project root path, not by SQL foreign key
 
@@ -386,6 +396,7 @@ LoopTroop creates a small set of runtime-focused indexes rather than a large gen
 - OpenCode session lookup: `opencode_sessions(session_id)`, `opencode_sessions(ticket_id, phase, state)`, `opencode_sessions(ticket_id, phase, phase_attempt, member_id, bead_id, iteration, step, state)`
 - blocked-error lookup: unique `(ticket_id, occurrence_number)` plus `(ticket_id, resolved_at, occurrence_number)`
 - throughput/ETA lookup: `bead_execution_metrics(size_bucket, effort_tier, completed_at)` and `bead_execution_metrics(ticket_id)`
+- projected history lookup: `execution_log_projection(ticket_id, classification, phase, phase_attempt, model_id, ordinal DESC)`
 
 These match the hot runtime paths: ticket board/status queries, phase-attempt version browsing, session reconnect, blocked-error recovery, and read-time ETA throughput sampling.
 

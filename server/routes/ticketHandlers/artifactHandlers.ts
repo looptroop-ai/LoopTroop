@@ -266,7 +266,7 @@ function parseArtifactId(value: string): number | null {
 export function handleGetArtifactContent(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const artifactId = parseArtifactId(c.req.param('artifactId'))
+  const artifactId = parseArtifactId(c.req.param('artifactId') ?? '')
   if (artifactId === null) return c.json({ error: 'Artifact id must be a positive integer' }, 400)
   const artifact = getPhaseArtifactById(ticketId, artifactId)
   if (!artifact) return c.json({ error: 'Artifact not found' }, 404)

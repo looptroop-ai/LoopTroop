@@ -23,7 +23,10 @@ vi.spyOn(ticketsModule, 'getTicketPaths').mockReturnValue({
   beadsPath: '/tmp/test-beads.jsonl',
 })
 
-const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation(() => {})
+const mockAppend = vi.spyOn(atomicAppendModule, 'safeAtomicAppend').mockImplementation((_path, line) => ({
+  offset: 0,
+  length: Buffer.byteLength(`${line}\n`),
+}))
 const mockBroadcast = vi.mocked(broadcaster.broadcast)
 
 import {

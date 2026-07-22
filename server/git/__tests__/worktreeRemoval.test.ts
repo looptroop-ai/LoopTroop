@@ -28,7 +28,7 @@ function createRepoWithWorktree() {
   const worktreePath = resolve(worktreesRoot, 'TEST-1')
 
   mkdirSync(projectRoot, { recursive: true })
-  git(projectRoot, ['init'])
+  git(projectRoot, ['init', '--initial-branch=main'])
   git(projectRoot, ['config', 'user.email', 'test@example.com'])
   git(projectRoot, ['config', 'user.name', 'LoopTroop Test'])
   writeFileSync(resolve(projectRoot, 'README.md'), 'fixture\n')

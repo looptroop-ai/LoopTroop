@@ -193,6 +193,7 @@ export function PhaseLogPanel({
   const previousViewRef = useRef<string | null>(null)
   const previousVisibleTailRef = useRef<string | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const olderPageAnchorRef = useRef<{ height: number; top: number } | null>(null)
 
   const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
     const scroll = () => {
@@ -235,8 +236,7 @@ export function PhaseLogPanel({
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
       if (atTop && shouldLoadArchivedLogs && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
-        // React Query prepends the older page and the browser keeps the
-        // viewport anchored to the already rendered content.
+        olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
         void historicalLogs.fetchOlder()
       }
     }
@@ -245,6 +245,16 @@ export function PhaseLogPanel({
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [historicalLogs, shouldLoadArchivedLogs])
+
+  useEffect(() => {
+    const anchor = olderPageAnchorRef.current
+    const el = viewportRef.current
+    if (!anchor || !el || historicalLogs.isFetchingOlder) return
+    // Older entries are prepended in chronological order. Keep the first row
+    // that was already visible at the same screen position after the resize.
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
+    olderPageAnchorRef.current = null
+  }, [historicalLogs.entries.length, historicalLogs.isFetchingOlder])
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) {

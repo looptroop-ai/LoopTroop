@@ -134,7 +134,8 @@ describe('CodingView', () => {
           description: 'Full bead details',
           acceptanceCriteria: ['Keeps bead data current'],
           tests: ['renders fresh details'],
-          testCommands: ['npm test'],
+          testCommands: [],
+          testCommandReason: 'No appropriate automated command exists for this documentation-only change.',
           contextGuidance: { patterns: ['refresh bead state'], anti_patterns: [] },
           failedIterationNotes: [{ timestamp: TEST.timestamp, iteration: 1, content: 'updated' }],
         },
@@ -163,6 +164,10 @@ describe('CodingView', () => {
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/1:TEST-1/beads')
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /First/ }))
+    expect(await screen.findByText('No Planned Automated Command')).toBeInTheDocument()
+    expect(screen.getByText('No appropriate automated command exists for this documentation-only change.')).toBeInTheDocument()
   })
 
   it('does not show or fetch bead controls outside the implementing phase', async () => {

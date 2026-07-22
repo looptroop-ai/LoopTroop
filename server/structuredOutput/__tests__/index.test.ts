@@ -2011,6 +2011,59 @@ describe.concurrent('structured output normalization', () => {
     expect(result.normalizedContent).toContain('beads:')
   })
 
+  it('accepts an empty bead command list only with a reason', () => {
+    const base = [
+      'beads:',
+      '  - id: manual-only-check',
+      '    title: Keep automated commands honest',
+      '    prdRefs: [EPIC-1 / US-1]',
+      '    description: Record why no repository-native automated command applies.',
+      '    contextGuidance:',
+      '      patterns: [Keep verification project-agnostic.]',
+      '      anti_patterns: [Do not invent a test runner.]',
+      '    acceptanceCriteria: [The reason remains visible.]',
+      '    tests: [Review the interactive behavior during Manual QA.]',
+      '    testCommands: []',
+    ]
+    const valid = normalizeBeadSubsetYamlOutput([...base, '    testCommandReason: The behavior requires human interaction.'].join('\n'))
+    expect(valid.ok).toBe(true)
+    if (valid.ok) {
+      expect(valid.value[0]?.testCommands).toEqual([])
+      expect(valid.value[0]?.testCommandReason).toBe('The behavior requires human interaction.')
+    }
+
+    const missingReason = normalizeBeadSubsetYamlOutput(base.join('\n'))
+    expect(missingReason.ok).toBe(false)
+    if (!missingReason.ok) expect(missingReason.error).toContain('requires testCommandReason')
+
+    const redundantReason = normalizeBeadSubsetYamlOutput([
+      ...base.slice(0, -1),
+      '    testCommands: [npm run test]',
+      '    testCommandReason: This should not coexist with a command.',
+    ].join('\n'))
+    expect(redundantReason.ok).toBe(false)
+    if (!redundantReason.ok) expect(redundantReason.error).toContain('only when testCommands is empty')
+  })
+
+  it('rejects blank bead commands instead of silently removing them', () => {
+    const result = normalizeBeadSubsetYamlOutput([
+      'beads:',
+      '  - id: blank-command',
+      '    title: Reject blank commands',
+      '    prdRefs: [EPIC-1 / US-1]',
+      '    description: Keep command validation truthful.',
+      '    contextGuidance:',
+      '      patterns: [Use runnable commands.]',
+      '      anti_patterns: [Do not accept blank entries.]',
+      '    acceptanceCriteria: [Blank commands fail validation.]',
+      '    tests: [Parser rejects a blank command.]',
+      '    testCommands: [""]',
+    ].join('\n'))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('invalid test command')
+  })
+
   it('accepts bead subset YAML after repairing bare sequence item ids', () => {
     const result = normalizeBeadSubsetYamlOutput([
       'beads:',

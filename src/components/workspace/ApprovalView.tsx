@@ -101,6 +101,7 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
     acceptanceCriteria: getStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria']),
     tests: getStringArray(bead, ['tests']),
     testCommands: getStringArray(bead, ['testCommands', 'test_commands']),
+    testCommandReason: getString(bead, ['testCommandReason', 'test_command_reason']) || undefined,
     targetFiles: getStringArray(bead, ['targetFiles', 'target_files']),
     contextGuidance: {
       patterns: getStringArray(guidance, ['patterns']),
@@ -119,11 +120,12 @@ function parseBeadsForEditor(data: unknown[]): ParsedBead[] {
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
 function buildBeadForSave(bead: ParsedBead): Record<string, unknown> {
-  const { contextGuidance, dependencies, acceptanceCriteria, testCommands, targetFiles, prdRefs, ...rest } = bead
+  const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
   return {
     ...rest,
     acceptanceCriteria,
     testCommands,
+    ...(testCommands.length === 0 && testCommandReason ? { testCommandReason } : {}),
     targetFiles,
     prdRefs,
     contextGuidance: {

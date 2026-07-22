@@ -376,7 +376,7 @@ export function buildBeadsCoverageRevisionRetryPrompt(
         '- Include a top-level `changes` list that fully accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry: {type, id, title, summary}.',
         '- Include a top-level `gap_resolutions` list with exactly one entry per provided coverage gap.',
         '- Preserve existing bead order and IDs unless a provided gap requires a concrete change.',
-        '- Every bead must include non-empty `acceptanceCriteria`, `tests`, and `testCommands`.',
+        '- Every bead must include non-empty `acceptanceCriteria` and `tests`; `testCommands` may be empty only with a non-empty `testCommandReason`.',
         '- If a gap describes internally contradictory source artifacts, do not choose a side or invent implementation requirements. Record `action: left_unresolved`, explain the contradiction in `rationale`, and use `affected_items: []`.',
         '- Use `affected_items` only for bead references. Leave it empty when no bead mapping applies.',
         '- If a gap does not map cleanly to one or more specific beads, use `affected_items: []` and do not emit PRD refs, section names, or non-bead item types.',

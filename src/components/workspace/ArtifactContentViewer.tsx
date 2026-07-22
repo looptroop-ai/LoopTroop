@@ -2414,6 +2414,8 @@ interface ParsedBead {
   tests?: string[]
   testCommands?: string[]
   test_commands?: string[]
+  testCommandReason?: string
+  test_command_reason?: string
   priority?: number
   status?: string
   issueType?: string
@@ -3002,6 +3004,7 @@ export function BeadsDraftView({ content }: { content: string }) {
             const acceptanceCriteria = getBeadStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria'])
             const tests = getBeadStringArray(bead, ['tests'])
             const testCommands = getBeadStringArray(bead, ['testCommands', 'test_commands'])
+            const testCommandReason = getBeadStringValue(bead, ['testCommandReason', 'test_command_reason'])
             const targetFiles = getBeadStringArray(bead, ['targetFiles', 'target_files'])
             const status = getBeadStringValue(bead, ['status']) || 'pending'
             const tone = getBeadStatusTone(status)
@@ -3112,7 +3115,7 @@ export function BeadsDraftView({ content }: { content: string }) {
                       </ul>
                     </BeadSection>
                   )}
-                  {(tests.length > 0 || testCommands.length > 0) && (
+                  {(tests.length > 0 || testCommands.length > 0 || testCommandReason) && (
                     <BeadSection title="Tests" accent="border-amber-300 dark:border-amber-700">
                       {tests.length > 0 && (
                         <ul className="list-disc pl-4 space-y-0.5">
@@ -3123,12 +3126,18 @@ export function BeadsDraftView({ content }: { content: string }) {
                       )}
                       {testCommands.length > 0 && (
                         <div className="space-y-1">
-                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Test Commands</div>
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Planned Test Commands</div>
                           {testCommands.map((command) => (
                             <code key={command} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono break-all">
                               {command}
                             </code>
                           ))}
+                        </div>
+                      )}
+                      {testCommands.length === 0 && testCommandReason && (
+                        <div className="space-y-1">
+                          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">No automated command</div>
+                          <p className="text-xs text-muted-foreground">{testCommandReason}</p>
                         </div>
                       )}
                     </BeadSection>

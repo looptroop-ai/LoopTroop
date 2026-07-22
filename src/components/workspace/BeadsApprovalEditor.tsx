@@ -11,6 +11,7 @@ export interface ParsedBead {
   acceptanceCriteria: string[]
   tests: string[]
   testCommands: string[]
+  testCommandReason?: string
   targetFiles: string[]
   dependencies: { blocked_by: string[]; blocks: string[] }
   [key: string]: unknown
@@ -157,11 +158,33 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                   <StringListEditor items={bead.tests} onChange={(items) => updateBead(index, { tests: items })} disabled={disabled} placeholder="Test specification..." />
                 </div>
 
-                {/* Test Commands */}
+                {/* Planned Test Commands */}
                 <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Test Commands</label>
-                  <StringListEditor items={bead.testCommands} onChange={(items) => updateBead(index, { testCommands: items })} disabled={disabled} placeholder="npm test..." />
+                  <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Planned Test Commands</label>
+                  <StringListEditor
+                    items={bead.testCommands}
+                    onChange={(items) => updateBead(index, {
+                      testCommands: items,
+                      ...(items.length > 0 ? { testCommandReason: undefined } : {}),
+                    })}
+                    disabled={disabled}
+                    placeholder="Project-native test or build command..."
+                  />
                 </div>
+
+                {bead.testCommands.length === 0 && (
+                  <div>
+                    <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Why no automated command applies</label>
+                    <textarea
+                      value={bead.testCommandReason ?? ''}
+                      onChange={(e) => updateBead(index, { testCommandReason: e.target.value })}
+                      disabled={disabled}
+                      rows={2}
+                      className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs resize-y"
+                      placeholder="Explain why this bead has no appropriate automated command..."
+                    />
+                  </div>
+                )}
 
                 {/* Target Files */}
                 <div>

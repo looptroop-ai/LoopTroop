@@ -40,7 +40,8 @@ A bead is the smallest unit LoopTroop will schedule for coding. It carries enoug
 | `contextGuidance` | `{ patterns: string[]; anti_patterns: string[] }` | Local implementation guardrails |
 | `acceptanceCriteria` | `string[]` | Completion requirements |
 | `tests` | `string[]` | Verification intent in prose |
-| `testCommands` | `string[]` | Concrete commands the bead expects to run |
+| `testCommands` | `string[]` | Minimal planned commands the coding agent may adapt to repository evidence; may be empty |
+| `testCommandReason` | `string?` | Required visible explanation when `testCommands` is empty; omitted otherwise |
 | `priority` | `number` | Deterministic execution order among runnable beads |
 | `status` | `'pending' \| 'in_progress' \| 'done' \| 'error'` | Runtime state |
 | `issueType` | `string` | Task, bug, chore, or similar |
@@ -60,7 +61,7 @@ A bead is the smallest unit LoopTroop will schedule for coding. It carries enoug
 
 ### Why These Fields Matter At Runtime
 
-- **Planning fields** (`prdRefs`, `description`, `acceptanceCriteria`, `testCommands`, `targetFiles`) keep each coding session narrow.
+- **Planning fields** (`prdRefs`, `description`, `acceptanceCriteria`, `tests`, `testCommands`, `testCommandReason`, `targetFiles`) keep each coding session narrow without inventing an automated command where none is appropriate.
 - **Graph fields** (`priority`, `dependencies`) let the scheduler choose work deterministically instead of letting the model decide its own sequence.
 - **Recovery fields** (`status`, `iteration`, the three typed note histories, `startedAt`, attempt-level `updatedAt`, and `beadStartCommit`) make retries durable across resets, backend restarts, and blocked-error recovery without mixing distinct failure sources.
 
@@ -270,12 +271,12 @@ Important consequences:
 2. **Assemble narrow context** - load the active bead plus focused runtime context for that bead.
 3. **Create or reattach session** - own the OpenCode session for that bead iteration.
 4. **Prompt** - send the coding prompt and watch OpenCode stream/status events.
-5. **Enforce structured completion** - require a valid `<BEAD_STATUS>` marker instead of trusting free-form prose.
-6. **Verify declared commands** - while the session remains open, run every repository-provided `testCommands` entry sequentially through the setup wrapper and within the same iteration deadline. Each failure records its effective command, exit/signal state, and bounded output excerpt.
-7. **Retry inside the session when safe** - send malformed markers, reported incomplete gates, or deterministic command failures back to the same session while time remains.
-8. **Persist checkpoint** - write `bead_execution:{beadId}` with the execution result, verification receipts, and checkpoint metadata.
+5. **Run adaptable bead checks** - the coding agent starts from the planned `testCommands`, corrects or replaces them when repository evidence requires it, and runs the smallest appropriate bead-scoped checks. A bead may intentionally have no planned automated command when its recorded reason explains why none is appropriate.
+6. **Enforce structured completion** - require a valid `<BEAD_STATUS>` marker with passing test, lint, typecheck, and qualitative declarations instead of trusting free-form prose.
+7. **Retry inside the session when safe** - send malformed markers or reported incomplete gates back to the same session while time remains.
+8. **Persist checkpoint** - write `bead_execution:{beadId}` with the execution result and checkpoint metadata.
 9. **Finalize locally** - create the bead commit when Git-visible project changes exist, or record a true no-op completion.
-10. **Capture diff and advance** - persist `bead_diff:{beadId}`, mark the bead `done`, and either choose the next runnable bead or advance to final test.
+10. **Capture diff and advance** - persist `bead_diff:{beadId}`, mark the bead `done`, and either choose the next runnable bead or advance to the hard-gated final test.
 
 ### What "done" Really Means
 
@@ -283,7 +284,7 @@ Important consequences:
 
 - the completion marker passed validation
 - lint, typecheck, and qualitative checks were reported as passing
-- every declared bead test command was independently executed by LoopTroop and passed
+- the coding agent reported every applicable bead-scoped gate as passing after running appropriate checks
 - local finalization succeeded
 - a bead commit exists when committable project changes were present, regardless of language or extension
 
@@ -304,24 +305,16 @@ Each bead attempt must end with exactly one `<BEAD_STATUS>...</BEAD_STATUS>` blo
 - `checks.typecheck`
 - `checks.qualitative`
 
-If the output is malformed or missing the marker, LoopTroop does **not** guess. It sends a structured retry reminder that asks for the exact schema again. If the workflow deadline expires before a marker or deterministic verification is complete, the failure is recorded explicitly as an iteration timeout rather than being reduced to a generic missing-marker message.
+If the output is malformed or missing the marker, LoopTroop does **not** guess. It sends a structured retry reminder that asks for the exact schema again. If the workflow deadline expires before a valid marker is returned, the failure is recorded explicitly as an iteration timeout rather than being reduced to a generic missing-marker message.
 
-If the marker shape is valid but the bead is still incomplete, LoopTroop sends a continuation reminder instructing the agent to keep editing, rerun the failing checks, and only return once the bead is actually complete. A valid all-pass marker is still only a candidate: LoopTroop executes the bead's declared test commands itself, records command receipts, and sends the first deterministic failure back into the same session. Verification consumes the same per-iteration deadline, so a session that cannot repair the repository before the deadline follows the normal Ralph reset and fresh-session path.
+If the marker shape is valid but the bead is still incomplete, LoopTroop sends a continuation reminder instructing the agent to keep editing, rerun the failing checks, and only return once the bead is actually complete. Planned commands are guidance rather than a frozen second gate: the agent may adapt them to facts discovered in the repository, while Final Testing remains the mandatory backend-executed ticket-level gate. A session that cannot repair and verify the repository before the deadline follows the normal Ralph reset and fresh-session path.
 
-This two-stage enforcement matters:
+The response enforcement distinguishes:
 
 - **schema repair path** for malformed completion output
 - **keep-working path** for valid-but-incomplete output
 
 That prevents the executor from confusing formatting errors with genuine implementation failure.
-
-### Verification Failure Diagnostics
-
-Declared command failures are recorded in the `bead_execution:{beadId}` artifact and included in the corrective prompt with:
-
-- the declared command and effective setup-wrapped command;
-- exit code, signal, and duration where available; and
-- a bounded, ANSI-stripped output excerpt from stdout and stderr.
 
 This keeps command execution language-agnostic while making project-specific failures—such as unsupported flags, missing tools, or service startup errors—actionable without requiring LoopTroop to infer how the project should be run.
 
@@ -521,7 +514,7 @@ That combination is what makes the system durable at repository scale rather tha
 
 ### Manual QA fix beads
 
-When an enabled Manual QA round is submitted with any explicit Fail, one locked-main-implementer prompt plans every user-selected failure merge group. It receives focused ticket, approved PRD, existing-bead, final-test, checklist/result, evidence-reference, and diff metadata and must successfully use at least one read-only repository inspection tool. This lets it discover newly relevant target files rather than copying only the original bead paths. The strict `<MANUAL_QA_FIX_BEADS>` response must provide one candidate per application-owned stable group key with a title, description, PRD refs, implementation context, acceptance criteria, tests, test commands, labels, dependency inputs, and safe project-relative targets.
+When an enabled Manual QA round is submitted with any explicit Fail, one locked-main-implementer prompt plans every user-selected failure merge group. It receives focused ticket, approved PRD, existing-bead, final-test, checklist/result, evidence-reference, and diff metadata and must successfully use at least one read-only repository inspection tool. This lets it discover newly relevant target files rather than copying only the original bead paths. The strict `<MANUAL_QA_FIX_BEADS>` response must provide one candidate per application-owned stable group key with a title, description, PRD refs, implementation context, acceptance criteria, tests, appropriate planned command guidance, labels, dependency inputs, and safe project-relative targets. A candidate may instead use an empty command list with a visible `testCommandReason`.
 
 LoopTroop validates exact group coverage and the full candidate set, then persists canonical `fix-beads.yaml` before creating any child record. The application assigns deterministic IDs, priority/order, pending status, `qa-fix` issue type, external reference, reverse `blocks` links, timestamps, and QA provenance through the normal bead writer. If model generation, required tool activity, or parsing fails, no Improvement ticket or bead is created; the workflow enters recoverable `BLOCKED_ERROR` and Retry resumes the stored submission action. If no checks failed, this model call is skipped.
 

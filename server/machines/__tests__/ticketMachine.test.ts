@@ -1,8 +1,40 @@
 import { describe, expect, it } from 'vitest'
 import { createActor } from 'xstate'
+import { FINAL_TEST_FAILED } from '@shared/errorCodes'
 import { ticketMachine } from '../ticketMachine'
 
 describe('ticketMachine execution setup flow', () => {
+  it('records a stable cause code when Final Testing fails', () => {
+    const actor = createActor(ticketMachine, {
+      snapshot: {
+        status: 'active',
+        value: 'RUNNING_FINAL_TEST',
+        historyValue: {},
+        context: {
+          ticketId: '1:T-1', projectId: 1, externalId: 'T-1', title: 'Final test failure', status: 'RUNNING_FINAL_TEST',
+          lockedMainImplementer: 'model-a', lockedMainImplementerVariant: null,
+          lockedCouncilMembers: ['model-a'], lockedCouncilMemberVariants: null,
+          lockedInterviewQuestions: null, lockedCoverageFollowUpBudgetPercent: null,
+          lockedMaxCoveragePasses: null, lockedMaxPrdCoveragePasses: null,
+          lockedMaxBeadsCoveragePasses: null, lockedStructuredRetryCount: null,
+          lockedManualQaEnabled: false, lockedManualQaSource: 'profile',
+          previousStatus: 'CODING', error: null, errorCodes: [], errorDiagnostics: null,
+          blockedErrorResolution: null, beadProgress: { total: 1, completed: 1, current: null },
+          iterationCount: 0, maxIterations: 5, councilResults: null,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        },
+        children: {},
+      } as unknown as never,
+      input: {},
+    })
+
+    actor.start()
+    actor.send({ type: 'TESTS_FAILED' })
+
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
+    expect(actor.getSnapshot().context.errorCodes).toEqual([FINAL_TEST_FAILED])
+  })
+
   it('routes passed final tests through Manual QA only when the started ticket locked it on', () => {
     const makeActor = (enabled: boolean | null) => createActor(ticketMachine, {
       snapshot: {

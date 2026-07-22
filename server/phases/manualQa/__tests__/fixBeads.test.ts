@@ -132,6 +132,59 @@ describe('Manual QA fix-bead generation contracts', () => {
     expect(bead?.id).toMatch(/^qa-v1-[a-f0-9]{12}$/)
   })
 
+  it('accepts a zero-command fix bead with a reason and preserves it during hydration', () => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    const response = validResponse.replace(
+      '    testCommands: ["npm run test:client"]',
+      '    testCommands: []\n    testCommandReason: "This repair has only an interactive Manual QA check."',
+    )
+    const candidates = parseManualQaFixBeadsOutput(response, groups)
+    expect(candidates[0]).toMatchObject({
+      testCommands: [],
+      testCommandReason: 'This repair has only an interactive Manual QA check.',
+    })
+
+    const [bead] = hydrateManualQaFixBeads({
+      candidates,
+      groups,
+      existing: [],
+      checklist,
+      evidence: [],
+      ticketId: '1:TEST-1',
+      externalId: 'TEST-1',
+      version: 1,
+      actionId: 'manual-qa-submit:no-command',
+      modelCapability: {
+        schemaVersion: 1,
+        artifact: 'manual_qa_model_capability',
+        ticketId: 'TEST-1',
+        version: 1,
+        modelId: 'provider/model',
+        modelVariant: null,
+        capabilityLookup: 'available',
+        supportsImages: false,
+        imageEvidenceMode: 'references_only',
+        capturedAt: '2026-07-14T08:02:00.000Z',
+      },
+    })
+    expect(bead).toMatchObject({ testCommands: [], testCommandReason: 'This repair has only an interactive Manual QA check.' })
+  })
+
+  it('rejects zero-command fix beads without a reason and reasons alongside commands', () => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    expect(() => parseManualQaFixBeadsOutput(
+      validResponse.replace('    testCommands: ["npm run test:client"]', '    testCommands: []'),
+      groups,
+    )).toThrow('testCommandReason')
+    expect(() => parseManualQaFixBeadsOutput(
+      validResponse.replace(
+        '    testCommands: ["npm run test:client"]',
+        '    testCommands: ["npm run test:client"]\n    testCommandReason: "Not allowed with commands."',
+      ),
+      groups,
+    )).toThrow('testCommandReason')
+  })
+
   it('repairs wrapped colon-containing acceptance criteria in generated fix beads', () => {
     const groups = buildManualQaFixGroups(checklist, draft)
     const response = validResponse.replace(

@@ -43,11 +43,19 @@ const CandidateSchema = z.object({
   }).strict(),
   acceptanceCriteria: z.array(z.string().trim().min(1)).min(1),
   tests: z.array(z.string().trim().min(1)).min(1),
-  testCommands: z.array(z.string().trim().min(1)).min(1),
+  testCommands: z.array(z.string().trim().min(1)),
+  testCommandReason: z.string().trim().min(1).optional(),
   labels: z.array(z.string().trim().min(1)).min(1),
   blockedByGroupIds: z.array(z.string().trim().min(1)).default([]),
   targetFiles: z.array(z.string().trim().min(1)).min(1),
-}).strict()
+}).strict().superRefine((candidate, ctx) => {
+  if (candidate.testCommands.length === 0 && !candidate.testCommandReason) {
+    ctx.addIssue({ code: 'custom', path: ['testCommandReason'], message: 'testCommandReason is required when testCommands is empty.' })
+  }
+  if (candidate.testCommands.length > 0 && candidate.testCommandReason) {
+    ctx.addIssue({ code: 'custom', path: ['testCommandReason'], message: 'testCommandReason is allowed only when testCommands is empty.' })
+  }
+})
 
 const CandidateDocumentSchema = z.object({
   beads: z.array(CandidateSchema).min(1),
@@ -222,6 +230,7 @@ function buildFixBeadsPrompt(input: {
       acceptanceCriteria: bead.acceptanceCriteria,
       tests: bead.tests,
       testCommands: bead.testCommands,
+      ...(bead.testCommandReason ? { testCommandReason: bead.testCommandReason } : {}),
       labels: bead.labels,
       dependencies: bead.dependencies,
       targetFiles: bead.targetFiles,
@@ -432,6 +441,7 @@ export function hydrateManualQaFixBeads(input: {
       acceptanceCriteria: candidate.acceptanceCriteria,
       tests: candidate.tests,
       testCommands: candidate.testCommands,
+      ...(candidate.testCommandReason ? { testCommandReason: candidate.testCommandReason } : {}),
       priority: maxPriority + index + 1,
       status: 'pending',
       issueType: 'qa-fix',

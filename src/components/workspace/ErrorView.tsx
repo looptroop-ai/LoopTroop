@@ -24,7 +24,15 @@ import {
   type TicketErrorOccurrence,
 } from '@/lib/errorOccurrences'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
-import { BEAD_RETRY_BUDGET_EXHAUSTED } from '@shared/errorCodes'
+import {
+  BEAD_AGENT_RESPONSE_INVALID,
+  BEAD_FINALIZATION_FAILED,
+  BEAD_ITERATION_TIMEOUT,
+  BEAD_RETRY_BUDGET_EXHAUSTED,
+  FINAL_TEST_FAILED,
+  OPENCODE_PROVIDER_AUTH_FAILED,
+  OPENCODE_PROVIDER_ERROR,
+} from '@shared/errorCodes'
 import type { WorkflowAction } from '@shared/workflowMeta'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { CancelTicketDialog } from '@/components/ticket/CancelTicketDialog'
@@ -131,6 +139,75 @@ function normalizeErrorText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
+interface BlockedErrorExplanation {
+  title: string
+  description: string
+  recommendation: string
+}
+
+function explainBlockedError(
+  blockedFromStatus: string | undefined,
+  errorCodes: string[],
+): BlockedErrorExplanation {
+  const codes = new Set(errorCodes)
+
+  if (codes.has(BEAD_FINALIZATION_FAILED)) {
+    return {
+      title: 'Git finalization failed',
+      description: 'The implementation finished, but LoopTroop could not save the bead as a Git commit.',
+      recommendation: 'Retry finalization. The completed implementation can be reused.',
+    }
+  }
+  if (codes.has(BEAD_AGENT_RESPONSE_INVALID)) {
+    return {
+      title: 'Agent response incomplete',
+      description: 'The coding agent did not provide the required completion result, so LoopTroop could not confirm the bead finished.',
+      recommendation: 'Retry with an extra note that asks the agent to finish with the required result.',
+    }
+  }
+  if (codes.has(BEAD_ITERATION_TIMEOUT)) {
+    return {
+      title: 'Implementation attempt timed out',
+      description: 'The coding attempt exceeded its configured time limit before it could finish.',
+      recommendation: 'Retry the bead. Add a note if the work should be split or approached differently.',
+    }
+  }
+  if (codes.has(OPENCODE_PROVIDER_AUTH_FAILED) || codes.has(OPENCODE_PROVIDER_ERROR)) {
+    return {
+      title: 'Provider or environment unavailable',
+      description: 'The model provider or its runtime interrupted this workflow step. This does not necessarily mean the work itself failed.',
+      recommendation: 'Continue the preserved session when available, or retry after the service or credentials recover.',
+    }
+  }
+  if (codes.has(FINAL_TEST_FAILED) || blockedFromStatus === 'RUNNING_FINAL_TEST') {
+    return {
+      title: 'Final Testing failed',
+      description: 'The ticket-wide automated checks did not pass, so LoopTroop stopped before delivery.',
+      recommendation: 'Review the failed checks, then retry Final Testing after addressing them.',
+    }
+  }
+  if (codes.has(BEAD_RETRY_BUDGET_EXHAUSTED)) {
+    return {
+      title: 'Implementation retries exhausted',
+      description: 'The coding agent used every configured attempt without completing this bead.',
+      recommendation: 'Retry with an extra note that clarifies the approach or the remaining problem.',
+    }
+  }
+  if (blockedFromStatus === 'PREPARING_EXECUTION_ENV' || blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL') {
+    return {
+      title: 'Workspace setup failed',
+      description: 'LoopTroop could not prepare the repository environment needed for implementation.',
+      recommendation: 'Edit the setup plan when it is incorrect, or retry after fixing the environment.',
+    }
+  }
+
+  return {
+    title: 'Workflow step failed',
+    description: 'LoopTroop stopped because the current workflow step could not finish safely.',
+    recommendation: 'Review the technical details, then use an available recovery action.',
+  }
+}
+
 export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewProps) {
   const { mutate: performAction, isPending } = useTicketAction()
   const [actionError, setActionError] = useState<string | null>(null)
@@ -210,6 +287,10 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
   const displayErrorCodes = visibleOccurrence?.errorCodes
     .map(code => sanitizeErrorForDisplay(code))
     .filter(code => code.length > 0) ?? []
+  const errorExplanation = explainBlockedError(
+    visibleOccurrence?.blockedFromStatus ?? ticket.previousStatus ?? undefined,
+    visibleOccurrence?.errorCodes ?? [],
+  )
   const statusLabelOptions = {
     currentBead: ticket.runtime.currentBead ?? ticket.currentBead,
     totalBeads: ticket.runtime.totalBeads ?? ticket.totalBeads,
@@ -320,42 +401,54 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                   </span>
                 )}
               </div>
-              <p className="text-xs font-mono text-muted-foreground">{primaryErrorMessage}</p>
-              {displayErrorCodes.length > 0 && (
-                <div className="flex flex-col items-start gap-1">
-                  {displayErrorCodes.map((code, index) => code.includes('\n') || code.length > 120 ? (
-                    <div
-                      key={`${index}:${code}`}
-                      className="w-full rounded-md border border-border px-2.5 py-1 text-[10px] font-mono leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
-                    >
-                      {code}
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-foreground">{errorExplanation.title}</h3>
+                <p className="text-xs text-muted-foreground">{errorExplanation.description}</p>
+                <p className="text-xs text-foreground">
+                  <span className="font-medium">Recommended:</span> {errorExplanation.recommendation}
+                </p>
+              </div>
+              <details className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px]">
+                <summary className="cursor-pointer font-medium text-foreground">Technical details</summary>
+                <div className="mt-2 space-y-2">
+                  <p className="font-mono text-muted-foreground">{primaryErrorMessage}</p>
+                  {displayErrorCodes.length > 0 && (
+                    <div className="flex flex-col items-start gap-1">
+                      {displayErrorCodes.map((code, index) => code.includes('\n') || code.length > 120 ? (
+                        <div
+                          key={`${index}:${code}`}
+                          className="w-full rounded-md border border-border px-2.5 py-1 text-[10px] font-mono leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+                        >
+                          {code}
+                        </div>
+                      ) : (
+                        <Badge key={`${index}:${code}`} variant="outline" className="text-[10px]">
+                          {code}
+                        </Badge>
+                      ))}
                     </div>
-                  ) : (
-                    <Badge key={`${index}:${code}`} variant="outline" className="text-[10px]">
-                      {code}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-              {diagnostics && (
-                <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1.5">
-                  <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-foreground">
-                    <Info className="h-3.5 w-3.5" />
-                    Underlying error
-                  </div>
-                  {hasDiagnosticSummary && (
-                    <p className="font-mono whitespace-pre-wrap text-muted-foreground/90">{diagnosticSummary}</p>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
-                    {diagnosticRows.map((row) => (
-                      <div key={`${row.label}:${row.value}`} className="min-w-0">
-                        <span className="text-muted-foreground/80">{row.label}: </span>
-                        <span className="font-mono text-foreground break-words">{row.value}</span>
+                  {diagnostics && (
+                    <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1.5">
+                      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-foreground">
+                        <Info className="h-3.5 w-3.5" />
+                        Underlying error
                       </div>
-                    ))}
-                  </div>
+                      {hasDiagnosticSummary && (
+                        <p className="font-mono whitespace-pre-wrap text-muted-foreground/90">{diagnosticSummary}</p>
+                      )}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+                        {diagnosticRows.map((row) => (
+                          <div key={`${row.label}:${row.value}`} className="min-w-0">
+                            <span className="text-muted-foreground/80">{row.label}: </span>
+                            <span className="font-mono text-foreground break-words">{row.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </details>
               {(failedBead || pausedCodingBead || ticket.runtime.activeBeadIteration) && (
                 <div className="rounded border border-border bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground space-y-1">
                   {failedBead && (

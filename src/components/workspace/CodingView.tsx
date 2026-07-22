@@ -52,6 +52,7 @@ interface TicketBead {
   acceptanceCriteria: string[]
   tests: string[]
   testCommands: string[]
+  testCommandReason?: string
   targetFiles: string[]
   contextGuidance: { patterns: string[]; anti_patterns: string[] }
   dependencies: { blocked_by: string[]; blocks: string[] }
@@ -222,6 +223,7 @@ function normalizeBead(input: {
   acceptanceCriteria?: string[]
   tests?: string[]
   testCommands?: string[]
+  testCommandReason?: string
   targetFiles?: string[]
   contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
   dependencies?: { blocked_by?: string[]; blocks?: string[] }
@@ -269,6 +271,7 @@ function normalizeBead(input: {
     acceptanceCriteria: input.acceptanceCriteria ?? [],
     tests: input.tests ?? [],
     testCommands: input.testCommands ?? [],
+    ...(input.testCommandReason ? { testCommandReason: input.testCommandReason } : {}),
     targetFiles: Array.isArray(input.targetFiles) ? input.targetFiles : [],
     contextGuidance,
     dependencies,
@@ -354,6 +357,7 @@ async function fetchTicketBeads(ticketId: string): Promise<TicketBead[]> {
           acceptanceCriteria?: string[]
           tests?: string[]
           testCommands?: string[]
+          testCommandReason?: string
           targetFiles?: string[]
           contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
           dependencies?: { blocked_by?: string[]; blocks?: string[] }
@@ -1838,7 +1842,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                 )}
 
                 {/* Tests */}
-                {(viewedBead.tests.length > 0 || viewedBead.testCommands.length > 0) && (
+                {(viewedBead.tests.length > 0 || viewedBead.testCommands.length > 0 || viewedBead.testCommandReason) && (
                   <div className="border-l-2 border-amber-300 dark:border-amber-700 pl-2 space-y-1.5">
                     <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-600 dark:text-amber-400">Tests</div>
                     {viewedBead.tests.length > 0 && (
@@ -1850,12 +1854,18 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                     )}
                     {viewedBead.testCommands.length > 0 && (
                       <div>
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">Test Commands</div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">Planned Test Commands</div>
                         <div className="space-y-1">
                           {viewedBead.testCommands.map((command) => (
                             <code key={command} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono">{command}</code>
                           ))}
                         </div>
+                      </div>
+                    )}
+                    {viewedBead.testCommands.length === 0 && viewedBead.testCommandReason && (
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">No Planned Automated Command</div>
+                        <p className="text-xs text-muted-foreground">{viewedBead.testCommandReason}</p>
                       </div>
                     )}
                   </div>

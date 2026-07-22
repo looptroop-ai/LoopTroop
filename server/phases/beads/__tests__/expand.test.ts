@@ -133,6 +133,22 @@ describe.concurrent('validateBeadExpansion', () => {
     expect(warnings[0]).toContain('testCommands[0]')
   })
 
+  it('restores testCommandReason drift from the refined blueprint', () => {
+    const subsets = buildSubsetBeads()
+    subsets[0] = {
+      ...subsets[0]!,
+      testCommands: [],
+      testCommandReason: 'No appropriate automated command exists.',
+    }
+    const expanded = buildExpandedBeads(subsets)
+    expanded[0] = { ...expanded[0]!, testCommandReason: 'A different reason.' }
+
+    const warnings = validateBeadExpansion(subsets, expanded)
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('testCommandReason')
+  })
+
   it('still fails when beads are reordered', () => {
     const subsets = buildSubsetBeads()
     const expanded = buildExpandedBeads(subsets).reverse()

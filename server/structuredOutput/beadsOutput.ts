@@ -23,7 +23,7 @@ import { parseRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 
-const BEAD_SEQUENCE_CHILD_KEYS = ['title', 'name', 'prdRefs', 'prd_refs', 'description', 'details', 'contextGuidance', 'context_guidance', 'acceptanceCriteria', 'acceptance_criteria', 'tests', 'testCommands', 'test_commands'] as const
+const BEAD_SEQUENCE_CHILD_KEYS = ['title', 'name', 'prdRefs', 'prd_refs', 'description', 'details', 'contextGuidance', 'context_guidance', 'acceptanceCriteria', 'acceptance_criteria', 'tests', 'testCommands', 'test_commands', 'testCommandReason', 'test_command_reason'] as const
 const BEAD_SEQUENCE_ITEM_PRIMARY_KEYS = {
   beads: { primaryKey: 'id', childKeys: BEAD_SEQUENCE_CHILD_KEYS },
   tasks: { primaryKey: 'id', childKeys: BEAD_SEQUENCE_CHILD_KEYS },
@@ -162,6 +162,20 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     ? idValue.trim()
     : `bead-${index + 1}`
 
+  const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands', 'commands'])
+  if (!Array.isArray(testCommandsValue)) {
+    throw new Error(`Bead ${id} is missing the testCommands list`)
+  }
+  if (Array.isArray(testCommandsValue) && testCommandsValue.some((command) => typeof command !== 'string' || !command.trim())) {
+    throw new Error(`Bead ${id} contains an invalid test command`)
+  }
+  const testCommands = toStringArray(testCommandsValue)
+  const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
+  if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
+    throw new Error(`Bead ${id} contains an invalid testCommandReason`)
+  }
+  const testCommandReason = typeof testCommandReasonValue === 'string' ? testCommandReasonValue.trim() : ''
+
   const subset: BeadSubset = {
     id,
     title: getRequiredString(value, ['title', 'name'], `bead title at index ${index}`),
@@ -174,7 +188,8 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     ),
     acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
     tests: toStringArray(getValueByAliases(value, ['tests', 'testcases', 'test_cases'])),
-    testCommands: toStringArray(getValueByAliases(value, ['testcommands', 'test_commands', 'commands'])),
+    testCommands,
+    ...(testCommandReason ? { testCommandReason } : {}),
   }
 
   if (subset.acceptanceCriteria.length === 0) {
@@ -183,8 +198,11 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
   if (subset.tests.length === 0) {
     throw new Error(`Bead ${subset.id} is missing tests`)
   }
-  if (subset.testCommands.length === 0) {
-    throw new Error(`Bead ${subset.id} is missing test commands`)
+  if (subset.testCommands.length === 0 && !subset.testCommandReason) {
+    throw new Error(`Bead ${subset.id} requires testCommandReason when testCommands is empty`)
+  }
+  if (subset.testCommands.length > 0 && subset.testCommandReason) {
+    throw new Error(`Bead ${subset.id} may include testCommandReason only when testCommands is empty`)
   }
 
   return subset
@@ -317,7 +335,7 @@ function buildBeadItemFromSubset(bead: BeadSubset): NormalizedBeadItem {
     id: bead.id,
     label,
     detail,
-    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}`,
+    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}\x1f${bead.testCommands.join('|')}\x1f${bead.testCommandReason ?? ''}`,
   }
 }
 
@@ -740,6 +758,20 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     : rawStatus === 'skipped' ? 'done'
     : rawStatus) as Bead['status']
 
+  const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands'])
+  if (!Array.isArray(testCommandsValue)) {
+    throw new Error(`Bead at index ${index} is missing the testCommands list`)
+  }
+  if (Array.isArray(testCommandsValue) && testCommandsValue.some((command) => typeof command !== 'string' || !command.trim())) {
+    throw new Error(`Bead at index ${index} contains an invalid test command`)
+  }
+  const testCommands = toStringArray(testCommandsValue)
+  const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
+  if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
+    throw new Error(`Bead at index ${index} contains an invalid testCommandReason`)
+  }
+  const testCommandReason = typeof testCommandReasonValue === 'string' ? testCommandReasonValue.trim() : ''
+
   const bead: Bead = {
     id: getRequiredString(value, ['id'], `bead id at index ${index}`),
     title: getRequiredString(value, ['title'], `bead title at index ${index}`),
@@ -748,7 +780,8 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     contextGuidance: normalizedGuidance,
     acceptanceCriteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
     tests: toStringArray(getValueByAliases(value, ['tests'])),
-    testCommands: toStringArray(getValueByAliases(value, ['testcommands', 'test_commands'])),
+    testCommands,
+    ...(testCommandReason ? { testCommandReason } : {}),
     priority: Number(getValueByAliases(value, ['priority']) ?? index + 1),
     status,
     issueType: typeof getValueByAliases(value, ['issuetype', 'issue_type']) === 'string'
@@ -789,6 +822,12 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
   }
   if (bead.tests.length === 0) {
     throw new Error(`Bead ${bead.id} is missing tests`)
+  }
+  if (bead.testCommands.length === 0 && !bead.testCommandReason) {
+    throw new Error(`Bead ${bead.id} requires testCommandReason when testCommands is empty`)
+  }
+  if (bead.testCommands.length > 0 && bead.testCommandReason) {
+    throw new Error(`Bead ${bead.id} may include testCommandReason only when testCommands is empty`)
   }
 
   return bead

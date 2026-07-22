@@ -558,7 +558,7 @@ This policy affects only LoopTroop's internal Git operations. It does not alter 
 **Default:** 1200 s (20 minutes)  
 **Range:** 0–3600 s
 
-The maximum runtime for a single bead attempt in `CODING`, including deterministic execution of every declared bead test command after the model reports `done/pass`. Commands run sequentially through the approved execution-setup wrapper and stop at the first failure. A failing command is sent back to the same live coding session with its exit status and concise output so the implementer can continue within the remaining time. If the shared deadline expires during coding or verification, LoopTroop treats it as a failed iteration and routes it through the standard Ralph retry path. This timeout is separate from OpenCode/provider interruption handling, which can preserve an addressable session for Continue.
+The maximum runtime for a single bead attempt in `CODING`, including implementation, agent-owned bead-scoped checks, and structured completion. Planned test commands are starting guidance and may be adapted when repository evidence requires it; LoopTroop does not independently rerun them after `done/pass`. If the deadline expires before valid completion, LoopTroop treats it as a failed iteration and routes it through the standard Ralph retry path. This timeout is separate from OpenCode/provider interruption handling, which can preserve an addressable session for Continue. Ticket-level Final Testing remains a separate mandatory gate.
 
 **What retry means here:**
 

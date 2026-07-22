@@ -177,6 +177,27 @@ describe('ticketRouter beads approval routes', () => {
     expect(receiptData.content_sha256).toBe(contentSha256(beadsContent))
   })
 
+  it('approves a bead with no planned command when its reason is visible', async () => {
+    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+    const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    beads[0]!.testCommands = []
+    beads[0]!.testCommandReason = 'No appropriate automated command exists for this documentation-only change.'
+    const zeroCommandContent = `${beads.map((bead) => JSON.stringify(bead)).join('\n')}\n`
+    writeFileSync(paths.beadsPath, zeroCommandContent)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      ...approvalPayload(zeroCommandContent),
+    })
+
+    expect(response.status).toBe(200)
+    const approved = readFileSync(paths.beadsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(approved[0]).toMatchObject({
+      testCommands: [],
+      testCommandReason: 'No appropriate automated command exists for this documentation-only change.',
+    })
+  })
+
   it('dispatches beads approval through the generic approve route', async () => {
     const { app, ticket, beadsContent } = setupBeadsApprovalTicket()
 

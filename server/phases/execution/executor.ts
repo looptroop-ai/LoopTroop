@@ -19,7 +19,11 @@ import { COUNCIL_RESPONSE_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { buildPromptFromTemplate, buildSameSessionPromptFromTemplate, PROM_CODING, PROM51 } from '../../prompts/index'
-import { BEAD_RETRY_BUDGET_EXHAUSTED } from '../../../shared/errorCodes'
+import {
+  BEAD_AGENT_RESPONSE_INVALID,
+  BEAD_ITERATION_TIMEOUT,
+  BEAD_RETRY_BUDGET_EXHAUSTED,
+} from '../../../shared/errorCodes'
 import {
   buildOpenCodeBlockedErrorDiagnostics,
   mergeErrorCodes,
@@ -32,7 +36,6 @@ import {
 } from '../../opencode/sessionContinuation'
 import { isContinuableOpenCodeRetryMessage, type OpenCodeRetryPolicy } from '../../opencode/retryPolicy'
 import { isWorkflowDeadlineTimeoutError, WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
-import { runShellCommand } from '../../lib/shellCommand'
 
 const BEAD_STATUS_SCHEMA_REMINDER = [
   'Return exactly one <BEAD_STATUS>...</BEAD_STATUS> block and nothing else.',
@@ -66,22 +69,6 @@ export interface ExecutionResult {
   rawAttempts?: ExecutionRawAttempt[]
   errorCodes?: string[]
   diagnostics?: BlockedErrorDiagnostics | null
-  verificationCommands: BeadVerificationCommandReceipt[]
-}
-
-export interface BeadVerificationCommandReceipt {
-  command: string
-  iteration: number
-  commandIndex: number
-  effectiveCommand?: string
-  setupWrapperApplied: boolean
-  checkedAt: string
-  durationMs: number
-  exitCode: number | null
-  signal: NodeJS.Signals | null
-  timedOut: boolean
-  passed: boolean
-  outputExcerpt: string
 }
 
 export type ExecutionRawAttemptOutcome = 'accepted' | 'rejected' | 'failed' | 'timed_out' | 'cancelled'
@@ -107,7 +94,6 @@ type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 type CodingPromptStage =
   | 'coding_main'
   | 'coding_continue'
-  | 'coding_verification'
   | 'coding_structured_retry'
   | 'context_wipe_note'
 type ContextWipeReason = 'failure' | 'iteration_timeout'
@@ -154,72 +140,6 @@ function stripAnsiSequences(text: string): string {
     .replace(ANSI_OSC_SEQUENCE, '')
     .replace(ANSI_CSI_SEQUENCE, '')
     .replace(ANSI_SINGLE_SEQUENCE, '')
-}
-
-function buildVerificationFailurePrompt(beadId: string, receipt: BeadVerificationCommandReceipt): PromptPart[] {
-  const outcome = receipt.timedOut
-    ? `timed out after ${receipt.durationMs}ms`
-    : `exited with code ${receipt.exitCode ?? 'unknown'}`
-  return [{
-    type: 'text',
-    content: [
-      '## Deterministic Test Verification Failed',
-      '',
-      `Bead: ${beadId}`,
-      `Command: ${receipt.command}`,
-      `Result: ${outcome}`,
-      receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
-      receipt.signal ? `Signal: ${receipt.signal}` : '',
-      '',
-      'LoopTroop ran this declared bead test command independently. The bead is not complete yet.',
-      'Inspect this real failure, fix it, rerun the relevant checks, and continue working in this same session.',
-      '',
-      'Output excerpt:',
-      '```',
-      receipt.outputExcerpt || 'No command output was captured.',
-      '```',
-      '',
-      CONTINUE_CODING_SCHEMA_REMINDER,
-    ].join('\n'),
-  }]
-}
-
-function toVerificationReceipt(
-  result: Awaited<ReturnType<typeof runShellCommand>>,
-  iteration: number,
-  commandIndex: number,
-): BeadVerificationCommandReceipt {
-  const combinedOutput = stripAnsiSequences([result.stdout, result.stderr].filter(Boolean).join('\n')).trim()
-  return {
-    command: result.command,
-    iteration,
-    commandIndex,
-    ...(result.effectiveCommand ? { effectiveCommand: result.effectiveCommand } : {}),
-    setupWrapperApplied: result.setupWrapperApplied,
-    checkedAt: new Date().toISOString(),
-    durationMs: result.durationMs,
-    exitCode: result.exitCode,
-    signal: result.signal,
-    timedOut: result.timedOut,
-    passed: result.exitCode === 0 && !result.timedOut,
-    outputExcerpt: truncateForNote(combinedOutput, EXECUTOR_DETAIL_TRUNCATION_LENGTH),
-  }
-}
-
-function formatVerificationFailure(receipt: BeadVerificationCommandReceipt): string {
-  const outcome = receipt.timedOut
-    ? `timed out after ${receipt.durationMs}ms`
-    : receipt.signal
-      ? `terminated by ${receipt.signal}`
-      : receipt.exitCode === null
-        ? 'could not start'
-        : `exited with code ${receipt.exitCode}`
-  const details = [
-    `Declared test command ${outcome}: ${receipt.command}`,
-    receipt.effectiveCommand ? `Effective command: ${receipt.effectiveCommand}` : '',
-    receipt.outputExcerpt ? `Output excerpt: ${receipt.outputExcerpt}` : 'Output excerpt: no command output was captured.',
-  ].filter(Boolean)
-  return details.join('\n')
 }
 
 function shouldUseStructuredRetry(result: ReturnType<typeof parseCompletionMarker>): boolean {
@@ -405,14 +325,6 @@ export async function executeBead(
       maxAttempts: number | null
     }) => Promise<void>
     onContinuableTimeoutPreserved?: (entry: { beadId: string; sessionId: string; iteration: number; message: string }) => void
-    commandWrapper?: string
-    onVerificationCommand?: (entry: {
-      beadId: string
-      iteration: number
-      receipt: BeadVerificationCommandReceipt
-      stdout: string
-      stderr: string
-    }) => void
     structuredRetryCount?: number
     opencodeRetryPolicy?: Partial<OpenCodeRetryPolicy>
   },
@@ -428,7 +340,7 @@ export async function executeBead(
   let lastOutput = ''
   const errors: string[] = []
   const rawAttempts: ExecutionRawAttempt[] = []
-  const verificationCommands: BeadVerificationCommandReceipt[] = []
+  const executorErrorCodes = new Set<string>()
   const latestOpenCodeDiagnostics: { current: OpenCodeBlockedErrorDiagnosticsResult | null } = { current: null }
   const currentIterationOpenCodeDiagnostics: { current: OpenCodeBlockedErrorDiagnosticsResult | null } = { current: null }
   const sessionManager = callbacks?.ticketId ? new SessionManager(adapter) : null
@@ -549,6 +461,7 @@ export async function executeBead(
     let activeSessionId: string | null = null
     let activeSession: Session | null = null
     const iterationErrors: string[] = []
+    const iterationErrorCodes = new Set<string>()
     let contextWipeReason: ContextWipeReason = 'failure'
     let latestMessages: Message[] = []
     let iterationInitialInput = ''
@@ -653,70 +566,6 @@ export async function executeBead(
 
         const result = parseCompletionMarker(lastOutput)
         if (result.complete && result.gatesValid) {
-          let failedVerification: BeadVerificationCommandReceipt | null = null
-          for (const [commandIndex, command] of bead.testCommands.entries()) {
-            const remainingMs = getRemainingTimeoutMs(deadlineAt)
-            if (remainingMs !== undefined && remainingMs <= 0) {
-              throw new WorkflowDeadlineTimeoutError({ phase: 'CODING', beadId: bead.id, iteration, timeoutMs: timeout })
-            }
-            const commandResult = await runShellCommand({
-              command,
-              cwd: projectPath,
-              timeoutMs: remainingMs,
-              commandWrapper: callbacks?.commandWrapper,
-            })
-            const receipt = toVerificationReceipt(commandResult, iteration, commandIndex)
-            verificationCommands.push(receipt)
-            callbacks?.onVerificationCommand?.({
-              beadId: bead.id,
-              iteration,
-              receipt,
-              stdout: commandResult.stdout,
-              stderr: commandResult.stderr,
-            })
-            if (!receipt.passed) {
-              failedVerification = receipt
-              break
-            }
-          }
-
-          if (failedVerification) {
-            const verificationError = formatVerificationFailure(failedVerification)
-            if (!iterationErrors.includes(verificationError)) iterationErrors.push(verificationError)
-
-            const remainingMs = getRemainingTimeoutMs(deadlineAt)
-            if (failedVerification.timedOut || (remainingMs !== undefined && remainingMs <= 0)) {
-              throw new WorkflowDeadlineTimeoutError({ phase: 'CODING', beadId: bead.id, iteration, timeoutMs: timeout })
-            }
-
-            runResult = await runOpenCodeSessionPrompt({
-              adapter,
-              session: runResult.session,
-              parts: buildVerificationFailurePrompt(bead.id, failedVerification),
-              signal,
-              timeoutMs: remainingMs,
-              deadlineScope: 'workflow',
-              model: callbacks?.model,
-              variant: callbacks?.variant,
-              sessionOwnership: codingSessionOwnership,
-              opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
-              erroredSessionPolicy: 'discard_errored_session_output',
-              toolPolicy: PROM_CODING.toolPolicy,
-              onStreamEvent: (event) => {
-                rememberOpenCodeStreamDiagnostics(runResult.session.id, event)
-                callbacks?.onOpenCodeStreamEvent?.({ sessionId: runResult.session.id, iteration, event })
-              },
-              onPromptDispatched: (event) => {
-                callbacks?.onPromptDispatched?.({ sessionId: event.session.id, iteration, event })
-              },
-              onPromptCompleted: (event) => {
-                rememberPromptCompletedDiagnostics(event)
-                callbacks?.onPromptCompleted?.({ iteration, stage: 'coding_verification', event })
-              },
-            })
-            continue
-          }
-
           recordRawAttempt({
             iteration,
             status: 'accepted',
@@ -730,7 +579,7 @@ export async function executeBead(
             activeSessionId = null
           }
           activeSession = null
-          return { beadId: bead.id, success: true, iteration, output: lastOutput, errors: [], rawAttempts, verificationCommands }
+          return { beadId: bead.id, success: true, iteration, output: lastOutput, errors: [], rawAttempts }
         }
 
         const incompleteSummary = result.errors.join(', ') || 'Incomplete'
@@ -750,6 +599,8 @@ export async function executeBead(
 
         if (shouldUseStructuredRetry(result)) {
           if (structuredRetryAttempts >= structuredRetryCount) {
+            iterationErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
+            executorErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
             throw new Error(`Completion marker failed validation after ${structuredRetryCount} structured retry attempt(s): ${result.errors.join('; ') || 'Completion marker missing or invalid.'}`)
           }
           structuredRetryAttempts += 1
@@ -851,7 +702,9 @@ export async function executeBead(
       const workflowDeadlineTimedOut = isWorkflowDeadlineTimeoutError(err)
       if (workflowDeadlineTimedOut) {
         contextWipeReason = 'iteration_timeout'
-        iterationErrors.push('Coding iteration timed out before the completion marker or deterministic verification finished.')
+        iterationErrorCodes.add(BEAD_ITERATION_TIMEOUT)
+        executorErrorCodes.add(BEAD_ITERATION_TIMEOUT)
+        iterationErrors.push('Coding iteration timed out before the completion marker was accepted.')
       } else {
         rememberOpenCodeDiagnostics(buildOpenCodeBlockedErrorDiagnostics({
           error: err,
@@ -924,7 +777,10 @@ export async function executeBead(
       failureClass: openCodeDiagnosticsForAttempt?.diagnostics?.kind ?? attemptFailureStatus,
       sessionId: contextWipeSessionId,
       diagnostics: openCodeDiagnosticsForAttempt?.diagnostics ?? null,
-      errorCodes: openCodeDiagnosticsForAttempt?.errorCodes,
+      errorCodes: mergeErrorCodes(
+        [...iterationErrorCodes],
+        openCodeDiagnosticsForAttempt?.errorCodes ?? [],
+      ),
     })
 
     activeSession = null
@@ -1008,7 +864,10 @@ export async function executeBead(
     ? [BEAD_RETRY_BUDGET_EXHAUSTED]
     : []
   const openCodeDiagnostics = latestOpenCodeDiagnostics.current
-  const errorCodes = mergeErrorCodes(baseErrorCodes, openCodeDiagnostics?.errorCodes ?? [])
+  const errorCodes = mergeErrorCodes(
+    mergeErrorCodes(baseErrorCodes, [...executorErrorCodes]),
+    openCodeDiagnostics?.errorCodes ?? [],
+  )
 
   return {
     beadId: bead.id,
@@ -1017,7 +876,6 @@ export async function executeBead(
     output: lastOutput,
     errors,
     rawAttempts,
-    verificationCommands,
     ...(errorCodes.length > 0 ? { errorCodes } : {}),
     ...(openCodeDiagnostics?.diagnostics ? { diagnostics: openCodeDiagnostics.diagnostics } : {}),
   }

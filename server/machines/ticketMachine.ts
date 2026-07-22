@@ -1,6 +1,7 @@
 import { assign, setup } from 'xstate'
 import type { TicketContext, TicketEvent } from './types'
 import { PROFILE_DEFAULTS } from '../db/defaults'
+import { FINAL_TEST_FAILED } from '@shared/errorCodes'
 
 type TicketInput = Partial<TicketContext>
 
@@ -77,6 +78,7 @@ export const ticketMachine = setup({
         if (event.type === 'EXECUTION_SETUP_PLAN_FAILED') return event.errors ?? []
         if (event.type === 'EXECUTION_SETUP_FAILED') return event.errors ?? []
         if (event.type === 'BEAD_ERROR') return event.codes ?? []
+        if (event.type === 'TESTS_FAILED') return [FINAL_TEST_FAILED]
         return []
       },
       errorDiagnostics: ({ event }) => {

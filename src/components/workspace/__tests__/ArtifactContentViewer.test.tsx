@@ -191,6 +191,23 @@ items:
     expect(screen.getByText('Retry note')).toBeInTheDocument()
   })
 
+  it('shows why a bead has no automated test command', () => {
+    render(<BeadsDraftView content={JSON.stringify({ beads: [{
+      id: 'bead-no-command',
+      title: 'Verify interactive behavior manually',
+      description: 'Keep interactive verification in Manual QA.',
+      acceptanceCriteria: ['The visual state is correct.'],
+      tests: ['A human verifies the visual state.'],
+      testCommands: [],
+      testCommandReason: 'No appropriate automated command exists for this interactive check.',
+    }] })} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Verify interactive behavior manually/ }))
+
+    expect(screen.getByText('No automated command')).toBeInTheDocument()
+    expect(screen.getByText('No appropriate automated command exists for this interactive check.')).toBeInTheDocument()
+  })
+
   it('uses the interview results header for approval-phase canonical interviews', () => {
     render(
       <ArtifactContent

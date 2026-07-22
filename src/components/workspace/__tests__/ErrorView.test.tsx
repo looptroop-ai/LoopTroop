@@ -3,7 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { makeTicket } from '@/test/factories'
 import { ErrorView } from '../ErrorView'
-import { BEAD_RETRY_BUDGET_EXHAUSTED } from '@shared/errorCodes'
+import {
+  BEAD_AGENT_RESPONSE_INVALID,
+  BEAD_FINALIZATION_FAILED,
+  BEAD_ITERATION_TIMEOUT,
+  BEAD_RETRY_BUDGET_EXHAUSTED,
+  FINAL_TEST_FAILED,
+  OPENCODE_PROVIDER_ERROR,
+} from '@shared/errorCodes'
 
 const logSectionMock = vi.hoisted(() => vi.fn(() => <div data-testid="phase-log-section" />))
 const mockUseTicketAction = vi.hoisted(() => vi.fn())
@@ -47,6 +54,62 @@ describe('ErrorView', () => {
     logSectionMock.mockClear()
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false })
     mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), isPending: false })
+  })
+
+  it.each([
+    [BEAD_AGENT_RESPONSE_INVALID, 'CODING', 'Agent response incomplete'],
+    [BEAD_ITERATION_TIMEOUT, 'CODING', 'Implementation attempt timed out'],
+    [OPENCODE_PROVIDER_ERROR, 'CODING', 'Provider or environment unavailable'],
+    [BEAD_RETRY_BUDGET_EXHAUSTED, 'CODING', 'Implementation retries exhausted'],
+    [BEAD_FINALIZATION_FAILED, 'CODING', 'Git finalization failed'],
+    [FINAL_TEST_FAILED, 'RUNNING_FINAL_TEST', 'Final Testing failed'],
+  ])('explains %s using its stable workflow cause', (errorCode, blockedFromStatus, expectedTitle) => {
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: blockedFromStatus,
+      availableActions: ['retry', 'cancel'],
+      activeErrorOccurrenceId: `error-${errorCode}`,
+      errorOccurrences: [{
+        id: `error-${errorCode}`,
+        occurrenceNumber: 1,
+        blockedFromStatus,
+        errorMessage: 'Low-level failure detail',
+        errorCodes: [errorCode],
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        resolvedAt: null,
+        resolutionStatus: null,
+        resumedToStatus: null,
+      }],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: expectedTitle })).toBeInTheDocument()
+    expect(screen.getByText(/^Recommended:/)).toBeInTheDocument()
+    expect(screen.getByText('Technical details')).toBeInTheDocument()
+  })
+
+  it('uses the failed workflow phase for workspace setup errors without guessing from logs', () => {
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'PREPARING_EXECUTION_ENV',
+      activeErrorOccurrenceId: 'setup-failure',
+      errorOccurrences: [{
+        id: 'setup-failure',
+        occurrenceNumber: 1,
+        blockedFromStatus: 'PREPARING_EXECUTION_ENV',
+        errorMessage: 'Opaque low-level detail',
+        errorCodes: [],
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        resolvedAt: null,
+        resolutionStatus: null,
+        resumedToStatus: null,
+      }],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: 'Workspace setup failed' })).toBeInTheDocument()
   })
 
   it('requires confirmation before canceling a blocked ticket', () => {

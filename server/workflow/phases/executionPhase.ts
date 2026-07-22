@@ -9,7 +9,7 @@ import { throwIfAborted } from '../../council/types'
 import { broadcaster } from '../../sse/broadcaster'
 import { withCommandLoggingAsync, withCommandLoggingFieldsAsync } from '../../log/commandLogger'
 import { adapter } from './state'
-import { emitPhaseLog, emitDebugLog, emitAiMilestone, emitOpenCodeSessionLogs, emitOpenCodeStreamEvent, emitOpenCodePromptLog, createOpenCodeStreamState, resolveExecutionRuntimeSettings, resolveStructuredRetryRuntimeSettings } from './helpers'
+import { emitPhaseLog, emitAiMilestone, emitOpenCodeSessionLogs, emitOpenCodeStreamEvent, emitOpenCodePromptLog, createOpenCodeStreamState, resolveExecutionRuntimeSettings, resolveStructuredRetryRuntimeSettings } from './helpers'
 import type { OpenCodeStreamState } from './types'
 import { readTicketBeads, recoverCodingBeadWithReset, writeTicketBeads, updateTicketProgressFromBeads } from './beadsPhase'
 import { recordBeadMetric } from '../../storage/executionTelemetry'
@@ -20,10 +20,9 @@ import {
 import { listOpenCodeSessionsForTicket, SessionManager } from '../../opencode/sessionManager'
 import { clearOpenCodePromptDispatchCount } from '../runOpenCodePrompt'
 import { ensureLocalGitExclude } from '../../git/repository'
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { writeFileSync, rmSync } from 'fs'
 import { resolve } from 'path'
-import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE, EXECUTION_SETUP_PROFILE_MIRROR } from '../../phases/executionSetup/types'
-import { getExecutionSetupCommandWrapperFromContent } from '../../phases/executionSetup/runtimeProfile'
+import { BEAD_FINALIZATION_FAILED } from '@shared/errorCodes'
 
 const ESCAPE_CHARACTER = String.fromCharCode(27)
 const BELL_CHARACTER = String.fromCharCode(7)
@@ -52,24 +51,6 @@ function mergeBeadRetryMetadata(
       updatedAt,
     }
   })
-}
-
-function resolveCodingCommandWrapper(ticketId: string, worktreePath: string): string | undefined {
-  const profileArtifact = getLatestPhaseArtifact(
-    ticketId,
-    EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
-    'PREPARING_EXECUTION_ENV',
-  )
-  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content, worktreePath)
-  if (artifactWrapper) return artifactWrapper
-
-  const profileMirrorPath = resolve(worktreePath, EXECUTION_SETUP_PROFILE_MIRROR)
-  if (!existsSync(profileMirrorPath)) return undefined
-  try {
-    return getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf8'), worktreePath) ?? undefined
-  } catch {
-    return undefined
-  }
 }
 
 function stripAnsiSequences(text: string): string {
@@ -271,7 +252,7 @@ function markBeadFinalizationFailed(input: {
             timestamp: failedAt,
             iteration: input.result.iteration,
             content: failureNote,
-            errorCode: 'BEAD_FINALIZATION_FAILED',
+            errorCode: BEAD_FINALIZATION_FAILED,
           },
         ],
       }
@@ -289,12 +270,12 @@ function markBeadFinalizationFailed(input: {
       source: 'system',
       modelId: input.codingModelId,
       beadId: input.finalizingBead.id,
-      errorCode: 'BEAD_FINALIZATION_FAILED',
+      errorCode: BEAD_FINALIZATION_FAILED,
     },
   )
   input.sendEvent({
     type: 'BEAD_ERROR',
-    codes: ['BEAD_FINALIZATION_FAILED'],
+    codes: [BEAD_FINALIZATION_FAILED],
     diagnostics: {
       kind: 'runtime',
       source: 'system',
@@ -512,32 +493,6 @@ export async function handleCoding(
         opencodeRetryPolicy: {
           limit: executionSettings.opencodeRetryLimit,
           delayMs: executionSettings.opencodeRetryDelayMs,
-        },
-        commandWrapper: resolveCodingCommandWrapper(ticketId, paths.worktreePath),
-        onVerificationCommand: ({ beadId, iteration, receipt, stdout, stderr }) => {
-          emitPhaseLog(
-            ticketId,
-            context.externalId,
-            'CODING',
-            receipt.passed ? 'info' : 'error',
-            receipt.passed
-              ? `Verified declared test command for bead ${beadId}: ${receipt.command}`
-              : `Declared test command failed for bead ${beadId}: ${receipt.command}`,
-            {
-              source: 'system',
-              modelId: codingModelId,
-              beadId,
-              beadIteration: iteration,
-              verificationCommand: receipt,
-            },
-          )
-          emitDebugLog(ticketId, 'CODING', 'bead.verification_command', {
-            beadId,
-            beadIteration: iteration,
-            receipt,
-            stdout,
-            stderr,
-          })
         },
         onSessionCreated: (sessionId, iteration) => {
           const currentBeads = readTicketBeads(ticketId)

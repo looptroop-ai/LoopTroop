@@ -109,6 +109,7 @@ const PRD_OUTPUT_FORMAT = [
 ].join('\n')
 const INTERVIEW_PHASE_ORDER_RULE = 'Phase Order Is Mandatory: all `foundation` questions first, then all `structure` questions, then all `assembly` questions. Never go backwards to an earlier phase once you have entered a later phase.'
 const BEADS_ORDER_PRESERVATION_RULE = 'Order Is Mandatory: Preserve the bead list order from the winning draft exactly. When adding new beads, insert them at a logical position that respects dependency ordering, but do not reorder, merge, or split existing beads. The app executes beads sequentially and derives `priority` from this list order.'
+const BEAD_VERIFICATION_RESTRAINT_RULE = 'Verification Restraint: Only when genuinely necessary for the bead\'s core implementation and unsuitable for Final Testing or Manual QA should the plan add, retain, or expand commands; derive automated verification from risks, alternatives, or manual behavior; introduce server/process/cookie/port/temp-directory orchestration; or create a verification-only bead. Detailed tests and acceptance criteria do not each require a matching command. Prefer the smallest existing repository-native test or build command, with no numerical command target or cap. When no appropriate automated command exists, use `testCommands: []` and a concise `testCommandReason`; include `testCommandReason` only in that case.'
 const BEAD_SUBSET_OUTPUT_FORMAT = [
   'YAML with a single top-level `beads` key containing a list.',
   'Each bead item must include exactly these fields:',
@@ -132,6 +133,7 @@ const BEAD_SUBSET_OUTPUT_FORMAT = [
   '    testCommands:',
   '      - "npm run test -- server/db"',
   '```',
+  '`testCommands` must always be a YAML list. When it is empty, add `testCommandReason` as a non-empty string; otherwise omit `testCommandReason`.',
   'YAML Safety: For any field value or list item that contains dense punctuation, quotes, backslashes, `: `, brackets, braces, shell metacharacters, or other code-like inline syntax, prefer a block scalar (`|-`) and otherwise use a double-quoted YAML string.',
   'When using double-quoted YAML strings, escape literal backslashes as `\\\\` (for example `\\\\|` in regex-like text), or use a block scalar for commands and regex-like text.',
   'For `testCommands` containing regex backslashes such as `\\+`, prefer a block scalar list item (`- |-`) or escape every literal backslash as `\\\\+`; never put raw `\\+` inside a double-quoted YAML string.',
@@ -550,11 +552,13 @@ export const PROM20: PromptTemplate = {
   - contextGuidance — an object with two keys: \`patterns\` (specific patterns to follow copied from the PRD/Architecture, e.g., "Use the AppError class for exceptions", "Follow the Container/Presenter pattern defined in src/components") and \`anti_patterns\` (approaches to avoid for this task, e.g., "Do not use alert() for error display").
   - acceptanceCriteria — human-readable definitions of done for this bead.
   - tests — bead-scoped tests (targeted unit/integration tests for this bead only, not the full suite).
-  - testCommands — exact commands to run the bead-scoped tests.`,
+  - testCommands — exact commands to run appropriate bead-scoped checks; may be empty.
+  - testCommandReason — required only when testCommands is empty; explains why no appropriate automated command exists.`,
     'Context Guidance Contract: Write `contextGuidance` as an object with an explicit `patterns` list and an explicit `anti_patterns` list. Each must contain at least one entry. If the structure risks becoming too long, shorten the prose in those lists instead of dropping later beads.',
     'Dependency Ordering: List beads in dependency order — if bead B depends on bead A, A must appear before B. Do not create circular dependencies or self-references.',
     'PRD Coverage: Every in-scope PRD requirement must map to at least one bead. Each bead\'s `prdRefs` must reference valid PRD epic or user-story IDs (e.g., EPIC-1, US-1-1).',
-    'Test Specificity: Each bead\'s `tests` must verify that bead alone — not the entire feature. Each bead must have at least one entry in `testCommands` with the exact command to run.',
+    'Test Specificity: Each bead\'s `tests` must verify that bead alone — not the entire feature. Tests may describe multiple scenarios without requiring one command per scenario.',
+    BEAD_VERIFICATION_RESTRAINT_RULE,
     CONDITIONAL_REPOSITORY_INSPECTION,
     'Test Command Grounding: When `relevant_files` and the approved PRD do not establish an exact `testCommands` entry, inspect the repository before emitting that command, while allowing checks for files or behavior the bead will create.',
     'Project-Agnostic Test Commands: Use focused repository inspection when the supplied context does not establish an exact test command. Choose the smallest practical verification for the bead, including standard platform utilities or checks for files and behavior the bead will create. Never assume a language, package manager, framework, or test runner merely because it is familiar.',
@@ -602,6 +606,7 @@ export const PROM22: PromptTemplate = {
     CONDITIONAL_REPOSITORY_INSPECTION,
     'Repository Detail Preservation: Before adopting or retaining repository-specific commands, paths, tooling, or framework details from an alternative draft, inspect the repository when the supplied context does not provide concrete evidence.',
     'Test Command Quality: Preserve practical bead-scoped test commands. Replace commands that assume an unobserved project ecosystem or do not verify the bead with a suitable project-agnostic or repository-native check, and account for that replacement in `changes`.',
+    BEAD_VERIFICATION_RESTRAINT_RULE,
     'Single Artifact Contract: Return one YAML artifact that contains both the final refined Beads breakdown and a top-level `changes` list. Do not split the refined beads and change metadata across multiple outputs, wrappers, or separate artifacts.',
     'Changes Coverage: The top-level `changes` list must fully account for the differences between the winning bead subset and the final refined bead subset. Use `type` values `modified`, `added`, or `removed`. Include `item_type: bead` plus `before` and `after` bead item records (or `null` when appropriate).',
     'One-Entry-Per-Item Rule: Every changed bead must appear exactly once in `changes`. If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead. Do not split one changed bead across multiple change entries.',
@@ -624,7 +629,8 @@ export const PROM23: PromptTemplate = {
   task: 'Re-read the final PRD as the source of truth and compare it against the current Beads blueprint to ensure complete coverage before execution planning is finalized.',
   instructions: [
     'Primary Truth: Treat the approved PRD as the sole source of truth for this audit. Every in-scope PRD requirement must be traceable to at least one bead.',
-    'Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing verification steps, empty or insufficient acceptance criteria, missing test commands, and beads with no `prdRefs` mapping.',
+    'Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing necessary verification, empty or insufficient acceptance criteria, invalid empty-command explanations, and beads with no `prdRefs` mapping. Do not treat command absence or command-to-requirement parity as a gap by itself.',
+    BEAD_VERIFICATION_RESTRAINT_RULE,
     CONDITIONAL_REPOSITORY_INSPECTION,
     'Repository-Specific Claims: Use focused repository inspection when the supplied context does not provide enough evidence to assess a path, build system, or tooling claim. The coverage decision itself remains about whether the blueprint covers the approved PRD.',
     'Source Artifact Contradictions: If the approved PRD is internally contradictory in a way the Beads blueprint cannot faithfully satisfy, report the contradiction as an unresolved coverage gap. Do not choose a side or invent implementation requirements to reconcile contradictory source artifacts.',
@@ -655,10 +661,11 @@ export const PROM24: PromptTemplate = {
     'Gap Resolution Rule: Address only the concrete coverage gaps provided in the context. Do not make unrelated improvements.',
     'Source Artifact Contradictions: If a provided gap describes internally contradictory source artifacts, do not choose a side, invent implementation requirements, or revise beads to pretend the contradiction is resolved. Record that gap with `action: left_unresolved` and `affected_items: []`.',
     'Preservation Rule: Keep the existing bead order, IDs, and unaffected fields unless a provided gap requires a concrete change. If you add a new bead, insert it at the minimal valid position that preserves dependency order.',
-    'Bead Completeness: Every bead in the revised blueprint must include non-empty `acceptanceCriteria`, `tests`, and `testCommands`. Never leave a bead as a shell with empty verification fields.',
+    'Bead Completeness: Every bead in the revised blueprint must include non-empty `acceptanceCriteria` and `tests`. `testCommands` may be empty only when accompanied by a non-empty `testCommandReason`.',
+    BEAD_VERIFICATION_RESTRAINT_RULE,
     CONDITIONAL_REPOSITORY_INSPECTION,
     'Repository-Specific Revisions: When changing a repository-specific detail, use focused repository inspection if the supplied context does not establish the replacement. A verification command may also target files or behavior that the revised bead will create.',
-    'Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include exactly the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.',
+    'Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`, plus `testCommandReason` only for an empty command list.',
     'Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry must include `type` (added|removed|modified), `id`, `title`, and `summary`.',
     'Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.',
     'Gap Resolution Actions: Each `gap_resolutions` entry must include `gap`, `action`, `rationale`, and `affected_items`. `action` must be one of `updated_beads`, `already_covered`, or `left_unresolved`.',
@@ -679,8 +686,8 @@ export const PROM25: PromptTemplate = {
   task: 'Take the latest validated Beads blueprint and expand each bead into the final execution-ready Beads list by adding only the AI-owned fields.',
   instructions: [
     'Fresh Context Contract: This prompt includes only the approved final PRD, the latest validated blueprint, ticket details, and `relevant_files`. Use this refreshed context as your full working set; do not assume any prior conversation state.',
-    'Expansion Only: Preserve these Part 1 fields exactly for every bead: `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.',
-    'Test Command Preservation: Preserve `testCommands` byte-for-byte during expansion; this phase adds execution metadata and must not redesign the semantic blueprint.',
+    'Expansion Only: Preserve these Part 1 fields exactly for every bead: `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, `testCommands`, and conditional `testCommandReason`.',
+    'Test Command Preservation: Preserve `testCommands` and any `testCommandReason` byte-for-byte during expansion; this phase adds execution metadata and must not redesign the semantic blueprint.',
     'Order Is Mandatory: Preserve bead list order exactly. The app executes beads sequentially in this order and derives `priority` from this order. Do not reorder, merge, split, add, or remove beads.',
     'AI-Owned Fields Only: Add only these fields per bead: `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.',
     'Mechanical Copy Rule: For each bead, start from the matching bead in `### beads_draft`, mechanically copy every preserved Part 1 field byte-for-byte, then replace only `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.',
@@ -709,7 +716,8 @@ export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {
     'Repository Inspection Is Mandatory: perform at least one successful focused read-only repository tool call before answering. Inspect the files that are most likely to explain each failure, including files outside earlier bead targets when the evidence points there.',
     'No Mutation: do not edit files, run mutating commands, install dependencies, or change repository state.',
     'Exact Group Coverage: return exactly one candidate for every supplied merge-group ID, in the supplied order. Do not add, omit, merge, split, or rename groups.',
-    'Implementation Quality: each candidate must contain a precise title and description, concrete implementation guidance, acceptance criteria, automated tests, runnable test commands, useful labels, dependencies, and minimal project-relative target files.',
+    'Implementation Quality: each candidate must contain a precise title and description, concrete implementation guidance, acceptance criteria, automated test scenarios, appropriate verification command guidance, useful labels, dependencies, and minimal project-relative target files.',
+    BEAD_VERIFICATION_RESTRAINT_RULE,
     'PRD References: use only PRD references supplied for that merge group. Never invent a PRD reference.',
     'Dependencies: `blockedByGroupIds` may reference only earlier supplied merge-group IDs. Keep the graph acyclic.',
     'Application-Owned Fields: do not generate bead IDs, priority, status, issue type, external reference, reverse `blocks`, lifecycle timestamps, notes, iteration, or QA provenance. LoopTroop adds those fields after validation.',
@@ -729,6 +737,7 @@ export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {
     '    acceptanceCriteria: ["Observable completion criterion"]',
     '    tests: ["Concrete automated regression test"]',
     '    testCommands: ["Bead-scoped verification command"]',
+    '    # When testCommands is [], add: testCommandReason: "Why no appropriate automated command exists"',
     '    labels: ["manual-qa", "domain-label"]',
     '    blockedByGroupIds: []',
     '    targetFiles: ["project/relative/path.ext"]',
@@ -1004,9 +1013,9 @@ export const PROM_CODING: PromptTemplate = {
     'Implement Changes: Make the necessary code changes in the worktree to fulfill the bead requirements. Follow existing code patterns and conventions in the project.',
     'Environment Readiness: If the setup profile file is missing, unreadable, or invalid, do only the minimum safe discovery needed to proceed. Do not rediscover or rebuild the full environment unless the existing setup is missing or invalid. If a required command launcher or toolchain is missing and no approved temp root from the setup profile can hold execution-only tooling, report an environment failure instead of installing into arbitrary repository paths.',
     'Execution-Only Tooling: If you must prepare a missed execution-only toolchain or cache during coding, create it only under an existing approved temp root from `.ticket/runtime/execution-setup-profile.json`, preferably `.ticket/runtime/execution-setup/**`. Never download or install toolchains, SDKs, package managers, or large caches into arbitrary project paths.',
-    'Repair Loop: After implementing the bead, run the bead\'s test commands first. Then run impacted, package-scoped, or file-scoped lint and typecheck commands when the project supports them. If a scoped lint/typecheck command is unavailable, use the best safe project-native command family from the setup profile file when available without blocking on unrelated baseline debt.',
-    'Run Tests: Execute the bead\'s test commands and keep fixing failures until they pass.',
-    'Deterministic Verification: A `done/pass` marker is only a candidate completion. LoopTroop will independently rerun every declared `testCommands` entry through the prepared setup wrapper before accepting the bead. If a command fails or times out, LoopTroop will return a deterministic failure receipt to this same session; use that real command output to fix the implementation and continue within the existing iteration deadline.',
+    'Repair Loop: After implementing the bead, treat its planned test commands as starting guidance. Run the applicable commands, and correct or replace a command when repository evidence shows that another project-native check is more appropriate. Then run impacted, package-scoped, or file-scoped lint and typecheck commands when the project supports them. If a scoped lint/typecheck command is unavailable, use the best safe project-native command family from the setup profile file when available without blocking on unrelated baseline debt.',
+    'Run Tests: Use the smallest appropriate automated checks for the implementation and keep fixing relevant failures until they pass. When the bead has no test commands and gives a reason, do not invent an unsuitable command merely to create a gate.',
+    'Agent-Owned Verification: LoopTroop validates the final completion marker but does not independently rerun a frozen copy of the bead test commands. Return `done` only after you have run the applicable checks and verified the implementation against the acceptance criteria.',
     'Run Lint & Typecheck: Prefer scoped lint and typecheck for the code you touched. Do not fail the bead because of unrelated pre-existing project-wide lint/typecheck debt.',
     'Self-Verify Quality: Review each acceptance criterion and confirm the implementation satisfies it qualitatively. Check edge cases and error handling.',
     'Do Not Self-Terminate Early: Do not stop just because lint, tests, or typecheck fail. Continue working in the same session while time remains. The app will decide when to stop the iteration.',

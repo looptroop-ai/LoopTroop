@@ -591,7 +591,7 @@ Each quality gate (`tests`, `lint`, `typecheck`, `qualitative`) accepts multiple
 
 Any other string value is kept as-is (lowercased).
 
-Normalization decides whether the response is a valid completion *candidate*; it does not mark the bead complete. After a valid `done` marker, LoopTroop independently executes every declared `testCommands` entry in order. A command failure returns a deterministic receipt to the same coding session, and only an all-passing sequence permits Git finalization. The marker's lint, typecheck, and qualitative values remain self-reported unless their commands are explicitly part of `testCommands`.
+Normalization decides whether the response is a valid completion candidate; local Git finalization still determines whether the bead can become `done`. The coding agent owns bead-scoped verification, may adapt planned `testCommands` when repository evidence contradicts them, and must return passing test, lint, typecheck, and qualitative values. LoopTroop does not independently rerun the frozen bead commands after this marker; the later Final Testing phase remains a mandatory backend-executed gate.
 
 **Accepted wrapper keys:** `beadstatus`, `bead_status`, `statusmarker`, `marker`, `result`, `output`, `data`.
 

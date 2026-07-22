@@ -57,6 +57,7 @@ export interface Bead {
   acceptanceCriteria: string[]            // Field 11
   tests: string[]                         // Field 14
   testCommands: string[]                  // Field 15
+  testCommandReason?: string              // Required only when testCommands is empty
 
   // Expanded fields (terminal expansion phase — PROM25)
   priority: number                        // Field 3 — sequential execution order
@@ -78,4 +79,4 @@ export interface Bead {
   qaOrigin?: QaOrigin                     // Typed Manual QA provenance.
 }
 
-export type BeadSubset = Pick<Bead, 'id' | 'title' | 'prdRefs' | 'description' | 'contextGuidance' | 'acceptanceCriteria' | 'tests' | 'testCommands'>
+export type BeadSubset = Pick<Bead, 'id' | 'title' | 'prdRefs' | 'description' | 'contextGuidance' | 'acceptanceCriteria' | 'tests' | 'testCommands' | 'testCommandReason'>

@@ -74,13 +74,23 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     if (typeof record.title !== 'string' || !record.title.trim()) {
       throw new Error(`Bead at line ${index + 1} is missing a valid "title" field`)
     }
-    if (!Array.isArray(record.testCommands) || record.testCommands.length === 0) {
-      throw new Error(`Bead ${record.id} is missing test commands`)
+    if (!Array.isArray(record.testCommands)) {
+      throw new Error(`Bead ${record.id} is missing the testCommands list`)
     }
     for (const command of record.testCommands) {
       if (typeof command !== 'string' || !command.trim()) {
         throw new Error(`Bead ${record.id} contains an invalid test command`)
       }
+    }
+    if (record.testCommandReason !== undefined && (typeof record.testCommandReason !== 'string' || !record.testCommandReason.trim())) {
+      throw new Error(`Bead ${record.id} contains an invalid testCommandReason`)
+    }
+    const testCommandReason = typeof record.testCommandReason === 'string' ? record.testCommandReason.trim() : ''
+    if (record.testCommands.length === 0 && !testCommandReason) {
+      throw new Error(`Bead ${record.id} requires testCommandReason when testCommands is empty`)
+    }
+    if (record.testCommands.length > 0 && testCommandReason) {
+      throw new Error(`Bead ${record.id} may include testCommandReason only when testCommands is empty`)
     }
   }
 

@@ -1044,17 +1044,19 @@ Create a Beads breakdown (architecture/task graph) based on the final PRD.
   - contextGuidance — an object with two keys: `patterns` (specific patterns to follow copied from the PRD/Architecture, e.g., "Use the AppError class for exceptions", "Follow the Container/Presenter pattern defined in src/components") and `anti_patterns` (approaches to avoid for this task, e.g., "Do not use alert() for error display").
   - acceptanceCriteria — human-readable definitions of done for this bead.
   - tests — bead-scoped tests (targeted unit/integration tests for this bead only, not the full suite).
-  - testCommands — exact commands to run the bead-scoped tests.
+  - testCommands — exact commands to run appropriate bead-scoped checks; may be empty.
+  - testCommandReason — required only when testCommands is empty; explains why no appropriate automated command exists.
 4. Context Guidance Contract: Write `contextGuidance` as an object with an explicit `patterns` list and an explicit `anti_patterns` list. Each must contain at least one entry. If the structure risks becoming too long, shorten the prose in those lists instead of dropping later beads.
 5. Dependency Ordering: List beads in dependency order — if bead B depends on bead A, A must appear before B. Do not create circular dependencies or self-references.
 6. PRD Coverage: Every in-scope PRD requirement must map to at least one bead. Each bead's `prdRefs` must reference valid PRD epic or user-story IDs (e.g., EPIC-1, US-1-1).
-7. Test Specificity: Each bead's `tests` must verify that bead alone — not the entire feature. Each bead must have at least one entry in `testCommands` with the exact command to run.
-8. Project-Agnostic Test Commands: Use focused repository inspection when the supplied context does not establish an exact test command. Choose the smallest practical verification for the bead, including standard platform utilities or checks for files and behavior the bead will create. Never assume a language, package manager, framework, or test runner merely because it is familiar.
-9. Single Response Completeness: Return one complete final `beads` list in a single response. Do not stop mid-list or emit partial subsets.
-10. Length Safety: If total output risks being cut off, shorten description text instead of omitting later beads. Every planned bead must appear in the output.
-11. Strict Output: Do not add wrappers, markdown fences, prose, or trailing commentary. Begin at `beads:` and end after the final bead item.
-12. Boundary Rule: Begin output at the `beads:` key. End after the last bead item. No prose, markdown fences, or commentary before or after the YAML.
-13. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
+7. Test Specificity: Each bead's `tests` must verify that bead alone — not the entire feature. Tests may describe multiple scenarios without requiring one command per scenario.
+8. Verification Restraint: Only when genuinely necessary for the bead's core implementation and unsuitable for Final Testing or Manual QA should the plan add, retain, or expand commands; derive automated verification from risks, alternatives, or manual behavior; introduce server/process/cookie/port/temp-directory orchestration; or create a verification-only bead. Detailed tests and acceptance criteria do not each require a matching command. Prefer the smallest existing repository-native test or build command, with no numerical command target or cap. When no appropriate automated command exists, use `testCommands: []` and a concise `testCommandReason`; include `testCommandReason` only in that case.
+9. Project-Agnostic Test Commands: Use focused repository inspection when the supplied context does not establish an exact test command. Choose the smallest practical verification for the bead, including standard platform utilities or checks for files and behavior the bead will create. Never assume a language, package manager, framework, or test runner merely because it is familiar.
+10. Single Response Completeness: Return one complete final `beads` list in a single response. Do not stop mid-list or emit partial subsets.
+11. Length Safety: If total output risks being cut off, shorten description text instead of omitting later beads. Every planned bead must appear in the output.
+12. Strict Output: Do not add wrappers, markdown fences, prose, or trailing commentary. Begin at `beads:` and end after the final bead item.
+13. Boundary Rule: Begin output at the `beads:` key. End after the last bead item. No prose, markdown fences, or commentary before or after the YAML.
+14. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
 
 ## Expected Output Format
 YAML with a single top-level `beads` key containing a list.
@@ -1079,6 +1081,7 @@ beads:
     testCommands:
       - "npm run test -- server/db"
 ```
+`testCommands` must always be a YAML list. When it is empty, add `testCommandReason` as a non-empty string; otherwise omit `testCommandReason`.
 YAML Safety: For any field value or list item that contains dense punctuation, quotes, backslashes, `: `, brackets, braces, shell metacharacters, or other code-like inline syntax, prefer a block scalar (`|-`) and otherwise use a double-quoted YAML string.
 When using double-quoted YAML strings, escape literal backslashes as `\\` (for example `\\|` in regex-like text), or use a block scalar for commands and regex-like text.
 For `testCommands` containing regex backslashes such as `\+`, prefer a block scalar list item (`- |-`) or escape every literal backslash as `\\+`; never put raw `\+` inside a double-quoted YAML string.
@@ -1189,15 +1192,16 @@ Create the final, definitive version of your Beads breakdown by reviewing the al
 4. Measured Refinement: Do not rewrite from scratch or blend drafts together just for balance. But it is acceptable to improve multiple beads, adjust dependency edges, or rework test strategies across the draft if that produces a clearly stronger final result.
 5. Restraint: Avoid adding beads that merely restate work already covered by an existing bead. But if genuine gaps exist — missing work units, uncovered error paths, overlooked dependencies — add them; a complete graph matters more than a short one.
 6. Test Command Quality: Preserve practical bead-scoped test commands. Replace commands that assume an unobserved project ecosystem or do not verify the bead with a suitable project-agnostic or repository-native check, and account for that replacement in `changes`.
-7. Single Artifact Contract: Return one YAML artifact that contains both the final refined Beads breakdown and a top-level `changes` list. Do not split the refined beads and change metadata across multiple outputs, wrappers, or separate artifacts.
-8. Changes Coverage: The top-level `changes` list must fully account for the differences between the winning bead subset and the final refined bead subset. Use `type` values `modified`, `added`, or `removed`. Include `item_type: bead` plus `before` and `after` bead item records (or `null` when appropriate).
-9. One-Entry-Per-Item Rule: Every changed bead must appear exactly once in `changes`. If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead. Do not split one changed bead across multiple change entries.
-10. Optional Inspiration Attribution: When a change was directly inspired by an alternative draft, include `inspiration` with `alternative_draft` and the inspiring `item`. Include `inspiration.item.detail` whenever the source item has useful supporting text (for example description, acceptance, tests, or dependency detail). If a change was not directly inspired by a losing draft, omit `inspiration` or set it to null.
-11. ID Stability: Preserve existing bead IDs from the winning draft unless you are adding a genuinely new bead. Do not renumber for neatness.
-12. Formatting: Output only this single refined Beads artifact with its top-level `changes` list.
-13. Schema Preservation: keep the same bead subset schema and output a single top-level `beads` list. Do not wrap it in prose or additional objects.
-14. Order Is Mandatory: Preserve the bead list order from the winning draft exactly. When adding new beads, insert them at a logical position that respects dependency ordering, but do not reorder, merge, or split existing beads. The app executes beads sequentially and derives `priority` from this list order.
-15. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
+7. Verification Restraint: Only when genuinely necessary for the bead's core implementation and unsuitable for Final Testing or Manual QA should refinement add, retain, or expand commands; derive automated verification from risks, alternatives, or manual behavior; introduce server/process/cookie/port/temp-directory orchestration; or create a verification-only bead. Detailed tests and acceptance criteria do not each require a matching command. Prefer the smallest existing repository-native test or build command, with no numerical command target or cap. When no appropriate automated command exists, use `testCommands: []` and a concise `testCommandReason`; include `testCommandReason` only in that case.
+8. Single Artifact Contract: Return one YAML artifact that contains both the final refined Beads breakdown and a top-level `changes` list. Do not split the refined beads and change metadata across multiple outputs, wrappers, or separate artifacts.
+9. Changes Coverage: The top-level `changes` list must fully account for the differences between the winning bead subset and the final refined bead subset. Use `type` values `modified`, `added`, or `removed`. Include `item_type: bead` plus `before` and `after` bead item records (or `null` when appropriate).
+10. One-Entry-Per-Item Rule: Every changed bead must appear exactly once in `changes`. If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead. Do not split one changed bead across multiple change entries.
+11. Optional Inspiration Attribution: When a change was directly inspired by an alternative draft, include `inspiration` with `alternative_draft` and the inspiring `item`. Include `inspiration.item.detail` whenever the source item has useful supporting text (for example description, acceptance, tests, or dependency detail). If a change was not directly inspired by a losing draft, omit `inspiration` or set it to null.
+12. ID Stability: Preserve existing bead IDs from the winning draft unless you are adding a genuinely new bead. Do not renumber for neatness.
+13. Formatting: Output only this single refined Beads artifact with its top-level `changes` list.
+14. Schema Preservation: keep the same bead subset schema and output a single top-level `beads` list. Do not wrap it in prose or additional objects.
+15. Order Is Mandatory: Preserve the bead list order from the winning draft exactly. When adding new beads, insert them at a logical position that respects dependency ordering, but do not reorder, merge, or split existing beads. The app executes beads sequentially and derives `priority` from this list order.
+16. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
 
 ## Expected Output Format
 YAML with a single top-level `beads` key containing a list.
@@ -1222,6 +1226,7 @@ beads:
     testCommands:
       - "npm run test -- server/db"
 ```
+`testCommands` must always be a YAML list. When it is empty, add `testCommandReason` as a non-empty string; otherwise omit `testCommandReason`.
 YAML Safety: For any field value or list item that contains dense punctuation, quotes, backslashes, `: `, brackets, braces, shell metacharacters, or other code-like inline syntax, prefer a block scalar (`|-`) and otherwise use a double-quoted YAML string.
 When using double-quoted YAML strings, escape literal backslashes as `\\` (for example `\\|` in regex-like text), or use a block scalar for commands and regex-like text.
 For `testCommands` containing regex backslashes such as `\+`, prefer a block scalar list item (`- |-`) or escape every literal backslash as `\\+`; never put raw `\+` inside a double-quoted YAML string.
@@ -1266,19 +1271,20 @@ Re-read the final PRD as the source of truth and compare it against the current 
 
 ## Instructions
 1. Primary Truth: Treat the approved PRD as the sole source of truth for this audit. Every in-scope PRD requirement must be traceable to at least one bead.
-2. Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing verification steps, empty or insufficient acceptance criteria, missing test commands, and beads with no `prdRefs` mapping.
-3. Repository-Specific Claims: Use focused repository inspection when the supplied context does not provide enough evidence to assess a path, build system, or tooling claim. The coverage decision itself remains about whether the blueprint covers the approved PRD.
-4. Source Artifact Contradictions: If the approved PRD is internally contradictory in a way the Beads blueprint cannot faithfully satisfy, report the contradiction as an unresolved coverage gap. Do not choose a side or invent implementation requirements to reconcile contradictory source artifacts.
-5. Identify Gaps: List any specific gaps or discrepancies found between the PRD and the Beads breakdown.
-6. Coverage Limits: Treat `coverage_run_number` and `max_coverage_passes` from the context as hard limits. Coverage can run once or at most `max_coverage_passes` times in total. If `is_final_coverage_run` is true, report unresolved gaps clearly without assuming another refinement pass exists.
-7. If no gaps exist, confirm that the Beads blueprint is complete and ready for the final expansion step.
-8. Audit-Only Contract: This prompt only audits the current Beads blueprint. Do not rewrite beads, propose changes, or include resolution notes in this response.
-9. Output Envelope: return only YAML with top-level `status`, `gaps`, and `follow_up_questions`.
-10. Beads Follow-Up Rule: `follow_up_questions` is always `[]` for beads coverage. Beads coverage has no user interaction; use `gaps` only.
-11. YAML Validity: Every item in `gaps` must be a double-quoted YAML string, even when the text contains code identifiers, paths, flags, backticks, or punctuation.
-12. Gap Triggering: Use `status: gaps` only when at least one real unresolved gap remains. Use concrete `gaps` entries to trigger another refinement pass. Do not flag stylistic preferences or minor wording differences as gaps.
-13. Do not output a rewritten Beads blueprint, beads patch, or any extra keys.
-14. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
+2. Coverage Check: Detect uncovered PRD requirements, oversized beads, vague work splits, missing necessary verification, empty or insufficient acceptance criteria, invalid empty-command explanations, and beads with no `prdRefs` mapping. Do not treat command absence or command-to-requirement parity as a gap by itself.
+3. Verification Restraint: Only when genuinely necessary for the bead's core implementation and unsuitable for Final Testing or Manual QA should coverage require commands, automated risk/alternative/manual checks, process orchestration, or verification-only beads. Detailed tests and acceptance criteria do not each require a matching command, and there is no numerical command target or cap.
+4. Repository-Specific Claims: Use focused repository inspection when the supplied context does not provide enough evidence to assess a path, build system, or tooling claim. The coverage decision itself remains about whether the blueprint covers the approved PRD.
+5. Source Artifact Contradictions: If the approved PRD is internally contradictory in a way the Beads blueprint cannot faithfully satisfy, report the contradiction as an unresolved coverage gap. Do not choose a side or invent implementation requirements to reconcile contradictory source artifacts.
+6. Identify Gaps: List any specific gaps or discrepancies found between the PRD and the Beads breakdown.
+7. Coverage Limits: Treat `coverage_run_number` and `max_coverage_passes` from the context as hard limits. Coverage can run once or at most `max_coverage_passes` times in total. If `is_final_coverage_run` is true, report unresolved gaps clearly without assuming another refinement pass exists.
+8. If no gaps exist, confirm that the Beads blueprint is complete and ready for the final expansion step.
+9. Audit-Only Contract: This prompt only audits the current Beads blueprint. Do not rewrite beads, propose changes, or include resolution notes in this response.
+10. Output Envelope: return only YAML with top-level `status`, `gaps`, and `follow_up_questions`.
+11. Beads Follow-Up Rule: `follow_up_questions` is always `[]` for beads coverage. Beads coverage has no user interaction; use `gaps` only.
+12. YAML Validity: Every item in `gaps` must be a double-quoted YAML string, even when the text contains code identifiers, paths, flags, backticks, or punctuation.
+13. Gap Triggering: Use `status: gaps` only when at least one real unresolved gap remains. Use concrete `gaps` entries to trigger another refinement pass. Do not flag stylistic preferences or minor wording differences as gaps.
+14. Do not output a rewritten Beads blueprint, beads patch, or any extra keys.
+15. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
 
 ## Expected Output Format
 YAML with exactly these top-level keys: `status`, `gaps`, `follow_up_questions`. `status` must be `clean` or `gaps`. `gaps` must be a YAML list of double-quoted strings. Quote every `gaps` item even when it contains code identifiers, file paths, flags, backticks, or punctuation. `follow_up_questions` must be a YAML list (empty when status is `clean`). For beads coverage, `follow_up_questions` must always be `[]`.
@@ -1317,16 +1323,17 @@ Revise the current Beads blueprint to address the provided coverage gaps while p
 3. Gap Resolution Rule: Address only the concrete coverage gaps provided in the context. Do not make unrelated improvements.
 4. Source Artifact Contradictions: If a provided gap describes internally contradictory source artifacts, do not choose a side, invent implementation requirements, or revise beads to pretend the contradiction is resolved. Record that gap with `action: left_unresolved` and `affected_items: []`.
 5. Preservation Rule: Keep the existing bead order, IDs, and unaffected fields unless a provided gap requires a concrete change. If you add a new bead, insert it at the minimal valid position that preserves dependency order.
-6. Bead Completeness: Every bead in the revised blueprint must include non-empty `acceptanceCriteria`, `tests`, and `testCommands`. Never leave a bead as a shell with empty verification fields.
-7. Repository-Specific Revisions: When changing a repository-specific detail, use focused repository inspection if the supplied context does not establish the replacement. A verification command may also target files or behavior that the revised bead will create.
-8. Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include exactly the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.
-9. Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry must include `type` (added|removed|modified), `id`, `title`, and `summary`.
-10. Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.
-11. Gap Resolution Actions: Each `gap_resolutions` entry must include `gap`, `action`, `rationale`, and `affected_items`. `action` must be one of `updated_beads`, `already_covered`, or `left_unresolved`.
-12. Affected Items: `affected_items` must be a YAML list of `{ item_type, id, label }` entries referencing bead items. Use an empty list when no bead mapping applies.
-13. Non-Bead Gaps: If a gap does not map cleanly to one or more specific beads, keep `affected_items: []`. Never emit PRD refs, section names, or non-bead item types in `affected_items`.
-14. Output Discipline: Return only one YAML artifact with a top-level `beads` list plus top-level `changes` and `gap_resolutions`. Do not add wrappers or prose.
-15. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
+6. Bead Completeness: Every bead must include non-empty `acceptanceCriteria` and `tests`. `testCommands` may be empty only with a non-empty `testCommandReason`.
+7. Verification Restraint: Only when genuinely necessary for the bead's core implementation and unsuitable for Final Testing or Manual QA should a revision add or expand commands, automated risk/alternative/manual checks, process orchestration, or verification-only beads. Detailed tests and acceptance criteria do not each require a matching command, and there is no numerical command target or cap. Prefer consolidating or replacing commands over appending them.
+8. Repository-Specific Revisions: When changing a repository-specific detail, use focused repository inspection if the supplied context does not establish the replacement. A verification command may also target files or behavior that the revised bead will create.
+9. Semantic Blueprint Rule: Return semantic Part 1 bead records only. Each bead must include the Beads blueprint fields: `id`, `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`, plus `testCommandReason` only for an empty command list.
+10. Change Accounting: Include a top-level `changes` list that fully and exactly accounts for the diff between the current Beads candidate and the revised Beads candidate. Each entry must include `type` (added|removed|modified), `id`, `title`, and `summary`.
+11. Gap Resolution Accounting: Include a top-level `gap_resolutions` list with exactly one entry per provided gap.
+12. Gap Resolution Actions: Each `gap_resolutions` entry must include `gap`, `action`, `rationale`, and `affected_items`. `action` must be one of `updated_beads`, `already_covered`, or `left_unresolved`.
+13. Affected Items: `affected_items` must be a YAML list of `{ item_type, id, label }` entries referencing bead items. Use an empty list when no bead mapping applies.
+14. Non-Bead Gaps: If a gap does not map cleanly to one or more specific beads, keep `affected_items: []`. Never emit PRD refs, section names, or non-bead item types in `affected_items`.
+15. Output Discipline: Return only one YAML artifact with a top-level `beads` list plus top-level `changes` and `gap_resolutions`. Do not add wrappers or prose.
+16. Final Self-Check: before responding, verify that you are returning only the artifact, using the exact required top-level shape, with no prose, no markdown fences, no commentary, and no extra wrapper keys.
 
 ## Expected Output Format
 YAML with a single top-level `beads` key containing a list.
@@ -1351,6 +1358,7 @@ beads:
     testCommands:
       - "npm run test -- server/db"
 ```
+`testCommands` must always be a YAML list. When it is empty, add `testCommandReason` as a non-empty string; otherwise omit `testCommandReason`.
 YAML Safety: For any field value or list item that contains dense punctuation, quotes, backslashes, `: `, brackets, braces, shell metacharacters, or other code-like inline syntax, prefer a block scalar (`|-`) and otherwise use a double-quoted YAML string.
 When using double-quoted YAML strings, escape literal backslashes as `\\` (for example `\\|` in regex-like text), or use a block scalar for commands and regex-like text.
 For `testCommands` containing regex backslashes such as `\+`, prefer a block scalar list item (`- |-`) or escape every literal backslash as `\\+`; never put raw `\+` inside a double-quoted YAML string.
@@ -1391,8 +1399,8 @@ Take the latest validated Beads blueprint and expand each bead into the final ex
 
 ## Instructions
 1. Fresh Context Contract: This prompt includes only the approved final PRD, the latest validated blueprint, ticket details, and `relevant_files`. Use this refreshed context as your full working set; do not assume any prior conversation state.
-2. Expansion Only: Preserve these Part 1 fields exactly for every bead: `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, and `testCommands`.
-3. Test Command Preservation: Preserve `testCommands` byte-for-byte during expansion; this phase adds execution metadata and must not redesign the semantic blueprint.
+2. Expansion Only: Preserve these Part 1 fields exactly for every bead: `title`, `prdRefs`, `description`, `contextGuidance`, `acceptanceCriteria`, `tests`, `testCommands`, and conditional `testCommandReason`.
+3. Test Command Preservation: Preserve `testCommands` and `testCommandReason` byte-for-byte during expansion; this phase adds execution metadata and must not redesign the semantic blueprint.
 4. Order Is Mandatory: Preserve bead list order exactly. The app executes beads sequentially in this order and derives `priority` from this order. Do not reorder, merge, split, add, or remove beads.
 5. AI-Owned Fields Only: Add only these fields per bead: `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.
 6. Mechanical Copy Rule: For each bead, start from the matching bead in `### beads_draft`, mechanically copy every preserved Part 1 field byte-for-byte, then replace only `id`, `issueType`, `labels`, `dependencies.blocked_by`, and `targetFiles`.
@@ -1874,9 +1882,9 @@ Implement the active bead requirements in the worktree, pass all quality gates (
 5. Implement Changes: Make the necessary code changes in the worktree to fulfill the bead requirements. Follow existing code patterns and conventions in the project.
 6. Environment Readiness: If the setup profile file is missing, unreadable, or invalid, do only the minimum safe discovery needed to proceed. Do not rediscover or rebuild the full environment unless the existing setup is missing or invalid. If a required command launcher or toolchain is missing and no approved temp root from the setup profile can hold execution-only tooling, report an environment failure instead of installing into arbitrary repository paths.
 7. Execution-Only Tooling: If you must prepare a missed execution-only toolchain or cache during coding, create it only under an existing approved temp root from `.ticket/runtime/execution-setup-profile.json`, preferably `.ticket/runtime/execution-setup/**`. Never download or install toolchains, SDKs, package managers, or large caches into arbitrary project paths.
-8. Repair Loop: After implementing the bead, run the bead's test commands first. Then run impacted, package-scoped, or file-scoped lint and typecheck commands when the project supports them. If a scoped lint/typecheck command is unavailable, use the best safe project-native command family from the setup profile file when available without blocking on unrelated baseline debt.
-9. Run Tests: Execute the bead's test commands and keep fixing failures until they pass.
-10. Deterministic Verification: A `done/pass` marker is only a candidate completion. LoopTroop will independently rerun every declared `testCommands` entry through the prepared setup wrapper before accepting the bead. If a command fails or times out, LoopTroop will return a deterministic failure receipt to this same session; use that real command output to fix the implementation and continue within the existing iteration deadline.
+8. Repair Loop: Treat the bead's planned test commands as starting guidance. Run applicable commands first, but correct or replace an inaccurate command when repository evidence requires it. Then run impacted, package-scoped, or file-scoped lint and typecheck commands when supported without blocking on unrelated baseline debt.
+9. Run Tests: Run the smallest appropriate bead-scoped checks and keep fixing failures until applicable checks pass. When the bead records that no automated command is appropriate, do not invent one solely to satisfy the plan.
+10. Agent-Owned Verification: You own bead-scoped verification. LoopTroop validates the final structured completion marker but does not independently rerun the frozen planned commands; return `done/pass` only after the checks actually appropriate to the repository and bead have passed.
 11. Run Lint & Typecheck: Prefer scoped lint and typecheck for the code you touched. Do not fail the bead because of unrelated pre-existing project-wide lint/typecheck debt.
 12. Self-Verify Quality: Review each acceptance criterion and confirm the implementation satisfies it qualitatively. Check edge cases and error handling.
 13. Do Not Self-Terminate Early: Do not stop just because lint, tests, or typecheck fail. Continue working in the same session while time remains. The app will decide when to stop the iteration.

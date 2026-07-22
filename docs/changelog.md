@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made bead verification lightweight and adaptable while preserving Final Testing as the mandatory automated delivery gate.
 - Improved bead failure diagnostics so command failures and coding timeouts retain actionable execution context.
 - Scoped each bead's execution log to the selected iteration, added a distinct all-iterations view, and clarified iteration states.
 - Standardized AI log headers with full model identifiers across prompts, thinking, tools, and output.
@@ -39,7 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Prevented automatic development maintenance from installing peer-incompatible npm dependency graphs.
 - Preserved eligible same-session Continue recovery across backend, OpenCode, WSL, OS, and machine restarts.
 - Restored one-click recovery for blocked tickets when Retry sends an empty request body.
-- Added language-agnostic workspace and Git-hook validation, backend-enforced bead test commands, and separate append-only implementation note histories.
+- Added language-agnostic workspace and Git-hook validation, adaptable agent-owned bead checks, and separate append-only implementation note histories.
 - Made planning and interview prompts inspect repository evidence read-only only when supplied context cannot support a project-specific claim, while keeping council voting tool-disabled.
 - Added a copy button next to the ticket description tab in the backlog workspace when clicking on the "Raw" view.
 - Made ticket cancellation confirmation mandatory in every state, including Draft and Blocked Error, preventing accidental one-click cancellation.
@@ -77,7 +78,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added the active execution setup attempt count (e.g. `execution setup attempt 2 of 5`) from the phase logs to the `Preparing Workspace Runtime` status title when the setup attempt number is greater than 1.
 - Added user-reviewed workspace input files and directories to execution setup plans, plus setup-specific **Retry with extra note...** and **Edit setup plan...** recovery actions.
 - Added repository-level workspace probes and configurable explicit Git-hook validation with visible setup-plan evidence, editable validation commands, and audited internal-hook policies.
-- Added backend-owned verification receipts for every declared bead test command so structured model completion claims are accepted only after the repository commands actually pass.
 - Added a copy button next to the description's "Raw" tab in both DraftView (tickets in backlog before starting) and PhaseReviewView (backlog/DRAFT phase of started tickets).
 - Added **Retry with extra note...** to live implementation errors, with a required multiline note that is appended to the recoverable bead's existing context before the next fresh attempt.
 - Added reasoned **Not applicable to Manual QA** PRD coverage, P1–P5 and Manual QA settings for Improvement tickets, and strict repository-aware `<MANUAL_QA_FIX_BEADS>` generation persisted before child creation.
@@ -95,6 +95,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Beads may now explain why no planned automated command is appropriate, and coding agents may adapt planned commands to repository evidence instead of being blocked by a frozen backend rerun. Planning, refinement, and coverage favor only necessary bead-scoped commands without turning manual behavior, risks, optional alternatives, or broad integration scenarios into mandatory Coding gates; Final Testing remains strict.
 - Bead detail logs now show only entries from the selected iteration, with an opt-in **Show all logs for bead** view when multiple iterations exist. The all-logs mode visibly deselects the iteration, and each iteration view is bounded by its own session start and the next retry so delayed old-session events cannot leak into another attempt; the list remounts on view changes so rows cannot persist between views. Active iterations show **In progress** while older attempts without an explicit outcome show **Rejected**.
 - Standardized visible AI log headers as `PROMPT`, `THINKING`, `TOOL`, and `OUTPUT`, each carrying the complete model ID while keeping persisted log tags compatible with existing diagnostics.
 - Full Answers, PRD and beads drafting, refinement, coverage, and blueprint expansion now have focused read-only repository inspection available after reviewing supplied context. They use it only to confirm unsupported repository-specific commands, paths, frameworks, package managers, build systems, or test runners; council voting remains tool-disabled.
@@ -139,7 +140,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
-- Fixed bead iteration failures that previously surfaced only as a generic missing completion-marker message by recording explicit coding timeouts and command failure details.
+- Fixed blocked workflow errors that previously collapsed distinct agent-response, coding-timeout, environment/provider, final-test, and Git-finalization failures into generic messages.
 - Prevented truncated streaming-thinking previews from repeating the model header above their retained tail lines.
 - Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.
 - Removed the avoidable retry delay for deterministic setup failures by generating local retry notes for missing structured results and complete backend command failures.

@@ -115,6 +115,8 @@ function buildBeadContentFingerprint(bead: BeadSubset): string {
     description: bead.description.trim(),
     acceptanceCriteria: normalizeFingerprintList(bead.acceptanceCriteria),
     tests: normalizeFingerprintList(bead.tests),
+    testCommands: bead.testCommands,
+    testCommandReason: bead.testCommandReason ?? '',
   })
 }
 
@@ -629,6 +631,13 @@ function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinem
         ? normalizeFingerprintList((entry.acceptanceCriteria ?? entry.acceptance_criteria) as string[])
         : []
       const tests = Array.isArray(entry.tests) ? normalizeFingerprintList(entry.tests as string[]) : []
+      const testCommands = Array.isArray(entry.testCommands) || Array.isArray(entry.test_commands)
+        ? normalizeFingerprintList((entry.testCommands ?? entry.test_commands) as string[])
+        : []
+      const rawTestCommandReason = entry.testCommandReason ?? entry.test_command_reason
+      const testCommandReason = typeof rawTestCommandReason === 'string'
+        ? rawTestCommandReason.trim()
+        : ''
 
       const bead: BeadSubset = {
         id,
@@ -638,7 +647,8 @@ function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinem
         contextGuidance: { patterns: [], anti_patterns: [] },
         acceptanceCriteria,
         tests,
-        testCommands: [],
+        testCommands,
+        ...(testCommandReason ? { testCommandReason } : {}),
       }
 
       items.push(buildBeadItemFromSubset(bead))
@@ -844,7 +854,7 @@ export function buildBeadsRefinementRetryPrompt(
         '',
         'Return only one corrected YAML artifact.',
         'Requirements:',
-        '- Use the bead subset schema (id, title, prdRefs, description, contextGuidance, acceptanceCriteria, tests, testCommands) plus a top-level `changes` list.',
+        '- Use the bead subset schema (id, title, prdRefs, description, contextGuidance, acceptanceCriteria, tests, testCommands, and conditional testCommandReason) plus a top-level `changes` list.',
         '- The `changes` list must fully and exactly account for the diff between the winning bead draft and the final refined beads.',
         '- Every changed bead must appear exactly once in `changes` with item_type: bead.',
         '- If an existing bead keeps the same ID but its content changes, emit exactly one `modified` entry for that bead.',

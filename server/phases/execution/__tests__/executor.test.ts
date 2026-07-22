@@ -6,10 +6,12 @@ import type { Bead } from '../../beads/types'
 import { PROFILE_DEFAULTS } from '../../../db/defaults'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
-import { BEAD_RETRY_BUDGET_EXHAUSTED, OPENCODE_PROVIDER_ERROR } from '../../../../shared/errorCodes'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import {
+  BEAD_AGENT_RESPONSE_INVALID,
+  BEAD_ITERATION_TIMEOUT,
+  BEAD_RETRY_BUDGET_EXHAUSTED,
+  OPENCODE_PROVIDER_ERROR,
+} from '../../../../shared/errorCodes'
 
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
   private promptCounts = new Map<string, number>()
@@ -111,7 +113,7 @@ describe('executeBead', () => {
     repoManager.cleanup()
   })
 
-  it('rejects a false done marker, feeds the real command failure to the same session, and records receipts', async () => {
+  it('accepts the agent completion marker without independently running declared commands', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
     const doneMarker = [
       '<BEAD_STATUS>',
@@ -119,73 +121,17 @@ describe('executeBead', () => {
       '</BEAD_STATUS>',
     ].join('\n')
     adapter.mockResponses.set('mock-session-1#1', doneMarker)
-    adapter.mockResponses.set('mock-session-1#2', doneMarker)
-    const cwd = mkdtempSync(join(tmpdir(), 'looptroop-bead-verification-'))
-    const rawVerificationOutputs: Array<{ stdout: string; stderr: string }> = []
+    const result = await executeBead(
+      adapter,
+      buildBead({ testCommands: ['node -e "process.exit(1)"'] }),
+      [{ type: 'text', content: 'Bead context' }],
+      '/tmp/test',
+      1,
+      PROFILE_DEFAULTS.perIterationTimeout,
+    )
 
-    try {
-      const statefulCommand = 'node -e "const fs=require(\'fs\');const p=\'verification-marker\';if(fs.existsSync(p))process.exit(0);process.stderr.write(\'full raw verification failure\');fs.writeFileSync(p,\'ready\');process.exit(1)"'
-      const result = await executeBead(
-        adapter,
-        buildBead({ testCommands: [statefulCommand] }),
-        [{ type: 'text', content: 'Bead context' }],
-        cwd,
-        1,
-        PROFILE_DEFAULTS.perIterationTimeout,
-        undefined,
-        {
-          onVerificationCommand: ({ stdout, stderr }) => rawVerificationOutputs.push({ stdout, stderr }),
-        },
-      )
-
-      expect(result.success).toBe(true)
-      expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['mock-session-1', 'mock-session-1'])
-      expect(adapter.promptCalls[1]?.parts[0]?.content).toContain('Deterministic Test Verification Failed')
-      expect(result.verificationCommands).toMatchObject([
-        { command: statefulCommand, passed: false, exitCode: 1, timedOut: false },
-        { command: statefulCommand, passed: true, exitCode: 0, timedOut: false },
-      ])
-      expect(rawVerificationOutputs[0]?.stderr).toContain('full raw verification failure')
-      expect(adapter.promptCalls[1]?.parts[0]?.content).toContain('full raw verification failure')
-    } finally {
-      rmSync(cwd, { recursive: true, force: true })
-    }
-  })
-
-  it.runIf(process.platform !== 'win32')('runs declared commands sequentially through the setup wrapper', async () => {
-    const adapter = new SequencedMockOpenCodeAdapter()
-    adapter.mockResponses.set('mock-session-1#1', [
-      '<BEAD_STATUS>',
-      '{"bead_id":"bead-1","status":"done","checks":{"tests":"pass","lint":"pass","typecheck":"pass","qualitative":"pass"}}',
-      '</BEAD_STATUS>',
-    ].join('\n'))
-    const cwd = mkdtempSync(join(tmpdir(), 'looptroop-bead-wrapper-'))
-    const wrapper = join(cwd, 'run')
-    writeFileSync(wrapper, '#!/bin/sh\nexec "$@"\n')
-    chmodSync(wrapper, 0o755)
-
-    try {
-      const commands = [
-        'node -e "process.stdout.write(\'first\')"',
-        'node -e "process.stdout.write(\'second\')"',
-      ]
-      const result = await executeBead(
-        adapter,
-        buildBead({ testCommands: commands }),
-        [{ type: 'text', content: 'Bead context' }],
-        cwd,
-        1,
-        PROFILE_DEFAULTS.perIterationTimeout,
-        undefined,
-        { commandWrapper: wrapper },
-      )
-
-      expect(result.success).toBe(true)
-      expect(result.verificationCommands.map((receipt) => receipt.command)).toEqual(commands)
-      expect(result.verificationCommands.every((receipt) => receipt.passed && receipt.setupWrapperApplied)).toBe(true)
-    } finally {
-      rmSync(cwd, { recursive: true, force: true })
-    }
+    expect(result.success).toBe(true)
+    expect(adapter.promptCalls.map((call) => call.sessionId)).toEqual(['mock-session-1'])
   })
 
   it('retries malformed completion markers in the same session', async () => {
@@ -422,7 +368,11 @@ describe('executeBead', () => {
     )
 
     expect(result.success).toBe(false)
-    expect(result.errorCodes).toEqual([BEAD_RETRY_BUDGET_EXHAUSTED, OPENCODE_PROVIDER_ERROR])
+    expect(result.errorCodes).toEqual([
+      BEAD_RETRY_BUDGET_EXHAUSTED,
+      BEAD_AGENT_RESPONSE_INVALID,
+      OPENCODE_PROVIDER_ERROR,
+    ])
     expect(result.diagnostics).toMatchObject({
       kind: 'opencode_provider',
       source: 'provider',
@@ -647,7 +597,7 @@ describe('executeBead', () => {
 
       expect(result.success).toBe(false)
       expect(result.iteration).toBe(10)
-      expect(result.errorCodes).toEqual([BEAD_RETRY_BUDGET_EXHAUSTED])
+      expect(result.errorCodes).toEqual([BEAD_RETRY_BUDGET_EXHAUSTED, BEAD_ITERATION_TIMEOUT])
       expect(result.errors).toContain('Reached the configured per-bead retry budget at iteration 10.')
     } finally {
       vi.useRealTimers()
@@ -752,6 +702,7 @@ describe('executeBead', () => {
       },
     ])
     expect(result.rawAttempts?.[0]?.initialInput).toContain('BEAD_STATUS')
+    expect(result.rawAttempts?.[0]?.errorCodes).toContain(BEAD_ITERATION_TIMEOUT)
     expect(result.rawAttempts?.[1]?.rawResponse).toContain('"status":"done"')
     expect(contextWipes).toEqual([
       { reason: 'iteration_timeout', attempt: 1, nextAttempt: 2, maxAttempts: 2 },
@@ -759,6 +710,24 @@ describe('executeBead', () => {
     expect(preservedTimeouts).toEqual([])
     expect(adapter.abortCalls).toEqual(['mock-session-1'])
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1', 'mock-session-2'])
+  }, 40_000)
+
+  it('reports an iteration timeout code when the coding retry budget is exhausted', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.promptFailures.set('mock-session-1#1', 'stallUntilAbort')
+    adapter.mockResponses.set('mock-session-1#2', 'Timeout note from stalled session.')
+
+    const result = await executeBead(
+      adapter,
+      buildBead(),
+      [{ type: 'text', content: 'Bead context' }],
+      '/tmp/test',
+      1,
+      25,
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.errorCodes).toEqual([BEAD_RETRY_BUDGET_EXHAUSTED, BEAD_ITERATION_TIMEOUT])
   }, 40_000)
 
   it('resets and retries when the per-iteration timeout expires during a continuation prompt', async () => {

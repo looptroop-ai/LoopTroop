@@ -174,6 +174,9 @@ function collectPreservedFieldDrift(subset: BeadSubset, bead: Bead): PreservedFi
   substantivePaths.push(...testsDrift.substantivePaths)
 
   const commandPaths = collectPreservedCommandArrayDrift('testCommands', subset.testCommands, bead.testCommands)
+  if ((subset.testCommandReason ?? '') !== (bead.testCommandReason ?? '')) {
+    commandPaths.push('testCommandReason')
+  }
 
   return { cosmeticPaths, substantivePaths, commandPaths }
 }

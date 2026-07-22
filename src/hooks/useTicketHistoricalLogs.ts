@@ -58,12 +58,17 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const query = useInfiniteQuery({
     queryKey,
     enabled: Boolean(ticketId) && enabled,
-    initialPageParam: undefined as string | undefined,
+    // React Query v5 requires a concrete initial parameter for an infinite
+    // query; `null` represents the newest page and is omitted from the URL.
+    initialPageParam: null as string | null,
     queryFn: async ({ pageParam, signal }) => {
-      const response = await fetch(getQuery(ticketId!, scope, pageParam), { signal })
+      const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
       if (!response.ok) throw new Error(`Unable to load logs (${response.status})`)
       return normalizePage(await response.json(), scope.phase)
     },
+    // History is only fetched toward older cursors via fetchPreviousPage.
+    // React Query still requires this callback to calculate result metadata.
+    getNextPageParam: () => undefined,
     getPreviousPageParam: firstPage => firstPage.hasOlder ? firstPage.olderCursor ?? undefined : undefined,
     // Eight pages bounds the historical footprint at 2,000 entries per view.
     maxPages: 8,

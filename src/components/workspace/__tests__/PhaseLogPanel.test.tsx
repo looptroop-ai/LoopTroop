@@ -7,6 +7,8 @@ import type { LogContextValue } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
+import { createTestQueryClient } from '@/test/renderHelpers'
+import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({
@@ -124,8 +126,13 @@ function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> 
 }
 
 function renderWithTooltipProvider(ui: React.ReactElement) {
+  const queryClient = createTestQueryClient()
   return render(ui, {
-    wrapper: ({ children }) => <TooltipProvider>{children}</TooltipProvider>,
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>{children}</TooltipProvider>
+      </QueryClientProvider>
+    ),
   })
 }
 
@@ -275,7 +282,7 @@ describe('PhaseLogPanel', () => {
 
   it('loads snapshot attempts directly instead of subscribing to live logs', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify([
+      new Response(JSON.stringify({ entries: [
         {
           type: 'info',
           phase: 'PREPARING_EXECUTION_ENV',
@@ -286,7 +293,7 @@ describe('PhaseLogPanel', () => {
           entryId: 'archived-runtime-row',
           timestamp: '2026-03-13T10:00:01.000Z',
         },
-      ]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      ], olderCursor: null, hasOlder: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     )
     const loadLogsForPhase = vi.fn()
     const value: LogContextValue = {
@@ -323,7 +330,10 @@ describe('PhaseLogPanel', () => {
       await waitFor(() => {
         expect(screen.getByText(/Archived runtime setup row/i)).toBeInTheDocument()
       })
-      expect(fetchSpy).toHaveBeenCalledWith('/api/files/ticket-1/logs?phase=PREPARING_EXECUTION_ENV&phaseAttempt=1', expect.any(Object))
+      expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=PREPARING_EXECUTION_ENV&phaseAttempt=1',
+        expect.any(Object),
+      )
       expect(loadLogsForPhase).not.toHaveBeenCalled()
       expect(screen.queryByText(/Live row should stay out/i)).not.toBeInTheDocument()
     } finally {

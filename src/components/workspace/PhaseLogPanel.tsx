@@ -406,7 +406,9 @@ export function PhaseLogPanel({
       queueMicrotask(() => setIsAutoScroll(true))
     }
 
-    if (hasLogs && (viewChanged || (visibleTailChanged && autoScrollEnabledRef.current))) {
+    // An initially empty panel should always reveal its first durable/live
+    // batch. After content exists, respect the user's scroll position.
+    if (hasLogs && (viewChanged || !hadVisibleLogs || (visibleTailChanged && autoScrollEnabledRef.current))) {
       const behavior: ScrollBehavior = viewChanged || !hadVisibleLogs ? 'auto' : 'smooth'
       scheduleScrollToBottom(behavior)
     }

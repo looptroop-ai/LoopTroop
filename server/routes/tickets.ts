@@ -38,6 +38,9 @@ import {
   handlePutExecutionSetupPlan,
   handleRegenerateExecutionSetupPlan,
   handleGetArtifacts,
+  handleGetArtifactManifest,
+  handleGetArtifactContent,
+  handlePostArtifactContentBatch,
   handleListPhaseAttempts,
   handleGetManualQa,
   handleGetManualQaVersion,
@@ -94,6 +97,9 @@ ticketRouter.get('/tickets/:id/interview', (c) => handleGetInterview(c))
 ticketRouter.get('/tickets/:id/artifacts', (c) => handleGetArtifacts(c))
 ticketRouter.get('/tickets/:id/logs', (c) => handleGetTicketLogs(c))
 ticketRouter.get('/tickets/:id/logs/export', (c) => handleExportTicketLogs(c))
+ticketRouter.get('/tickets/:id/artifacts/manifest', (c) => handleGetArtifactManifest(c))
+ticketRouter.get('/tickets/:id/artifacts/:artifactId/content', (c) => handleGetArtifactContent(c))
+ticketRouter.post('/tickets/:id/artifacts/content/batch', async (c) => handlePostArtifactContentBatch(c))
 ticketRouter.get('/tickets/:id/phases/:phase/attempts', (c) => handleListPhaseAttempts(c))
 ticketRouter.get('/tickets/:id/manual-qa', (c) => handleGetManualQa(c))
 ticketRouter.get('/tickets/:id/manual-qa/versions/:version', (c) => handleGetManualQaVersion(c))

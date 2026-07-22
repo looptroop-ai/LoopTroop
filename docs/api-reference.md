@@ -709,9 +709,14 @@ The outer `answers` array must stay in the same order as the returned `questions
 | Method | Route | Notes |
 | --- | --- | --- |
 | `GET` | `/api/tickets/:id/artifacts` | List ticket artifacts, optionally filtered |
+| `GET` | `/api/tickets/:id/artifacts/manifest` | List lightweight artifact metadata and previews without artifact bodies |
+| `GET` | `/api/tickets/:id/artifacts/:artifactId/content` | Read one ticket-isolated artifact body; supports SHA-256 ETags and `304 Not Modified` |
+| `POST` | `/api/tickets/:id/artifacts/content/batch` | Read up to 20 artifact bodies, capped at approximately 2 MB of content per response |
 | `GET` | `/api/tickets/:id/phases/:phase/attempts` | List phase attempt history |
 
 `GET /api/tickets/:id/artifacts` accepts optional `phase` and `phaseAttempt` query filters. When `phaseAttempt` is omitted, the backend resolves the current active attempt for that phase; supplying `phaseAttempt=1` is how clients intentionally read archived planning generations after an edit/retry/regenerate flow.
+
+The manifest route accepts the same filters and returns `{ "artifacts": [...] }`. Every entry includes its identity, phase and attempt, type, timestamps, `contentByteCount`, lowercase `contentSha256`, availability, and a compact scalar preview. It never includes the raw artifact body. Fetch bodies from the content routes after selecting the artifact; batch requests use `{ "artifactIds": [1, 2] }` and return unavailable or byte-budget-deferred IDs in `omittedIds`.
 
 Example artifact list item:
 

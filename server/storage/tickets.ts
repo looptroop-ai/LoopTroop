@@ -39,6 +39,9 @@ export {
 
 export {
   listPhaseArtifacts,
+  listArtifactManifest,
+  getPhaseArtifactById,
+  toArtifactManifestEntry,
   getLatestPhaseArtifact,
   countPhaseArtifacts,
   insertPhaseArtifact,

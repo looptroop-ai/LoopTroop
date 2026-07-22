@@ -1,13 +1,15 @@
 import { and, desc, eq } from 'drizzle-orm'
-import { phaseArtifacts } from '../db/schema'
+import { createHash } from 'node:crypto'
+import { phaseArtifacts, ticketPhaseAttempts } from '../db/schema'
 import { broadcaster } from '../sse/broadcaster'
-import type { ArtifactSnapshot } from '../sse/eventTypes'
+import type { ArtifactManifestEntry, ArtifactSnapshot } from '../sse/eventTypes'
 import { getTicketContext } from './ticketQueries'
 import { assertCurrentEditablePhaseAttempt, resolvePhaseAttempt } from './ticketPhaseAttempts'
 
 type LocalPhaseArtifactRow = typeof phaseArtifacts.$inferSelect
 
 export type PublicPhaseArtifactRow = ArtifactSnapshot
+export type PublicArtifactManifestEntry = ArtifactManifestEntry
 
 const UNKNOWN_ARTIFACT_TYPE = 'UNKNOWN'
 
@@ -25,6 +27,39 @@ function toPublicPhaseArtifact(ticketRef: string, artifact: LocalPhaseArtifactRo
   }
 }
 
+function compactPreview(content: string): Record<string, string | number | boolean | null> {
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const record = parsed as Record<string, unknown>
+    const preview: Record<string, string | number | boolean | null> = {}
+    for (const key of ['title', 'name', 'memberId', 'member_id', 'modelId', 'model_id', 'outcome', 'status', 'winnerId', 'winner_id']) {
+      const value = record[key]
+      if (typeof value === 'string') preview[key] = value.slice(0, 300)
+      else if (typeof value === 'number' || typeof value === 'boolean' || value === null) preview[key] = value
+    }
+    return preview
+  } catch {
+    return {}
+  }
+}
+
+export function toArtifactManifestEntry(ticketRef: string, artifact: LocalPhaseArtifactRow): PublicArtifactManifestEntry {
+  return {
+    id: artifact.id,
+    ticketId: ticketRef,
+    phase: artifact.phase,
+    phaseAttempt: artifact.phaseAttempt ?? 1,
+    artifactType: artifact.artifactType ?? UNKNOWN_ARTIFACT_TYPE,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    contentByteCount: Buffer.byteLength(artifact.content, 'utf8'),
+    contentSha256: createHash('sha256').update(artifact.content).digest('hex'),
+    available: true,
+    preview: compactPreview(artifact.content),
+  }
+}
+
 function broadcastArtifactChange(
   ticketRef: string,
   phase: string,
@@ -35,7 +70,7 @@ function broadcastArtifactChange(
     ticketId: ticketRef,
     phase,
     artifactType,
-    artifact: toPublicPhaseArtifact(ticketRef, artifact),
+    artifact: toArtifactManifestEntry(ticketRef, artifact),
   })
 }
 
@@ -48,18 +83,48 @@ export function listPhaseArtifacts(
 ): PublicPhaseArtifactRow[] {
   const context = getTicketContext(ticketRef)
   if (!context) return []
-  const artifacts = context.projectDb
-    .select()
-    .from(phaseArtifacts)
-    .where(eq(phaseArtifacts.ticketId, context.localTicketId))
-    .all()
-  return artifacts
-    .filter((artifact) => {
-      if (options?.phase && artifact.phase !== options.phase) return false
-      const expectedAttempt = resolvePhaseAttempt(ticketRef, artifact.phase, options?.phase === artifact.phase ? options.phaseAttempt : undefined)
-      return artifact.phaseAttempt === expectedAttempt
-    })
-    .map((artifact) => toPublicPhaseArtifact(ticketRef, artifact))
+  return selectVisibleArtifacts(ticketRef, options).map((artifact) => toPublicPhaseArtifact(ticketRef, artifact))
+}
+
+function selectVisibleArtifacts(
+  ticketRef: string,
+  options?: { phase?: string; phaseAttempt?: number },
+): LocalPhaseArtifactRow[] {
+  const context = getTicketContext(ticketRef)
+  if (!context) return []
+  const conditions = [eq(phaseArtifacts.ticketId, context.localTicketId)]
+  if (options?.phase) {
+    conditions.push(eq(phaseArtifacts.phase, options.phase))
+    conditions.push(eq(phaseArtifacts.phaseAttempt, resolvePhaseAttempt(ticketRef, options.phase, options.phaseAttempt)))
+    return context.projectDb.select().from(phaseArtifacts).where(and(...conditions)).all()
+  }
+
+  const artifacts = context.projectDb.select().from(phaseArtifacts)
+    .where(eq(phaseArtifacts.ticketId, context.localTicketId)).all()
+  const activeAttempts = new Map<string, number>()
+  for (const attempt of context.projectDb.select().from(ticketPhaseAttempts)
+    .where(eq(ticketPhaseAttempts.ticketId, context.localTicketId)).all()) {
+    if (attempt.state === 'active') activeAttempts.set(attempt.phase, attempt.attemptNumber)
+  }
+  // Untracked phases do not have an attempt row and always use attempt one.
+  for (const artifact of artifacts) {
+    if (!activeAttempts.has(artifact.phase)) activeAttempts.set(artifact.phase, 1)
+  }
+  return artifacts.filter((artifact) => artifact.phaseAttempt === activeAttempts.get(artifact.phase))
+}
+
+/** Lists lightweight metadata. Bodies are deliberately excluded from this API shape. */
+export function listArtifactManifest(ticketRef: string, options?: { phase?: string; phaseAttempt?: number }): PublicArtifactManifestEntry[] {
+  return selectVisibleArtifacts(ticketRef, options).map((artifact) => toArtifactManifestEntry(ticketRef, artifact))
+}
+
+export function getPhaseArtifactById(ticketRef: string, artifactId: number): LocalPhaseArtifactRow | undefined {
+  const context = getTicketContext(ticketRef)
+  if (!context) return undefined
+  return context.projectDb.select().from(phaseArtifacts).where(and(
+    eq(phaseArtifacts.ticketId, context.localTicketId),
+    eq(phaseArtifacts.id, artifactId),
+  )).get()
 }
 
 export function getLatestPhaseArtifact(

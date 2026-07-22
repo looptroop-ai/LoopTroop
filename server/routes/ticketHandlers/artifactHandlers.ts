@@ -1,9 +1,12 @@
 import type { Context } from 'hono'
 import {
   getTicketByRef,
+  getPhaseArtifactById,
   getTicketPaths,
+  listArtifactManifest,
   listPhaseArtifacts,
   listPhaseAttempts,
+  toArtifactManifestEntry,
 } from '../../storage/tickets'
 import { getRequiredRouteParam, getTicketParam } from './routeUtils'
 
@@ -237,4 +240,83 @@ export function handleGetArtifacts(c: Context) {
       ? { phaseAttempt }
       : {}),
   }))
+}
+
+function getArtifactFilters(c: Context): { phase?: string; phaseAttempt?: number } {
+  const phase = c.req.query('phase')
+  const rawPhaseAttempt = c.req.query('phaseAttempt')
+  const phaseAttempt = rawPhaseAttempt != null ? Number(rawPhaseAttempt) : undefined
+  return {
+    ...(phase ? { phase } : {}),
+    ...(typeof phaseAttempt === 'number' && Number.isFinite(phaseAttempt) && phaseAttempt > 0 ? { phaseAttempt } : {}),
+  }
+}
+
+export function handleGetArtifactManifest(c: Context) {
+  const ticketId = getTicketParam(c)
+  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  return c.json({ artifacts: listArtifactManifest(ticketId, getArtifactFilters(c)) })
+}
+
+function parseArtifactId(value: string): number | null {
+  const id = Number(value)
+  return Number.isSafeInteger(id) && id > 0 ? id : null
+}
+
+export function handleGetArtifactContent(c: Context) {
+  const ticketId = getTicketParam(c)
+  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  const artifactId = parseArtifactId(c.req.param('artifactId'))
+  if (artifactId === null) return c.json({ error: 'Artifact id must be a positive integer' }, 400)
+  const artifact = getPhaseArtifactById(ticketId, artifactId)
+  if (!artifact) return c.json({ error: 'Artifact not found' }, 404)
+  const manifest = toArtifactManifestEntry(ticketId, artifact)
+  const etag = `"${manifest.contentSha256}"`
+  c.header('ETag', etag)
+  c.header('Cache-Control', 'private, max-age=0, must-revalidate')
+  if (c.req.header('if-none-match') === etag) return c.body(null, 304)
+  return c.json({ artifact: { ...manifest, content: artifact.content } })
+}
+
+const MAX_BATCH_ARTIFACTS = 20
+const MAX_BATCH_CONTENT_BYTES = 2 * 1024 * 1024
+
+export async function handlePostArtifactContentBatch(c: Context) {
+  const ticketId = getTicketParam(c)
+  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+  let payload: unknown
+  try {
+    payload = await c.req.json()
+  } catch {
+    return c.json({ error: 'Expected a JSON body containing artifactIds' }, 400)
+  }
+  const rawIds = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>).artifactIds
+    : null
+  if (!Array.isArray(rawIds) || rawIds.length > MAX_BATCH_ARTIFACTS) {
+    return c.json({ error: `artifactIds must contain at most ${MAX_BATCH_ARTIFACTS} ids` }, 400)
+  }
+  const artifactIds = [...new Set(rawIds.map((id) => typeof id === 'number' ? id : Number.NaN))]
+  if (artifactIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    return c.json({ error: 'artifactIds must contain positive integer ids' }, 400)
+  }
+
+  let usedBytes = 0
+  const artifacts: Array<ReturnType<typeof toArtifactManifestEntry> & { content: string }> = []
+  const omittedIds: number[] = []
+  for (const artifactId of artifactIds) {
+    const artifact = getPhaseArtifactById(ticketId, artifactId)
+    if (!artifact) {
+      omittedIds.push(artifactId)
+      continue
+    }
+    const contentBytes = Buffer.byteLength(artifact.content, 'utf8')
+    if (usedBytes + contentBytes > MAX_BATCH_CONTENT_BYTES) {
+      omittedIds.push(artifactId)
+      continue
+    }
+    usedBytes += contentBytes
+    artifacts.push({ ...toArtifactManifestEntry(ticketId, artifact), content: artifact.content })
+  }
+  return c.json({ artifacts, omittedIds })
 }

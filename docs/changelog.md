@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made artifact loading responsive by separating lightweight manifests from on-demand, cache-validatable content bodies.
 - Made bead verification lightweight and adaptable while preserving Final Testing as the mandatory automated delivery gate.
 - Improved bead failure diagnostics so command failures and coding timeouts retain actionable execution context.
 - Scoped each bead's execution log to the selected iteration, added a distinct all-iterations view, and clarified iteration states.
@@ -70,6 +71,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added ticket-isolated artifact manifest and content APIs, including SHA-256 ETags and a bounded batch body endpoint so large artifact histories no longer travel with the initial list or SSE artifact updates.
 - Added effective commands and bounded output excerpts to deterministic bead verification diagnostics.
 - Added ticket-level Git-hook policy overrides, start-time inheritance locks, and contextual documentation links in Configuration, Project Advanced settings, new-ticket Advanced settings, and the Draft workspace.
 - Added three explicit existing-project attachment actions: restore all state, retain project settings while clearing every ticket, or delete `.looptroop` and start fresh. Destructive actions include active-ticket warnings, a keep/delete comparison, and a required confirmation.

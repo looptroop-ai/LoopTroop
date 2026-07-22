@@ -73,9 +73,27 @@ export interface ArtifactSnapshot {
   updatedAt: string
 }
 
+/** Lightweight artifact metadata used by list responses and SSE replay. */
+export interface ArtifactManifestEntry {
+  id: number
+  ticketId: string
+  phase: string
+  phaseAttempt: number
+  artifactType: string
+  createdAt: string
+  updatedAt: string
+  contentByteCount: number
+  contentSha256: string
+  available: boolean
+  preview: Record<string, string | number | boolean | null>
+}
+
 export interface ArtifactChangeEvent {
   ticketId: string
   phase: string
   artifactType: string
-  artifact?: ArtifactSnapshot
+  /** Metadata only: artifact bodies never enter the SSE replay buffer. */
+  artifact?: ArtifactManifestEntry
+  removedArtifactIds?: number[]
+  invalidatedPhases?: string[]
 }

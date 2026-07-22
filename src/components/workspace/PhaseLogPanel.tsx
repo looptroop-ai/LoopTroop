@@ -6,7 +6,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
-import { compareTimestamps, isDebugLogEntry, mergeEntry, normalizeLogRecord } from '@/context/logUtils'
+import { compareTimestamps, isDebugLogEntry } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelBadge } from '@/components/shared/ModelBadge'
@@ -19,6 +19,7 @@ import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
+import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
 
 interface PhaseLogPanelProps {
   phase: string
@@ -39,12 +40,6 @@ const BOTTOM_THRESHOLD = 50
 
 function isAiLogTab(tab: string): boolean {
   return tab === 'AI' || (!FIXED_TABS.includes(tab as LogTab) && tab !== 'CMD')
-}
-
-function mergeLogEntryList(entries: LogEntry[]): LogEntry[] {
-  return entries
-    .reduce<LogEntry[]>((bucket, entry) => mergeEntry(bucket, entry), [])
-    .sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
 }
 
 const TAB_TOOLTIPS: Record<string, string> = {
@@ -69,18 +64,6 @@ export function PhaseLogPanel({
 }: PhaseLogPanelProps) {
   const logCtx = useLogs()
   const [activeTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
-  const [archivedLogsState, setArchivedLogsState] = useState<{ key: string | null, entries: LogEntry[] }>({
-    key: null,
-    entries: [],
-  })
-  const [archivedDebugLogsState, setArchivedDebugLogsState] = useState<{ key: string | null, entries: LogEntry[] }>({
-    key: null,
-    entries: [],
-  })
-  const [archivedAiLogsState, setArchivedAiLogsState] = useState<{ key: string | null, entries: LogEntry[] }>({
-    key: null,
-    entries: [],
-  })
   const liveLogOptions = useMemo(
     () => (typeof phaseAttempt === 'number' && phaseAttempt > 0 ? { phaseAttempt } : undefined),
     [phaseAttempt],
@@ -121,120 +104,24 @@ export function PhaseLogPanel({
     [phase, phaseAttempt],
   )
   const shouldLoadArchivedLogs = logMode === 'snapshot' && Boolean(ticket?.id) && typeof phaseAttempt === 'number' && phaseAttempt > 0
-  const archivedLogsKey = useMemo(() => {
-    if (!shouldLoadArchivedLogs || !ticket?.id || typeof phaseAttempt !== 'number') {
-      return null
-    }
-
-    return `${ticket.id}:${phase}:${phaseAttempt}`
-  }, [phase, phaseAttempt, shouldLoadArchivedLogs, ticket?.id])
-
-  useEffect(() => {
-    if (!archivedLogsKey || !ticket?.id || typeof phaseAttempt !== 'number') {
-      return
-    }
-
-    const controller = new AbortController()
-
-    void fetch(`/api/files/${ticket.id}/logs?${new URLSearchParams({
-      phase,
-      phaseAttempt: String(phaseAttempt),
-    }).toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return [] as LogEntry[]
-        const payload = await response.json()
-        if (!Array.isArray(payload)) return [] as LogEntry[]
-        return payload
-          .map((entry) => normalizeLogRecord(entry as Record<string, unknown>, phase))
-          .filter((entry) => !isDebugLogEntry(entry))
-      })
-      .then((entries) => {
-        if (!controller.signal.aborted) {
-          setArchivedLogsState({ key: archivedLogsKey, entries })
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setArchivedLogsState({ key: archivedLogsKey, entries: [] })
-        }
-      })
-
-    return () => controller.abort()
-  }, [archivedLogsKey, phase, phaseAttempt, ticket?.id])
-
-  useEffect(() => {
-    if (!archivedLogsKey || !ticket?.id || typeof phaseAttempt !== 'number') {
-      return
-    }
-    if (activeTab !== 'DEBUG' || archivedDebugLogsState.key === archivedLogsKey) {
-      return
-    }
-
-    const controller = new AbortController()
-
-    void fetch(`/api/files/${ticket.id}/logs?${new URLSearchParams({
-      phase,
-      phaseAttempt: String(phaseAttempt),
-      channel: 'debug',
-    }).toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return [] as LogEntry[]
-        const payload = await response.json()
-        if (!Array.isArray(payload)) return [] as LogEntry[]
-        return payload
-          .map((entry) => normalizeLogRecord(entry as Record<string, unknown>, phase))
-          .filter((entry) => isDebugLogEntry(entry))
-      })
-      .then((entries) => {
-        if (!controller.signal.aborted) {
-          setArchivedDebugLogsState({ key: archivedLogsKey, entries })
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setArchivedDebugLogsState({ key: archivedLogsKey, entries: [] })
-        }
-      })
-
-    return () => controller.abort()
-  }, [activeTab, archivedDebugLogsState.key, archivedLogsKey, phase, phaseAttempt, ticket?.id])
-
-  useEffect(() => {
-    if (!archivedLogsKey || !ticket?.id || typeof phaseAttempt !== 'number') {
-      return
-    }
-    if (!isAiLogTab(activeTab) || archivedAiLogsState.key === archivedLogsKey) {
-      return
-    }
-
-    const controller = new AbortController()
-
-    void fetch(`/api/files/${ticket.id}/logs?${new URLSearchParams({
-      phase,
-      phaseAttempt: String(phaseAttempt),
-      channel: 'ai',
-    }).toString()}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return [] as LogEntry[]
-        const payload = await response.json()
-        if (!Array.isArray(payload)) return [] as LogEntry[]
-        return payload
-          .map((entry) => normalizeLogRecord(entry as Record<string, unknown>, phase))
-          .filter((entry) => !isDebugLogEntry(entry) && entry.audience === 'ai')
-      })
-      .then((entries) => {
-        if (!controller.signal.aborted) {
-          setArchivedAiLogsState({ key: archivedLogsKey, entries })
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setArchivedAiLogsState({ key: archivedLogsKey, entries: [] })
-        }
-      })
-
-    return () => controller.abort()
-  }, [activeTab, archivedAiLogsState.key, archivedLogsKey, phase, phaseAttempt, ticket?.id])
+  const historicalView: HistoricalLogView = activeTab === 'ALL'
+    ? 'overview'
+    : activeTab === 'SYS'
+      ? 'system'
+      : activeTab === 'CMD'
+        ? 'command'
+        : activeTab === 'ERROR'
+          ? 'error'
+          : activeTab === 'DEBUG'
+            ? 'debug'
+            : 'ai'
+  const historicalLogs = useTicketHistoricalLogs(ticket?.id, {
+    scope: 'phase',
+    phase,
+    phaseAttempt,
+    view: historicalView,
+    modelId: isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined,
+  }, shouldLoadArchivedLogs)
 
   useEffect(() => {
     if (propLogs || shouldLoadArchivedLogs) return
@@ -258,11 +145,7 @@ export function PhaseLogPanel({
   const isLoadingLogs = propLogs
     ? false
     : shouldLoadArchivedLogs
-      ? activeTab === 'DEBUG'
-        ? archivedDebugLogsState.key !== archivedLogsKey
-        : isAiLogTab(activeTab)
-          ? archivedLogsState.key !== archivedLogsKey || archivedAiLogsState.key !== archivedLogsKey
-          : archivedLogsState.key !== archivedLogsKey
+      ? historicalLogs.isLoading
       : activeTab === 'DEBUG'
         ? (logCtx?.isLoadingLogScope?.(liveDebugScope) ?? false)
         : isAiLogTab(activeTab)
@@ -280,14 +163,11 @@ export function PhaseLogPanel({
         ].sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
       }
       if (shouldLoadArchivedLogs) {
-        const normalEntries = archivedLogsState.key === archivedLogsKey ? archivedLogsState.entries : []
-        const aiEntries = archivedAiLogsState.key === archivedLogsKey ? archivedAiLogsState.entries : []
-        const debugEntries = archivedDebugLogsState.key === archivedLogsKey ? archivedDebugLogsState.entries : []
-        return mergeLogEntryList([...normalEntries, ...aiEntries, ...debugEntries])
+        return historicalLogs.entries
       }
       return logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []
     },
-    [activeTab, archivedAiLogsState.entries, archivedAiLogsState.key, archivedDebugLogsState.entries, archivedDebugLogsState.key, archivedLogsKey, archivedLogsState.entries, archivedLogsState.key, liveLogOptions, logCtx, phase, propLogs, shouldLoadArchivedLogs],
+    [activeTab, historicalLogs.entries, liveLogOptions, logCtx, phase, propLogs, shouldLoadArchivedLogs],
   )
   const isLiveTicketPhase = !ticket || ticket.status === phase
   const currentActivityEnabled = !shouldLoadArchivedLogs && isLiveTicketPhase
@@ -354,12 +234,17 @@ export function PhaseLogPanel({
       setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
+      if (atTop && shouldLoadArchivedLogs && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
+        // React Query prepends the older page and the browser keeps the
+        // viewport anchored to the already rendered content.
+        void historicalLogs.fetchOlder()
+      }
     }
     // initialize on mount
     onScroll()
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [historicalLogs, shouldLoadArchivedLogs])
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) {
@@ -474,13 +359,17 @@ export function PhaseLogPanel({
   const hasLogs = filteredLogs.length > 0
   const [copied, copyToClipboard] = useCopyToClipboard()
   const handleCopyLogs = useCallback(() => {
+    if (shouldLoadArchivedLogs) {
+      void historicalLogs.exportLogs().then(copyToClipboard).catch(() => undefined)
+      return
+    }
     if (!filteredLogs.length) return
     const textToCopy = filteredLogs.map((entry) => {
       const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
       return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
     }).join('\n')
     copyToClipboard(textToCopy)
-  }, [filteredLogs, shouldShowModelNameInLogTags, copyToClipboard])
+  }, [copyToClipboard, filteredLogs, historicalLogs, shouldLoadArchivedLogs, shouldShowModelNameInLogTags])
 
   const visibleLogTail = useMemo(() => {
     const lastEntry = filteredLogs.at(-1)

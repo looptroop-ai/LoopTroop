@@ -22,8 +22,14 @@ interface HistoricalLogPage {
   entries: LogEntry[]
   olderCursor: string | null
   hasOlder: boolean
+  totalEntries: number | null
+  totalTextLines: number | null
   /** Context for a delimiter that begins before this page. */
   boundary?: Record<string, unknown>
+}
+
+function normalizeCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 function getQuery(ticketId: string, scope: HistoricalLogScope, before?: string): string {
@@ -48,6 +54,8 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
       .map(entry => normalizeLogRecord(entry, fallbackPhase ?? String(entry.phase ?? entry.status ?? 'unknown'))),
     olderCursor: typeof data.olderCursor === 'string' ? data.olderCursor : null,
     hasOlder: data.hasOlder === true,
+    totalEntries: normalizeCount(data.totalEntries),
+    totalTextLines: normalizeCount(data.totalTextLines),
     boundary: data.boundary && typeof data.boundary === 'object' ? data.boundary as Record<string, unknown> : undefined,
   }
 }
@@ -94,6 +102,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     })
   }, [query.data?.pages])
   const refetch = query.refetch
+  const countPage = query.data?.pages.find(page => page.totalEntries !== null || page.totalTextLines !== null)
 
   const exportLogs = useCallback(async (signal?: AbortSignal): Promise<string> => {
     if (!ticketId) return ''
@@ -131,6 +140,8 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   return {
     ...query,
     entries,
+    totalEntries: countPage?.totalEntries ?? null,
+    totalTextLines: countPage?.totalTextLines ?? null,
     fetchOlder: query.fetchPreviousPage,
     fetchAllOlder,
     hasOlder: query.hasPreviousPage,

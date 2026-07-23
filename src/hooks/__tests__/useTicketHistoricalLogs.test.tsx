@@ -15,6 +15,8 @@ describe('useTicketHistoricalLogs', () => {
         entries: [{ phase: 'CODING', entryId: 'new', content: 'new', timestamp: '2026-03-10T00:00:02.000Z' }],
         olderCursor: 'cursor-older',
         hasOlder: true,
+        totalEntries: 2000,
+        totalTextLines: 4821,
       }))
       .mockImplementationOnce(() => createJsonResponse({
         entries: [{ phase: 'CODING', entryId: 'old', content: 'old', timestamp: '2026-03-10T00:00:01.000Z' }],
@@ -25,6 +27,8 @@ describe('useTicketHistoricalLogs', () => {
         entries: [{ phase: 'CODING', entryId: 'recovered', content: 'recovered', timestamp: '2026-03-10T00:00:03.000Z' }],
         olderCursor: 'cursor-older',
         hasOlder: true,
+        totalEntries: 2001,
+        totalTextLines: 4822,
       }))
     const client = createTestQueryClient()
     const wrapper = ({ children }: { children: ReactNode }) => (
@@ -35,6 +39,8 @@ describe('useTicketHistoricalLogs', () => {
     }), { wrapper })
 
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new']))
+    expect(result.current.totalEntries).toBe(2000)
+    expect(result.current.totalTextLines).toBe(4821)
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
       '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=20&phase=CODING&phaseAttempt=2',
@@ -52,6 +58,8 @@ describe('useTicketHistoricalLogs', () => {
     act(() => window.dispatchEvent(new CustomEvent(SERVER_LOG_REFRESH_EVENT, { detail: { ticketId: 'ticket-1' } })))
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['recovered']))
+    expect(result.current.totalEntries).toBe(2001)
+    expect(result.current.totalTextLines).toBe(4822)
   })
 
   it('loads every older cursor page for explicit navigation to the true beginning', async () => {

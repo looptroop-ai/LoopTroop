@@ -11,7 +11,8 @@ import { LoadingText } from '@/components/ui/LoadingText'
 import type { Ticket } from '@/hooks/useTickets'
 import { filterEntries, formatLogLine, isSystem, isCommand } from './logFormat'
 import { LogEntryRow } from './LogLine'
-import { LogColorLegend } from './LogColorLegend'
+import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
+import { countLogTextLines } from './logCountUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -281,6 +282,10 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   )
 
   const hasLogs = renderedEntries.length > 0
+  const loadedTextLines = useMemo(() => countLogTextLines(renderedEntries), [renderedEntries])
+  const totalTextLines = ticket?.id
+    ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
+    : loadedTextLines
   const isTerminalTicket = ticket?.status === 'COMPLETED' || ticket?.status === 'CANCELED'
 
   const beadLabelOptions: StatusLabelOptions | undefined = useMemo(() => {
@@ -705,11 +710,18 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 type="button"
                 className="flex items-center cursor-help px-1 py-0.5 rounded hover:bg-muted transition-colors border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
               >
-                <span>{renderedEntries.length} entries</span>
+                <LogCountLabel
+                  loadedEntries={renderedEntries.length}
+                  totalEntries={ticket?.id ? historicalLogs.totalEntries : renderedEntries.length}
+                />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" align="end" className="flex flex-col gap-1.5 p-2 bg-popover text-popover-foreground border border-border font-medium shadow-md">
-              <LogColorLegend />
+              <LogCountTooltip
+                loadedEntries={renderedEntries.length}
+                totalEntries={ticket?.id ? historicalLogs.totalEntries : renderedEntries.length}
+                totalTextLines={totalTextLines}
+              />
             </TooltipContent>
           </Tooltip>
           <Tooltip>

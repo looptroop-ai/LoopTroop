@@ -274,12 +274,21 @@ describe('FullLogView', () => {
         }],
         olderCursor: 'lifecycle-older',
         hasOlder: true,
+        totalEntries: 2000,
+        totalTextLines: 4821,
       }))
       .mockImplementationOnce(() => olderResponse)
 
     try {
       renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
       expect(await screen.findByText('Newest lifecycle row.')).toBeInTheDocument()
+      const countTrigger = screen.getByRole('button', { name: '2,000 entries' })
+      fireEvent.focus(countTrigger)
+      await waitFor(() => {
+        expect(screen.getAllByText('1 loaded · 1,999 remaining').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('4,821 text lines').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('Log Colors Legend').length).toBeGreaterThan(0)
+      })
 
       const viewport = screen.getByTestId('log-viewport')
       viewport.scrollTop = 0
@@ -598,7 +607,7 @@ describe('FullLogView', () => {
     renderWithTooltipProvider(<FullLogView />)
 
     fireEvent.click(screen.getByRole('button', { name: 'ERROR' }))
-    expect(screen.getByText('1 entries')).toBeTruthy()
+    expect(screen.getByText('1 entry')).toBeTruthy()
   })
 
   it('shows non-error command chatter in SYS in the full log view', () => {
@@ -698,7 +707,7 @@ describe('FullLogView', () => {
     fireEvent.click(screen.getByRole('button', { name: /gpt-5\.4/i }))
 
     expect(loadAllLogsMock).toHaveBeenLastCalledWith({ channel: 'ai' })
-    expect(screen.getByText('1 entries')).toBeTruthy()
+    expect(screen.getByText('1 entry')).toBeTruthy()
     expect(screen.getByText(/First output/)).toBeTruthy()
     expect(screen.queryByText(/Second output/)).toBeNull()
   })

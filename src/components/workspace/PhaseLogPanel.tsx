@@ -14,7 +14,8 @@ import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import type { Ticket } from '@/hooks/useTickets'
 import { filterEntries, formatLogLine, MULTI_MODEL_PHASES, isSystem, isCommand } from './logFormat'
 import { LogEntryRow } from './LogLine'
-import { LogColorLegend } from './LogColorLegend'
+import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
+import { countLogTextLines } from './logCountUtils'
 import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { BeadDelimiter } from './logGrouping'
@@ -406,6 +407,10 @@ export function PhaseLogPanel({
 
   const hasBeadSections = beadSectionsResult !== null && beadSectionsResult.beadSections.length > 0
   const hasLogs = filteredLogs.length > 0
+  const loadedTextLines = useMemo(() => countLogTextLines(filteredLogs), [filteredLogs])
+  const totalTextLines = shouldLoadHistoricalLogs
+    ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
+    : loadedTextLines
   const filteredIndexMap = useMemo(
     () => new Map(filteredLogs.map((entry, index) => [entry.entryId, index])),
     [filteredLogs],
@@ -685,11 +690,18 @@ export function PhaseLogPanel({
                 type="button"
                 className="flex items-center cursor-help px-1 py-0.5 rounded hover:bg-muted transition-colors border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
               >
-                <span>{filteredLogs.length} entries</span>
+                <LogCountLabel
+                  loadedEntries={filteredLogs.length}
+                  totalEntries={shouldLoadHistoricalLogs ? historicalLogs.totalEntries : filteredLogs.length}
+                />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" align="end" className="flex flex-col gap-1.5 p-2 bg-popover text-popover-foreground border border-border font-medium shadow-md">
-              <LogColorLegend />
+              <LogCountTooltip
+                loadedEntries={filteredLogs.length}
+                totalEntries={shouldLoadHistoricalLogs ? historicalLogs.totalEntries : filteredLogs.length}
+                totalTextLines={totalTextLines}
+              />
             </TooltipContent>
           </Tooltip>
           <Tooltip>

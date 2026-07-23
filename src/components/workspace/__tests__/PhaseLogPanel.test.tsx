@@ -247,11 +247,11 @@ describe('PhaseLogPanel', () => {
     )
 
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(screen.getByText('1 entries')).toBeInTheDocument()
+    expect(screen.getByText('1 entry')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
     expect(await screen.findByText('$0.01')).toBeInTheDocument()
     expect(screen.getByLabelText('AI details').parentElement).toHaveClass('sticky', 'top-0')
-    expect(screen.getByText('1 entries')).toBeInTheDocument()
+    expect(screen.getByText('1 entry')).toBeInTheDocument()
     fetchSpy.mockRestore()
   })
 
@@ -318,12 +318,21 @@ describe('PhaseLogPanel', () => {
         }],
         olderCursor: 'phase-older',
         hasOlder: true,
+        totalEntries: 2000,
+        totalTextLines: 4821,
       }))
       .mockImplementationOnce(() => olderResponse)
 
     try {
       renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
       expect(await screen.findByText('Newest phase row.')).toBeInTheDocument()
+      const countTrigger = screen.getByRole('button', { name: '2,000 entries' })
+      fireEvent.focus(countTrigger)
+      await waitFor(() => {
+        expect(screen.getAllByText('1 loaded · 1,999 remaining').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('4,821 text lines').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('Log Colors Legend').length).toBeGreaterThan(0)
+      })
 
       const viewport = screen.getByTestId('log-viewport')
       viewport.scrollTop = 0
@@ -1383,6 +1392,8 @@ describe('PhaseLogPanel', () => {
       expect(legends.length).toBeGreaterThan(0)
       expect(screen.getAllByText('Prompt').length).toBeGreaterThan(0)
       expect(screen.getAllByText('Final output').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('All entries loaded').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('2 text lines').length).toBeGreaterThan(0)
       expect(screen.getAllByText('Tool call').length).toBeGreaterThan(0)
       expect(screen.getAllByText('Input').length).toBeGreaterThan(0)
       expect(screen.getAllByText('Output').length).toBeGreaterThan(0)

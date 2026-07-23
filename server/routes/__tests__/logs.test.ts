@@ -34,12 +34,20 @@ describe('ticket log projection API', () => {
 
     const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
     expect(response.status).toBe(200)
-    const body = await response.json() as { entries: Array<{ content: string }>; hasOlder: boolean; olderCursor: string }
+    const body = await response.json() as {
+      entries: Array<{ content: string }>
+      hasOlder: boolean
+      olderCursor: string
+      totalEntries: number
+      totalTextLines: number
+    }
     expect(body.entries).toHaveLength(20)
     expect(body.entries[0]?.content).toBe('row-280')
     expect(body.entries.at(-1)?.content).toBe('row-299')
     expect(body.hasOlder).toBe(true)
     expect(body.olderCursor).toEqual(expect.any(String))
+    expect(body.totalEntries).toBe(300)
+    expect(body.totalTextLines).toBe(300)
   })
 
   it('filters command chatter before paginating the overview', async () => {
@@ -101,16 +109,66 @@ describe('ticket log projection API', () => {
 
     const first = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview&limit=2`)
     expect(first.status).toBe(200)
-    const firstBody = await first.json() as { entries: Array<{ content: string }>; hasOlder: boolean; olderCursor: string }
+    const firstBody = await first.json() as {
+      entries: Array<{ content: string }>
+      hasOlder: boolean
+      olderCursor: string
+      totalEntries: number
+      totalTextLines: number
+    }
     expect(firstBody.entries.map(entry => entry.content)).toEqual(['row-2', 'row-3'])
     expect(firstBody.hasOlder).toBe(true)
+    expect(firstBody.totalEntries).toBe(4)
+    expect(firstBody.totalTextLines).toBe(4)
 
     const older = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview&limit=2&before=${encodeURIComponent(firstBody.olderCursor)}`)
-    expect((await older.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toEqual(['row-0', 'row-1'])
+    const olderBody = await older.json() as {
+      entries: Array<{ content: string }>
+      totalEntries?: number
+      totalTextLines?: number
+    }
+    expect(olderBody.entries.map(entry => entry.content)).toEqual(['row-0', 'row-1'])
+    expect(olderBody.totalEntries).toBeUndefined()
+    expect(olderBody.totalTextLines).toBeUndefined()
 
     const exported = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs/export?scope=phase&phase=CODING&view=overview`)
     expect(exported.headers.get('content-type')).toContain('text/plain')
     expect((await exported.text()).split('\n').map(line => line.slice(-5))).toEqual(['row-0', 'row-1', 'row-2', 'row-3'])
+  })
+
+  it('counts logical text lines for the complete filtered result without applying the page cursor', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'first\nsecond\nthird', {}, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', '', {}, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ ignored-overview\nsecond-command-line', {}, 'system', 'CODING')
+    appendLogEvent(ticket.id, 'info', 'REVIEW', 'different phase\nline', {}, 'system', 'REVIEW')
+
+    const overviewResponse = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview&limit=1`,
+    )
+    const overview = await overviewResponse.json() as {
+      olderCursor: string
+      totalEntries: number
+      totalTextLines: number
+    }
+    expect(overview.totalEntries).toBe(2)
+    expect(overview.totalTextLines).toBe(3)
+
+    const olderResponse = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview&limit=1&before=${encodeURIComponent(overview.olderCursor)}`,
+    )
+    expect(await olderResponse.json()).not.toEqual(expect.objectContaining({
+      totalEntries: expect.any(Number),
+      totalTextLines: expect.any(Number),
+    }))
+
+    const commandResponse = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=command`,
+    )
+    expect(await commandResponse.json()).toEqual(expect.objectContaining({
+      totalEntries: 1,
+      totalTextLines: 2,
+    }))
   })
 
   it('uses the shared classification for command, error, AI, and debug views', async () => {

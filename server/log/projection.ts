@@ -265,6 +265,7 @@ export interface LogPageQuery {
   modelId?: string
   before?: string
   limit: number
+  includeTotals?: boolean
 }
 
 function decodeCursor(cursor?: string): number | null {
@@ -306,15 +307,54 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     params.push(query.view)
   }
   if (query.modelId) { clauses.push('model_id = ?'); params.push(query.modelId) }
-  if (before !== null) { clauses.push('ordinal < ?'); params.push(before) }
-  const where = clauses.join(' AND ')
+  const shouldIncludeTotals = query.includeTotals !== false && before === null
+  const countWhere = clauses.join(' AND ')
+  const countSql = `
+    SELECT
+      COUNT(*) AS total_entries,
+      COALESCE(SUM(
+        CASE
+          WHEN json_type(entry_json, '$.content') = 'text' THEN
+            CASE
+              WHEN length(json_extract(entry_json, '$.content')) = 0 THEN 0
+              ELSE 1
+                + length(json_extract(entry_json, '$.content'))
+                - length(replace(json_extract(entry_json, '$.content'), char(10), ''))
+            END
+          WHEN json_type(entry_json, '$.message') = 'text' THEN
+            CASE
+              WHEN length(json_extract(entry_json, '$.message')) = 0 THEN 0
+              ELSE 1
+                + length(json_extract(entry_json, '$.message'))
+                - length(replace(json_extract(entry_json, '$.message'), char(10), ''))
+            END
+          ELSE 0
+        END
+      ), 0) AS total_text_lines
+    FROM execution_log_projection
+    WHERE ${countWhere}
+  `
+  let counts: { total_entries: number; total_text_lines: number } | null = null
+  if (shouldIncludeTotals) {
+    let countStatement = storage.statements.queryPages.get(countSql)
+    if (!countStatement) {
+      countStatement = sqlite.prepare(countSql)
+      storage.statements.queryPages.set(countSql, countStatement)
+    }
+    counts = countStatement.get(...params) as { total_entries: number; total_text_lines: number }
+  }
+
+  const pageClauses = [...clauses]
+  const pageParams = [...params]
+  if (before !== null) { pageClauses.push('ordinal < ?'); pageParams.push(before) }
+  const where = pageClauses.join(' AND ')
   const sql = `SELECT ordinal, entry_json FROM execution_log_projection WHERE ${where} ORDER BY ordinal DESC LIMIT ?`
   let statement = storage.statements.queryPages.get(sql)
   if (!statement) {
     statement = sqlite.prepare(sql)
     storage.statements.queryPages.set(sql, statement)
   }
-  const rows = statement.all(...params, query.limit + 1) as Array<{ ordinal: number; entry_json: string }>
+  const rows = statement.all(...pageParams, query.limit + 1) as Array<{ ordinal: number; entry_json: string }>
   const hasOlder = rows.length > query.limit
   const page = rows.slice(0, query.limit)
   const oldest = page.at(-1)
@@ -322,10 +362,14 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
     entries: page.reverse().map(row => JSON.parse(row.entry_json)),
     olderCursor: hasOlder && oldest ? Buffer.from(JSON.stringify({ ordinal: oldest.ordinal })).toString('base64url') : null,
     hasOlder,
+    ...(counts ? {
+      totalEntries: counts.total_entries,
+      totalTextLines: counts.total_text_lines,
+    } : {}),
   }
 }
 
 export async function exportLogEntries(ticketId: string, query: Omit<LogPageQuery, 'before' | 'limit'>) {
-  const page = await queryLogPage(ticketId, { ...query, limit: Number.MAX_SAFE_INTEGER })
+  const page = await queryLogPage(ticketId, { ...query, limit: Number.MAX_SAFE_INTEGER, includeTotals: false })
   return page?.entries ?? null
 }

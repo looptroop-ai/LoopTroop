@@ -157,7 +157,7 @@ describe('TicketForm', () => {
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Create a ticket' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
 
-    expect(mockAddToast).toHaveBeenCalledWith('error', 'Project is unavailable', 5000)
+    expect(mockAddToast).toHaveBeenCalledWith('error', 'Unable to create ticket: Project is unavailable', 5000)
   })
 
   it('explains when no project is available', () => {

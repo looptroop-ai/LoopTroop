@@ -16,8 +16,12 @@ import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 async function parseErrorBody(res: Response, fallback: string): Promise<string> {
   let message = fallback
   try {
-    const err = await res.json() as { error?: string }
-    message = err.error || message
+    const err = await res.json() as { error?: string; message?: string }
+    const category = err.error?.trim()
+    const detail = err.message?.trim()
+    message = category && detail && category !== detail
+      ? `${category}: ${detail}`
+      : detail || category || message
   } catch {
     // ignore parse failure
   }

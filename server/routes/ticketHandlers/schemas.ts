@@ -5,7 +5,7 @@ const gitHookPolicySchema = z.enum(['validate_explicitly', 'use_on_internal_comm
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(10000).optional(),
+  description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
   gitHookPolicy: gitHookPolicySchema.nullable().optional(),
@@ -13,7 +13,7 @@ export const createTicketSchema = z.object({
 
 export const updateTicketSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  description: z.string().max(10000).optional(),
+  description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
   gitHookPolicy: gitHookPolicySchema.nullable().optional(),

@@ -25,6 +25,17 @@ describe('useTickets auto-refresh helpers', () => {
 describe('useTicketAction', () => {
   afterEach(() => vi.restoreAllMocks())
 
+  it('surfaces field-specific API validation messages', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      error: 'Invalid input',
+      message: 'description: Too big: expected string to have <=50000 characters',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+
+    await expect(ticketAction('ticket-1', 'retry')).rejects.toThrow(
+      'Invalid input: description: Too big: expected string to have <=50000 characters',
+    )
+  })
+
   it('posts the exact note as JSON for an extra-note retry', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       message: 'Retry started',

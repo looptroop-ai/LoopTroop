@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Increased the ticket description limit to 50,000 characters and made validation failures explain what needs fixing.
 - Made new-ticket creation explain missing project setup and surface create-request errors instead of appearing unresponsive.
 - Kept development startup available when npm 12 misclassifies a registry-hosted optional tarball as a remote dependency during update preview.
 - Added the live remaining/total timeout clock to Preparing Workspace Runtime.
@@ -84,6 +85,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added client-side handling for server validation messages, including the exact ticket field and constraint that failed.
 - Added visible new-ticket guidance when no project is attached and error toasts for failed ticket creation requests.
 - Preparing Workspace Runtime now shows the current setup attempt's remaining and configured total timeout beside its live status. The clock resets from the attempt-start event on automatic retries and respects the effective project or profile setup-timeout setting.
 - Added complete filtered entry and logical text-line totals to paginated log responses and the phase/Full Log count tooltip, alongside loaded/remaining progress and the existing color legend.
@@ -114,6 +116,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Increased create and update ticket descriptions from 10,000 to 50,000 characters and added explicit operation/category context to surfaced request errors.
 - Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs once the Vite frontend is available.
 - Full Log now loads the complete remaining lifecycle before **Go to top**, targets virtualized extrema directly, and keeps **Back to bottom** pinned through layout updates. **Copy all** in phase and Full Log views continues to use the complete-history export independently of visible pagination, with a disabled spinner, progress tooltip, and retry feedback while the export and clipboard write finish.
 - AI/model details now remain pinned while their log entries scroll, model hover details show the ticket-locked Configuration effort, and phase/Full Log history initially loads the latest 20 rows before visibly fetching older 250-row pages without moving the reader's position.

@@ -256,7 +256,7 @@ Ticket routes are implemented using a modular handler architecture located in `s
 | `GET` | `/api/tickets` | Optionally filtered with `?project=` or `?projectId=` |
 | `GET` | `/api/tickets/:id` | Get one ticket by composite ticket ref |
 | `GET` | `/api/tickets/:id/size` | Recursively measure the ticket worktree and return logs/artifacts/source breakdown; returns `{ "size": 0, "exists": false }` when no worktree exists yet |
-| `POST` | `/api/tickets` | Create a ticket; title max 500 characters, description max 10,000 characters, priority `1` through `5`, with optional Manual QA and Git-hook overrides |
+| `POST` | `/api/tickets` | Create a ticket; title max 500 characters, description max 50,000 characters, priority `1` through `5`, with optional Manual QA and Git-hook overrides |
 | `PATCH` | `/api/tickets/:id` | Update title, description, priority, Manual QA, or Git-hook settings; the two configuration overrides are Draft-only |
 | `DELETE` | `/api/tickets/:id` | Only allowed for `COMPLETED` or `CANCELED` |
 | `GET` | `/api/tickets/:id/ui-state?scope=...` | Read persisted UI state |
@@ -275,7 +275,7 @@ Example ticket creation payload:
 }
 ```
 
-Create-ticket validation requires a non-empty title up to 500 characters. The optional description is capped at 10,000 characters. `gitHookPolicy` accepts `validate_explicitly`, `ignore_internal_only`, `use_on_internal_commits`, or `null`; `manualQaOverride` accepts a boolean or `null`. Update validation is slightly narrower: patched titles are capped at 200 characters, configuration overrides return `409` outside Draft, and `status` is API-protected so workflow transitions must go through the action routes below.
+Create-ticket validation requires a non-empty title up to 500 characters. The optional description is capped at 50,000 characters. `gitHookPolicy` accepts `validate_explicitly`, `ignore_internal_only`, `use_on_internal_commits`, or `null`; `manualQaOverride` accepts a boolean or `null`. Update validation is slightly narrower: patched titles are capped at 200 characters, configuration overrides return `409` outside Draft, and `status` is API-protected so workflow transitions must go through the action routes below.
 
 Before Start, ticket responses expose the stored overrides plus `effectiveGitHookPolicy` / `effectiveGitHookPolicySource` and the equivalent Manual QA effective fields. At Start, LoopTroop freezes `lockedGitHookPolicy` and `lockedGitHookPolicySource` using ticket → project → profile precedence, so later parent-setting changes do not alter that run.
 

@@ -73,7 +73,7 @@ const BlockedErrorDiagnosticsSchema = z.object({
 const CreateTicketInputSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(10000).optional(),
+  description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
   gitHookPolicy: z.enum(['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only']).nullable().optional(),

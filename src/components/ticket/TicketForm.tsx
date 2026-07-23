@@ -70,7 +70,7 @@ export function TicketForm({ onClose }: TicketFormProps) {
       onClose()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start ticket'
-      alert(message)
+      alert(`Unable to create and start ticket: ${message}`)
     }
   }
 
@@ -86,7 +86,7 @@ export function TicketForm({ onClose }: TicketFormProps) {
         onSuccess: onClose,
         onError: (err) => {
           const message = err instanceof Error ? err.message : 'Failed to create ticket'
-          addToast('error', message, 5000)
+          addToast('error', `Unable to create ticket: ${message}`, 5000)
         },
       },
     )

@@ -48,7 +48,7 @@ describe('ticketRouter POST /tickets', () => {
       body: JSON.stringify({
         projectId: project.id,
         title: 'Oversized description',
-        description: 'x'.repeat(10_001),
+        description: 'x'.repeat(50_001),
       }),
     })
 

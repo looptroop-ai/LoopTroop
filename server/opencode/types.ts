@@ -76,7 +76,8 @@ export interface PromptSessionOptions {
   variant?: string
   system?: string
   noReply?: boolean
-  tools?: Record<string, boolean>
+  permission?: ReadonlyArray<OpenCodePermissionRule>
+  autoApprovePermissions?: boolean
   onEvent?: (event: StreamEvent) => void
   stepFinishSafetyMs?: number
 }
@@ -282,6 +283,7 @@ export interface SessionErrorStreamEvent extends StreamEventBase {
 
 export interface PermissionStreamEvent extends StreamEventBase {
   type: 'permission'
+  action: 'asked' | 'replied' | 'updated'
   permissionId: string
   permission?: string
   title?: string

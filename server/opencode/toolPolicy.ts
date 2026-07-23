@@ -1,13 +1,14 @@
-import type { PromptSessionOptions } from './types'
+import type { OpenCodePermissionRule, PromptSessionOptions } from './types'
+import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from './permissions'
 
 export type OpenCodeToolPolicy = 'default' | 'disabled' | 'read_only' | 'execution_setup_online'
 
-export const OPENCODE_DEFAULT_TOOLS: Readonly<Record<string, boolean>> = Object.freeze({
+const OPENCODE_DEFAULT_OVERRIDES: Readonly<Record<string, boolean>> = Object.freeze({
   webfetch: false,
   websearch: false,
 })
 
-export const OPENCODE_DISABLED_TOOLS: Readonly<Record<string, boolean>> = Object.freeze({
+const OPENCODE_DISABLED_OVERRIDES: Readonly<Record<string, boolean>> = Object.freeze({
   '*': false,
   bash: false,
   codesearch: false,
@@ -29,7 +30,7 @@ export const OPENCODE_DISABLED_TOOLS: Readonly<Record<string, boolean>> = Object
   write: false,
 })
 
-export const OPENCODE_READ_ONLY_TOOLS: Readonly<Record<string, boolean>> = Object.freeze({
+const OPENCODE_READ_ONLY_OVERRIDES: Readonly<Record<string, boolean>> = Object.freeze({
   '*': false,
   bash: false,
   codesearch: true,
@@ -51,17 +52,37 @@ export const OPENCODE_READ_ONLY_TOOLS: Readonly<Record<string, boolean>> = Objec
   write: false,
 })
 
-export const OPENCODE_EXECUTION_SETUP_ONLINE_TOOLS: Readonly<Record<string, boolean>> = Object.freeze({
+const OPENCODE_EXECUTION_SETUP_ONLINE_OVERRIDES: Readonly<Record<string, boolean>> = Object.freeze({
   webfetch: true,
   websearch: true,
 })
 
-export function resolveOpenCodeTools(
+function buildPermissionRules(
+  overrides: Readonly<Record<string, boolean>>,
+): ReadonlyArray<OpenCodePermissionRule> {
+  return Object.freeze([
+    ...OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS,
+    ...Object.entries(overrides).map(([permission, enabled]) => ({
+      permission,
+      pattern: '*',
+      action: enabled ? 'allow' as const : 'deny' as const,
+    })),
+  ])
+}
+
+export const OPENCODE_DEFAULT_PERMISSIONS = buildPermissionRules(OPENCODE_DEFAULT_OVERRIDES)
+export const OPENCODE_DISABLED_PERMISSIONS = buildPermissionRules(OPENCODE_DISABLED_OVERRIDES)
+export const OPENCODE_READ_ONLY_PERMISSIONS = buildPermissionRules(OPENCODE_READ_ONLY_OVERRIDES)
+export const OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS = buildPermissionRules(
+  OPENCODE_EXECUTION_SETUP_ONLINE_OVERRIDES,
+)
+
+export function resolveOpenCodePermissions(
   toolPolicy: OpenCodeToolPolicy = 'default',
-): PromptSessionOptions['tools'] | undefined {
-  if (toolPolicy === 'default') return OPENCODE_DEFAULT_TOOLS
-  if (toolPolicy === 'disabled') return OPENCODE_DISABLED_TOOLS
-  if (toolPolicy === 'read_only') return OPENCODE_READ_ONLY_TOOLS
-  if (toolPolicy === 'execution_setup_online') return OPENCODE_EXECUTION_SETUP_ONLINE_TOOLS
+): PromptSessionOptions['permission'] | undefined {
+  if (toolPolicy === 'default') return OPENCODE_DEFAULT_PERMISSIONS
+  if (toolPolicy === 'disabled') return OPENCODE_DISABLED_PERMISSIONS
+  if (toolPolicy === 'read_only') return OPENCODE_READ_ONLY_PERMISSIONS
+  if (toolPolicy === 'execution_setup_online') return OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS
   return undefined
 }

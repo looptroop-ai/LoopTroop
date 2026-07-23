@@ -22,10 +22,10 @@ import type {
 } from '../../opencode/types'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import {
-  OPENCODE_DEFAULT_TOOLS,
-  OPENCODE_DISABLED_TOOLS,
-  OPENCODE_EXECUTION_SETUP_ONLINE_TOOLS,
-  OPENCODE_READ_ONLY_TOOLS,
+  OPENCODE_DEFAULT_PERMISSIONS,
+  OPENCODE_DISABLED_PERMISSIONS,
+  OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS,
+  OPENCODE_READ_ONLY_PERMISSIONS,
 } from '../../opencode/toolPolicy'
 import {
   runOpenCodePrompt,
@@ -257,7 +257,10 @@ describe('runOpenCodePrompt', () => {
 
   function createFakeSdkClient(overrides: {
     create?: (...args: unknown[]) => Promise<unknown>
+    update?: (...args: unknown[]) => Promise<unknown>
     prompt?: (...args: unknown[]) => Promise<unknown>
+    permissionReply?: (...args: unknown[]) => Promise<unknown>
+    abort?: (...args: unknown[]) => Promise<unknown>
     list?: (...args: unknown[]) => Promise<unknown>
     messages?: (...args: unknown[]) => Promise<unknown>
     subscribe?: (...args: unknown[]) => Promise<{ stream: AsyncIterable<unknown> }>
@@ -275,11 +278,15 @@ describe('runOpenCodePrompt', () => {
     return {
       session: {
         create: overrides.create ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
+        update: overrides.update ?? (async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } })),
         list: overrides.list ?? (async () => ({ data: [] })),
         prompt: overrides.prompt ?? (async () => ({ data: { parts: [] } })),
         messages: overrides.messages ?? (async () => ({ data: [] })),
-        abort: async () => ({ data: {} }),
+        abort: overrides.abort ?? (async () => ({ data: {} })),
         get: overrides.get ?? (async () => ({ data: { directory: '/tmp/project' } })),
+      },
+      permission: {
+        reply: overrides.permissionReply ?? (async () => ({ data: true })),
       },
       event: {
         subscribe: eventSubscribe,
@@ -321,6 +328,140 @@ describe('runOpenCodePrompt', () => {
     const adapter = new OpenCodeSDKAdapter('http://localhost:4096', sessionCreate as unknown as OpenCodeSDKClient)
 
     await adapter.createSession('/tmp/project')
+  })
+
+  it('applies complete session permissions before prompting without sending deprecated tools', async () => {
+    const updateCalls: unknown[][] = []
+    const promptCalls: unknown[][] = []
+    const fakeClient = createFakeSdkClient({
+      update: async (...args: unknown[]) => {
+        updateCalls.push(args)
+        return { data: { id: 'ses-1', directory: '/tmp/project' } }
+      },
+      prompt: async (...args: unknown[]) => {
+        promptCalls.push(args)
+        return {
+          data: {
+            info: { id: 'msg-1' },
+            parts: [{ type: 'text', text: 'assistant response' }],
+          },
+        }
+      },
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.promptSession(
+      'ses-1',
+      [{ type: 'text', content: 'Prompt body' }],
+      undefined,
+      { permission: OPENCODE_DEFAULT_PERMISSIONS },
+    )).resolves.toBe('assistant response')
+
+    expect(updateCalls[0]?.[0]).toMatchObject({
+      sessionID: 'ses-1',
+      directory: '/tmp/project',
+      permission: OPENCODE_DEFAULT_PERMISSIONS,
+    })
+    expect(promptCalls[0]?.[0]).not.toHaveProperty('tools')
+  })
+
+  it('auto-approves each unexpected permission request once and continues the prompt', async () => {
+    const promptResponse = createDeferred<unknown>()
+    const permissionReplies: unknown[][] = []
+    const fakeClient = createFakeSdkClient({
+      prompt: async () => promptResponse.promise,
+      permissionReply: async (...args: unknown[]) => {
+        permissionReplies.push(args)
+        promptResponse.resolve({
+          data: {
+            info: { id: 'msg-1' },
+            parts: [{ type: 'text', text: 'assistant response' }],
+          },
+        })
+        return { data: true }
+      },
+      subscribe: async () => ({
+        stream: (async function* () {
+          const permission = {
+            type: 'permission.asked',
+            properties: {
+              id: 'per-1',
+              sessionID: 'ses-1',
+              permission: 'external_directory',
+              patterns: ['/tmp/test/*'],
+            },
+          }
+          yield permission
+          yield permission
+          yield { type: 'session.idle', properties: { sessionID: 'ses-1' } }
+        })(),
+      }),
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.promptSession(
+      'ses-1',
+      [{ type: 'text', content: 'Prompt body' }],
+      undefined,
+      {
+        permission: OPENCODE_DEFAULT_PERMISSIONS,
+        autoApprovePermissions: true,
+      },
+    )).resolves.toBe('assistant response')
+
+    expect(permissionReplies).toHaveLength(1)
+    expect(permissionReplies[0]?.[0]).toMatchObject({
+      requestID: 'per-1',
+      directory: '/tmp/project',
+      reply: 'always',
+    })
+  })
+
+  it('aborts immediately when an unexpected permission cannot be auto-approved', async () => {
+    const abortCalls: unknown[][] = []
+    const fakeClient = createFakeSdkClient({
+      prompt: async (...args: unknown[]) => {
+        const options = args[1] as { signal?: AbortSignal } | undefined
+        return await new Promise((_, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true })
+        })
+      },
+      permissionReply: async () => {
+        throw new Error('permission endpoint unavailable')
+      },
+      abort: async (...args: unknown[]) => {
+        abortCalls.push(args)
+        return { data: true }
+      },
+      subscribe: async () => ({
+        stream: (async function* () {
+          yield {
+            type: 'permission.asked',
+            properties: {
+              id: 'per-1',
+              sessionID: 'ses-1',
+              permission: 'external_directory',
+              patterns: ['/tmp/test/*'],
+            },
+          }
+        })(),
+      }),
+    })
+    const adapter = new OpenCodeSDKAdapter('http://localhost:4096', fakeClient as unknown as OpenCodeSDKClient)
+
+    await expect(adapter.promptSession(
+      'ses-1',
+      [{ type: 'text', content: 'Prompt body' }],
+      undefined,
+      {
+        permission: OPENCODE_DEFAULT_PERMISSIONS,
+        autoApprovePermissions: true,
+      },
+    )).rejects.toThrow(
+      'Failed to auto-approve OpenCode permission external_directory: permission endpoint unavailable',
+    )
+    expect(abortCalls).toHaveLength(1)
+    expect(abortCalls[0]?.[0]).toMatchObject({ sessionID: 'ses-1' })
   })
 
   it('passes bounded caller signals to create, list, session get, and messages SDK calls', async () => {
@@ -1038,7 +1179,7 @@ describe('runOpenCodePrompt', () => {
     expect(promptNumbers).toEqual([1, 2])
   })
 
-  it('sends the shared deny-all tools map when toolPolicy is disabled', async () => {
+  it('sends the shared deny-all permission policy when toolPolicy is disabled', async () => {
     const adapter = new TestOpenCodeAdapter(['assistant response'])
 
     await runOpenCodePrompt({
@@ -1049,10 +1190,10 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_DISABLED_TOOLS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DISABLED_PERMISSIONS)
   })
 
-  it('sends the default no-web tools override when toolPolicy is default', async () => {
+  it('sends the default no-web permission policy with unattended safeguards', async () => {
     const adapter = new TestOpenCodeAdapter(['assistant response'])
 
     await runOpenCodePrompt({
@@ -1063,10 +1204,17 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_DEFAULT_TOOLS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
+      { permission: 'external_directory', pattern: '*', action: 'allow' },
+      { permission: 'doom_loop', pattern: '*', action: 'allow' },
+      { permission: 'webfetch', pattern: '*', action: 'deny' },
+      { permission: 'websearch', pattern: '*', action: 'deny' },
+    ]))
+    expect(adapter.promptCalls[0]?.options?.autoApprovePermissions).toBe(true)
   })
 
-  it('enables OpenCode web tools for execution setup prompts only', async () => {
+  it('allows OpenCode web permissions for execution setup prompts only', async () => {
     const adapter = new TestOpenCodeAdapter(['assistant response'])
 
     await runOpenCodePrompt({
@@ -1077,7 +1225,7 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_EXECUTION_SETUP_ONLINE_TOOLS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS)
   })
 
   it('propagates the initial PROM1 interview draft prompt to callers', async () => {
@@ -1126,7 +1274,7 @@ describe('runOpenCodePrompt', () => {
     expect(dispatchedEntries[0]!.event.promptText).toContain('## System Role')
     expect(dispatchedEntries[0]!.event.promptText).toContain('Build a ticket dashboard.')
     expect(dispatchedEntries[0]!.event.promptText).toContain('max_initial_questions: 3')
-    expect(adapter.promptCalls[0]?.options?.tools).toEqual(OPENCODE_READ_ONLY_TOOLS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
   })
 
   it('returns snapshot content when stream done arrives before SDK prompt resolves', async () => {
@@ -1575,6 +1723,7 @@ describe('runOpenCodePrompt', () => {
     const fakeClient = {
       session: {
         create: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
+        update: async () => ({ data: { id: 'ses-1', directory: '/tmp/project' } }),
         prompt: async () => ({
           data: {
             info: { id: 'msg-echo' },

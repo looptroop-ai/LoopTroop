@@ -214,6 +214,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const model = promptOptions.model ?? parseModelRef(promptOptions.modelRef)
 
     const directory = await this.resolveSessionDirectory(sessionId, promptSignal)
+    if (promptOptions.permission) {
+      try {
+        const res = await this.client.session.update({
+          sessionID: sessionId,
+          ...(directory ? { directory } : {}),
+          permission: promptOptions.permission.map(rule => ({ ...rule })),
+        }, this.requestOptions(this.withSdkOperationTimeout(promptSignal)))
+        if (!res.data) throw new Error('OpenCode returned no updated session payload')
+      } catch (error) {
+        if (error instanceof Error && (error.name === 'AbortError' || promptSignal?.aborted)) throw error
+        throw new Error(
+          `Failed to apply OpenCode session permissions: ${getErrorMessage(error)}. ` +
+          'Session permission updates require a current OpenCode server; upgrade OpenCode and restart `opencode serve`.',
+        )
+      }
+    }
     // Manual QA file parts carry a creation-time model-capability snapshot.
     // If present, forward every part; provider/context failures must surface.
     const { systemText, promptParts } = this.partitionPromptParts(parts, promptOptions.system, true)
@@ -276,11 +292,37 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     const streamClosed = new Promise<void>((resolve) => {
       resolveStreamClosed = resolve
     })
+    const handledPermissionIds = new Set<string>()
+    let permissionReplyFailure: Error | null = null
     const streamDrain = this.consumeStreamEvents(
       sessionId,
-      (event) => {
+      async (event) => {
         rememberStreamText(event)
         promptOptions.onEvent?.(event)
+        if (
+          event.type === 'permission'
+          && event.action === 'asked'
+          && promptOptions.autoApprovePermissions
+          && event.permissionId
+          && !handledPermissionIds.has(event.permissionId)
+        ) {
+          handledPermissionIds.add(event.permissionId)
+          try {
+            const result = await this.client.permission.reply({
+              requestID: event.permissionId,
+              ...(directory ? { directory } : {}),
+              reply: 'always',
+            }, this.requestOptions(this.withSdkOperationTimeout(promptSignal)))
+            if (!result.data) throw new Error('OpenCode did not confirm the permission reply')
+          } catch (error) {
+            permissionReplyFailure = new Error(
+              `Failed to auto-approve OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
+            )
+            sdkPromptAbortController.abort(permissionReplyFailure)
+            await this.abortSession(sessionId).catch(() => false)
+            throw permissionReplyFailure
+          }
+        }
         if (event.type !== 'done' || streamDoneObserved) return
         streamDoneObserved = true
         void this.readAssistantSnapshotWithRetry(sessionId)
@@ -368,6 +410,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         streamFirstResponse,
         ...(signalAbort ? [signalAbort] : []),
       ])
+      if (permissionReplyFailure) throw permissionReplyFailure
       if (responseText && looksLikePromptEcho(responseText) && !streamDoneObserved) {
         const terminalResponse = await Promise.race([
           streamDoneResponse.then((snapshot) => snapshot?.trim() ?? ''),
@@ -912,20 +955,20 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
   private async consumeStreamEvents(
     sessionId: string,
-    onEvent: (event: StreamEvent) => void,
+    onEvent: (event: StreamEvent) => void | Promise<void>,
     signal?: AbortSignal,
     stepFinishSafetyMs?: number,
   ) {
     try {
       for await (const event of this.subscribeToEvents(sessionId, signal, stepFinishSafetyMs)) {
-        onEvent(event)
+        await onEvent(event)
         if (event.type === 'done') break
       }
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
         return
       }
-      onEvent({
+      await onEvent({
         type: 'session_error',
         sessionId,
         error: getErrorMessage(error),
@@ -1116,6 +1159,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         const details = this.getRecord(props)
         return {
           type: 'permission',
+          action: event.type === 'permission.asked'
+            ? 'asked'
+            : event.type === 'permission.replied'
+              ? 'replied'
+              : 'updated',
           sessionId,
           permissionId: typeof details?.id === 'string' ? details.id : '',
           permission: typeof details?.permission === 'string' ? details.permission : undefined,

@@ -26,4 +26,14 @@ export const OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS: ReadonlyArray<OpenCodePer
     pattern: '**/.*',
     action: 'allow',
   },
+  {
+    permission: 'doom_loop',
+    pattern: '*',
+    action: 'allow',
+  },
+  {
+    permission: 'external_directory',
+    pattern: '*',
+    action: 'allow',
+  },
 ])

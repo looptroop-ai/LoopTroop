@@ -39,11 +39,11 @@ The `OpenCodeAdapter` interface currently exposes:
 
 `getOpenCodeAdapter()` returns a singleton. In normal mode it uses `@opencode-ai/sdk/v2`; in mock mode it returns `MockOpenCodeAdapter`, which also supplies a mock health result and provider catalog for the rest of the app.
 
-The SDK adapter automatically adds a Basic auth header when `OPENCODE_SERVER_PASSWORD` is configured. Prompt dispatch also passes OpenCode prompt options such as `model`, `agent`, `variant`, `tools`, and `stepFinishSafetyMs`.
+The SDK adapter automatically adds a Basic auth header when `OPENCODE_SERVER_PASSWORD` is configured. Prompt dispatch passes OpenCode prompt options such as `model`, `agent`, `variant`, and `stepFinishSafetyMs`. Tool access is no longer sent through OpenCode's deprecated prompt-level `tools` field; LoopTroop applies the prompt's complete ordered permission policy to the session immediately before dispatch.
 
 Session creation, exact session lookup, session listing, and message reads accept `AbortSignal`s and are wrapped with bounded SDK-operation timeouts. Session creation also runs through a shared retry wrapper: after the initial failure, LoopTroop waits 1 s, 3 s, and 7 s before the three retry attempts. Each failed create attempt collects lightweight OpenCode health diagnostics, but the health probe is diagnostic-only and never replaces the actual session-create result.
 
-LoopTroop creates sessions with a session-scoped allow-all permission rule. If the connected OpenCode server is too old to support session-scoped permissions, session creation fails with an explicit upgrade message instead of silently degrading behavior.
+LoopTroop creates sessions with a session-scoped allow-all permission rule, then refreshes the complete policy before every prompt so reused sessions cannot retain a previous phase's restrictions. If the connected OpenCode server is too old to support session-scoped permissions, session creation or policy application fails with an explicit upgrade message instead of silently degrading behavior.
 
 ## 3. Base URL And Modes
 
@@ -80,7 +80,9 @@ For full local OpenCode DEBUG logs in your terminal, run `npm run dev --opencode
 
 When OpenCode emits only a generic `Provider returned error` stream event, LoopTroop best-effort scans the newest local OpenCode log files for the same `session.id` and surfaces the exact provider cause in the ticket log and blocked-error diagnostics. The enrichment keeps compact fields only: HTTP status, retryability, OpenCode provider/model, request model, provider error type/title/message, and a short response-body preview. It discards prompt bodies, raw request payloads, headers, cookies, authorization values, and URL query strings before persisting anything. By default it reads OpenCode's documented local log directory; set `LOOPTROOP_OPENCODE_LOG_DIR` when LoopTroop is attached to an external server with logs stored elsewhere.
 
-For trusted local LoopTroop sessions, the managed OpenCode server is permissive by default: `scripts/dev-opencode.ts` sets `OPENCODE_PERMISSION='"allow"'` when it starts `opencode serve`, unless `LOOPTROOP_OPENCODE_PERMISSION_MODE=inherit` is set. LoopTroop also creates execution sessions with a robust set of SDK permission rules (including patterns `*`, `/*`, `/**/*`, `**`, and `**/.*` under the `allow` action), so server-level permission policy and session-scoped permissions both allow required tool use and pre-approve absolute paths. This removes OpenCode approval prompts from trusted automation (especially when setup scripts read system config directories like `/etc` to determine OS and CPU architecture properties), but it does not bypass normal OS privileges or make passworded `sudo` a dependency of setup.
+For trusted local LoopTroop sessions, the managed OpenCode server is permissive by default: `scripts/dev-opencode.ts` sets `OPENCODE_PERMISSION='"allow"'` when it starts `opencode serve`, unless `LOOPTROOP_OPENCODE_PERMISSION_MODE=inherit` is set. LoopTroop also applies a complete ordered SDK permission policy to each session immediately before prompting. The unrestricted baseline explicitly allows all actions, `external_directory`, and `doom_loop`, including absolute-path patterns needed by system inspection and temporary tool provisioning; prompt-specific restrictions are appended afterward so read-only, tool-disabled, and web-access policies remain authoritative.
+
+Unexpected permission requests are treated as a headless-runtime compatibility fallback rather than user input. LoopTroop answers each new permission request once with `always` and lets the current prompt continue. If OpenCode rejects or fails that reply, LoopTroop aborts the session immediately and returns an actionable prompt failure so the workflow's existing retry or blocked-error path can take over instead of appearing idle. These controls remove approval stalls from trusted unattended automation, but they do not bypass normal OS privileges or make passworded `sudo` a dependency of setup.
 
 ### 4.1 Tool Policy Layer
 
@@ -93,7 +95,7 @@ Prompt templates choose from four OpenCode tool policies:
 | `read_only` | Allows only read-style tools (`codesearch`, `glob`, `grep`, `list`, `lsp`, `read`) |
 | `execution_setup_online` | Re-enables `webfetch` and `websearch` for setup prompts that may need official installer or launcher lookup |
 
-That policy layer is applied per prompt at the `runOpenCodePrompt()` / `runOpenCodeSessionPrompt()` boundary. For the prompt-to-policy mapping, see [Prompt Inventory](prompts.md).
+That policy layer is resolved into a complete ordered session permission ruleset and applied at the `runOpenCodePrompt()` / `runOpenCodeSessionPrompt()` boundary before each prompt. Explicit restrictions follow the permissive baseline and therefore win for read-only and tool-disabled phases. For the prompt-to-policy mapping, see [Prompt Inventory](prompts.md).
 
 Planning prompts that can make or preserve repository-specific claims use `read_only` selectively: they review their supplied context first and inspect the repository only when they need concrete evidence. This covers Full Answers, PRD and beads drafting, refinement, and coverage, plus blueprint expansion and the non-voting interview workflow. Council voting remains tool-disabled; no planning prompt receives shell execution or mutation tools through this policy.
 
@@ -130,11 +132,12 @@ It currently does the following:
 
 1. Resolve or create the session, retrying session-creation failures before the prompt is sent.
 2. If `sessionOwnership` is present, call `SessionManager.validateAndReconnect()` first.
-3. Dispatch the prompt with model, agent, variant, tool policy, and timeout settings.
-4. Subscribe to stream events while the prompt is running.
-5. Track OpenCode `session.status` retry events against the profile retry budget and grace window.
-6. Reconcile the streamed reply with assistant messages and stream status.
-7. Mark the session completed, keep it active, or preserve/abandon it depending on the outcome.
+3. Resolve and apply the complete session permission policy for the prompt.
+4. Dispatch the prompt with model, agent, variant, and timeout settings.
+5. Subscribe to stream events, automatically answering unexpected permission requests once per request ID.
+6. Track OpenCode `session.status` retry events against the profile retry budget and grace window.
+7. Reconcile the streamed reply with assistant messages and stream status.
+8. Mark the session completed, keep it active, or preserve/abandon it depending on the outcome.
 
 `runOpenCodeSessionPrompt()` is the lower-level helper for prompting a known session.
 
@@ -216,7 +219,8 @@ The prompt runner tracks:
 - step start and finish events
 - session status events, including retry budget/grace-window detection
 - session error events
-- question and permission events that contribute to ticket-side recovery or UI prompts
+- question events that contribute to ticket-side recovery or UI prompts
+- permission requests that are deduplicated and answered automatically for unattended execution, with an immediate session abort if the reply fails
 
 The runner also backfills finalized assistant message parts from the current prompt segment of `session.messages()` after completion so thinking, intermediate assistant narration, tool activity, and terminal output are durable even if no browser was watching in real time. It never treats older messages from a reused session as new activity. Intermediate text is logged as an `ASSISTANT` Other event and the final response remains `OUTPUT`, both keyed by stable session/message identities.
 

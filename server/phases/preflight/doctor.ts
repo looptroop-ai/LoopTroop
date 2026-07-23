@@ -17,7 +17,7 @@ import {
 import { fetchConnectedModelIds } from '../../opencode/providerCatalog'
 import { buildPromptFromTemplate, PROM_EXECUTION_CAPABILITY_PROBE } from '../../prompts/index'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../opencode/permissions'
-import { resolveOpenCodeTools } from '../../opencode/toolPolicy'
+import { resolveOpenCodePermissions } from '../../opencode/toolPolicy'
 import { parseModelRef, type Session, type SessionErrorStreamEvent, type StreamEvent } from '../../opencode/types'
 import { summarizeModelErrorForLog } from '../../opencode/errorDetails'
 import { createOpenCodeSessionWithRetry } from '../../opencode/sessionCreation'
@@ -114,7 +114,8 @@ async function runExecutionCapabilityProbe(
           {
             model: parseModelRef(modelId),
             variant: preFlightContext.lockedMainImplementerVariant ?? undefined,
-            tools: resolveOpenCodeTools(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy),
+            permission: resolveOpenCodePermissions(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy),
+            autoApprovePermissions: true,
             onEvent: handleStreamEvent,
           },
         ),

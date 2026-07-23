@@ -16,7 +16,7 @@ import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../opencode/permission
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { parseModelRef } from '../opencode/types'
 import { SessionManager, type SessionOwnership } from '../opencode/sessionManager'
-import { resolveOpenCodeTools } from '../opencode/toolPolicy'
+import { resolveOpenCodePermissions } from '../opencode/toolPolicy'
 import { PROMPT_MIN_TIMEOUT_MS, PROMPT_MAX_TIMEOUT_MS } from '../lib/constants'
 import { PROM54_CONTINUE_TEXT } from '../prompts/index'
 import {
@@ -572,7 +572,7 @@ export async function runOpenCodeSessionPrompt({
   let latestContinuableRetryAttempt: number | undefined
   const resolvedRetryPolicy = resolveOpenCodeRetryPolicy(opencodeRetryPolicy)
   const parsedModel = model ? parseModelRef(model) : undefined
-  const tools = resolveOpenCodeTools(toolPolicy)
+  const permission = resolveOpenCodePermissions(toolPolicy)
   const stepFinishSafetyMs = promptTimeoutMs === undefined || promptTimeoutMs <= 0
     ? undefined
     : Math.min(Math.max(promptTimeoutMs / 10, PROMPT_MIN_TIMEOUT_MS), PROMPT_MAX_TIMEOUT_MS)
@@ -581,7 +581,7 @@ export async function runOpenCodeSessionPrompt({
     ...(parsedModel ? { model: parsedModel } : {}),
     ...(agent ? { agent } : {}),
     ...(variant ? { variant } : {}),
-    ...(tools ? { tools } : {}),
+    ...(permission ? { permission, autoApprovePermissions: true } : {}),
     ...(stepFinishSafetyMs !== undefined ? { stepFinishSafetyMs } : {}),
   }
   let sessionErrorEvent: SessionErrorStreamEvent | undefined

@@ -31,6 +31,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept Beads coverage focused on PRD completeness while allowing project-agnostic verification commands.
 - Made workspace setup preserve prepared tool environments and begin deterministic retries without avoidable AI-note delays.
 - Expanded OpenCode session-scoped permission rules to match absolute paths, preventing workspace setup and tool provisioning from blocking on system read commands.
+- Prevented unattended OpenCode work from stalling on unexpected permission requests.
 - Added an explicit default None choice to model effort controls so providers keep their native effort behavior until you select an override.
 - Kept GitHub readiness checks compatible with older GitHub CLI releases while retaining structured checks on current releases.
 - Added concise, setting-specific guidance to Configuration documentation-link tooltips.
@@ -175,6 +176,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.
 - Removed the avoidable retry delay for deterministic setup failures by generating local retry notes for missing structured results and complete backend command failures.
 - Fixed workspace setup (`PREPARING_EXECUTION_ENV`) blocking and timing out when setup commands run system diagnostics (such as checking CPU architecture or reading `/etc/os-release` to provision toolchains) by adding absolute path glob patterns (`*`, `/*`, `/**/*`, `**`, and `**/.*`) to the default allow-all OpenCode permission rules.
+- Fixed unattended OpenCode prompts stalling on permission requests by replacing deprecated prompt-level tool maps with complete ordered session permission policies, explicitly allowing `external_directory` and `doom_loop`, and automatically approving unexpected requests once per request ID. Failed approval replies now abort the session immediately so the existing retry or blocked-error flow can recover.
 - Pre-flight GitHub authentication now falls back to `gh auth status --hostname github.com` only when an older GitHub CLI rejects the JSON status flag, so valid older installations can proceed while current installations retain structured account validation.
 - Fixed npm 12 dependency maintenance incorrectly holding releases whose publish-time metadata was returned as a one-element JSON array; both the legacy object and npm 12 array shapes now participate in the seven-day release-age check.
 - Fixed native dependency builds (like better-sqlite3 and esbuild) failing or being skipped on npm v12+ by adding them to the allowScripts allowlist in package.json.

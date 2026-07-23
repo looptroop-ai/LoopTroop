@@ -15,6 +15,7 @@ import {
   getDependencyUpdateReleaseDetails,
   getHeldAuditPackageReleaseDetails,
   getHeldDependencyReleaseDetails,
+  getRegistryHostedRemotePolicyFailureUrl,
   isExpectedAuditFindingsExit,
   isPeerResolutionFailure,
   parseNpmViewPublishTimes,
@@ -293,7 +294,7 @@ describe('held dependency detail formatting', () => {
   it('describes the release-age policy used by dev startup messaging', () => {
     expect(formatDependencyReleasePolicySummaryLines()).toEqual([
       'Direct npm dependency updates and npm audit fixes wait until a release has been published for 7 days.',
-      'Updates are previewed with npm peer resolution; incompatible releases are held and never forced.',
+      'Updates are previewed with npm peer resolution; incompatible releases and registry-tarball policy conflicts are held and never forced.',
       'OpenCode CLI and @opencode-ai/sdk updates are applied immediately.',
     ])
   })
@@ -371,6 +372,37 @@ describe('held dependency detail formatting', () => {
       'held dev dependency typescript 6.0.3 -> 7.0.2; because npm reported an incompatible peer dependency: ' +
       'peer typescript@">=4.8.4 <6.1.0" from typescript-eslint@8.63.0',
     ])
+  })
+
+  it('explains registry-tarball policy holds and their daily retry', () => {
+    const details = getHeldDependencyReleaseDetails({
+      heldDependencies: [],
+      heldDevDependencies: [{
+        name: '@tailwindcss/vite',
+        current: '4.3.2',
+        latest: '4.3.3',
+        reason: 'registry-tarball-policy',
+        detail: 'npm rejected https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.3.3.tgz as a remote URL',
+      }],
+    })
+
+    expect(details.map(formatHeldDependencyReleaseDetail)).toEqual([
+      'held dev dependency @tailwindcss/vite 4.3.2 -> 4.3.3; because npm rejected a registry-hosted tarball as a remote URL during lockfile preview; ' +
+      'the update will be retried on the next daily check: npm rejected https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.3.3.tgz as a remote URL',
+    ])
+  })
+
+  it('only recognizes EALLOWREMOTE holds for the configured registry host', () => {
+    const message = [
+      'npm error code EALLOWREMOTE',
+      'npm error Fetching packages of type "remote" have been disabled',
+      'npm error Refusing to fetch "https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.3.3.tgz"',
+    ].join('\n')
+
+    expect(getRegistryHostedRemotePolicyFailureUrl(message, 'https://registry.npmjs.org/')).toBe(
+      'https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.3.3.tgz',
+    )
+    expect(getRegistryHostedRemotePolicyFailureUrl(message, 'https://registry.example.test/')).toBeNull()
   })
 
   it('explains metadata and version-comparison holds without relying on the policy summary', () => {

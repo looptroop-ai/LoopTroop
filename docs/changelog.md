@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Kept development startup available when npm 12 misclassifies a registry-hosted optional tarball as a remote dependency during update preview.
 - Added the live remaining/total timeout clock to Preparing Workspace Runtime.
 - Made paginated log totals honest without removing the existing color legend.
 - Clarified dev server startup output with explicit "LoopTroop App" and "Documentation" labels and a prominent Ready summary when the frontend is available.
@@ -165,6 +166,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Manual QA workspace drift detection to bypass Git worktree checks and return no drift for display-only mock tickets, resolving baseline-missing errors when loading mock tickets in the UI.
 
 #### Fixed
+- Deferred only the triggering direct dependency update when npm rejects a configured-registry tarball as remote during preview, while preserving npm's remote-package policy and clear daily-retry diagnostics.
 - Fixed the ALL tab appearing empty after a hard refresh when the newest projected rows were all commands by excluding command-classified rows before applying overview pagination.
 - Prevented progress-only workspace setup replies from consuming fresh attempts immediately: LoopTroop now continues the same session twice before failing the attempt with a functional incomplete-setup explanation, while malformed completed results keep their separate structured repair path.
 - Replaced the generic workspace-setup check failure with a visible failed area and the setup agent's concise blocker explanation.

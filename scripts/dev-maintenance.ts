@@ -74,7 +74,7 @@ export interface HeldDependencyUpdate {
   current?: string
   latest?: string
   nextEligibleAt?: string
-  reason: 'metadata-unavailable' | 'missing-version' | 'non-semver-current' | 'no-aged-version' | 'peer-incompatible'
+  reason: 'metadata-unavailable' | 'missing-version' | 'non-semver-current' | 'no-aged-version' | 'peer-incompatible' | 'registry-tarball-policy'
   detail?: string
 }
 
@@ -202,6 +202,8 @@ function formatHeldReleaseTiming(
         : 'because the proposed release has not completed the 7-day release-safety period'
     case 'peer-incompatible':
       return 'because npm reported an incompatible peer dependency'
+    case 'registry-tarball-policy':
+      return 'because npm rejected a registry-hosted tarball as a remote URL during lockfile preview; the update will be retried on the next daily check'
   }
 }
 
@@ -250,7 +252,7 @@ export function formatDependencyUpdateReleaseDetail(detail: DependencyReleaseUpd
 export function formatDependencyReleasePolicySummaryLines() {
   return [
     `Direct npm dependency updates and npm audit fixes wait until a release has been published for ${DEPENDENCY_RELEASE_DELAY_DAYS} days.`,
-    'Updates are previewed with npm peer resolution; incompatible releases are held and never forced.',
+    'Updates are previewed with npm peer resolution; incompatible releases and registry-tarball policy conflicts are held and never forced.',
     'OpenCode CLI and @opencode-ai/sdk updates are applied immediately.',
   ]
 }
@@ -575,6 +577,28 @@ function validateStagedDependencyGraph(tempDir: string, { verbose = false }: { v
 
 export function isPeerResolutionFailure(message: string) {
   return /\bERESOLVE\b|could not resolve dependency|conflicting peer dependency/i.test(message)
+}
+
+export function getRegistryHostedRemotePolicyFailureUrl(message: string, registryUrl: string) {
+  if (!/\bEALLOWREMOTE\b|Fetching packages of type "remote" have been disabled/i.test(message)) {
+    return null
+  }
+
+  const refusedUrl = message.match(/Refusing to fetch\s+["']([^"']+)["']/i)?.[1]
+  if (!refusedUrl) return null
+
+  try {
+    const registry = new URL(registryUrl)
+    const refused = new URL(refusedUrl)
+    return refused.hostname === registry.hostname ? refused.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function getConfiguredNpmRegistryUrl() {
+  const result = runCommand(['config', 'get', 'registry'], 'npm config get registry')
+  return result.status === 0 && result.stdout ? result.stdout : null
 }
 
 export function isExpectedAuditFindingsExit(result: NpmCommandResult) {
@@ -1332,6 +1356,7 @@ interface DependencyUpdatePreview {
   lockContents: string | null
   error: string | null
   peerConflict: boolean
+  registryRemotePolicyFailureUrl: string | null
 }
 
 export function formatUpdatedDependencyRange(currentRange: string, targetVersion: string) {
@@ -1342,7 +1367,7 @@ export function formatUpdatedDependencyRange(currentRange: string, targetVersion
 
 function previewDirectDependencyUpdates(
   updates: DependencyUpdateCandidate[],
-  { verbose = false }: { verbose?: boolean } = {},
+  { verbose = false, registryUrl }: { verbose?: boolean; registryUrl: string | null } = { registryUrl: null },
 ): DependencyUpdatePreview {
   const tempDir = mkdtempSync(join(tmpdir(), 'looptroop-dependency-update-'))
   const tempPackageJsonPath = resolve(tempDir, 'package.json')
@@ -1351,12 +1376,12 @@ function previewDirectDependencyUpdates(
   try {
     const packageContents = readFileIfPresent(packageJsonPath)
     if (!packageContents || !readFileIfPresent(packageLockPath)) {
-      return { packageContents: null, lockContents: null, error: 'Unable to read dependency manifests.', peerConflict: false }
+      return { packageContents: null, lockContents: null, error: 'Unable to read dependency manifests.', peerConflict: false, registryRemotePolicyFailureUrl: null }
     }
 
     const manifest = parseJson<PackageManifest>(packageContents)
     if (!manifest) {
-      return { packageContents: null, lockContents: null, error: 'Unable to parse package.json.', peerConflict: false }
+      return { packageContents: null, lockContents: null, error: 'Unable to parse package.json.', peerConflict: false, registryRemotePolicyFailureUrl: null }
     }
 
     for (const update of updates) {
@@ -1368,6 +1393,7 @@ function previewDirectDependencyUpdates(
           lockContents: null,
           error: `Unable to stage ${update.name}; it is no longer a direct ${update.dependencyType} dependency.`,
           peerConflict: false,
+          registryRemotePolicyFailureUrl: null,
         }
       }
       dependencies[update.name] = formatUpdatedDependencyRange(currentRange, update.targetVersion)
@@ -1388,6 +1414,7 @@ function previewDirectDependencyUpdates(
         lockContents: null,
         error: message,
         peerConflict: isPeerResolutionFailure(message),
+        registryRemotePolicyFailureUrl: registryUrl ? getRegistryHostedRemotePolicyFailureUrl(message, registryUrl) : null,
       }
     }
 
@@ -1398,6 +1425,7 @@ function previewDirectDependencyUpdates(
         lockContents: null,
         error: validation.error,
         peerConflict: validation.peerConflict,
+        registryRemotePolicyFailureUrl: null,
       }
     }
 
@@ -1409,6 +1437,7 @@ function previewDirectDependencyUpdates(
         lockContents: null,
         error: 'Unable to read the resolved dependency preview.',
         peerConflict: false,
+        registryRemotePolicyFailureUrl: null,
       }
     }
 
@@ -1417,9 +1446,10 @@ function previewDirectDependencyUpdates(
       lockContents: proposedLockContents,
       error: null,
       peerConflict: false,
+      registryRemotePolicyFailureUrl: null,
     }
   } catch (error) {
-    return { packageContents: null, lockContents: null, error: getErrorMessage(error), peerConflict: false }
+    return { packageContents: null, lockContents: null, error: getErrorMessage(error), peerConflict: false, registryRemotePolicyFailureUrl: null }
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
@@ -1427,34 +1457,43 @@ function previewDirectDependencyUpdates(
 
 function findCompatibleDependencyUpdates(
   candidates: DependencyUpdateCandidate[],
-  { verbose = false }: { verbose?: boolean } = {},
+  { verbose = false, registryUrl }: { verbose?: boolean; registryUrl: string | null } = { registryUrl: null },
 ) {
   if (candidates.length === 0) {
     return { accepted: [] as DependencyUpdateCandidate[], held: [] as HeldDependencyUpdate[], preview: null, error: null as string | null }
   }
 
-  const combinedPreview = previewDirectDependencyUpdates(candidates, { verbose })
+  const combinedPreview = previewDirectDependencyUpdates(candidates, { verbose, registryUrl })
   if (!combinedPreview.error) {
     return { accepted: candidates, held: [] as HeldDependencyUpdate[], preview: combinedPreview, error: null as string | null }
   }
-  if (!combinedPreview.peerConflict) {
+  if (!combinedPreview.peerConflict && !combinedPreview.registryRemotePolicyFailureUrl) {
     return { accepted: [] as DependencyUpdateCandidate[], held: [] as HeldDependencyUpdate[], preview: null, error: combinedPreview.error }
   }
 
   const accepted: DependencyUpdateCandidate[] = []
   let pending = candidates.map((candidate) => ({ candidate, detail: summarizePeerResolutionFailure(combinedPreview.error ?? '') }))
+  const held: HeldDependencyUpdate[] = []
   let madeProgress = true
 
   while (madeProgress && pending.length > 0) {
     madeProgress = false
     const nextPending: typeof pending = []
     for (const item of pending) {
-      const preview = previewDirectDependencyUpdates([...accepted, item.candidate], { verbose })
+      const preview = previewDirectDependencyUpdates([...accepted, item.candidate], { verbose, registryUrl })
       if (!preview.error) {
         accepted.push(item.candidate)
         madeProgress = true
       } else if (preview.peerConflict) {
         nextPending.push({ candidate: item.candidate, detail: summarizePeerResolutionFailure(preview.error) })
+      } else if (preview.registryRemotePolicyFailureUrl) {
+        held.push({
+          name: item.candidate.name,
+          current: item.candidate.current,
+          latest: item.candidate.targetVersion,
+          reason: 'registry-tarball-policy',
+          detail: `npm rejected ${preview.registryRemotePolicyFailureUrl} as a remote URL`,
+        })
       } else {
         return { accepted: [] as DependencyUpdateCandidate[], held: [] as HeldDependencyUpdate[], preview: null, error: preview.error }
       }
@@ -1462,20 +1501,23 @@ function findCompatibleDependencyUpdates(
     pending = nextPending
   }
 
-  const finalPreview = accepted.length > 0 ? previewDirectDependencyUpdates(accepted, { verbose }) : null
+  const finalPreview = accepted.length > 0 ? previewDirectDependencyUpdates(accepted, { verbose, registryUrl }) : null
   if (finalPreview?.error) {
     return { accepted: [] as DependencyUpdateCandidate[], held: [] as HeldDependencyUpdate[], preview: null, error: finalPreview.error }
   }
 
   return {
     accepted,
-    held: pending.map(({ candidate, detail }) => ({
-      name: candidate.name,
-      current: candidate.current,
-      latest: candidate.targetVersion,
-      reason: 'peer-incompatible' as const,
-      detail,
-    })),
+    held: [
+      ...held,
+      ...pending.map(({ candidate, detail }) => ({
+        name: candidate.name,
+        current: candidate.current,
+        latest: candidate.targetVersion,
+        reason: 'peer-incompatible' as const,
+        detail,
+      })),
+    ],
     preview: finalPreview,
     error: null as string | null,
   }
@@ -1545,7 +1587,10 @@ export function syncDirectDependencies(
     ...runtimePlan.updates.map((update) => ({ ...update, dependencyType: 'runtime' as const })),
     ...devPlan.updates.map((update) => ({ ...update, dependencyType: 'dev' as const })),
   ]
-  const compatibility = findCompatibleDependencyUpdates(candidates, { verbose })
+  const compatibility = findCompatibleDependencyUpdates(candidates, {
+    verbose,
+    registryUrl: candidates.length > 0 ? getConfiguredNpmRegistryUrl() : null,
+  })
   const errors: string[] = compatibility.error ? [compatibility.error] : []
 
   if (!compatibility.error && compatibility.accepted.length > 0) {

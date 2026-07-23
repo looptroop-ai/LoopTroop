@@ -748,6 +748,15 @@ export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {
 }
 
 // Execution Prompts
+const EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE =
+  'Project Agnosticism: Infer required tooling and preparation from repository evidence. Do not assume a programming language, build system, package manager, shell, operating system, or setup command, and do not invent commands for tooling you did not observe.'
+
+const EXECUTION_SETUP_COMPLETION_RULE =
+  'Completion: Continue using the available tools until setup work finishes and you can return exactly one structured result. A progress update such as "provisioning the toolchain" is never a final answer. Return `ready` when preparation succeeds or `blocked` with evidence when it cannot succeed safely; do not stop at a statement of intent.'
+
+const EXECUTION_SETUP_HONEST_OUTCOME_RULE =
+  'Honest Outcome: Return `ready` only when every setup check passes. If any check fails or a required tool is `failed` or `not_provisionable`, return `blocked`, identify the cause and attempted approaches, and preserve the evidence needed for recovery.'
+
 export const PROM_EXECUTION_CAPABILITY_PROBE: PromptTemplate = {
   id: 'PROM_EXECUTION_CAPABILITY_PROBE',
   description: 'Execution Capability Probe Prompt',
@@ -776,7 +785,7 @@ export const PROM_EXECUTION_SETUP_PLAN: PromptTemplate = {
     'Missing Work Only: If the environment is not fully ready, set `readiness.status` to `partial` or `missing`, set `readiness.actions_required` to `true`, record concrete gaps, and include only the smallest credible set of setup steps needed to close those gaps. Missing command launchers or toolchains for discovered command families are setup gaps, not cautions on a ready plan.',
     'Runtime Command Readiness: Inspect the launchers required by the approved beads and project commands so the setup plan can provision missing runtime tooling without redesigning the approved work.',
     'Readiness Contradictions: Never return `readiness.status: ready` with `actions_required: false` when any workspace probe, bead test command, or project command needs a launcher that is unavailable or still needs provisioning. A caution cannot downgrade a missing required launcher into a ready environment.',
-    'Language Agnosticism: Infer tooling from the repository itself. Do not assume Node, npm, pnpm, Python, Cargo, Maven, Gradle, Go, or any other ecosystem unless the repository evidence supports it. Never invent commands for a language or toolchain you did not actually observe.',
+    EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE,
     'Workspace Setup Policy: The setup plan may propose repository-native bootstrap commands. Prefer LoopTroop-owned temporary roots under `.ticket/runtime/execution-setup/**`, especially `.ticket/runtime/execution-setup/tool-cache/**`, for execution-only toolchains, dependency caches, build caches, generated outputs, or tool caches. Do not propose ticket feature implementation as part of setup.',
     'Tracked Change Boundary: If a setup command is likely to modify tracked manifests, lockfiles, generated assets, or configuration, prefer a non-mutating or temp-root alternative. If readiness truly requires a permanent repository change, record the exact need in `cautions` instead of trying to make that change during setup.',
     'Plan Structure: Return ordered setup steps when commands are required. Each step must include `id`, `title`, `purpose`, `commands`, `required`, `rationale`, and `cautions`; use `cautions: []` when no step-specific cautions apply. A plan whose only required action is materializing approved workspace inputs may use a non-empty `workspace_inputs` list with an empty `steps` list.',
@@ -855,7 +864,7 @@ export const PROM_EXECUTION_SETUP_PLAN_REGENERATE: PromptTemplate = {
     'Re-audit current readiness while revising. Preserve or strengthen a no-op plan when the environment is already ready; only add steps if the commentary or repository evidence shows missing work.',
     'When prior workspace-runtime failure context is present, use its cleaned command and error output while checking the original checkout for ignored or untracked inputs that concretely explain the failure.',
     'Preserve good existing steps when the commentary does not require changing them.',
-    'Remain language-agnostic. Do not switch ecosystems or invent commands unless the repository evidence supports the change.',
+    EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE,
     'Recheck launcher readiness while revising. Do not report the environment as ready when a command required by the approved work still needs provisioning.',
     'Do not execute commands or mutate the repository while revising the plan.',
     'Return a full replacement setup plan artifact, not a diff or patch note.',
@@ -872,24 +881,17 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
   systemRole: 'You are an expert execution-environment initializer preparing a temporary reusable workspace for future coding beads.',
   task: 'Execute the approved setup plan, initialize reusable execution state, discover any missing project command details, and return a structured execution setup result.',
   instructions: [
-    'Scope: Your job is only to prepare a reusable temporary execution environment for later coding beads. You are not implementing ticket features.',
+    'Scope: Prepare only the reusable temporary execution environment needed by later coding beads. Do not implement ticket features, make broad source edits, or perform unrelated refactors.',
     'Approved Plan First: Read the approved `execution_setup_plan` context before taking action. Treat user-edited plan steps and commands as the primary setup contract.',
     'Readiness Respect: If the approved setup plan says `readiness.status` is `ready` and `readiness.actions_required` is `false`, verify that assessment and avoid bootstrap work unless a concrete missing prerequisite blocks later coding.',
     'Context Review: Read the ticket details, approved setup plan, beads plan, and any prior `execution_setup_note` context before taking action. Use repository tools for any concrete file, manifest, or script details you need. Avoid repeating failed setup approaches.',
-    'Prefer Native Bootstrap: Prefer repository-native manifests, lockfiles, scripts, and codegen commands when discovering how to initialize the environment.',
-    'Language Agnosticism: Do not assume a language or package manager. Use only the repository-native tooling that is actually present.',
-    'Workspace Writes: You may run repository-native setup commands from the approved plan. Execution-only toolchains, dependency caches, build caches, generated outputs, tool caches, setup logs, and reusable notes should be created under the approved temp roots, preferably `.ticket/runtime/execution-setup/**` and especially `.ticket/runtime/execution-setup/tool-cache/**` for toolchains.',
+    EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE,
+    'Repository-Native Setup: Prefer repository-provided wrappers, manifests, lockfiles, scripts, and bootstrap commands. Start with approved plan commands, and add only the smallest repository-evidenced preparation needed when the plan is incomplete.',
+    'Temporary Scope and Safety: Put execution-only toolchains, dependency/build caches, generated outputs, logs, and reusable setup artifacts under approved temp roots, preferably `.ticket/runtime/execution-setup/**` and `.ticket/runtime/execution-setup/tool-cache/**`. Do not use privileged or global installation, arbitrary source-tree install paths, or permanent repository changes.',
     'Gitignore Suggestions: If setup commands create untracked generated or local outputs outside approved temp roots because repository ignore coverage is missing, do not edit `.gitignore` during setup. Record the exact paths and recommended `.gitignore` entries in `cautions`, and prefer moving reusable setup outputs under approved temp roots when possible.',
-    'Missing Tool Self-Healing: If a required command launcher, language runtime, package manager, or toolchain is missing, first attempt a user-space provision under the approved temp roots before declaring tooling failed. Prefer official project/language distribution archives, repository-native version managers, or lockfile-directed installers that can live under `.ticket/runtime/execution-setup/tool-cache/**`. Do not use `sudo`, global OS package-manager installs, or arbitrary source-tree install paths as the default path.',
-    'Missing required launchers: a failed version/info probe is discovery only; before returning `checks.tooling = fail`, attempt safe user-space provisioning under approved temp roots or record why no safe provisioning path exists.',
-    'Provisioning persistence: after a required launcher provisioning attempt fails, try at least two distinct safe, repository-appropriate strategies under approved temp roots before returning checks.tooling = fail, unless inspected evidence proves no safe path exists; do not repeat the same command unchanged.',
-    'Real provisioning attempts: If the required launcher is missing, wrapper creation, cache inspection, PATH edits, and version probes do not count as provisioning strategies; try at least two real safe provisioning strategies that obtain, install, or activate the launcher under `.ticket/runtime/execution-setup/tool-cache` before reporting tooling fail.',
-    'Version pins/ranges: interpret repository-declared tool versions using that ecosystem\'s own resolution metadata before choosing an exact artifact.',
-    'Online artifact lookup: If local repository metadata and inspected caches do not identify a compatible required launcher version or artifact URL, use online lookup before giving up: prefer OpenCode `websearch` for discovery and `webfetch` for official release/download metadata, or bash/curl against official metadata when those web tools are unavailable; record the consulted URL or metadata source in the setup result.',
-    'Provisioning Examples, Non-Exhaustive: For Node, inspect `packageManager`, lockfiles, `.nvmrc`, or `.node-version` and use Corepack, a version manager, or official archives under `tool-cache`; for Python, inspect `pyproject.toml`, lockfiles, `.python-version`, or runtime files and use a local virtual environment/tool installer under `tool-cache`; for JavaScript runtimes such as Deno or Bun, inspect project config/lockfiles and use official user-space installers or archives under `tool-cache`. These examples are illustrative only; use any safe, repository-appropriate commands, installers, archives, package managers, or version managers needed to satisfy the approved setup requirements, while keeping execution-only tooling and caches under approved temp roots and avoiding global/sudo installs or permanent repo changes.',
+    'Missing Tool Recovery: A failed version or information probe only discovers a missing tool. Before reporting it as failed, try at least two distinct safe user-space strategies that actually obtain, install, or activate a compatible launcher under the approved temp roots, unless repository evidence proves no safe strategy exists. Wrapper creation, cache inspection, PATH edits, and probes are not provisioning attempts. Resolve declared version constraints from repository metadata, consult official release metadata when needed, record the evidence and commands used, and never repeat an unchanged failed approach.',
     'Reusable Runtime Wrapper: When you provision a launcher off the normal PATH or need prepared runtime environment variables, you MUST create `.ticket/runtime/execution-setup/env.sh` and executable `.ticket/runtime/execution-setup/run`. The `run` wrapper must source `env.sh` and execute the command arguments. Record `env.sh` as an environment artifact and `run` as a `command-wrapper` reusable artifact. LoopTroop independently routes the approved plan\'s bare workspace probes, explicit hook checks, and later project commands through this declared wrapper; do not rewrite approved probes merely to prefix the wrapper.',
-    'Feature-Work Ban: Do not implement ticket feature code, broad source edits, or unrelated refactors during setup. If a repository-native bootstrap command changes tracked manifests, lockfiles, generated assets, or configuration, do not leave those changes behind; record the exact need in `cautions` and report a blocker if readiness depends on a permanent repository change.',
-    'Approved Plan Execution: Start from the approved setup-plan steps and commands. Reuse them directly when they are still correct for the repository state.',
+    'Tracked Change Boundary: If a repository-native setup command changes tracked manifests, lockfiles, generated assets, or configuration, do not leave those changes behind. Record the exact need in `cautions` and return `blocked` if readiness depends on a permanent repository change.',
     'Minimum Necessary Work: If the environment is already ready or only partially missing one prerequisite, do only the missing temporary work. Do not rebuild or re-bootstrap the environment from scratch without evidence.',
     'Audited Augmentations: If the approved plan is insufficient and you must run additional setup commands, keep those additions minimal and make sure `bootstrap_commands` lists every command actually used, including additions beyond the approved plan.',
     'Reusable Outputs: Record any reusable dependency directory, build cache, generated temp artifact, tool cache, or setup note path in `temp_roots` or `reusable_artifacts`. Prefer runtime-owned paths under `.ticket/runtime/execution-setup/**`; use another setup-created location only when the repository itself requires it.',
@@ -899,20 +901,19 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
     'Git Hooks: Copy the approved `git_hooks.policy` and editable `git_hooks.validation_commands` into the profile. Do not modify backend-supplied `git_hooks.detected` evidence. LoopTroop runs explicit commands itself when the policy is `validate_explicitly`.',
     'Approved Workspace Inputs: LoopTroop materializes the approved `workspace_inputs` before this setup session begins. Use those inputs as part of the prepared worktree. Do not copy additional ignored or untracked paths that are not present in the approved plan. If an approved input is unavailable or materialization failed, report the exact path as a workspace failure.',
     'Quality Gate Policy: Default to bead test commands first, then impacted-or-package scoped lint/typecheck, and never block later phases on unrelated baseline debt.',
-    'Tooling Gate: If a required command launcher or toolchain is missing, set `checks.tooling` to `fail` only after at least two distinct safe user-space provisioning strategies under approved temp roots fail, or when no safe temp-root provisioning path exists. Keep the top-level `status` and `profile.status` as `ready` for schema compatibility, and explain the attempted provisioning and blocker in `summary` and `cautions`. LoopTroop will block coding until every setup check passes.',
-    'Do Not Stop Early: Continue working until the environment is ready, you hit a hard blocker, or the app interrupts you.',
-    'No Progress Prose: Do not return conversational status updates. Use tools until you can return the final structured result.',
+    EXECUTION_SETUP_HONEST_OUTCOME_RULE,
+    EXECUTION_SETUP_COMPLETION_RULE,
     'Output Discipline: End with exactly one `<EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT>` block and nothing else.',
   ],
   outputFormat: `JSON or YAML inside \`<EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT>\` with this exact shape:
 {
-  "status": "ready",
+  "status": "<ready|blocked>",
   "summary": "short human-readable summary",
   "profile": {
     "schema_version": 1,
     "ticket_id": "PROJ-123",
     "artifact": "execution_setup_profile",
-    "status": "ready",
+    "status": "<ready|blocked>",
     "summary": "environment initialized and reusable",
     "temp_roots": [".ticket/runtime/execution-setup", ".ticket/runtime/execution-setup/tool-cache"],
     "workspace_inputs": [{"path":"relative/path","kind":"file|directory","source_status":"ignored|untracked","reason":"approved setup input"}],
@@ -974,10 +975,10 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
     "cautions": ["..."]
   },
   "checks": {
-    "workspace": "pass",
-    "tooling": "pass",
-    "temp_scope": "pass",
-    "policy": "pass"
+    "workspace": "<pass|fail>",
+    "tooling": "<pass|fail>",
+    "temp_scope": "<pass|fail>",
+    "policy": "<pass|fail>"
   }
 }`,
   contextInputs: ['ticket_details', 'beads', 'execution_setup_plan', 'execution_setup_notes'],
@@ -992,7 +993,9 @@ export const PROM_EXECUTION_SETUP_NOTE: PromptTemplate = {
   instructions: [
     'Summarize the attempted environment initialization work and the most relevant commands or actions.',
     'Capture the specific blocker or policy violation that prevented setup from succeeding.',
-    'Guide the next retry toward the safest next step without repeating full logs.',
+    EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE,
+    'Guide the next retry toward the safest repository-evidenced approach without repeating full logs, and state whether another actionable approach remains or no safe preparation path exists.',
+    'The next setup attempt must finish with an honest structured `ready` or `blocked` outcome; a progress-only response is unfinished work.',
     'Keep it concise and directly actionable.',
   ],
   outputFormat: 'Plain text - one concise append-only retry note',

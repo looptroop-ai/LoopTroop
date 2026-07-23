@@ -255,6 +255,67 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })
 
+  it('keeps an honest blocked profile diagnostic-only and does not publish it as reusable runtime state', async () => {
+    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+      title: 'Execution setup honest blocked result',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+
+    const blockedProfile: ExecutionSetupProfile = {
+      ...readyExecutionSetupProfile(ticket.externalId),
+      status: 'blocked',
+      summary: 'The required launcher has no safe temporary provisioning path.',
+      toolRequirements: [{
+        launcher: 'project-tool',
+        requiredBy: ['project_commands.test_full[0]'],
+        status: 'not_provisionable',
+        missingProbe: 'project-tool --version',
+        provisioningAttempts: [],
+        finalProbe: 'project-tool --version',
+        failureReason: 'No compatible user-space artifact is available.',
+      }],
+    }
+    executeExecutionSetupWithRetriesMock.mockResolvedValueOnce({
+      status: 'failed',
+      ready: false,
+      checkedAt: '2026-07-23T12:00:00.000Z',
+      preparedBy: TEST.implementer,
+      summary: 'Workspace setup is blocked.',
+      profile: blockedProfile,
+      checks: {
+        workspace: 'pass',
+        tooling: 'fail',
+        tempScope: 'pass',
+        policy: 'pass',
+      },
+      modelOutput: '<EXECUTION_SETUP_RESULT>{"status":"blocked"}</EXECUTION_SETUP_RESULT>',
+      errors: ['The required launcher could not be prepared safely.'],
+    } satisfies ExecutionSetupReport)
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: ['The required launcher could not be prepared safely.'],
+    })
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_profile', 'PREPARING_EXECUTION_ENV')).toBeUndefined()
+    expect(existsSync(paths.executionSetupProfilePath)).toBe(false)
+
+    const reportArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_report', 'PREPARING_EXECUTION_ENV')
+    expect(JSON.parse(reportArtifact?.content ?? '{}')).toMatchObject({
+      status: 'failed',
+      ready: false,
+      profile: { status: 'blocked' },
+    })
+  })
+
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()
@@ -384,7 +445,7 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
       errors: expect.arrayContaining([
-        'Execution setup checks must all pass before the setup profile can be accepted.',
+        'Workspace setup cannot continue because the required tools check failed. Required launcher is unavailable.',
         expect.stringContaining('tool_requirements evidence'),
       ]),
     })
@@ -500,7 +561,7 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
       errors: expect.arrayContaining([
-        'Execution setup checks must all pass before the setup profile can be accepted.',
+        'Workspace setup cannot continue because the required tools check failed. Ready.',
         expect.stringContaining('provisioning_attempts'),
       ]),
     })
@@ -591,7 +652,7 @@ describe('handleExecutionSetup', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
-      errors: ['Execution setup checks must all pass before the setup profile can be accepted.'],
+      errors: ['Workspace setup cannot continue because the required tools check failed. Ready.'],
     })
     expect(sendEvent).not.toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',

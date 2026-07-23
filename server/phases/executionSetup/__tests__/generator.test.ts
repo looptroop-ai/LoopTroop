@@ -133,12 +133,9 @@ describe('generateExecutionSetup', () => {
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
   })
 
-  it.each([
-    { label: 'empty', response: '', failureClass: 'empty_response' },
-    { label: 'progress-only', response: 'I am still preparing the environment.', failureClass: 'validation_error' },
-  ] as const)('does not request structured correction for a $label markerless response', async ({ response, failureClass }) => {
+  it('does not treat an empty response as a progress continuation', async () => {
     const adapter = new SequencedMockOpenCodeAdapter()
-    adapter.mockResponses.set('mock-session-1#1', response)
+    adapter.mockResponses.set('mock-session-1#1', '')
     adapter.mockResponses.set('mock-session-1#2', buildReadyExecutionSetupResponse())
     const structuredRetryStarts: Array<{ sessionId: string; retryAttempt: number }> = []
 
@@ -148,6 +145,7 @@ describe('generateExecutionSetup', () => {
       '/tmp/test',
       undefined,
       {
+        structuredRetryCount: 0,
         onStructuredRetryStart: entry => structuredRetryStarts.push(entry),
       },
     )
@@ -155,12 +153,135 @@ describe('generateExecutionSetup', () => {
     expect(result.result).toBeNull()
     expect(result.structuredOutput.autoRetryCount).toBe(0)
     expect(result.rawAttempts).toEqual([
-      expect.objectContaining({ attempt: 1, outcome: 'rejected', rawResponse: response, failureClass }),
+      expect.objectContaining({ attempt: 1, outcome: 'rejected', rawResponse: '', failureClass: 'empty_response' }),
     ])
     expect(structuredRetryStarts).toEqual([])
     expect(adapter.promptCalls).toHaveLength(1)
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
     expect(adapter.messages.get('mock-session-1')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
+  })
+
+  it('continues progress-only setup work in the same session independently of structured retry settings', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'JDK and Maven are missing; provisioning them into the tool-cache.')
+    adapter.mockResponses.set('mock-session-1#2', buildReadyExecutionSetupResponse())
+    const structuredRetryStarts: Array<{ sessionId: string; retryAttempt: number }> = []
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      {
+        structuredRetryCount: 0,
+        onStructuredRetryStart: entry => structuredRetryStarts.push(entry),
+      },
+    )
+
+    expect(result.result?.status).toBe('ready')
+    expect(result.structuredOutput.autoRetryCount).toBe(0)
+    expect(result.rawAttempts).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        outcome: 'rejected',
+        rawResponse: 'JDK and Maven are missing; provisioning them into the tool-cache.',
+      }),
+      expect.objectContaining({
+        attempt: 2,
+        outcome: 'accepted',
+        rawResponse: expect.stringContaining('<EXECUTION_SETUP_RESULT>'),
+      }),
+    ])
+    expect(structuredRetryStarts).toEqual([])
+    expect(adapter.promptCalls).toHaveLength(2)
+    expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
+    const messages = adapter.messages.get('mock-session-1') ?? []
+    expect(messages.some((message) => (
+      typeof message.content === 'string'
+      && message.content.includes('previous response was only a progress update')
+      && message.content.includes('Do not return another progress update')
+    ))).toBe(true)
+    expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
+  })
+
+  it('allows two progress continuations and accepts the result returned by the second continuation', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'Preparing the workspace now.')
+    adapter.mockResponses.set('mock-session-1#2', 'Still downloading the required temporary toolchain.')
+    adapter.mockResponses.set('mock-session-1#3', buildReadyExecutionSetupResponse())
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      { structuredRetryCount: 0 },
+    )
+
+    expect(result.result?.status).toBe('ready')
+    expect(result.structuredOutput.autoRetryCount).toBe(0)
+    expect(adapter.promptCalls).toHaveLength(3)
+    expect(result.rawAttempts).toHaveLength(3)
+    expect(result.rawAttempts?.map(attempt => attempt.outcome)).toEqual(['rejected', 'rejected', 'accepted'])
+  })
+
+  it('uses structured repair after a progress continuation returns a completed but malformed result', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'Preparing the workspace now.')
+    adapter.mockResponses.set('mock-session-1#2', 'status: ready\nsummary: setup finished but the marker is missing')
+    adapter.mockResponses.set('mock-session-1#3', buildReadyExecutionSetupResponse())
+    const structuredRetryStarts: Array<{ sessionId: string; retryAttempt: number }> = []
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      {
+        structuredRetryCount: 1,
+        onStructuredRetryStart: entry => structuredRetryStarts.push(entry),
+      },
+    )
+
+    expect(result.result?.status).toBe('ready')
+    expect(result.structuredOutput.autoRetryCount).toBe(1)
+    expect(result.rawAttempts?.map(attempt => attempt.outcome)).toEqual(['rejected', 'rejected', 'accepted'])
+    expect(structuredRetryStarts).toEqual([{ sessionId: 'mock-session-1', retryAttempt: 1 }])
+    expect(adapter.promptCalls).toHaveLength(3)
+    expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
+  })
+
+  it('fails the setup attempt with a functional error after the third progress-only response', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'Preparing the workspace now.')
+    adapter.mockResponses.set('mock-session-1#2', 'Still downloading the required temporary toolchain.')
+    adapter.mockResponses.set('mock-session-1#3', 'Continuing to configure the workspace.')
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      { structuredRetryCount: 0 },
+    )
+
+    expect(result.result).toBeNull()
+    expect(result.parse.errors).toEqual([
+      'Setup agent stopped before completing workspace preparation after two continuations.',
+    ])
+    expect(result.structuredOutput.validationError).toBe(
+      'Setup agent stopped before completing workspace preparation after two continuations.',
+    )
+    expect(result.structuredOutput.retryDiagnostics).toHaveLength(3)
+    expect(result.structuredOutput.retryDiagnostics?.every(diagnostic => (
+      diagnostic.validationError === 'No execution setup result marker found'
+    ))).toBe(true)
+    expect(result.rawAttempts).toHaveLength(3)
+    expect(result.rawAttempts?.every(attempt => (
+      attempt.validationError === 'No execution setup result marker found'
+    ))).toBe(true)
+    expect(adapter.promptCalls).toHaveLength(3)
+    expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])
   })
 
   it('announces structured correction before dispatching the retry prompt', async () => {

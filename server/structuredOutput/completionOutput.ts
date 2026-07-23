@@ -6,6 +6,7 @@ import type {
   ExecutionSetupProfilePayload,
   ExecutionSetupProvisioningAttemptPayload,
   ExecutionSetupResultPayload,
+  ExecutionSetupStatus,
   ExecutionSetupToolRequirementStatus,
   ExecutionSetupCommandProbePayload,
   ExecutionSetupGitHooksPayload,
@@ -355,11 +356,14 @@ export function normalizeFinalTestCommandsOutput(rawContent: string): Structured
   )
 }
 
-function normalizeExecutionSetupStatus(value: unknown): 'ready' {
+function normalizeExecutionSetupStatus(value: unknown): ExecutionSetupStatus {
   const raw = getRequiredString({ status: value }, ['status'], 'status')
   const normalized = normalizeKey(raw)
   if (['ready', 'ok', 'complete', 'completed', 'success', 'succeeded'].includes(normalized)) {
     return 'ready'
+  }
+  if (['blocked', 'failed', 'fail', 'failure', 'error'].includes(normalized)) {
+    return 'blocked'
   }
   throw new Error(`Invalid execution setup status: ${raw}`)
 }
@@ -1066,6 +1070,20 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
       const summary = getRequiredString(parsed, ['summary', 'reason'], 'summary')
       const profile = normalizeExecutionSetupProfile(getValueByAliases(parsed, ['profile']))
       const checks = normalizeExecutionSetupChecks(getValueByAliases(parsed, ['checks']))
+
+      if (profile.status !== status) {
+        throw new Error('Execution setup result status must match profile.status')
+      }
+
+      const checkValues = Object.values(checks)
+      const everyCheckPassed = checkValues.every((check) => check === 'pass')
+      const atLeastOneCheckFailed = checkValues.some((check) => check === 'fail')
+      if (status === 'ready' && !everyCheckPassed) {
+        throw new Error('Execution setup status ready requires every setup check to pass')
+      }
+      if (status === 'blocked' && !atLeastOneCheckFailed) {
+        throw new Error('Execution setup status blocked requires at least one setup check to fail')
+      }
 
       appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'EXECUTION_SETUP_RESULT' })
 

@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made workspace setup finish with honest Ready or Blocked results and recover progress-only replies within the same attempt.
 - Made cold ticket and status opens responsive by warming workspace modules and progressively loading projected logs.
 - Made artifact loading responsive by separating lightweight manifests from on-demand, cache-validatable content bodies.
 - Made bead verification lightweight and adaptable while preserving Final Testing as the mandatory automated delivery gate.
@@ -98,6 +99,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Workspace setup prompts now use concise repository-grounded rules without assuming a language, build system, package manager, shell, or operating system. Ready requires every setup check to pass; actionable Blocked results retry, while evidence that no safe provisioning path exists stops immediately.
 - Changed ticket history restoration to request the newest 250 projected log rows, merge them with bounded live SSE rows by stable identity, virtualize large timelines, and page older rows only when the user scrolls upward. Copy all continues to export the complete matching history, while browser `localStorage` no longer stores full log snapshots.
 - Warmed common ticket workspace modules in development and pre-optimized `react-virtuoso`; selected live workspace modules preload after ticket discovery and the common historical review view prefetches during idle time.
 - Made cold log projection catch-up cooperative and deduplicated, with cached schema/prepared statements, so large JSONL histories do not monopolize the server while health checks are waiting.
@@ -146,6 +148,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Prevented progress-only workspace setup replies from consuming fresh attempts immediately: LoopTroop now continues the same session twice before failing the attempt with a functional incomplete-setup explanation, while malformed completed results keep their separate structured repair path.
+- Replaced the generic workspace-setup check failure with a visible failed area and the setup agent's concise blocker explanation.
 - Fixed blocked workflow errors that previously collapsed distinct agent-response, coding-timeout, environment/provider, final-test, and Git-finalization failures into generic messages.
 - Prevented truncated streaming-thinking previews from repeating the model header above their retained tail lines.
 - Fixed prepared toolchains disappearing during independent setup validation because a nested login shell reloaded profiles and overwrote the wrapper-provided environment.

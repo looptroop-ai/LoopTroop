@@ -222,11 +222,13 @@ export interface ExecutionSetupPlanPayload {
   cautions: string[]
 }
 
+export type ExecutionSetupStatus = 'ready' | 'blocked'
+
 export interface ExecutionSetupProfilePayload {
   schemaVersion: number
   ticketId: string
   artifact: 'execution_setup_profile'
-  status: 'ready'
+  status: ExecutionSetupStatus
   summary: string
   tempRoots: string[]
   workspaceInputs: ExecutionSetupWorkspaceInputPayload[]
@@ -253,7 +255,7 @@ export interface ExecutionSetupProfilePayload {
 }
 
 export interface ExecutionSetupResultPayload {
-  status: 'ready'
+  status: ExecutionSetupStatus
   summary: string
   profile: ExecutionSetupProfilePayload
   checks: {

@@ -258,7 +258,7 @@ export async function executeExecutionSetupWithRetries(
       maxIterations: number
       report: ExecutionSetupReport
       notes: string[]
-      reason?: 'exhausted' | 'repeated_tooling_failure'
+      reason?: 'exhausted' | 'repeated_tooling_failure' | 'not_provisionable'
     }) => void | Promise<void>
   },
 ): Promise<ExecutionSetupReport> {
@@ -386,7 +386,10 @@ export async function executeExecutionSetupWithRetries(
       && !withinBaseBudget
       && needsToolingPersistenceRetry(finalReport)
       && extraToolingPersistenceAttemptsUsed < MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS
-    const canRetry = !repeatedToolingFailure && (withinBaseBudget || canUseExtraToolingPersistenceAttempt)
+    const hasImmediateNoSafePathBlocker = hasNoSafePathToolingEvidence(finalReport)
+    const canRetry = !repeatedToolingFailure
+      && !hasImmediateNoSafePathBlocker
+      && (withinBaseBudget || canUseExtraToolingPersistenceAttempt)
     await callbacks.onFailedAttempt?.({
       attempt,
       report: finalReport,
@@ -402,7 +405,11 @@ export async function executeExecutionSetupWithRetries(
         maxIterations: options.maxIterations,
         report: finalReport,
         notes: [...notes],
-        reason: repeatedToolingFailure ? 'repeated_tooling_failure' : 'exhausted',
+        reason: repeatedToolingFailure
+          ? 'repeated_tooling_failure'
+          : hasImmediateNoSafePathBlocker
+            ? 'not_provisionable'
+            : 'exhausted',
       })
       return withRetryMetadata(finalReport, {
         attempt,

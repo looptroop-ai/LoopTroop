@@ -6,6 +6,40 @@ function buildExecutionSetupPayload(body: string): string {
   return `<EXECUTION_SETUP_RESULT>\n${body}\n</EXECUTION_SETUP_RESULT>`
 }
 
+function buildMinimalExecutionSetupResult(
+  status: 'ready' | 'blocked',
+  checks: Record<'workspace' | 'tooling' | 'temp_scope' | 'policy', 'pass' | 'fail'>,
+) {
+  return {
+    status,
+    summary: status === 'ready' ? 'environment initialized' : 'environment setup is blocked',
+    profile: {
+      schema_version: 1,
+      ticket_id: 'T-1',
+      artifact: 'execution_setup_profile',
+      status,
+      summary: status === 'ready' ? 'environment initialized and reusable' : 'required tooling is unavailable',
+      temp_roots: ['.ticket/runtime/execution-setup'],
+      bootstrap_commands: [],
+      reusable_artifacts: [],
+      project_commands: {
+        prepare: [],
+        test_full: [],
+        lint_full: [],
+        typecheck_full: [],
+      },
+      quality_gate_policy: {
+        tests: 'bead-test-commands-first',
+        lint: 'impacted-or-package',
+        typecheck: 'impacted-or-package',
+        full_project_fallback: 'never-block-on-unrelated-baseline',
+      },
+      cautions: [],
+    },
+    checks,
+  }
+}
+
 describe('parseExecutionSetupResult', () => {
   it('parses an exact execution setup marker payload', () => {
     const parsed = parseExecutionSetupResult(buildExecutionSetupPayload(JSON.stringify({
@@ -143,6 +177,10 @@ describe('parseExecutionSetupResult', () => {
     } satisfies Parameters<typeof serializeExecutionSetupProfile>[0]
 
     expect(JSON.parse(serializeExecutionSetupProfile(baseProfile))).not.toHaveProperty('tool_requirements')
+    expect(JSON.parse(serializeExecutionSetupProfile({
+      ...baseProfile,
+      status: 'blocked',
+    }))).toHaveProperty('status', 'blocked')
 
     const serialized = serializeExecutionSetupProfile({
       ...baseProfile,
@@ -328,15 +366,15 @@ describe('parseExecutionSetupResult', () => {
     expect(parsed.repairWarnings?.some((warning) => warning.includes('Removed wrapper key'))).toBe(true)
   })
 
-  it('parses tooling check failures without requiring a new setup status', () => {
+  it('parses an honest blocked result when a setup check fails', () => {
     const parsed = parseExecutionSetupResult(buildExecutionSetupPayload(JSON.stringify({
-      status: 'ready',
+      status: 'blocked',
       summary: 'tooling is missing',
       profile: {
         schema_version: 1,
         ticket_id: 'T-1',
         artifact: 'execution_setup_profile',
-        status: 'ready',
+        status: 'blocked',
         summary: 'required launcher is unavailable',
         temp_roots: ['.ticket/runtime/execution-setup'],
         bootstrap_commands: ['command -v project-tool || true'],
@@ -364,8 +402,52 @@ describe('parseExecutionSetupResult', () => {
     })))
 
     expect(parsed.errors).toEqual([])
-    expect(parsed.result?.status).toBe('ready')
+    expect(parsed.result?.status).toBe('blocked')
+    expect(parsed.result?.profile.status).toBe('blocked')
     expect(parsed.result?.checks.tooling).toBe('fail')
+  })
+
+  it('rejects ready results when any setup check fails', () => {
+    const parsed = parseExecutionSetupResult(buildExecutionSetupPayload(JSON.stringify(
+      buildMinimalExecutionSetupResult('ready', {
+        workspace: 'pass',
+        tooling: 'fail',
+        temp_scope: 'pass',
+        policy: 'pass',
+      }),
+    )))
+
+    expect(parsed.result).toBeNull()
+    expect(parsed.errors[0]).toContain('status ready requires every setup check to pass')
+  })
+
+  it('rejects blocked results when every setup check passes', () => {
+    const parsed = parseExecutionSetupResult(buildExecutionSetupPayload(JSON.stringify(
+      buildMinimalExecutionSetupResult('blocked', {
+        workspace: 'pass',
+        tooling: 'pass',
+        temp_scope: 'pass',
+        policy: 'pass',
+      }),
+    )))
+
+    expect(parsed.result).toBeNull()
+    expect(parsed.errors[0]).toContain('status blocked requires at least one setup check to fail')
+  })
+
+  it('rejects results whose top-level and profile statuses do not match', () => {
+    const payload = buildMinimalExecutionSetupResult('blocked', {
+      workspace: 'pass',
+      tooling: 'fail',
+      temp_scope: 'pass',
+      policy: 'pass',
+    })
+    payload.profile.status = 'ready'
+
+    const parsed = parseExecutionSetupResult(buildExecutionSetupPayload(JSON.stringify(payload)))
+
+    expect(parsed.result).toBeNull()
+    expect(parsed.errors[0]).toContain('result status must match profile.status')
   })
 
   it('rejects prompt echoes clearly', () => {

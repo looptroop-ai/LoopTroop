@@ -85,6 +85,23 @@ function allChecksPass(result: ExecutionSetupResult): boolean {
   return Object.values(result.checks).every((value) => value === 'pass')
 }
 
+function buildFailedSetupChecksError(result: ExecutionSetupResult): string {
+  const checkLabels: Record<keyof ExecutionSetupResult['checks'], string> = {
+    workspace: 'workspace',
+    tooling: 'required tools',
+    tempScope: 'temporary-file safety',
+    policy: 'setup policy',
+  }
+  const failedChecks = Object.entries(result.checks)
+    .filter(([, value]) => value === 'fail')
+    .map(([key]) => checkLabels[key as keyof ExecutionSetupResult['checks']])
+  const failedArea = failedChecks.length === 1
+    ? `the ${failedChecks[0]} check failed`
+    : `these required checks failed: ${failedChecks.join(', ')}`
+  const explanation = result.summary.trim() || result.profile.summary.trim()
+  return `Workspace setup cannot continue because ${failedArea}.${explanation ? ` ${explanation}` : ''}`
+}
+
 function buildExecutionSetupReport(input: {
   preparedBy: string
   generation: ExecutionSetupGenerationResult
@@ -513,7 +530,7 @@ export async function handleExecutionSetup(
             }
 
             if (result && !allChecksPass(result)) {
-              errors.push('Execution setup checks must all pass before the setup profile can be accepted.')
+              errors.push(buildFailedSetupChecksError(result))
             }
 
             if (profile) {
@@ -769,6 +786,8 @@ export async function handleExecutionSetup(
               'error',
               reason === 'repeated_tooling_failure'
                 ? `Execution setup stopped after ${attempt} attempts because the same tooling blocker repeated after provisioning failed.`
+                : reason === 'not_provisionable'
+                ? `Execution setup stopped after attempt ${attempt} because the agent found no safe temporary provisioning path.`
                 : `Execution setup retries exhausted after ${attempt} attempt${attempt === 1 ? '' : 's'}.`,
             )
           },

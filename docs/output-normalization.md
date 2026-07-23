@@ -725,14 +725,14 @@ Plans carry `workspace_inputs` entries with a repository-relative `path`, `kind`
 
 Both artifacts carry ordered `workspace_probes` entries with required `id`, `command`, and `purpose`. Their `git_hooks` object contains a strict policy enum, read-only detected-hook records (`name`, normalized `path`, `source`, `executable`, optional `manager_hint`), and ordered validation commands (`id`, `hook`, `command`, `purpose`). An empty validation-command list is valid and preserved exactly; the parser never synthesizes a command for an unknown hook.
 
-Parsing preserves project commands as declared rather than restricting them to a built-in ecosystem list. Runtime setup still checks launcher availability, executes the approved tooling and workspace probes, and requires those probes to succeed before coding begins.
+Parsing preserves project commands as declared rather than restricting them to a built-in ecosystem list. Runtime setup still checks launcher availability, executes the approved tooling and workspace probes, and requires those probes to succeed before coding begins. A short markerless progress reply is treated as unfinished work rather than a malformed final artifact: LoopTroop sends up to two same-session continuation instructions without consuming a setup attempt or structured-output retry. Completed but malformed results retain the normal structured repair path.
 
 The canonical executable `.ticket/runtime/execution-setup/run` may be recovered from disk when a valid setup result omitted its reusable-artifact declaration. This backend repair upgrades or adds one `command-wrapper` artifact without duplicates and records a caution. Independent command receipts may include `setupWrapperApplied` and `effectiveCommand` so the UI can distinguish the approved bare command from the actual routed command.
 
 **Status normalization**
 
 - Execution setup plan status accepts `draft`, `planned`, `plan`, `review` and normalizes to `draft`.
-- Execution setup result/profile status accepts `ready`, `ok`, `complete`, `completed`, `success`, `succeeded` and normalizes to `ready`.
+- Execution setup result/profile status accepts success aliases and normalizes them to `ready`; `blocked`, `failed`, `fail`, `failure`, and `error` normalize to `blocked`. The top-level and profile statuses must match. Ready requires every check to pass, while Blocked requires at least one explicit failed check.
 - Readiness status accepts `ready`, `partial`, and `missing` plus close aliases such as `needsSetup`, `incomplete`, `notReady`, and `uninitialized`.
 
 **Path normalization**

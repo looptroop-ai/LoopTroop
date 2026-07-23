@@ -192,11 +192,11 @@ The setup plan is an approval artifact, not the final runtime state. Its key fie
 - **`qualityGatePolicy`**: default policy later coding beads should follow
 - **`cautions`**: user-facing warnings or assumptions
 
-This matters because the setup gate is now explicitly allowed to conclude that the environment is already ready. In that case, the plan can be approved with zero setup steps and the next phase mostly becomes verification plus profile emission.
+This matters because the setup gate is explicitly allowed to conclude that the environment is already ready. In that case, the plan can be approved with zero setup steps and the next phase mostly becomes verification plus profile emission.
 
 ### 5.2 Runtime Setup Profile Shape
 
-The setup profile is the durable runtime contract that later phases reuse. It records:
+For a `Ready` result, the setup profile is the durable runtime contract that later phases reuse. It records:
 
 - **`bootstrapCommands`** actually used during setup
 - **`toolingProbeCommands`** used to verify the prepared runtime
@@ -212,6 +212,8 @@ When setup provisions tooling, LoopTroop expects reusable runtime artifacts unde
 - `.ticket/runtime/execution-setup-profile.json`
 
 Final testing reuses this validated runtime wrapper instead of rediscovering the environment from scratch.
+
+The setup agent may instead return `Blocked` when at least one required check genuinely fails. That profile remains diagnostic evidence in the setup report and is not activated for coding or final testing. Its top-level status and profile status must agree, `Ready` requires every declared check to pass, and `Blocked` requires at least one declared failure.
 
 ### 5.3 What Setup Is Allowed To Do
 
@@ -481,7 +483,7 @@ Three runtime controls matter most here:
 
 ### Execution Setup Timeout
 
-The maximum runtime for `PREPARING_EXECUTION_ENV`. This bounds the setup agent while it verifies readiness, provisions temporary tooling, validates wrappers/probes, and emits the reusable runtime profile.
+The maximum runtime for `PREPARING_EXECUTION_ENV`. This bounds the setup agent while it verifies readiness, prepares temporary tooling when needed, validates wrappers and probes, and emits an honest `Ready` or `Blocked` result. A short progress-only reply receives at most two same-session continuation nudges without consuming a normal setup attempt or structured-output retry. If the agent reports that a required tool cannot be provisioned safely, setup stops immediately with that reason instead of repeating equivalent attempts.
 
 ### Per-Iteration Timeout
 

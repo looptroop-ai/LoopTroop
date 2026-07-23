@@ -26,7 +26,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 const EXECUTION_SETUP_SCHEMA_REMINDER = [
   'Return exactly one <EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT> block and nothing else.',
   'Inside the marker, return a single JSON or YAML object with top-level keys: status, summary, profile, checks.',
-  'status and profile.status must be ready for schema compatibility.',
+  'status and profile.status must match: use ready only when every check passes, or blocked when at least one check fails.',
   'profile.artifact must be execution_setup_profile.',
   'profile.temp_roots and profile.reusable_artifacts[].path should prefer approved runtime-owned setup paths under .ticket/runtime/execution-setup/**.',
   'profile.tool_requirements is optional for passing setup, but required as evidence when checks.tooling is fail.',
@@ -37,17 +37,33 @@ const EXECUTION_SETUP_SCHEMA_REMINDER = [
   'If required command launchers or toolchains are missing and cannot be prepared safely under approved temp roots, set checks.tooling to fail only after recording failed evidence for at least two distinct safe strategies or not_provisionable evidence with a no-safe-path reason.',
 ].join('\n')
 
+const MAX_PROGRESS_CONTINUATIONS = 2
+const PROGRESS_CONTINUATION_FAILURE = 'Setup agent stopped before completing workspace preparation after two continuations.'
+const EXECUTION_SETUP_PROGRESS_CONTINUATION_PROMPT = [
+  'Continue the workspace preparation in this same session.',
+  'Your previous response was only a progress update, so the setup work is not finished yet.',
+  'Use the available tools to complete the approved setup work now. Do not return another progress update.',
+  'Finish with exactly one <EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT> block that honestly reports ready or blocked, including the cause and evidence when blocked.',
+].join('\n')
+
 type ExecutionSetupPromptStage =
   | 'execution_setup_main'
+  | 'execution_setup_progress_continuation'
   | 'execution_setup_structured_retry'
 
 function isProgressOnlyExecutionSetupResponse(response: string, markerFound: boolean): boolean {
   if (markerFound) return false
   const trimmed = response.trim()
-  if (!trimmed) return true
+  if (!trimmed) return false
   if (trimmed.length > 500) return false
-  return !/[{[]/.test(trimmed)
-    && !/^\s*(?:status|profile|checks|summary)\s*:/im.test(trimmed)
+  if (/[{[]/.test(trimmed) || /^\s*(?:status|profile|checks|summary)\s*:/im.test(trimmed)) {
+    return false
+  }
+  if (/\b(?:blocked|complete(?:d)?|done|failed|finished|ready|succeeded|unable|could not)\b/i.test(trimmed)) {
+    return false
+  }
+  return /\b(?:checking|configuring|continuing|downloading|getting|inspecting|installing|preparing|provisioning|setting\s+up|starting|working)\b/i.test(trimmed)
+    || /\b(?:going to|will)\s+(?:check|configure|continue|download|get|inspect|install|prepare|provision|set\s+up|start|work)\b/i.test(trimmed)
 }
 
 export type GenerateExecutionSetupResult = ExecutionSetupGenerationResult
@@ -223,6 +239,8 @@ export async function generateExecutionSetup(
   const retryDiagnostics: NonNullable<StructuredOutputMetadata['retryDiagnostics']> = []
   const structuredRetryCount = normalizeStructuredRetryCount(callbacks?.structuredRetryCount)
   let retryAttemptsUsed = 0
+  let progressContinuationsUsed = 0
+  let progressContinuationExhausted = false
   let structuredOutput = buildStructuredOutputMetadata({
     autoRetryCount: 0,
     repairApplied: Boolean(parsed.repairApplied),
@@ -252,13 +270,53 @@ export async function generateExecutionSetup(
       validationError,
       retryDiagnostics,
     })
-    if (!shouldRetryStructuredOutput(retryAttemptsUsed, structuredRetryCount)) {
-      break
+    if (isProgressOnlyExecutionSetupResponse(response, parsed.markerFound)) {
+      if (progressContinuationsUsed >= MAX_PROGRESS_CONTINUATIONS) {
+        progressContinuationExhausted = true
+        break
+      }
+      progressContinuationsUsed += 1
+      try {
+        const continuationResult = await runOpenCodeSessionPrompt({
+          adapter,
+          session: result.session,
+          parts: [{ type: 'text', content: EXECUTION_SETUP_PROGRESS_CONTINUATION_PROMPT }],
+          signal,
+          timeoutMs: callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
+          timeoutKind: 'execution_setup',
+          model: callbacks?.model,
+          erroredSessionPolicy: 'discard_errored_session_output',
+          toolPolicy: PROM_EXECUTION_SETUP.toolPolicy,
+          onStreamEvent: (event) => {
+            if (!sessionId) return
+            callbacks?.onOpenCodeStreamEvent?.({ sessionId, event })
+          },
+          onPromptDispatched: (event) => {
+            callbacks?.onPromptDispatched?.({ sessionId: event.session.id, event })
+          },
+          onPromptCompleted: (event) => {
+            callbacks?.onPromptCompleted?.({ stage: 'execution_setup_progress_continuation', event })
+          },
+        })
+        throwIfAborted(signal)
+        result = continuationResult
+        response = continuationResult.response
+        parsed = parseExecutionSetupResult(response)
+        structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
+          repairApplied: Boolean(parsed.repairApplied),
+          repairWarnings: parsed.repairWarnings ?? [],
+          ...(parsed.validationError ? { validationError: parsed.validationError } : {}),
+        })
+        continue
+      } catch (error) {
+        throwIfCancelled(error, signal)
+        if (!activeSession) {
+          throw error
+        }
+        return buildPromptFailureGeneration(activeSession, error, retryDiagnostics, rawAttempts, initialInput)
+      }
     }
-    if (
-      (retryDecision.failureClass === 'empty_response' || retryDecision.failureClass === 'validation_error')
-      && isProgressOnlyExecutionSetupResponse(response, parsed.markerFound)
-    ) {
+    if (!shouldRetryStructuredOutput(retryAttemptsUsed, structuredRetryCount)) {
       break
     }
     retryAttemptsUsed += 1
@@ -364,6 +422,19 @@ export async function generateExecutionSetup(
       repairApplied: Boolean(parsed.repairApplied),
       repairWarnings: parsed.repairWarnings ?? [],
       ...(parsed.validationError ? { validationError: parsed.validationError } : {}),
+    })
+  }
+
+  if (progressContinuationExhausted) {
+    parsed = {
+      ...parsed,
+      result: null,
+      errors: [PROGRESS_CONTINUATION_FAILURE],
+      validationError: PROGRESS_CONTINUATION_FAILURE,
+    }
+    structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
+      validationError: PROGRESS_CONTINUATION_FAILURE,
+      retryDiagnostics,
     })
   }
 

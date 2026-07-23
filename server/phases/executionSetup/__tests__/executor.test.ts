@@ -114,6 +114,28 @@ function buildToolingFailureReport(
   }
 }
 
+function buildNotProvisionableToolingFailureReport(attempt: number): ExecutionSetupReport {
+  const report = buildToolingFailureReport(attempt)
+  if (!report.profile) return report
+  return {
+    ...report,
+    summary: 'The required project launcher cannot be prepared safely in the approved temporary area.',
+    profile: {
+      ...report.profile,
+      summary: 'The required launcher has no safe temporary provisioning path.',
+      toolRequirements: [{
+        launcher: 'project-tool',
+        requiredBy: ['project_commands.test_full[0]'],
+        status: 'not_provisionable',
+        missingProbe: 'project-tool --version',
+        provisioningAttempts: [],
+        finalProbe: 'project-tool --version',
+        failureReason: 'The vendor provides no compatible user-space artifact for this platform.',
+      }],
+    },
+  }
+}
+
 function buildBackendValidationFailureReport(
   attempt: number,
   receipt?: {
@@ -213,6 +235,81 @@ describe('executeExecutionSetupWithRetries', () => {
       maxIterations: 5,
       reason: 'repeated_tooling_failure',
     }))
+  })
+
+  it('stops immediately when tooling evidence says there is no safe provisioning path', async () => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+
+    const beforeRetry = vi.fn()
+    const onFailedAttempt = vi.fn()
+    const onRetriesExhausted = vi.fn()
+
+    const report = await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 5,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildNotProvisionableToolingFailureReport(attempt),
+        beforeRetry,
+        onFailedAttempt,
+        onRetriesExhausted,
+      },
+    )
+
+    expect(generateExecutionSetupMock).toHaveBeenCalledTimes(1)
+    expect(beforeRetry).not.toHaveBeenCalled()
+    expect(report.ready).toBe(false)
+    expect(report.attempt).toBe(1)
+    expect(onFailedAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      attempt: 1,
+      canRetry: false,
+    }))
+    expect(onRetriesExhausted).toHaveBeenCalledWith(expect.objectContaining({
+      attempt: 1,
+      maxIterations: 5,
+      reason: 'not_provisionable',
+    }))
+  })
+
+  it('retries an actionable blocked setup result within the normal attempt budget', async () => {
+    generateExecutionSetupMock
+      .mockResolvedValueOnce(buildGeneration(1))
+      .mockResolvedValueOnce(buildGeneration(2))
+
+    const beforeRetry = vi.fn()
+    const onFailedAttempt = vi.fn()
+
+    const report = await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 2,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt }) => buildBackendValidationFailureReport(attempt),
+        beforeRetry,
+        onFailedAttempt,
+      },
+    )
+
+    expect(generateExecutionSetupMock).toHaveBeenCalledTimes(2)
+    expect(beforeRetry).toHaveBeenCalledTimes(1)
+    expect(onFailedAttempt).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      attempt: 1,
+      canRetry: true,
+    }))
+    expect(report.ready).toBe(false)
+    expect(report.attempt).toBe(2)
   })
 
   it('uses bounded extra attempts when provisioning evidence has only one strategy after the base budget', async () => {

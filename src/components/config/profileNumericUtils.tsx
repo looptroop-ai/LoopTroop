@@ -13,15 +13,13 @@ export interface NumericFieldProps {
 }
 
 interface DurationParts {
-  hours: number
   minutes: number
   seconds: number
 }
 
 function toDurationParts(totalSeconds: number): DurationParts {
   return {
-    hours: Math.floor(totalSeconds / 3600),
-    minutes: Math.floor((totalSeconds % 3600) / 60),
+    minutes: Math.floor(totalSeconds / 60),
     seconds: totalSeconds % 60,
   }
 }
@@ -46,10 +44,10 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
     if (!duration || rawValue === '') return
     const value = Number(rawValue)
     if (!Number.isInteger(value) || value < 0) return
-    if ((part === 'minutes' || part === 'seconds') && value > 59) return
+    if (part === 'seconds' && value > 59) return
 
     const next = { ...duration, [part]: value }
-    onChange(fieldKey, String((next.hours * 3600) + (next.minutes * 60) + next.seconds))
+    onChange(fieldKey, String((next.minutes * 60) + next.seconds))
   }
 
   return (
@@ -73,40 +71,54 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
           </Tooltip>
         ) : null}
       </div>
-      <input
-        type="number"
-        aria-label={cfg.label}
-        value={rawNumeric[fieldKey]}
-        onChange={e => onChange(fieldKey, e.target.value)}
-        className={cn("w-full rounded-md border bg-background px-3 py-2 text-sm", error ? 'border-red-500' : 'border-input')}
-      />
       {isDuration ? (
         <div
-          className="mt-2 grid grid-cols-3 gap-2"
-          aria-label={`${cfg.label} duration breakdown`}
+          className={cn(
+            'grid grid-cols-[minmax(0,1fr)_auto] items-center overflow-hidden rounded-md border bg-background',
+            error ? 'border-red-500' : 'border-input',
+          )}
+          aria-label={`${cfg.label} seconds and equivalent duration`}
         >
-          {([
-            ['hours', 'Hours', undefined],
-            ['minutes', 'Minutes', 59],
-            ['seconds', 'Seconds', 59],
-          ] as const).map(([part, label, max]) => (
-            <label key={part} className="text-xs text-muted-foreground">
-              <span className="mb-1 block">{label}</span>
-              <input
-                type="number"
-                min={0}
-                max={max}
-                step={1}
-                aria-label={`${cfg.label} ${part}`}
-                value={duration?.[part] ?? ''}
-                disabled={error !== null}
-                onChange={e => updateDurationPart(part, e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              />
-            </label>
-          ))}
+          <input
+            type="number"
+            aria-label={cfg.label}
+            value={rawNumeric[fieldKey]}
+            onChange={e => onChange(fieldKey, e.target.value)}
+            className="min-w-0 border-0 bg-transparent px-3 py-2 text-sm outline-none"
+          />
+          <div className="flex items-center gap-1 border-l border-input bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+            <span aria-hidden="true">(</span>
+            {([
+              ['minutes', 'min', undefined],
+              ['seconds', 'sec', 59],
+            ] as const).map(([part, unit, max]) => (
+              <span key={part} className="inline-flex items-center gap-0.5">
+                <input
+                  type="number"
+                  min={0}
+                  max={max}
+                  step={1}
+                  aria-label={`${cfg.label} ${part}`}
+                  value={duration?.[part] ?? ''}
+                  disabled={error !== null}
+                  onChange={e => updateDurationPart(part, e.target.value)}
+                  className="w-10 rounded border border-transparent bg-transparent px-1 py-1 text-right text-xs text-foreground outline-none transition-colors hover:border-input focus:border-input focus:bg-background disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span>{unit}</span>
+              </span>
+            ))}
+            <span aria-hidden="true">)</span>
+          </div>
         </div>
-      ) : null}
+      ) : (
+        <input
+          type="number"
+          aria-label={cfg.label}
+          value={rawNumeric[fieldKey]}
+          onChange={e => onChange(fieldKey, e.target.value)}
+          className={cn('w-full rounded-md border bg-background px-3 py-2 text-sm', error ? 'border-red-500' : 'border-input')}
+        />
+      )}
       {error ? (
         <p className="text-xs text-red-500 mt-1">{error}</p>
       ) : (

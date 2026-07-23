@@ -299,42 +299,36 @@ describe('ProfileSetup', () => {
       'OpenCode Retry Grace Window',
     ]
     for (const label of durationFields) {
-      expect(screen.getByLabelText(`${label} hours`)).toBeEnabled()
       expect(screen.getByLabelText(`${label} minutes`)).toBeEnabled()
       expect(screen.getByLabelText(`${label} seconds`)).toBeEnabled()
     }
 
     const responseTimeout = screen.getByLabelText('AI Response Timeout')
     fireEvent.change(responseTimeout, { target: { value: '9' } })
-    expect(screen.getByLabelText('AI Response Timeout hours')).toBeDisabled()
+    expect(screen.getByLabelText('AI Response Timeout minutes')).toBeDisabled()
     fireEvent.change(responseTimeout, { target: { value: '10' } })
-    expect(screen.getByLabelText('AI Response Timeout hours')).toBeEnabled()
+    expect(screen.getByLabelText('AI Response Timeout minutes')).toBeEnabled()
 
     fireEvent.change(responseTimeout, { target: { value: '90' } })
-    expect(screen.getByLabelText('AI Response Timeout hours')).toHaveValue(0)
     expect(screen.getByLabelText('AI Response Timeout minutes')).toHaveValue(1)
     expect(screen.getByLabelText('AI Response Timeout seconds')).toHaveValue(30)
 
-    fireEvent.change(screen.getByLabelText('AI Response Timeout hours'), { target: { value: '0' } })
     fireEvent.change(screen.getByLabelText('AI Response Timeout minutes'), { target: { value: '20' } })
     fireEvent.change(screen.getByLabelText('AI Response Timeout seconds'), { target: { value: '5' } })
     expect(responseTimeout).toHaveValue(1205)
 
     const setupTimeout = screen.getByLabelText('Execution Setup Timeout')
     fireEvent.change(setupTimeout, { target: { value: '0' } })
-    expect(screen.getByLabelText('Execution Setup Timeout hours')).toHaveValue(0)
     expect(screen.getByLabelText('Execution Setup Timeout minutes')).toHaveValue(0)
     expect(screen.getByLabelText('Execution Setup Timeout seconds')).toHaveValue(0)
-    expect(screen.getByLabelText('Execution Setup Timeout hours')).toBeEnabled()
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toBeEnabled()
 
     fireEvent.change(setupTimeout, { target: { value: '' } })
-    expect(screen.getByLabelText('Execution Setup Timeout hours')).toBeDisabled()
     expect(screen.getByLabelText('Execution Setup Timeout minutes')).toBeDisabled()
     expect(screen.getByLabelText('Execution Setup Timeout seconds')).toBeDisabled()
 
     fireEvent.change(setupTimeout, { target: { value: '3600' } })
-    expect(screen.getByLabelText('Execution Setup Timeout hours')).toHaveValue(1)
-    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toHaveValue(0)
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toHaveValue(60)
     expect(screen.getByLabelText('Execution Setup Timeout seconds')).toHaveValue(0)
   })
 

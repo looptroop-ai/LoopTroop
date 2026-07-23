@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef, useEffect, useCallback, Fragment, type ReactNode } from 'react'
-import { Copy, Check, ArrowUpToLine, ArrowDownToLine } from 'lucide-react'
+import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId, type ReactNode } from 'react'
+import { Copy, Check, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -22,6 +22,8 @@ import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
 import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
+import { AiDetailsSummary } from './AiDetailsSummary'
+import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
 
 interface PhaseLogPanelProps {
   phase: string
@@ -66,6 +68,8 @@ export function PhaseLogPanel({
 }: PhaseLogPanelProps) {
   const logCtx = useLogs()
   const [activeTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
+  const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
+  const aiDetailsPanelId = useId()
   const liveLogOptions = useMemo(
     () => (typeof phaseAttempt === 'number' && phaseAttempt > 0 ? { phaseAttempt } : undefined),
     [phaseAttempt],
@@ -331,6 +335,14 @@ export function PhaseLogPanel({
     }
     return Array.from(ids)
   }, [phaseLogs])
+  const observedModelVariants = useMemo(() => {
+    const variants = new Map<string, string>()
+    for (const entry of phaseLogs) {
+      const modelId = entry.modelId ?? (entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : undefined)
+      if (modelId && entry.variant) variants.set(modelId, entry.variant)
+    }
+    return variants
+  }, [phaseLogs])
 
   const modelTabs = useMemo(() => {
     const enableModelTabs = isKnownMultiModelPhase || detectedModelIds.length > 0
@@ -366,6 +378,15 @@ export function PhaseLogPanel({
       : 'ALL'
   const filteredLogs = filterEntries(phaseLogs, effectiveTab)
   const shouldShowModelNameInLogTags = effectiveTab === 'ALL' || effectiveTab === 'AI'
+  const aiDetailsModelId = isAiLogTab(effectiveTab) && effectiveTab !== 'AI' ? effectiveTab : undefined
+  const showAiDetails = Boolean(ticket?.id) && isAiLogTab(effectiveTab)
+  const aiDetailsRequest = useMemo(() => ({
+    scope: 'phase' as const,
+    phase,
+    ...(typeof phaseAttempt === 'number' ? { phaseAttempt } : {}),
+    ...(aiDetailsModelId ? { modelId: aiDetailsModelId } : {}),
+  }), [aiDetailsModelId, phase, phaseAttempt])
+  const aiDetails = useTicketAiDetails(ticket?.id, aiDetailsRequest, showAiDetails && isAiDetailsOpen)
 
   const visibleEntryIds = useMemo(
     () => new Set(filteredLogs.map((entry) => entry.entryId)),
@@ -497,7 +518,9 @@ export function PhaseLogPanel({
                                             {aiTabLabel}
                                           </button>
                           </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">{singleModelTabId}</TooltipContent>
+                          <TooltipContent className="max-w-xs text-center text-balance">
+                            {singleModelTabId} · Variant: {observedModelVariants.get(singleModelTabId) ?? 'Default / not reported'}
+                          </TooltipContent>
                         </Tooltip>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
@@ -542,6 +565,7 @@ export function PhaseLogPanel({
                   <ModelBadge
                     key={mTab}
                     modelId={mTab}
+                    variant={observedModelVariants.get(mTab) ?? null}
                     active={effectiveTab === mTab}
                     onClick={() => setActiveTab(mTab)}
                     showIcon={false}
@@ -629,6 +653,21 @@ export function PhaseLogPanel({
           )
         })}
         <div className="ml-auto flex items-center pl-2 gap-2 text-xs text-muted-foreground">
+          {showAiDetails ? (
+            <button
+              type="button"
+              aria-expanded={isAiDetailsOpen}
+              aria-controls={aiDetailsPanelId}
+              onClick={() => setIsAiDetailsOpen(open => !open)}
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+                isAiDetailsOpen ? 'bg-accent text-accent-foreground' : 'hover:bg-muted hover:text-foreground',
+              )}
+            >
+              <ChartNoAxesCombined className="h-3.5 w-3.5" />
+              {aiDetailsModelId ? 'Model details' : 'AI details'}
+            </button>
+          ) : null}
           <Tooltip delayDuration={200}>
             <TooltipTrigger asChild>
               <button
@@ -666,6 +705,19 @@ export function PhaseLogPanel({
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+            {showAiDetails && isAiDetailsOpen ? (
+              <div id={aiDetailsPanelId}>
+                <AiDetailsSummary
+                  details={aiDetails.data}
+                  isLoading={aiDetails.isLoading}
+                  isError={aiDetails.isError}
+                  isFetching={aiDetails.isFetching}
+                  modelId={aiDetailsModelId}
+                  scope="phase"
+                  onRetry={() => void aiDetails.refetch()}
+                />
+              </div>
+            ) : null}
             {hasLogs ? (
               shouldVirtualize && scrollParent ? (
                 <Virtuoso

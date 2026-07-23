@@ -108,6 +108,7 @@ describe('logFormat AI headers', () => {
 
   it.each([
     ['[MODEL] Result', 'text', `[OUTPUT-${modelId}] Result`],
+    ['[ASSISTANT] Checking lint next.', 'assistant', `[ASSISTANT-${modelId}] Checking lint next.`],
     ['Reasoning', 'reasoning', `[THINKING-${modelId}] Reasoning`],
     ['[TOOL] bash completed', 'tool', `[TOOL-${modelId}] bash completed`],
   ] as const)('uses the full model ID for %s', (line, kind, expected) => {

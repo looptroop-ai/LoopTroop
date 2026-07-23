@@ -198,6 +198,95 @@ describe('OpenCode log canonicalization', () => {
     })
   })
 
+  it('classifies streamed tool-loop narration as assistant activity and only the terminal message as output', () => {
+    const state = createOpenCodeStreamState()
+    const base = ['1:T-42', 'T-42', 'CODING', 'openai/gpt-5.4', 'ses-loop'] as const
+
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text',
+      sessionId: 'ses-loop',
+      messageId: 'msg-progress',
+      partId: 'part-progress',
+      text: 'Tests passed. Checking lint next.',
+      streaming: false,
+      complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'tool',
+      sessionId: 'ses-loop',
+      messageId: 'msg-progress',
+      partId: 'part-tool',
+      tool: 'bash',
+      callId: 'call-tool',
+      status: 'completed',
+      output: 'lint passed',
+      complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, {
+      type: 'text',
+      sessionId: 'ses-loop',
+      messageId: 'msg-final',
+      partId: 'part-final',
+      text: '<BEAD_STATUS>{"status":"done"}</BEAD_STATUS>',
+      streaming: false,
+      complete: true,
+    }, state)
+    emitOpenCodeStreamEvent(...base, { type: 'done', sessionId: 'ses-loop' }, state)
+
+    emitOpenCodeSessionLogs(
+      ...base,
+      'coding_main',
+      '<BEAD_STATUS>{"status":"done"}</BEAD_STATUS>',
+      [
+        { id: 'user-loop', role: 'user', content: 'Implement the bead.' },
+        {
+          id: 'msg-progress',
+          role: 'assistant',
+          content: 'Tests passed. Checking lint next.',
+          parts: [{
+            id: 'part-progress',
+            sessionID: 'ses-loop',
+            messageID: 'msg-progress',
+            type: 'text',
+            text: 'Tests passed. Checking lint next.',
+          }],
+        },
+        {
+          id: 'msg-final',
+          role: 'assistant',
+          content: '<BEAD_STATUS>{"status":"done"}</BEAD_STATUS>',
+          parts: [{
+            id: 'part-final',
+            sessionID: 'ses-loop',
+            messageID: 'msg-final',
+            type: 'text',
+            text: '<BEAD_STATUS>{"status":"done"}</BEAD_STATUS>',
+          }],
+        },
+      ],
+      state,
+    )
+
+    const assistantEntries = getNormalPersistedEntries()
+      .filter((entry) => entry.entryId === 'ses-loop:msg-progress:text')
+    const finalEntries = getNormalPersistedEntries()
+      .filter((entry) => entry.entryId === 'ses-loop:msg-final:text')
+    expect(assistantEntries).toEqual([
+      expect.objectContaining({
+        kind: 'assistant',
+        content: '[ASSISTANT] Tests passed. Checking lint next.',
+        op: 'finalize',
+      }),
+    ])
+    expect(finalEntries).toEqual([
+      expect.objectContaining({
+        kind: 'text',
+        content: '<BEAD_STATUS>{"status":"done"}</BEAD_STATUS>',
+        op: 'finalize',
+      }),
+    ])
+  })
+
   it('broadcasts progressive text upserts on the 10ms live cadence while only persisting the final row', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1000)
     const state = createOpenCodeStreamState()
@@ -323,7 +412,7 @@ describe('OpenCode log canonicalization', () => {
         entryId: 'ses-3:msg-3:text',
         content: 'files:\n  - src/app.ts',
         kind: 'text',
-        op: 'append',
+        op: 'finalize',
       }),
     ])
     expect(getPersistedEntries().some((entry) => entry.entryId === 'ses-3:transcript-summary')).toBe(false)
@@ -444,7 +533,15 @@ describe('OpenCode log canonicalization', () => {
         {
           id: 'msg-previous-assistant',
           role: 'assistant',
+          content: 'Old progress narration.',
           parts: [
+            {
+              id: 'previous-text',
+              sessionID: 'ses-tools',
+              messageID: 'msg-previous-assistant',
+              type: 'text',
+              text: 'Old progress narration.',
+            },
             {
               id: 'previous-tool-call',
               sessionID: 'ses-tools',
@@ -469,7 +566,15 @@ describe('OpenCode log canonicalization', () => {
         {
           id: 'msg-tool-turn',
           role: 'assistant',
+          content: 'I will inspect the theme variables before answering.',
           parts: [
+            {
+              id: 'tool-turn-text',
+              sessionID: 'ses-tools',
+              messageID: 'msg-tool-turn',
+              type: 'text',
+              text: 'I will inspect the theme variables before answering.',
+            },
             {
               id: 'tool-turn-step-start',
               sessionID: 'ses-tools',
@@ -510,6 +615,12 @@ describe('OpenCode log canonicalization', () => {
           id: 'msg-final-turn',
           role: 'assistant',
           content: '<RELEVANT_FILES_RESULT>done</RELEVANT_FILES_RESULT>',
+          info: {
+            id: 'msg-final-turn',
+            sessionID: 'ses-tools',
+            role: 'assistant',
+            variant: 'xhigh',
+          },
           parts: [
             {
               id: 'final-text',
@@ -527,6 +638,11 @@ describe('OpenCode log canonicalization', () => {
     const aiEntries = getAiPersistedEntries()
     expect(aiEntries).toEqual(expect.arrayContaining([
       expect.objectContaining({
+        entryId: 'ses-tools:msg-tool-turn:text',
+        kind: 'assistant',
+        content: '[ASSISTANT] I will inspect the theme variables before answering.',
+      }),
+      expect.objectContaining({
         entryId: 'ses-tools:tool-turn-reasoning',
         kind: 'reasoning',
         content: 'I need to inspect theme files before answering.',
@@ -540,11 +656,13 @@ describe('OpenCode log canonicalization', () => {
         entryId: 'ses-tools:msg-final-turn:text',
         kind: 'text',
         content: '<RELEVANT_FILES_RESULT>done</RELEVANT_FILES_RESULT>',
+        variant: 'xhigh',
       }),
     ]))
     expect(aiEntries.find((entry) => entry.entryId === 'ses-tools:tool-turn-call')?.content)
       .toContain('ui/src/scss/_vars.scss')
     expect(aiEntries.some((entry) => entry.entryId === 'ses-tools:previous-tool-call')).toBe(false)
+    expect(aiEntries.some((entry) => entry.entryId === 'ses-tools:msg-previous-assistant:text')).toBe(false)
   })
 
   it('does not duplicate AI part rows already finalized from the live stream', () => {
@@ -658,7 +776,7 @@ describe('OpenCode log canonicalization', () => {
         beadId: 'bead-1',
         beadIteration: 3,
         kind: 'text',
-        op: 'append',
+        op: 'finalize',
       }),
     ]))
   })
@@ -763,6 +881,36 @@ describe('OpenCode log canonicalization', () => {
 
     const errorEntry = getPersistedEntries().find((entry) => entry.entryId === 'ses-error:error')
     expect(errorEntry?.data?.errorDetails).not.toHaveProperty('requestBodyValues')
+  })
+
+  it('does not label the last progress narration as final output when the session fails', () => {
+    const state = createOpenCodeStreamState()
+    emitOpenCodeStreamEvent('1:T-42', 'T-42', 'CODING', 'openai/gpt-5.4', 'ses-failed-progress', {
+      type: 'text',
+      sessionId: 'ses-failed-progress',
+      messageId: 'msg-progress',
+      partId: 'part-progress',
+      text: 'Tests passed. Starting the build.',
+      streaming: false,
+      complete: true,
+    }, state)
+    emitOpenCodeStreamEvent('1:T-42', 'T-42', 'CODING', 'openai/gpt-5.4', 'ses-failed-progress', {
+      type: 'session_error',
+      sessionId: 'ses-failed-progress',
+      error: 'Provider disconnected',
+    }, state)
+
+    expect(getNormalPersistedEntries()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        entryId: 'ses-failed-progress:msg-progress:text',
+        kind: 'assistant',
+        content: '[ASSISTANT] Tests passed. Starting the build.',
+      }),
+      expect.objectContaining({
+        entryId: 'ses-failed-progress:error',
+        kind: 'error',
+      }),
+    ]))
   })
 
   it('persists generated OpenCode APIError details from readiness probe session errors', () => {
@@ -915,6 +1063,12 @@ describe('OpenCode log canonicalization', () => {
       },
       output: 'stdout line',
       error: 'stderr line',
+      durationMs: 1250,
+      compactedAt: Date.UTC(2026, 6, 23, 10, 0, 0),
+      attachments: [
+        { filename: 'results.json', mime: 'application/json' },
+        { mime: 'text/plain' },
+      ],
       complete: true,
     }, createOpenCodeStreamState(), 'bead-1')
 
@@ -925,7 +1079,7 @@ describe('OpenCode log canonicalization', () => {
         modelId: 'openai/gpt-5.4',
         beadId: 'bead-1',
         kind: 'tool',
-        content: expect.stringContaining('[TOOL] bash error: Run tests'),
+        content: expect.stringContaining('[TOOL] bash error (1.25s): Run tests'),
       }),
     ]))
 
@@ -934,5 +1088,8 @@ describe('OpenCode log canonicalization', () => {
     expect(toolEntry?.content).toContain('"command": "npm test -- --runInBand"')
     expect(toolEntry?.content).toContain('Output:\nstdout line')
     expect(toolEntry?.content).toContain('Error:\nstderr line')
+    expect(toolEntry?.content).toContain('Attachments: 2')
+    expect(toolEntry?.content).toContain('- results.json (application/json)')
+    expect(toolEntry?.content).toContain('Compacted: 2026-07-23T10:00:00.000Z')
   })
 })

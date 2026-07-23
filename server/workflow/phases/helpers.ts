@@ -112,6 +112,7 @@ export function emitPhaseLog(
     ...(typeof data?.audience === 'string' ? { audience: data.audience as StructuredLogAudience } : {}),
     ...(typeof data?.kind === 'string' ? { kind: data.kind as StructuredLogKind } : {}),
     ...(typeof data?.modelId === 'string' ? { modelId: data.modelId } : {}),
+    ...(typeof data?.variant === 'string' ? { variant: data.variant } : {}),
     ...(typeof data?.sessionId === 'string' ? { sessionId: data.sessionId } : {}),
     ...(typeof data?.beadId === 'string' ? { beadId: data.beadId } : {}),
     ...(typeof data?.beadIteration === 'number' && Number.isFinite(data.beadIteration) ? { beadIteration: data.beadIteration } : {}),
@@ -268,6 +269,26 @@ function stringifyToolDetail(value: unknown, maxChars: number): string {
   }
 }
 
+function normalizeAttachmentMetadata(value: string | undefined, maxChars: number): string | undefined {
+  if (!value) return undefined
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (!normalized) return undefined
+  return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars)}…`
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 2 : 1)}s`
+  const minutes = Math.floor(durationMs / 60_000)
+  const seconds = Math.round((durationMs % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
+function formatTimestamp(value: number): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
+}
+
 export function createOpenCodeStreamState(): OpenCodeStreamState {
   return {
     seenFirstActivity: false,
@@ -398,7 +419,10 @@ export function formatToolState(
   const title = event.title
   const error = event.error
   const output = event.output
-  const lines = [`[TOOL] ${tool} ${status}${title ? `: ${title}` : ''}`]
+  const duration = typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0
+    ? ` (${formatDuration(event.durationMs)})`
+    : ''
+  const lines = [`[TOOL] ${tool} ${status}${duration}${title ? `: ${title}` : ''}`]
 
   if (event.input && Object.keys(event.input).length > 0) {
     lines.push('Input:', stringifyToolDetail(event.input, resolved.inputMaxChars))
@@ -410,6 +434,21 @@ export function formatToolState(
 
   if (error) {
     lines.push('Error:', stringifyToolDetail(error, resolved.errorMaxChars))
+  }
+
+  if (event.attachments && event.attachments.length > 0) {
+    lines.push(
+      `Attachments: ${event.attachments.length}`,
+      ...event.attachments.map((attachment) => {
+        const filename = normalizeAttachmentMetadata(attachment.filename, 256) || 'unnamed attachment'
+        const mime = normalizeAttachmentMetadata(attachment.mime, 128)
+        return `- ${filename}${mime ? ` (${mime})` : ''}`
+      }),
+    )
+  }
+
+  if (typeof event.compactedAt === 'number' && Number.isFinite(event.compactedAt)) {
+    lines.push(`Compacted: ${formatTimestamp(event.compactedAt)}`)
   }
 
   if (lines.length === 1) {
@@ -495,6 +534,7 @@ export function emitOpenCodePromptLog(
       op: 'append',
       source,
       modelId: memberId || undefined,
+      variant: event.variant,
       sessionId: event.session.id,
       ...buildBeadLogFields(beadId, beadIteration),
       ...(event.timeoutMs !== undefined ? { timeoutMs: event.timeoutMs } : {}),
@@ -514,33 +554,38 @@ export function finalizeOpenCodeParts(
   state: OpenCodeStreamState,
   beadId?: string,
   beadIteration?: number,
+  hasTerminalOutput = true,
 ) {
   const source = memberId ? `model:${memberId}` : 'opencode'
   const beadFields = buildBeadLogFields(beadId, beadIteration)
-  for (const [, message] of state.liveTextMessages.entries()) {
+  const completedTextMessages = Array.from(state.liveTextMessages.values())
+    .filter((message) => buildLiveTextMessageContent(message).length > 0)
+  const terminalTextEntryId = hasTerminalOutput ? completedTextMessages.at(-1)?.entryId : undefined
+  for (const message of completedTextMessages) {
     const content = buildLiveTextMessageContent(message)
-    if (content.length > 0) {
-      emitAiDetail(
-        ticketId,
-        ticketExternalId,
-        phase,
-        'model_output',
-        content,
-        {
-          entryId: message.entryId,
-          audience: 'ai',
-          kind: 'text',
-          op: 'finalize',
-          source,
-          modelId: memberId || undefined,
-          sessionId,
-          ...beadFields,
-          streaming: false,
-        },
-      )
+    const isTerminal = message.entryId === terminalTextEntryId
+    emitAiDetail(
+      ticketId,
+      ticketExternalId,
+      phase,
+      isTerminal ? 'model_output' : 'info',
+      isTerminal ? content : `[ASSISTANT] ${content}`,
+      {
+        entryId: message.entryId,
+        audience: 'ai',
+        kind: isTerminal ? 'text' : 'assistant',
+        op: 'finalize',
+        source,
+        modelId: memberId || undefined,
+        sessionId,
+        ...beadFields,
+        streaming: false,
+      },
+    )
+    if (isTerminal) {
       state.finalizedTextEntryIds.add(message.entryId)
-      rememberFinalizedDetailEntry(state, message.entryId)
     }
+    rememberFinalizedDetailEntry(state, message.entryId)
     state.liveStreamEmissions.delete(message.entryId)
   }
 
@@ -601,6 +646,21 @@ function getAssistantMessageId(message: Message): string | undefined {
 
 function isAssistantMessage(message: Message): boolean {
   return message.role === 'assistant' || message.info?.role === 'assistant'
+}
+
+function getAssistantMessageVariant(message: Message): string | undefined {
+  const variant = message.info?.variant
+  return typeof variant === 'string' && variant.trim().length > 0 ? variant : undefined
+}
+
+function getAssistantMessageText(message: Message): string {
+  const partText = (message.parts ?? [])
+    .filter((part) => part.type === 'text')
+    .map((part) => getString((part as MessagePart & Record<string, unknown>).text) ?? '')
+    .join('')
+    .trimEnd()
+  if (partText) return partText
+  return typeof message.content === 'string' ? message.content.trimEnd() : ''
 }
 
 function selectAssistantMessagesForDetailBackfill(
@@ -671,15 +731,43 @@ function emitAssistantMessagePartDetails(
   state?: OpenCodeStreamState,
   beadId?: string,
   beadIteration?: number,
+  latestAssistantMessageId?: string,
 ) {
   const source = memberId ? `model:${memberId}` : 'opencode'
   const beadFields = buildBeadLogFields(beadId, beadIteration)
   for (const message of messages) {
     const messageId = getAssistantMessageId(message)
+    const variant = getAssistantMessageVariant(message)
+    const text = getAssistantMessageText(message)
+    if (messageId && text) {
+      const isTerminal = messageId === latestAssistantMessageId
+      emitBackfilledAiDetail(
+        ticketId,
+        ticketExternalId,
+        phase,
+        isTerminal ? 'model_output' : 'info',
+        isTerminal ? text : `[ASSISTANT] ${text}`,
+        state,
+        {
+          entryId: getTextMessageEntryId(sessionId, messageId),
+          audience: 'ai',
+          kind: isTerminal ? 'text' : 'assistant',
+          op: 'finalize',
+          source,
+          modelId: memberId || undefined,
+          variant,
+          sessionId,
+          ...beadFields,
+        },
+      )
+      if (isTerminal) state?.finalizedTextEntryIds.add(getTextMessageEntryId(sessionId, messageId))
+    }
+
     for (const part of message.parts ?? []) {
       const partRecord = part as MessagePart & Record<string, unknown>
       const partId = getString(partRecord.id)
       if (!partId) continue
+      if (part.type === 'text') continue
 
       const entryId = getPartEntryId(sessionId, partId)
       const commonFields = {
@@ -687,6 +775,7 @@ function emitAssistantMessagePartDetails(
         audience: 'ai' as const,
         source,
         modelId: memberId || undefined,
+        variant,
         sessionId,
         ...beadFields,
       }
@@ -704,12 +793,26 @@ function emitAssistantMessagePartDetails(
 
       if (part.type === 'tool') {
         const stateRecord = getRecord(partRecord.state)
+        const timeRecord = getRecord(stateRecord?.time)
         const tool = getString(partRecord.tool) ?? 'tool'
         const status = normalizeToolStatus(stateRecord?.status)
         const input = getRecord(stateRecord?.input) ?? undefined
         const output = getString(stateRecord?.output)
         const error = getString(stateRecord?.error)
         const title = getString(stateRecord?.title)
+        const start = typeof timeRecord?.start === 'number' ? timeRecord.start : undefined
+        const end = typeof timeRecord?.end === 'number' ? timeRecord.end : undefined
+        const attachments = Array.isArray(stateRecord?.attachments)
+          ? stateRecord.attachments.flatMap((attachment) => {
+              const record = getRecord(attachment)
+              if (!record) return []
+              const filename = getString(record.filename) ?? getString(record.name)
+              const mime = getString(record.mime) ?? getString(record.mediaType)
+              return filename || mime
+                ? [{ ...(filename ? { filename } : {}), ...(mime ? { mime } : {}) }]
+                : []
+            })
+          : undefined
         const content = formatToolState({
           type: 'tool',
           sessionId,
@@ -722,6 +825,9 @@ function emitAssistantMessagePartDetails(
           ...(input ? { input } : {}),
           ...(output ? { output } : {}),
           ...(error ? { error } : {}),
+          ...(start !== undefined && end !== undefined && end >= start ? { durationMs: end - start } : {}),
+          ...(typeof timeRecord?.compacted === 'number' ? { compactedAt: timeRecord.compacted } : {}),
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
           complete: true,
         })
         emitBackfilledAiDetail(ticketId, ticketExternalId, phase, 'info', content, state, {
@@ -941,6 +1047,7 @@ export function emitOpenCodeStreamEvent(
           sessionId,
           ...beadFields,
           streaming: entry.op !== 'append' && event.status !== 'idle',
+          ...(entry.recoveryAction ? { recoveryAction: entry.recoveryAction } : {}),
         },
       )
     }
@@ -1092,7 +1199,7 @@ export function emitOpenCodeStreamEvent(
 
   if (event.type === 'session_error') {
     const errorSummary = summarizeModelErrorForLog(event.details ?? event.error, event.error)
-    finalizeOpenCodeParts(ticketId, ticketExternalId, phase, memberId, sessionId, state, beadId, beadIteration)
+    finalizeOpenCodeParts(ticketId, ticketExternalId, phase, memberId, sessionId, state, beadId, beadIteration, false)
     emitAiDetail(
       ticketId,
       ticketExternalId,
@@ -1166,6 +1273,10 @@ export function emitOpenCodeSessionLogs(
   beadIteration?: number,
 ) {
   const beadFields = buildBeadLogFields(beadId, beadIteration)
+  const latestReportedVariant = [...messages]
+    .reverse()
+    .find(isAssistantMessage)
+    ?.info?.variant
   emitModelSystemLog(
     ticketId,
     ticketExternalId,
@@ -1173,7 +1284,12 @@ export function emitOpenCodeSessionLogs(
     'info',
     `OpenCode ${stage}: ${memberId} session=${sessionId}, messages=${messages.length}, responseChars=${response.length}.`,
     memberId,
-    beadFields,
+    {
+      ...beadFields,
+      ...(typeof latestReportedVariant === 'string' && latestReportedVariant.trim()
+        ? { variant: latestReportedVariant }
+        : {}),
+    },
   )
   if (response.length === 0) {
     emitAiMilestone(
@@ -1191,7 +1307,7 @@ export function emitOpenCodeSessionLogs(
     ? getTextMessageEntryId(sessionId, latestAssistantMessageId)
     : undefined
   const fallbackContent = response.trim() || responseText.trim()
-  const hasCanonicalStreamedText = latestTextEntryId
+  const hadCanonicalStreamedText = latestTextEntryId
     ? state?.finalizedTextEntryIds.has(latestTextEntryId) ?? false
     : false
   const assistantMessages = selectAssistantMessagesForDetailBackfill(messages, latestAssistantMessageId)
@@ -1206,9 +1322,13 @@ export function emitOpenCodeSessionLogs(
     state,
     beadId,
     beadIteration,
+    latestAssistantMessageId,
   )
 
-  if (fallbackContent && !hasCanonicalStreamedText) {
+  const hasCanonicalText = hadCanonicalStreamedText || (latestTextEntryId
+    ? state?.finalizedTextEntryIds.has(latestTextEntryId) ?? false
+    : false)
+  if (fallbackContent && !hasCanonicalText) {
     const entryId = latestTextEntryId
       ? latestTextEntryId
       : `${sessionId}:response-fallback`
@@ -1225,6 +1345,9 @@ export function emitOpenCodeSessionLogs(
         op: 'append',
         source: `model:${memberId}`,
         modelId: memberId,
+        ...(typeof latestReportedVariant === 'string' && latestReportedVariant.trim()
+          ? { variant: latestReportedVariant }
+          : {}),
         sessionId,
         ...beadFields,
         streaming: false,

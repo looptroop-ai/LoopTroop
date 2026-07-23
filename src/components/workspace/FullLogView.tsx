@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef, useEffect, useCallback, Fragment } from 'react'
-import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine } from 'lucide-react'
+import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId } from 'react'
+import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -22,6 +22,8 @@ import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTick
 import { mergeEntriesBatch } from '@/context/logUtils'
 import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
+import { AiDetailsSummary } from './AiDetailsSummary'
+import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
 
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
@@ -134,6 +136,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   )
 
   const [activeTab, setActiveTab] = useState<string>('ALL')
+  const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
+  const aiDetailsPanelId = useId()
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
   const [isSysCollapsed, setIsSysCollapsed] = useState(true)
   const historicalView: HistoricalLogView = activeTab === 'ALL'
@@ -188,6 +192,14 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     }
     return Array.from(ids)
   }, [combinedLogs])
+  const observedModelVariants = useMemo(() => {
+    const variants = new Map<string, string>()
+    for (const entry of combinedLogs) {
+      const modelId = entry.modelId ?? (entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : undefined)
+      if (modelId && entry.variant) variants.set(modelId, entry.variant)
+    }
+    return variants
+  }, [combinedLogs])
 
   const modelTabs = useMemo(() => {
     const seen = new Set<string>()
@@ -218,6 +230,13 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     : singleModelTabId && activeTab === singleModelTabId
       ? 'AI'
       : 'ALL'
+  const aiDetailsModelId = isAiLogTab(effectiveTab) && effectiveTab !== 'AI' ? effectiveTab : undefined
+  const showAiDetails = Boolean(ticket?.id) && isAiLogTab(effectiveTab)
+  const aiDetailsRequest = useMemo(() => ({
+    scope: 'lifecycle' as const,
+    ...(aiDetailsModelId ? { modelId: aiDetailsModelId } : {}),
+  }), [aiDetailsModelId])
+  const aiDetails = useTicketAiDetails(ticket?.id, aiDetailsRequest, showAiDetails && isAiDetailsOpen)
 
   useEffect(() => {
     if (ticket?.id || !isAiLogTab(effectiveTab)) return
@@ -461,7 +480,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                                             {aiTabLabel}
                                           </button>
                           </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">{singleModelTabId}</TooltipContent>
+                          <TooltipContent className="max-w-xs text-center text-balance">
+                            {singleModelTabId} · Variant: {observedModelVariants.get(singleModelTabId) ?? 'Default / not reported'}
+                          </TooltipContent>
                         </Tooltip>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
@@ -506,6 +527,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   <ModelBadge
                     key={modelTab}
                     modelId={modelTab}
+                    variant={observedModelVariants.get(modelTab) ?? null}
                     active={effectiveTab === modelTab}
                     onClick={() => setActiveTab(modelTab)}
                     showIcon={false}
@@ -593,6 +615,21 @@ export function FullLogView({ ticket }: FullLogViewProps) {
           )
         })}
         <div className="ml-auto flex items-center pl-2 gap-2 text-xs text-muted-foreground">
+          {showAiDetails ? (
+            <button
+              type="button"
+              aria-expanded={isAiDetailsOpen}
+              aria-controls={aiDetailsPanelId}
+              onClick={() => setIsAiDetailsOpen(open => !open)}
+              className={cn(
+                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
+                isAiDetailsOpen ? 'bg-accent text-accent-foreground' : 'hover:bg-muted hover:text-foreground',
+              )}
+            >
+              <ChartNoAxesCombined className="h-3.5 w-3.5" />
+              {aiDetailsModelId ? 'Model details' : 'AI details'}
+            </button>
+          ) : null}
           <Tooltip delayDuration={200}>
             <TooltipTrigger asChild>
               <button
@@ -632,6 +669,19 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+            {showAiDetails && isAiDetailsOpen ? (
+              <div id={aiDetailsPanelId}>
+                <AiDetailsSummary
+                  details={aiDetails.data}
+                  isLoading={aiDetails.isLoading}
+                  isError={aiDetails.isError}
+                  isFetching={aiDetails.isFetching}
+                  modelId={aiDetailsModelId}
+                  scope="lifecycle"
+                  onRetry={() => void aiDetails.refetch()}
+                />
+              </div>
+            ) : null}
             {hasLogs ? (
               shouldVirtualize && scrollParent ? (
                 <Virtuoso

@@ -494,6 +494,7 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
       DELETE FROM ticket_status_history;
       DELETE FROM ticket_error_occurrences;
       DELETE FROM bead_execution_metrics;
+      DELETE FROM ticket_ai_turn_metrics;
       DELETE FROM tickets;
     `)
     projectDb.sqlite.prepare(`

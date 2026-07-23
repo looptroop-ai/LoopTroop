@@ -38,6 +38,8 @@ API routes use a global per-client rate limit, with separate buckets for read re
 
 `/api/stream` also accepts `lastEventId` and, when header auth is not available, `apiToken` query parameters. Browsers normally send `Last-Event-ID` automatically only for native reconnects; the frontend persists the last event id per ticket and sends the query value after reloads so the backend can replay buffered events when possible. The stream route rejects the 7th concurrent client for the same ticket and rejects new streams once the global total reaches 100 active clients.
 
+After a completed assistant turn is recorded, an `ai_metrics` event carries only `ticketId`, `phase`, `phaseAttempt`, `modelId`, and `updatedAt`. It invalidates an already-open AI/model details query; token and cost values remain in the authenticated REST response rather than the SSE replay buffer.
+
 Example health payload:
 
 ```json
@@ -715,12 +717,48 @@ The outer `answers` array must stay in the same order as the returned `questions
 | `GET` | `/api/tickets/:id/phases/:phase/attempts` | List phase attempt history |
 | `GET` | `/api/tickets/:id/logs` | Read a projected log page; defaults to the newest 250 rows and accepts an older-page cursor |
 | `GET` | `/api/tickets/:id/logs/export` | Export the complete matching log history as plain text for Copy all |
+| `GET` | `/api/tickets/:id/ai-details` | Aggregate completed AI-turn cost, tokens, and timing for a phase attempt or the ticket lifecycle |
 
 `GET /api/tickets/:id/artifacts` accepts optional `phase` and `phaseAttempt` query filters. When `phaseAttempt` is omitted, the backend resolves the current active attempt for that phase; supplying `phaseAttempt=1` is how clients intentionally read archived planning generations after an edit/retry/regenerate flow.
 
 The manifest route accepts the same filters and returns `{ "artifacts": [...] }`. Every entry includes its identity, phase and attempt, type, timestamps, `contentByteCount`, lowercase `contentSha256`, availability, and a compact scalar preview. It never includes the raw artifact body. Fetch bodies from the content routes after selecting the artifact; batch requests use `{ "artifactIds": [1, 2] }` and return unavailable or byte-budget-deferred IDs in `omittedIds`.
 
-The projected log route accepts `scope=phase|lifecycle`, `view=overview|system|command|ai|error|debug`, optional `phase`, `phaseAttempt`, and `modelId`, `limit=1..500`, and an opaque `before` cursor. It returns chronological `entries` for that page plus `olderCursor` and `hasOlder`. Projection catch-up reads unindexed JSONL suffixes cooperatively and deduplicates concurrent catch-up requests; it does not change the live SSE or durable log-writing paths.
+The projected log route accepts `scope=phase|lifecycle`, `view=overview|system|command|ai|error|debug`, optional `phase`, `phaseAttempt`, and `modelId`, `limit=1..500`, and an opaque `before` cursor. It returns chronological `entries` for that page plus `olderCursor` and `hasOlder`. The AI channel includes model-scoped error rows so provider recovery information is also visible beside that model; the same durable event remains available from the ERROR view. Projection catch-up reads unindexed JSONL suffixes cooperatively and deduplicates concurrent catch-up requests; it does not change the live SSE or durable log-writing paths.
+
+`GET /api/tickets/:id/ai-details` accepts `scope=phase|lifecycle` and an optional `modelId`. Phase scope requires `phase`; `phaseAttempt` selects an archived attempt or defaults to the active attempt using the same resolver as phase logs. Lifecycle scope ignores phase boundaries. The response contains completed turn/session counts, nullable cost and token aggregates, nullable total/average/longest duration, per-metric reporting coverage, and `updatedAt`. A nullable aggregate means OpenCode did not report that metric; it is not equivalent to zero.
+
+```json
+{
+  "scope": "phase",
+  "phase": "CODING",
+  "phaseAttempt": 1,
+  "modelId": "openai/gpt-5.4",
+  "summary": {
+    "turns": 3,
+    "sessions": 1,
+    "costUsd": 0.089462,
+    "tokens": {
+      "total": 45479,
+      "input": 43117,
+      "output": 409,
+      "reasoning": 33,
+      "cacheRead": 1920,
+      "cacheWrite": 0
+    },
+    "timingMs": {
+      "total": 8421,
+      "average": 2807,
+      "longest": 4210
+    },
+    "coverage": {
+      "costTurns": 3,
+      "tokenTurns": 3,
+      "timingTurns": 3
+    }
+  },
+  "updatedAt": "2026-07-23T12:00:00.000Z"
+}
+```
 
 Example artifact list item:
 

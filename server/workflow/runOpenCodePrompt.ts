@@ -37,6 +37,7 @@ import {
   isWorkflowDeadlineTimeoutError,
   WorkflowDeadlineTimeoutError,
 } from '../lib/deadlineErrors'
+import { recordAiTurnMetricFromPrompt } from '../storage/aiTurnMetrics'
 
 export interface OpenCodeRunCallbacks {
   onSessionCreated?: (session: Session) => void
@@ -799,7 +800,7 @@ export async function runOpenCodeSessionPrompt({
     responseMeta,
     attemptMeta,
   }
-  onPromptCompleted?.({
+  const completedEvent: OpenCodePromptCompletedEvent = {
     session: resolvedSession,
     parts,
     response,
@@ -809,7 +810,15 @@ export async function runOpenCodeSessionPrompt({
     ...(model ? { model } : {}),
     ...(agent ? { agent } : {}),
     ...(variant ? { variant } : {}),
-  })
+  }
+  if (sessionOwnership?.ticketId) {
+    try {
+      recordAiTurnMetricFromPrompt(completedEvent, sessionOwnership)
+    } catch {
+      // Diagnostics are best-effort and must never interrupt workflow progress.
+    }
+  }
+  onPromptCompleted?.(completedEvent)
 
   return result
 }

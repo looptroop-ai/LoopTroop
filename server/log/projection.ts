@@ -292,7 +292,13 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
   else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
   else { clauses.push("channel = 'normal'") }
-  if (query.view !== 'overview') { clauses.push('classification = ?'); params.push(query.view) }
+  // The AI detail channel is already audience-scoped and intentionally includes
+  // model error rows so one provider recovery event remains visible in both its
+  // model transcript and the ERROR view.
+  if (query.view !== 'overview' && query.view !== 'ai') {
+    clauses.push('classification = ?')
+    params.push(query.view)
+  }
   if (query.modelId) { clauses.push('model_id = ?'); params.push(query.modelId) }
   if (before !== null) { clauses.push('ordinal < ?'); params.push(before) }
   const where = clauses.join(' AND ')

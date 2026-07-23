@@ -218,7 +218,13 @@ The prompt runner tracks:
 - session error events
 - question and permission events that contribute to ticket-side recovery or UI prompts
 
-The runner also backfills finalized assistant message parts from `session.messages()` after prompt completion so thinking/tool/output history is durable even if no browser was watching the ticket in real time. The adapter keeps a short step-finish safety window near prompt deadlines so terminal finish metadata still has a chance to arrive before the stream is treated as done.
+The runner also backfills finalized assistant message parts from the current prompt segment of `session.messages()` after completion so thinking, intermediate assistant narration, tool activity, and terminal output are durable even if no browser was watching in real time. It never treats older messages from a reused session as new activity. Intermediate text is logged as an `ASSISTANT` Other event and the final response remains `OUTPUT`, both keyed by stable session/message identities.
+
+Each newly completed assistant message also produces one idempotent AI-turn metrics row. OpenCode step-finish data supplies cost and input/output/reasoning/cache tokens; assistant timestamps supply duration; message provenance supplies the actual model and variant. Persistence and SSE invalidation are best-effort diagnostics and cannot fail the workflow. Collection is forward-only and does not scan historical OpenCode sessions.
+
+Tool normalization retains reported elapsed time, compaction time, and attachment filename/MIME metadata while discarding attachment payloads. `session.status.action` recovery metadata is sanitized into an error event; unsafe non-HTTP(S) links are discarded before persistence.
+
+The adapter keeps a short step-finish safety window near prompt deadlines so terminal finish metadata still has a chance to arrive before the stream is treated as done.
 
 Step-finish metadata is also used for blocked-error diagnostics. If OpenCode reports a finish reason such as `length`, LoopTroop records the failure as model output truncation, carries through token counts when available, and explains that subsequent structured-output validation errors may be secondary symptoms of an incomplete response.
 

@@ -441,6 +441,33 @@ describe('useSSE', () => {
     }
   })
 
+  it('debounces AI details invalidation when model metrics arrive', async () => {
+    const ticketId = '1:T-42'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const onEvent = vi.fn<SSEHandler>()
+    renderHook(() => useSSE({ ticketId, onEvent }))
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('ai_metrics', {
+        ticketId,
+        phase: 'CODING',
+        modelId: 'openai/gpt-5.4',
+      }, '')
+      MockEventSource.instances[0]!.emit('ai_metrics', {
+        ticketId,
+        phase: 'CODING',
+        modelId: 'openai/gpt-5.4',
+      }, '')
+    })
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket-ai-details', ticketId] })
+    })
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ai_metrics' }))
+  })
+
   it('tracks reconnecting state when the live stream drops', async () => {
     const ticketId = '1:T-42'
     const { result } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))

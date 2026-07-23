@@ -128,6 +128,20 @@ describe('normalizeStoredEntry', () => {
       beadIteration: 3,
     })
   })
+
+  it('preserves runtime model variants from live and restored log records', () => {
+    const normalized = normalizeLogRecord({
+      type: 'info',
+      phase: 'CODING',
+      source: 'model:openai/gpt-5.4',
+      modelId: 'openai/gpt-5.4',
+      data: { variant: 'high' },
+      content: '[ASSISTANT] Working',
+    }, 'CODING')
+
+    expect(normalized.variant).toBe('high')
+    expect(normalizeStoredEntry(normalized, 'CODING').variant).toBe('high')
+  })
 })
 
 describe('mergeEntriesBatch', () => {

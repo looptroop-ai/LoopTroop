@@ -7,7 +7,7 @@ import type { LogContextValue } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
-import { createTestQueryClient } from '@/test/renderHelpers'
+import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -217,6 +217,43 @@ beforeEach(() => {
 })
 
 describe('PhaseLogPanel', () => {
+  it('shows lazy AI details without changing the visible entry count', async () => {
+    const aiLog = makeLog('ai-1', '[MODEL] Done', {
+      source: 'model:openai/gpt-5.4',
+      audience: 'ai',
+      kind: 'text',
+      modelId: 'openai/gpt-5.4',
+      variant: 'high',
+    })
+    const payload = {
+      scope: 'phase',
+      phase: 'CODING',
+      phaseAttempt: null,
+      modelId: null,
+      summary: {
+        turns: 1,
+        sessions: 1,
+        costUsd: 0.01,
+        tokens: { total: 100, input: 80, output: 20, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+        timingMs: { total: 1000, average: 1000, longest: 1000 },
+        coverage: { costTurns: 1, tokenTurns: 1, timingTurns: 1 },
+      },
+      updatedAt: null,
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse(payload))
+
+    renderWithTooltipProvider(
+      <PhaseLogPanel phase="CODING" logs={[aiLog]} ticket={makeTicket()} defaultTab="AI" />,
+    )
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(screen.getByText('1 entries')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
+    expect(await screen.findByText('$0.01')).toBeInTheDocument()
+    expect(screen.getByText('1 entries')).toBeInTheDocument()
+    fetchSpy.mockRestore()
+  })
+
   it('virtualizes large historical row sets', () => {
     const logs = Array.from({ length: 250 }, (_, index) => makeLog(`bulk-${index}`, `[SYS] Bulk row ${index}`))
     renderWithTooltipProvider(<PhaseLogPanel phase="CODING" logs={logs} />)
@@ -395,7 +432,7 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryByText(/System event/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByTitle('openai/gpt-5.4'))
+    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Variant: Default / not reported'))
 
     expect(loadLogsForPhase).toHaveBeenLastCalledWith('CODING', { channel: 'ai' })
     expect(screen.getByText(/First output/i)).toBeInTheDocument()
@@ -936,7 +973,7 @@ describe('PhaseLogPanel', () => {
     renderWithTooltipProvider(<PhaseLogPanel phase="COUNCIL_VOTING_PRD" logs={logs} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByTitle('openai/gpt-5.4'))
+    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Variant: Default / not reported'))
 
     const line = screen.getByText(/OpenCode vote: openai\/gpt-5\.4 session=ses-1/i)
     const lineContainer = line.closest('.whitespace-pre-wrap') ?? line
@@ -1194,6 +1231,44 @@ describe('PhaseLogPanel', () => {
     expect(screen.getByText('Input:')).toHaveClass('text-sky-700')
     expect(screen.getByText('Output:')).toHaveClass('text-emerald-700')
     expect(screen.getByText('Error:')).toHaveClass('text-rose-700')
+  })
+
+  it('makes only safe provider recovery links interactive', () => {
+    renderWithTooltipProvider(
+      <PhaseLogPanel
+        phase="CODING"
+        defaultTab="ERROR"
+        logs={[
+          makeLog(
+            'provider-action-safe',
+            '[ERROR] Provider recovery required for openai. Suggested action: Check status — https://status.openai.com/.',
+            {
+              source: 'model:openai/gpt-5-mini',
+              audience: 'ai',
+              kind: 'error',
+              modelId: 'openai/gpt-5-mini',
+            },
+          ),
+          makeLog(
+            'provider-action-unsafe',
+            '[ERROR] Provider recovery required. Suggested action: Run script — javascript:alert(1)',
+            {
+              source: 'model:openai/gpt-5-mini',
+              audience: 'ai',
+              kind: 'error',
+              modelId: 'openai/gpt-5-mini',
+            },
+          ),
+        ]}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: 'https://status.openai.com/' })).toMatchObject({
+      target: '_blank',
+      rel: 'noopener noreferrer',
+    })
+    expect(screen.getByText(/javascript:alert\(1\)/)).toBeInTheDocument()
+    expect(screen.getAllByRole('link')).toHaveLength(1)
   })
 
   it('separates command stdin stdout and stderr for both legacy and structured command rows', () => {

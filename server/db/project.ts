@@ -195,6 +195,31 @@ function initializeProjectSqlite(sqlite: Database.Database) {
       cost_usd REAL
     );
 
+    CREATE TABLE IF NOT EXISTS ticket_ai_turn_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      phase TEXT NOT NULL,
+      phase_attempt INTEGER NOT NULL DEFAULT 1,
+      session_id TEXT NOT NULL,
+      assistant_message_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      variant TEXT,
+      agent TEXT,
+      finish_reason TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      cost_usd REAL,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      schema_version INTEGER NOT NULL DEFAULT 1
+    );
+
     CREATE INDEX IF NOT EXISTS idx_project_tickets_status ON tickets(status);
     CREATE INDEX IF NOT EXISTS idx_project_tickets_external_id ON tickets(external_id);
     CREATE INDEX IF NOT EXISTS idx_phase_artifacts_ticket ON phase_artifacts(ticket_id);
@@ -210,6 +235,12 @@ function initializeProjectSqlite(sqlite: Database.Database) {
       ON bead_execution_metrics(size_bucket, effort_tier, completed_at);
     CREATE INDEX IF NOT EXISTS idx_bead_metrics_ticket
       ON bead_execution_metrics(ticket_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_turn_metrics_message
+      ON ticket_ai_turn_metrics(ticket_id, session_id, assistant_message_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_turn_metrics_scope
+      ON ticket_ai_turn_metrics(ticket_id, phase, phase_attempt, model_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_turn_metrics_lifecycle
+      ON ticket_ai_turn_metrics(ticket_id, model_id, updated_at);
   `)
 
   ensureColumn(sqlite, 'tickets', 'locked_interview_questions', 'INTEGER')
@@ -289,6 +320,10 @@ function cleanupProjectForeignKeyOrphans(sqlite: Database.Database) {
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 
     DELETE FROM bead_execution_metrics
+    WHERE ticket_id NOT IN (SELECT id FROM tickets)
+      OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
+
+    DELETE FROM ticket_ai_turn_metrics
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 

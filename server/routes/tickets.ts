@@ -53,6 +53,7 @@ import {
   handleDiscardManualQaDrift,
   handleGetTicketLogs,
   handleExportTicketLogs,
+  handleGetAiDetails,
 } from './ticketHandlers'
 
 const ticketRouter = new Hono()
@@ -97,6 +98,7 @@ ticketRouter.get('/tickets/:id/interview', (c) => handleGetInterview(c))
 ticketRouter.get('/tickets/:id/artifacts', (c) => handleGetArtifacts(c))
 ticketRouter.get('/tickets/:id/logs', (c) => handleGetTicketLogs(c))
 ticketRouter.get('/tickets/:id/logs/export', (c) => handleExportTicketLogs(c))
+ticketRouter.get('/tickets/:id/ai-details', (c) => handleGetAiDetails(c))
 ticketRouter.get('/tickets/:id/artifacts/manifest', (c) => handleGetArtifactManifest(c))
 ticketRouter.get('/tickets/:id/artifacts/:artifactId/content', (c) => handleGetArtifactContent(c))
 ticketRouter.post('/tickets/:id/artifacts/content/batch', async (c) => handlePostArtifactContentBatch(c))

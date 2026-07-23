@@ -101,6 +101,7 @@ The project database is the operational store for one attached repository. LoopT
 | `ticket_status_history` | Append-only status transition log |
 | `ticket_error_occurrences` | Append-only blocked-error history plus resolution state |
 | `bead_execution_metrics` | One row per completed bead; powers throughput/ETA forecasting |
+| `ticket_ai_turn_metrics` | One idempotent row per newly completed OpenCode assistant message; powers AI/model details |
 | `execution_log_projection` | Rebuildable, query-oriented rows projected from the three durable JSONL log channels |
 | `execution_log_projection_cursors` | Per-ticket/channel byte offsets used for incremental projection catch-up |
 
@@ -317,6 +318,25 @@ Operational notes:
 - ETA is computed **read-time** in `buildRuntime` from these rows (rich bucketed history with a `(size+effort) -> effort -> any` fallback, current-run samples while the ticket is building its own signal, sparse history before the hardcoded default); nothing about the forecast itself is persisted
 - the reserved token/cost columns let Cost Management extend the same per-bead record later without changing existing readers
 
+### `ticket_ai_turn_metrics`
+
+One row is upserted per newly completed OpenCode assistant message. The unique ticket/session/message identity makes prompt completion and reconnect handling idempotent without scanning or migrating historical OpenCode sessions.
+
+Columns:
+
+- ownership and scope: `ticket_id`, `phase`, `phase_attempt`, `session_id`, `assistant_message_id`
+- provenance: `model_id`, `variant`, `agent`, `finish_reason`
+- timing: `started_at`, `completed_at`, `duration_ms`
+- usage: `cost_usd`, `input_tokens`, `output_tokens`, `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens`
+- metadata: `created_at`, `updated_at`, `schema_version`
+
+Operational notes:
+
+- missing provider usage or timing remains `NULL`; aggregate readers report coverage separately instead of treating missing values as zero
+- phase details use the selected phase attempt, while lifecycle details aggregate all rows for the ticket and can optionally filter one model
+- metric persistence and live invalidation are best-effort diagnostics and never block model execution
+- ticket deletion cascades to these rows; clear-tickets and orphan cleanup remove them explicitly
+
 ### Execution log projection tables
 
 `execution_log_projection` is a rebuildable read model over the ticket's normal, debug, and AI JSONL files. Its composite primary key is `(ticket_id, channel, identity)`; query columns include ordinal, timestamp, phase/attempt, classification, model/bead identifiers, canonical entry JSON, and source byte range. Stable identities fold streaming upserts/finalizations into one projected row without changing what the JSONL writer stores.
@@ -336,13 +356,14 @@ erDiagram
     tickets ||--o{ ticket_status_history : transitions
     tickets ||--o{ ticket_error_occurrences : records
     tickets ||--o{ bead_execution_metrics : measures
+    tickets ||--o{ ticket_ai_turn_metrics : measures
     tickets ||--o{ execution_log_projection : projects
     tickets ||--o{ execution_log_projection_cursors : indexes
 ```
 
 Deletion behavior:
 
-- deleting a ticket cascades through `phase_artifacts`, `ticket_phase_attempts`, `ticket_status_history`, `ticket_error_occurrences`, `bead_execution_metrics`, and both execution-log projection tables
+- deleting a ticket cascades through `phase_artifacts`, `ticket_phase_attempts`, `ticket_status_history`, `ticket_error_occurrences`, `bead_execution_metrics`, `ticket_ai_turn_metrics`, and both execution-log projection tables
 - `opencode_sessions.ticket_id` uses `ON DELETE SET NULL`
 - app DB rows and project DB rows are linked **logically** by project root path, not by SQL foreign key
 
@@ -396,6 +417,7 @@ LoopTroop creates a small set of runtime-focused indexes rather than a large gen
 - OpenCode session lookup: `opencode_sessions(session_id)`, `opencode_sessions(ticket_id, phase, state)`, `opencode_sessions(ticket_id, phase, phase_attempt, member_id, bead_id, iteration, step, state)`
 - blocked-error lookup: unique `(ticket_id, occurrence_number)` plus `(ticket_id, resolved_at, occurrence_number)`
 - throughput/ETA lookup: `bead_execution_metrics(size_bucket, effort_tier, completed_at)` and `bead_execution_metrics(ticket_id)`
+- AI detail lookup: unique `ticket_ai_turn_metrics(ticket_id, session_id, assistant_message_id)`, phase/model scope `(ticket_id, phase, phase_attempt, model_id)`, and lifecycle/model scope `(ticket_id, model_id, updated_at)`
 - projected history lookup: `execution_log_projection(ticket_id, classification, phase, phase_attempt, model_id, ordinal DESC)`
 
 These match the hot runtime paths: ticket board/status queries, phase-attempt version browsing, session reconnect, blocked-error recovery, and read-time ETA throughput sampling.

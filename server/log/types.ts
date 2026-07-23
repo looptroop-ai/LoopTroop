@@ -3,7 +3,7 @@ export type LogEventType = 'state_change' | 'model_output' | 'test_result' | 'er
 export type LogSource = 'system' | 'opencode' | 'error' | 'debug' | `model:${string}`
 type LogAudience = 'all' | 'ai' | 'debug'
 type LogEntryOperation = 'append' | 'upsert' | 'finalize'
-export type LogKind = 'milestone' | 'reasoning' | 'text' | 'tool' | 'step' | 'session' | 'prompt' | 'error' | 'test'
+export type LogKind = 'milestone' | 'reasoning' | 'text' | 'assistant' | 'tool' | 'step' | 'session' | 'prompt' | 'error' | 'test'
 export type PromptTimeoutKind = 'ai_response' | 'council_response' | 'per_iteration' | 'execution_setup' | 'opencode_prompt'
 
 export interface LogEvent {
@@ -23,6 +23,7 @@ export interface LogEvent {
   audience?: LogAudience
   kind?: LogKind
   modelId?: string
+  variant?: string
   sessionId?: string
   beadId?: string
   beadIteration?: number

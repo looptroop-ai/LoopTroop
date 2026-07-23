@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Added complete OpenCode AI diagnostics with assistant progress, live usage details, richer tool records, runtime variants, and provider recovery actions.
 - Made workspace setup obey one total timeout per attempt and made duration settings easier to understand and edit.
 - Made workspace setup finish with honest Ready or Blocked results and recover progress-only replies within the same attempt.
 - Made cold ticket and status opens responsive by warming workspace modules and progressively loading projected logs.
@@ -74,6 +75,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added forward-only per-turn AI metrics and expandable AI/model summaries for cost, token categories, and model time, plus latest runtime-variant hover details, tool duration/attachment/compaction metadata, and provider recovery actions in ERROR and model logs.
 - Added ticket-isolated artifact manifest and content APIs, including SHA-256 ETags and a bounded batch body endpoint so large artifact histories no longer travel with the initial list or SSE artifact updates.
 - Added effective commands and bounded output excerpts to deterministic bead verification diagnostics.
 - Added ticket-level Git-hook policy overrides, start-time inheritance locks, and contextual documentation links in Configuration, Project Advanced settings, new-ticket Advanced settings, and the Draft workspace.
@@ -100,6 +102,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Completed AI-detail persistence for every assistant message in the current prompt segment: intermediate narration is now an `ASSISTANT` Other event, terminal responses remain `OUTPUT`, and reused sessions do not duplicate older turns.
 - Execution Setup Timeout now bounds all active work in one workspace-setup attempt, including provider recovery, continuation/correction prompts, validation, worktree checks, and retry-note generation; each genuine retry receives a fresh budget, while safe cleanup may finish afterward. Configuration now distinguishes AI, coding, and workspace-setup deadlines and provides compact inline synchronized seconds and minutes/seconds editors for every duration setting.
 - Workspace setup prompts now use concise repository-grounded rules without assuming a language, build system, package manager, shell, or operating system. Ready requires every setup check to pass; actionable Blocked results retry, while evidence that no safe provisioning path exists stops immediately.
 - Changed ticket history restoration to request the newest 250 projected log rows, merge them with bounded live SSE rows by stable identity, virtualize large timelines, and page older rows only when the user scrolls upward. Copy all continues to export the complete matching history, while browser `localStorage` no longer stores full log snapshots.

@@ -10,7 +10,7 @@ type StructuredLogFields = Omit<LogEvent, 'timestamp' | 'type' | 'ticketId' | 'p
 // They are stripped from `data` before serialization to avoid redundant storage.
 const STRUCTURED_KEYS: ReadonlySet<string> = new Set([
   'content', 'source', 'status', 'entryId', 'fingerprint', 'op', 'audience',
-  'kind', 'modelId', 'sessionId', 'beadId', 'beadIteration', 'timeoutMs', 'deadlineAt',
+  'kind', 'modelId', 'variant', 'sessionId', 'beadId', 'beadIteration', 'timeoutMs', 'deadlineAt',
   'timeoutKind', 'streaming', 'phaseAttempt',
 ])
 
@@ -34,6 +34,7 @@ function pickStructuredFields(data?: Record<string, unknown>): Partial<LogEvent>
     ...(typeof data.audience === 'string' ? { audience: data.audience as LogEvent['audience'] } : {}),
     ...(typeof data.kind === 'string' ? { kind: data.kind as LogEvent['kind'] } : {}),
     ...(typeof data.modelId === 'string' ? { modelId: data.modelId } : {}),
+    ...(typeof data.variant === 'string' ? { variant: data.variant } : {}),
     ...(typeof data.sessionId === 'string' ? { sessionId: data.sessionId } : {}),
     ...(typeof data.beadId === 'string' ? { beadId: data.beadId } : {}),
     ...(typeof data.beadIteration === 'number' && Number.isFinite(data.beadIteration) ? { beadIteration: data.beadIteration } : {}),

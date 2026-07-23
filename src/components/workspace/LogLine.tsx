@@ -67,6 +67,16 @@ function renderLogLine(entry: LogEntry, showModelName: boolean) {
   if (isCommandEntry) {
     return renderCommandLogLine(entry, formatted.tagText, formatted.bodyText)
   }
+  if (entry.kind === 'error' && entry.line.includes('Provider recovery required')) {
+    return (
+      <>
+        <span className={cn('font-semibold', color)}>
+          {formatted.tagText}
+        </span>
+        {renderSafeHttpLinks(formatted.bodyText)}
+      </>
+    )
+  }
 
   return (
     <>
@@ -76,6 +86,34 @@ function renderLogLine(entry: LogEntry, showModelName: boolean) {
       {formatted.bodyText}
     </>
   )
+}
+
+function renderSafeHttpLinks(text: string) {
+  return text.split(/(https?:\/\/\S+)/g).map((part, index) => {
+    if (!part.startsWith('http://') && !part.startsWith('https://')) return part
+    const match = part.match(/^(.*?)([),.;!?]*)$/)
+    const candidate = match?.[1] ?? part
+    const trailing = match?.[2] ?? ''
+    try {
+      const url = new URL(candidate)
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return part
+      return (
+        <span key={`${candidate}-${index}`}>
+          <a
+            href={url.toString()}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-current/50 underline-offset-2 hover:decoration-current"
+          >
+            {candidate}
+          </a>
+          {trailing}
+        </span>
+      )
+    } catch {
+      return part
+    }
+  })
 }
 
 function toStructuredSectionKind(label: string): StructuredSectionKind {

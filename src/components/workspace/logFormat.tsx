@@ -54,7 +54,7 @@ function isCanonicalAiTextEntry(entry: LogEntry): boolean {
     && !isLegacyDerivedSummary(entry)
 }
 
-const AI_DETAIL_OUTPUT_KINDS = new Set(['text', 'prompt', 'reasoning', 'tool', 'step', 'session'])
+const AI_DETAIL_OUTPUT_KINDS = new Set(['text', 'assistant', 'prompt', 'reasoning', 'tool', 'step', 'session'])
 const AI_DETAIL_SESSION_KINDS = new Set([...AI_DETAIL_OUTPUT_KINDS, 'error'])
 
 function hasLeadingLogTag(entry: LogEntry, tag: string): boolean {
@@ -175,7 +175,7 @@ function formatTaggedSegment(tag: string, entry: LogEntry, showModelName: boolea
   const bareTag = tag.slice(1, -1)
   const fullModelId = getEntryFullModelId(entry)
   const visibleTag = bareTag === 'MODEL' ? 'OUTPUT' : bareTag
-  const isStandardAiHeader = bareTag === 'MODEL' || bareTag === 'PROMPT' || bareTag === 'THINKING' || bareTag === 'TOOL'
+  const isStandardAiHeader = bareTag === 'MODEL' || bareTag === 'ASSISTANT' || bareTag === 'PROMPT' || bareTag === 'THINKING' || bareTag === 'TOOL'
   const modelName = bareTag === 'ERROR' ? getEntryModelDisplayName(entry) : fullModelId
   const shouldShowModelName = Boolean(modelName) && (bareTag === 'ERROR' || (showModelName && isStandardAiHeader))
 

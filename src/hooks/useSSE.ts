@@ -11,6 +11,7 @@ import {
   normalizeTicketArtifact,
   type DBartifact,
 } from './useTicketArtifacts'
+import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
 
 interface SSEOptions {
   ticketId: string | null
@@ -20,6 +21,8 @@ interface SSEOptions {
 export type SSEConnectionState = 'connecting' | 'connected' | 'reconnecting'
 
 const LAST_EVENT_ID_STORAGE_PREFIX = 'looptroop-sse-last-event-id:'
+const AI_DETAILS_INVALIDATION_DELAY_MS = 400
+const aiDetailsInvalidationTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function getLastEventIdStorageKey(ticketId: string) {
   return `${LAST_EVENT_ID_STORAGE_PREFIX}${ticketId}`
@@ -74,7 +77,18 @@ function recoverTicketAfterStreamGap(ticketId: string) {
   queryClient.invalidateQueries({ queryKey: ['ticket-beads', ticketId] })
   queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, 'beads'] })
   invalidateManualQaQueries(ticketId)
+  queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
   dispatchServerLogRefresh(ticketId)
+}
+
+function scheduleAiDetailsInvalidation(ticketId: string) {
+  const currentTimer = aiDetailsInvalidationTimers.get(ticketId)
+  if (currentTimer) clearTimeout(currentTimer)
+  const timer = setTimeout(() => {
+    aiDetailsInvalidationTimers.delete(ticketId)
+    queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
+  }, AI_DETAILS_INVALIDATION_DELAY_MS)
+  aiDetailsInvalidationTimers.set(ticketId, timer)
 }
 
 export function useSSE({ ticketId, onEvent }: SSEOptions) {
@@ -314,6 +328,19 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
             }
           }
           onEventRef.current?.({ type: 'artifact_change', data })
+        } catch {
+          // ignore parse errors
+        }
+      })
+
+      es.addEventListener('ai_metrics', (e) => {
+        lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
+        persistLastEventId(ticketId, lastEventIdRef.current)
+        try {
+          const data = JSON.parse(e.data) as Record<string, unknown>
+          const metricsTicketId = typeof data.ticketId === 'string' ? data.ticketId : ticketId
+          if (metricsTicketId === ticketId) scheduleAiDetailsInvalidation(ticketId)
+          onEventRef.current?.({ type: 'ai_metrics', data })
         } catch {
           // ignore parse errors
         }

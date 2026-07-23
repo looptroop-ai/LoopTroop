@@ -14,6 +14,7 @@ import {
   phaseArtifacts,
   projects,
   ticketErrorOccurrences,
+  ticketAiTurnMetrics,
   ticketPhaseAttempts,
   ticketStatusHistory,
   tickets,
@@ -365,6 +366,14 @@ describe('projectRouter project cleanup', () => {
       activeDurationMs: 100,
       completedAt: new Date().toISOString(),
     }).run()
+    context.projectDb.insert(ticketAiTurnMetrics).values({
+      ticketId: localTicket.id,
+      phase: 'CODING',
+      phaseAttempt: 1,
+      sessionId: 'session',
+      assistantMessageId: 'assistant-message',
+      modelId: 'provider/model',
+    }).run()
 
     const app = new Hono()
     app.route('/api', projectRouter)
@@ -408,6 +417,7 @@ describe('projectRouter project cleanup', () => {
       ticketStatusHistory,
       ticketErrorOccurrences,
       beadExecutionMetrics,
+      ticketAiTurnMetrics,
       tickets,
     ]) {
       expect(cleared.projectDb.select().from(table).all()).toHaveLength(0)

@@ -48,4 +48,63 @@ describe.concurrent('buildSessionStatusLogEntries', () => {
       },
     ])
   })
+
+  it('emits one complete provider recovery error and omits the duplicate generic retry error', () => {
+    const event: SessionStatusStreamEvent = {
+      type: 'session_status',
+      sessionId: 'ses-1',
+      status: 'retry',
+      attempt: 3,
+      message: 'Provider authentication expired.',
+      action: {
+        provider: 'anthropic',
+        reason: 'oauth_expired',
+        title: 'Authentication required',
+        message: 'Sign in to continue using this provider.',
+        label: 'Sign in',
+        link: 'https://provider.example/login',
+      },
+    }
+
+    expect(buildSessionStatusLogEntries('ses-1', event)).toEqual([
+      {
+        entryId: 'ses-1:provider-action:3',
+        type: 'error',
+        kind: 'error',
+        op: 'append',
+        content: 'Provider recovery required (retry #3) for anthropic. Reason: oauth_expired Authentication required: Sign in to continue using this provider. Suggested action: Sign in — https://provider.example/login',
+        recoveryAction: event.action,
+      },
+      {
+        entryId: 'ses-1:status',
+        type: 'info',
+        kind: 'session',
+        op: 'upsert',
+        content: 'Session status: retry (attempt 3).',
+      },
+    ])
+  })
+
+  it('drops unsafe provider recovery links while retaining the action label', () => {
+    const entries = buildSessionStatusLogEntries('ses-1', {
+      type: 'session_status',
+      sessionId: 'ses-1',
+      status: 'busy',
+      action: {
+        reason: 'authentication',
+        label: 'Sign in',
+        link: 'javascript:alert(1)',
+      },
+    })
+
+    expect(entries[0]).toMatchObject({
+      kind: 'error',
+      content: 'Provider recovery required. Reason: authentication Suggested action: Sign in',
+      recoveryAction: {
+        reason: 'authentication',
+        label: 'Sign in',
+      },
+    })
+    expect(JSON.stringify(entries)).not.toContain('javascript:')
+  })
 })

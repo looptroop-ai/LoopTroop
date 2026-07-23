@@ -56,6 +56,15 @@ interface RawEvent {
   workspace?: string
 }
 
+function normalizeSafeHttpUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export interface OpenCodeAdapter {
   createSession(projectPath: string, signal?: AbortSignal, options?: OpenCodeSessionCreateOptions): Promise<Session>
   promptSession(
@@ -1021,6 +1030,20 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       case 'session.status': {
         const status = this.getRecord(props.status)
         const statusType = typeof status?.type === 'string' ? status.type : 'busy'
+        const rawAction = this.getRecord(status?.action)
+        const actionLink = typeof rawAction?.link === 'string'
+          ? normalizeSafeHttpUrl(rawAction.link)
+          : undefined
+        const action = rawAction
+          ? {
+              ...(typeof rawAction.reason === 'string' ? { reason: rawAction.reason } : {}),
+              ...(typeof rawAction.provider === 'string' ? { provider: rawAction.provider } : {}),
+              ...(typeof rawAction.title === 'string' ? { title: rawAction.title } : {}),
+              ...(typeof rawAction.message === 'string' ? { message: rawAction.message } : {}),
+              ...(typeof rawAction.label === 'string' ? { label: rawAction.label } : {}),
+              ...(actionLink ? { link: actionLink } : {}),
+            }
+          : undefined
         return {
           type: 'session_status',
           sessionId,
@@ -1028,6 +1051,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           attempt: typeof status?.attempt === 'number' ? status.attempt : undefined,
           message: typeof status?.message === 'string' ? status.message : undefined,
           next: typeof status?.next === 'number' ? status.next : undefined,
+          ...(action && Object.keys(action).length > 0 ? { action } : {}),
         }
       }
 
@@ -1194,6 +1218,28 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
 
     if (this.isToolPart(part)) {
       const input = this.getRecord(part.state.input)
+      const time = this.getRecord(part.state.time)
+      const start = typeof time?.start === 'number' ? time.start : undefined
+      const end = typeof time?.end === 'number' ? time.end : undefined
+      const attachments = Array.isArray(part.state.attachments)
+        ? part.state.attachments.flatMap((attachment) => {
+            const record = this.getRecord(attachment)
+            if (!record) return []
+            const filename = typeof record.filename === 'string'
+              ? record.filename
+              : typeof record.name === 'string'
+                ? record.name
+                : undefined
+            const mime = typeof record.mime === 'string'
+              ? record.mime
+              : typeof record.mediaType === 'string'
+                ? record.mediaType
+                : undefined
+            return filename || mime
+              ? [{ ...(filename ? { filename } : {}), ...(mime ? { mime } : {}) }]
+              : []
+          })
+        : undefined
       return {
         type: 'tool',
         sessionId,
@@ -1207,6 +1253,9 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         output: typeof part.state.output === 'string' ? part.state.output : undefined,
         error: typeof part.state.error === 'string' ? part.state.error : undefined,
         metadata: part.metadata,
+        ...(start !== undefined && end !== undefined && end >= start ? { durationMs: end - start } : {}),
+        ...(typeof time?.compacted === 'number' ? { compactedAt: time.compacted } : {}),
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
         complete: part.state.status === 'completed' || part.state.status === 'error',
       }
     }

@@ -1,4 +1,4 @@
-export type SSEEventType = 'state_change' | 'log' | 'progress' | 'app_error' | 'bead_complete' | 'needs_input' | 'artifact_change'
+export type SSEEventType = 'state_change' | 'log' | 'progress' | 'app_error' | 'bead_complete' | 'needs_input' | 'artifact_change' | 'ai_metrics'
 
 export interface SSEEvent {
   id: string
@@ -27,7 +27,7 @@ export interface LogEvent {
   entryId?: string
   op?: 'append' | 'upsert' | 'finalize'
   audience?: 'all' | 'ai' | 'debug'
-  kind?: 'milestone' | 'reasoning' | 'text' | 'tool' | 'step' | 'session' | 'prompt' | 'error' | 'test'
+  kind?: 'milestone' | 'reasoning' | 'text' | 'assistant' | 'tool' | 'step' | 'session' | 'prompt' | 'error' | 'test'
   modelId?: string
   sessionId?: string
   streaming?: boolean
@@ -96,4 +96,12 @@ export interface ArtifactChangeEvent {
   artifact?: ArtifactManifestEntry
   removedArtifactIds?: number[]
   invalidatedPhases?: string[]
+}
+
+export interface AiMetricsEvent {
+  ticketId: string
+  phase: string
+  phaseAttempt: number
+  modelId: string
+  updatedAt: string
 }

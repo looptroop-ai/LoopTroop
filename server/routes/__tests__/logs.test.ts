@@ -106,4 +106,27 @@ describe('ticket log projection API', () => {
       expect((await response.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toContain(expected)
     }
   })
+
+  it('shows one AI provider error in both the model transcript and ERROR history', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    appendLogEvent(
+      ticket.id,
+      'error',
+      'CODING',
+      'Provider recovery required. Reason: overloaded',
+      { audience: 'ai', kind: 'error', modelId: 'test/model' },
+      'model:test/model',
+      'CODING',
+    )
+
+    const modelResponse = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=lifecycle&view=ai&modelId=${encodeURIComponent('test/model')}`,
+    )
+    const errorResponse = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=lifecycle&view=error`,
+    )
+    const expected = 'Provider recovery required. Reason: overloaded'
+    expect((await modelResponse.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toEqual([expected])
+    expect((await errorResponse.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content)).toEqual([expected])
+  })
 })

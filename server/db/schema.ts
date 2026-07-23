@@ -204,3 +204,31 @@ export const beadExecutionMetrics = sqliteTable('bead_execution_metrics', {
   outputTokens: integer('output_tokens'),
   costUsd: real('cost_usd'),
 })
+
+// One idempotent row per completed OpenCode assistant message. These rows are
+// intentionally forward-only: prompt completion records new activity, but
+// project initialization never backfills historical OpenCode sessions.
+export const ticketAiTurnMetrics = sqliteTable('ticket_ai_turn_metrics', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  phase: text('phase').notNull(),
+  phaseAttempt: integer('phase_attempt').notNull().default(1),
+  sessionId: text('session_id').notNull(),
+  assistantMessageId: text('assistant_message_id').notNull(),
+  modelId: text('model_id').notNull(),
+  variant: text('variant'),
+  agent: text('agent'),
+  finishReason: text('finish_reason'),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
+  durationMs: integer('duration_ms'),
+  costUsd: real('cost_usd'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  reasoningTokens: integer('reasoning_tokens'),
+  cacheReadTokens: integer('cache_read_tokens'),
+  cacheWriteTokens: integer('cache_write_tokens'),
+  createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
+  updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),
+  schemaVersion: integer('schema_version').notNull().default(1),
+})

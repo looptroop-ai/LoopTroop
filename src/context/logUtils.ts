@@ -14,6 +14,7 @@ export interface LogEntry {
   audience: 'all' | 'ai' | 'debug'
   kind: string
   modelId?: string
+  variant?: string
   sessionId?: string
   beadId?: string
   beadIteration?: number
@@ -41,6 +42,7 @@ export interface PlainLogOptions {
   audience?: LogEntry['audience']
   kind?: string
   modelId?: string
+  variant?: string
   sessionId?: string
   beadId?: string
   beadIteration?: number
@@ -139,7 +141,7 @@ const LOW_VALUE_GIT_PROBE_PATTERNS = [
   ' diff --cached --quiet',
 ] as const
 
-const AI_DETAIL_STORED_KINDS = new Set(['text', 'prompt', 'reasoning', 'tool', 'step', 'session', 'error'])
+const AI_DETAIL_STORED_KINDS = new Set(['text', 'assistant', 'prompt', 'reasoning', 'tool', 'step', 'session', 'error'])
 
 function stringifyForLine(value: unknown, maxLen = 2000): string {
   if (typeof value === 'string') return value
@@ -276,11 +278,16 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
     ? data.entryId
     : fallbackEntryId(status, source, timestamp, line)
   const modelId = deriveModelId(data, source)
-  const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined
-  const beadId = typeof data.beadId === 'string' ? data.beadId : undefined
   const nested = data.data && typeof data.data === 'object'
     ? (data.data as Record<string, unknown>)
     : null
+  const variant = typeof data.variant === 'string' && data.variant.trim()
+    ? data.variant
+    : typeof nested?.variant === 'string' && nested.variant.trim()
+      ? nested.variant
+      : undefined
+  const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined
+  const beadId = typeof data.beadId === 'string' ? data.beadId : undefined
   const beadIteration = normalizePositiveNumber(data.beadIteration ?? nested?.beadIteration)
   const timeoutMs = typeof data.timeoutMs === 'number' && Number.isFinite(data.timeoutMs)
     ? data.timeoutMs
@@ -305,6 +312,7 @@ export function normalizeLogRecord(data: Record<string, unknown>, fallbackPhase:
     audience,
     kind,
     ...(modelId ? { modelId } : {}),
+    ...(variant ? { variant } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(beadId ? { beadId } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),
@@ -357,6 +365,7 @@ export function normalizeStoredEntry(entry: Partial<LogEntry>, fallbackStatus: s
     audience,
     kind: String(rawKind ?? (audience === 'ai' ? 'text' : 'milestone')),
     ...(entry.modelId ? { modelId: String(entry.modelId) } : {}),
+    ...(entry.variant ? { variant: String(entry.variant) } : {}),
     ...(entry.sessionId ? { sessionId: String(entry.sessionId) } : {}),
     ...(entry.beadId ? { beadId: String(entry.beadId) } : {}),
     ...(beadIteration !== undefined ? { beadIteration } : {}),

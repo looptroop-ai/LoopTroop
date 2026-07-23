@@ -283,6 +283,7 @@ export function LogProvider({
       ...(options?.fingerprint ? { fingerprint: options.fingerprint } : {}),
       ...(options?.op ? { op: options.op } : {}),
       ...(options?.modelId ? { modelId: options.modelId } : {}),
+      ...(options?.variant ? { variant: options.variant } : {}),
       ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
       ...(options?.beadId ? { beadId: options.beadId } : {}),
       ...(typeof options?.beadIteration === 'number' && Number.isFinite(options.beadIteration) ? { beadIteration: options.beadIteration } : {}),

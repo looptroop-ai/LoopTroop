@@ -131,6 +131,20 @@ export interface ToolMessagePart extends MessagePartBase {
   metadata?: Record<string, unknown>
 }
 
+export interface ToolAttachmentSummary {
+  filename?: string
+  mime?: string
+}
+
+export interface OpenCodeProviderAction {
+  reason?: string
+  provider?: string
+  title?: string
+  message?: string
+  label?: string
+  link?: string
+}
+
 export interface StepStartMessagePart extends MessagePartBase {
   type: 'step-start'
   snapshot?: string
@@ -174,6 +188,7 @@ export interface MessageInfo {
   author?: string
   providerID?: string
   modelID?: string
+  variant?: string
   timestamp?: string
   time?: {
     created?: number
@@ -234,6 +249,9 @@ export interface ToolStreamEvent extends StreamEventBase {
   output?: string
   error?: string
   metadata?: Record<string, unknown>
+  durationMs?: number
+  compactedAt?: number
+  attachments?: ToolAttachmentSummary[]
   complete: boolean
 }
 
@@ -253,6 +271,7 @@ export interface SessionStatusStreamEvent extends StreamEventBase {
   attempt?: number
   message?: string
   next?: number
+  action?: OpenCodeProviderAction
 }
 
 export interface SessionErrorStreamEvent extends StreamEventBase {

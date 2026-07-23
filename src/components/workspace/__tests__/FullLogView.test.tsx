@@ -5,7 +5,7 @@ import type { LogEntry } from '@/context/LogContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, TEST, type RuntimeBeadInput } from '@/test/factories'
-import { createTestQueryClient } from '@/test/renderHelpers'
+import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -169,6 +169,51 @@ beforeEach(() => {
 })
 
 describe('FullLogView', () => {
+  it('loads lifecycle AI details only after its panel is opened', async () => {
+    getAllLogsMock.mockReturnValue([
+      makeLog('ai-1', '[MODEL] Done', 'CODING', {
+        source: 'model:openai/gpt-5.4',
+        audience: 'ai',
+        kind: 'text',
+        modelId: 'openai/gpt-5.4',
+        variant: 'high',
+      }),
+    ])
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/ai-details?')) {
+        return createJsonResponse({
+          scope: 'lifecycle',
+          phase: null,
+          phaseAttempt: null,
+          modelId: null,
+          summary: {
+            turns: 1,
+            sessions: 1,
+            costUsd: 0.02,
+            tokens: { total: 200, input: 150, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+            timingMs: { total: 2000, average: 2000, longest: 2000 },
+            coverage: { costTurns: 1, tokenTurns: 1, timingTurns: 1 },
+          },
+          updatedAt: null,
+        })
+      }
+      return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+    })
+
+    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^AI/ }))
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/ai-details?'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
+
+    expect(await screen.findByText('$0.02')).toBeInTheDocument()
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('/ai-details?scope=lifecycle'),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    fetchSpy.mockRestore()
+  })
+
   it('renders empty state when there are no logs', () => {
     getAllLogsMock.mockReturnValue([])
     renderWithTooltipProvider(<FullLogView />)

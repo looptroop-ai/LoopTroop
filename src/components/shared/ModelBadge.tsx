@@ -4,6 +4,7 @@ import { getModelDisplayName, getModelIcon } from './modelBadgeUtils'
 
 interface ModelBadgeProps {
     modelId: string
+    variant?: string | null
     active?: boolean
     onClick?: () => void
     className?: string
@@ -27,8 +28,10 @@ export function ModelIcon({ modelId, className, ...props }: ModelIconProps) {
     )
 }
 
-export function ModelBadge({ modelId, active, onClick, className, showIcon = true, children }: ModelBadgeProps) {
+export function ModelBadge({ modelId, variant, active, onClick, className, showIcon = true, children }: ModelBadgeProps) {
     const name = getModelDisplayName(modelId)
+    const variantLabel = variant?.trim() || 'Default / not reported'
+    const title = variant === undefined ? modelId : `${modelId} · Variant: ${variantLabel}`
 
     const Component = onClick ? 'button' : 'div'
 
@@ -42,7 +45,7 @@ export function ModelBadge({ modelId, active, onClick, className, showIcon = tru
                     : 'bg-secondary text-secondary-foreground hover:bg-secondary/80 border-border/50',
                 className
             )}
-            title={modelId}
+            title={title}
         >
             {showIcon ? <ModelIcon modelId={modelId} /> : null}
             {children || <span className="truncate">{name}</span>}

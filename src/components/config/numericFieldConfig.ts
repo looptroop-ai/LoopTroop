@@ -6,6 +6,7 @@ interface NumericFieldConfig {
   max: number
   label: string
   docsPath: string
+  unit?: 'seconds'
   fromStore: (value: number) => string
   toStore: (value: number) => number
 }
@@ -16,6 +17,7 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'Per-Iteration Timeout',
     docsPath: '/configuration#per-iteration-timeout',
+    unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
   },
@@ -24,6 +26,7 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'Execution Setup Timeout',
     docsPath: '/configuration#execution-setup-timeout',
+    unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
   },
@@ -32,6 +35,7 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'AI Response Timeout',
     docsPath: '/configuration#ai-response-timeout',
+    unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
   },
@@ -56,6 +60,7 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'OpenCode Retry Grace Window',
     docsPath: '/configuration#opencode-retry-grace-window',
+    unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
   },

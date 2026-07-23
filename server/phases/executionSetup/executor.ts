@@ -17,7 +17,12 @@ type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 const REPEATED_TOOLING_FAILURE_MESSAGE = 'Repeated tooling setup failure detected; stopping early because the same tooling blocker repeated after a provisioning attempt.'
 const MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS = 2
 
-interface ExecutionSetupAttemptStartMetadata {
+export interface ExecutionSetupAttemptTiming {
+  timeoutMs: number
+  timeoutDeadline?: number
+}
+
+interface ExecutionSetupAttemptStartMetadata extends ExecutionSetupAttemptTiming {
   baseMaxIterations: number
   isManualContinuationAttempt: boolean
   isExtraToolingPersistenceAttempt: boolean
@@ -214,12 +219,14 @@ export async function executeExecutionSetupWithRetries(
     evaluateGeneration: (input: {
       attempt: number
       generation: GenerateExecutionSetupResult
+      timing: ExecutionSetupAttemptTiming
     }) => Promise<ExecutionSetupReport>
     generateRetryNote?: (input: {
       attempt: number
       report: ExecutionSetupReport
       generation: GenerateExecutionSetupResult
       notes: string[]
+      timing: ExecutionSetupAttemptTiming
     }) => Promise<string | null | undefined>
     onAttemptStart?: (attempt: number, metadata: ExecutionSetupAttemptStartMetadata) => void | Promise<void>
     onAttemptComplete?: (input: {
@@ -279,7 +286,12 @@ export async function executeExecutionSetupWithRetries(
   ) {
     attempt += 1
     throwIfAborted(signal)
+    const timing: ExecutionSetupAttemptTiming = {
+      timeoutMs: options.timeoutMs,
+      ...(options.timeoutMs > 0 ? { timeoutDeadline: Date.now() + options.timeoutMs } : {}),
+    }
     await callbacks.onAttemptStart?.(attempt, {
+      ...timing,
       baseMaxIterations: options.maxIterations,
       isManualContinuationAttempt: hasManualContinuationBudget
         && attempt > attemptsUsedAtStart
@@ -301,6 +313,7 @@ export async function executeExecutionSetupWithRetries(
         model: options.model,
         variant: options.variant,
         timeoutMs: options.timeoutMs,
+        timeoutDeadline: timing.timeoutDeadline,
         structuredRetryCount: options.structuredRetryCount,
         phaseAttempt: attempt,
         manualContinuation: hasManualContinuationBudget
@@ -325,7 +338,7 @@ export async function executeExecutionSetupWithRetries(
     )
     throwIfAborted(signal)
 
-    const report = await callbacks.evaluateGeneration({ attempt, generation })
+    const report = await callbacks.evaluateGeneration({ attempt, generation, timing })
     const toolingFailureSignature = buildToolingFailureSignature(report)
     const repeatedToolingFailure = toolingFailureSignature !== null
       && toolingFailureSignatures[toolingFailureSignatures.length - 1] === toolingFailureSignature
@@ -365,6 +378,7 @@ export async function executeExecutionSetupWithRetries(
           report: finalReport,
           generation,
           notes: [...notes],
+          timing,
         })
       } catch {
         note = null

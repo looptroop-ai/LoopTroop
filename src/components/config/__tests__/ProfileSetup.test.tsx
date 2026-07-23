@@ -145,7 +145,7 @@ describe('ProfileSetup', () => {
     expect(screen.getByLabelText('OpenCode Retry Grace Window')).toHaveValue(45)
     expect(screen.getByText('Execution Setup Timeout (s)')).toBeInTheDocument()
     expect(screen.getByText('Pre-Implementation')).toBeInTheDocument()
-    expect(screen.getByText('Implementation Phase')).toBeInTheDocument()
+    expect(screen.getByText('Implementation & Workspace Setup')).toBeInTheDocument()
     expect(screen.queryByText('Execution Phase')).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText('Profile')).not.toBeInTheDocument()
@@ -285,7 +285,91 @@ describe('ProfileSetup', () => {
     const responseTimeoutLink = screen.getByRole('link', { name: 'Open documentation for AI Response Timeout' })
     fireEvent.focus(responseTimeoutLink)
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
-      'Wait time for AI model responses (10–3600s) Open the detailed documentation.',
+      'Wait time for planning and other AI-only responses (10–3600s). Open the detailed documentation.',
+    )
+  })
+
+  it('keeps seconds and editable duration parts synchronized for every duration field', async () => {
+    await renderProfileSetup()
+
+    const durationFields = [
+      'AI Response Timeout',
+      'Execution Setup Timeout',
+      'Per-Iteration Timeout',
+      'OpenCode Retry Grace Window',
+    ]
+    for (const label of durationFields) {
+      expect(screen.getByLabelText(`${label} hours`)).toBeEnabled()
+      expect(screen.getByLabelText(`${label} minutes`)).toBeEnabled()
+      expect(screen.getByLabelText(`${label} seconds`)).toBeEnabled()
+    }
+
+    const responseTimeout = screen.getByLabelText('AI Response Timeout')
+    fireEvent.change(responseTimeout, { target: { value: '9' } })
+    expect(screen.getByLabelText('AI Response Timeout hours')).toBeDisabled()
+    fireEvent.change(responseTimeout, { target: { value: '10' } })
+    expect(screen.getByLabelText('AI Response Timeout hours')).toBeEnabled()
+
+    fireEvent.change(responseTimeout, { target: { value: '90' } })
+    expect(screen.getByLabelText('AI Response Timeout hours')).toHaveValue(0)
+    expect(screen.getByLabelText('AI Response Timeout minutes')).toHaveValue(1)
+    expect(screen.getByLabelText('AI Response Timeout seconds')).toHaveValue(30)
+
+    fireEvent.change(screen.getByLabelText('AI Response Timeout hours'), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText('AI Response Timeout minutes'), { target: { value: '20' } })
+    fireEvent.change(screen.getByLabelText('AI Response Timeout seconds'), { target: { value: '5' } })
+    expect(responseTimeout).toHaveValue(1205)
+
+    const setupTimeout = screen.getByLabelText('Execution Setup Timeout')
+    fireEvent.change(setupTimeout, { target: { value: '0' } })
+    expect(screen.getByLabelText('Execution Setup Timeout hours')).toHaveValue(0)
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toHaveValue(0)
+    expect(screen.getByLabelText('Execution Setup Timeout seconds')).toHaveValue(0)
+    expect(screen.getByLabelText('Execution Setup Timeout hours')).toBeEnabled()
+
+    fireEvent.change(setupTimeout, { target: { value: '' } })
+    expect(screen.getByLabelText('Execution Setup Timeout hours')).toBeDisabled()
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toBeDisabled()
+    expect(screen.getByLabelText('Execution Setup Timeout seconds')).toBeDisabled()
+
+    fireEvent.change(setupTimeout, { target: { value: '3600' } })
+    expect(screen.getByLabelText('Execution Setup Timeout hours')).toHaveValue(1)
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toHaveValue(0)
+    expect(screen.getByLabelText('Execution Setup Timeout seconds')).toHaveValue(0)
+  })
+
+  it('saves duration-part edits through the existing millisecond payload', async () => {
+    await renderProfileSetup()
+
+    fireEvent.change(screen.getByLabelText('Execution Setup Timeout minutes'), { target: { value: '20' } })
+    fireEvent.change(screen.getByLabelText('Execution Setup Timeout seconds'), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText('OpenCode Retry Grace Window minutes'), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText('OpenCode Retry Grace Window seconds'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionSetupTimeout: 1_230_000,
+        opencodeRetryDelay: 65_000,
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('explains the timeout boundaries in field help', async () => {
+    await renderProfileSetup()
+
+    const aiHelp = screen.getByRole('button', { name: 'AI Response Timeout help' })
+    fireEvent.focus(aiHelp)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'It does not apply to coding attempts or pre-implementation workspace setup',
+    )
+    fireEvent.blur(aiHelp)
+
+    const setupHelp = screen.getByRole('button', { name: 'Execution Setup Timeout help' })
+    fireEvent.focus(setupHelp)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'every genuine retry receives a fresh full budget',
     )
   })
 

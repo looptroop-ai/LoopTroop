@@ -31,6 +31,18 @@ class FailingPromptAdapter extends MockOpenCodeAdapter {
   }
 }
 
+class DeadlineAwareSessionAdapter extends MockOpenCodeAdapter {
+  override async createSession(...args: Parameters<MockOpenCodeAdapter['createSession']>) {
+    const signal = args[1]
+    if (signal?.aborted) {
+      const error = new Error('Aborted before session creation')
+      error.name = 'AbortError'
+      throw error
+    }
+    return await super.createSession(...args)
+  }
+}
+
 function buildReadyExecutionSetupResponse(): string {
   return [
     '<EXECUTION_SETUP_RESULT>',
@@ -74,6 +86,55 @@ function buildReadyExecutionSetupResponse(): string {
 }
 
 describe('generateExecutionSetup', () => {
+  it('returns a retryable generation failure when the attempt deadline expires before session creation', async () => {
+    const adapter = new DeadlineAwareSessionAdapter()
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      {
+        timeoutMs: 60_000,
+        timeoutDeadline: Date.now() - 1,
+      },
+    )
+
+    expect(result.session).toBeNull()
+    expect(result.result).toBeNull()
+    expect(result.parse.errors).toEqual([
+      'Execution setup prompt failed: Execution setup timed out before workspace preparation completed.',
+    ])
+  })
+
+  it('reuses one absolute deadline for progress and structured-result continuations', async () => {
+    const adapter = new SequencedMockOpenCodeAdapter()
+    adapter.mockResponses.set('mock-session-1#1', 'Preparing the workspace now.')
+    adapter.mockResponses.set('mock-session-1#2', 'status: ready\nsummary: finished without the required marker')
+    adapter.mockResponses.set('mock-session-1#3', buildReadyExecutionSetupResponse())
+    const timeoutDeadline = Date.now() + 60_000
+    const dispatchDeadlines: Array<string | undefined> = []
+
+    const result = await generateExecutionSetup(
+      adapter,
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/test',
+      undefined,
+      {
+        timeoutMs: 60_000,
+        timeoutDeadline,
+        onPromptDispatched: ({ event }) => dispatchDeadlines.push(event.deadlineAt),
+      },
+    )
+
+    expect(result.result?.status).toBe('ready')
+    expect(dispatchDeadlines).toEqual([
+      new Date(timeoutDeadline).toISOString(),
+      new Date(timeoutDeadline).toISOString(),
+      new Date(timeoutDeadline).toISOString(),
+    ])
+  })
+
   it('does not replace a failed manual continuation with the full setup prompt in a fresh session', async () => {
     const adapter = new FailingPromptAdapter()
 

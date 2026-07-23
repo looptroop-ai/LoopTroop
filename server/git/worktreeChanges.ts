@@ -106,6 +106,7 @@ interface FileClassifyOptions {
 
 interface WorktreeSummaryOptions {
   setupExcludedRoots?: string[]
+  timeoutMs?: number
 }
 
 interface ExecutionSetupProfileLike {
@@ -327,6 +328,7 @@ export function summarizeWorktreeChanges(
   ], {
     encoding: 'utf8',
     maxBuffer: GIT_OP_MAX_BUFFER_BYTES,
+    ...(options.timeoutMs !== undefined && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
   })
 
   if (result.status !== 0 || result.error) {

@@ -1764,6 +1764,36 @@ describe('runOpenCodePrompt', () => {
     expect(adapter.abortCalls).toEqual([])
   })
 
+  it('uses an explicit absolute deadline instead of restarting timeoutMs', async () => {
+    const deferred = createDeferred<string>()
+    const adapter = new TestOpenCodeAdapter([{
+      response: deferred,
+      streamEvents: [{
+        type: 'session_status',
+        sessionId: 'ses-1',
+        status: 'retry',
+        attempt: 1,
+        message: 'temporarily unavailable',
+      }],
+    }])
+    const timeoutDeadline = Date.now() + 20
+    const dispatched: OpenCodePromptDispatchEvent[] = []
+
+    await expect(runOpenCodePrompt({
+      adapter,
+      projectPath: '/tmp/project',
+      parts: [{ type: 'text', content: 'Prompt body' }],
+      timeoutMs: 60_000,
+      timeoutDeadline,
+      opencodeRetryPolicy: { limit: 50, delayMs: 60_000 },
+      onPromptDispatched: event => dispatched.push(event),
+    })).rejects.toThrow('Timeout')
+
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0]?.deadlineAt).toBe(new Date(timeoutDeadline).toISOString())
+    expect(adapter.abortCalls).toEqual(['ses-1'])
+  })
+
   it('subscribeToEvents emits synthetic done after step-finish safety timeout', async () => {
     // Test the safety timeout directly on the adapter level with a small value
     const fakeClient = createFakeSdkClient({

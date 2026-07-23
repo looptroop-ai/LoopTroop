@@ -489,7 +489,13 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
           {/* ── AI Thinking ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">AI Thinking</div>
           <div className="grid grid-cols-2 gap-3">
-            <NumericField fieldKey="councilResponseTimeout" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Wait time for AI model responses (10–3600s)" />
+            <NumericField
+              fieldKey="councilResponseTimeout"
+              rawNumeric={rawNumeric}
+              onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
+              hint="Wait time for planning and other AI-only responses (10–3600s)."
+              tooltip="Applies to planning and other AI-only responses. It does not apply to coding attempts or pre-implementation workspace setup; use Per-Iteration Timeout and Execution Setup Timeout for those."
+            />
             <NumericField fieldKey="minCouncilQuorum" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Minimum council votes required (1–6)" />
           </div>
           <div className="mt-3">
@@ -539,8 +545,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           <Separator />
 
-          {/* ── Implementation Phase ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Implementation Phase</div>
+          {/* ── Implementation & Workspace Setup ── */}
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Implementation &amp; Workspace Setup</div>
           <div className="grid grid-cols-2 gap-3">
             <NumericField fieldKey="maxIterations" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum automatic retries per bead during coding (0–20). Final test retries use the same limit." />
             <NumericField fieldKey="perIterationTimeout" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Timeout for each attempt (10–3600s)" />
@@ -550,8 +556,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
               fieldKey="executionSetupTimeout"
               rawNumeric={rawNumeric}
               onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
-              hint="Timeout for the one-time execution setup phase before coding starts (0–3600s)."
-              tooltip="Runs a one-time setup step after pre-flight and before coding. It can install toolchains, warm caches, and prepare repository-local runtime artifacts when the approved setup plan requires them."
+              hint="Total active-work budget for each workspace setup attempt before coding starts (0–3600s)."
+              tooltip="This is the maximum total active-work time for one pre-implementation workspace setup attempt. Progress continuations and result corrections share the same budget; every genuine retry receives a fresh full budget."
             />
           </div>
 

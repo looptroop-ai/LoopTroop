@@ -27,7 +27,10 @@ import {
 import type { OpenCodeStreamState } from './types'
 import { handleMockExecutionUnsupported } from './executionPhase'
 import { recordWorktreeStartCommit, resetWorktreeToCommit, WORKTREE_RESET_PRESERVE_PATHS } from '../../phases/execution/gitOps'
-import { executeExecutionSetupWithRetries } from '../../phases/executionSetup/executor'
+import {
+  executeExecutionSetupWithRetries,
+  type ExecutionSetupAttemptTiming,
+} from '../../phases/executionSetup/executor'
 import { readExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 import { flattenExecutionSetupPlanCommands } from '../../phases/executionSetupPlan/types'
 import {
@@ -68,6 +71,21 @@ import { materializeExecutionSetupWorkspaceInputs } from '../../phases/execution
 
 const SETUP_WRAPPER_VALIDATION_TIMEOUT_MS = 10_000
 const SETUP_PROBE_TIMEOUT_MS = 30_000
+
+function getRemainingExecutionSetupAttemptMs(
+  timing: ExecutionSetupAttemptTiming,
+): number | undefined {
+  if (timing.timeoutDeadline === undefined) return undefined
+  return Math.max(0, timing.timeoutDeadline - Date.now())
+}
+
+function buildExecutionSetupAttemptTimeoutError(
+  timing: ExecutionSetupAttemptTiming,
+  activity: string,
+): string {
+  const seconds = timing.timeoutMs / 1000
+  return `Execution setup reached its configured ${seconds}-second timeout while ${activity}.`
+}
 
 function readExecutionSetupAttempt(content: string | null | undefined): number {
   if (!content) return 0
@@ -189,12 +207,39 @@ async function validateExecutionSetupRuntimeProfile(input: {
   beadsPath: string
   profile: ExecutionSetupProfile
   signal: AbortSignal
+  timing: ExecutionSetupAttemptTiming
 }): Promise<{ errors: string[]; profile: ExecutionSetupProfile }> {
   const errors: string[] = []
   const workspaceProbeReceipts: ExecutionSetupCommandReceiptPayload[] = []
   const hookValidationReceipts: ExecutionSetupCommandReceiptPayload[] = []
   const wrapperPath = getExecutionSetupCommandWrapper(input.profile, input.worktreePath)
   const declaresReusableExecution = Boolean(wrapperPath) || hasExecutionSetupProjectCommands(input.profile)
+  const resultWithReceipts = () => ({
+    errors,
+    profile: {
+      ...input.profile,
+      workspaceProbeReceipts,
+      gitHooks: {
+        ...input.profile.gitHooks,
+        validationReceipts: hookValidationReceipts,
+      },
+    },
+  })
+  const commandTimeout = (maximumMs: number, activity: string): number | null => {
+    const remainingMs = getRemainingExecutionSetupAttemptMs(input.timing)
+    if (remainingMs === undefined) return maximumMs
+    if (remainingMs <= 0) {
+      errors.push(buildExecutionSetupAttemptTimeoutError(input.timing, activity))
+      return null
+    }
+    return Math.max(1, Math.min(maximumMs, remainingMs))
+  }
+  const stopAfterDeadline = (activity: string): boolean => {
+    const remainingMs = getRemainingExecutionSetupAttemptMs(input.timing)
+    if (remainingMs === undefined || remainingMs > 0) return false
+    errors.push(buildExecutionSetupAttemptTimeoutError(input.timing, activity))
+    return true
+  }
 
   if (declaresReusableExecution && input.profile.toolingProbeCommands.length === 0) {
     errors.push(
@@ -205,13 +250,16 @@ async function validateExecutionSetupRuntimeProfile(input: {
   if (wrapperPath) {
     throwIfAborted(input.signal, input.ticketId)
     const noOpCommand = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`
+    const timeoutMs = commandTimeout(SETUP_WRAPPER_VALIDATION_TIMEOUT_MS, 'validating the runtime wrapper')
+    if (timeoutMs === null) return resultWithReceipts()
     const result = await runShellCommand({
       command: noOpCommand,
       cwd: input.worktreePath,
-      timeoutMs: SETUP_WRAPPER_VALIDATION_TIMEOUT_MS,
+      timeoutMs,
       commandWrapper: wrapperPath,
       forceWrapper: true,
     })
+    if (stopAfterDeadline('validating the runtime wrapper')) return resultWithReceipts()
     if (result.exitCode !== 0 || result.timedOut) {
       errors.push(summarizeSetupCommandFailure({
         label: `Execution setup wrapper validation failed for ${wrapperPath}`,
@@ -222,18 +270,21 @@ async function validateExecutionSetupRuntimeProfile(input: {
         durationMs: result.durationMs,
         timedOut: result.timedOut,
       }))
-      return { errors, profile: input.profile }
+      return resultWithReceipts()
     }
   }
 
   for (const probeCommand of input.profile.toolingProbeCommands) {
     throwIfAborted(input.signal, input.ticketId)
+    const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'running tooling probes')
+    if (timeoutMs === null) return resultWithReceipts()
     const result = await runShellCommand({
       command: probeCommand,
       cwd: input.worktreePath,
-      timeoutMs: SETUP_PROBE_TIMEOUT_MS,
+      timeoutMs,
       ...(wrapperPath ? { commandWrapper: wrapperPath } : {}),
     })
+    if (stopAfterDeadline('running tooling probes')) return resultWithReceipts()
     if (result.exitCode !== 0 || result.timedOut) {
       errors.push(summarizeSetupCommandFailure({
         label: 'Execution setup tooling probe failed',
@@ -257,13 +308,16 @@ async function validateExecutionSetupRuntimeProfile(input: {
   }
   for (const probe of input.profile.workspaceProbes) {
     throwIfAborted(input.signal, input.ticketId)
+    const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'running workspace probes')
+    if (timeoutMs === null) return resultWithReceipts()
     const result = await runShellCommand({
       command: probe.command,
       cwd: input.worktreePath,
-      timeoutMs: SETUP_PROBE_TIMEOUT_MS,
+      timeoutMs,
       ...(wrapperPath ? { commandWrapper: wrapperPath } : {}),
     })
     workspaceProbeReceipts.push(toCommandReceipt(probe.id, probe.command, result))
+    if (stopAfterDeadline('running workspace probes')) return resultWithReceipts()
     if (result.exitCode !== 0 || result.timedOut) {
       errors.push(summarizeSetupCommandFailure({
         label: `Execution setup workspace probe failed (${probe.id})`,
@@ -280,13 +334,16 @@ async function validateExecutionSetupRuntimeProfile(input: {
   if (input.profile.gitHooks.policy === 'validate_explicitly') {
     for (const validation of input.profile.gitHooks.validationCommands) {
       throwIfAborted(input.signal, input.ticketId)
+      const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'validating Git hooks')
+      if (timeoutMs === null) return resultWithReceipts()
       const result = await runShellCommand({
         command: validation.command,
         cwd: input.worktreePath,
-        timeoutMs: SETUP_PROBE_TIMEOUT_MS,
+        timeoutMs,
         ...(wrapperPath ? { commandWrapper: wrapperPath } : {}),
       })
       hookValidationReceipts.push(toCommandReceipt(validation.id, validation.command, result))
+      if (stopAfterDeadline('validating Git hooks')) return resultWithReceipts()
       if (result.exitCode !== 0 || result.timedOut) {
         errors.push(summarizeSetupCommandFailure({
           label: `Explicit Git hook validation failed (${validation.hook})`,
@@ -323,17 +380,7 @@ async function validateExecutionSetupRuntimeProfile(input: {
     })
   }
 
-  return {
-    errors,
-    profile: {
-      ...input.profile,
-      workspaceProbeReceipts,
-      gitHooks: {
-        ...input.profile.gitHooks,
-        validationReceipts: hookValidationReceipts,
-      },
-    },
-  }
+  return resultWithReceipts()
 }
 
 function validateExecutionSetupToolingFailureEvidence(input: {
@@ -380,9 +427,13 @@ async function generateExecutionSetupRetryNote(input: {
   signal: AbortSignal
   model: string
   variant?: string
+  timing: ExecutionSetupAttemptTiming
   onPromptDispatched?: (event: OpenCodePromptDispatchEvent) => void
   onPromptCompleted?: (event: OpenCodePromptCompletedEvent) => void
 }): Promise<string | null> {
+  if (!input.generation.session) return null
+  const remainingMs = getRemainingExecutionSetupAttemptMs(input.timing)
+  if (remainingMs !== undefined && remainingMs <= 0) return null
   const ticketState: TicketState = {
     ticketId: input.context.externalId,
     title: input.context.title,
@@ -411,7 +462,8 @@ async function generateExecutionSetupRetryNote(input: {
     session: input.generation.session,
     parts: [{ type: 'text', content: prompt }],
     signal: input.signal,
-    timeoutMs: 60000,
+    timeoutMs: Math.min(60_000, remainingMs ?? 60_000),
+    timeoutDeadline: input.timing.timeoutDeadline,
     timeoutKind: 'execution_setup',
     model: input.model,
     variant: input.variant,
@@ -508,7 +560,8 @@ export async function handleExecutionSetup(
           additionalManualIterations: pendingContinuation?.additionalRetryAttempts ?? 0,
         },
         {
-          evaluateGeneration: async ({ generation }) => {
+          evaluateGeneration: async ({ generation, timing }) => {
+            const attemptTiming = timing ?? { timeoutMs: runtimeSettings.timeoutMs }
             const errors = [...generation.parse.errors]
             const result = generation.result
             const worktreeWarnings: string[] = []
@@ -548,28 +601,44 @@ export async function handleExecutionSetup(
                   beadsPath: paths.beadsPath,
                   profile,
                   signal,
+                  timing: attemptTiming,
                 })
                 errors.push(...validation.errors)
                 profile = validation.profile
               }
 
-              try {
-                const setupExcludedRoots = getExecutionSetupCommitExcludedRoots(paths.worktreePath, profile)
-                const changeSummary = summarizeWorktreeChanges(paths.worktreePath, {
-                  setupExcludedRoots,
-                })
-
-                if (changeSummary.hasCommittableChanges) {
-                  errors.push(buildWorktreeDirtyError(changeSummary.committable.map(entry => entry.path)))
+              const remainingMs = getRemainingExecutionSetupAttemptMs(attemptTiming)
+              if (remainingMs !== undefined && remainingMs <= 0) {
+                if (!errors.some(error => error.startsWith('Execution setup reached its configured '))) {
+                  errors.push(buildExecutionSetupAttemptTimeoutError(attemptTiming, 'inspecting workspace changes'))
                 }
+              } else {
+                try {
+                  const setupExcludedRoots = getExecutionSetupCommitExcludedRoots(paths.worktreePath, profile)
+                  const changeSummary = summarizeWorktreeChanges(paths.worktreePath, {
+                    setupExcludedRoots,
+                    ...(remainingMs !== undefined ? { timeoutMs: remainingMs } : {}),
+                  })
 
-                if (changeSummary.generatedNoise.length > 0) {
-                  const warning = buildGeneratedNoiseWarning(changeSummary.generatedNoise)
-                  worktreeWarnings.push(warning)
-                  profile = addProfileCautions(profile, [warning])
+                  if (changeSummary.hasCommittableChanges) {
+                    errors.push(buildWorktreeDirtyError(changeSummary.committable.map(entry => entry.path)))
+                  }
+
+                  if (changeSummary.generatedNoise.length > 0) {
+                    const warning = buildGeneratedNoiseWarning(changeSummary.generatedNoise)
+                    worktreeWarnings.push(warning)
+                    profile = addProfileCautions(profile, [warning])
+                  }
+                } catch (err) {
+                  const postInspectionRemainingMs = getRemainingExecutionSetupAttemptMs(attemptTiming)
+                  if (postInspectionRemainingMs !== undefined && postInspectionRemainingMs <= 0) {
+                    if (!errors.some(error => error.startsWith('Execution setup reached its configured '))) {
+                      errors.push(buildExecutionSetupAttemptTimeoutError(attemptTiming, 'inspecting workspace changes'))
+                    }
+                  } else {
+                    errors.push(`Failed to inspect setup worktree cleanliness: ${err instanceof Error ? err.message : 'Unknown error'}`)
+                  }
                 }
-              } catch (err) {
-                errors.push(`Failed to inspect setup worktree cleanliness: ${err instanceof Error ? err.message : 'Unknown error'}`)
               }
             }
 
@@ -582,7 +651,7 @@ export async function handleExecutionSetup(
               worktreeWarnings,
             })
           },
-          generateRetryNote: async ({ generation, report }) => {
+          generateRetryNote: async ({ generation, report, timing }) => {
             try {
               return await generateExecutionSetupRetryNote({
                 ticketId,
@@ -592,6 +661,7 @@ export async function handleExecutionSetup(
                 signal,
                 model: setupModelId,
                 variant: context.lockedMainImplementerVariant ?? undefined,
+                timing,
                 onPromptDispatched: (event) => {
                   emitOpenCodePromptLog(
                     ticketId,
@@ -654,7 +724,7 @@ export async function handleExecutionSetup(
               )
             }
 
-            if (report.ready) {
+            if (report.ready && generation.session) {
               await sessionManager.completeSession(generation.session.id)
             }
           },
@@ -760,7 +830,9 @@ export async function handleExecutionSetup(
             )
           },
           beforeRetry: async ({ generation, nextAttempt }) => {
-            await sessionManager.abandonSession(generation.session.id)
+            if (generation.session) {
+              await sessionManager.abandonSession(generation.session.id)
+            }
             resetWorktreeToCommit(paths.worktreePath, phaseStartCommit, {
               preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],
             })

@@ -12,14 +12,45 @@ export interface NumericFieldProps {
   tooltip?: string
 }
 
+interface DurationParts {
+  hours: number
+  minutes: number
+  seconds: number
+}
+
+function toDurationParts(totalSeconds: number): DurationParts {
+  return {
+    hours: Math.floor(totalSeconds / 3600),
+    minutes: Math.floor((totalSeconds % 3600) / 60),
+    seconds: totalSeconds % 60,
+  }
+}
+
 export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: NumericFieldProps) {
   const cfg = numericFields[fieldKey]
   const error = getFieldError(fieldKey, rawNumeric)
-  const unitSuffix = fieldKey === 'councilResponseTimeout' || fieldKey === 'perIterationTimeout' || fieldKey === 'executionSetupTimeout' || fieldKey === 'opencodeRetryDelay'
+  const isDuration = 'unit' in cfg && cfg.unit === 'seconds'
+  const unitSuffix = isDuration
     ? ' (s)'
     : fieldKey === 'coverageFollowUpBudgetPercent'
       ? ' (%)'
       : ''
+  const totalSeconds = Number(rawNumeric[fieldKey])
+  const hasUsableDuration = isDuration
+    && rawNumeric[fieldKey] !== ''
+    && Number.isInteger(totalSeconds)
+    && totalSeconds >= 0
+  const duration = hasUsableDuration ? toDurationParts(totalSeconds) : null
+
+  const updateDurationPart = (part: keyof DurationParts, rawValue: string) => {
+    if (!duration || rawValue === '') return
+    const value = Number(rawValue)
+    if (!Number.isInteger(value) || value < 0) return
+    if ((part === 'minutes' || part === 'seconds') && value > 59) return
+
+    const next = { ...duration, [part]: value }
+    onChange(fieldKey, String((next.hours * 3600) + (next.minutes * 60) + next.seconds))
+  }
 
   return (
     <div>
@@ -49,6 +80,33 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
         onChange={e => onChange(fieldKey, e.target.value)}
         className={cn("w-full rounded-md border bg-background px-3 py-2 text-sm", error ? 'border-red-500' : 'border-input')}
       />
+      {isDuration ? (
+        <div
+          className="mt-2 grid grid-cols-3 gap-2"
+          aria-label={`${cfg.label} duration breakdown`}
+        >
+          {([
+            ['hours', 'Hours', undefined],
+            ['minutes', 'Minutes', 59],
+            ['seconds', 'Seconds', 59],
+          ] as const).map(([part, label, max]) => (
+            <label key={part} className="text-xs text-muted-foreground">
+              <span className="mb-1 block">{label}</span>
+              <input
+                type="number"
+                min={0}
+                max={max}
+                step={1}
+                aria-label={`${cfg.label} ${part}`}
+                value={duration?.[part] ?? ''}
+                disabled={error !== null}
+                onChange={e => updateDurationPart(part, e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              />
+            </label>
+          ))}
+        </div>
+      ) : null}
       {error ? (
         <p className="text-xs text-red-500 mt-1">{error}</p>
       ) : (

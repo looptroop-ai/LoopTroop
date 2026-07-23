@@ -316,6 +316,93 @@ describe('handleExecutionSetup', () => {
     })
   })
 
+  it('rejects an otherwise ready profile after the aggregate setup-attempt deadline expires', async () => {
+    const { ticket, context } = createInitializedTestTicket(repoManager, {
+      title: 'Execution setup aggregate deadline',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+          timing: { timeoutMs: number; timeoutDeadline: number }
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({
+          profile: readyExecutionSetupProfile(ticket.externalId),
+        }),
+        timing: {
+          timeoutMs: 60_000,
+          timeoutDeadline: Date.now() - 1,
+        },
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: [expect.stringContaining('configured 60-second timeout')],
+    })
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_profile', 'PREPARING_EXECUTION_ENV')).toBeUndefined()
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+  })
+
+  it('caps backend setup probes at the time remaining in the aggregate attempt', async () => {
+    const { ticket, context } = createInitializedTestTicket(repoManager, {
+      title: 'Execution setup remaining validation budget',
+    })
+    writeExecutionSetupPlan(ticket.id, ticket.externalId)
+    const slowProbe = `${quoteShellArg(process.execPath)} -e ${quoteShellArg('setTimeout(() => {}, 1000)')}`
+
+    executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
+      const callbacks = args[5] as {
+        evaluateGeneration: (entry: {
+          attempt: number
+          generation: ReturnType<typeof buildExecutionSetupGeneration>
+          timing: { timeoutMs: number; timeoutDeadline: number }
+        }) => Promise<ExecutionSetupReport>
+      }
+      return await callbacks.evaluateGeneration({
+        attempt: 1,
+        generation: buildExecutionSetupGeneration({
+          profile: {
+            ...readyExecutionSetupProfile(ticket.externalId),
+            toolingProbeCommands: [slowProbe],
+          },
+        }),
+        timing: {
+          timeoutMs: 60_000,
+          timeoutDeadline: Date.now() + 75,
+        },
+      })
+    })
+
+    const sendEvent = vi.fn()
+    await handleExecutionSetup(
+      ticket.id,
+      { ...context, lockedMainImplementer: TEST.implementer },
+      sendEvent,
+      new AbortController().signal,
+    )
+
+    expect(sendEvent).toHaveBeenCalledWith({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: [expect.stringContaining('configured 60-second timeout while running tooling probes')],
+    })
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
+  })
+
   afterAll(() => {
     resetTestDb()
     repoManager.cleanup()

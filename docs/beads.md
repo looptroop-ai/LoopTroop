@@ -483,7 +483,9 @@ Three runtime controls matter most here:
 
 ### Execution Setup Timeout
 
-The maximum runtime for `PREPARING_EXECUTION_ENV`. This bounds the setup agent while it verifies readiness, prepares temporary tooling when needed, validates wrappers and probes, and emits an honest `Ready` or `Blocked` result. A short progress-only reply receives at most two same-session continuation nudges without consuming a normal setup attempt or structured-output retry. If the agent reports that a required tool cannot be provisioned safely, setup stops immediately with that reason instead of repeating equivalent attempts.
+The maximum total active-work budget for one `PREPARING_EXECUTION_ENV` attempt. A single deadline covers session acquisition, the initial/fallback prompts, OpenCode provider recovery, progress continuations, structured-output corrections, setup commands and validation, worktree inspection, and retry-note generation while the agent works toward an honest `Ready` or `Blocked` result. Each step receives only the remaining time; progress and correction prompts do not restart the clock. OpenCode's retry limit and grace window still apply within prompts but cannot extend the attempt.
+
+Every genuine setup retry starts with a fresh full budget. Setting this timeout to `0` disables the aggregate deadline while leaving command-level safety limits intact. On expiry, process/session cleanup and safe workspace restoration may finish after the deadline so the next attempt can start cleanly. If the agent reports that a required tool cannot be provisioned safely, setup stops immediately with that reason instead of repeating equivalent attempts.
 
 ### Per-Iteration Timeout
 

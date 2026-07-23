@@ -31,7 +31,7 @@ export interface ExecutionSetupParseResult {
 }
 
 export interface ExecutionSetupGenerationResult {
-  session: Session
+  session: Session | null
   output: string
   result: ExecutionSetupResult | null
   parse: ExecutionSetupParseResult

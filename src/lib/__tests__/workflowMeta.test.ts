@@ -220,7 +220,11 @@ describe.concurrent('workflow metadata', () => {
     expect(setupApprovalPhase?.label).toBe('Approving Workspace Setup')
     expect(setupApprovalPhase?.reviewArtifactType).toBe('execution_setup_plan')
     expect(setupPhase?.label).toBe('Preparing Workspace Runtime')
-    expect(setupPhase?.description).toContain('functional repository probes, and explicit Git-hook checks')
+    expect(setupPhase?.description).toContain('honest Ready or Blocked result')
+    expect(setupPhase?.details.steps).toEqual(expect.arrayContaining([
+      expect.stringContaining('One Deadline Per Attempt'),
+      expect.stringContaining('Deadline Recovery'),
+    ]))
     expect(setupPhase?.contextSummary).toEqual(['ticket_details', 'beads', 'execution_setup_plan', 'execution_setup_notes'])
     expect(codingPhase?.contextSummary).toEqual(['bead_data', 'bead_notes'])
   })

@@ -347,7 +347,9 @@ All numeric fields are validated against min/max bounds defined in `numericField
 | Tool Error Max Chars | [Configuration Reference](configuration.md#tool-error-max-chars) |
 
 > [!NOTE]
-> Timeout and delay fields are stored in **milliseconds**. `ProfileSetup` converts those stored milliseconds to seconds for display and back to milliseconds on save. Count-style fields such as `OpenCode Max Steps` remain raw integers in both storage and UI.
+> AI Response Timeout, Execution Setup Timeout, Per-Iteration Timeout, and OpenCode Retry Grace Window keep total seconds as their canonical UI value and are stored in **milliseconds**. Each also shows synchronized whole-number Hours, Minutes, and Seconds controls: editing either representation updates the other immediately, with Minutes and Seconds normalized to `0–59`. Invalid or blank total seconds disable the derived controls until corrected. Count-style fields such as `OpenCode Max Steps` remain raw integers in both storage and UI.
+
+Configuration groups Per-Iteration Timeout, Execution Setup Timeout, and Max Bead Retries under **Implementation & Workspace Setup**. The `?` tooltip for AI Response Timeout explains that it excludes coding and pre-implementation workspace setup, which use Per-Iteration Timeout and Execution Setup Timeout respectively. Execution Setup Timeout's tooltip identifies it as the total budget for one workspace-setup attempt and notes that each genuine retry receives a fresh budget.
 
 Profile settings are inherited by new tickets at start time. The locked copies in the ticket record are what the workflow actually uses for that run.
 

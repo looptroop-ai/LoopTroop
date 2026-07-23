@@ -72,8 +72,17 @@ function errorMessage(error: unknown): string {
   return getErrorMessage(error)
 }
 
+function normalizeExecutionSetupPromptError(
+  error: unknown,
+  timeoutDeadline: number | undefined,
+): unknown {
+  return timeoutDeadline !== undefined && Date.now() >= timeoutDeadline
+    ? new Error('Execution setup timed out before workspace preparation completed.', { cause: error })
+    : error
+}
+
 function buildPromptFailureGeneration(
-  session: Session,
+  session: Session | null,
   error: unknown,
   previousDiagnostics: NonNullable<StructuredOutputMetadata['retryDiagnostics']> = [],
   previousRawAttempts: RawAttempt[] = [],
@@ -127,6 +136,7 @@ export async function generateExecutionSetup(
     model?: string
     variant?: string
     timeoutMs?: number
+    timeoutDeadline?: number
     structuredRetryCount?: number
     phaseAttempt?: number
     manualContinuation?: boolean
@@ -140,6 +150,9 @@ export async function generateExecutionSetup(
   const promptContent = buildPromptFromTemplate(PROM_EXECUTION_SETUP, ticketContext)
   const promptParts = [{ type: 'text', content: promptContent }] as PromptPart[]
   const initialInput = formatPromptText(promptParts)
+  const timeoutMs = callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS
+  const timeoutDeadline = callbacks?.timeoutDeadline
+    ?? (timeoutMs > 0 ? Date.now() + timeoutMs : undefined)
   let sessionId = ''
   let activeSessionId: string | null = null
   let activeSession: Session | null = null
@@ -151,7 +164,8 @@ export async function generateExecutionSetup(
     projectPath,
     parts: promptParts,
     signal,
-    timeoutMs: callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
+    timeoutMs,
+    timeoutDeadline,
     timeoutKind: 'execution_setup',
     model: callbacks?.model,
     variant: callbacks?.variant,
@@ -191,6 +205,15 @@ export async function generateExecutionSetup(
     result = await runMainSetupPrompt()
   } catch (error) {
     throwIfCancelled(error, signal)
+    if (timeoutDeadline !== undefined && Date.now() >= timeoutDeadline) {
+      return buildPromptFailureGeneration(
+        activeSession,
+        normalizeExecutionSetupPromptError(error, timeoutDeadline),
+        [],
+        [],
+        initialInput,
+      )
+    }
     if (callbacks?.manualContinuation) throw error
     if (activeSessionId && sessionManager) {
       await sessionManager.abandonSession(activeSessionId)
@@ -202,6 +225,15 @@ export async function generateExecutionSetup(
       result = await runMainSetupPrompt()
     } catch (retryError) {
       throwIfCancelled(retryError, signal)
+      if (timeoutDeadline !== undefined && Date.now() >= timeoutDeadline) {
+        return buildPromptFailureGeneration(
+          activeSession,
+          normalizeExecutionSetupPromptError(retryError, timeoutDeadline),
+          [],
+          [],
+          initialInput,
+        )
+      }
       if (!activeSession) {
         throw retryError
       }
@@ -282,7 +314,8 @@ export async function generateExecutionSetup(
           session: result.session,
           parts: [{ type: 'text', content: EXECUTION_SETUP_PROGRESS_CONTINUATION_PROMPT }],
           signal,
-          timeoutMs: callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
+          timeoutMs,
+          timeoutDeadline,
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           erroredSessionPolicy: 'discard_errored_session_output',
@@ -313,7 +346,13 @@ export async function generateExecutionSetup(
         if (!activeSession) {
           throw error
         }
-        return buildPromptFailureGeneration(activeSession, error, retryDiagnostics, rawAttempts, initialInput)
+        return buildPromptFailureGeneration(
+          activeSession,
+          normalizeExecutionSetupPromptError(error, timeoutDeadline),
+          retryDiagnostics,
+          rawAttempts,
+          initialInput,
+        )
       }
     }
     if (!shouldRetryStructuredOutput(retryAttemptsUsed, structuredRetryCount)) {
@@ -340,7 +379,8 @@ export async function generateExecutionSetup(
           session: result.session,
           parts: retryParts,
           signal,
-          timeoutMs: callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
+          timeoutMs,
+          timeoutDeadline,
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           erroredSessionPolicy: 'discard_errored_session_output',
@@ -370,7 +410,8 @@ export async function generateExecutionSetup(
           projectPath,
           parts: promptParts,
           signal,
-          timeoutMs: callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS,
+          timeoutMs,
+          timeoutDeadline,
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           variant: callbacks?.variant,
@@ -414,7 +455,13 @@ export async function generateExecutionSetup(
       if (!activeSession) {
         throw error
       }
-      return buildPromptFailureGeneration(activeSession, error, retryDiagnostics, rawAttempts, initialInput)
+      return buildPromptFailureGeneration(
+        activeSession,
+        normalizeExecutionSetupPromptError(error, timeoutDeadline),
+        retryDiagnostics,
+        rawAttempts,
+        initialInput,
+      )
     }
 
     parsed = parseExecutionSetupResult(response)

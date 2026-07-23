@@ -67,7 +67,7 @@ The docs links on each control point back to this page, but the UI itself also h
 - **Model pickers load configured providers only by default.** Inside the picker you can search by model name, provider, or family and filter to free models. The much larger full OpenCode catalog is not requested until you enable **Show all providers**; turning the option off returns to the configured-provider list.
 - **Duplicate model selection is prevented.** The main implementer is auto-included in the council, and the picker disables models already chosen in another council slot.
 - **Effort controls are conditional.** The effort / thinking picker only appears when the selected model advertises variants, and the saved variant is stored per slot.
-- **Numeric validation is strict.** All numeric fields must be whole numbers. The UI shows timeout/delay inputs in seconds and coverage in percent, while the API stores timeout/delay values in milliseconds.
+- **Numeric validation is strict.** All numeric fields must be whole numbers. AI Response Timeout, Execution Setup Timeout, Per-Iteration Timeout, and OpenCode Retry Grace Window keep total seconds as the saved value and also provide synchronized Hours, Minutes, and Seconds editors; changing either representation updates the other immediately. Coverage remains displayed in percent, while the API stores timeout/delay values in milliseconds.
 - **The `About` button opens a separate window for application details.** It starts with the current runtime environment, then shows the application's storage locations and a short note explaining that each attached project also keeps local LoopTroop state inside `<repo>/.looptroop/`.
 
 ### About Window
@@ -108,9 +108,9 @@ This is meant to answer two quick questions without opening logs or artifacts:
 | [Beads Coverage Passes](#beads-coverage-passes) | 5 | 2–20 | Coverage | ticket start lock |
 | [Manual QA](#manual-qa) | disabled | enabled / disabled | Post-Implementation | ticket start lock |
 | [Git Hook Policy](#git-hook-policy) | Validate | Validate / Ignore / Run | Pre-Implementation | ticket start lock |
-| [Per-Iteration Timeout](#per-iteration-timeout) | 1200 s | 0–3600 s | Implementation Phase | next coding/final-test attempt |
-| [Execution Setup Timeout](#execution-setup-timeout) | 1200 s | 0–3600 s | Implementation Phase | next execution-setup attempt |
-| [Max Bead Retries](#max-bead-retries) | 5 | 0–20 | Implementation Phase | next execution/final-test attempt |
+| [Per-Iteration Timeout](#per-iteration-timeout) | 1200 s | 0–3600 s | Implementation & Workspace Setup | next coding/final-test attempt |
+| [Execution Setup Timeout](#execution-setup-timeout) | 1200 s | 0–3600 s | Implementation & Workspace Setup | next execution-setup attempt |
+| [Max Bead Retries](#max-bead-retries) | 5 | 0–20 | Implementation & Workspace Setup | next execution/final-test attempt |
 | [Tool Input Max Chars](#tool-input-max-chars) | 4,000 | 500–50,000 | Logging | live log formatting (cached briefly) |
 | [Tool Output Max Chars](#tool-output-max-chars) | 12,000 | 1,000–100,000 | Logging | live log formatting (cached briefly) |
 | [Tool Error Max Chars](#tool-error-max-chars) | 6,000 | 500–50,000 | Logging | live log formatting (cached briefly) |
@@ -304,6 +304,8 @@ Maximum number of steps OpenCode is allowed to perform per session. When the lim
 **Range:** 10–3600 s
 
 The maximum time LoopTroop will wait for a model response in non-coding model-output phases. It covers relevant-files scanning, council drafting/voting/refinement, coverage and expansion prompts, interview QA prompts, execution setup-plan drafting/regeneration, final-test model prompts, and PR title/body drafting.
+
+This setting does **not** govern coding attempts or `PREPARING_EXECUTION_ENV` workspace setup. Use [Per-Iteration Timeout](#per-iteration-timeout) for coding and [Execution Setup Timeout](#execution-setup-timeout) for pre-implementation workspace setup.
 
 **What happens when it expires:**
 
@@ -550,7 +552,7 @@ This policy affects only LoopTroop's internal Git operations. It does not alter 
 
 ---
 
-## Implementation Phase
+## Implementation & Workspace Setup
 
 ### Per-Iteration Timeout
 
@@ -587,15 +589,17 @@ LoopTroop generates a context wipe note summarizing the failure when possible, a
 **Default:** 1200 s (20 minutes)  
 **Range:** 0–3600 s
 
-The maximum allowed runtime for the one-time `PREPARING_EXECUTION_ENV` phase, which runs after the setup plan is approved and before any coding begins. This budget also covers setup-scoped online lookup of official launcher artifact metadata when local repository evidence is insufficient.
+The maximum total active-work budget for one `PREPARING_EXECUTION_ENV` attempt, which runs after the setup plan is approved and before any coding begins. One deadline is shared by session acquisition, the initial and fallback prompts, OpenCode provider recovery, progress continuations, structured-output corrections, setup-scoped online lookup, backend wrapper/probe/hook validation, worktree inspection, and retry-note generation. None of those steps restarts the current attempt's clock.
 
 **What execution setup does:**
 
 The setup phase can materialize user-approved ignored or untracked files and directories from the original checkout, install user-space toolchains under `.ticket/runtime/execution-setup/tool-cache`, warm caches, build native dependencies, or prepare repository-local runtime artifacts. It runs in the ticket's worktree before coding, records reusable wrapper commands when prepared runtime environment variables are needed, and validates declared tooling probes, repository-level workspace probes, and approved explicit Git-hook commands before the workflow enters coding. Setup follows repository evidence without assuming a language, build system, package manager, shell, or operating system. LoopTroop automatically recovers the canonical executable `.ticket/runtime/execution-setup/run` when a setup result omits its declaration, records the repair, and uses a non-login nested shell so the wrapper's prepared `PATH` is preserved. The agent must return an honest `ready` result when every check passes or `blocked` when any check fails; only ready profiles become reusable runtime state. If required launcher setup fails, a blocked profile records `tool_requirements.provisioning_attempts` evidence showing distinct attempted temp-root provisioning strategies and commands, or why no safe provisioning path exists. Workspace inputs have no size limit and use the setup plan approval gate rather than a separate configuration setting. Manual approval authorizes the listed paths. A future unattended mode must limit materialization to paths covered by a project allowlist.
 
-The long setup timeout remains available for real provisioning work such as toolchain downloads. When a completed setup turn contains only a short progress update, LoopTroop continues the same session up to two times without consuming a setup attempt or structured-output repair. A third progress-only response fails that attempt with a plain incomplete-setup explanation. Completed but malformed results use the separate Structured Output Retries setting. Actionable blocked results can use the normal setup-attempt budget; a blocked result proving that no safe provisioning path exists stops immediately.
+The long setup timeout remains available for real provisioning work such as toolchain downloads. When a completed setup turn contains only a short progress update, LoopTroop continues the same session up to two times without consuming a setup attempt or structured-output repair, but each continuation receives only the time remaining on the current attempt. Completed but malformed results use the separate Structured Output Retries setting under that same deadline. OpenCode Retry Limit and Retry Grace Window still apply within each prompt, but cannot extend the setup attempt beyond its deadline. A third progress-only response fails that attempt with a plain incomplete-setup explanation. Actionable blocked results can use the normal setup-attempt budget; a blocked result proving that no safe provisioning path exists stops immediately.
 
-When setup exhausts its automatic retry budget, **Retry with extra note...** can grant one manual setup attempt. This does not raise or replace the configured budget. It sends the entered text directly to the preserved setup session for that one attempt.
+Every genuine automatic, tooling-persistence, manual, or user-requested retry receives a new full Execution Setup Timeout budget. When setup exhausts its automatic retry budget, **Retry with extra note...** can grant one manual setup attempt. This does not raise or replace the configured retry budget. It sends the entered text directly to the preserved setup session for that one attempt.
+
+When the deadline expires, LoopTroop stops scheduling new setup work and returns a setup-timeout error. Process termination, session cleanup, safe worktree reset, and approved-input rematerialization may finish just after the deadline so a later retry starts safely; cleanup does not consume the new attempt's budget. A timeout before session creation is still an ordinary failed setup attempt and is eligible for configured retries.
 
 **Trade-offs:**
 
@@ -608,7 +612,7 @@ When setup exhausts its automatic retry budget, **Retry with extra note...** can
 
 - Increase for projects with heavyweight setup steps such as installing toolchains, running `docker pull`, or bootstrapping large `node_modules`.
 - Leave at default for most repos where setup runs in seconds or is not needed.
-- Setting to 0 disables the timeout for the setup phase specifically.
+- Setting to 0 disables the aggregate setup deadline; existing command-level safety limits still apply.
 
 **See also:** [Beads & Execution → Execution Setup Timeout](/beads#execution-setup-timeout)
 

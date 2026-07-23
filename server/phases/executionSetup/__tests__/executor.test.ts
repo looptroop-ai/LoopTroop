@@ -312,6 +312,82 @@ describe('executeExecutionSetupWithRetries', () => {
     expect(report.attempt).toBe(2)
   })
 
+  it('starts a fresh execution setup deadline for every genuine retry attempt', async () => {
+    const now = vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(5_000)
+    generateExecutionSetupMock
+      .mockResolvedValueOnce(buildGeneration(1))
+      .mockResolvedValueOnce(buildGeneration(2))
+    const observedDeadlines: Array<number | undefined> = []
+
+    await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 2,
+        timeoutMs: 60_000,
+      },
+      {
+        evaluateGeneration: async ({ attempt, timing }) => {
+          observedDeadlines.push(timing.timeoutDeadline)
+          return buildBackendValidationFailureReport(attempt)
+        },
+      },
+    )
+
+    expect(generateExecutionSetupMock).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.anything(),
+      '/tmp/project',
+      undefined,
+      expect.objectContaining({ timeoutDeadline: 61_000 }),
+    )
+    expect(generateExecutionSetupMock).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.anything(),
+      '/tmp/project',
+      undefined,
+      expect.objectContaining({ timeoutDeadline: 65_000 }),
+    )
+    expect(observedDeadlines).toEqual([61_000, 65_000])
+    now.mockRestore()
+  })
+
+  it('leaves the aggregate attempt deadline disabled when setup timeout is zero', async () => {
+    generateExecutionSetupMock.mockResolvedValueOnce(buildGeneration(1))
+    const evaluateGeneration = vi.fn(async ({ attempt }) => buildBackendValidationFailureReport(attempt))
+
+    await executeExecutionSetupWithRetries(
+      new MockOpenCodeAdapter(),
+      [{ type: 'text', content: 'Execution setup context' }],
+      '/tmp/project',
+      undefined,
+      {
+        model: 'model-a',
+        maxIterations: 1,
+        timeoutMs: 0,
+      },
+      { evaluateGeneration },
+    )
+
+    expect(generateExecutionSetupMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      '/tmp/project',
+      undefined,
+      expect.not.objectContaining({ timeoutDeadline: expect.any(Number) }),
+    )
+    expect(evaluateGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      timing: { timeoutMs: 0 },
+    }))
+  })
+
   it('uses bounded extra attempts when provisioning evidence has only one strategy after the base budget', async () => {
     generateExecutionSetupMock
       .mockResolvedValueOnce(buildGeneration(1))

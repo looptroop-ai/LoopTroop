@@ -53,4 +53,45 @@ describe('useTicketHistoricalLogs', () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['recovered']))
   })
+
+  it('loads every older cursor page for explicit navigation to the true beginning', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'new', content: 'new' }],
+        olderCursor: 'cursor-2',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'middle', content: 'middle' }],
+        olderCursor: 'cursor-1',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'old', content: 'old' }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+    const client = createTestQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
+      scope: 'lifecycle', view: 'overview',
+    }), { wrapper })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new', 'middle', 'old']))
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      2,
+      '/api/tickets/ticket-1/logs?scope=lifecycle&view=overview&limit=250&before=cursor-2',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      3,
+      '/api/tickets/ticket-1/logs?scope=lifecycle&view=overview&limit=250&before=cursor-1',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
 })

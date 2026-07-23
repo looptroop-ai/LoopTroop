@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId, type ReactNode } from 'react'
-import { Copy, Check, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined } from 'lucide-react'
+import { Copy, Check, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -433,18 +433,27 @@ export function PhaseLogPanel({
     `${phase}:${phaseAttempt ?? 'active'}:${effectiveTab}`,
   )
   const [copied, copyToClipboard] = useCopyToClipboard()
-  const handleCopyLogs = useCallback(() => {
-    if (shouldLoadHistoricalLogs) {
-      void historicalLogs.exportLogs().then(copyToClipboard).catch(() => undefined)
-      return
+  const [isCopyingLogs, setIsCopyingLogs] = useState(false)
+  const [copyLogsFailed, setCopyLogsFailed] = useState(false)
+  const handleCopyLogs = useCallback(async () => {
+    if (isCopyingLogs) return
+    setIsCopyingLogs(true)
+    setCopyLogsFailed(false)
+    try {
+      const textToCopy = shouldLoadHistoricalLogs
+        ? await historicalLogs.exportLogs()
+        : filteredLogs.map((entry) => {
+            const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
+            return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
+          }).join('\n')
+      if (!textToCopy) return
+      await copyToClipboard(textToCopy)
+    } catch {
+      setCopyLogsFailed(true)
+    } finally {
+      setIsCopyingLogs(false)
     }
-    if (!filteredLogs.length) return
-    const textToCopy = filteredLogs.map((entry) => {
-      const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
-      return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
-    }).join('\n')
-    copyToClipboard(textToCopy)
-  }, [copyToClipboard, filteredLogs, historicalLogs, shouldLoadHistoricalLogs, shouldShowModelNameInLogTags])
+  }, [copyToClipboard, filteredLogs, historicalLogs, isCopyingLogs, shouldLoadHistoricalLogs, shouldShowModelNameInLogTags])
 
   const visibleLogTail = useMemo(() => {
     const lastEntry = filteredLogs.at(-1)
@@ -684,19 +693,34 @@ export function PhaseLogPanel({
             </TooltipContent>
           </Tooltip>
           <Tooltip>
-                    <TooltipTrigger asChild>
+            <TooltipTrigger asChild>
+              <span className="inline-flex" tabIndex={isCopyingLogs ? 0 : undefined}>
                       <button
                               type="button"
                               aria-label="Copy all logs"
-                              onClick={handleCopyLogs}
-                              disabled={!hasLogs}
-                              className="flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={() => void handleCopyLogs()}
+                              disabled={isCopyingLogs || (!shouldLoadHistoricalLogs && !hasLogs)}
+                              className={cn(
+                                'flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                                isCopyingLogs && 'pointer-events-none',
+                              )}
                             >
-                              {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                              {isCopyingLogs
+                                ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+                                : copied
+                                  ? <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  : <Copy className="w-3.5 h-3.5" />}
                             </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs text-center text-balance">Copy all logs</TooltipContent>
-                  </Tooltip>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs text-center text-balance">
+              {isCopyingLogs
+                ? 'Preparing complete log history…'
+                : copyLogsFailed
+                  ? 'Could not copy complete logs. Click to retry.'
+                  : 'Copy all logs'}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
       <CurrentActivityStrip

@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId } from 'react'
-import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined } from 'lucide-react'
+import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -20,7 +20,7 @@ import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
 import { mergeEntriesBatch } from '@/context/logUtils'
-import { Virtuoso } from 'react-virtuoso'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
@@ -300,14 +300,26 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     setScrollParent(node)
   }, [])
   const contentRef = useRef<HTMLDivElement>(null)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const virtualItemCountRef = useRef(0)
   const autoScrollEnabledRef = useRef(true)
   const previousVisibleTailRef = useRef<string | null>(null)
   const previousViewRef = useRef<string | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
   const olderPageAnchorRef = useRef<{ height: number; top: number } | null>(null)
+  const explicitTopNavigationRef = useRef(false)
 
-  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
+  const scheduleScrollToBottom = useCallback((behavior: 'auto' | 'smooth') => {
     const scroll = () => {
+      const virtualItemCount = virtualItemCountRef.current
+      if (virtuosoRef.current && virtualItemCount > 0) {
+        virtuosoRef.current.scrollToIndex({
+          index: virtualItemCount - 1,
+          align: 'end',
+          behavior,
+        })
+        return
+      }
       const el = viewportRef.current
       if (!el) return
       el.scrollTo({ top: el.scrollHeight, behavior })
@@ -345,7 +357,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
       if (allowPagination && atTop && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
-        if (renderedEntries.length <= 200) olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+        if (!explicitTopNavigationRef.current && renderedEntries.length <= 200) {
+          olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
+        }
         void historicalLogs.fetchOlder()
       }
     }
@@ -409,7 +423,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     }
 
     if (hasLogs && (viewChanged || (visibleTailChanged && autoScrollEnabledRef.current))) {
-      const behavior: ScrollBehavior = viewChanged || !hadVisibleLogs ? 'auto' : 'smooth'
+      const behavior: 'auto' | 'smooth' = viewChanged || !hadVisibleLogs ? 'auto' : 'smooth'
       scheduleScrollToBottom(behavior)
     }
 
@@ -419,18 +433,27 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
   // ── Copy all logs ──────────────────────────────────────────────
   const [copied, copyToClipboard] = useCopyToClipboard()
-  const handleCopyLogs = useCallback(() => {
-    if (ticket?.id) {
-      void historicalLogs.exportLogs().then(copyToClipboard).catch(() => undefined)
-      return
+  const [isCopyingLogs, setIsCopyingLogs] = useState(false)
+  const [copyLogsFailed, setCopyLogsFailed] = useState(false)
+  const handleCopyLogs = useCallback(async () => {
+    if (isCopyingLogs) return
+    setIsCopyingLogs(true)
+    setCopyLogsFailed(false)
+    try {
+      const textToCopy = ticket?.id
+        ? await historicalLogs.exportLogs()
+        : renderedEntries.map((entry) => {
+            const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
+            return `${ts}[${entry.status}] ${formatLogLine(entry, true).copyText}`
+          }).join('\n')
+      if (!textToCopy) return
+      await copyToClipboard(textToCopy)
+    } catch {
+      setCopyLogsFailed(true)
+    } finally {
+      setIsCopyingLogs(false)
     }
-    if (!renderedEntries.length) return
-    const textToCopy = renderedEntries.map((entry) => {
-      const ts = entry.timestamp ? `[${entry.timestamp}] ` : ''
-      return `${ts}[${entry.status}] ${formatLogLine(entry, true).copyText}`
-    }).join('\n')
-    copyToClipboard(textToCopy)
-  }, [renderedEntries, copyToClipboard, historicalLogs, ticket?.id])
+  }, [renderedEntries, copyToClipboard, historicalLogs, isCopyingLogs, ticket?.id])
 
   // ── Global entry index counter ──────────────────────────────────
   const globalIndexMap = useMemo(() => {
@@ -459,11 +482,43 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     return items
   }), [phaseGroups])
   const shouldVirtualize = virtualItems.length > 200
+  virtualItemCountRef.current = virtualItems.length
   const virtualFirstItemIndex = useVirtualFirstItemIndex(
     virtualItems.map(item => item.key),
     virtualItems.find(item => item.type === 'entry')?.key,
     `full-log:${effectiveTab}`,
   )
+  const [isNavigatingToTop, setIsNavigatingToTop] = useState(false)
+  const handleGoToTop = useCallback(async () => {
+    if (isNavigatingToTop) return
+    explicitTopNavigationRef.current = true
+    olderPageAnchorRef.current = null
+    autoScrollEnabledRef.current = false
+    setIsAutoScroll(false)
+    setIsNavigatingToTop(true)
+    try {
+      await historicalLogs.fetchAllOlder()
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      if (virtuosoRef.current && virtualItemCountRef.current > 0) {
+        virtuosoRef.current.scrollToIndex({ index: 0, align: 'start', behavior: 'auto' })
+      } else {
+        viewportRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+      }
+    } finally {
+      explicitTopNavigationRef.current = false
+      setIsNavigatingToTop(false)
+    }
+  }, [historicalLogs, isNavigatingToTop])
+  const handleGoToBottom = useCallback(() => {
+    autoScrollEnabledRef.current = true
+    setIsAutoScroll(true)
+    const viewport = viewportRef.current
+    if (!virtuosoRef.current && viewport) {
+      viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+    }
+    scheduleScrollToBottom('auto')
+    requestAnimationFrame(() => scheduleScrollToBottom('auto'))
+  }, [scheduleScrollToBottom])
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
@@ -658,19 +713,34 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             </TooltipContent>
           </Tooltip>
           <Tooltip>
-                    <TooltipTrigger asChild>
+            <TooltipTrigger asChild>
+              <span className="inline-flex" tabIndex={isCopyingLogs ? 0 : undefined}>
                       <button
                               type="button"
                               aria-label="Copy all logs"
-                              onClick={handleCopyLogs}
-                              disabled={!hasLogs}
-                              className="flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={() => void handleCopyLogs()}
+                              disabled={isCopyingLogs || (!ticket?.id && !hasLogs)}
+                              className={cn(
+                                'flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                                isCopyingLogs && 'pointer-events-none',
+                              )}
                             >
-                              {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                              {isCopyingLogs
+                                ? <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+                                : copied
+                                  ? <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  : <Copy className="w-3.5 h-3.5" />}
                             </button>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs text-center text-balance">Copy all logs</TooltipContent>
-                  </Tooltip>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs text-center text-balance">
+              {isCopyingLogs
+                ? 'Preparing complete log history…'
+                : copyLogsFailed
+                  ? 'Could not copy complete logs. Click to retry.'
+                  : 'Copy all logs'}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
@@ -696,10 +766,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 />
               </div>
             ) : null}
-            {historicalLogs.isFetchingOlder ? <LoadingRemainingLogsLine /> : null}
+            {historicalLogs.isFetchingOlder || isNavigatingToTop ? <LoadingRemainingLogsLine /> : null}
             {hasLogs ? (
               shouldVirtualize && scrollParent ? (
                 <Virtuoso
+                  ref={virtuosoRef}
                   data={virtualItems}
                   customScrollParent={scrollParent}
                   data-testid="virtualized-log-list"
@@ -777,13 +848,19 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={() => viewportRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                aria-label="Go to top"
+                onClick={() => void handleGoToTop()}
+                disabled={isNavigatingToTop}
                 className="absolute top-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
               >
-                <ArrowUpToLine className="w-4 h-4" />
+                {isNavigatingToTop
+                  ? <LoaderCircle className="w-4 h-4 animate-spin" />
+                  : <ArrowUpToLine className="w-4 h-4" />}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="left" className="text-xs">Go to top</TooltipContent>
+            <TooltipContent side="left" className="text-xs">
+              {isNavigatingToTop ? 'Loading complete history…' : 'Go to top'}
+            </TooltipContent>
           </Tooltip>
         )}
         {hasLogs && !isAutoScroll && (
@@ -791,11 +868,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={() => {
-                  autoScrollEnabledRef.current = true
-                  setIsAutoScroll(true)
-                  scheduleScrollToBottom('smooth')
-                }}
+                aria-label="Back to bottom"
+                onClick={handleGoToBottom}
                 className="absolute bottom-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
               >
                 <ArrowDownToLine className="w-4 h-4" />

@@ -303,6 +303,138 @@ describe('FullLogView', () => {
     }
   })
 
+  it('loads all older pages before going to the true top of Full Log', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Newest row.',
+          entryId: 'newest',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: 'middle-cursor',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Middle row.',
+          entryId: 'middle',
+          timestamp: '2026-03-13T10:00:02.000Z',
+        }],
+        olderCursor: 'oldest-cursor',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'DRAFT',
+          status: 'DRAFT',
+          source: 'system',
+          content: 'Oldest row.',
+          entryId: 'oldest',
+          timestamp: '2026-03-13T10:00:01.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+
+    try {
+      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      expect(await screen.findByText('Newest row.')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 })
+      viewport.scrollTop = 400
+      viewport.scrollTo = vi.fn((options?: ScrollToOptions | number) => {
+        if (typeof options === 'object' && typeof options.top === 'number') viewport.scrollTop = options.top
+      })
+      fireEvent.scroll(viewport)
+      fireEvent.click(await screen.findByRole('button', { name: 'Go to top' }))
+
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+      await waitFor(() => expect(screen.getByText('Oldest row.')).toBeInTheDocument())
+      expect(viewport.scrollTop).toBe(0)
+      expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual(expect.arrayContaining([
+        expect.stringContaining('before=middle-cursor'),
+        expect.stringContaining('before=oldest-cursor'),
+      ]))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('reaches the maximum bottom in Full Log', async () => {
+    const scrollTo = vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(() => {})
+    getAllLogsMock.mockReturnValue([
+      makeLog('first', '[SYS] First', 'DRAFT'),
+      makeLog('last', '[SYS] Last', 'CODING'),
+    ])
+    renderWithTooltipProvider(<FullLogView />)
+
+    const viewport = screen.getByTestId('log-viewport')
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 100 })
+    viewport.scrollTop = 400
+    fireEvent.scroll(viewport)
+    scrollTo.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to bottom' }))
+
+    expect(screen.queryByRole('button', { name: 'Back to bottom' })).not.toBeInTheDocument()
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+    scrollTo.mockRestore()
+  })
+
+  it('shows pending feedback while exporting complete history for Copy all', async () => {
+    let resolveExport!: (response: Response) => void
+    const exportResponse = new Promise<Response>((resolve) => {
+      resolveExport = resolve
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/logs/export?')) return exportResponse
+      return createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Visible newest row.',
+          entryId: 'visible-newest',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: 'older-cursor',
+        hasOlder: true,
+      })
+    })
+
+    try {
+      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      expect(await screen.findByText('Visible newest row.')).toBeInTheDocument()
+      const copyButton = screen.getByRole('button', { name: 'Copy all logs' })
+
+      fireEvent.click(copyButton)
+      expect(copyButton).toBeDisabled()
+      expect(copyButton.querySelector('.animate-spin')).toBeInTheDocument()
+      fireEvent.pointerMove(copyButton)
+      expect((await screen.findAllByText('Preparing complete log history…')).length).toBeGreaterThan(0)
+
+      resolveExport(new Response('[complete history]', { status: 200 }))
+      await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('[complete history]'))
+      await waitFor(() => expect(copyButton).not.toBeDisabled())
+      expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes('/logs/export?'))).toHaveLength(1)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('renders the header with "Full Log" title', () => {
     getAllLogsMock.mockReturnValue([])
     renderWithTooltipProvider(<FullLogView />)

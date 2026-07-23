@@ -106,6 +106,17 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     return response.text()
   }, [scope, ticketId])
 
+  const fetchPreviousPage = query.fetchPreviousPage
+  const hasPreviousPage = query.hasPreviousPage
+  const fetchAllOlder = useCallback(async (): Promise<void> => {
+    let hasOlder = hasPreviousPage
+    while (hasOlder) {
+      const result = await fetchPreviousPage()
+      if (result.isError) throw result.error
+      hasOlder = result.hasPreviousPage
+    }
+  }, [fetchPreviousPage, hasPreviousPage])
+
   useEffect(() => {
     if (!ticketId || !enabled) return
     const handleRefresh = (event: Event) => {
@@ -121,6 +132,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     ...query,
     entries,
     fetchOlder: query.fetchPreviousPage,
+    fetchAllOlder,
     hasOlder: query.hasPreviousPage,
     isFetchingOlder: query.isFetchingPreviousPage,
     exportLogs,

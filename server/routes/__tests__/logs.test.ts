@@ -42,6 +42,26 @@ describe('ticket log projection API', () => {
     expect(body.olderCursor).toEqual(expect.any(String))
   })
 
+  it('filters command chatter before paginating the overview', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'info', 'CODING', 'visible milestone', {}, 'system', 'CODING')
+    for (let index = 0; index < 25; index += 1) {
+      appendLogEvent(ticket.id, 'info', 'CODING', `[CMD] $ command-${index}`, {}, 'system', 'CODING')
+    }
+
+    const overview = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
+    expect(overview.status).toBe(200)
+    expect((await overview.json() as { entries: Array<{ content: string }> }).entries.map(entry => entry.content))
+      .toEqual(['visible milestone'])
+
+    const commands = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=command`)
+    expect(commands.status).toBe(200)
+    const commandBody = await commands.json() as { entries: Array<{ content: string }>; hasOlder: boolean }
+    expect(commandBody.entries).toHaveLength(20)
+    expect(commandBody.entries.every(entry => entry.content.startsWith('[CMD]'))).toBe(true)
+    expect(commandBody.hasOlder).toBe(true)
+  })
+
   it('keeps health responsive and deduplicates readers during a cold projection catch-up', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     const paths = getTicketPaths(ticket.id)

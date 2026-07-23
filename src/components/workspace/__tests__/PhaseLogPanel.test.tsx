@@ -357,6 +357,47 @@ describe('PhaseLogPanel', () => {
     }
   })
 
+  it('shows pending feedback while exporting complete phase history for Copy all', async () => {
+    let resolveExport!: (response: Response) => void
+    const exportResponse = new Promise<Response>((resolve) => {
+      resolveExport = resolve
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/logs/export?')) return exportResponse
+      return createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Visible phase row.',
+          entryId: 'visible-phase-row',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: 'older-phase-cursor',
+        hasOlder: true,
+      })
+    })
+
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByText('Visible phase row.')).toBeInTheDocument()
+      const copyButton = screen.getByRole('button', { name: 'Copy all logs' })
+
+      fireEvent.click(copyButton)
+      expect(copyButton).toBeDisabled()
+      expect(copyButton.querySelector('.animate-spin')).toBeInTheDocument()
+
+      resolveExport(new Response('[complete phase history]', { status: 200 }))
+      await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('[complete phase history]'))
+      await waitFor(() => expect(copyButton).not.toBeDisabled())
+      expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes('/logs/export?'))).toHaveLength(1)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('shows the remaining-history indicator above a virtualized phase log', async () => {
     let resolveOlder!: (response: Response) => void
     const olderResponse = new Promise<Response>((resolve) => {

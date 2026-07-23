@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made complete log navigation, copying, and hard-refresh restoration reliable for long ticket histories.
 - Kept AI diagnostics and progressive log history visible and contextual while reviewing long phase and Full Log timelines.
 - Added complete OpenCode AI diagnostics with assistant progress, live usage details, richer tool records, runtime variants, and provider recovery actions.
 - Made workspace setup obey one total timeout per attempt and made duration settings easier to understand and edit.
@@ -103,11 +104,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Full Log now loads the complete remaining lifecycle before **Go to top**, targets virtualized extrema directly, and keeps **Back to bottom** pinned through layout updates. **Copy all** in phase and Full Log views continues to use the complete-history export independently of visible pagination, with a disabled spinner, progress tooltip, and retry feedback while the export and clipboard write finish.
 - AI/model details now remain pinned while their log entries scroll, model hover details show the ticket-locked Configuration effort, and phase/Full Log history initially loads the latest 20 rows before visibly fetching older 250-row pages without moving the reader's position.
 - Completed AI-detail persistence for every assistant message in the current prompt segment: intermediate narration is now an `ASSISTANT` Other event, terminal responses remain `OUTPUT`, and reused sessions do not duplicate older turns.
 - Execution Setup Timeout now bounds all active work in one workspace-setup attempt, including provider recovery, continuation/correction prompts, validation, worktree checks, and retry-note generation; each genuine retry receives a fresh budget, while safe cleanup may finish afterward. Configuration now distinguishes AI, coding, and workspace-setup deadlines and provides compact inline synchronized seconds and minutes/seconds editors for every duration setting.
 - Workspace setup prompts now use concise repository-grounded rules without assuming a language, build system, package manager, shell, or operating system. Ready requires every setup check to pass; actionable Blocked results retry, while evidence that no safe provisioning path exists stops immediately.
-- Changed ticket history restoration to request the newest 250 projected log rows, merge them with bounded live SSE rows by stable identity, virtualize large timelines, and page older rows only when the user scrolls upward. Copy all continues to export the complete matching history, while browser `localStorage` no longer stores full log snapshots.
+- Changed ticket history restoration to request the newest 20 projected log rows, merge them with bounded live SSE rows by stable identity, virtualize large timelines, and page older rows in 250-row batches only when the user scrolls upward. Copy all continues to export the complete matching history, while browser `localStorage` no longer stores full log snapshots.
 - Warmed common ticket workspace modules in development and pre-optimized `react-virtuoso`; selected live workspace modules preload after ticket discovery and the common historical review view prefetches during idle time.
 - Made cold log projection catch-up cooperative and deduplicated, with cached schema/prepared statements, so large JSONL histories do not monopolize the server while health checks are waiting.
 - Beads may now explain why no planned automated command is appropriate, and coding agents may adapt planned commands to repository evidence instead of being blocked by a frozen backend rerun. Planning, refinement, and coverage favor only necessary bead-scoped commands without turning manual behavior, risks, optional alternatives, or broad integration scenarios into mandatory Coding gates; Final Testing remains strict.
@@ -155,6 +157,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Extended final delivery and PR summaries with the latest Manual QA outcome, created fix-bead/improvement-ticket IDs, and skip/waiver state while keeping evidence binaries out of prompts, commits, diffs, and PRs.
 
 #### Fixed
+- Fixed the ALL tab appearing empty after a hard refresh when the newest projected rows were all commands by excluding command-classified rows before applying overview pagination.
 - Prevented progress-only workspace setup replies from consuming fresh attempts immediately: LoopTroop now continues the same session twice before failing the attempt with a functional incomplete-setup explanation, while malformed completed results keep their separate structured repair path.
 - Replaced the generic workspace-setup check failure with a visible failed area and the setup agent's concise blocker explanation.
 - Fixed blocked workflow errors that previously collapsed distinct agent-response, coding-timeout, environment/provider, final-test, and Git-finalization failures into generic messages.

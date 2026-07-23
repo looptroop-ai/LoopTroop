@@ -10,12 +10,11 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const copy = useCallback(
-    (text: string) => {
-      navigator.clipboard.writeText(text).then(() => {
-        setIsCopied(true)
-        clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setIsCopied(false), displayMs)
-      })
+    async (text: string) => {
+      await navigator.clipboard.writeText(text)
+      setIsCopied(true)
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setIsCopied(false), displayMs)
     },
     [displayMs],
   )

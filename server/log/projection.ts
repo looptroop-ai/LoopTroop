@@ -292,6 +292,12 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
   else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
   else { clauses.push("channel = 'normal'") }
+  // The overview backs the ALL tab, which intentionally omits routine command
+  // chatter. Filter commands before LIMIT so a command-heavy tail cannot
+  // produce an apparently empty page while older overview rows still exist.
+  if (query.view === 'overview') {
+    clauses.push("classification <> 'command'")
+  }
   // The AI detail channel is already audience-scoped and intentionally includes
   // model error rows so one provider recovery event remains visible in both its
   // model transcript and the ERROR view.

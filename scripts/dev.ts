@@ -321,9 +321,9 @@ const services: DevService[] = [
 ]
 
 printDivider('Startup Summary')
-printSummaryLine('Frontend', `http://localhost:${frontendPort}`)
+printSummaryLine('LoopTroop App', `http://localhost:${frontendPort}`)
 printSummaryLine('Backend', `http://localhost:${backendPort}`)
-printSummaryLine('Docs', `${effectiveDocsOrigin}/docs/`)
+printSummaryLine('Documentation', `${effectiveDocsOrigin}/docs/`)
 printSummaryLine('OpenCode', baseUrl)
 printSummaryLine('LAN sharing', formatLanSharingSummary())
 await printLanSharingDetails()
@@ -461,12 +461,33 @@ const { commands, result } = concurrently(
   },
 )
 
+let readySummaryPrinted = false
+
+function printReadySummary() {
+  if (readySummaryPrinted) return
+  readySummaryPrinted = true
+  printDivider('Ready')
+  printSummaryLine('LoopTroop App', `→  http://localhost:${frontendPort}`)
+  printSummaryLine('Documentation', `→  ${effectiveDocsOrigin}/docs/`)
+  printDivider('Open the app')
+}
+
 for (const command of commands) {
   command.stateChange.subscribe((state) => {
     if (state === 'started') {
       console.log(`[dev] Service ${command.name} started.`)
     }
   })
+
+  // Detect when the WEB (Vite) service is ready and print the Ready summary
+  if (command.name === 'WEB') {
+    command.stdout.subscribe((data) => {
+      const output = data.toString()
+      if (output.includes('ready in') || output.includes('Local:')) {
+        printReadySummary()
+      }
+    })
+  }
 
   command.error.subscribe((error) => {
     const message = getErrorMessage(error)

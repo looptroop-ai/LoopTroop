@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Clarified dev server startup output with explicit "LoopTroop App" and "Documentation" labels and a prominent Ready summary when the frontend is available.
 - Made complete log navigation, copying, and hard-refresh restoration reliable for long ticket histories.
 - Kept AI diagnostics and progressive log history visible and contextual while reviewing long phase and Full Log timelines.
 - Added complete OpenCode AI diagnostics with assistant progress, live usage details, richer tool records, runtime variants, and provider recovery actions.
@@ -105,6 +106,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs once the Vite frontend is available.
 - Full Log now loads the complete remaining lifecycle before **Go to top**, targets virtualized extrema directly, and keeps **Back to bottom** pinned through layout updates. **Copy all** in phase and Full Log views continues to use the complete-history export independently of visible pagination, with a disabled spinner, progress tooltip, and retry feedback while the export and clipboard write finish.
 - AI/model details now remain pinned while their log entries scroll, model hover details show the ticket-locked Configuration effort, and phase/Full Log history initially loads the latest 20 rows before visibly fetching older 250-row pages without moving the reader's position.
 - Completed AI-detail persistence for every assistant message in the current prompt segment: intermediate narration is now an `ASSISTANT` Other event, terminal responses remain `OUTPUT`, and reused sessions do not duplicate older turns.

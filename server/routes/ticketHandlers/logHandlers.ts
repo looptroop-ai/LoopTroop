@@ -17,7 +17,7 @@ function parseQuery(c: Context, allowCursor: boolean) {
     return { error: 'Invalid phaseAttempt parameter: must be a positive integer' } as const
   }
   const rawLimit = c.req.query('limit')
-  const limit = rawLimit === undefined ? 250 : Number(rawLimit)
+  const limit = rawLimit === undefined ? 20 : Number(rawLimit)
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) return { error: 'Invalid limit parameter: must be an integer from 1 to 500' } as const
   const before = allowCursor ? c.req.query('before') : undefined
   if (allowCursor && !isValidLogCursor(before)) return { error: 'Invalid before cursor' } as const

@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Kept AI diagnostics and progressive log history visible and contextual while reviewing long phase and Full Log timelines.
 - Added complete OpenCode AI diagnostics with assistant progress, live usage details, richer tool records, runtime variants, and provider recovery actions.
 - Made workspace setup obey one total timeout per attempt and made duration settings easier to understand and edit.
 - Made workspace setup finish with honest Ready or Blocked results and recover progress-only replies within the same attempt.
@@ -102,6 +103,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- AI/model details now remain pinned while their log entries scroll, model hover details show the ticket-locked Configuration effort, and phase/Full Log history initially loads the latest 20 rows before visibly fetching older 250-row pages without moving the reader's position.
 - Completed AI-detail persistence for every assistant message in the current prompt segment: intermediate narration is now an `ASSISTANT` Other event, terminal responses remain `OUTPUT`, and reused sessions do not duplicate older turns.
 - Execution Setup Timeout now bounds all active work in one workspace-setup attempt, including provider recovery, continuation/correction prompts, validation, worktree checks, and retry-note generation; each genuine retry receives a fresh budget, while safe cleanup may finish afterward. Configuration now distinguishes AI, coding, and workspace-setup deadlines and provides compact inline synchronized seconds and minutes/seconds editors for every duration setting.
 - Workspace setup prompts now use concise repository-grounded rules without assuming a language, build system, package manager, shell, or operating system. Ready requires every setup check to pass; actionable Blocked results retry, while evidence that no safe provisioning path exists stops immediately.

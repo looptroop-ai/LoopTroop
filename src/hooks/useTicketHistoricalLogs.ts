@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
-import { normalizeLogRecord, type LogEntry } from '@/context/logUtils'
-import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import {
+  INITIAL_LOG_PAGE_LIMIT,
+  normalizeLogRecord,
+  OLDER_LOG_PAGE_LIMIT,
+  SERVER_LOG_REFRESH_EVENT,
+  type LogEntry,
+} from '@/context/logUtils'
 
 export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
 
@@ -25,7 +30,7 @@ function getQuery(ticketId: string, scope: HistoricalLogScope, before?: string):
   const params = new URLSearchParams({
     scope: scope.scope,
     view: scope.view,
-    limit: '250',
+    limit: String(before ? OLDER_LOG_PAGE_LIMIT : INITIAL_LOG_PAGE_LIMIT),
   })
   if (scope.phase) params.set('phase', scope.phase)
   if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))

@@ -5,6 +5,7 @@ import { getModelDisplayName, getModelIcon } from './modelBadgeUtils'
 interface ModelBadgeProps {
     modelId: string
     variant?: string | null
+    effort?: string | null
     active?: boolean
     onClick?: () => void
     className?: string
@@ -28,10 +29,15 @@ export function ModelIcon({ modelId, className, ...props }: ModelIconProps) {
     )
 }
 
-export function ModelBadge({ modelId, variant, active, onClick, className, showIcon = true, children }: ModelBadgeProps) {
+export function ModelBadge({ modelId, variant, effort, active, onClick, className, showIcon = true, children }: ModelBadgeProps) {
     const name = getModelDisplayName(modelId)
     const variantLabel = variant?.trim() || 'Default / not reported'
-    const title = variant === undefined ? modelId : `${modelId} · Variant: ${variantLabel}`
+    const effortLabel = effort?.trim() || 'None (provider default)'
+    const title = effort !== undefined
+        ? `${modelId} · Effort: ${effortLabel}`
+        : variant === undefined
+            ? modelId
+            : `${modelId} · Variant: ${variantLabel}`
 
     const Component = onClick ? 'button' : 'div'
 

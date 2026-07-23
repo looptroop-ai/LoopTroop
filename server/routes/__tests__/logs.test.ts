@@ -26,7 +26,7 @@ afterAll(() => {
 })
 
 describe('ticket log projection API', () => {
-  it('defaults to the newest 250 projected rows without reading the complete history', async () => {
+  it('defaults to the newest 20 projected rows without reading the complete history', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     for (let index = 0; index < 300; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z` }, 'system', 'CODING')
@@ -35,8 +35,8 @@ describe('ticket log projection API', () => {
     const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
     expect(response.status).toBe(200)
     const body = await response.json() as { entries: Array<{ content: string }>; hasOlder: boolean; olderCursor: string }
-    expect(body.entries).toHaveLength(250)
-    expect(body.entries[0]?.content).toBe('row-50')
+    expect(body.entries).toHaveLength(20)
+    expect(body.entries[0]?.content).toBe('row-280')
     expect(body.entries.at(-1)?.content).toBe('row-299')
     expect(body.hasOlder).toBe(true)
     expect(body.olderCursor).toEqual(expect.any(String))
@@ -68,7 +68,7 @@ describe('ticket log projection API', () => {
     const [first, second] = await Promise.all([firstHistory, secondHistory])
     const firstBody = await first.json() as { entries: Array<{ content: string }> }
     const secondBody = await second.json() as { entries: Array<{ content: string }> }
-    expect(firstBody.entries).toHaveLength(250)
+    expect(firstBody.entries).toHaveLength(20)
     expect(secondBody.entries).toEqual(firstBody.entries)
     expect(firstBody.entries.at(-1)?.content).toBe('cold-1999')
   })

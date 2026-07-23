@@ -24,6 +24,8 @@ import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
+import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
+import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
 
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
@@ -200,6 +202,10 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     }
     return variants
   }, [combinedLogs])
+  const getModelEffort = useCallback(
+    (modelId: string) => resolveLogModelEffort(ticket, modelId, observedModelVariants.get(modelId)),
+    [observedModelVariants, ticket],
+  )
 
   const modelTabs = useMemo(() => {
     const seen = new Set<string>()
@@ -298,6 +304,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const previousVisibleTailRef = useRef<string | null>(null)
   const previousViewRef = useRef<string | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const olderPageAnchorRef = useRef<{ height: number; top: number } | null>(null)
 
   const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
     const scroll = () => {
@@ -338,6 +345,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       const atTop = el.scrollTop <= 50
       setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
       if (allowPagination && atTop && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
+        if (renderedEntries.length <= 200) olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
         void historicalLogs.fetchOlder()
       }
     }
@@ -345,7 +353,17 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     const onScroll = () => updateScrollState(true)
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [historicalLogs])
+  }, [historicalLogs, renderedEntries.length])
+
+  useEffect(() => {
+    const anchor = olderPageAnchorRef.current
+    const el = viewportRef.current
+    if (!anchor || !el || historicalLogs.isFetchingOlder) return
+    // Older entries are prepended in chronological order. Keep the first row
+    // that was already visible at the same screen position after the resize.
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
+    olderPageAnchorRef.current = null
+  }, [historicalLogs.entries.length, historicalLogs.isFetchingOlder])
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) {
@@ -464,29 +482,25 @@ export function FullLogView({ ticket }: FullLogViewProps) {
           const tooltipContent = TAB_TOOLTIPS[tab]
 
           if (tab === 'AI' && singleModelTabId) {
+            const effort = getModelEffort(singleModelTabId)
             return (
               <Tooltip key={tab} delayDuration={300}>
                 <TooltipTrigger asChild>
-                  <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                                            type="button"
-                                            onClick={() => setActiveTab(tab)}
-                                            className={cn(
-                                              'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                                              effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
-                                            )}
-                                          >
-                                            {aiTabLabel}
-                                          </button>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">
-                            {singleModelTabId} · Variant: {observedModelVariants.get(singleModelTabId) ?? 'Default / not reported'}
-                          </TooltipContent>
-                        </Tooltip>
+                  <button
+                    type="button"
+                    title={`${singleModelTabId} · Effort: ${formatLogModelEffort(effort)}`}
+                    onClick={() => setActiveTab(tab)}
+                    className={cn(
+                      'px-2 py-0.5 rounded text-xs font-medium shrink-0',
+                      effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {aiTabLabel}
+                  </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
-                  {tooltipContent}
+                  <div>{tooltipContent}</div>
+                  <div className="mt-1">{singleModelTabId} · Effort: {formatLogModelEffort(effort)}</div>
                 </TooltipContent>
               </Tooltip>
             )
@@ -527,7 +541,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   <ModelBadge
                     key={modelTab}
                     modelId={modelTab}
-                    variant={observedModelVariants.get(modelTab) ?? null}
+                    effort={getModelEffort(modelTab)}
                     active={effectiveTab === modelTab}
                     onClick={() => setActiveTab(modelTab)}
                     showIcon={false}
@@ -670,7 +684,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
             {showAiDetails && isAiDetailsOpen ? (
-              <div id={aiDetailsPanelId}>
+              <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary
                   details={aiDetails.data}
                   isLoading={aiDetails.isLoading}
@@ -682,6 +696,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 />
               </div>
             ) : null}
+            {historicalLogs.isFetchingOlder ? <LoadingRemainingLogsLine /> : null}
             {hasLogs ? (
               shouldVirtualize && scrollParent ? (
                 <Virtuoso

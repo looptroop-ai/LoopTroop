@@ -24,6 +24,8 @@ import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
+import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
+import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
 
 interface PhaseLogPanelProps {
   phase: string
@@ -343,6 +345,10 @@ export function PhaseLogPanel({
     }
     return variants
   }, [phaseLogs])
+  const getModelEffort = useCallback(
+    (modelId: string) => resolveLogModelEffort(ticket, modelId, observedModelVariants.get(modelId)),
+    [observedModelVariants, ticket],
+  )
 
   const modelTabs = useMemo(() => {
     const enableModelTabs = isKnownMultiModelPhase || detectedModelIds.length > 0
@@ -502,29 +508,25 @@ export function PhaseLogPanel({
           const tooltipContent = TAB_TOOLTIPS[tab]
 
           if (tab === 'AI' && singleModelTabId) {
+            const effort = getModelEffort(singleModelTabId)
             return (
               <Tooltip key={tab} delayDuration={300}>
                 <TooltipTrigger asChild>
-                  <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                                            type="button"
-                                            onClick={() => setActiveTab(tab)}
-                                            className={cn(
-                                              'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                                              effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
-                                            )}
-                                          >
-                                            {aiTabLabel}
-                                          </button>
-                          </TooltipTrigger>
-                          <TooltipContent className="max-w-xs text-center text-balance">
-                            {singleModelTabId} · Variant: {observedModelVariants.get(singleModelTabId) ?? 'Default / not reported'}
-                          </TooltipContent>
-                        </Tooltip>
+                  <button
+                    type="button"
+                    title={`${singleModelTabId} · Effort: ${formatLogModelEffort(effort)}`}
+                    onClick={() => setActiveTab(tab)}
+                    className={cn(
+                      'px-2 py-0.5 rounded text-xs font-medium shrink-0',
+                      effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    {aiTabLabel}
+                  </button>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
-                  {tooltipContent}
+                  <div>{tooltipContent}</div>
+                  <div className="mt-1">{singleModelTabId} · Effort: {formatLogModelEffort(effort)}</div>
                 </TooltipContent>
               </Tooltip>
             )
@@ -565,7 +567,7 @@ export function PhaseLogPanel({
                   <ModelBadge
                     key={mTab}
                     modelId={mTab}
-                    variant={observedModelVariants.get(mTab) ?? null}
+                    effort={getModelEffort(mTab)}
                     active={effectiveTab === mTab}
                     onClick={() => setActiveTab(mTab)}
                     showIcon={false}
@@ -706,7 +708,7 @@ export function PhaseLogPanel({
         <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
           <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
             {showAiDetails && isAiDetailsOpen ? (
-              <div id={aiDetailsPanelId}>
+              <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary
                   details={aiDetails.data}
                   isLoading={aiDetails.isLoading}
@@ -718,6 +720,7 @@ export function PhaseLogPanel({
                 />
               </div>
             ) : null}
+            {historicalLogs.isFetchingOlder ? <LoadingRemainingLogsLine /> : null}
             {hasLogs ? (
               shouldVirtualize && scrollParent ? (
                 <Virtuoso

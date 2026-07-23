@@ -250,8 +250,46 @@ describe('PhaseLogPanel', () => {
     expect(screen.getByText('1 entries')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
     expect(await screen.findByText('$0.01')).toBeInTheDocument()
+    expect(screen.getByLabelText('AI details').parentElement).toHaveClass('sticky', 'top-0')
     expect(screen.getByText('1 entries')).toBeInTheDocument()
     fetchSpy.mockRestore()
+  })
+
+  it('shows the configured effort for main and council model tabs', () => {
+    const mainModel = 'openai/gpt-5.4'
+    const councilModel = 'anthropic/claude-sonnet-4.6'
+    const logs = [
+      makeLog('main-ai', '[MODEL] Main output', {
+        status: 'COUNCIL_DELIBERATING',
+        source: `model:${mainModel}`,
+        audience: 'ai',
+        kind: 'text',
+        modelId: mainModel,
+        variant: 'medium',
+      }),
+      makeLog('council-ai', '[MODEL] Council output', {
+        status: 'COUNCIL_DELIBERATING',
+        source: `model:${councilModel}`,
+        audience: 'ai',
+        kind: 'text',
+        modelId: councilModel,
+      }),
+    ]
+    const ticket = {
+      ...makeTicket(),
+      lockedMainImplementer: mainModel,
+      lockedMainImplementerVariant: 'high',
+      lockedCouncilMembers: [councilModel],
+      lockedCouncilMemberVariants: null,
+    }
+
+    renderWithTooltipProvider(
+      <PhaseLogPanel phase="COUNCIL_DELIBERATING" logs={logs} ticket={ticket} />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
+    expect(screen.getByTitle(`${mainModel} · Effort: high`)).toBeInTheDocument()
+    expect(screen.getByTitle(`${councilModel} · Effort: None (provider default)`)).toBeInTheDocument()
   })
 
   it('virtualizes large historical row sets', () => {
@@ -260,6 +298,107 @@ describe('PhaseLogPanel', () => {
 
     expect(screen.getByTestId('virtualized-log-list')).toBeInTheDocument()
     expect(screen.queryAllByText(/Bulk row/).length).toBeLessThan(logs.length)
+  })
+
+  it('shows a first-line indicator while loading older phase logs', async () => {
+    let resolveOlder!: (response: Response) => void
+    const olderResponse = new Promise<Response>((resolve) => {
+      resolveOlder = resolve
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Newest phase row.',
+          entryId: 'phase-newest',
+          timestamp: '2026-03-13T10:00:02.000Z',
+        }],
+        olderCursor: 'phase-older',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => olderResponse)
+
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByText('Newest phase row.')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      viewport.scrollTop = 0
+      fireEvent.scroll(viewport)
+
+      expect(await screen.findByRole('status')).toHaveTextContent('Loading remaining logs')
+      expect(fetchSpy).toHaveBeenNthCalledWith(
+        2,
+        '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=CODING&before=phase-older',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      )
+
+      viewport.dataset.scrollHeight = '900'
+      resolveOlder(new Response(JSON.stringify({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Older phase row.',
+          entryId: 'phase-older-row',
+          timestamp: '2026-03-13T10:00:01.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await waitFor(() => expect(screen.queryByText(/Loading remaining logs/)).not.toBeInTheDocument())
+      expect(viewport.scrollTop).toBe(300)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('shows the remaining-history indicator above a virtualized phase log', async () => {
+    let resolveOlder!: (response: Response) => void
+    const olderResponse = new Promise<Response>((resolve) => {
+      resolveOlder = resolve
+    })
+    const entries = Array.from({ length: 201 }, (_, index) => ({
+      type: 'info',
+      phase: 'CODING',
+      status: 'CODING',
+      source: 'system',
+      content: `Virtual phase row ${index}.`,
+      entryId: `virtual-phase-${index}`,
+      timestamp: `2026-03-13T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+    }))
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries,
+        olderCursor: 'virtual-phase-older',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => olderResponse)
+
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByTestId('virtualized-log-list')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      viewport.scrollTop = 0
+      fireEvent.scroll(viewport)
+
+      expect(await screen.findByRole('status')).toHaveTextContent('Loading remaining logs')
+      expect(screen.getByTestId('virtualized-log-list')).toBeInTheDocument()
+
+      resolveOlder(new Response(JSON.stringify({
+        entries: [],
+        olderCursor: null,
+        hasOlder: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await waitFor(() => expect(screen.queryByText(/Loading remaining logs/)).not.toBeInTheDocument())
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 
   it('asks for phase debug logs only after the DEBUG tab is selected', () => {
@@ -376,7 +515,7 @@ describe('PhaseLogPanel', () => {
         expect(screen.getByText(/Archived runtime setup row/i)).toBeInTheDocument()
       })
       expect(fetchSpy).toHaveBeenCalledWith(
-        '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=PREPARING_EXECUTION_ENV&phaseAttempt=1',
+        '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=20&phase=PREPARING_EXECUTION_ENV&phaseAttempt=1',
         expect.any(Object),
       )
       expect(loadLogsForPhase).not.toHaveBeenCalled()
@@ -432,7 +571,7 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryByText(/System event/i)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Variant: Default / not reported'))
+    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Effort: Not reported'))
 
     expect(loadLogsForPhase).toHaveBeenLastCalledWith('CODING', { channel: 'ai' })
     expect(screen.getByText(/First output/i)).toBeInTheDocument()
@@ -973,7 +1112,7 @@ describe('PhaseLogPanel', () => {
     renderWithTooltipProvider(<PhaseLogPanel phase="COUNCIL_VOTING_PRD" logs={logs} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
-    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Variant: Default / not reported'))
+    fireEvent.click(screen.getByTitle('openai/gpt-5.4 · Effort: Not reported'))
 
     const line = screen.getByText(/OpenCode vote: openai\/gpt-5\.4 session=ses-1/i)
     const lineContainer = line.closest('.whitespace-pre-wrap') ?? line

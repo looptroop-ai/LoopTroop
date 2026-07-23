@@ -190,12 +190,12 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=250&phase=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=CODING')
 
     act(() => latestLogApi?.loadLogsForPhase?.('DRAFTING_PRD'))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=250&phase=DRAFTING_PRD')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-scope/logs?scope=phase&view=overview&limit=20&phase=DRAFTING_PRD')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([url]) => !String(url).includes('tail='))).toBe(true)
   })
 
@@ -212,7 +212,7 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=overview&limit=250&phase=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=overview&limit=20&phase=CODING')
 
     await act(async () => {
       latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'debug' })
@@ -220,7 +220,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=debug&limit=250&phase=CODING')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-debug-phase/logs?scope=phase&view=debug&limit=20&phase=CODING')
   })
 
   it('requests phase AI detail logs through the AI channel and merges them into the phase bucket', async () => {
@@ -250,7 +250,7 @@ describe('LogProvider', () => {
     ))
 
     await flushMicrotasks()
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=overview&limit=250&phase=CODING')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=overview&limit=20&phase=CODING')
 
     await act(async () => {
       latestLogApi?.loadLogsForPhase?.('CODING', { channel: 'ai' })
@@ -258,7 +258,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=ai&limit=250&phase=CODING')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-ai-phase/logs?scope=phase&view=ai&limit=20&phase=CODING')
     expect(getCodingLogs()).toEqual(expect.arrayContaining([
       expect.objectContaining({
         entryId: 'session-1:thinking',
@@ -361,7 +361,7 @@ describe('LogProvider', () => {
       await Promise.resolve()
     })
 
-    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-persisted-attempt/logs?scope=phase&view=overview&limit=250&phase=PREPARING_EXECUTION_ENV&phaseAttempt=2')
+    expect(globalThis.fetch).toHaveBeenLastCalledWith('/api/tickets/1%3AT-persisted-attempt/logs?scope=phase&view=overview&limit=20&phase=PREPARING_EXECUTION_ENV&phaseAttempt=2')
     expect(latestLogApi?.getLogsForPhase('PREPARING_EXECUTION_ENV', { phaseAttempt: 2 })).toEqual([
       expect.objectContaining({
         entryId: 'persisted-attempt-2',

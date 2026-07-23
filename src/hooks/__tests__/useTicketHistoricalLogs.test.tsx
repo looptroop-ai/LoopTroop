@@ -9,7 +9,7 @@ import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('requests only 250 newest rows, then pages upward with the returned cursor', async () => {
+  it('requests 20 newest rows, then pages upward in batches of 250 with the returned cursor', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementationOnce(() => createJsonResponse({
         entries: [{ phase: 'CODING', entryId: 'new', content: 'new', timestamp: '2026-03-10T00:00:02.000Z' }],
@@ -37,7 +37,7 @@ describe('useTicketHistoricalLogs', () => {
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new']))
     expect(fetchSpy).toHaveBeenNthCalledWith(
       1,
-      '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=250&phase=CODING&phaseAttempt=2',
+      '/api/tickets/ticket-1/logs?scope=phase&view=overview&limit=20&phase=CODING&phaseAttempt=2',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
 

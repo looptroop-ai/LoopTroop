@@ -1,5 +1,5 @@
 import type { ReactNode, Ref } from 'react'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -207,6 +207,7 @@ describe('FullLogView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
 
     expect(await screen.findByText('$0.02')).toBeInTheDocument()
+    expect(screen.getByLabelText('AI details').parentElement).toHaveClass('sticky', 'top-0')
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/ai-details?scope=lifecycle'),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -214,10 +215,92 @@ describe('FullLogView', () => {
     fetchSpy.mockRestore()
   })
 
+  it('shows configured effort on lifecycle model tabs', () => {
+    const firstModel = 'openai/gpt-5.4'
+    const secondModel = 'anthropic/claude-sonnet-4.6'
+    getAllLogsMock.mockReturnValue([
+      makeLog('first-ai', '[MODEL] First output', 'CODING', {
+        source: `model:${firstModel}`,
+        audience: 'ai',
+        kind: 'text',
+        modelId: firstModel,
+        variant: 'medium',
+      }),
+      makeLog('second-ai', '[MODEL] Second output', 'CODING', {
+        source: `model:${secondModel}`,
+        audience: 'ai',
+        kind: 'text',
+        modelId: secondModel,
+      }),
+    ])
+
+    renderWithTooltipProvider(
+      <FullLogView
+        ticket={makeTicket({
+          lockedMainImplementer: firstModel,
+          lockedMainImplementerVariant: 'xhigh',
+          lockedCouncilMembers: [secondModel],
+          lockedCouncilMemberVariants: null,
+        })}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
+    expect(screen.getByTitle(`${firstModel} · Effort: xhigh`)).toBeInTheDocument()
+    expect(screen.getByTitle(`${secondModel} · Effort: None (provider default)`)).toBeInTheDocument()
+  })
+
   it('renders empty state when there are no logs', () => {
     getAllLogsMock.mockReturnValue([])
     renderWithTooltipProvider(<FullLogView />)
     expect(screen.getByText(/no log entries yet/i)).toBeTruthy()
+  })
+
+  it('shows a first-line indicator while loading older lifecycle logs', async () => {
+    let resolveOlder!: (response: Response) => void
+    const olderResponse = new Promise<Response>((resolve) => {
+      resolveOlder = resolve
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Newest lifecycle row.',
+          entryId: 'lifecycle-newest',
+          timestamp: '2026-03-13T10:00:02.000Z',
+        }],
+        olderCursor: 'lifecycle-older',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => olderResponse)
+
+    try {
+      renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+      expect(await screen.findByText('Newest lifecycle row.')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      viewport.scrollTop = 0
+      fireEvent.scroll(viewport)
+
+      expect(await screen.findByRole('status')).toHaveTextContent('Loading remaining logs')
+      expect(fetchSpy).toHaveBeenNthCalledWith(
+        2,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/logs?scope=lifecycle&view=overview&limit=250&before=lifecycle-older`,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      )
+
+      resolveOlder(new Response(JSON.stringify({
+        entries: [],
+        olderCursor: null,
+        hasOlder: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      await waitFor(() => expect(screen.queryByText(/Loading remaining logs/)).not.toBeInTheDocument())
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 
   it('renders the header with "Full Log" title', () => {

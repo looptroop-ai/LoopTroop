@@ -74,6 +74,8 @@ export interface LogContextValue {
 export const LOG_STORAGE_PREFIX = 'logs-v2-'
 export const LEGACY_LOG_STORAGE_PREFIX = 'logs-'
 export const SERVER_LOG_REFRESH_EVENT = 'looptroop:server-log-refresh'
+export const INITIAL_LOG_PAGE_LIMIT = 20
+export const OLDER_LOG_PAGE_LIMIT = 250
 
 const LOG_TYPE_TAGS: Record<string, string> = {
   state_change: '[SYS]',
@@ -114,7 +116,7 @@ export function getServerLogsUrl(ticketId: string, scope: ServerLogScope = {}): 
       : scope.channel === 'ai'
         ? 'ai'
         : 'overview',
-    limit: '250',
+    limit: String(INITIAL_LOG_PAGE_LIMIT),
   })
   if (scope.status) params.set('phase', scope.status)
   if (scope.phase) params.set('phase', scope.phase)

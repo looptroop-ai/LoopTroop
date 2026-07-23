@@ -17,6 +17,7 @@ import { useProfile } from '@/hooks/useProfile'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { resolveGitHookPolicySetting, type GitHookPolicyOverride } from '@/lib/gitHookPolicySetting'
+import { useToast } from '@/components/shared/useToast'
 
 interface TicketFormProps {
   onClose: () => void
@@ -24,6 +25,7 @@ interface TicketFormProps {
 
 export function TicketForm({ onClose }: TicketFormProps) {
   const { dispatch } = useUI()
+  const { addToast } = useToast()
   const createTicket = useCreateTicket()
   const { mutateAsync: startTicket, isPending: isStartPending } = useTicketAction()
   const { data: projects = [] } = useProjects()
@@ -74,10 +76,19 @@ export function TicketForm({ onClose }: TicketFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!effectiveProjectId) return
+    if (!effectiveProjectId) {
+      addToast('warning', 'Attach a project before creating a ticket.')
+      return
+    }
     createTicket.mutate(
       createInput(),
-      { onSuccess: onClose },
+      {
+        onSuccess: onClose,
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : 'Failed to create ticket'
+          addToast('error', message, 5000)
+        },
+      },
     )
   }
 
@@ -168,6 +179,11 @@ export function TicketForm({ onClose }: TicketFormProps) {
                 </div>
               </div>
             </DropdownPicker>
+            {projects.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                No projects are attached yet. Add a project before creating a ticket.
+              </p>
+            )}
           </div>
 
           <div>

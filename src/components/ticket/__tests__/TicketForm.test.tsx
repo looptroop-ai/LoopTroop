@@ -7,6 +7,7 @@ import { TicketForm } from '../TicketForm'
 const mockUseProjects = vi.hoisted(() => vi.fn())
 const mockUseCreateTicket = vi.hoisted(() => vi.fn())
 const mockUseTicketAction = vi.hoisted(() => vi.fn())
+const mockAddToast = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/useProjects', () => ({
   useProjects: () => mockUseProjects(),
@@ -24,6 +25,10 @@ vi.mock('@/hooks/useTickets', async () => {
     useTicketAction: () => mockUseTicketAction(),
   }
 })
+
+vi.mock('@/components/shared/useToast', () => ({
+  useToast: () => ({ addToast: mockAddToast }),
+}))
 
 function makeFilters(): UIContextValue['state']['filters'] {
   return {
@@ -58,6 +63,7 @@ function makeUIValue(): UIContextValue {
 
 describe('TicketForm', () => {
   beforeEach(() => {
+    mockAddToast.mockReset()
     mockUseProjects.mockReturnValue({
       data: [{
         id: 1,
@@ -134,5 +140,36 @@ describe('TicketForm', () => {
       expect.objectContaining({ manualQaOverride: true, gitHookPolicy: 'ignore_internal_only' }),
       expect.any(Object),
     )
+  })
+
+  it('reports a failed ticket creation instead of leaving the form silent', () => {
+    const mutate = vi.fn((_input, options) => {
+      options.onError(new Error('Project is unavailable'))
+    })
+    mockUseCreateTicket.mockReturnValue({ mutate, mutateAsync: vi.fn(), isPending: false })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Create a ticket' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
+
+    expect(mockAddToast).toHaveBeenCalledWith('error', 'Project is unavailable', 5000)
+  })
+
+  it('explains when no project is available', () => {
+    mockUseProjects.mockReturnValue({ data: [] })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue()}>
+        <TicketForm onClose={vi.fn()} />
+      </UIContext.Provider>,
+    )
+
+    expect(screen.getByText('No projects are attached yet. Add a project before creating a ticket.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create Ticket' })).toBeDisabled()
   })
 })

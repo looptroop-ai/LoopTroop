@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Made new-ticket creation explain missing project setup and surface create-request errors instead of appearing unresponsive.
 - Kept development startup available when npm 12 misclassifies a registry-hosted optional tarball as a remote dependency during update preview.
 - Added the live remaining/total timeout clock to Preparing Workspace Runtime.
 - Made paginated log totals honest without removing the existing color legend.
@@ -83,6 +84,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Added visible new-ticket guidance when no project is attached and error toasts for failed ticket creation requests.
 - Preparing Workspace Runtime now shows the current setup attempt's remaining and configured total timeout beside its live status. The clock resets from the attempt-start event on automatic retries and respects the effective project or profile setup-timeout setting.
 - Added complete filtered entry and logical text-line totals to paginated log responses and the phase/Full Log count tooltip, alongside loaded/remaining progress and the existing color legend.
 - Added forward-only per-turn AI metrics and expandable AI/model summaries for cost, token categories, and model time, plus latest runtime-variant hover details, tool duration/attachment/compaction metadata, and provider recovery actions in ERROR and model logs.

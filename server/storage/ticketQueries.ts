@@ -172,6 +172,7 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
     maxIterations: number | null
     maxIterationsPerBead: number | null
     perIterationTimeoutMs: number | null
+    executionSetupTimeoutMs: number | null
     activeBeadId: string | null
     activeBeadIteration: number | null
     lastFailedBeadId: string | null
@@ -659,6 +660,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     maxIterations: null,
     maxIterationsPerBead: null,
     perIterationTimeoutMs: null,
+    executionSetupTimeoutMs: null,
     activeBeadId: null,
     activeBeadIteration: null,
     lastFailedBeadId: null,
@@ -830,6 +832,9 @@ function buildRuntime(
   const perIterationTimeoutMs = projectContext?.project.perIterationTimeout
     ?? profile?.perIterationTimeout
     ?? PROFILE_DEFAULTS.perIterationTimeout
+  const executionSetupTimeoutMs = projectContext?.project.executionSetupTimeout
+    ?? profile?.executionSetupTimeout
+    ?? PROFILE_DEFAULTS.executionSetupTimeout
   const finalTestArtifact = projectContext?.projectDb.select().from(phaseArtifacts)
     .where(and(
       eq(phaseArtifacts.ticketId, ticket.id),
@@ -921,6 +926,7 @@ function buildRuntime(
     maxIterations,
     maxIterationsPerBead: maxIterations,
     perIterationTimeoutMs,
+    executionSetupTimeoutMs,
     activeBeadId: inProgressBead?.id ?? (blockedFromCoding ? lastFailedBead?.id ?? null : null),
     activeBeadIteration: inProgressBead?.iteration ?? (blockedFromCoding ? lastFailedBead?.iteration ?? null : null),
     lastFailedBeadId: blockedFromCoding ? lastFailedBead?.id ?? null : null,

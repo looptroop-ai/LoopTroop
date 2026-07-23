@@ -421,7 +421,7 @@ function getActivePhaseAttempt(attempts: TicketPhaseAttempt[]): TicketPhaseAttem
   return attempts.find((attempt) => attempt.state === 'active') ?? attempts[0] ?? null
 }
 
-function getExecutionSetupAttemptInfo(logs: LogEntry[]): { attempt: number; maxIterations?: number } | null {
+function getExecutionSetupAttemptInfo(logs: LogEntry[]): { attempt: number; maxIterations?: number; startedAt?: string } | null {
   let attempt: number | null = null
   let maxIterations: number | null = null
 
@@ -434,18 +434,27 @@ function getExecutionSetupAttemptInfo(logs: LogEntry[]): { attempt: number; maxI
     if (matchStart) {
       if (attempt === null && matchStart[1]) attempt = parseInt(matchStart[1], 10)
       if (maxIterations === null && matchStart[2]) maxIterations = parseInt(matchStart[2], 10)
+      if (attempt !== null) {
+        return { attempt, ...(maxIterations !== null ? { maxIterations } : {}), ...(entry.timestamp ? { startedAt: entry.timestamp } : {}) }
+      }
     }
 
     const matchResume = /Resuming execution setup session for user-requested attempt (\d+)(?: \(configured automatic budget (\d+)\))?/i.exec(line)
     if (matchResume) {
       if (attempt === null && matchResume[1]) attempt = parseInt(matchResume[1], 10)
       if (maxIterations === null && matchResume[2]) maxIterations = parseInt(matchResume[2], 10)
+      if (attempt !== null) {
+        return { attempt, ...(maxIterations !== null ? { maxIterations } : {}), ...(entry.timestamp ? { startedAt: entry.timestamp } : {}) }
+      }
     }
 
     const matchPersist = /Starting execution setup tooling persistence attempt (\d+).+?base budget (\d+)/i.exec(line)
     if (matchPersist) {
       if (attempt === null && matchPersist[1]) attempt = parseInt(matchPersist[1], 10)
       if (maxIterations === null && matchPersist[2]) maxIterations = parseInt(matchPersist[2], 10)
+      if (attempt !== null) {
+        return { attempt, ...(maxIterations !== null ? { maxIterations } : {}), ...(entry.timestamp ? { startedAt: entry.timestamp } : {}) }
+      }
     }
 
     const matchSessionCreated = /Execution setup attempt (\d+) session created/i.exec(line)
@@ -570,6 +579,12 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
     return phaseAttemptLabel ? `${basePhaseLabel} (${phaseAttemptLabel})` : basePhaseLabel
   }, [basePhaseLabel, coveragePass, coverageVersion, isLivePhase, phase, phaseAttemptLabel, runtime, phaseLogs])
   const showLiveCodingCountdown = ticket.status === 'CODING' && phase === 'CODING'
+  const liveExecutionSetup = useMemo(
+    () => ticket.status === 'PREPARING_EXECUTION_ENV' && phase === 'PREPARING_EXECUTION_ENV'
+      ? getExecutionSetupAttemptInfo(phaseLogs)
+      : null,
+    [phase, phaseLogs, ticket.status],
+  )
 
   if (!phaseMeta) return null
 
@@ -601,6 +616,13 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
             }
             return null
           })() : null}
+          {liveExecutionSetup?.startedAt && runtime.executionSetupTimeoutMs ? (
+            <ActiveBeadCountdown
+              startedAt={liveExecutionSetup.startedAt}
+              perIterationTimeoutMs={runtime.executionSetupTimeoutMs}
+              tooltip="Time remaining for the current workspace runtime setup attempt before it times out and is retried."
+            />
+          ) : null}
         </button>
         {isExpanded ? (
           <p id={descriptionId} className="mt-px ml-5 text-[11px] leading-[15px] text-muted-foreground">

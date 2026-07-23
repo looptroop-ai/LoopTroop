@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Added the live remaining/total timeout clock to Preparing Workspace Runtime.
 - Made paginated log totals honest without removing the existing color legend.
 - Clarified dev server startup output with explicit "LoopTroop App" and "Documentation" labels and a prominent Ready summary when the frontend is available.
 - Made complete log navigation, copying, and hard-refresh restoration reliable for long ticket histories.
@@ -80,6 +81,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
+- Preparing Workspace Runtime now shows the current setup attempt's remaining and configured total timeout beside its live status. The clock resets from the attempt-start event on automatic retries and respects the effective project or profile setup-timeout setting.
 - Added complete filtered entry and logical text-line totals to paginated log responses and the phase/Full Log count tooltip, alongside loaded/remaining progress and the existing color legend.
 - Added forward-only per-turn AI metrics and expandable AI/model summaries for cost, token categories, and model time, plus latest runtime-variant hover details, tool duration/attachment/compaction metadata, and provider recovery actions in ERROR and model logs.
 - Added ticket-isolated artifact manifest and content APIs, including SHA-256 ETags and a bounded batch body endpoint so large artifact histories no longer travel with the initial list or SSE artifact updates.

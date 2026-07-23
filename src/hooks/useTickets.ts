@@ -100,6 +100,7 @@ interface TicketRuntime {
   maxIterations: number | null
   maxIterationsPerBead: number | null
   perIterationTimeoutMs?: number | null
+  executionSetupTimeoutMs?: number | null
   activeBeadId: string | null
   activeBeadIteration: number | null
   lastFailedBeadId: string | null

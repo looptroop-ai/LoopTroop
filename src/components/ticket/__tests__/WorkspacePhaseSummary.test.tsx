@@ -450,7 +450,13 @@ describe('WorkspacePhaseSummary', () => {
   })
 
   it('shows the live execution setup attempt when status is PREPARING_EXECUTION_ENV', async () => {
-    const ticket = makeTicket({ id: TEST.ticketId, status: 'PREPARING_EXECUTION_ENV' })
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:02:00.000Z'))
+    const ticket = makeTicket({
+      id: TEST.ticketId,
+      status: 'PREPARING_EXECUTION_ENV',
+      runtime: { ...makeTicket().runtime, executionSetupTimeoutMs: 20 * 60 * 1000 },
+    })
     const logsByPhase = {
       PREPARING_EXECUTION_ENV: [
         {
@@ -473,9 +479,9 @@ describe('WorkspacePhaseSummary', () => {
       logsByPhase,
     )
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Preparing Workspace Runtime (execution setup attempt 2 of 5)' })).toBeInTheDocument()
-    })
+    expect(screen.getByRole('button', { name: 'Preparing Workspace Runtime (execution setup attempt 2 of 5)' })).toBeInTheDocument()
+    expect(screen.getByText('18:00')).toBeInTheDocument()
+    expect(screen.getByText('20:00')).toBeInTheDocument()
   })
 
   it('shows the live execution setup attempt with phase attempt label when status is PREPARING_EXECUTION_ENV', async () => {

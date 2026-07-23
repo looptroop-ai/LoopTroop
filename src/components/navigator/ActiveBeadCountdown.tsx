@@ -6,6 +6,7 @@ import { COUNTDOWN_TICK_MS } from '@/lib/constants'
 interface ActiveBeadCountdownProps {
   startedAt: string
   perIterationTimeoutMs: number
+  tooltip?: string
 }
 
 function formatTime(ms: number) {
@@ -15,7 +16,7 @@ function formatTime(ms: number) {
   return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
 }
 
-export function ActiveBeadCountdown({ startedAt, perIterationTimeoutMs }: ActiveBeadCountdownProps) {
+export function ActiveBeadCountdown({ startedAt, perIterationTimeoutMs, tooltip = 'Time remaining for the current bead iteration before it times out and is retried.' }: ActiveBeadCountdownProps) {
   const [remainingMs, setRemainingMs] = useState(() => {
     const startMs = new Date(startedAt).getTime()
     const now = Date.now()
@@ -44,7 +45,7 @@ export function ActiveBeadCountdown({ startedAt, perIterationTimeoutMs }: Active
         </span>
       </TooltipTrigger>
       <TooltipContent>
-        Time remaining for the current bead iteration before it times out and is retried.
+        {tooltip}
       </TooltipContent>
     </Tooltip>
   )

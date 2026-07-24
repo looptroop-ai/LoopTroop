@@ -462,9 +462,15 @@ const { commands, result } = concurrently(
 )
 
 let readySummaryPrinted = false
+let frontendReady = false
+let backendReady = false
 
+// Only show the Ready banner once the app has truly loaded: the frontend
+// (Vite) must be serving AND the backend must have finished its full startup
+// sequence (through step 6, signalled by "[startup] Startup complete").
 function printReadySummary() {
   if (readySummaryPrinted) return
+  if (!frontendReady || !backendReady) return
   readySummaryPrinted = true
   printDivider('Ready')
   printSummaryLine('LoopTroop App', `→  http://localhost:${frontendPort}`)
@@ -479,11 +485,23 @@ for (const command of commands) {
     }
   })
 
-  // Detect when the WEB (Vite) service is ready and print the Ready summary
+  // Detect when the WEB (Vite) service is ready.
   if (command.name === 'WEB') {
     command.stdout.subscribe((data) => {
       const output = data.toString()
       if (output.includes('ready in') || output.includes('Local:')) {
+        frontendReady = true
+        printReadySummary()
+      }
+    })
+  }
+
+  // Detect when the API backend has completed its startup sequence (step 6).
+  if (command.name === 'API') {
+    command.stdout.subscribe((data) => {
+      const output = data.toString()
+      if (output.includes('Startup complete')) {
+        backendReady = true
         printReadySummary()
       }
     })

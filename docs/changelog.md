@@ -20,7 +20,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept development startup available when npm 12 misclassifies a registry-hosted optional tarball as a remote dependency during update preview.
 - Added the live remaining/total timeout clock to Preparing Workspace Runtime.
 - Made paginated log totals honest without removing the existing color legend.
-- Clarified dev server startup output with explicit "LoopTroop App" and "Documentation" labels and a prominent Ready summary when the frontend is available.
+- Clarified dev server startup output with explicit "LoopTroop App" and "Documentation" labels and a prominent Ready summary that now appears only once the app has fully loaded (frontend serving and backend startup complete).
 - Made complete log navigation, copying, and hard-refresh restoration reliable for long ticket histories.
 - Kept AI diagnostics and progressive log history visible and contextual while reviewing long phase and Full Log timelines.
 - Added complete OpenCode AI diagnostics with assistant progress, live usage details, richer tool records, runtime variants, and provider recovery actions.
@@ -123,7 +123,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 #### Changed
 - Updated `docs/core-philosophy.md` with a TL;DR block summarizing LoopTroop's purpose and key AI engineering methodologies, added Manual QA Verification as the fifteenth core philosophy section, and updated section count references from fourteen to fifteen.
 - Increased create and update ticket descriptions from 10,000 to 50,000 characters and added explicit operation/category context to surfaced request errors.
-- Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs once the Vite frontend is available.
+- Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs only once the app has truly loaded — the Vite frontend is serving **and** the backend has finished its full startup sequence (through step 6, signalled by `[startup] Startup complete`) — instead of appearing as soon as Vite is ready.
 - Full Log now loads the complete remaining lifecycle before **Go to top**, targets virtualized extrema directly, and keeps **Back to bottom** pinned through layout updates. **Copy all** in phase and Full Log views continues to use the complete-history export independently of visible pagination, with a disabled spinner, progress tooltip, and retry feedback while the export and clipboard write finish.
 - AI/model details now remain pinned while their log entries scroll, model hover details show the ticket-locked Configuration effort, and phase/Full Log history initially loads the latest 20 rows before visibly fetching older 250-row pages without moving the reader's position.
 - Completed AI-detail persistence for every assistant message in the current prompt segment: intermediate narration is now an `ASSISTANT` Other event, terminal responses remain `OUTPUT`, and reused sessions do not duplicate older turns.

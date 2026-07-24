@@ -19,6 +19,8 @@ import { cancelTicket } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
 import { withCommandLogging } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
+import { registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
+import { refreshProviderCatalog } from '../../opencode/providerCatalog'
 import {
   archiveActivePhaseAttempts,
   cleanupCanceledTicketData,
@@ -128,6 +130,17 @@ export async function handleStartTicket(c: Context) {
       error: message,
     })
     return c.json({ error: message }, 400)
+  }
+
+  try {
+    if (registerOpenRouterRoutingModels(modelSelection.councilMembers)) {
+      await refreshProviderCatalog()
+      emitRoutePhaseLog(ticketId, startPhase, 'info', 'Registered selected OpenRouter routing variants with OpenCode.')
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unable to register OpenRouter routing models'
+    emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ OpenRouter Routing: ${message}`, { error: message })
+    return c.json({ error: message }, 502)
   }
 
   emitRoutePhaseLog(ticketId, startPhase, 'info', 'Initializing workspace and ticket directories.')

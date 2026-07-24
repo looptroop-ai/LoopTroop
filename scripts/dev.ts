@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import concurrently from 'concurrently'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +23,7 @@ import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
 import { LOOPTROOP_OPENCODE_LOGS, resolveOpenCodeLogMode } from './opencode-log-mode'
 import { getWslLanAccessPlan } from './wsl-lan-access'
 import { getErrorMessage } from '../shared/typeGuards'
+import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -37,6 +39,15 @@ let shutdownStartedAtMs: number | null = null
 
 delete childEnv.NO_COLOR
 delete childEnv.FORCE_COLOR
+
+if (!childEnv.OPENCODE_CONFIG?.trim()) {
+  const routingConfigPath = resolve(repoRoot, '.looptroop', 'opencode', 'openrouter-routing.json')
+  mkdirSync(dirname(routingConfigPath), { recursive: true })
+  if (!existsSync(routingConfigPath)) {
+    writeFileSync(routingConfigPath, '{}\n', 'utf8')
+  }
+  childEnv[LOOPTROOP_OPENCODE_ROUTING_CONFIG] = routingConfigPath
+}
 
 type DevService = {
   name: string

@@ -157,7 +157,7 @@ Pick the model you trust most for sustained reasoning and code generation. Other
 
 If the model supports effort or thinking variants (see [Effort / Thinking Variant](#effort--thinking-variant)), prefer a higher-effort variant for complex tickets.
 
-OpenRouter selections use the exact model ID returned by OpenCode, such as `openrouter/deepseek/deepseek-v4-flash`. OpenRouter request suffixes such as `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free` are not OpenCode model IDs, so LoopTroop does not append them to saved selections. Older saved selections are normalized back to their catalog model ID when configuration is saved or a prompt is dispatched.
+For OpenRouter models, LoopTroop supports the routing choices shown in the configuration UI, including `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`. It saves the selected suffix and registers that exact model ID with its managed OpenCode server before a ticket runs.
 
 ::: tip
 You can change the main implementer between tickets. The choice is locked per-ticket once work starts, so adjustments to the profile only affect future tickets.

@@ -154,7 +154,7 @@ describe('profileRouter numeric validation', () => {
     })
   })
 
-  it('canonicalizes legacy OpenRouter routing suffixes when updating other settings', async () => {
+  it('preserves OpenRouter routing suffixes when updating other settings', async () => {
     db.insert(profiles).values({
       mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
       councilMembers: JSON.stringify([
@@ -171,10 +171,10 @@ describe('profileRouter numeric validation', () => {
 
     expect(response.status).toBe(200)
     expect(db.select().from(profiles).get()).toMatchObject({
-      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash',
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
       councilMembers: JSON.stringify([
-        'openrouter/deepseek/deepseek-v4-flash',
-        'openrouter/openrouter/free',
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'openrouter/openrouter/free:free',
       ]),
     })
   })

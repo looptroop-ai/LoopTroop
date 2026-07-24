@@ -5,7 +5,8 @@ import { profiles } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { validateModelSelection } from '../opencode/modelValidation'
 import { parseCouncilMembers } from '../council/members'
-import { normalizeModelId } from '../../shared/modelId'
+import { registerOpenRouterRoutingModels } from '../opencode/openRouterRoutingConfig'
+import { refreshProviderCatalog } from '../opencode/providerCatalog'
 
 const profileRouter = new Hono()
 const MAX_TIMEOUT_MS = 3_600_000
@@ -40,15 +41,21 @@ function normalizeModelSelection(
   mainImplementerRaw: string | null | undefined,
   councilMembersRaw: string | null | undefined,
 ) {
-  const mainImplementer = normalizeModelId(mainImplementerRaw)
+  const mainImplementer = typeof mainImplementerRaw === 'string' ? mainImplementerRaw.trim() : ''
   const councilMembers = Array.from(new Set([
     mainImplementer,
-    ...parseCouncilMembers(councilMembersRaw).map(normalizeModelId),
+    ...parseCouncilMembers(councilMembersRaw),
   ].filter(Boolean)))
 
   return {
     mainImplementer,
     councilMembers,
+  }
+}
+
+async function registerSelectedRoutingModels(modelIds: readonly string[]): Promise<void> {
+  if (registerOpenRouterRoutingModels(modelIds)) {
+    await refreshProviderCatalog()
   }
 }
 
@@ -85,6 +92,11 @@ profileRouter.post('/profile', async (c) => {
   const existing = db.select().from(profiles).limit(1).get()
   if (existing) {
     return c.json({ error: 'Profile already exists. Use PATCH to update.' }, 409)
+  }
+  try {
+    await registerSelectedRoutingModels(validatedModels.councilMembers)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' }, 502)
   }
   const result = db.insert(profiles).values({
     ...parsed.data,
@@ -130,6 +142,14 @@ profileRouter.patch('/profile', async (c) => {
       mainImplementer: normalizedRequested.mainImplementer || existing.mainImplementer,
       councilMembers: JSON.stringify(normalizedRequested.councilMembers),
     }
+  }
+
+  try {
+    await registerSelectedRoutingModels(
+      JSON.parse(modelPatch.councilMembers ?? '[]') as string[],
+    )
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' }, 502)
   }
 
   const result = db.update(profiles)

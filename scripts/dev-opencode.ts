@@ -4,6 +4,7 @@ import { getErrorMessage } from '../shared/typeGuards'
 import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
 import { resolveOpenCodeLogMode } from './opencode-log-mode'
 import { withManagedOpenCodeServerEnv } from './opencode-permission-env'
+import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
 
 const requestedBaseUrl = process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim() || DEFAULT_OPENCODE_BASE_URL
 const hasExplicitBaseUrl = Boolean(process.env.LOOPTROOP_OPENCODE_BASE_URL?.trim())
@@ -46,9 +47,17 @@ if (opencodeLogMode.mode === 'all') {
   console.log('[dev-opencode] Printing managed OpenCode DEBUG logs to stderr.')
 }
 
+const managedServerEnv = withManagedOpenCodeServerEnv(process.env)
+if (!managedServerEnv.OPENCODE_CONFIG?.trim()) {
+  const routingConfigPath = process.env[LOOPTROOP_OPENCODE_ROUTING_CONFIG]?.trim()
+  if (routingConfigPath) {
+    managedServerEnv.OPENCODE_CONFIG = routingConfigPath
+  }
+}
+
 const child = spawn('opencode', ['serve', ...opencodeLogMode.serveArgs, '--hostname', serveHostname, '--port', String(port)], {
   stdio: 'inherit',
-  env: withManagedOpenCodeServerEnv(process.env),
+  env: managedServerEnv,
 })
 
 child.once('error', (error) => {

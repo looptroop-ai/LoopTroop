@@ -82,6 +82,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added Show/Hide Mock Tickets option to the Kanban triage filter bar.
 - Consolidated the three separate chat roadmap items (Log AI Chat, Chat during execution, Chat in dashboard) into a unified **Ticket Chat & Action Assistant** with actionable write capabilities (approve/reject artifacts, edit artifacts and project files, trigger workflow actions) and full auto-execute with undo/rollback.
 - Modified workspace drift detection to gracefully bypass Git checks and avoid throwing baseline-missing errors for display-only mock tickets.
+- Updated the Core Philosophy documentation with a TL;DR overview and a new Manual QA Verification section.
 
 ### Detailed Changes
 
@@ -117,6 +118,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Updated `docs/core-philosophy.md` with a TL;DR block summarizing LoopTroop's purpose and key AI engineering methodologies, added Manual QA Verification as the fifteenth core philosophy section, and updated section count references from fourteen to fifteen.
 - Increased create and update ticket descriptions from 10,000 to 50,000 characters and added explicit operation/category context to surfaced request errors.
 - Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs once the Vite frontend is available.
 - Full Log now loads the complete remaining lifecycle before **Go to top**, targets virtualized extrema directly, and keeps **Back to bottom** pinned through layout updates. **Copy all** in phase and Full Log views continues to use the complete-history export independently of visible pagination, with a disabled spinner, progress tooltip, and retry feedback while the export and clipboard write finish.

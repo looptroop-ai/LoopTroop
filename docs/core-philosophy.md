@@ -1,5 +1,7 @@
 # Core Philosophy
 
+> **TL;DR:** LoopTroop is a tool you run locally with a graphical interface that helps you create and edit applications using AI. It does this by employing modern AI engineering methodologies — context engineering, Ralph-style retry loops, LLM council planning, thorough upfront planning, Git worktree isolation, and more.
+
 LoopTroop is opinionated about how AI coding systems should behave. The app trades speed and conversational convenience for controllability, recovery, and durable correctness.
 
 ## The Five Core Commitments
@@ -12,7 +14,7 @@ LoopTroop is opinionated about how AI coding systems should behave. The app trad
 | Retry with fresh state, not with stale chat memory | Bead execution uses bounded Ralph-style retry loops with fresh context + notes from failures |
 | Let a council decide, not a single model | An LLM Council scores anonymized drafts, then refines the winner with the best ideas from the losing drafts to reduce single-model bias |
 
-The fourteen sections below describe each idea behind LoopTroop in detail. Every section opens with a one-paragraph summary, then explains the idea and how it shows up in the real system.
+The fifteen sections below describe each idea behind LoopTroop in detail. Every section opens with a one-paragraph summary, then explains the idea and how it shows up in the real system.
 
 ## 1. A Local, Fully Open-Source App
 
@@ -201,9 +203,25 @@ This keeps the system honest. The model is allowed to move quickly inside a phas
 
 **Read more:** [Pre-Implementation](pre-implementation.md) for the setup-plan approval gate and [Post-Implementation](post-implementation.md#_5-waiting-pr-review-human-merge-or-finish-gate) for the PR review gate.
 
+## 15. Manual QA Verification
+
+**Summary:** LoopTroop offers an optional Manual QA checkpoint after final tests pass. Instead of assuming automated tests are enough, it generates a human-facing verification checklist from the approved PRD and bead work, hands it to you to run the application and record results, and turns any failures into AI-planned QA-fix beads that re-enter the coding loop. Non-blocking observations become improvement tickets in the backlog.
+
+Automated tests catch regressions, but they cannot verify that the application actually feels right to a human user — layout, interaction flow, visual correctness, and real-world behavior often need a person at the screen. Manual QA fills that gap as a structured, auditable checkpoint rather than an ad-hoc "try it and see" step:
+
+1. **Checklist generation** — after final tests pass, LoopTroop assembles a versioned checklist from the approved PRD, bead metadata, and final-test report, with advisory PRD coverage states (covered, partially covered, uncovered, not applicable).
+2. **Human verification** — you run the application yourself, mark each item as Pass, Fail, or Waive, attach optional evidence (screenshots, files, links), and record observations for any failures.
+3. **Failure → fix beads** — submitted failures are grouped and fed to the main implementer, which plans full QA-fix beads that re-enter the standard coding pipeline, followed by a fresh final-test attempt and a new checklist version.
+4. **Improvements → backlog** — non-blocking observations can be turned into prioritized improvement tickets in the same project, keeping the current ticket unblocked while capturing the insight.
+5. **Versioned rounds** — each QA round is recorded with timestamps, outcomes, evidence references, and created work, so the full verification history is inspectable and resumable.
+
+Manual QA is configured per profile, project, or ticket and locked when the ticket starts, so the pipeline behavior is known and auditable from the beginning. When disabled, tickets proceed directly from final tests to integration.
+
+**Read more:** [Post-Implementation](post-implementation.md#_15-optional-manual-qa-route) for the full Manual QA route and [Beads & Execution](beads.md#manual-qa-fix-beads) for QA-fix bead details.
+
 ## Why LoopTroop Over Direct Agent Loops?
 
-Direct coding-agent loops are highly useful, but they degrade rapidly when task complexity or repository scale increases. The fourteen ideas above add up to a set of structural fixes:
+Direct coding-agent loops are highly useful, but they degrade rapidly when task complexity or repository scale increases. The fifteen ideas above add up to a set of structural fixes:
 
 | Core Challenge | Direct Agent Behavior | LoopTroop's Structural Fix |
 | :--- | :--- | :--- |

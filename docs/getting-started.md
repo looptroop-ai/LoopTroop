@@ -12,7 +12,7 @@ You need a few basic developer tools:
 - **Node.js** and **npm**
 - **Git**
 - A local git repository with an `origin` pointing to GitHub
-- **[OpenCode](https://opencode.ai)** installed locally with at least one configured provider
+- **[OpenCode](https://opencode.ai)** installed locally with at least one configured provider (v1 for now, v2 coming soon).
 
 ### Why a VM?
 

@@ -1,8 +1,10 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { eq } from 'drizzle-orm'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { writeJsonl } from '../../io/jsonl'
-import { getTicketByRef } from '../tickets'
+import { getTicketByRef, getTicketContext } from '../tickets'
 import { resolveReviewCutoffStatus } from '../ticketQueries'
+import { ticketStatusHistory, tickets } from '../../db/schema'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
 
@@ -93,6 +95,42 @@ describe('runtime Manual QA bead origin projection', () => {
     expect(getTicketByRef(setup.ticket.id)?.runtime.beads[0]).toMatchObject({
       startedAt: '2026-07-16T12:00:00.000Z',
       updatedAt: '2026-07-17T04:45:20.704Z',
+    })
+  })
+
+  it('projects active implementation time without blocked retry pauses and includes setup/testing breakdowns', () => {
+    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Implementation timing' })
+    const context = getTicketContext(setup.ticket.id)
+    if (!context) throw new Error('Expected ticket context')
+
+    writeJsonl(setup.paths.beadsPath, [{
+      id: 'completed-bead',
+      title: 'Completed bead',
+      status: 'completed',
+      iteration: 2,
+      startedAt: '2026-07-20T10:12:00.000Z',
+      completedAt: '2026-07-20T11:42:00.000Z',
+      updatedAt: '2026-07-20T11:42:00.000Z',
+    }])
+    context.projectDb.insert(ticketStatusHistory).values([
+      { ticketId: context.localTicketId, newStatus: 'PREPARING_EXECUTION_ENV', changedAt: '2026-07-20T10:00:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-07-20T10:12:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'BLOCKED_ERROR', changedAt: '2026-07-20T11:12:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-07-20T11:32:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'RUNNING_FINAL_TEST', changedAt: '2026-07-20T11:42:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'COMPLETED', changedAt: '2026-07-20T11:50:00.000Z' },
+    ]).run()
+    context.projectDb.update(tickets)
+      .set({ status: 'COMPLETED' })
+      .where(eq(tickets.id, context.localTicketId))
+      .run()
+
+    expect(getTicketByRef(setup.ticket.id)?.implementationTiming).toEqual({
+      activeDurationMs: 70 * 60_000,
+      startedAt: '2026-07-20T10:12:00.000Z',
+      lastBeadFinishedAt: '2026-07-20T11:42:00.000Z',
+      workspacePreparationDurationMs: 12 * 60_000,
+      finalTestingDurationMs: 8 * 60_000,
     })
   })
 })

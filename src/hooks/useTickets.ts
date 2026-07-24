@@ -119,6 +119,7 @@ interface TicketRuntime {
     finalizationFailureNotes: BeadNoteEntry[]
     startedAt?: string | null
     updatedAt?: string | null
+    completedAt?: string | null
     qaOrigin?: ManualQaBeadOrigin | null
   }>
   candidateCommitSha: string | null
@@ -148,6 +149,13 @@ export interface Ticket {
   errorMessage: string | null
   errorSeenSignature?: string | null
   needsInputSeenSignature?: string | null
+  implementationTiming: {
+    activeDurationMs: number
+    startedAt: string | null
+    lastBeadFinishedAt: string | null
+    workspacePreparationDurationMs: number
+    finalTestingDurationMs: number
+  }
   errorOccurrences?: TicketErrorOccurrence[]
   activeErrorOccurrenceId?: string | null
   hasPastErrors?: boolean

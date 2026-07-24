@@ -62,6 +62,13 @@ export function makeTicket(overrides: TicketOverrides = {}): Ticket {
     errorMessage: null,
     errorSeenSignature: null,
     needsInputSeenSignature: null,
+    implementationTiming: {
+      activeDurationMs: 0,
+      startedAt: null,
+      lastBeadFinishedAt: null,
+      workspacePreparationDurationMs: 0,
+      finalTestingDurationMs: 0,
+    },
     errorOccurrences: [],
     activeErrorOccurrenceId: null,
     hasPastErrors: false,

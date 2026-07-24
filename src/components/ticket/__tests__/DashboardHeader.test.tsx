@@ -172,6 +172,36 @@ describe('DashboardHeader', () => {
     expect(within(projectSection as HTMLElement).getByText('🧭')).toBeInTheDocument()
   })
 
+  it('shows pause-aware implementation time and its delivery breakdown in Details', async () => {
+    const ticket = makeTicket({
+      status: 'RUNNING_FINAL_TEST',
+      startedAt: '2026-01-01T08:00:00.000Z',
+      implementationTiming: {
+        activeDurationMs: 65 * 60_000,
+        startedAt: '2026-01-01T09:00:00.000Z',
+        lastBeadFinishedAt: '2026-01-01T11:00:00.000Z',
+        workspacePreparationDurationMs: 12 * 60_000,
+        finalTestingDurationMs: 8 * 60_000,
+      },
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+
+    expect(screen.getByText('Actual implementation time')).toBeInTheDocument()
+    expect(screen.getByText('1h 5m')).toBeInTheDocument()
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'About actual implementation time' }))
+    expect((await screen.findAllByText(/Time actively spent running beads/)).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('12m')
+    expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('8m')
+    expect(screen.getAllByText(/implementation delivery time is 1h 25m/).length).toBeGreaterThan(0)
+  })
+
   it('shows effective Manual QA and Git hook settings in Details', () => {
     const ticket = makeTicket({
       status: 'DRAFTING_PRD',

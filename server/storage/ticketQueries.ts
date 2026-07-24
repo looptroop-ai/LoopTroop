@@ -120,6 +120,19 @@ export interface TicketErrorOccurrence {
   resumedToStatus: string | null
 }
 
+export interface TicketImplementationTiming {
+  /** Total time the ticket actually spent executing beads; paused/error intervals are excluded. */
+  activeDurationMs: number
+  /** First time the ticket entered bead execution. */
+  startedAt: string | null
+  /** Most recent completed bead timestamp, when available. */
+  lastBeadFinishedAt: string | null
+  /** Total time spent preparing the execution workspace. */
+  workspacePreparationDurationMs: number
+  /** Total time spent in the automated final-test phase. */
+  finalTestingDurationMs: number
+}
+
 /** Full public projection of a ticket row, enriched with runtime data, error history, and available actions. */
 export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncilMembers' | 'lockedCouncilMemberVariants' | 'lockedManualQaSource' | 'lockedGitHookPolicy' | 'lockedGitHookPolicySource'> {
   id: string
@@ -155,6 +168,7 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
   hasPastErrors: boolean
   errorSeenSignature: string | null
   needsInputSeenSignature: string | null
+  implementationTiming: TicketImplementationTiming
   completionDisposition: 'merged' | 'closed_unmerged' | null
   cleanup: {
     status: 'clean' | 'warning' | null
@@ -509,6 +523,80 @@ function readVisitedStatuses(
   return [...visited]
 }
 
+const IMPLEMENTATION_TIMING_STATUSES = {
+  coding: 'CODING',
+  workspacePreparation: 'PREPARING_EXECUTION_ENV',
+  finalTesting: 'RUNNING_FINAL_TEST',
+} as const
+
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function readImplementationTiming(
+  projectContext: NonNullable<ReturnType<typeof getProjectContextById>> | null | undefined,
+  ticket: LocalTicketRow,
+  beads: Array<{ completedAt?: string | null }>,
+): TicketImplementationTiming {
+  const empty: TicketImplementationTiming = {
+    activeDurationMs: 0,
+    startedAt: null,
+    lastBeadFinishedAt: null,
+    workspacePreparationDurationMs: 0,
+    finalTestingDurationMs: 0,
+  }
+  if (!projectContext) return empty
+
+  const rows = projectContext.projectDb.select({
+    newStatus: ticketStatusHistory.newStatus,
+    changedAt: ticketStatusHistory.changedAt,
+  })
+    .from(ticketStatusHistory)
+    .where(eq(ticketStatusHistory.ticketId, ticket.id))
+    .orderBy(asc(ticketStatusHistory.id))
+    .all()
+
+  let activeDurationMs = 0
+  let workspacePreparationDurationMs = 0
+  let finalTestingDurationMs = 0
+  let startedAt: string | null = null
+  const now = Date.now()
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (!row) continue
+    const startedMs = parseTimestamp(row.changedAt)
+    if (startedMs === null) continue
+    const endedMs = parseTimestamp(rows[index + 1]?.changedAt)
+      ?? (ticket.status === row.newStatus ? now : startedMs)
+    const durationMs = Math.max(0, endedMs - startedMs)
+
+    if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.coding) {
+      activeDurationMs += durationMs
+      startedAt ??= row.changedAt
+    } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.workspacePreparation) {
+      workspacePreparationDurationMs += durationMs
+    } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.finalTesting) {
+      finalTestingDurationMs += durationMs
+    }
+  }
+
+  const lastBeadFinishedAt = beads
+    .map((bead) => bead.completedAt ?? null)
+    .filter((value): value is string => parseTimestamp(value) !== null)
+    .sort((left, right) => parseTimestamp(right)! - parseTimestamp(left)!)[0] ?? null
+
+  return {
+    activeDurationMs,
+    startedAt,
+    lastBeadFinishedAt,
+    workspacePreparationDurationMs,
+    finalTestingDurationMs,
+  }
+}
+
 const MANUAL_QA_OUTCOMES = new Set(['passed', 'waived_through', 'skipped', 'failed', 'created_fixes'])
 
 function readManualQaProjection(
@@ -680,6 +768,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const visitedStatuses = readVisitedStatuses(projectContext, ticket)
   const manualQa = readManualQaProjection(projectContext, ticket.id)
   const manualQaOrigin = readManualQaOrigin(project?.folderPath, ticket.externalId)
+  const implementationTiming = readImplementationTiming(projectContext, ticket, runtime.beads ?? [])
   const manualQaResolution: { enabled: boolean; source: 'ticket' | 'project' | 'profile' } = ticket.startedAt !== null
     ? {
         enabled: ticket.lockedManualQaEnabled === true,
@@ -748,6 +837,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     hasPastErrors: errorOccurrences.some((occurrence) => occurrence.resolvedAt !== null),
     errorSeenSignature,
     needsInputSeenSignature,
+    implementationTiming,
     completionDisposition,
     cleanup,
     runtime,
@@ -941,6 +1031,7 @@ function buildRuntime(
       finalizationFailureNotes: bead.finalizationFailureNotes,
       startedAt: bead.startedAt,
       updatedAt: bead.updatedAt,
+      completedAt: bead.completedAt,
       qaOrigin: bead.qaOrigin,
     })),
     candidateCommitSha: integrationReport?.candidateCommitSha ?? null,
@@ -971,6 +1062,7 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
           finalizationFailureNotes: Array.isArray(bead.finalizationFailureNotes) ? bead.finalizationFailureNotes : [],
           updatedAt: typeof bead.updatedAt === 'string' ? bead.updatedAt : null,
           startedAt: typeof bead.startedAt === 'string' ? bead.startedAt : null,
+          completedAt: typeof bead.completedAt === 'string' ? bead.completedAt : null,
           qaOrigin: qaOrigin.success ? qaOrigin.data : null,
         }
       })

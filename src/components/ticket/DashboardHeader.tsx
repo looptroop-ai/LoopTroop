@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, useEffect } from 'react'
-import { FolderOpen, Copy, Check as CheckIcon, Pencil, HardDrive, RotateCw, ChevronDown, ChevronRight, File, Folder, ExternalLink } from 'lucide-react'
+import { FolderOpen, Copy, Check as CheckIcon, Pencil, HardDrive, RotateCw, ChevronDown, ChevronRight, File, Folder, ExternalLink, CircleHelp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -52,6 +52,13 @@ function ProjectIcon({
 function getPriorityLabel(priority: number): string {
   const labels: Record<number, string> = { 1: 'Very High', 2: 'High', 3: 'Normal', 4: 'Low', 5: 'Very Low' }
   return labels[priority] ?? 'Normal'
+}
+
+function formatDuration(durationMs: number): string {
+  const minutes = Math.max(0, Math.floor(durationMs / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
 }
 
 function getStatusBadgeClasses(status: string): string {
@@ -489,6 +496,41 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                   const hrs = Math.floor(mins / 60)
                   return `${hrs}h ${mins % 60}m`
                 })()}</p>
+              </div>
+            )}
+            {ticket.implementationTiming.startedAt && (
+              <div>
+                <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                  <span>Actual implementation time</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label="About actual implementation time"
+                      >
+                        <CircleHelp className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-sm space-y-1.5 p-3 text-left text-xs leading-relaxed">
+                      <p>Time actively spent running beads. Time while the ticket was blocked and waiting for a retry or continue action is not included.</p>
+                      <div className="border-t border-border/60 pt-1.5">
+                        <p><span className="font-medium">Bead execution started:</span> {new Date(ticket.implementationTiming.startedAt).toLocaleString()}</p>
+                        <p><span className="font-medium">Last bead finished:</span> {ticket.implementationTiming.lastBeadFinishedAt ? new Date(ticket.implementationTiming.lastBeadFinishedAt).toLocaleString() : 'Not finished yet'}</p>
+                      </div>
+                      <div className="border-t border-border/60 pt-1.5">
+                        <p><span className="font-medium">Workspace preparation:</span> {formatDuration(ticket.implementationTiming.workspacePreparationDurationMs)}</p>
+                        <p><span className="font-medium">Final testing:</span> {formatDuration(ticket.implementationTiming.finalTestingDurationMs)}</p>
+                        <p className="text-muted-foreground">Including these stages, implementation delivery time is {formatDuration(
+                          ticket.implementationTiming.activeDurationMs
+                          + ticket.implementationTiming.workspacePreparationDurationMs
+                          + ticket.implementationTiming.finalTestingDurationMs,
+                        )}.</p>
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <p className="mt-0.5">{formatDuration(ticket.implementationTiming.activeDurationMs)}</p>
               </div>
             )}
             <div className="col-span-2">

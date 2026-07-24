@@ -1364,6 +1364,33 @@ search: false
 
 
 
+*   **Stuck-bead recovery (model-escalation retry + AI bead re-analysis):** When a ticket fails a coding bead after consuming all of its per-bead retry attempts (so it is blocked and waiting on the user), offer two new recovery actions alongside the existing Retry / Retry with extra note / Cancel — one for escalating the model, one for diagnosing and correcting the bead itself.
+    * Scope both actions to coding-phase blocked errors only; they must not appear for other blocked phases (e.g. execution-env setup, final test, PR creation).
+    * **Retry with another model:** Add a new recovery action that re-runs the stuck bead using a different model chosen by the user from the connected models, without changing the model locked for the rest of the ticket.
+        * The alternate model is used for the entire next bead run (every attempt within that bead until it succeeds or exhausts its retry budget again), then the ticket automatically reverts to its original locked model for all subsequent beads.
+        * The user picks the model fresh from a dropdown each time they use the action; there is no permanent fallback model and no automatic model switching.
+        * The override is transient and never mutates the ticket's locked model configuration; once the bead completes, the override is gone.
+        * Optionally allow a short free-text reason for the model switch, persisted for auditability.
+        * The retry still resets the worktree to the stuck bead's start point, exactly like a normal retry, so the alternate model starts from a clean bead state.
+        * AI turn metrics for the alternate-model run must be attributable to that model so users can see, after the fact, which model produced which attempts.
+    * **Re-analyze stuck bead (one button that branches):** Add a single "Re-analyze" action that produces an AI diagnosis of why the bead keeps getting stuck, then lets the user choose what to do next — either correct the bead spec(s) or turn the diagnosis into a retry note.
+        * The action gathers the approved PRD, the full list of beads, and all of the stuck bead's execution logs (the model's assistant outputs plus the error and system lines), prioritizing error and structured-retry-diagnostic entries and staying within the normal context budget so the diagnosis is not drowned in raw debug noise.
+        * The model returns a structured diagnosis: the likely root cause, the signals that point to it, a hypothesis, recommended next actions, an optional suggested retry note, an optional suggested bead correction (with a recommended change level: slight, necessary, or major, and a recommended scope: just this bead or this and future beads), and a confidence level.
+        * The diagnosis is persisted and surfaced in the blocked-error UI so the user can read it before deciding what to do; nothing is applied automatically.
+        * **Branch A — Apply bead correction:** Let the user regenerate the stuck bead's spec from the diagnosis, pre-filled with the suggested correction but adjustable.
+            * The user chooses scope (correct only the current stuck bead, or correct the current and all not-yet-started future beads) and change level (slight, necessary, or major), where the level controls how much of the bead spec may be rewritten — slight touches only context guidance and anti-patterns, necessary also rewords acceptance criteria and tests, and major may also rewrite the description and target files.
+            * When scope includes future beads, only beads that have not started yet may be changed; already-completed or in-progress beads are never rewritten.
+            * For every level, the app must show a diff of the proposed spec changes and require explicit user approval before writing anything; no correction is ever applied silently.
+            * On approval, the corrected bead spec(s) are saved, the stuck bead's iteration counter is reset, its machine-generated failure notes are cleared, its user-authored retry notes are preserved, the worktree is reset to the stuck bead's start point, and the ticket resumes coding with the new spec(s).
+            * If the OpenCode process dies mid-correction, the ticket must remain blocked and no partial changes may be written.
+        * **Branch B — Use as retry note:** Let the user take the diagnosis's suggested retry note (or an edited version of it) straight into the existing "Retry with extra note" flow.
+            * The retry-note dialog is pre-filled with the suggested note; the user can edit it before submitting.
+            * Submitting uses the existing retry-with-note behavior: the note is appended to the bead's user retry notes, replayed into every future attempt for that bead, and the ticket resumes coding.
+            * No new retry mechanism is introduced for this branch; it reuses the existing retry-with-note path.
+        * The two branches are reached from the single Re-analyze button (diagnosis first, then choose a branch), so the user always gets the diagnosis before committing to either a correction or a note.
+    * Both new actions coexist with the existing Retry, Retry with extra note, and Cancel actions; they are additional escalation options for the user, never automatic, and the user stays in control of which recovery path to take.
+    * Keep these actions as a coherent escalation ladder for the user: Retry (same model, same spec) -> Retry with extra note (same model, same spec, more guidance) -> Retry with another model (different model, same spec) -> Re-analyze (diagnose, then either correct the spec or feed the diagnosis back as a retry note).
+
 ## Medium Priority
 
 *   **Check documentation:** MANUAL audit of all documentation or information shown to the user that can be considered docs (like details per status, etc).

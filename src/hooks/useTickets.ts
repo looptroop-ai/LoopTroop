@@ -152,7 +152,9 @@ export interface Ticket {
   implementationTiming: {
     activeDurationMs: number
     startedAt: string | null
-    lastBeadFinishedAt: string | null
+    lastPlannedBeadFinishedAt: string | null
+    manualQaFixDurationMs: number
+    manualQaFixStartedAt: string | null
     workspacePreparationDurationMs: number
     workspacePreparationStartedAt: string | null
     finalTestingDurationMs: number

@@ -111,6 +111,33 @@ describe('runtime Manual QA bead origin projection', () => {
       startedAt: '2026-07-20T10:12:00.000Z',
       completedAt: '2026-07-20T11:42:00.000Z',
       updatedAt: '2026-07-20T11:42:00.000Z',
+    }, {
+      id: 'manual-qa-fix',
+      title: 'Manual QA fix',
+      status: 'completed',
+      iteration: 1,
+      startedAt: '2026-07-20T12:00:00.000Z',
+      completedAt: '2026-07-20T12:20:00.000Z',
+      updatedAt: '2026-07-20T12:20:00.000Z',
+      qaOrigin: {
+        schemaVersion: 1,
+        actionId: 'manual-qa-submit-one',
+        sourceTicketId: setup.ticket.id,
+        sourceTicketExternalId: setup.ticket.externalId,
+        version: 1,
+        modelId: null,
+        modelSupportsImages: null,
+        createdFromManualQaAt: '2026-07-20T11:50:00.000Z',
+        sourceItems: [{
+          itemId: 'qa-001',
+          lineageId: 'qa-001',
+          behavior: 'Expected behavior',
+          observation: 'Observed behavior',
+          expectedResult: 'Correct behavior',
+          evidence: [],
+          links: [],
+        }],
+      },
     }])
     context.projectDb.insert(ticketStatusHistory).values([
       { ticketId: context.localTicketId, newStatus: 'PREPARING_EXECUTION_ENV', changedAt: '2026-07-20T10:00:00.000Z' },
@@ -118,7 +145,10 @@ describe('runtime Manual QA bead origin projection', () => {
       { ticketId: context.localTicketId, newStatus: 'BLOCKED_ERROR', changedAt: '2026-07-20T11:12:00.000Z' },
       { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-07-20T11:32:00.000Z' },
       { ticketId: context.localTicketId, newStatus: 'RUNNING_FINAL_TEST', changedAt: '2026-07-20T11:42:00.000Z' },
-      { ticketId: context.localTicketId, newStatus: 'COMPLETED', changedAt: '2026-07-20T11:50:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'WAITING_MANUAL_QA', changedAt: '2026-07-20T11:50:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-07-20T12:00:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'RUNNING_FINAL_TEST', changedAt: '2026-07-20T12:20:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'COMPLETED', changedAt: '2026-07-20T12:28:00.000Z' },
     ]).run()
     context.projectDb.update(tickets)
       .set({ status: 'COMPLETED' })
@@ -126,12 +156,14 @@ describe('runtime Manual QA bead origin projection', () => {
       .run()
 
     expect(getTicketByRef(setup.ticket.id)?.implementationTiming).toEqual({
-      activeDurationMs: 70 * 60_000,
+      activeDurationMs: 90 * 60_000,
       startedAt: '2026-07-20T10:12:00.000Z',
-      lastBeadFinishedAt: '2026-07-20T11:42:00.000Z',
+      lastPlannedBeadFinishedAt: '2026-07-20T11:42:00.000Z',
+      manualQaFixDurationMs: 20 * 60_000,
+      manualQaFixStartedAt: '2026-07-20T12:00:00.000Z',
       workspacePreparationDurationMs: 12 * 60_000,
       workspacePreparationStartedAt: '2026-07-20T10:00:00.000Z',
-      finalTestingDurationMs: 8 * 60_000,
+      finalTestingDurationMs: 16 * 60_000,
       finalTestingStartedAt: '2026-07-20T11:42:00.000Z',
     })
   })

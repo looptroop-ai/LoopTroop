@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
-- Added a pause-aware Actual implementation time to Ticket Details, with workspace-preparation and final-testing context.
+- Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
 - Sped up the dev server on Linux, macOS, native Windows, and remote/VPS hosts by using efficient native file watching by default instead of always polling, while still auto-enabling polling for WSL workspaces on Windows-mounted drives.
 - Increased the ticket description limit to 50,000 characters and made validation failures explain what needs fixing.
 - Made new-ticket creation explain missing project setup and surface create-request errors instead of appearing unresponsive.
@@ -88,7 +88,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
-- Added **Actual implementation time** below the overall Ticket Details duration. It totals only `CODING` intervals, excluding time in `BLOCKED_ERROR` while an exhausted or failed bead waits for Retry or Continue. Its help tooltip shows bead execution start and last completion timestamps, plus separate workspace-preparation and final-testing durations and their combined delivery time.
+- Added **Actual implementation time** below the overall Ticket Details duration. It totals only `CODING` intervals, excluding time in `BLOCKED_ERROR` while an exhausted or failed bead waits for Retry or Continue. Its help tooltip shows bead execution start, the final originally planned bead's completion (unchanged by Manual QA fix beads), and separate workspace-preparation, final-testing, and Manual QA-fix durations.
 - Added client-side handling for server validation messages, including the exact ticket field and constraint that failed.
 - Added visible new-ticket guidance when no project is attached and error toasts for failed ticket creation requests.
 - Preparing Workspace Runtime now shows the current setup attempt's remaining and configured total timeout beside its live status. The clock resets from the attempt-start event on automatic retries and respects the effective project or profile setup-timeout setting.

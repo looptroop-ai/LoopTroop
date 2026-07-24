@@ -65,7 +65,9 @@ export function makeTicket(overrides: TicketOverrides = {}): Ticket {
     implementationTiming: {
       activeDurationMs: 0,
       startedAt: null,
-      lastBeadFinishedAt: null,
+      lastPlannedBeadFinishedAt: null,
+      manualQaFixDurationMs: 0,
+      manualQaFixStartedAt: null,
       workspacePreparationDurationMs: 0,
       workspacePreparationStartedAt: null,
       finalTestingDurationMs: 0,

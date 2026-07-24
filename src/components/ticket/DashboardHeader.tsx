@@ -520,11 +520,12 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                       <p>Time actively spent running beads. Time while the ticket was blocked and waiting for a retry or continue action is not included.</p>
                       <div className="border-t border-border/60 pt-1.5">
                         <p><span className="font-medium">Bead execution started:</span> {new Date(ticket.implementationTiming.startedAt).toLocaleString()}</p>
-                        <p><span className="font-medium">Last bead finished:</span> {ticket.implementationTiming.lastBeadFinishedAt ? new Date(ticket.implementationTiming.lastBeadFinishedAt).toLocaleString() : 'Not finished yet'}</p>
+                        <p><span className="font-medium">Last planned bead finished:</span> {ticket.implementationTiming.lastPlannedBeadFinishedAt ? new Date(ticket.implementationTiming.lastPlannedBeadFinishedAt).toLocaleString() : 'Not finished yet'}</p>
                       </div>
                       <div className="border-t border-border/60 pt-1.5">
                         <p><span className="font-medium">Workspace preparation:</span> {ticket.implementationTiming.workspacePreparationStartedAt ? formatDuration(ticket.implementationTiming.workspacePreparationDurationMs) : 'N/A'}</p>
                         <p><span className="font-medium">Final testing:</span> {ticket.implementationTiming.finalTestingStartedAt ? formatDuration(ticket.implementationTiming.finalTestingDurationMs) : 'N/A'}</p>
+                        <p><span className="font-medium">Manual QA fix beads:</span> {ticket.implementationTiming.manualQaFixStartedAt ? formatDuration(ticket.implementationTiming.manualQaFixDurationMs) : 'N/A'} <span className="text-muted-foreground">(included above)</span></p>
                         <p className="text-muted-foreground">Including these stages, implementation delivery time is {formatDuration(
                           ticket.implementationTiming.activeDurationMs
                           + ticket.implementationTiming.workspacePreparationDurationMs

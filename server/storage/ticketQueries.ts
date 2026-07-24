@@ -125,8 +125,12 @@ export interface TicketImplementationTiming {
   activeDurationMs: number
   /** First time the ticket entered bead execution. */
   startedAt: string | null
-  /** Most recent completed bead timestamp, when available. */
-  lastBeadFinishedAt: string | null
+  /** Completion time for the final originally planned bead; Manual QA fix beads do not change it. */
+  lastPlannedBeadFinishedAt: string | null
+  /** Active coding time attributable to Manual QA fix beads. This is included in activeDurationMs. */
+  manualQaFixDurationMs: number
+  /** First time a Manual QA fix bead started. */
+  manualQaFixStartedAt: string | null
   /** Total time spent preparing the execution workspace. */
   workspacePreparationDurationMs: number
   /** First time workspace preparation began. */
@@ -205,6 +209,7 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
       finalizationFailureNotes: BeadNoteEntry[]
       startedAt?: string | null
       updatedAt?: string | null
+      completedAt?: string | null
       qaOrigin?: QaOrigin | null
     }>
     candidateCommitSha: string | null
@@ -542,12 +547,19 @@ function parseTimestamp(value: string | null | undefined): number | null {
 function readImplementationTiming(
   projectContext: NonNullable<ReturnType<typeof getProjectContextById>> | null | undefined,
   ticket: LocalTicketRow,
-  beads: Array<{ completedAt?: string | null }>,
+  beads: Array<{
+    startedAt?: string | null
+    updatedAt?: string | null
+    completedAt?: string | null
+    qaOrigin?: QaOrigin | null
+  }>,
 ): TicketImplementationTiming {
   const empty: TicketImplementationTiming = {
     activeDurationMs: 0,
     startedAt: null,
-    lastBeadFinishedAt: null,
+    lastPlannedBeadFinishedAt: null,
+    manualQaFixDurationMs: 0,
+    manualQaFixStartedAt: null,
     workspacePreparationDurationMs: 0,
     workspacePreparationStartedAt: null,
     finalTestingDurationMs: 0,
@@ -570,6 +582,7 @@ function readImplementationTiming(
   let startedAt: string | null = null
   let workspacePreparationStartedAt: string | null = null
   let finalTestingStartedAt: string | null = null
+  const codingIntervals: Array<{ startedAt: number; endedAt: number }> = []
   const now = Date.now()
 
   for (let index = 0; index < rows.length; index += 1) {
@@ -584,6 +597,7 @@ function readImplementationTiming(
     if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.coding) {
       activeDurationMs += durationMs
       startedAt ??= row.changedAt
+      codingIntervals.push({ startedAt: startedMs, endedAt: endedMs })
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.workspacePreparation) {
       workspacePreparationDurationMs += durationMs
       workspacePreparationStartedAt ??= row.changedAt
@@ -593,15 +607,32 @@ function readImplementationTiming(
     }
   }
 
-  const lastBeadFinishedAt = beads
-    .map((bead) => bead.completedAt ?? null)
+  const finalPlannedBead = beads.filter((bead) => !bead.qaOrigin).at(-1)
+  const lastPlannedBeadFinishedAt = parseTimestamp(finalPlannedBead?.completedAt) !== null
+    ? finalPlannedBead!.completedAt!
+    : null
+  const manualQaFixBeads = beads.filter((bead) => bead.qaOrigin)
+  const manualQaFixStartedAt = manualQaFixBeads
+    .map((bead) => bead.startedAt ?? null)
     .filter((value): value is string => parseTimestamp(value) !== null)
-    .sort((left, right) => parseTimestamp(right)! - parseTimestamp(left)!)[0] ?? null
+    .sort((left, right) => parseTimestamp(left)! - parseTimestamp(right)!)[0] ?? null
+  const manualQaFixDurationMs = manualQaFixBeads.reduce((total, bead) => {
+    const beadStartedAt = parseTimestamp(bead.startedAt)
+    if (beadStartedAt === null) return total
+    const beadEndedAt = parseTimestamp(bead.completedAt)
+      ?? parseTimestamp(bead.updatedAt)
+      ?? (ticket.status === IMPLEMENTATION_TIMING_STATUSES.coding ? now : beadStartedAt)
+    return total + codingIntervals.reduce((duration, interval) => (
+      duration + Math.max(0, Math.min(interval.endedAt, beadEndedAt) - Math.max(interval.startedAt, beadStartedAt))
+    ), 0)
+  }, 0)
 
   return {
     activeDurationMs,
     startedAt,
-    lastBeadFinishedAt,
+    lastPlannedBeadFinishedAt,
+    manualQaFixDurationMs,
+    manualQaFixStartedAt,
     workspacePreparationDurationMs,
     workspacePreparationStartedAt,
     finalTestingDurationMs,

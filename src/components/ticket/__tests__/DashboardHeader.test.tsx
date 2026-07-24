@@ -179,7 +179,9 @@ describe('DashboardHeader', () => {
       implementationTiming: {
         activeDurationMs: 65 * 60_000,
         startedAt: '2026-01-01T09:00:00.000Z',
-        lastBeadFinishedAt: '2026-01-01T11:00:00.000Z',
+        lastPlannedBeadFinishedAt: '2026-01-01T11:00:00.000Z',
+        manualQaFixDurationMs: 9 * 60_000,
+        manualQaFixStartedAt: '2026-01-01T11:30:00.000Z',
         workspacePreparationDurationMs: 12 * 60_000,
         workspacePreparationStartedAt: '2026-01-01T08:48:00.000Z',
         finalTestingDurationMs: 8 * 60_000,
@@ -202,6 +204,7 @@ describe('DashboardHeader', () => {
     expect((await screen.findAllByText(/Time actively spent running beads/)).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('12m')
     expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('8m')
+    expect(screen.getAllByText(/Manual QA fix beads:/).at(-1)?.parentElement).toHaveTextContent('9m')
     expect(screen.getAllByText(/implementation delivery time is 1h 25m/).length).toBeGreaterThan(0)
   })
 
@@ -212,7 +215,9 @@ describe('DashboardHeader', () => {
       implementationTiming: {
         activeDurationMs: 5 * 60_000,
         startedAt: '2026-01-01T09:00:00.000Z',
-        lastBeadFinishedAt: null,
+        lastPlannedBeadFinishedAt: null,
+        manualQaFixDurationMs: 0,
+        manualQaFixStartedAt: null,
         workspacePreparationDurationMs: 0,
         workspacePreparationStartedAt: null,
         finalTestingDurationMs: 0,
@@ -231,6 +236,7 @@ describe('DashboardHeader', () => {
     expect((await screen.findAllByText('Not finished yet')).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('N/A')
     expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('N/A')
+    expect(screen.getAllByText(/Manual QA fix beads:/).at(-1)?.parentElement).toHaveTextContent('N/A')
   })
 
   it('shows effective Manual QA and Git hook settings in Details', () => {

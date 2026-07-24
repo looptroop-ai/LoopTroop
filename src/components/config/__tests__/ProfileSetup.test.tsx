@@ -224,6 +224,18 @@ describe('ProfileSetup', () => {
     ))
   })
 
+  it('shows the main implementer variant in its read-only council row', async () => {
+    profileForTest = {
+      ...existingProfile,
+      mainImplementerVariant: 'high',
+    }
+
+    await renderProfileSetup()
+
+    expect(await screen.findByText('· high')).toHaveClass('text-muted-foreground')
+    expect(screen.getByText('MAI — auto-included')).toBeInTheDocument()
+  })
+
   it('resets the effort selection to None when the main model changes', async () => {
     profileForTest = {
       ...existingProfile,

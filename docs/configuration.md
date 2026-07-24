@@ -192,6 +192,8 @@ The minimum viable council is the main implementer plus one additional member. T
 
 The UI prevents duplicate picks across council slots, so if you cannot select a model twice that is intentional rather than a catalog bug.
 
+The auto-included main implementer row shows its selected effort variant in muted text. Change that variant only in the Main Implementer section above.
+
 ::: tip
 Up to 9 council slots are available in addition to the main implementer, for a maximum council size of 10.
 :::

@@ -279,6 +279,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
   const updateField = <K extends keyof CreateProfileInput>(key: K, value: CreateProfileInput[K]) => {
     setFormData(prev => ({ ...prev, [key]: value }))
   }
+  const mainImplementerVariantLabel = mainVariant && mainVariant !== 'none' ? mainVariant : 'None'
 
   return (
     <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-6">
@@ -359,6 +360,9 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
               <div className="flex items-center gap-2">
                 <div className="flex-1 rounded-lg border border-input bg-muted/40 px-3 py-2.5 text-sm">
                   <span className="font-medium">{formData.mainImplementer || '(select main implementer above)'}</span>
+                  {formData.mainImplementer && (
+                    <span className="ml-2 text-[10px] text-muted-foreground">· {mainImplementerVariantLabel}</span>
+                  )}
                   <span className="ml-2 text-[10px] text-muted-foreground">MAI — auto-included</span>
                 </div>
               </div>

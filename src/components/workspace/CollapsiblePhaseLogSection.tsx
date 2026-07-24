@@ -43,7 +43,7 @@ export function CollapsiblePhaseLogSection({
 
   const rootClassName = cn(
     'min-w-0 flex flex-col',
-    !hasResizeHandle && 'border-t border-border/40 pt-1.5',
+    !hasResizeHandle && 'border-t border-border/30 pt-1.5',
     variant === 'fill' ? 'mt-auto shrink-0' : 'shrink-0',
     className,
   )
@@ -131,7 +131,7 @@ export function CollapsiblePhaseLogSection({
       onClick={handleToggleExpanded}
       aria-expanded={isExpanded}
       aria-controls={panelId}
-      className="flex items-center gap-1 py-1 text-xs font-medium text-muted-foreground uppercase tracking-wider transition-colors hover:text-foreground shrink-0"
+      className="flex items-center gap-1 py-1 text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider transition-all hover:text-foreground shrink-0"
     >
       <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', isExpanded && 'rotate-90')} />
       <span>Log</span>

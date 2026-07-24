@@ -232,7 +232,7 @@ function normalizeBead(input: {
   finalizationFailureNotes?: BeadNoteEntry[]
   createdAt?: string
   updatedAt?: string | null
-  completedAt?: string
+  completedAt?: string | null
   startedAt?: string | null
   beadStartCommit?: string | null
   qaOrigin?: TicketBead['qaOrigin']
@@ -278,10 +278,10 @@ function normalizeBead(input: {
     failedIterationNotes: normalizeNoteEntries(input.failedIterationNotes),
     userRetryNotes: normalizeNoteEntries(input.userRetryNotes, false),
     finalizationFailureNotes: normalizeNoteEntries(input.finalizationFailureNotes),
-    createdAt: input.createdAt ?? '',
-    updatedAt: input.updatedAt ?? '',
-    completedAt: input.completedAt ?? '',
-    startedAt: input.startedAt ?? '',
+    createdAt: typeof input.createdAt === 'string' ? input.createdAt : '',
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : '',
+    completedAt: typeof input.completedAt === 'string' ? input.completedAt : '',
+    startedAt: typeof input.startedAt === 'string' ? input.startedAt : '',
     beadStartCommit: input.beadStartCommit ?? null,
     qaOrigin: input.qaOrigin ?? null,
   }

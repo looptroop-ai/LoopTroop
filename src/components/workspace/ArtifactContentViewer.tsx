@@ -156,7 +156,7 @@ export function CollapsibleSection({
   return (
     <div
       ref={sectionRef}
-      className={cn('border border-border rounded-md overflow-hidden flex flex-col min-w-0 w-full', className)}
+      className={cn('border border-border/70 rounded-lg overflow-hidden flex flex-col min-w-0 w-full shadow-2xs', className)}
     >
       <div className={cn('flex flex-wrap items-start gap-2 min-w-0', headerClassName)}>
         <button
@@ -164,7 +164,7 @@ export function CollapsibleSection({
           aria-expanded={isOpen}
           onClick={() => setIsOpen((current) => !current)}
           className={cn(
-            'flex items-center gap-1.5 flex-1 min-w-0 px-3 py-2 text-xs font-medium hover:bg-accent/50 transition-colors text-left',
+            'flex items-center gap-1.5 flex-1 min-w-0 px-3 py-2 text-xs font-mono font-medium hover:bg-muted/30 transition-all text-left',
             triggerClassName,
           )}
         >
@@ -344,9 +344,9 @@ function RawAttemptVariantSelector({
     <div
       role="group"
       aria-label={ariaLabel}
-      className="inline-flex min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-background"
+      className="inline-flex min-w-0 max-w-full overflow-hidden rounded-lg border border-border/70 bg-background shadow-2xs"
     >
-      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 bg-muted px-2.5 py-1 text-[10px] font-medium text-foreground">
+      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 bg-muted/60 px-2.5 py-1 text-[10px] font-mono font-medium text-foreground">
         {source.modelId ? <ModelIcon modelId={source.modelId} className="h-3 w-3" /> : null}
         <span className="min-w-0 truncate">{label}</span>
       </span>

@@ -533,13 +533,13 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-3">
         <div className="flex items-center gap-2">
           <ScrollText className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-medium text-foreground">Full Log</span>
+          <span className="text-sm font-mono font-medium text-foreground">Full Log</span>
           <span className="text-[11px] text-muted-foreground">— Complete ticket lifecycle</span>
         </div>
       </div>
 
       {/* Toolbar */}
-      <div className="flex px-1 py-1 items-center flex-wrap gap-1 shrink-0">
+      <div className="flex px-1 py-1.5 items-center flex-wrap gap-1 shrink-0 border-b border-border/30">
         {FIXED_TABS.map(tab => {
           const tooltipContent = TAB_TOOLTIPS[tab]
 
@@ -553,8 +553,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                     title={`${singleModelTabId} · Effort: ${formatLogModelEffort(effort)}`}
                     onClick={() => setActiveTab(tab)}
                     className={cn(
-                      'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                      effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                      'px-2 py-0.5 rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                      effectiveTab === tab ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
                     )}
                   >
                     {aiTabLabel}
@@ -576,8 +576,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   <TooltipTrigger asChild>
                     <div
                       className={cn(
-                        'flex items-center rounded text-xs font-medium shrink-0 transition-colors',
-                        isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'
+                        'flex items-center rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                        isActive ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:bg-muted/30'
                       )}
                     >
                       <button
@@ -621,8 +621,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   <TooltipTrigger asChild>
                     <div
                       className={cn(
-                        'flex items-center rounded text-xs font-medium shrink-0 transition-colors',
-                        isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'
+                        'flex items-center rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                        isActive ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:bg-muted/30'
                       )}
                     >
                       <button
@@ -677,8 +677,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   type="button"
                   onClick={() => setActiveTab(tab)}
                   className={cn(
-                    'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                    effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                    'px-2 py-0.5 rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                    effectiveTab === tab ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
                   )}
                 >
                   {tab}
@@ -698,8 +698,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
               aria-controls={aiDetailsPanelId}
               onClick={() => setIsAiDetailsOpen(open => !open)}
               className={cn(
-                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
-                isAiDetailsOpen ? 'bg-accent text-accent-foreground' : 'hover:bg-muted hover:text-foreground',
+                'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono transition-all',
+                isAiDetailsOpen ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'hover:bg-muted/30 hover:text-foreground',
               )}
             >
               <ChartNoAxesCombined className="h-3.5 w-3.5" />
@@ -710,7 +710,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="flex items-center cursor-help px-1 py-0.5 rounded hover:bg-muted transition-colors border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
+                className="flex items-center cursor-help px-1 py-0.5 rounded-md hover:bg-muted/70 transition-all border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 <LogCountLabel
                   loadedEntries={renderedEntries.length}
@@ -735,7 +735,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                               onClick={() => void handleCopyLogs()}
                               disabled={isCopyingLogs || (!ticket?.id && !hasLogs)}
                               className={cn(
-                                'flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                                'flex items-center justify-center p-1 rounded-md hover:bg-muted/70 hover:text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                                 isCopyingLogs && 'pointer-events-none',
                               )}
                             >
@@ -766,7 +766,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
-          <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+          <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
             {showAiDetails && isAiDetailsOpen ? (
               <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary
@@ -865,7 +865,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 aria-label="Go to top"
                 onClick={() => void handleGoToTop()}
                 disabled={isNavigatingToTop}
-                className="absolute top-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
+                className="absolute top-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >
                 {isNavigatingToTop
                   ? <LoaderCircle className="w-4 h-4 animate-spin" />
@@ -884,7 +884,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 type="button"
                 aria-label="Back to bottom"
                 onClick={handleGoToBottom}
-                className="absolute bottom-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
+                className="absolute bottom-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >
                 <ArrowDownToLine className="w-4 h-4" />
               </button>

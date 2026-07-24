@@ -247,8 +247,8 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           Back to list
         </Button>
       )}
-      <Card>
-        <CardHeader><CardTitle className="text-sm">Project Details</CardTitle></CardHeader>
+      <Card className="rounded-xl border border-border/70 bg-card shadow-2xs">
+        <CardHeader><CardTitle className="text-sm font-semibold text-foreground">Project Details</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-3">
             <div className="flex-1">
@@ -259,7 +259,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                className="w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-medium text-foreground transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none"
                 autoComplete="off"
                 required
               />
@@ -275,7 +275,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   type="text"
                   value={shortname}
                   onChange={e => setShortname(e.target.value.toUpperCase().slice(0, 5))}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm uppercase"
+                  className="w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-mono font-medium text-foreground uppercase transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none"
                   autoComplete="off"
                   minLength={3}
                   maxLength={5}
@@ -611,11 +611,11 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           )}
         </CardContent>
       </Card>
-      <div className="flex justify-between gap-2">
+      <div className="flex justify-between gap-2.5 pt-2">
         {isEditing && (
           <div className="flex gap-2">
-            <Button type="button" variant="destructive" onClick={handleDelete} disabled={isBusy}>
-              <Trash2 className="h-4 w-4 mr-1" />
+            <Button type="button" variant="destructive" onClick={handleDelete} disabled={isBusy} className="rounded-lg shadow-2xs">
+              <Trash2 className="h-4 w-4 mr-1.5" />
               Delete Project
             </Button>
             <Button
@@ -623,15 +623,20 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               variant="outline"
               onClick={() => setIsWorktreesDialogOpen(true)}
               disabled={isBusy}
+              className="rounded-lg border border-border/70 shadow-2xs"
             >
-              <HardDrive className="h-4 w-4 mr-1" />
+              <HardDrive className="h-4 w-4 mr-1.5" />
               Free Disk Space…
             </Button>
           </div>
         )}
-        <div className="flex gap-2 ml-auto">
-          <Button type="button" variant="outline" onClick={closeView}>Cancel</Button>
-          <Button type="submit" disabled={isBusy || (!isEditing && gitStatus !== 'valid')}>
+        <div className="flex gap-2.5 ml-auto">
+          <Button type="button" variant="outline" onClick={closeView} className="rounded-lg">Cancel</Button>
+          <Button
+            type="submit"
+            disabled={isBusy || (!isEditing && gitStatus !== 'valid')}
+            className="rounded-lg bg-foreground text-background font-semibold hover:opacity-95 active:scale-[0.98] shadow-2xs"
+          >
             {isEditing
               ? 'Save Changes'
               : restoreMode

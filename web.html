@@ -180,79 +180,82 @@
 
   <main>
   <!-- ============ HERO SECTION ============ -->
-  <section class="hero-bg pt-28 pb-20 md:pt-36 md:pb-28 overflow-hidden">
+  <section class="hero-bg pt-28 pb-16 md:pt-36 md:pb-24 overflow-hidden relative">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="grid lg:grid-cols-2 gap-8 lg:gap-16 items-center">
+      <div class="grid lg:grid-cols-2 gap-10 lg:gap-16 items-center">
         <!-- Left: Text content -->
         <div class="fade-up">
-          <!-- Badge -->
-          <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-50 dark:bg-brand-900/30 border border-brand-200 dark:border-brand-700/40 mb-6">
+          <!-- Eyebrow Pill (1 of max 3 on page) -->
+          <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-50/80 dark:bg-brand-950/40 border border-brand-200/80 dark:border-brand-800/50 mb-6 shadow-2xs backdrop-blur-xs">
             <span class="w-2 h-2 rounded-full bg-brand-500 animate-pulse"></span>
             <!-- VERSION: dynamically replaced from package.json -->
             <span class="text-xs font-semibold text-brand-700 dark:text-brand-300 tracking-wide uppercase">Open Source &middot; MIT License &middot; v{{VERSION}}</span>
           </div>
 
-          <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold leading-tight tracking-tight mb-6">
-            <span class="gradient-text">LLM councils</span> plan it.
-            <br><span class="gradient-text">Ralph loops</span> perfect it.
-            <br><span class="gradient-text">OpenCode worktrees</span> ship it.
+          <!-- Hero Headline (2 lines max at desktop) -->
+          <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold leading-[1.1] tracking-tight mb-6">
+            <span class="gradient-text">LLM Councils</span> plan it.<br>
+            <span class="gradient-text">Ralph Loops</span> perfect it.<br>
+            <span class="gradient-text">OpenCode</span> ships it.
           </h1>
-          <p class="text-lg sm:text-xl text-zinc-600 dark:text-zinc-400 leading-relaxed mb-8 max-w-2xl">
-            A smart local engine that automates big coding tasks from start to finish. Get the job done as you imagined it.
+
+          <!-- Hero Subtext (Max 20 words) -->
+          <p class="text-base sm:text-lg text-zinc-600 dark:text-zinc-400 leading-relaxed mb-8 max-w-xl">
+            A smart local engine for long-running AI software delivery through multi-model council planning, worktree isolation, and human-gated approvals.
           </p>
 
           <!-- Terminal block -->
-          <div class="relative rounded-2xl bg-zinc-950 dark:bg-zinc-900 border border-zinc-800 dark:border-zinc-700/50 shadow-2xl glow-teal mb-8 overflow-hidden">
-            <div class="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 dark:border-zinc-700/50">
+          <div class="relative rounded-2xl bg-zinc-950 dark:bg-zinc-900 border border-zinc-800 dark:border-zinc-700/60 shadow-2xl glow-teal mb-8 overflow-hidden">
+            <div class="flex items-center gap-2 px-4 py-3 border-b border-zinc-800 dark:border-zinc-700/50 bg-zinc-900/80">
               <div class="browser-dot bg-red-500/80"></div>
               <div class="browser-dot bg-yellow-500/80"></div>
               <div class="browser-dot bg-green-500/80"></div>
-              <span class="ml-3 text-xs text-zinc-500 font-mono">terminal</span>
+              <span class="ml-3 text-xs text-zinc-400 font-mono font-medium">terminal</span>
             </div>
             <div class="p-4 sm:p-5 overflow-x-auto">
-              <code class="text-sm sm:text-base font-mono text-emerald-400 block">
+              <code class="text-xs sm:text-sm font-mono text-emerald-400 block leading-relaxed">
                 <span class="terminal-row"><span class="line-num">1</span><span class="text-zinc-500">$</span> git clone https://github.com/looptroop-ai/LoopTroop.git</span>
                 <span class="terminal-row"><span class="line-num">2</span><span class="text-zinc-500">$</span> cd LoopTroop</span>
                 <span class="terminal-row"><span class="line-num">3</span><span class="text-zinc-500">$</span> npm run dev</span>
               </code>
-              <button id="copyBtn" onclick="copyCommand()" class="absolute top-3 right-3 px-3 py-1.5 text-xs font-semibold text-zinc-400 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-all duration-200 border border-zinc-700 hover:border-zinc-600" aria-label="Copy command">
+              <button id="copyBtn" onclick="copyCommand()" class="absolute top-3 right-3 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-all duration-200 border border-zinc-700 hover:border-zinc-600 cursor-pointer" aria-label="Copy command">
                 <i class="fa-regular fa-clipboard mr-1"></i> Copy
               </button>
             </div>
           </div>
 
           <!-- CTA buttons -->
-          <div class="flex flex-wrap gap-3 mb-5">
-            <a href="#how-it-works" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-xl shadow-lg shadow-brand-600/25 hover:shadow-brand-700/30 transition-all duration-200 hover:-translate-y-0.5">
-              <i class="fa-solid fa-rocket text-xs"></i> Get Started
+          <div class="flex flex-wrap gap-3 mb-6">
+            <a href="#how-it-works" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-500 rounded-xl shadow-lg shadow-brand-600/25 hover:shadow-brand-600/35 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
+              <i class="fa-solid fa-rocket text-xs"></i> Get Started Free
             </a>
-            <a href="https://github.com/looptroop-ai/LoopTroop" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5">
+            <a href="https://github.com/looptroop-ai/LoopTroop" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
               <i class="fa-solid fa-star text-amber-400 text-xs"></i> Star on GitHub
             </a>
-            <a href="/docs/" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5">
-              <i class="fa-solid fa-book text-xs"></i> Read Docs
+            <a href="/docs/" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
+              <i class="fa-solid fa-book text-xs"></i> Docs
             </a>
           </div>
 
-          <!-- Tag lines below buttons -->
-          <div class="flex flex-wrap gap-x-5 gap-y-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <!-- Trust points strip -->
+          <div class="flex flex-wrap gap-x-6 gap-y-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
             <span class="flex items-center gap-1.5"><i class="fa-solid fa-shield-halved text-brand-500"></i> 100% local execution</span>
-            <span class="flex items-center gap-1.5"><i class="fa-solid fa-code-branch text-brand-500"></i> Git worktree isolation</span>
-            <span class="flex items-center gap-1.5"><i class="fa-solid fa-users text-brand-500"></i> Multi-model councils</span>
+            <span class="flex items-center gap-1.5"><i class="fa-solid fa-code-branch text-brand-500"></i> Git worktrees</span>
+            <span class="flex items-center gap-1.5"><i class="fa-solid fa-users text-brand-500"></i> LLM consensus</span>
           </div>
         </div>
 
-        <!-- Right: Video showcase placeholder -->
+        <!-- Right: Demo video showcase -->
         <div class="fade-up">
-          <div class="relative rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 shadow-2xl glow-teal bg-gradient-to-br from-brand-50 via-white to-brand-50 dark:from-brand-900/20 dark:via-zinc-900 dark:to-brand-900/20">
+          <div class="relative rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 shadow-2xl glow-teal bg-gradient-to-br from-brand-50 via-white to-brand-50 dark:from-brand-950/40 dark:via-zinc-900 dark:to-brand-950/40">
             <!-- Browser chrome -->
-            <div class="flex items-center gap-2 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900">
+            <div class="flex items-center gap-2 px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-100/80 dark:bg-zinc-900/80 backdrop-blur-xs">
               <div class="browser-dot bg-red-400"></div>
               <div class="browser-dot bg-yellow-400"></div>
               <div class="browser-dot bg-green-400"></div>
               <div class="flex-1 mx-4">
-                <div class="max-w-xs mx-auto h-6 bg-zinc-200 dark:bg-zinc-800 rounded-md flex items-center justify-center">
-                  <span class="text-[10px] font-mono text-zinc-400 dark:text-zinc-600">localhost:5173</span>
+                <div class="max-w-xs mx-auto h-6 bg-zinc-200/80 dark:bg-zinc-800/80 rounded-md flex items-center justify-center border border-zinc-300/40 dark:border-zinc-700/40">
+                  <span class="text-[10px] font-mono text-zinc-500 dark:text-zinc-400 font-medium">localhost:5173</span>
                 </div>
               </div>
             </div>
@@ -261,6 +264,32 @@
               <iframe class="absolute inset-0 w-full h-full rounded-b-xl" src="https://www.youtube.com/embed/LYiYkooc_iY" title="LoopTroop Demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TECH LOGO WALL (Under Hero) ============ -->
+  <section class="py-8 border-y border-zinc-200/60 dark:border-zinc-800/60 bg-zinc-50/50 dark:bg-zinc-900/30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-wrap items-center justify-center gap-8 sm:gap-14 opacity-70 grayscale hover:grayscale-0 transition-all duration-300 text-zinc-600 dark:text-zinc-400">
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-terminal text-brand-500"></i> OpenCode
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-brain text-brand-500"></i> Ollama
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-robot text-brand-500"></i> Anthropic
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-microchip text-brand-500"></i> OpenAI
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-code text-brand-500"></i> TypeScript
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
+          <i class="fa-solid fa-database text-brand-500"></i> SQLite
         </div>
       </div>
     </div>

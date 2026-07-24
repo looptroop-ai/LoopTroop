@@ -28,12 +28,12 @@ export function BeadCompletionChip({
   const chip = (
     <span
       className={cn(
-        'inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-emerald-300/80 bg-emerald-50 px-1.5 text-[10px] font-medium leading-none text-emerald-700 shadow-sm dark:border-emerald-800/80 dark:bg-emerald-950/35 dark:text-emerald-300',
+        'inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-0.5 text-xs font-medium leading-none text-muted-foreground shadow-2xs font-mono',
         className,
       )}
     >
-      <ProgressRing percent={roundedPercent} size={14} stroke={2.2} colorClass="text-emerald-500" />
-      <span className="font-mono">{label}</span>
+      <ProgressRing percent={roundedPercent} size={14} stroke={2.2} colorClass="text-muted-foreground" />
+      <span>{label}</span>
     </span>
   )
 

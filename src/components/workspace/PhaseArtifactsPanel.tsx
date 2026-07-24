@@ -485,8 +485,8 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
         outcome: 'completed',
         detail: (
           <span className="flex items-center gap-1.5">
-            <span className="text-green-600 dark:text-green-400">+{stats.additions}</span>
-            <span className="text-red-600 dark:text-red-400">-{stats.deletions}</span>
+            <span className="text-emerald-600 dark:text-emerald-400 font-mono">+{stats.additions}</span>
+            <span className="text-rose-600 dark:text-rose-400 font-mono">-{stats.deletions}</span>
           </span>
         ),
       }
@@ -667,12 +667,12 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
   const artifactsBody = phase === 'DRAFTING_PRD' ? (
     <div>
-      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-1">Artifacts</span>
+      <span className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider px-1">Artifacts</span>
 
       {hasFullAnswerRow && (
         <div className="mt-2">
           <div className="flex items-baseline gap-1.5 px-0.5 mb-0.5">
-            <span className="text-[11px] font-semibold text-foreground/80">Part 1</span>
+            <span className="text-[11px] font-mono font-semibold text-foreground/80">Part 1</span>
             <span className="text-[11px] text-muted-foreground">— Answering Skipped Questions</span>
           </div>
           <p className="text-[10px] text-muted-foreground mb-1.5 px-0.5">
@@ -696,7 +696,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       {hasTopArtifactRow && (
         <div className={hasFullAnswerRow ? '' : 'mt-2'}>
           <div className="flex items-baseline gap-1.5 px-0.5 mb-0.5">
-            <span className="text-[11px] font-semibold text-foreground/80">Part 2</span>
+            <span className="text-[11px] font-mono font-semibold text-foreground/80">Part 2</span>
             <span className="text-[11px] text-muted-foreground">— Generating PRD Drafts</span>
           </div>
           <p className="text-[10px] text-muted-foreground mb-1.5 px-0.5">
@@ -766,18 +766,18 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       {artifactsBody}
 
       <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>
-        <DialogContent className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden">
+        <DialogContent className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg">
           <DialogHeader>
-            <DialogTitle className="text-sm flex items-center gap-2">
+            <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
               {viewingArtifact?.icon ?? null}
               {viewingArtifact?.label}
             </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
+            <DialogDescription className="text-xs text-muted-foreground font-mono">
               {viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
-            <div className="min-w-0 max-w-full overflow-x-hidden bg-muted rounded-md p-4">
+            <div className="min-w-0 max-w-full overflow-x-hidden bg-muted/60 rounded-lg border border-border/30 p-4">
               {isLoadingArtifacts ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />

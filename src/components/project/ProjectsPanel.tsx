@@ -140,33 +140,40 @@ export function ProjectsPanel({ onClose }: ProjectsPanelProps) {
 
       <div className="space-y-3">
         {sortedProjects.map(project => (
-          <Card key={project.id}>
-            <CardContent className="flex items-center gap-4 py-4">
-              {project.icon?.startsWith('data:') ? <img src={project.icon} className="h-7 w-7 rounded" alt="" /> : <span className="text-2xl">{project.icon}</span>}
-              <div
-                className="h-8 w-1 rounded-full shrink-0"
-                style={{ backgroundColor: project.color }}
-              />
+          <Card key={project.id} className="group relative overflow-hidden rounded-xl border border-border/70 bg-card hover:bg-accent/40 hover:border-brand-500/30 transition-all shadow-2xs hover:shadow-md hover:-translate-y-0.5">
+            <CardContent className="flex items-center gap-4 p-4">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/30">
+                {project.icon?.startsWith('data:') ? <img src={project.icon} className="h-6 w-6 rounded" alt="" /> : <span className="text-xl">{project.icon}</span>}
+              </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{project.name}</span>
-                  <Badge variant="secondary" className="text-xs shrink-0">
+                  <span className="font-semibold text-foreground truncate">{project.name}</span>
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border shadow-2xs shrink-0"
+                    style={{
+                      backgroundColor: `${project.color}15`,
+                      color: project.color,
+                      borderColor: `${project.color}35`,
+                    }}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: project.color }} />
                     {project.shortname}
-                  </Badge>
+                  </span>
                 </div>
-                <p className="text-xs text-muted-foreground font-mono truncate">
+                <p className="mt-0.5 text-xs text-muted-foreground/80 font-mono truncate">
                   {project.folderPath}
                 </p>
               </div>
-              <Badge variant="outline" className="shrink-0">
+              <Badge variant="outline" className="shrink-0 font-mono text-xs">
                 {project.ticketCounter} ticket{project.ticketCounter === 1 ? '' : 's'}
               </Badge>
               <Button
                 variant="ghost"
                 size="sm"
+                className="rounded-lg shrink-0"
                 onClick={() => setView({ mode: 'edit', project })}
               >
-                <Pencil className="h-4 w-4 mr-1" />
+                <Pencil className="h-4 w-4 mr-1.5" />
                 Edit
               </Button>
             </CardContent>

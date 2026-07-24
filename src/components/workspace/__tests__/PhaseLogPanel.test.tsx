@@ -117,6 +117,17 @@ function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> 
     plannedDate: null,
     createdAt: '2026-03-10T10:00:00.000Z',
     updatedAt: '2026-03-10T10:00:00.000Z',
+    implementationTiming: {
+      activeDurationMs: 0,
+      startedAt: null,
+      lastPlannedBeadFinishedAt: null,
+      manualQaFixDurationMs: 0,
+      manualQaFixStartedAt: null,
+      workspacePreparationDurationMs: 0,
+      workspacePreparationStartedAt: null,
+      finalTestingDurationMs: 0,
+      finalTestingStartedAt: null,
+    },
     runtime: {
       ...defaultRuntime,
       ...runtimeOverrides,

@@ -44,7 +44,7 @@ function ActivityRow({ activity }: { activity: CurrentActivity }) {
       )}
     >
       <ActivityIcon activity={activity} />
-      <span className="min-w-0 font-medium text-foreground truncate max-w-full sm:max-w-md">
+      <span className="min-w-0 font-mono font-medium text-foreground truncate max-w-full sm:max-w-md">
         {activity.label}
       </span>
       <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -167,7 +167,7 @@ export function CurrentActivityStrip({ entries, enabled = true, activeStatus, cl
       aria-live="polite"
       aria-label="Current activity"
       className={cn(
-        'mx-1 mb-1 overflow-hidden rounded-md border text-xs shadow-none transition-all duration-300 ease-in-out',
+        'mx-1 mb-1 overflow-hidden rounded-lg border text-xs shadow-2xs transition-all duration-300 ease-in-out',
         severityClassName[maxSeverity],
         className,
       )}
@@ -175,7 +175,7 @@ export function CurrentActivityStrip({ entries, enabled = true, activeStatus, cl
       <button
         type="button"
         onClick={toggleExpand}
-        className="w-full flex items-center justify-between px-3 py-2 text-left font-medium select-none hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
+        className="w-full flex items-center justify-between px-3 py-2 text-left font-mono font-medium select-none hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
         aria-expanded={isExpanded}
       >
         <div className="flex items-center gap-2 truncate min-w-0">

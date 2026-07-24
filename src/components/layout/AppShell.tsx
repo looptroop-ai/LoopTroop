@@ -83,19 +83,30 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
   }
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 relative">
+    <div className="min-h-screen bg-background text-foreground antialiased selection:bg-brand-500/20 selection:text-brand-500">
+      <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border/80 bg-background/80 px-4 md:px-6 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 shadow-xs transition-all">
         <button
-          className="flex items-center gap-2 cursor-pointer"
+          className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => {
             dispatch({ type: 'SELECT_TICKET', ticketId: null })
             window.history.pushState({}, '', '/')
           }}
         >
-          <img src="/trans-logo.png" alt="LoopTroop" className="h-7" />
-          <span className="text-xl tracking-wide leading-none" style={{ fontFamily: "'Georgia', 'Times New Roman', serif" }}>
-            LoopTroop
-          </span>
+          <div className="relative flex items-center justify-center">
+            <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
+            <span className={cn(
+              "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-background transition-all",
+              isOffline ? "bg-amber-500 animate-pulse" : "bg-emerald-500"
+            )} />
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-xl font-bold tracking-tight text-foreground group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
+              LoopTroop
+            </span>
+            <span className="hidden sm:inline-block text-[10px] font-mono font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/60">
+              v0.3.3
+            </span>
+          </div>
         </button>
         <div className="flex min-w-0 items-center gap-2">
           <DashboardSearch isModalOpen={isModalOpen} />
@@ -108,16 +119,16 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
                   onClick={() => dispatch({ type: 'TOGGLE_TRIAGE_BAR' })}
                   aria-label={`${state.showTriageBar ? 'Hide filters' : 'Show filters'}${activeTriageFilterCount > 0 ? `, ${activeTriageFilterCount} active` : ''}`}
                   className={cn(
-                    "relative h-9 w-9 shrink-0 cursor-pointer transition-all border border-transparent",
+                    "relative h-9 w-9 shrink-0 cursor-pointer transition-all border border-transparent rounded-lg",
                     state.showTriageBar
-                      ? "bg-accent/80 text-accent-foreground border-border/80 shadow-sm"
-                      : "hover:bg-accent/55"
+                      ? "bg-brand-500/10 text-brand-600 dark:text-brand-400 border-brand-500/30 shadow-xs"
+                      : "hover:bg-accent/60 text-muted-foreground hover:text-foreground"
                   )}
                   disabled={isModalOpen}
                 >
                   <SlidersHorizontal className="h-4 w-4" />
                   {activeTriageFilterCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground ring-2 ring-background">
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 dark:bg-brand-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-background">
                       {activeTriageFilterCount}
                     </span>
                   )}
@@ -135,27 +146,27 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
               <button
                 onClick={onOpenTicket}
                 disabled={isModalOpen}
-                className="flex items-center gap-1 rounded-md bg-foreground text-background px-3 py-1.5 text-sm font-medium hover:bg-foreground/90 disabled:opacity-50 dark:bg-foreground dark:text-background dark:hover:bg-foreground/80"
+                className="group relative inline-flex items-center gap-1.5 rounded-lg bg-foreground text-background px-3.5 py-1.5 text-sm font-medium transition-all hover:opacity-95 active:scale-[0.98] disabled:opacity-50 shadow-xs cursor-pointer"
               >
-                <Plus className="h-4 w-4" />
-                New Ticket
+                <Plus className="h-4 w-4 transition-transform group-hover:rotate-90 duration-200" />
+                <span>New Ticket</span>
               </button>
             </TooltipTrigger>
             <TooltipContent>Create new ticket</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen}>
-                <FolderOpen className="h-4 w-4 mr-1" />
-                Projects
+              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen} className="rounded-lg">
+                <FolderOpen className="h-4 w-4 mr-1.5" />
+                <span className="hidden sm:inline">Projects</span>
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Projects</TooltipContent>
+            <TooltipContent>Manage Projects</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen}>
-                <Settings className="h-4 w-4 mr-1" />
+              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen} className="rounded-lg">
+                <Settings className="h-4 w-4 mr-1.5" />
                 Configuration
               </Button>
             </TooltipTrigger>
@@ -163,9 +174,9 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" asChild>
+              <Button variant="ghost" size="sm" asChild className="rounded-lg">
                 <a href={docsOrigin} target="_blank" rel="noreferrer noopener">
-                  <BookOpen className="h-4 w-4 mr-1" />
+                  <BookOpen className="h-4 w-4 mr-1.5" />
                   Docs
                 </a>
               </Button>

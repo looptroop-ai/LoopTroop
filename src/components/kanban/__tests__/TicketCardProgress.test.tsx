@@ -38,7 +38,8 @@ describe('TicketCard progress', () => {
       },
     }))
 
-    expect(screen.getByText('Beads 40%')).toBeInTheDocument()
+    expect(screen.getByText(/Implementing \(Bead 3\/5\)/)).toBeInTheDocument()
+    expect(screen.getByText(/Implementing \(Bead 3\/5\)/).parentElement).toHaveAttribute('style', expect.stringContaining('40%'))
     expect(screen.getByText('~15m')).toBeInTheDocument()
   })
 })

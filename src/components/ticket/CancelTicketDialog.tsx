@@ -81,8 +81,10 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             </span>
           </label>
         </div>
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="outline" size="sm" onClick={close}>Keep Ticket</Button>
+        <div className="flex justify-end gap-2.5 mt-4">
+          <Button variant="outline" size="sm" onClick={close} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
+            Keep Ticket
+          </Button>
           <Button
             variant="destructive"
             size="sm"
@@ -91,6 +93,7 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
               cancelTicket({ id: ticketId, options: { deleteContent: deleteTicket || deleteContent, deleteLog: deleteTicket || deleteLog, deleteTicket } })
               close()
             }}
+            className="rounded-lg bg-rose-500 text-white hover:bg-rose-600 active:scale-[0.98] shadow-xs font-mono text-xs font-semibold transition-all"
           >
             {deleteTicket ? 'Yes, Delete Ticket' : 'Yes, Cancel Ticket'}
           </Button>

@@ -94,31 +94,34 @@ export function KanbanColumn({
   }
 
   return (
-    <Card className="flex min-w-0 flex-col overflow-hidden">
-      <CardHeader className="min-w-0 flex-shrink-0 pb-3">
+    <Card className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/60 backdrop-blur-xs shadow-xs transition-all">
+      <CardHeader className="min-w-0 flex-shrink-0 pb-2.5 pt-3.5 px-3.5 border-b border-border/40">
         <Tooltip>
           <TooltipTrigger asChild>
             <div
               tabIndex={0}
-              className="min-w-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="min-w-0 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <div className="flex min-w-0 items-center justify-between gap-2">
-                <CardTitle className="min-w-0 text-sm font-medium">{column.title}</CardTitle>
-                <Badge variant="secondary" className="shrink-0 text-xs">
+                <CardTitle className="min-w-0 text-sm font-semibold tracking-tight text-foreground">{column.title}</CardTitle>
+                <Badge variant="secondary" className="shrink-0 text-xs font-mono font-medium rounded-full bg-muted/80 text-muted-foreground border border-border/40 px-2 py-0.5">
                   {tickets.length}
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground">{column.description}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{column.description}</p>
             </div>
           </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-center text-balance">{column.tooltip}</TooltipContent>
+          <TooltipContent className="max-w-xs text-center text-balance text-xs">{column.tooltip}</TooltipContent>
         </Tooltip>
       </CardHeader>
-      <CardContent className="min-w-0 flex-1 overflow-hidden px-3 pb-3">
+      <CardContent className="min-w-0 flex-1 overflow-hidden p-2.5">
         <ScrollArea className="h-full min-w-0" contentLayout="block">
           {tickets.length === 0 ? (
-            <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-border">
-              <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+            <div className="flex h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-muted/20 p-4 text-center">
+              <div className="h-8 w-8 rounded-full bg-muted/60 flex items-center justify-center text-muted-foreground mb-2">
+                <span className="text-xs font-mono font-bold">0</span>
+              </div>
+              <p className="text-xs font-medium text-muted-foreground">{emptyLabel}</p>
             </div>
           ) : (
             <div className="min-w-0 space-y-2">

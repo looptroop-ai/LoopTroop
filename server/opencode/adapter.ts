@@ -363,7 +363,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           ...(promptOptions.variant ? { variant: promptOptions.variant } : {}),
           ...(systemText ? { system: systemText } : {}),
           ...(typeof promptOptions.noReply === 'boolean' ? { noReply: promptOptions.noReply } : {}),
-          ...(promptOptions.tools ? { tools: promptOptions.tools } : {}),
+          ...('tools' in promptOptions && promptOptions.tools ? { tools: promptOptions.tools as Record<string, boolean> } : {}),
           parts: promptParts,
         }, this.requestOptions(sdkPromptSignal))
 

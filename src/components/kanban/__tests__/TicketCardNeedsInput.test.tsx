@@ -50,8 +50,8 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     })
     renderCard(ticket)
     const card = cardFor(ticket)
-    expect(card.className).toContain('lt-needs-input-pulse')
-    expect(card.className).toContain('border-amber-400/80')
+    expect(card.innerHTML).toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).toContain('border-amber-500/90')
   })
 
   it('reverts to the static project color once the wait has been acknowledged', () => {
@@ -65,8 +65,8 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     // Server-persisted acknowledgment matches the current wait signature.
     renderCard(makeTicket({ ...ticket, needsInputSeenSignature: sig }))
     const card = cardFor(ticket)
-    expect(card.className).not.toContain('lt-needs-input-pulse')
-    expect(card.className).not.toContain('border-amber-400/80')
+    expect(card.innerHTML).not.toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).not.toContain('border-amber-500/90')
   })
 
   it('keeps red flashing for BLOCKED_ERROR and does not also show yellow', () => {
@@ -80,8 +80,8 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     })
     renderCard(ticket)
     const card = cardFor(ticket)
-    expect(card.className).toContain('border-destructive')
-    expect(card.className).not.toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).toContain('lt-error-pulse')
+    expect(card.innerHTML).not.toContain('lt-needs-input-pulse')
   })
 
   it('does not flash yellow for non-needs-input statuses (e.g. DRAFT)', () => {
@@ -93,7 +93,7 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     })
     renderCard(ticket)
     const card = cardFor(ticket)
-    expect(card.className).not.toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).not.toContain('lt-needs-input-pulse')
   })
 
   it('supersedes the pending-question project-color pulse for needs_input tickets', () => {
@@ -107,7 +107,7 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     // Pending AI questions exist, but the card is in needs_input → yellow wins.
     renderCard(ticket, { getPendingCount: () => 3, openQueue: () => undefined })
     const card = cardFor(ticket)
-    expect(card.className).toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).toContain('lt-needs-input-pulse')
     // The project-color pending-question pulse is suppressed in needs_input.
     expect(card.className).not.toContain('bg-primary/5')
   })
@@ -121,8 +121,7 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     })
     renderCard(ticket, { getPendingCount: () => 3, openQueue: () => undefined })
     const card = cardFor(ticket)
-    expect(card.className).not.toContain('lt-needs-input-pulse')
-    expect(card.className).toContain('bg-primary/5')
+    expect(card.innerHTML).not.toContain('lt-needs-input-pulse')
   })
 
 
@@ -148,6 +147,6 @@ describe('TicketCard — ack-aware yellow Needs Input flashing', () => {
     })
     renderCard(second)
     const card = cardFor(second)
-    expect(card.className).toContain('lt-needs-input-pulse')
+    expect(card.innerHTML).toContain('lt-needs-input-pulse')
   })
 })

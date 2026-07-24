@@ -28,11 +28,11 @@ export function ArtifactTypeFilter({ artifacts, getArtifactState, action, isComp
             <button
               key={artifact.id}
               onClick={() => onSelect(artifact.id)}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/50 bg-secondary px-2.5 py-1.5 text-xs text-secondary-foreground shadow-sm transition-colors hover:bg-secondary/80 whitespace-nowrap"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 px-2.5 py-1.5 text-xs text-foreground shadow-2xs transition-all hover:bg-muted/70 active:scale-[0.98] whitespace-nowrap"
             >
               <span className="text-muted-foreground">{artifact.icon}</span>
               <div className="text-left">
-                <span className="font-medium">{artifact.label}</span>
+                <span className="font-mono font-medium">{artifact.label}</span>
                 {artifactState.detail && <div className="max-w-[28rem] whitespace-normal break-all text-[10px] text-blue-500">{artifactState.detail}</div>}
               </div>
               <CouncilStatusIcon outcome={statusOutcome} action={action} className="ml-auto h-3 w-3" />
@@ -44,11 +44,11 @@ export function ArtifactTypeFilter({ artifacts, getArtifactState, action, isComp
           <button
             key={artifact.id}
             onClick={() => onSelect(artifact.id)}
-            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 hover:bg-accent/50 cursor-pointer transition-colors text-xs whitespace-nowrap"
+            className="flex items-center gap-1.5 rounded-lg border border-border/70 px-2.5 py-1.5 hover:bg-muted/30 cursor-pointer transition-all active:scale-[0.98] text-xs whitespace-nowrap shadow-2xs"
           >
             <span className="text-muted-foreground">{artifact.icon}</span>
             <div className="text-left">
-              <span className="font-medium">{artifact.label}</span>
+              <span className="font-mono font-medium">{artifact.label}</span>
               {artifactState.detail && <div className="max-w-[28rem] whitespace-normal break-all text-[10px] text-blue-500">{artifactState.detail}</div>}
             </div>
             <CouncilStatusIcon outcome={statusOutcome} action={action} className="ml-auto h-3 w-3" />

@@ -115,26 +115,32 @@ export function TicketForm({ onClose }: TicketFormProps) {
                 <Tooltip>
                     <TooltipTrigger asChild>
                       <button
-                                    type="button"
-                                    className={cn(
-                                      'w-full flex items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm',
-                                      isProjectPickerOpen && 'ring-2 ring-primary/30',
-                                    )}
-                                  >
-                                    {selectedProject ? (
-                                      <span className="flex items-center gap-2 min-w-0 text-left overflow-hidden">
-                                        <span className="shrink-0 flex items-center">
-                                          {selectedProject.icon?.startsWith('data:')
-                                            ? <img src={selectedProject.icon} className="h-5 w-5 rounded block" alt="" />
-                                            : <span>{selectedProject.icon}</span>}
-                                        </span>
-                                        <span className="truncate">{selectedProject.name} ({selectedProject.shortname})</span>
-                                      </span>
-                                    ) : (
-                                      <span className="truncate text-left text-muted-foreground">Select a project...</span>
-                                    )}
-                                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                  </button>
+                        type="button"
+                        className={cn(
+                          'w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-all shadow-2xs',
+                          isProjectPickerOpen && 'ring-2 ring-brand-500/30',
+                        )}
+                        style={selectedProject?.color ? {
+                          borderColor: `${selectedProject.color}45`,
+                          backgroundColor: `${selectedProject.color}0D`,
+                        } : {
+                          borderColor: 'var(--color-border)',
+                        }}
+                      >
+                        {selectedProject ? (
+                          <span className="flex items-center gap-2 min-w-0 text-left overflow-hidden">
+                            <span className="shrink-0 flex items-center">
+                              {selectedProject.icon?.startsWith('data:')
+                                ? <img src={selectedProject.icon} className="h-5 w-5 rounded block" alt="" />
+                                : <span>{selectedProject.icon}</span>}
+                            </span>
+                            <span className="truncate">{selectedProject.name} ({selectedProject.shortname})</span>
+                          </span>
+                        ) : (
+                          <span className="truncate text-left text-muted-foreground">Select a project...</span>
+                        )}
+                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs text-center text-balance">Choose project</TooltipContent>
                   </Tooltip>
@@ -309,31 +315,41 @@ export function TicketForm({ onClose }: TicketFormProps) {
         </CardContent>
       </Card>
 
-      <div className="flex justify-end gap-2">
+      <div className="flex justify-end gap-2.5 pt-2">
         <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button type="button" variant="outline" onClick={onClose}>
-                        Cancel
-                      </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-center text-balance">Close without creating ticket</TooltipContent>
-              </Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="outline" onClick={onClose} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
+              Cancel
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs text-center text-balance">Close without creating ticket</TooltipContent>
+        </Tooltip>
         <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button type="button" variant="outline" disabled={createTicket.isPending || isStartPending || !effectiveProjectId} onClick={handleCreateAndStart}>
-                        {createTicket.isPending || isStartPending ? <LoadingText text="Starting" /> : 'Create and Start'}
-                      </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-center text-balance">Create ticket and immediately start the workflow</TooltipContent>
-              </Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={createTicket.isPending || isStartPending || !effectiveProjectId}
+              onClick={handleCreateAndStart}
+              className="rounded-lg border border-border/70 bg-muted/60 text-foreground hover:bg-muted/90 active:scale-[0.98] font-mono text-xs font-semibold shadow-2xs transition-all"
+            >
+              {createTicket.isPending || isStartPending ? <LoadingText text="Starting" /> : 'Create & Start'}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs text-center text-balance">Create ticket and immediately start the workflow</TooltipContent>
+        </Tooltip>
         <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button type="submit" disabled={createTicket.isPending || isStartPending || !effectiveProjectId}>
-                        {createTicket.isPending ? <LoadingText text="Creating" /> : 'Create Ticket'}
-                      </Button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-center text-balance">Create ticket in selected project</TooltipContent>
-              </Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="submit"
+              disabled={createTicket.isPending || isStartPending || !effectiveProjectId}
+              className="rounded-lg bg-foreground text-background font-mono text-xs font-semibold hover:opacity-90 active:scale-[0.98] shadow-xs transition-all"
+            >
+              {createTicket.isPending ? <LoadingText text="Creating" /> : 'Create Ticket'}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs text-center text-balance">Create ticket in selected project</TooltipContent>
+        </Tooltip>
       </div>
     </form>
   )

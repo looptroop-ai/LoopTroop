@@ -3,6 +3,7 @@ import { AlertTriangle, CirclePlay, Clock3, FilePenLine, Info, MessageSquarePlus
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -356,9 +357,12 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
   return (
     <div className="h-full min-h-0 flex flex-col overflow-hidden">
       <div className="min-h-0 shrink overflow-y-auto p-4">
-        <Card className={isLiveError ? 'border-destructive' : 'border-amber-300 dark:border-amber-800'}>
+        <Card className={cn(
+          'rounded-xl border bg-card shadow-2xs transition-all overflow-hidden',
+          isLiveError ? 'border-rose-500/30 dark:border-rose-500/40' : 'border-amber-500/30 dark:border-amber-500/40'
+        )}>
           <CardHeader className="py-3">
-            <CardTitle className="text-sm flex items-center gap-2 text-destructive">
+            <CardTitle className={cn('text-sm font-mono font-semibold flex items-center gap-2', isLiveError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400')}>
               <AlertTriangle className={`h-4 w-4 ${isLiveError ? 'animate-wobble-throb' : ''}`} />
               {isLiveError ? 'Blocked — Error' : 'Error Review'}
             </CardTitle>
@@ -506,7 +510,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                     size="sm"
                     onClick={() => setCancelDialogOpen(true)}
                     disabled={isPending}
-                    className="h-7 text-xs"
+                    className="h-7 text-xs font-mono font-semibold rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/30 hover:bg-rose-500/20 active:scale-[0.98] transition-all"
                   >
                     Cancel…
                   </Button>
@@ -518,7 +522,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                           size="sm"
                           onClick={() => handleAction('continue')}
                           disabled={isPending}
-                          className="h-7 text-xs border-amber-500/70 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                          className="h-7 text-xs font-mono font-semibold rounded-lg border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20 active:scale-[0.98] transition-all"
                         >
                           <CirclePlay className="mr-1 h-3.5 w-3.5" />
                           Continue
@@ -535,7 +539,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                       size="sm"
                       onClick={() => setEditSetupPlanDialogOpen(true)}
                       disabled={isPending}
-                      className="h-7 text-xs"
+                      className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
                     >
                       <FilePenLine className="mr-1 h-3.5 w-3.5" />
                       Edit setup plan...
@@ -550,7 +554,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                         setRetryNoteDialogOpen(true)
                       }}
                       disabled={isPending}
-                      className="h-7 text-xs"
+                      className="h-7 text-xs font-mono font-medium rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] transition-all"
                     >
                       <MessageSquarePlus className="mr-1 h-3.5 w-3.5" />
                       Retry with extra note...
@@ -560,7 +564,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
                     size="sm"
                     onClick={() => handleAction('retry')}
                     disabled={isPending}
-                    className="h-7 text-xs"
+                    className="h-7 text-xs font-mono font-semibold rounded-lg bg-brand-500 text-brand-50 hover:bg-brand-600 active:scale-[0.98] shadow-xs transition-all"
                   >
                     {retryActionLabel}
                   </Button>

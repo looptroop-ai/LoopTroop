@@ -16,8 +16,8 @@ export function AboutDialog() {
 
   if (!startupStatus) {
     return (
-      <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">
+      <div className="space-y-3 py-6 text-center">
+        <p className="text-sm text-muted-foreground animate-pulse">
           Loading LoopTroop details...
         </p>
       </div>
@@ -27,37 +27,41 @@ export function AboutDialog() {
   const attachedProjectCount = projects?.length ?? startupStatus.storage.restoredProjectCount
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-2">
-        <p className="text-sm text-muted-foreground">
-          LoopTroop stores application data centrally and keeps project-specific state inside each attached repository.
-        </p>
+    <div className="space-y-5">
+      <div className="rounded-xl border border-border/60 bg-muted/30 p-3.5 text-sm text-muted-foreground leading-relaxed">
+        LoopTroop stores application data centrally and keeps project-specific state inside each attached repository.
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Settings className="h-4 w-4" />
+      <Card className="rounded-xl border border-border/70 bg-card shadow-2xs hover:border-brand-500/30 transition-all">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2.5 text-base font-semibold text-foreground">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-500/10 text-brand-600 dark:text-brand-400 border border-brand-500/20">
+              <Settings className="h-4 w-4" />
+            </div>
             Runtime
           </CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Version</p>
-            <p className="mt-1 text-sm font-medium text-foreground">v{packageJson.version}</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Version</p>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-brand-500/10 text-brand-700 dark:text-brand-300 font-mono text-xs font-semibold border border-brand-500/30 shadow-2xs">
+                v{packageJson.version}
+              </span>
+            </div>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Operating System</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Operating System</p>
             <p className="mt-1 text-sm font-medium text-foreground">{startupStatus.runtime.osLabel}</p>
           </div>
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Application Location</p>
-            <p className="mt-1 break-all rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">{startupStatus.runtime.appRoot}</p>
+          <div className="sm:col-span-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono mb-1">Application Location</p>
+            <p className="break-all rounded-lg border border-border/60 bg-muted/40 px-3 py-2 font-mono text-xs text-foreground shadow-2xs">{startupStatus.runtime.appRoot}</p>
           </div>
           {startupStatus.runtime.appPathWarning && (
-            <div className="sm:col-span-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="sm:col-span-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
                 <p>{startupStatus.runtime.appPathWarning}</p>
               </div>
             </div>
@@ -65,39 +69,43 @@ export function AboutDialog() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Database className="h-4 w-4" />
+      <Card className="rounded-xl border border-border/70 bg-card shadow-2xs hover:border-brand-500/30 transition-all">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2.5 text-base font-semibold text-foreground">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-500/10 text-brand-600 dark:text-brand-400 border border-brand-500/20">
+              <Database className="h-4 w-4" />
+            </div>
             Storage
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Attached Projects</p>
-              <p className="mt-1 text-sm font-medium text-foreground">{attachedProjectCount}</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Attached Projects</p>
+              <p className="mt-1 text-sm font-semibold text-foreground">{attachedProjectCount}</p>
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Storage Source</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Storage Source</p>
               <p className="mt-1 text-sm font-medium text-foreground">{formatStorageSource(startupStatus.storage.source)}</p>
             </div>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">App Database</p>
-            <p className="mt-1 break-all rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">{startupStatus.storage.dbPath}</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono mb-1">App Database</p>
+            <p className="break-all rounded-lg border border-border/60 bg-muted/40 px-3 py-2 font-mono text-xs text-foreground shadow-2xs">{startupStatus.storage.dbPath}</p>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Config Directory</p>
-            <p className="mt-1 break-all rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">{startupStatus.storage.configDir}</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono mb-1">Config Directory</p>
+            <p className="break-all rounded-lg border border-border/60 bg-muted/40 px-3 py-2 font-mono text-xs text-foreground shadow-2xs">{startupStatus.storage.configDir}</p>
           </div>
-          <p>
-            Each attached project stores its local LoopTroop state in:
-          </p>
-          <p className="rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">&lt;repo&gt;/.looptroop/</p>
-          <p className="text-xs text-muted-foreground">
-            The exact repository path is shown in Project Details.
-          </p>
+          <div className="pt-1">
+            <p className="text-xs text-muted-foreground mb-1.5">
+              Each attached project stores its local LoopTroop state in:
+            </p>
+            <p className="inline-block rounded-md border border-border/60 bg-muted/40 px-2.5 py-1 font-mono text-xs text-foreground shadow-2xs">&lt;repo&gt;/.looptroop/</p>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              The exact repository path is shown in Project Details.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

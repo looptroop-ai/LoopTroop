@@ -24,13 +24,13 @@ export function ArtifactList({ memberArtifacts, compactInterviewArtifacts, compa
             ? 'text-amber-400'
             : 'text-blue-400'
         const cardClass = compact
-          ? 'min-w-[85px] max-w-[110px] px-2 py-1 h-auto flex-none items-start gap-1 rounded-md'
+          ? 'min-w-[85px] max-w-[110px] px-2 py-1 h-auto flex-none items-start gap-1 rounded-lg shadow-2xs'
           : compactInterviewArtifacts
-            ? 'min-w-[150px] max-w-[220px] px-3 py-2 h-auto flex-none items-start gap-2'
-            : 'min-w-[220px] flex-1 px-3 py-2 h-auto items-start gap-2'
+            ? 'min-w-[150px] max-w-[220px] px-3 py-2 h-auto flex-none items-start gap-2 rounded-lg shadow-2xs'
+            : 'min-w-[220px] flex-1 px-3 py-2 h-auto items-start gap-2 rounded-lg shadow-2xs'
         const shouldShowStatus = !compactInterviewArtifacts
-        const nameClass = compact ? 'text-[9px] font-medium truncate' : 'text-xs font-medium truncate'
-        const subClass = compact ? 'text-[8px] opacity-80 mt-0.5 truncate' : 'text-[10px] opacity-80 mt-0.5 truncate'
+        const nameClass = compact ? 'text-[9px] font-mono font-medium truncate' : 'text-xs font-mono font-medium truncate'
+        const subClass = compact ? 'text-[8px] font-mono opacity-80 mt-0.5 truncate' : 'text-[10px] font-mono opacity-80 mt-0.5 truncate'
         const detailClass = compact ? `text-[8px] mt-0.5 truncate ${detailTone}` : `text-[10px] mt-0.5 truncate ${detailTone}`
         return (
           <ModelBadge

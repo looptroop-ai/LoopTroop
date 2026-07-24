@@ -609,11 +609,19 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
         </CardContent>
       </Card>
 
-      <div className="flex items-center justify-between gap-2">
-        <Button type="button" variant="ghost" onClick={onOpenAbout}>About</Button>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={createProfile.isPending || updateProfile.isPending || hasErrors}>
+      <div className="flex items-center justify-between gap-2 pt-2">
+        <Button type="button" variant="ghost" onClick={onOpenAbout} className="rounded-lg text-muted-foreground hover:text-foreground">
+          About
+        </Button>
+        <div className="flex items-center gap-2.5">
+          <Button type="button" variant="outline" onClick={onClose} className="rounded-lg">
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={createProfile.isPending || updateProfile.isPending || hasErrors}
+            className="rounded-lg bg-foreground text-background font-semibold hover:opacity-95 active:scale-[0.98] shadow-2xs"
+          >
             {createProfile.isPending || updateProfile.isPending ? <LoadingText text="Saving" /> : 'Save'}
           </Button>
         </div>

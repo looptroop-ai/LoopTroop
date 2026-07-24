@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Redesigned the main dashboard and landing page using taste-skill anti-slop frontend guidelines, introducing sleek glassmorphism, refined dark/light mode tech aesthetics, ambient glow effects, header-aligned priority badges on Kanban cards, keyboard search shortcuts, and tech stack logo walls.
 - Fixed ticket log opening so the newest 20 visible entries appear immediately instead of inheriting another ticket's scroll position or landing on hidden AI-detail rows.
 - Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
 - Sped up the dev server on Linux, macOS, native Windows, and remote/VPS hosts by using efficient native file watching by default instead of always polling, while still auto-enabling polling for WSL workspaces on Windows-mounted drives.
@@ -121,6 +122,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added typed `qaOrigin` metadata and Manual QA Fix presentation across coding/bead/artifact/log views, with image evidence delivered through OpenCode SDK file parts for image-capable locked models.
 
 #### Changed
+- Aligned priority badges (`P1`–`P5`) into the top header row of Kanban ticket cards alongside the project badge and ticket key, preventing priority text truncation and visual line misalignments on short or multi-line titles.
 - Updated `docs/core-philosophy.md` with a TL;DR block summarizing LoopTroop's purpose and key AI engineering methodologies, added Manual QA Verification as the fifteenth core philosophy section, and updated section count references from fourteen to fifteen.
 - Increased create and update ticket descriptions from 10,000 to 50,000 characters and added explicit operation/category context to surfaced request errors.
 - Dev server startup output now uses explicit "LoopTroop App" and "Documentation" labels instead of "Frontend" and "Docs", and prints a prominent Ready summary with direct URLs only once the app has truly loaded — the Vite frontend is serving **and** the backend has finished its full startup sequence (through step 6, signalled by `[startup] Startup complete`) — instead of appearing as soon as Vite is ready.

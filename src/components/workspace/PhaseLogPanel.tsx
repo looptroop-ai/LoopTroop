@@ -512,7 +512,7 @@ export function PhaseLogPanel({
         </div>
       )}
       <div ref={toolbarRef} className={cn(
-        'flex px-1 py-1 items-center flex-wrap',
+        'flex px-1 py-1.5 items-center flex-wrap border-b border-border/30',
         hasToolbarPrefix ? 'gap-2' : 'gap-1',
       )}>
         {toolbarPrefix ? (
@@ -534,8 +534,8 @@ export function PhaseLogPanel({
                     title={`${singleModelTabId} · Effort: ${formatLogModelEffort(effort)}`}
                     onClick={() => setActiveTab(tab)}
                     className={cn(
-                      'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                      effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                      'px-2 py-0.5 rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                      effectiveTab === tab ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
                     )}
                   >
                     {aiTabLabel}
@@ -557,8 +557,8 @@ export function PhaseLogPanel({
                   <TooltipTrigger asChild>
                     <div
                       className={cn(
-                        'flex items-center rounded text-xs font-medium shrink-0 transition-colors',
-                        isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'
+                        'flex items-center rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                        isActive ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:bg-muted/30'
                       )}
                     >
                       <button
@@ -602,8 +602,8 @@ export function PhaseLogPanel({
                   <TooltipTrigger asChild>
                     <div
                       className={cn(
-                        'flex items-center rounded text-xs font-medium shrink-0 transition-colors',
-                        isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'
+                        'flex items-center rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                        isActive ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:bg-muted/30'
                       )}
                     >
                       <button
@@ -658,8 +658,8 @@ export function PhaseLogPanel({
                   type="button"
                   onClick={() => setActiveTab(tab)}
                   className={cn(
-                    'px-2 py-0.5 rounded text-xs font-medium shrink-0',
-                    effectiveTab === tab ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
+                    'px-2 py-0.5 rounded-md text-xs font-mono font-medium shrink-0 transition-all',
+                    effectiveTab === tab ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
                   )}
                 >
                   {tab}
@@ -679,8 +679,8 @@ export function PhaseLogPanel({
               aria-controls={aiDetailsPanelId}
               onClick={() => setIsAiDetailsOpen(open => !open)}
               className={cn(
-                'inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors',
-                isAiDetailsOpen ? 'bg-accent text-accent-foreground' : 'hover:bg-muted hover:text-foreground',
+                'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono transition-all',
+                isAiDetailsOpen ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'hover:bg-muted/30 hover:text-foreground',
               )}
             >
               <ChartNoAxesCombined className="h-3.5 w-3.5" />
@@ -691,7 +691,7 @@ export function PhaseLogPanel({
             <TooltipTrigger asChild>
               <button
                 type="button"
-                className="flex items-center cursor-help px-1 py-0.5 rounded hover:bg-muted transition-colors border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
+                className="flex items-center cursor-help px-1 py-0.5 rounded-md hover:bg-muted/70 transition-all border-none bg-transparent m-0 focus:outline-none focus:ring-1 focus:ring-ring"
               >
                 <LogCountLabel
                   loadedEntries={filteredLogs.length}
@@ -716,7 +716,7 @@ export function PhaseLogPanel({
                               onClick={() => void handleCopyLogs()}
                               disabled={isCopyingLogs || (!shouldLoadHistoricalLogs && !hasLogs)}
                               className={cn(
-                                'flex items-center justify-center p-1 rounded hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                                'flex items-center justify-center p-1 rounded-md hover:bg-muted/70 hover:text-foreground transition-all disabled:opacity-50 disabled:cursor-not-allowed',
                                 isCopyingLogs && 'pointer-events-none',
                               )}
                             >
@@ -745,7 +745,7 @@ export function PhaseLogPanel({
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
-          <div ref={contentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+          <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
             {showAiDetails && isAiDetailsOpen ? (
               <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary
@@ -825,7 +825,7 @@ export function PhaseLogPanel({
               <button
                 type="button"
                 onClick={() => viewportRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="absolute top-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
+                className="absolute top-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >
                 <ArrowUpToLine className="w-4 h-4" />
               </button>
@@ -843,7 +843,7 @@ export function PhaseLogPanel({
                   setIsAutoScroll(true)
                   scheduleScrollToBottom('smooth')
                 }}
-                className="absolute bottom-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"
+                className="absolute bottom-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"
               >
                 <ArrowDownToLine className="w-4 h-4" />
               </button>

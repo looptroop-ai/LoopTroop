@@ -84,7 +84,7 @@ function DashboardSearchInput({
             onEscapeWithEmptyQuery?.()
           }
         }}
-        className="h-8 w-full rounded-full border border-border/40 bg-muted/55 py-1 pl-3 pr-8 text-sm text-foreground shadow-[inset_0_1px_2px_rgba(15,23,42,0.08)] outline-none transition-colors placeholder:text-muted-foreground hover:bg-muted/70 focus:border-border focus:bg-background focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-muted/35 dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.25)] dark:hover:bg-muted/50"
+        className="h-8.5 w-full rounded-lg border border-border/60 bg-muted/40 py-1.5 pl-3.5 pr-14 text-xs font-medium text-foreground shadow-xs outline-none transition-all placeholder:text-muted-foreground/70 hover:bg-muted/60 hover:border-border focus:border-brand-500/50 focus:bg-background focus-visible:ring-2 focus-visible:ring-brand-500/30 disabled:cursor-not-allowed disabled:opacity-50"
       />
       {hasValue ? (
         <Tooltip>
@@ -94,7 +94,7 @@ function DashboardSearchInput({
               onClick={onClear}
               disabled={isDisabled}
               aria-label="Clear ticket search"
-              className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-background/30"
+              className="absolute right-2 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -102,7 +102,9 @@ function DashboardSearchInput({
           <TooltipContent>Clear search</TooltipContent>
         </Tooltip>
       ) : (
-        <Search className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <div className="pointer-events-none absolute right-2.5 top-1/2 flex -translate-y-1/2 items-center">
+          <Search className="h-3.5 w-3.5 text-muted-foreground/70" />
+        </div>
       )}
       {shouldShowSuggestions && (
         <div

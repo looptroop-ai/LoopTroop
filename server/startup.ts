@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm'
 import { initializeDatabase } from './db/init'
-import { db, startWalCheckpoint } from './db/index'
+import { startWalCheckpoint } from './db/index'
 import { createIndexes } from './db/indexes'
 import { hydrateAllTickets } from './machines/persistence'
 import { getOpenCodeAdapter } from './opencode/factory'
 import { SessionManager } from './opencode/sessionManager'
-import { opencodeSessions, profiles, tickets } from './db/schema'
+import { opencodeSessions, tickets } from './db/schema'
 import { getProjectContextById, listProjects } from './storage/projects'
 import { buildTicketRef, getTicketPaths, listTickets } from './storage/tickets'
 import {
@@ -15,9 +15,6 @@ import {
 import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
-import { parseCouncilMembers } from './council/members'
-import { registerOpenRouterRoutingModels } from './opencode/openRouterRoutingConfig'
-import { refreshProviderCatalog } from './opencode/providerCatalog'
 
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
@@ -120,22 +117,11 @@ export async function startupSequence(): Promise<void> {
   startWalCheckpoint()
 
   console.log('[startup] Step 4: OpenCode health check')
-  const profile = db.select().from(profiles).limit(1).get()
-  const registeredRoutingModels = profile
-    ? registerOpenRouterRoutingModels([
-      profile.mainImplementer ?? '',
-      ...parseCouncilMembers(profile.councilMembers),
-    ])
-    : false
   const adapter = getOpenCodeAdapter()
   try {
     const health = await adapter.checkHealth()
     if (health.available) {
       console.log(`[startup] OpenCode is reachable (version: ${health.version ?? 'unknown'})`)
-      if (registeredRoutingModels) {
-        await refreshProviderCatalog()
-        console.log('[startup] Registered selected OpenRouter routing variants with OpenCode')
-      }
     } else {
       console.warn(`[startup] OpenCode is NOT reachable: ${health.error ?? 'unknown error'}. Start it with \`opencode serve\`.`)
     }

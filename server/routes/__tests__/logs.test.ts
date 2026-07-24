@@ -70,6 +70,26 @@ describe('ticket log projection API', () => {
     expect(commandBody.hasOlder).toBe(true)
   })
 
+  it('filters AI detail-only rows before paginating the overview', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    for (let index = 0; index < 25; index += 1) {
+      appendLogEvent(ticket.id, 'model_output', 'CODING', `tool detail ${index}`, {
+        audience: 'ai',
+        kind: 'tool',
+        entryId: `tool-detail-${index}`,
+      }, 'opencode', 'CODING')
+    }
+    appendLogEvent(ticket.id, 'info', 'CODING', 'visible milestone', {}, 'system', 'CODING')
+
+    const overview = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview`)
+    expect(overview.status).toBe(200)
+    expect(await overview.json()).toEqual(expect.objectContaining({
+      entries: [expect.objectContaining({ content: 'visible milestone' })],
+      totalEntries: 1,
+      hasOlder: false,
+    }))
+  })
+
   it('keeps health responsive and deduplicates readers during a cold projection catch-up', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     const paths = getTicketPaths(ticket.id)

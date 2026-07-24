@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
-- Fixed ticket switching so the newest 20 log entries appear immediately instead of inheriting another ticket's scroll position.
+- Fixed ticket log opening so the newest 20 visible entries appear immediately instead of inheriting another ticket's scroll position or landing on hidden AI-detail rows.
 - Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
 - Sped up the dev server on Linux, macOS, native Windows, and remote/VPS hosts by using efficient native file watching by default instead of always polling, while still auto-enabling polling for WSL workspaces on Windows-mounted drives.
 - Increased the ticket description limit to 50,000 characters and made validation failures explain what needs fixing.
@@ -178,6 +178,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Manual QA workspace drift detection to bypass Git worktree checks and return no drift for display-only mock tickets, resolving baseline-missing errors when loading mock tickets in the UI.
 
 #### Fixed
+- Fixed the initial ALL log page appearing empty when its newest projected rows were AI tool/detail entries that belong only in dedicated tabs. Overview pagination now filters those hidden rows before applying its 20-entry limit, so opening a high-latency remote ticket shows visible history without requiring a scroll-triggered older-page request.
 - Fixed the Vite dev server unconditionally forcing `usePolling` for frontend file watching on every platform. The frontend and backend watchers now share one OS-agnostic decision (`resolveWatchPollingDecision()` in `shared/wslPerformance.ts`): native OS file-system events are used by default on Linux (including remote/VPS hosts), macOS, native Windows, and WSL workspaces on the Linux filesystem, while polling is auto-enabled only for WSL workspaces on Windows-mounted drives (`/mnt/...`). An explicit `CHOKIDAR_USEPOLLING` value still overrides the auto-detection in either direction. This removes constant polling CPU overhead and reduces refresh latency and HMR jitter, most noticeably on remote hosts.
 - Deferred only the triggering direct dependency update when npm rejects a configured-registry tarball as remote during preview, while preserving npm's remote-package policy and clear daily-retry diagnostics.
 - Fixed the ALL tab appearing empty after a hard refresh when the newest projected rows were all commands by excluding command-classified rows before applying overview pagination.

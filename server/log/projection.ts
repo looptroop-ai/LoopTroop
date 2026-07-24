@@ -293,11 +293,24 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
   else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
   else { clauses.push("channel = 'normal'") }
-  // The overview backs the ALL tab, which intentionally omits routine command
-  // chatter. Filter commands before LIMIT so a command-heavy tail cannot
-  // produce an apparently empty page while older overview rows still exist.
+  // The overview backs the ALL tab. Apply its visible-row rules before LIMIT
+  // so a page of commands or AI detail-only rows cannot produce an apparently
+  // empty ALL tab while older visible history exists.
   if (query.view === 'overview') {
-    clauses.push("classification <> 'command'")
+    clauses.push(`(
+      classification = 'system'
+      OR classification = 'error'
+      OR json_extract(entry_json, '$.kind') = 'prompt'
+      OR (
+        classification = 'ai'
+        AND json_extract(entry_json, '$.audience') = 'ai'
+        AND json_extract(entry_json, '$.kind') = 'text'
+        AND (
+          COALESCE(json_extract(entry_json, '$.streaming'), 0) = 0
+          OR json_extract(entry_json, '$.op') = 'append'
+        )
+      )
+    )`)
   }
   // The AI detail channel is already audience-scoped and intentionally includes
   // model error rows so one provider recovery event remains visible in both its

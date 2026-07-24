@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getBackendOrigin, getDocsBaseUrl, getFrontendPort } from './shared/appConfig'
 import { resolveDevHostMode } from './scripts/dev-host-mode'
+import { resolveWatchPollingDecision } from './shared/wslPerformance'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
   FRONTEND_DEDUPED_DEPENDENCIES,
@@ -17,6 +19,24 @@ const backendOrigin = getBackendOrigin()
 const apiToken = process.env.LOOPTROOP_API_TOKEN?.trim() ?? ''
 const apiTokenHeader = 'X-LoopTroop-Token'
 const devHostMode = resolveDevHostMode()
+
+function detectWslRuntime() {
+  if (process.platform !== 'linux') return false
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true
+
+  try {
+    return readFileSync('/proc/version', 'utf8').toLowerCase().includes('microsoft')
+  } catch {
+    return false
+  }
+}
+
+const watchPolling = resolveWatchPollingDecision({
+  explicitPolling: process.env.CHOKIDAR_USEPOLLING,
+  isWsl: detectWslRuntime(),
+  workspacePath: __dirname,
+})
+console.log(`[dev-frontend] ${watchPolling.reason}`)
 
 function isBackendHealthProbe(req: IncomingMessage) {
   if ((req.method ?? 'GET').toUpperCase() !== 'GET') return false
@@ -125,7 +145,7 @@ export default defineConfig({
       ],
     },
     watch: {
-      usePolling: true,
+      usePolling: watchPolling.usePolling,
     },
     proxy: {
       '/api': {

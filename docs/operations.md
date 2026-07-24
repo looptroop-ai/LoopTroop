@@ -195,7 +195,7 @@ The app database is runtime-bootstrapped by `server/db/init.ts`. The committed m
 | `LOOPTROOP_OPENCODE_PERMISSION_MODE` | Set to `inherit` to skip setting `OPENCODE_PERMISSION='"allow"'` when `npm run dev` starts a managed OpenCode server; by default LoopTroop sets permissive mode automatically for local trusted sessions |
 | `LOOPTROOP_OPENCODE_LOGS=all` | Direct watcher fallback for `npm run dev:opencode`; starts a managed OpenCode server with `--print-logs --log-level DEBUG` when the watcher actually launches OpenCode |
 | `LOOPTROOP_OPENCODE_LOG_DIR` | Optional OpenCode log directory used to enrich generic provider errors from an external or nonstandard OpenCode server; default lookup is `~/.local/share/opencode/log/` |
-| `CHOKIDAR_USEPOLLING` | Set to `1` to force chokidar polling for file watching; auto-set on mounted WSL drives, but can be overridden manually |
+| `CHOKIDAR_USEPOLLING` | Governs both the frontend (Vite) and backend file watchers. Leave unset for auto-detection (native watching everywhere except WSL on a Windows-mounted drive). Set to `1` to force polling or `0` to force native watching |
 | `OPENCODE_SERVER_USERNAME` | Basic auth username for the local OpenCode dev server; defaults to `opencode` when `OPENCODE_SERVER_PASSWORD` is also set |
 | `OPENCODE_SERVER_PASSWORD` | Basic auth password for the local OpenCode dev server; auto-generated as an ephemeral random credential by `npm run dev` if not set and a new local OpenCode server is about to start |
 
@@ -312,13 +312,18 @@ When using `npm run dev`, port resolution and basic auth are handled automatical
 
 ## 12. Watcher and WSL Performance Notes
 
-The backend watcher prefers native file watching on normal local filesystems. Under WSL, mounted-drive workspaces such as `/mnt/...` can be slower and may need polling. LoopTroop auto-enables chokidar polling for those mounted-drive workspaces.
+Both the frontend (Vite) and backend watchers prefer native file watching on normal local filesystems — Linux (including a remote VPS), macOS, and native Windows all use fast native OS file-system events by default. Polling is only enabled automatically when it is genuinely required: a WSL runtime whose workspace lives on a Windows-mounted drive such as `/mnt/c/...`, where native watching is unreliable.
 
-If your environment still misses file changes, force polling for the run:
+> [!NOTE]
+> Earlier versions forced polling for the frontend on every platform, which wasted CPU and added refresh latency on native Linux/macOS/Windows (most noticeable on remote hosts). Both watchers now share a single OS-agnostic decision (`resolveWatchPollingDecision()` in `shared/wslPerformance.ts`) so native watching is used everywhere unless polling is actually needed.
+
+If your environment still misses file changes, force polling for the run (applies to both watchers):
 
 ```bash
 CHOKIDAR_USEPOLLING=1 npm run dev
 ```
+
+You can also force native watching off a mounted drive with `CHOKIDAR_USEPOLLING=0`; an explicit value always overrides the auto-detection in either direction.
 
 ### Windows-Mounted Drive Warning (WSL Users Only)
 
@@ -329,7 +334,7 @@ If you run LoopTroop inside Windows Subsystem for Linux (WSL), ensure that both 
 >
 > Keeping the LoopTroop codebase or attached projects on Windows-mounted drives severely degrades disk I/O performance. This slows down Git operations, codebase scanning, and test execution. It also disables native file-watching, forcing a fallback to chokidar polling (`CHOKIDAR_USEPOLLING=1`). For optimal performance, always store your workspaces and repositories inside the Linux home directory.
 
-The path detection logic is implemented in `shared/wslPerformance.ts`, which exports `isWslWindowsMountPath()` to identify Windows-mounted paths and `buildWslAppMountedDriveWarning()` / `buildWslProjectMountedDriveWarning()` to generate targeted performance warnings.
+The path detection logic is implemented in `shared/wslPerformance.ts`, which exports `isWslWindowsMountPath()` to identify Windows-mounted paths, `resolveWatchPollingDecision()` to choose native watching vs. polling for both the frontend and backend watchers, and `buildWslAppMountedDriveWarning()` / `buildWslProjectMountedDriveWarning()` to generate targeted performance warnings.
 
 When LoopTroop detects these mounted-drive paths, it surfaces the warning in two places: the startup UI warns when the LoopTroop app itself lives on a Windows-mounted drive, and project attachment warns when the target repository is mounted there.
 

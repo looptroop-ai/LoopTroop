@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Sped up the dev server on Linux, macOS, native Windows, and remote/VPS hosts by using efficient native file watching by default instead of always polling, while still auto-enabling polling for WSL workspaces on Windows-mounted drives.
 - Increased the ticket description limit to 50,000 characters and made validation failures explain what needs fixing.
 - Made new-ticket creation explain missing project setup and surface create-request errors instead of appearing unresponsive.
 - Kept development startup available when npm 12 misclassifies a registry-hosted optional tarball as a remote dependency during update preview.
@@ -172,6 +173,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Manual QA workspace drift detection to bypass Git worktree checks and return no drift for display-only mock tickets, resolving baseline-missing errors when loading mock tickets in the UI.
 
 #### Fixed
+- Fixed the Vite dev server unconditionally forcing `usePolling` for frontend file watching on every platform. The frontend and backend watchers now share one OS-agnostic decision (`resolveWatchPollingDecision()` in `shared/wslPerformance.ts`): native OS file-system events are used by default on Linux (including remote/VPS hosts), macOS, native Windows, and WSL workspaces on the Linux filesystem, while polling is auto-enabled only for WSL workspaces on Windows-mounted drives (`/mnt/...`). An explicit `CHOKIDAR_USEPOLLING` value still overrides the auto-detection in either direction. This removes constant polling CPU overhead and reduces refresh latency and HMR jitter, most noticeably on remote hosts.
 - Deferred only the triggering direct dependency update when npm rejects a configured-registry tarball as remote during preview, while preserving npm's remote-package policy and clear daily-retry diagnostics.
 - Fixed the ALL tab appearing empty after a hard refresh when the newest projected rows were all commands by excluding command-classified rows before applying overview pagination.
 - Prevented progress-only workspace setup replies from consuming fresh attempts immediately: LoopTroop now continues the same session twice before failing the attempt with a functional incomplete-setup explanation, while malformed completed results keep their separate structured repair path.

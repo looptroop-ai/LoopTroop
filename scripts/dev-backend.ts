@@ -2,13 +2,12 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveWatchPollingDecision } from '../shared/wslPerformance'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
 const binExtension = process.platform === 'win32' ? '.cmd' : ''
 const tsxBin = resolve(repoRoot, 'node_modules', '.bin', `tsx${binExtension}`)
-const explicitPolling = process.env.CHOKIDAR_USEPOLLING?.trim()
-const workspaceLooksMounted = isWslRuntime() && /^\/mnt\/[a-z]\//i.test(repoRoot)
 
 const childEnv = { ...process.env }
 
@@ -23,25 +22,18 @@ function isWslRuntime() {
   }
 }
 
-function isTruthy(value: string) {
-  return value !== '' && value !== '0' && value.toLowerCase() !== 'false'
-}
+const pollingDecision = resolveWatchPollingDecision({
+  explicitPolling: process.env.CHOKIDAR_USEPOLLING,
+  isWsl: isWslRuntime(),
+  workspacePath: repoRoot,
+})
 
-if (explicitPolling) {
-  if (isTruthy(explicitPolling)) {
-    childEnv.CHOKIDAR_USEPOLLING = explicitPolling
-    console.log(`[dev-backend] Respecting CHOKIDAR_USEPOLLING=${explicitPolling}.`)
-  } else {
-    delete childEnv.CHOKIDAR_USEPOLLING
-    console.log('[dev-backend] Respecting CHOKIDAR_USEPOLLING disable override; using native file watching.')
-  }
-} else if (workspaceLooksMounted) {
+if (pollingDecision.usePolling) {
   childEnv.CHOKIDAR_USEPOLLING = '1'
-  console.log('[dev-backend] Mounted-drive workspace detected; enabling chokidar polling.')
 } else {
   delete childEnv.CHOKIDAR_USEPOLLING
-  console.log('[dev-backend] Using native file watching.')
 }
+console.log(`[dev-backend] ${pollingDecision.reason}`)
 
 const child = spawn(tsxBin, ['watch', 'server/index.ts'], {
   cwd: repoRoot,

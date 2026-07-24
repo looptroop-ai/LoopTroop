@@ -5,39 +5,10 @@ import { Separator } from '@/components/ui/separator'
 import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
-import { OpenRouterRoutingPicker } from './OpenRouterRoutingPicker'
-import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
+import { normalizeModelId } from '@shared/modelId'
 
 function cleanModelId(id: string | null | undefined): string {
-  if (id && id.startsWith('openrouter/')) {
-    return id.split(':')[0]!
-  }
-  return id ?? ''
-}
-
-function parseOpenRouterModel(modelId: string | null | undefined) {
-  const val = modelId ?? ''
-  if (val.startsWith('openrouter/')) {
-    const lastColon = val.lastIndexOf(':')
-    if (lastColon > val.indexOf('/')) {
-      return {
-        base: val.substring(0, lastColon),
-        suffix: val.substring(lastColon)
-      }
-    }
-  }
-  return { base: val, suffix: '' }
-}
-
-function isRouterModel(modelId: string | null | undefined, modelsList?: OpenCodeModel[]): boolean {
-  const clean = cleanModelId(modelId)
-  if (!clean.startsWith('openrouter/')) return false
-  if (clean.startsWith('openrouter/openrouter/')) return true
-  if (modelsList) {
-    const found = modelsList.find(m => m.fullId === clean)
-    if (found && found.name.toLowerCase().includes('router')) return true
-  }
-  return false
+  return normalizeModelId(id)
 }
 import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfile'
 import type { CreateProfileInput } from '@/hooks/useProfile'
@@ -256,17 +227,19 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       const n = Number(rawNumeric[key]);
       (validatedData as Record<string, unknown>)[key] = cfg.toStore(n)
     }
-    const allCouncil = [validatedData.mainImplementer, ...councilSlots].filter((x): x is string => Boolean(x))
+    const normalizedMainImplementer = normalizeModelId(validatedData.mainImplementer)
+    const allCouncil = [normalizedMainImplementer, ...councilSlots.map(normalizeModelId)].filter(Boolean)
     const uniqueCouncil = [...new Set(allCouncil)]
     // Build council member variants map (only for members with a variant set)
     const variantsMap: Record<string, string> = {}
     for (const modelId of uniqueCouncil) {
-      if (modelId === validatedData.mainImplementer) continue
+      if (modelId === normalizedMainImplementer) continue
       const v = councilVariants[cleanModelId(modelId)]
       if (v && v !== 'none') variantsMap[modelId] = v
     }
     const payload: CreateProfileInput = {
       ...validatedData,
+      mainImplementer: normalizedMainImplementer,
       councilMembers: JSON.stringify(uniqueCouncil),
       mainImplementerVariant: mainVariant && mainVariant !== 'none' ? mainVariant : '',
       councilMemberVariants: Object.keys(variantsMap).length > 0 ? JSON.stringify(variantsMap) : '',
@@ -341,17 +314,6 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                   value={mainVariant}
                   onChange={setMainVariant}
                 />
-                {formData.mainImplementer.startsWith('openrouter/') && !isRouterModel(formData.mainImplementer, models) && (() => {
-                  const { base, suffix } = parseOpenRouterModel(formData.mainImplementer)
-                  return (
-                    <OpenRouterRoutingPicker
-                      value={suffix}
-                      onChange={nextSuffix => {
-                        updateField('mainImplementer', base + nextSuffix)
-                      }}
-                    />
-                  )
-                })()}
               </div>
             )}
             {isOpenCodeConnected === false && (
@@ -417,17 +379,6 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                             return next
                           })}
                         />
-                        {slot.startsWith('openrouter/') && !isRouterModel(slot, models) && (() => {
-                          const { base, suffix } = parseOpenRouterModel(slot)
-                          return (
-                            <OpenRouterRoutingPicker
-                              value={suffix}
-                              onChange={nextSuffix => {
-                                setCouncilSlots(prev => prev.map((s, j) => j === i ? base + nextSuffix : s))
-                              }}
-                            />
-                          )
-                        })()}
                       </div>
                     )}
                   </div>

@@ -5,6 +5,7 @@ import { profiles } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { validateModelSelection } from '../opencode/modelValidation'
 import { parseCouncilMembers } from '../council/members'
+import { normalizeModelId } from '../../shared/modelId'
 
 const profileRouter = new Hono()
 const MAX_TIMEOUT_MS = 3_600_000
@@ -39,10 +40,10 @@ function normalizeModelSelection(
   mainImplementerRaw: string | null | undefined,
   councilMembersRaw: string | null | undefined,
 ) {
-  const mainImplementer = typeof mainImplementerRaw === 'string' ? mainImplementerRaw.trim() : ''
+  const mainImplementer = normalizeModelId(mainImplementerRaw)
   const councilMembers = Array.from(new Set([
     mainImplementer,
-    ...parseCouncilMembers(councilMembersRaw),
+    ...parseCouncilMembers(councilMembersRaw).map(normalizeModelId),
   ].filter(Boolean)))
 
   return {
@@ -124,9 +125,10 @@ profileRouter.patch('/profile', async (c) => {
       councilMembers: JSON.stringify(validatedModels.councilMembers),
     }
   } else {
+    const normalizedRequested = normalizeModelSelection(requestedMainImplementer, requestedCouncilMembers)
     modelPatch = {
-      mainImplementer: existing.mainImplementer,
-      councilMembers: existing.councilMembers,
+      mainImplementer: normalizedRequested.mainImplementer || existing.mainImplementer,
+      councilMembers: JSON.stringify(normalizedRequested.councilMembers),
     }
   }
 

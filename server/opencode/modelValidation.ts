@@ -1,18 +1,12 @@
 import { fetchConnectedModelIds } from './providerCatalog'
 import { parseCouncilMembers } from '../council/members'
+import { normalizeModelId } from '../../shared/modelId'
 
 export const MAX_COUNCIL_MEMBERS = 10
 
 export interface ValidatedModelSelection {
   mainImplementer: string
   councilMembers: string[]
-}
-
-function cleanModelId(modelId: string): string {
-  if (modelId.startsWith('openrouter/')) {
-    return modelId.split(':')[0]!
-  }
-  return modelId
 }
 
 export async function validateModelSelection(
@@ -29,13 +23,17 @@ export async function validateModelSelection(
     throw new Error('No configured OpenCode models are available.')
   }
 
-  const cleanMain = cleanModelId(mainImplementer)
+  const cleanMain = normalizeModelId(mainImplementer)
   if (!connectedModelIds.has(cleanMain)) {
     throw new Error(`Main implementer model is not configured in OpenCode: ${mainImplementer}`)
   }
 
   const parsedCouncilMembers = parseCouncilMembers(councilMembersRaw)
-  const normalizedCouncilMembers = Array.from(new Set([mainImplementer, ...parsedCouncilMembers]))
+  const normalizedCouncilMembers = Array.from(new Set(
+    [mainImplementer, ...parsedCouncilMembers]
+      .map(normalizeModelId)
+      .filter(Boolean),
+  ))
 
   if (normalizedCouncilMembers.length < 2) {
     throw new Error('At least two distinct council members are required, including the main implementer.')
@@ -45,15 +43,14 @@ export async function validateModelSelection(
   }
 
   const invalidCouncilMembers = normalizedCouncilMembers.filter((memberId) => {
-    const cleanMember = cleanModelId(memberId)
-    return !connectedModelIds.has(cleanMember)
+    return !connectedModelIds.has(memberId)
   })
   if (invalidCouncilMembers.length > 0) {
     throw new Error(`Council member models are not configured in OpenCode: ${invalidCouncilMembers.join(', ')}`)
   }
 
   return {
-    mainImplementer,
+    mainImplementer: cleanMain,
     councilMembers: normalizedCouncilMembers,
   }
 }

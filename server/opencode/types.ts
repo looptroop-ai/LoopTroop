@@ -1,3 +1,5 @@
+import { normalizeModelId } from '../../shared/modelId'
+
 export interface Session {
   id: string
   slug?: string
@@ -210,11 +212,12 @@ export interface Message {
 
 export function parseModelRef(modelRef?: string | null): ModelSelection | undefined {
   if (!modelRef) return undefined
-  const slashIndex = modelRef.indexOf('/')
-  if (slashIndex <= 0 || slashIndex === modelRef.length - 1) return undefined
+  const normalized = normalizeModelId(modelRef)
+  const slashIndex = normalized.indexOf('/')
+  if (slashIndex <= 0 || slashIndex === normalized.length - 1) return undefined
   return {
-    providerID: modelRef.slice(0, slashIndex),
-    modelID: modelRef.slice(slashIndex + 1),
+    providerID: normalized.slice(0, slashIndex),
+    modelID: normalized.slice(slashIndex + 1),
   }
 }
 

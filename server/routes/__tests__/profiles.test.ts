@@ -154,6 +154,31 @@ describe('profileRouter numeric validation', () => {
     })
   })
 
+  it('canonicalizes legacy OpenRouter routing suffixes when updating other settings', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: JSON.stringify([
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'openrouter/openrouter/free:free',
+      ]),
+    }).run()
+
+    const response = await createProfileApp().request('/api/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ opencodeRetryLimit: 5 }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(db.select().from(profiles).get()).toMatchObject({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash',
+      councilMembers: JSON.stringify([
+        'openrouter/deepseek/deepseek-v4-flash',
+        'openrouter/openrouter/free',
+      ]),
+    })
+  })
+
   it('rejects out-of-range PRD, beads coverage, structured retry, and OpenCode retry values', async () => {
     db.insert(profiles).values({
       mainImplementer: 'openai/gpt-5.4',

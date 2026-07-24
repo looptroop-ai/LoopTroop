@@ -422,7 +422,11 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
       </div>
 
       <Dialog open={isDetailsOpen} onOpenChange={(open) => { setIsDetailsOpen(open); if (open) detailsScrollInit() }}>
-        <DialogContent closeButtonVariant="dashboard" className="max-w-2xl max-h-[80vh] flex flex-col">
+        <DialogContent
+          closeButtonVariant="dashboard"
+          className="max-w-2xl max-h-[80vh] flex flex-col"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="text-sm">Ticket Details</DialogTitle>
             <DialogDescription className="sr-only">
@@ -519,8 +523,8 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                         <p><span className="font-medium">Last bead finished:</span> {ticket.implementationTiming.lastBeadFinishedAt ? new Date(ticket.implementationTiming.lastBeadFinishedAt).toLocaleString() : 'Not finished yet'}</p>
                       </div>
                       <div className="border-t border-border/60 pt-1.5">
-                        <p><span className="font-medium">Workspace preparation:</span> {formatDuration(ticket.implementationTiming.workspacePreparationDurationMs)}</p>
-                        <p><span className="font-medium">Final testing:</span> {formatDuration(ticket.implementationTiming.finalTestingDurationMs)}</p>
+                        <p><span className="font-medium">Workspace preparation:</span> {ticket.implementationTiming.workspacePreparationStartedAt ? formatDuration(ticket.implementationTiming.workspacePreparationDurationMs) : 'N/A'}</p>
+                        <p><span className="font-medium">Final testing:</span> {ticket.implementationTiming.finalTestingStartedAt ? formatDuration(ticket.implementationTiming.finalTestingDurationMs) : 'N/A'}</p>
                         <p className="text-muted-foreground">Including these stages, implementation delivery time is {formatDuration(
                           ticket.implementationTiming.activeDurationMs
                           + ticket.implementationTiming.workspacePreparationDurationMs

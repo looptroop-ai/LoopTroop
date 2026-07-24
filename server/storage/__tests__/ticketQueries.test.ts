@@ -130,7 +130,9 @@ describe('runtime Manual QA bead origin projection', () => {
       startedAt: '2026-07-20T10:12:00.000Z',
       lastBeadFinishedAt: '2026-07-20T11:42:00.000Z',
       workspacePreparationDurationMs: 12 * 60_000,
+      workspacePreparationStartedAt: '2026-07-20T10:00:00.000Z',
       finalTestingDurationMs: 8 * 60_000,
+      finalTestingStartedAt: '2026-07-20T11:42:00.000Z',
     })
   })
 })

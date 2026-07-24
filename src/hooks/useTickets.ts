@@ -154,7 +154,9 @@ export interface Ticket {
     startedAt: string | null
     lastBeadFinishedAt: string | null
     workspacePreparationDurationMs: number
+    workspacePreparationStartedAt: string | null
     finalTestingDurationMs: number
+    finalTestingStartedAt: string | null
   }
   errorOccurrences?: TicketErrorOccurrence[]
   activeErrorOccurrenceId?: string | null

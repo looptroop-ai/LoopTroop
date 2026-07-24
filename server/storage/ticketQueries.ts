@@ -129,8 +129,12 @@ export interface TicketImplementationTiming {
   lastBeadFinishedAt: string | null
   /** Total time spent preparing the execution workspace. */
   workspacePreparationDurationMs: number
+  /** First time workspace preparation began. */
+  workspacePreparationStartedAt: string | null
   /** Total time spent in the automated final-test phase. */
   finalTestingDurationMs: number
+  /** First time automated final testing began. */
+  finalTestingStartedAt: string | null
 }
 
 /** Full public projection of a ticket row, enriched with runtime data, error history, and available actions. */
@@ -545,7 +549,9 @@ function readImplementationTiming(
     startedAt: null,
     lastBeadFinishedAt: null,
     workspacePreparationDurationMs: 0,
+    workspacePreparationStartedAt: null,
     finalTestingDurationMs: 0,
+    finalTestingStartedAt: null,
   }
   if (!projectContext) return empty
 
@@ -562,6 +568,8 @@ function readImplementationTiming(
   let workspacePreparationDurationMs = 0
   let finalTestingDurationMs = 0
   let startedAt: string | null = null
+  let workspacePreparationStartedAt: string | null = null
+  let finalTestingStartedAt: string | null = null
   const now = Date.now()
 
   for (let index = 0; index < rows.length; index += 1) {
@@ -578,8 +586,10 @@ function readImplementationTiming(
       startedAt ??= row.changedAt
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.workspacePreparation) {
       workspacePreparationDurationMs += durationMs
+      workspacePreparationStartedAt ??= row.changedAt
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.finalTesting) {
       finalTestingDurationMs += durationMs
+      finalTestingStartedAt ??= row.changedAt
     }
   }
 
@@ -593,7 +603,9 @@ function readImplementationTiming(
     startedAt,
     lastBeadFinishedAt,
     workspacePreparationDurationMs,
+    workspacePreparationStartedAt,
     finalTestingDurationMs,
+    finalTestingStartedAt,
   }
 }
 

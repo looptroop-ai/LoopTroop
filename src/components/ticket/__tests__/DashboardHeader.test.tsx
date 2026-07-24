@@ -181,7 +181,9 @@ describe('DashboardHeader', () => {
         startedAt: '2026-01-01T09:00:00.000Z',
         lastBeadFinishedAt: '2026-01-01T11:00:00.000Z',
         workspacePreparationDurationMs: 12 * 60_000,
+        workspacePreparationStartedAt: '2026-01-01T08:48:00.000Z',
         finalTestingDurationMs: 8 * 60_000,
+        finalTestingStartedAt: '2026-01-01T11:00:00.000Z',
       },
     })
 
@@ -195,11 +197,40 @@ describe('DashboardHeader', () => {
 
     expect(screen.getByText('Actual implementation time')).toBeInTheDocument()
     expect(screen.getByText('1h 5m')).toBeInTheDocument()
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     fireEvent.pointerMove(screen.getByRole('button', { name: 'About actual implementation time' }))
     expect((await screen.findAllByText(/Time actively spent running beads/)).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('12m')
     expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('8m')
     expect(screen.getAllByText(/implementation delivery time is 1h 25m/).length).toBeGreaterThan(0)
+  })
+
+  it('marks unfinished and unstarted timing stages as unavailable in the implementation-time help', async () => {
+    const ticket = makeTicket({
+      status: 'CODING',
+      startedAt: '2026-01-01T08:00:00.000Z',
+      implementationTiming: {
+        activeDurationMs: 5 * 60_000,
+        startedAt: '2026-01-01T09:00:00.000Z',
+        lastBeadFinishedAt: null,
+        workspacePreparationDurationMs: 0,
+        workspacePreparationStartedAt: null,
+        finalTestingDurationMs: 0,
+        finalTestingStartedAt: null,
+      },
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    fireEvent.pointerMove(screen.getByRole('button', { name: 'About actual implementation time' }))
+    expect((await screen.findAllByText('Not finished yet')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('N/A')
+    expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('N/A')
   })
 
   it('shows effective Manual QA and Git hook settings in Details', () => {

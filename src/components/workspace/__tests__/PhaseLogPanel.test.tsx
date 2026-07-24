@@ -300,6 +300,48 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryAllByText(/Bulk row/).length).toBeLessThan(logs.length)
   })
 
+  it('reveals the initial log page after switching tickets in the same phase', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      return createJsonResponse({
+        entries: [{
+          phase: 'CODING',
+          entryId: url.includes('/ticket-2/') ? 'ticket-2-log' : 'ticket-1-log',
+          content: url.includes('/ticket-2/') ? 'Second ticket log.' : 'First ticket log.',
+          timestamp: '2026-03-13T10:00:02.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      })
+    })
+    try {
+      const rendered = renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByText('First ticket log.')).toBeInTheDocument()
+
+      const viewport = screen.getByTestId('log-viewport')
+      viewport.scrollTop = 0
+      fireEvent.scroll(viewport)
+      scrollToMock.mockClear()
+
+      rendered.rerender(
+        <QueryClientProvider client={createTestQueryClient()}>
+          <TooltipProvider>
+            <PhaseLogPanel phase="CODING" ticket={{ ...makeTicket(), id: 'ticket-2', externalId: 'T-2' }} />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      )
+
+      expect(await screen.findByText('Second ticket log.')).toBeInTheDocument()
+      expect(scrollToMock).toHaveBeenCalledWith(expect.objectContaining({ top: 600, behavior: 'auto' }))
+      expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual(expect.arrayContaining([
+        expect.stringContaining('/api/tickets/ticket-1/logs?'),
+        expect.stringContaining('/api/tickets/ticket-2/logs?'),
+      ]))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('shows a first-line indicator while loading older phase logs', async () => {
     let resolveOlder!: (response: Response) => void
     const olderResponse = new Promise<Response>((resolve) => {

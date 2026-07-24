@@ -475,7 +475,10 @@ export function PhaseLogPanel({
   // Pin the latest visible logs on mount/view changes, then keep following
   // the tail until the user scrolls away from the bottom.
   useEffect(() => {
-    const currentView = `${phase}:${effectiveTab}`
+    // A panel instance can be retained while the dashboard switches tickets.
+    // Include the ticket identity so its first durable page is always revealed
+    // instead of inheriting the prior ticket's manual scroll position.
+    const currentView = `${ticket?.id ?? 'live'}:${phase}:${effectiveTab}`
     const viewChanged = previousViewRef.current !== currentView
     const visibleTailChanged = previousVisibleTailRef.current !== visibleLogTail
     const hadVisibleLogs = previousVisibleTailRef.current !== null
@@ -494,7 +497,7 @@ export function PhaseLogPanel({
 
     previousViewRef.current = currentView
     previousVisibleTailRef.current = visibleLogTail
-  }, [phase, effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
+  }, [ticket?.id, phase, effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">

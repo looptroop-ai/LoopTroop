@@ -12,6 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ::: details Show unreleased changes
 
 #### Summary
+- Fixed ticket switching so the newest 20 log entries appear immediately instead of inheriting another ticket's scroll position.
 - Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
 - Sped up the dev server on Linux, macOS, native Windows, and remote/VPS hosts by using efficient native file watching by default instead of always polling, while still auto-enabling polling for WSL workspaces on Windows-mounted drives.
 - Increased the ticket description limit to 50,000 characters and made validation failures explain what needs fixing.

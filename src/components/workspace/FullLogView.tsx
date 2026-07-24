@@ -417,7 +417,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   }, [renderedEntries])
 
   useEffect(() => {
-    const currentView = `full-log:${effectiveTab}`
+    // Full Log remains mounted across ticket navigation. Treating a new ticket
+    // as a new view resets tail-following for its initial durable log page.
+    const currentView = `full-log:${ticket?.id ?? 'live'}:${effectiveTab}`
     const viewChanged = previousViewRef.current !== currentView
     const visibleTailChanged = previousVisibleTailRef.current !== visibleLogTail
     const hadVisibleLogs = previousVisibleTailRef.current !== null
@@ -434,7 +436,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
     previousViewRef.current = currentView
     previousVisibleTailRef.current = visibleLogTail
-  }, [effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
+  }, [ticket?.id, effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
 
   // ── Copy all logs ──────────────────────────────────────────────
   const [copied, copyToClipboard] = useCopyToClipboard()

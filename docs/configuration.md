@@ -204,7 +204,7 @@ Up to 9 council slots are available in addition to the main implementer, for a m
 
 **Type:** variant selector (per model, optional)
 
-Some models expose multiple effort or thinking modes (for example, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). When a selected model advertises variants, an effort picker appears below that slot's model selector. The **None** choice is always available and selected by default; it leaves the provider's effort behavior unmodified. If a model exposes no variants, the control stays hidden.
+Some models expose multiple effort or thinking modes (for example, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). When a selected model advertises variants, an effort picker appears below that slot's model selector. The **None** choice is always available, selected by default, and selected again whenever you change that model; it leaves the provider's effort behavior unmodified. If a model exposes no variants, the control stays hidden.
 
 **What it does:**
 

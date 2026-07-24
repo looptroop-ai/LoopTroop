@@ -54,8 +54,12 @@ vi.mock('@/hooks/useProfile', () => ({
 }))
 
 vi.mock('../ModelPicker', () => ({
-  ModelPicker: ({ value, placeholder = 'Search models…' }: { value?: string; placeholder?: string }) => (
-    <button type="button">{value || placeholder}</button>
+  ModelPicker: ({ value, placeholder = 'Search models…', onChange }: {
+    value?: string
+    placeholder?: string
+    onChange?: (modelId: string) => void
+  }) => (
+    <button type="button" onClick={() => onChange?.('openai/next-model')}>{value || placeholder}</button>
   ),
 }))
 
@@ -218,6 +222,39 @@ describe('ProfileSetup', () => {
       }),
       expect.anything(),
     ))
+  })
+
+  it('resets the effort selection to None when the main model changes', async () => {
+    profileForTest = {
+      ...existingProfile,
+      mainImplementerVariant: 'high',
+    }
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          models: [
+            { fullId: 'opencode/big-pickle', variants: { low: {}, high: {} } },
+            { fullId: 'openai/next-model', variants: { low: {}, high: {} } },
+          ],
+          connectedProviders: ['opencode', 'openai'],
+          defaultModels: {},
+        }),
+      } as Response
+    })
+
+    await renderProfileSetup()
+    expect(await screen.findByRole('button', { name: '●High' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'opencode/big-pickle' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '○None' })).toHaveAttribute('aria-pressed', 'true')
+    })
   })
 
   it('renders documentation links for configuration descriptions', async () => {

@@ -320,11 +320,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
               value={formData.mainImplementer ?? ''}
               onChange={v => {
                 updateField('mainImplementer', v)
-                // Reset variant if new model doesn't support current variant
-                const newVariants = modelVariantMap.get(v)
-                if (!newVariants || (mainVariant && !(mainVariant in newVariants))) {
-                  setMainVariant(undefined)
-                }
+                setMainVariant(undefined)
               }}
               disabledValues={councilSlots.filter(Boolean)}
             />
@@ -373,17 +369,11 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                       value={slot}
                       onChange={v => {
                         setCouncilSlots(prev => prev.map((s, j) => j === i ? v : s))
-                        const cleanV = cleanModelId(v)
                         const cleanSlot = cleanModelId(slot)
-                        const newVariants = modelVariantMap.get(cleanV)
-                        const oldVariant = councilVariants[cleanSlot]
                         if (slot && slot !== v) {
                           setCouncilVariants(prev => {
                             const next = { ...prev }
                             delete next[cleanSlot]
-                            if (oldVariant && newVariants && oldVariant in newVariants) {
-                              next[cleanV] = oldVariant
-                            }
                             return next
                           })
                         }

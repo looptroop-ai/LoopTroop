@@ -9,7 +9,7 @@ interface OpenRouterRoutingPickerProps {
 }
 
 const ROUTING_OPTIONS = [
-  { value: '', label: 'Default', icon: Settings, colorClass: 'text-slate-500 dark:text-slate-400', description: 'Default provider routing', selectedClass: 'bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700' },
+  { value: '', label: 'None', icon: Settings, colorClass: 'text-slate-500 dark:text-slate-400', description: 'No routing override', selectedClass: 'bg-slate-100 text-slate-700 ring-1 ring-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700' },
   { value: ':floor', label: 'Floor', icon: Coins, colorClass: 'text-emerald-600 dark:text-emerald-400', description: 'Cost focus: route to the cheapest provider', selectedClass: 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-200 dark:ring-emerald-800' },
   { value: ':nitro', label: 'Nitro', icon: Flame, colorClass: 'text-orange-600 dark:text-orange-400', description: 'Speed focus: route to the fastest provider', selectedClass: 'bg-orange-100 text-orange-800 ring-1 ring-orange-400 dark:bg-orange-950/60 dark:text-orange-200 dark:ring-orange-800' },
   { value: ':thinking', label: 'Thinking', icon: Brain, colorClass: 'text-purple-600 dark:text-purple-400', description: 'Reasoning focus: enable chain-of-thought outputs', selectedClass: 'bg-purple-100 text-purple-800 ring-1 ring-purple-300 dark:bg-purple-950/60 dark:text-purple-200 dark:ring-purple-800' },

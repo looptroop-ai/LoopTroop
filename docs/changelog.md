@@ -89,7 +89,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Detailed Changes
 
 #### Added
-- Added **Actual implementation time** below the overall Ticket Details duration. It totals only `CODING` intervals, excluding time in `BLOCKED_ERROR` while an exhausted or failed bead waits for Retry or Continue. Its help tooltip shows bead execution start, the final originally planned bead's completion (unchanged by Manual QA fix beads), and separate workspace-preparation, final-testing, and Manual QA-fix durations.
+- Added **Actual implementation time** below the overall Ticket Details duration. It totals only `CODING` intervals for originally planned beads, excluding time in `BLOCKED_ERROR` while an exhausted or failed bead waits for Retry or Continue and keeping Manual QA fix-bead work separate. Its help tooltip shows bead execution start, the final originally planned bead's completion (unchanged by Manual QA fix beads), and separate workspace-preparation, final-testing, and Manual QA-fix durations.
 - Added client-side handling for server validation messages, including the exact ticket field and constraint that failed.
 - Added visible new-ticket guidance when no project is attached and error toasts for failed ticket creation requests.
 - Preparing Workspace Runtime now shows the current setup attempt's remaining and configured total timeout beside its live status. The clock resets from the attempt-start event on automatic retries and respects the effective project or profile setup-timeout setting.

@@ -43,7 +43,7 @@ Useful mental model:
 - **Before `PRE_FLIGHT_CHECK`** you are still in editable planning territory: interview, PRD, beads, and setup artifacts can create archived versions and restart downstream work.
 - **From `PRE_FLIGHT_CHECK` onward** the workflow is in execution territory: repository mutations become isolated and tightly controlled, and recovery is driven by execution locks, retries, or explicit blocked-error decisions.
 - **`CODING` is the versioning exception**: retries reset the active bead/checkpoint instead of creating phase-attempt versions.
-- **Ticket Details timing**: **Actual implementation time** sums only periods in `CODING`, so a ticket paused in `BLOCKED_ERROR` while awaiting Retry or Continue does not inflate bead execution time. Its tooltip separately reports `PREPARING_EXECUTION_ENV`, `RUNNING_FINAL_TEST`, and Manual QA fix-bead time. The displayed final-bead timestamp belongs to the final originally planned bead, so later Manual QA fix beads do not replace it.
+- **Ticket Details timing**: **Actual implementation time** sums `CODING` periods for originally planned beads only, so a ticket paused in `BLOCKED_ERROR` while awaiting Retry or Continue does not inflate bead execution time and Manual QA fix-bead work remains separate. Its tooltip separately reports `PREPARING_EXECUTION_ENV`, `RUNNING_FINAL_TEST`, and Manual QA fix-bead time. The displayed final-bead timestamp belongs to the final originally planned bead, so later Manual QA fix beads do not replace it.
 
 ---
 

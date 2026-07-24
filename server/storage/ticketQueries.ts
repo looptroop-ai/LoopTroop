@@ -121,13 +121,13 @@ export interface TicketErrorOccurrence {
 }
 
 export interface TicketImplementationTiming {
-  /** Total time the ticket actually spent executing beads; paused/error intervals are excluded. */
+  /** Total time the ticket spent on originally planned beads; pauses and Manual QA fix beads are excluded. */
   activeDurationMs: number
   /** First time the ticket entered bead execution. */
   startedAt: string | null
   /** Completion time for the final originally planned bead; Manual QA fix beads do not change it. */
   lastPlannedBeadFinishedAt: string | null
-  /** Active coding time attributable to Manual QA fix beads. This is included in activeDurationMs. */
+  /** Active coding time attributable to Manual QA fix beads. This is separate from activeDurationMs. */
   manualQaFixDurationMs: number
   /** First time a Manual QA fix bead started. */
   manualQaFixStartedAt: string | null
@@ -628,7 +628,7 @@ function readImplementationTiming(
   }, 0)
 
   return {
-    activeDurationMs,
+    activeDurationMs: Math.max(0, activeDurationMs - manualQaFixDurationMs),
     startedAt,
     lastPlannedBeadFinishedAt,
     manualQaFixDurationMs,

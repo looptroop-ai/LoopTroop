@@ -156,7 +156,7 @@ describe('runtime Manual QA bead origin projection', () => {
       .run()
 
     expect(getTicketByRef(setup.ticket.id)?.implementationTiming).toEqual({
-      activeDurationMs: 90 * 60_000,
+      activeDurationMs: 70 * 60_000,
       startedAt: '2026-07-20T10:12:00.000Z',
       lastPlannedBeadFinishedAt: '2026-07-20T11:42:00.000Z',
       manualQaFixDurationMs: 20 * 60_000,

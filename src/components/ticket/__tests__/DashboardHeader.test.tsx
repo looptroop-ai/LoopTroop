@@ -201,11 +201,11 @@ describe('DashboardHeader', () => {
     expect(screen.getByText('1h 5m')).toBeInTheDocument()
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
     fireEvent.pointerMove(screen.getByRole('button', { name: 'About actual implementation time' }))
-    expect((await screen.findAllByText(/Time actively spent running beads/)).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText(/Time actively spent running the originally planned beads/)).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('12m')
     expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('8m')
     expect(screen.getAllByText(/Manual QA fix beads:/).at(-1)?.parentElement).toHaveTextContent('9m')
-    expect(screen.getAllByText(/implementation delivery time is 1h 25m/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/implementation delivery time is 1h 34m/).length).toBeGreaterThan(0)
   })
 
   it('marks unfinished and unstarted timing stages as unavailable in the implementation-time help', async () => {
@@ -233,7 +233,7 @@ describe('DashboardHeader', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /details/i }))
     fireEvent.pointerMove(screen.getByRole('button', { name: 'About actual implementation time' }))
-    expect((await screen.findAllByText('Not finished yet')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('N/A')).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Workspace preparation:/).at(-1)?.parentElement).toHaveTextContent('N/A')
     expect(screen.getAllByText(/Final testing:/).at(-1)?.parentElement).toHaveTextContent('N/A')
     expect(screen.getAllByText(/Manual QA fix beads:/).at(-1)?.parentElement).toHaveTextContent('N/A')

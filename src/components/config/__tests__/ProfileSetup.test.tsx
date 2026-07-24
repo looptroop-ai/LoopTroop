@@ -224,6 +224,31 @@ describe('ProfileSetup', () => {
     ))
   })
 
+  it('treats an empty saved main variant as None when configuration opens', async () => {
+    profileForTest = {
+      ...existingProfile,
+      mainImplementerVariant: '',
+    }
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (url === '/api/health/opencode') {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          models: [{ fullId: 'opencode/big-pickle', variants: { low: {}, high: {} } }],
+          connectedProviders: ['opencode'],
+          defaultModels: {},
+        }),
+      } as Response
+    })
+
+    await renderProfileSetup()
+
+    expect(await screen.findByRole('button', { name: '○None' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('shows the main implementer variant in its read-only council row', async () => {
     profileForTest = {
       ...existingProfile,

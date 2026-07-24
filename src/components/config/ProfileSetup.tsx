@@ -160,7 +160,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
     }))
     // Restore variant state
-    setMainVariant(profile.mainImplementerVariant ?? undefined)
+    setMainVariant(profile.mainImplementerVariant || undefined)
     try {
       const parsed = profile.councilMemberVariants ? JSON.parse(profile.councilMemberVariants) : {}
       const cleanedVariants: Record<string, string> = {}

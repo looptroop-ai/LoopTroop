@@ -7,11 +7,23 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ## Unreleased
 
-> Changes merged since the last versioned release that have not yet shipped in a tagged version. Expand to preview what will land in the next release.
+> Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
-::: details Show unreleased changes
+_No unreleased changes yet._
 
-#### Summary
+---
+
+## 0.4.0 (2026-07-24)
+
+### Release Highlights
+- Manual QA Verification: Interactive post-implementation testing gate with evidence uploads, automated QA-fix loops, and direct backlog improvement creation.
+- Modernized Dashboard and UI: Glassmorphic dashboard refresh, Markdown description previews, and resizable log drawers.
+- Native OS File Watching: Replaced brute-force file polling with native file watching across Linux, macOS, native Windows, and WSL Linux filesystems for major CPU savings and faster feedback.
+- 10-Member Councils and Routing: Support for up to 10 council models with live voting tallies and OpenRouter routing modifiers such as `:nitro`, `:thinking`, and `:free`.
+- Smarter Diagnostics and Logs: Latest-first log pagination, standardized AI log headers, and live token, cost, and runtime tracking.
+- Repo and Lifecycle Tools: New existing-repo attachment modes, complete ticket deletion, 50,000-character descriptions, and npm 12 support.
+
+### Summary
 - Redesigned the main dashboard and landing page using taste-skill anti-slop frontend guidelines, introducing sleek glassmorphism, refined dark/light mode tech aesthetics, ambient glow effects, header-aligned priority badges on Kanban cards, keyboard search shortcuts, and tech stack logo walls.
 - Fixed ticket log opening so the newest 20 visible entries appear immediately instead of inheriting another ticket's scroll position or landing on hidden AI-detail rows.
 - Added a pause-aware Actual implementation time to Ticket Details, with workspace, final-testing, and Manual QA fix-bead context.
@@ -243,8 +255,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the Manual QA status details and reference guides for Pending-first results, optional waiver reasons, collapsed disclosures, inline Improvements, evidence controls, merge-group validation, autosave status, and lossless Skip semantics.
 - Documented Manual QA configuration/inheritance, strict checklist/result contracts, Submit-versus-Skip artifact semantics, routes/CAS, workflow/status details, checkpoint/drift safety, prompts/normalization, context-rich Improvements, self-contained QA origins, frontend routing/timeline, architecture impacts, and post-implementation outcomes across the README and reference guides.
 - Added **Skip Reason Auditability** to the [High Priority roadmap](roadmap.md#high-priority): users can provide an optional reason when skipping any step, prompt, or approval gate, and the reason is persisted in the relevant ticket artifact.
-
-:::
 
 ---
 

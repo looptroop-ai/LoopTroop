@@ -20,6 +20,8 @@ describe('ManualQaSetting', () => {
 
     expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('data-state', 'checked')
+    expect(screen.getByRole('radio', { name: 'Enabled' }).className).toContain('bg-primary')
     expect(screen.getByText(/Current default:/)).toHaveTextContent('Enabled')
     fireEvent.click(screen.getByRole('radio', { name: 'Disabled' }))
     expect(onChange).toHaveBeenCalledWith(false)

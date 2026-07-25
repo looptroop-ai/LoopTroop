@@ -46,12 +46,16 @@ export function ManualQaSetting({
                   id={`${idPrefix}-${option.label.toLowerCase()}`}
                   type="button"
                   role="radio"
+                  aria-label={option.label}
                   aria-checked={selected}
+                  data-state={selected ? 'checked' : 'unchecked'}
                   disabled={disabled}
                   onClick={() => onChange(option.value)}
                   className={cn(
                     'rounded px-2.5 py-1 text-xs transition-colors',
-                    selected ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                    selected
+                      ? 'bg-primary font-semibold text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-background hover:text-foreground',
                     disabled && 'cursor-not-allowed opacity-60',
                   )}
                 >

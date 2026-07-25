@@ -3,6 +3,7 @@ import { clearPersistedTicketLogs } from '@/context/logUtils'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
+import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 
 interface Project {
   id: number
@@ -96,7 +97,11 @@ function removeDeletedProjectTicketCaches(
 async function fetchProjects(): Promise<Project[]> {
   const res = await fetch('/api/projects')
   if (!res.ok) throw new Error('Failed to fetch projects')
-  return res.json()
+  const projects = await res.json() as Project[]
+  return projects.map((project) => ({
+    ...project,
+    gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+  }))
 }
 
 async function createProject(input: CreateProjectInput): Promise<Project> {
@@ -110,7 +115,11 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
     const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
     throw new Error(message || 'Failed to create project')
   }
-  return res.json()
+  const project = await res.json() as Project
+  return {
+    ...project,
+    gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+  }
 }
 
 async function updateProject(id: number, input: Partial<Pick<Project, 'name' | 'icon' | 'color' | 'executionSetupTimeout' | 'gitHookPolicy' | 'manualQaOverride'>>): Promise<Project> {
@@ -124,7 +133,11 @@ async function updateProject(id: number, input: Partial<Pick<Project, 'name' | '
     const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
     throw new Error(message || 'Failed to update project')
   }
-  return res.json()
+  const project = await res.json() as Project
+  return {
+    ...project,
+    gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+  }
 }
 
 export function useProjects() {

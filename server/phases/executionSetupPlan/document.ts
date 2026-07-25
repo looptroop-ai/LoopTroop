@@ -1,4 +1,4 @@
-import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
+import { getLatestPhaseArtifact, getTicketByRef, upsertLatestPhaseArtifact } from '../../storage/tickets'
 import { nowIso } from '../../lib/dateUtils'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
@@ -17,11 +17,17 @@ import {
 
 const EXECUTION_SETUP_PLAN_PHASE = 'WAITING_EXECUTION_SETUP_APPROVAL'
 
-function normalizeStoredExecutionSetupPlanContent(rawContent: string) {
+function normalizeStoredExecutionSetupPlanContent(
+  rawContent: string,
+  authoritativeTicketId?: string,
+) {
   const content = rawContent.includes(EXECUTION_SETUP_PLAN_RESULT_MARKER)
     ? rawContent
     : `${EXECUTION_SETUP_PLAN_RESULT_MARKER}\n${rawContent}\n${EXECUTION_SETUP_PLAN_RESULT_END}`
-  return normalizeExecutionSetupPlanOutput(content)
+  return normalizeExecutionSetupPlanOutput(content, {
+    preserveBackendFields: true,
+    ...(authoritativeTicketId ? { authoritativeTicketId } : {}),
+  })
 }
 
 export function readExecutionSetupPlan(ticketId: string, phaseAttempt?: number): {
@@ -42,7 +48,11 @@ export function readExecutionSetupPlan(ticketId: string, phaseAttempt?: number):
     }
   }
 
-  const normalized = normalizeStoredExecutionSetupPlanContent(artifact.content)
+  const authoritativeTicketId = getTicketByRef(ticketId)?.externalId
+  const normalized = normalizeStoredExecutionSetupPlanContent(
+    artifact.content,
+    authoritativeTicketId,
+  )
   if (!normalized.ok) {
     throw new Error(normalized.error)
   }
@@ -62,7 +72,7 @@ export function saveExecutionSetupPlan(ticketId: string, plan: ExecutionSetupPla
   plan: ExecutionSetupPlan
 } {
   const raw = serializeExecutionSetupPlan(plan)
-  const normalized = normalizeStoredExecutionSetupPlanContent(raw)
+  const normalized = normalizeStoredExecutionSetupPlanContent(raw, plan.ticketId)
   if (!normalized.ok) {
     throw new Error(normalized.error)
   }
@@ -76,7 +86,10 @@ export function saveExecutionSetupPlanRawContent(ticketId: string, rawContent: s
   contentSha256: string
   plan: ExecutionSetupPlan
 } {
-  const normalized = normalizeStoredExecutionSetupPlanContent(rawContent)
+  const normalized = normalizeStoredExecutionSetupPlanContent(
+    rawContent,
+    getTicketByRef(ticketId)?.externalId,
+  )
   if (!normalized.ok) {
     throw new Error(normalized.error)
   }

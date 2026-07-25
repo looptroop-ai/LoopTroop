@@ -18,6 +18,7 @@ import { useProfile } from '@/hooks/useProfile'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { ExistingProjectActionDialog } from './ExistingProjectActionDialog'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
+import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 
 interface ProjectFormProps {
   onClose: () => void
@@ -63,7 +64,9 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [icon, setIcon] = useState(project?.icon ?? '📦')
   const [color, setColor] = useState(project?.color ?? '#3b82f6')
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(project?.manualQaOverride ?? null)
-  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy | null>(project?.gitHookPolicy ?? null)
+  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy | null>(
+    normalizeGitHookPolicySetting(project?.gitHookPolicy),
+  )
   const [isIconPickerOpen, setIsIconPickerOpen] = useState(false)
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false)
   const [gitInfo, setGitInfo] = useState<GitCheckResponse>({ isGit: false, status: 'none' })
@@ -112,7 +115,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               setManualQaOverride(data.existingProject.manualQaOverride)
             }
             if (data.existingProject.gitHookPolicy !== undefined) {
-              setGitHookPolicy(data.existingProject.gitHookPolicy)
+              setGitHookPolicy(normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy))
             }
             setExistingStateAction('restore')
             setIsExistingStateConfirmOpen(false)
@@ -152,9 +155,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         folderPath: folder,
         icon,
         color,
-        gitHookPolicy: restoreMode
-          ? gitHookPolicy
-          : gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_advisory',
+        gitHookPolicy,
         manualQaOverride: restoreMode
           ? manualQaOverride
           : manualQaOverride ?? profile?.manualQaEnabled ?? false,
@@ -185,7 +186,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           name,
           icon,
           color,
-          gitHookPolicy: gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_advisory',
+          gitHookPolicy,
           manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? false,
         },
         {

@@ -122,6 +122,7 @@ describe('TicketForm', () => {
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('data-state', 'checked')
     const helpLink = screen.getByRole('link', { name: 'Open documentation for ticket Manual QA checkpoint' })
     expect(helpLink).toHaveAttribute(
       'href',
@@ -137,7 +138,7 @@ describe('TicketForm', () => {
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
     expect(mockUseCreateTicket().mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ manualQaOverride: true, gitHookPolicy: 'observe_only' }),
+      expect.objectContaining({ manualQaOverride: true, gitHookPolicy: null }),
       expect.any(Object),
     )
   })

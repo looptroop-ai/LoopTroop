@@ -1,5 +1,8 @@
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
-import type { GitHookPolicyOverride } from '@/lib/gitHookPolicySetting'
+import {
+  normalizeGitHookPolicySetting,
+  type GitHookPolicyOverride,
+} from '@/lib/gitHookPolicySetting'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
@@ -41,7 +44,9 @@ export function GitHookPolicySetting({
   disabled = false,
   compact = false,
 }: GitHookPolicySettingProps) {
-  const selectedValue = value ?? inheritedPolicy
+  const selectedValue = normalizeGitHookPolicySetting(value)
+    ?? normalizeGitHookPolicySetting(inheritedPolicy)
+    ?? 'validate_advisory'
 
   return (
     <div>
@@ -60,11 +65,14 @@ export function GitHookPolicySetting({
                   role="radio"
                   aria-label={option.label}
                   aria-checked={selected}
+                  data-state={selected ? 'checked' : 'unchecked'}
                   disabled={disabled}
                   onClick={() => onChange(option.value)}
                   className={cn(
                     'rounded px-2.5 py-1 text-xs transition-colors',
-                    selected ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                    selected
+                      ? 'bg-primary font-semibold text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-background hover:text-foreground',
                     disabled && 'cursor-not-allowed opacity-60',
                   )}
                 >

@@ -58,7 +58,7 @@ export function TicketForm({ onClose }: TicketFormProps) {
     description: description || undefined,
     priority,
     manualQaOverride: effectiveManualQa.enabled,
-    gitHookPolicy: effectiveGitHookPolicy.policy,
+    gitHookPolicy,
   })
 
   const handleCreateAndStart = async () => {

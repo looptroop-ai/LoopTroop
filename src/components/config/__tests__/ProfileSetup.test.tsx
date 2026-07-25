@@ -297,6 +297,8 @@ describe('ProfileSetup', () => {
   it('renders documentation links for configuration descriptions', async () => {
     await renderProfileSetup()
 
+    expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('data-state', 'checked')
     const docsLinks = screen.getAllByRole('link', { name: /Open documentation for / })
     expect(docsLinks).toHaveLength(21)
 

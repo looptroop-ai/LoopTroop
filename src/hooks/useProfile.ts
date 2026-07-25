@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
+import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 
 interface Profile {
   id: number
@@ -59,7 +60,13 @@ interface CreateProfileInput {
 async function fetchProfile(): Promise<Profile | null> {
   const res = await fetch('/api/profile')
   if (!res.ok) throw new Error('Failed to fetch profile')
-  return res.json()
+  const profile = await res.json() as Profile | null
+  return profile
+    ? {
+        ...profile,
+        gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
+      }
+    : null
 }
 
 async function createProfile(input: CreateProfileInput): Promise<Profile> {
@@ -72,7 +79,11 @@ async function createProfile(input: CreateProfileInput): Promise<Profile> {
     const err = await res.json()
     throw new Error(err.error || 'Failed to create profile')
   }
-  return res.json()
+  const profile = await res.json() as Profile
+  return {
+    ...profile,
+    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
+  }
 }
 
 async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profile> {
@@ -85,7 +96,11 @@ async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profil
     const err = await res.json()
     throw new Error(err.error || 'Failed to update profile')
   }
-  return res.json()
+  const profile = await res.json() as Profile
+  return {
+    ...profile,
+    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
+  }
 }
 
 export function useProfile() {

@@ -21,6 +21,8 @@ import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
 import { contentSha256 } from '../../lib/contentHash'
 import { revertTicketToApprovalStatus } from '../../machines/persistence'
+import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
+import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
 
 const shellCommand = (script: string) => ({
   mode: 'shell' as const,
@@ -749,6 +751,26 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(receiptData.step_count).toBe(1)
     expect(receiptData.command_count).toBe(1)
     expect(receiptData.content_sha256).toBe(contentSha256(raw))
+  })
+
+  it('does not repeatedly report drift after backend hook evidence was already stored', async () => {
+    const { app, ticket, paths } = setupExecutionSetupPlanTicket()
+    writeFileSync(join(paths.worktreePath, '.pre-commit-config.yaml'), 'repos: []\n')
+    const stored = saveExecutionSetupPlan(
+      ticket.id,
+      lockExecutionSetupPlanDetectedHooks(ticket.id, buildStructuredPlan(ticket.externalId)),
+    )
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      method: 'POST',
+      ...approvalPayload(stored.raw),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      message: 'Execution setup plan approved',
+      status: 'PREPARING_EXECUTION_ENV',
+    })
   })
 
   it('dispatches execution setup plan approval through the generic approve route', async () => {

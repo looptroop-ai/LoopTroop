@@ -22,6 +22,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Fixed
 - Prevented malformed model-owned setup fields, fake Git-hook evidence, and invalid setup drafts from routing tickets to Blocked Error before user review.
 - Restored OpenRouter routing-suffix normalization before model selections are persisted.
+- Kept refreshed backend-owned workspace evidence stable across setup-plan saves so approval no longer enters a repeated “evidence changed” loop.
+- Made Git-hook policy inheritance remain live until ticket start and visibly highlighted the effective selection when configuration, project, and ticket controls first open.
 
 ---
 

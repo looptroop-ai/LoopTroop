@@ -117,6 +117,7 @@ describe('ProjectForm', () => {
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#manual-qa`,
     )
     expect(screen.getByRole('radio', { name: 'Check' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Check' })).toHaveAttribute('data-state', 'checked')
     expect(screen.getByRole('link', { name: 'Open documentation for project Git hook policy' })).toHaveAttribute(
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
@@ -131,6 +132,12 @@ describe('ProjectForm', () => {
     })
 
     expect(screen.getByText(/resolves to \/mnt\/d\/work\/app while LoopTroop is running in WSL/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+    expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ gitHookPolicy: null }),
+      expect.any(Object),
+    )
   })
 
   it('shows the project-local .looptroop path in edit mode', async () => {

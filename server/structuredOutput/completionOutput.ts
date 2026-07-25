@@ -1,6 +1,7 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import { detectHostContext } from '../lib/hostContext'
+import { hostContextSchema } from '@shared/hostContext'
 import { normalizeCommandSpec, runtimeEnvironmentSchema } from '@shared/commandSpec'
 import type {
   BeadCompletionPayload,
@@ -506,18 +507,46 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
 function normalizeExecutionSetupGitHooks(
   value: unknown,
   repairWarnings?: string[],
+  preserveBackendFields = false,
 ): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
     return { policy: 'validate_advisory', detected: [], validationCommands: [] }
   }
   if (!isRecord(value)) throw new Error('git_hooks must be an object')
   const rawDetected = getValueByAliases(value, ['detected', 'detectedhooks'])
-  if (rawDetected !== undefined && rawDetected !== null) {
+  if (rawDetected !== undefined && rawDetected !== null && !preserveBackendFields) {
     repairWarnings?.push('Ignored model-supplied git_hooks.detected; LoopTroop discovers hook evidence from the current workspace.')
   }
-  if (getValueByAliases(value, ['policy']) !== undefined) {
+  if (getValueByAliases(value, ['policy']) !== undefined && !preserveBackendFields) {
     repairWarnings?.push('Ignored model-supplied git_hooks.policy; LoopTroop applies the configured policy.')
   }
+  const policyValue = getValueByAliases(value, ['policy'])
+  const policy = preserveBackendFields && typeof policyValue === 'string'
+    && ['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'].includes(policyValue)
+    ? policyValue as ExecutionSetupGitHooksPayload['policy']
+    : 'validate_advisory'
+  const detected = preserveBackendFields && Array.isArray(rawDetected)
+    ? rawDetected.map((entry, index) => {
+        if (!isRecord(entry)) throw new Error(`git_hooks.detected[${index}] must be an object`)
+        const kind = getRequiredString(entry, ['kind'], `git_hooks.detected[${index}].kind`)
+        const runnable = getRequiredString(entry, ['runnable'], `git_hooks.detected[${index}].runnable`)
+        if (kind !== 'hook' && kind !== 'manager_config') {
+          throw new Error(`git_hooks.detected[${index}].kind must be hook or manager_config`)
+        }
+        if (!['yes', 'no', 'unknown'].includes(runnable)) {
+          throw new Error(`git_hooks.detected[${index}].runnable must be yes, no, or unknown`)
+        }
+        const managerHint = toOptionalString(getValueByAliases(entry, ['managerhint']))
+        return {
+          name: getRequiredString(entry, ['name'], `git_hooks.detected[${index}].name`),
+          path: normalizeExecutionSetupPath(getValueByAliases(entry, ['path']), `git_hooks.detected[${index}].path`),
+          source: getRequiredString(entry, ['source'], `git_hooks.detected[${index}].source`),
+          kind: kind as 'hook' | 'manager_config',
+          runnable: runnable as 'yes' | 'no' | 'unknown',
+          ...(managerHint ? { managerHint } : {}),
+        }
+      })
+    : []
   const rawCommands = getValueByAliases(value, ['validationcommands', 'commands'])
   const validationCommands = rawCommands === undefined || rawCommands === null
     ? []
@@ -537,8 +566,8 @@ function normalizeExecutionSetupGitHooks(
         })
       : (() => { throw new Error('git_hooks.validation_commands must be a list') })()
   return {
-    policy: 'validate_advisory',
-    detected: [],
+    policy,
+    detected,
     validationCommands,
   }
 }
@@ -613,7 +642,12 @@ function normalizeExecutionSetupPlanStep(
   }
 }
 
-function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]): ExecutionSetupPlanPayload {
+function normalizeExecutionSetupPlan(
+  value: unknown,
+  repairWarnings?: string[],
+  preserveBackendFields = false,
+  authoritativeTicketId?: string,
+): ExecutionSetupPlanPayload {
   if (!isRecord(value)) throw new Error('Execution setup plan is missing')
 
   for (const [aliases, label] of [
@@ -625,7 +659,7 @@ function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]):
     [['temproots', 'temproot'], 'temp_roots'],
     [['qualitygatepolicy', 'qualitypolicy'], 'quality_gate_policy'],
   ] as const) {
-    if (getValueByAliases(value, [...aliases]) !== undefined) {
+    if (!preserveBackendFields && getValueByAliases(value, [...aliases]) !== undefined) {
       repairWarnings?.push(`Ignored model-supplied ${label}; LoopTroop owns this setup-plan field.`)
     }
   }
@@ -661,29 +695,56 @@ function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]):
     'Execution setup plan project_commands',
     repairWarnings,
   )
-  const qualityGatePolicy = {
+  const rawQualityPolicy = getValueByAliases(value, ['qualitygatepolicy', 'qualitypolicy'])
+  const qualityGatePolicy = preserveBackendFields && isRecord(rawQualityPolicy)
+    ? {
+        tests: getRequiredString(rawQualityPolicy, ['tests'], 'quality_gate_policy.tests'),
+        lint: getRequiredString(rawQualityPolicy, ['lint'], 'quality_gate_policy.lint'),
+        typecheck: getRequiredString(rawQualityPolicy, ['typecheck'], 'quality_gate_policy.typecheck'),
+        fullProjectFallback: getRequiredString(rawQualityPolicy, ['fullprojectfallback'], 'quality_gate_policy.full_project_fallback'),
+      }
+    : {
     tests: 'bead-test-commands-first',
     lint: 'impacted-or-package',
     typecheck: 'impacted-or-package',
     fullProjectFallback: 'never-block-on-unrelated-baseline',
-  }
+      }
   const cautions = toStringArray(getValueByAliases(value, ['cautions', 'warnings', 'notes']))
   const workspaceProbes = normalizeExecutionSetupCommandProbes(
     getValueByAliases(value, ['workspaceprobes']),
     'workspace_probes',
     repairWarnings,
   )
-  const gitHooks = normalizeExecutionSetupGitHooks(getValueByAliases(value, ['githooks']), repairWarnings)
+  const gitHooks = normalizeExecutionSetupGitHooks(
+    getValueByAliases(value, ['githooks']),
+    repairWarnings,
+    preserveBackendFields,
+  )
+  const rawHostContext = getValueByAliases(value, ['hostcontext'])
+  const parsedHostContext = hostContextSchema.safeParse(rawHostContext)
+  const hostContext = preserveBackendFields && parsedHostContext.success
+    ? parsedHostContext.data
+    : detectHostContext()
+  const schemaVersion = preserveBackendFields
+    ? toInteger(getValueByAliases(value, ['schemaversion'])) ?? 1
+    : 1
+  const storedTicketId = toOptionalString(getValueByAliases(value, ['ticketid']))
+  const ticketId = preserveBackendFields
+    ? (storedTicketId || authoritativeTicketId || getRequiredString(value, ['ticketid'], 'ticket_id'))
+    : ''
+  const tempRoots = preserveBackendFields
+    ? toStringArray(getValueByAliases(value, ['temproots'])).map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
+    : ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache']
 
   return {
-    schemaVersion: 1,
-    ticketId: '',
+    schemaVersion,
+    ticketId,
     artifact: 'execution_setup_plan',
     status: 'draft',
-    hostContext: detectHostContext(),
+    hostContext,
     summary,
     readiness,
-    tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
+    tempRoots,
     workspaceInputs,
     workspaceProbes,
     gitHooks,
@@ -1012,7 +1073,13 @@ function toCanonicalExecutionSetupResultPayload(value: ExecutionSetupResultPaylo
   }
 }
 
-export function normalizeExecutionSetupPlanOutput(rawContent: string): StructuredOutputResult<ExecutionSetupPlanPayload> {
+export function normalizeExecutionSetupPlanOutput(
+  rawContent: string,
+  options: {
+    preserveBackendFields?: boolean
+    authoritativeTicketId?: string
+  } = {},
+): StructuredOutputResult<ExecutionSetupPlanPayload> {
   const candidates = collectTaggedCandidates(rawContent, 'EXECUTION_SETUP_PLAN')
   let lastError = 'No execution setup plan marker found'
   let lastErrorCause: unknown = null
@@ -1054,7 +1121,12 @@ export function normalizeExecutionSetupPlanOutput(rawContent: string): Structure
         ]))
       }
 
-      const value = normalizeExecutionSetupPlan(parsed, candidateWarnings)
+      const value = normalizeExecutionSetupPlan(
+        parsed,
+        candidateWarnings,
+        options.preserveBackendFields ?? false,
+        options.authoritativeTicketId,
+      )
       return {
         ok: true,
         value,

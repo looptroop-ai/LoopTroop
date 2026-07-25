@@ -529,10 +529,10 @@ Once coverage is clean or this cap is reached, LoopTroop advances to `EXPANDING_
 
 ### Git Hook Policy
 
-**Type:** three-choice policy
-**Default:** **Validate** (recommended)
+**Type:** four-choice inherited policy
+**Default:** **Check** (recommended)
 
-Choose how LoopTroop handles repository hooks. The same linked buttons appear in Configuration, Project **Advanced** settings, and the new-ticket **Advanced** settings; Draft tickets can change their initial choice before Start. The setup-plan approval editor may then override that inherited choice for the current ticket run without changing the parent setting. Hovering each button summarizes whether hooks are bypassed, whether explicit checks run, and whether a failure can block.
+Choose how LoopTroop handles repository hooks. The same linked buttons appear in Configuration, Project **Advanced** settings, and the new-ticket **Advanced** settings; the effective choice is visibly highlighted as soon as each screen opens. A project or ticket with no explicit override continues to inherit its parent value, so a Configuration change flows through projects and unstarted tickets that still inherit. Draft tickets can choose an override before Start. The setup-plan approval editor may then override that inherited choice for the current ticket run without changing the parent setting. Hovering each button summarizes whether hooks are bypassed, whether explicit checks run, and whether a failure can block.
 
 | Choice | Stored value | What LoopTroop does |
 | --- | --- | --- |
@@ -549,7 +549,7 @@ Resolution is deterministic:
 2. otherwise a non-null project `gitHookPolicy` wins;
 3. otherwise the profile `gitHookPolicy` is used.
 
-LoopTroop resolves the initial choice and source when the ticket starts. Later profile or project edits do not change that starting choice, but the setup approval editor can choose a non-strict ticket-run override. The approved plan becomes authoritative for that run; regeneration preserves the override.
+LoopTroop locks the resolved choice when the ticket starts. Parent changes continue to flow through unset project and ticket overrides before Start, but do not alter a started ticket. The setup approval editor can still choose a non-strict ticket-run override. The approved plan becomes authoritative for that run; regeneration preserves the override.
 
 Execution setup shows detected hooks as read-only evidence and lets you add, edit, reorder, or remove validation commands. An unknown hook never causes LoopTroop to invent an ecosystem-specific command. Removing all validation commands is allowed and the approval receipt records that exact decision.
 

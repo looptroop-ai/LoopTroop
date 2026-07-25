@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseExecutionSetupPlanResult } from '../parser'
 import { serializeExecutionSetupPlan } from '../types'
+import { normalizeExecutionSetupPlanOutput } from '../../../structuredOutput'
 
 function wrapPlan(body: string): string {
   return `<EXECUTION_SETUP_PLAN>\n${body}\n</EXECUTION_SETUP_PLAN>`
@@ -277,5 +278,68 @@ describe('parseExecutionSetupPlanResult', () => {
       expect.stringContaining('Ignored model-supplied ticket_id'),
       expect.stringContaining('Ignored model-supplied git_hooks.detected'),
     ]))
+  })
+
+  it('preserves trusted backend hook and host evidence when a stored plan is read again', () => {
+    const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([]))
+    expect(parsed.plan).not.toBeNull()
+    const storedPlan = {
+      ...parsed.plan!,
+      ticketId: 'T-1',
+      gitHooks: {
+        ...parsed.plan!.gitHooks,
+        policy: 'validate_required' as const,
+        detected: [{
+          name: 'pre-commit-config',
+          path: '.pre-commit-config.yaml',
+          source: 'hook-manager-config',
+          kind: 'manager_config' as const,
+          runnable: 'no' as const,
+          managerHint: 'pre-commit',
+        }],
+      },
+    }
+
+    const reread = normalizeExecutionSetupPlanOutput(
+      wrapPlan(serializeExecutionSetupPlan(storedPlan)),
+      { preserveBackendFields: true },
+    )
+
+    expect(reread.ok).toBe(true)
+    if (!reread.ok) return
+    expect(reread.value.hostContext).toEqual(storedPlan.hostContext)
+    expect(reread.value.gitHooks).toMatchObject({
+      policy: 'validate_required',
+      detected: storedPlan.gitHooks.detected,
+    })
+  })
+
+  it('repairs a trusted stored plan missing ticket_id only from an authoritative ticket id', () => {
+    const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([]))
+    expect(parsed.plan).not.toBeNull()
+    const stored = serializeExecutionSetupPlan({
+      ...parsed.plan!,
+      ticketId: 'RICH-4',
+    }).replace(/\s*"ticket_id":\s*"RICH-4",?\n/, '\n')
+
+    const withoutAuthority = normalizeExecutionSetupPlanOutput(
+      wrapPlan(stored),
+      { preserveBackendFields: true },
+    )
+    expect(withoutAuthority.ok).toBe(false)
+    if (!withoutAuthority.ok) {
+      expect(withoutAuthority.error).toContain('ticket_id')
+    }
+
+    const repaired = normalizeExecutionSetupPlanOutput(
+      wrapPlan(stored),
+      {
+        preserveBackendFields: true,
+        authoritativeTicketId: 'RICH-4',
+      },
+    )
+    expect(repaired.ok).toBe(true)
+    if (!repaired.ok) return
+    expect(repaired.value.ticketId).toBe('RICH-4')
   })
 })

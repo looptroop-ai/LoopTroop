@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
+import { migrateGitHookPolicy, readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
 
 const roots: string[] = []
 
@@ -12,9 +12,10 @@ afterEach(() => {
 
 describe('Git hook policy', () => {
   it.each([
-    ['validate_explicitly', true],
-    ['use_on_internal_commits', false],
-    ['ignore_internal_only', true],
+    ['observe_only', true],
+    ['validate_advisory', true],
+    ['validate_required', true],
+    ['use_native_hooks', false],
   ] as const)('resolves %s and chooses internal bypass=%s', (policy, bypass) => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-policy-'))
     roots.push(root)
@@ -28,9 +29,17 @@ describe('Git hook policy', () => {
     expect(shouldBypassGitHooks(resolved)).toBe(bypass)
   })
 
-  it('uses explicit validation as the safe default when no profile exists', () => {
+  it('uses advisory validation as the non-blocking default when no profile exists', () => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-policy-'))
     roots.push(root)
-    expect(readWorktreeGitHookPolicy(root)).toBe('validate_explicitly')
+    expect(readWorktreeGitHookPolicy(root)).toBe('validate_advisory')
+  })
+
+  it.each([
+    ['validate_explicitly', 'validate_advisory'],
+    ['ignore_internal_only', 'observe_only'],
+    ['use_on_internal_commits', 'use_native_hooks'],
+  ] as const)('maps persisted legacy policy %s to %s for settings migration', (legacyPolicy, expected) => {
+    expect(migrateGitHookPolicy(legacyPolicy)).toBe(expected)
   })
 })

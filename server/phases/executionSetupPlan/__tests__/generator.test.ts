@@ -103,8 +103,8 @@ describe('generateExecutionSetupPlan', () => {
     ))?.content
 
     expect(retryPrompt).toContain('Every setup step must include id, title, purpose, commands, required, rationale, and cautions')
-    expect(retryPrompt).toContain('workspace_inputs must list only concrete ignored or untracked files and directories needed by setup')
-    expect(retryPrompt).toContain('steps and workspace_inputs must both be empty when readiness says the environment is ready')
+    expect(retryPrompt).toContain('workspace_inputs must list only concrete ignored or untracked non-reproducible files and directories needed by setup, including category')
+    expect(retryPrompt).toContain('LoopTroop supplies ticket identity, schema/artifact/status, temp roots, host facts')
   })
 
   it('uses the structured retry loop to replace a semantically incompatible plan', async () => {

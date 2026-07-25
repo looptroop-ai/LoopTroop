@@ -13,26 +13,31 @@ interface GitHookPolicySettingProps {
 
 const OPTIONS: Array<{ value: GitHookPolicy; label: string; tooltip: string }> = [
   {
-    value: 'validate_explicitly',
-    label: 'Validate',
-    tooltip: 'LoopTroop bypasses repository hooks on its own commits and pushes. It discovers hook-related checks during setup and runs the approved validation commands as visible steps. Those commands run again before integration, so failures are captured without hiding inside Git. This is the recommended default.',
+    value: 'observe_only',
+    label: 'Observe',
+    tooltip: 'LoopTroop records detected hooks but bypasses them on its own commits and pushes. It does not run separate validation commands, so hooks cannot block this ticket.',
   },
   {
-    value: 'ignore_internal_only',
-    label: 'Ignore',
-    tooltip: 'LoopTroop bypasses repository hooks on its own commits and pushes. It does not run the explicit hook validation commands during setup or integration. The skip is recorded in the ticket artifacts for auditability. Your own Git commands and repository hook files are unchanged.',
+    value: 'validate_advisory',
+    label: 'Check',
+    tooltip: 'Recommended default. LoopTroop bypasses native hooks and runs the approved checks visibly. A failed or timed-out check produces a warning but does not block the ticket.',
   },
   {
-    value: 'use_on_internal_commits',
+    value: 'validate_required',
+    label: 'Require',
+    tooltip: 'LoopTroop bypasses native hooks and runs the approved checks visibly. A failed or timed-out check blocks the ticket until it is resolved.',
+  },
+  {
+    value: 'use_native_hooks',
     label: 'Run',
-    tooltip: 'LoopTroop lets Git execute repository hooks normally on its internal commits and pushes. A hook can block or modify those Git operations just as it would for your own command. LoopTroop does not add separate hook-equivalent validation commands for this policy. Use it when the hooks themselves are safe and reliable in the ticket worktree.',
+    tooltip: 'Git runs repository hooks normally on LoopTroop commits and pushes. A hook can block or modify those operations, so use this only when the hooks are reliable in the ticket worktree.',
   },
 ]
 
 export function GitHookPolicySetting({
   value,
   onChange,
-  inheritedPolicy = 'validate_explicitly',
+  inheritedPolicy = 'validate_advisory',
   disabled = false,
   compact = false,
 }: GitHookPolicySettingProps) {

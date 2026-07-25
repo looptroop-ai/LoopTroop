@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { parseExecutionSetupResult } from '../parser'
 import { serializeExecutionSetupProfile } from '../types'
+import { createShellCommandSpec } from '@shared/commandSpec'
+import type { HostContext } from '@shared/hostContext'
+
+const hostContext: HostContext = {
+  platform: 'linux',
+  environment: 'native',
+  arch: 'x64',
+  availableShells: ['posix'],
+  preferredShell: 'posix',
+}
 
 function buildExecutionSetupPayload(body: string): string {
   return `<EXECUTION_SETUP_RESULT>\n${body}\n</EXECUTION_SETUP_RESULT>`
@@ -115,12 +125,14 @@ describe('parseExecutionSetupResult', () => {
       '.ticket/runtime/execution-setup/env.sh',
       '.ticket/runtime/execution-setup/run',
     ])
-    expect(parsed.result?.profile.toolingProbeCommands).toEqual(['./.ticket/runtime/execution-setup/run go version'])
-    expect(parsed.result?.profile.workspaceProbes).toEqual([{ id: 'workspace-1', command: 'go list ./...', purpose: 'load packages' }])
+    expect(parsed.result?.profile.toolingProbeCommands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: './.ticket/runtime/execution-setup/run go version' }),
+    ])
+    expect(parsed.result?.profile.workspaceProbes).toEqual([])
     expect(parsed.result?.profile.gitHooks).toEqual({
-      policy: 'validate_explicitly',
-      detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'core.hooksPath', executable: true, managerHint: 'husky' }],
-      validationCommands: [{ id: 'hook-1', hook: 'pre-commit', command: 'project check', purpose: 'validate commit' }],
+      policy: 'validate_advisory',
+      detected: [],
+      validationCommands: [],
     })
     expect(parsed.result?.profile.toolRequirements).toEqual([
       {
@@ -131,7 +143,7 @@ describe('parseExecutionSetupResult', () => {
         provisioningAttempts: [
           {
             strategy: 'official archive',
-            commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+            commands: [expect.objectContaining({ mode: 'shell', script: './install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool' })],
             result: 'provisioned',
             reason: '',
           },
@@ -140,7 +152,9 @@ describe('parseExecutionSetupResult', () => {
         failureReason: '',
       },
     ])
-    expect(parsed.result?.profile.projectCommands.testFull).toEqual(['./.ticket/runtime/execution-setup/run go test ./...'])
+    expect(parsed.result?.profile.projectCommands.testFull).toEqual([
+      expect.objectContaining({ mode: 'shell', script: './.ticket/runtime/execution-setup/run go test ./...' }),
+    ])
   })
 
   it('serializes optional tool requirements in execution setup profile artifacts', () => {
@@ -149,14 +163,16 @@ describe('parseExecutionSetupResult', () => {
       ticketId: 'T-1',
       artifact: 'execution_setup_profile',
       status: 'ready',
+      hostContext,
+      runtimeEnvironment: { pathPrepend: [], variables: {} },
       summary: 'environment initialized and reusable',
       tempRoots: ['.ticket/runtime/execution-setup'],
       workspaceInputs: [],
       bootstrapCommands: [],
-      toolingProbeCommands: ['./.ticket/runtime/execution-setup/run go version'],
+      toolingProbeCommands: [createShellCommandSpec('./.ticket/runtime/execution-setup/run go version')],
       workspaceProbes: [],
       gitHooks: {
-        policy: 'validate_explicitly',
+        policy: 'validate_advisory',
         detected: [],
         validationCommands: [],
       },
@@ -193,7 +209,7 @@ describe('parseExecutionSetupResult', () => {
           provisioningAttempts: [
             {
               strategy: 'official archive',
-              commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+              commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
               result: 'failed',
               reason: 'official archive download returned 404',
             },
@@ -205,7 +221,7 @@ describe('parseExecutionSetupResult', () => {
     })
 
     expect(JSON.parse(serialized)).toMatchObject({
-      tooling_probe_commands: ['./.ticket/runtime/execution-setup/run go version'],
+      tooling_probe_commands: [expect.objectContaining({ mode: 'shell', script: './.ticket/runtime/execution-setup/run go version' })],
       tool_requirements: [
         {
           launcher: 'project-tool',
@@ -215,7 +231,7 @@ describe('parseExecutionSetupResult', () => {
           provisioning_attempts: [
             {
               strategy: 'official archive',
-              commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+              commands: [expect.objectContaining({ mode: 'shell', script: './install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool' })],
               result: 'failed',
               reason: 'official archive download returned 404',
             },

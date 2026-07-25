@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import type { CommandSpec } from '@shared/commandSpec'
+import { CommandSpecListEditor } from './CommandSpecListEditor'
 
 export interface ParsedBead {
   id: string
@@ -10,7 +12,7 @@ export interface ParsedBead {
   contextGuidance: { patterns: string[]; anti_patterns: string[] }
   acceptanceCriteria: string[]
   tests: string[]
-  testCommands: string[]
+  testCommands: CommandSpec[]
   testCommandReason?: string
   targetFiles: string[]
   dependencies: { blocked_by: string[]; blocks: string[] }
@@ -161,14 +163,13 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                 {/* Planned Test Commands */}
                 <div>
                   <label className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 block mb-1">Planned Test Commands</label>
-                  <StringListEditor
-                    items={bead.testCommands}
-                    onChange={(items) => updateBead(index, {
-                      testCommands: items,
-                      ...(items.length > 0 ? { testCommandReason: undefined } : {}),
+                  <CommandSpecListEditor
+                    commands={bead.testCommands}
+                    onChange={(commands) => updateBead(index, {
+                      testCommands: commands,
+                      ...(commands.length > 0 ? { testCommandReason: undefined } : {}),
                     })}
                     disabled={disabled}
-                    placeholder="Project-native test or build command..."
                   />
                 </div>
 

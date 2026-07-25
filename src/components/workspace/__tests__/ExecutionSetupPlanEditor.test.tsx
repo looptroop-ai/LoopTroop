@@ -10,16 +10,23 @@ function buildPlan(): ExecutionSetupPlan {
     artifact: 'execution_setup_plan',
     status: 'draft',
     summary: 'Verify the workspace.',
+    hostContext: {
+      platform: 'linux',
+      environment: 'wsl',
+      arch: 'x64',
+      availableShells: ['posix'],
+      preferredShell: 'posix',
+    },
     readiness: { status: 'ready', actionsRequired: false, evidence: [], gaps: [] },
     tempRoots: [],
     workspaceInputs: [],
-    workspaceProbes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the project.' }],
+    workspaceProbes: [{ id: 'workspace', command: { mode: 'process', program: 'project', args: ['test', '--list'], cwd: '.', env: {} }, purpose: 'Load the project.' }],
     gitHooks: {
-      policy: 'validate_explicitly',
-      detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'husky', executable: true, managerHint: 'husky' }],
+      policy: 'validate_advisory',
+      detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'husky', kind: 'manager_config', runnable: 'unknown', managerHint: 'husky' }],
       validationCommands: [
-        { id: 'lint', hook: 'pre-commit', command: 'project lint', purpose: 'Run lint.' },
-        { id: 'test', hook: 'pre-commit', command: 'project test', purpose: 'Run tests.' },
+        { id: 'lint', hook: 'pre-commit', command: { mode: 'process', program: 'project', args: ['lint'], cwd: '.', env: {} }, purpose: 'Run lint.' },
+        { id: 'test', hook: 'pre-commit', command: { mode: 'process', program: 'project', args: ['test'], cwd: '.', env: {} }, purpose: 'Run tests.' },
       ],
     },
     steps: [],
@@ -38,14 +45,17 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
     expect(screen.getByText('Detected Git Hooks (read-only)')).toBeInTheDocument()
     expect(screen.getByText('.husky/pre-commit')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('.husky/pre-commit')).not.toBeInTheDocument()
+    expect(screen.getByText('manager configuration')).toBeInTheDocument()
+    expect(screen.getByText('runnable: unknown')).toBeInTheDocument()
+    expect(screen.getByLabelText('Current setup host')).toHaveTextContent('wsl')
 
     fireEvent.click(screen.getByRole('button', { name: 'Move Git Hook Validation Commands 2 up' }))
     const reordered = onChange.mock.calls.at(-1)?.[0] as ExecutionSetupPlan
     expect(reordered.gitHooks.validationCommands.map((entry) => entry.id)).toEqual(['test', 'lint'])
 
     rerender(<ExecutionSetupPlanEditor plan={reordered} onChange={onChange} />)
-    fireEvent.change(screen.getByLabelText('Git Hook Validation Commands 1 command'), { target: { value: 'project test --all' } })
-    expect((onChange.mock.calls.at(-1)?.[0] as ExecutionSetupPlan).gitHooks.validationCommands.at(0)?.command).toBe('project test --all')
+    fireEvent.change(screen.getByLabelText('Git Hook Validation Commands 1 command program'), { target: { value: 'project-test' } })
+    expect((onChange.mock.calls.at(-1)?.[0] as ExecutionSetupPlan).gitHooks.validationCommands.at(0)?.command).toMatchObject({ program: 'project-test' })
 
     let current = onChange.mock.calls.at(-1)?.[0] as ExecutionSetupPlan
     rerender(<ExecutionSetupPlanEditor plan={current} onChange={onChange} />)

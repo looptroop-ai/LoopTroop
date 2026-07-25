@@ -9,7 +9,19 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
-_No unreleased changes yet._
+### Summary
+- Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
+
+### Added
+- Added direct-process and explicit POSIX, Command Prompt, and PowerShell command specifications with repository-relative working directories, structured environments, and bounded timeouts.
+- Added backend-owned host context, Git-hook evidence, and previewed size limits for non-reproducible workspace inputs.
+
+### Changed
+- Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
+
+### Fixed
+- Prevented malformed model-owned setup fields, fake Git-hook evidence, and invalid setup drafts from routing tickets to Blocked Error before user review.
+- Restored OpenRouter routing-suffix normalization before model selections are persisted.
 
 ---
 

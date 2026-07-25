@@ -29,9 +29,10 @@ interface DashboardHeaderProps {
 }
 
 const GIT_HOOK_POLICY_LABELS = {
-  validate_explicitly: 'Validate',
-  ignore_internal_only: 'Ignore',
-  use_on_internal_commits: 'Run',
+  observe_only: 'Observe',
+  validate_advisory: 'Check',
+  validate_required: 'Require',
+  use_native_hooks: 'Run',
 } as const
 
 function ProjectIcon({
@@ -625,7 +626,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                     />
                   </span>
                   <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium">
-                    {GIT_HOOK_POLICY_LABELS[ticket.effectiveGitHookPolicy ?? 'validate_explicitly']}
+                    {GIT_HOOK_POLICY_LABELS[ticket.effectiveGitHookPolicy ?? 'validate_advisory']}
                   </Badge>
                 </div>
               </div>

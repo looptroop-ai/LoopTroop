@@ -1,4 +1,12 @@
 import * as jsYaml from 'js-yaml'
+import {
+  normalizeCommandSpec,
+  type CommandSpec,
+} from '@shared/commandSpec'
+import {
+  hostContextSchema,
+  type HostContext,
+} from '@shared/hostContext'
 
 export const EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT = 'looptroop:execution-setup-plan-focus'
 
@@ -6,7 +14,7 @@ export interface ExecutionSetupPlanStep {
   id: string
   title: string
   purpose: string
-  commands: string[]
+  commands: CommandSpec[]
   required: boolean
   rationale: string
   cautions: string[]
@@ -23,14 +31,16 @@ export interface ExecutionSetupWorkspaceInput {
   path: string
   kind: 'file' | 'directory'
   sourceStatus: 'ignored' | 'untracked'
+  category: 'local_config' | 'secret' | 'fixture' | 'dataset' | 'other_non_reproducible'
+  allowLargeCopy?: boolean
   reason: string
 }
 
-export type GitHookPolicy = 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only'
+export type GitHookPolicy = 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
 
 export interface ExecutionSetupWorkspaceProbe {
   id: string
-  command: string
+  command: CommandSpec
   purpose: string
 }
 
@@ -38,14 +48,15 @@ export interface ExecutionSetupDetectedGitHook {
   name: string
   path: string
   source: string
-  executable: boolean
+  kind: 'hook' | 'manager_config'
+  runnable: 'yes' | 'no' | 'unknown'
   managerHint?: string
 }
 
 export interface ExecutionSetupGitHookValidationCommand {
   id: string
   hook: string
-  command: string
+  command: CommandSpec
   purpose: string
 }
 
@@ -55,6 +66,7 @@ export interface ExecutionSetupPlan {
   artifact: 'execution_setup_plan'
   status: 'draft'
   summary: string
+  hostContext: HostContext
   readiness: ExecutionSetupPlanReadiness
   tempRoots: string[]
   workspaceInputs: ExecutionSetupWorkspaceInput[]
@@ -66,10 +78,10 @@ export interface ExecutionSetupPlan {
   }
   steps: ExecutionSetupPlanStep[]
   projectCommands: {
-    prepare: string[]
-    testFull: string[]
-    lintFull: string[]
-    typecheckFull: string[]
+    prepare: CommandSpec[]
+    testFull: CommandSpec[]
+    lintFull: CommandSpec[]
+    typecheckFull: CommandSpec[]
   }
   qualityGatePolicy: {
     tests: string
@@ -78,6 +90,12 @@ export interface ExecutionSetupPlan {
     fullProjectFallback: string
   }
   cautions: string[]
+}
+
+export interface ExecutionSetupPlanParseResult {
+  plan: ExecutionSetupPlan | null
+  error: string | null
+  warnings: string[]
 }
 
 function toStringArray(value: unknown): string[] {
@@ -100,13 +118,73 @@ function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['
 }
 
 function normalizeGitHookPolicy(value: unknown): GitHookPolicy {
-  return value === 'use_on_internal_commits' || value === 'ignore_internal_only'
-    ? value
-    : 'validate_explicitly'
+  if (value === 'observe_only' || value === 'validate_required' || value === 'use_native_hooks') return value
+  if (value === 'ignore_internal_only') return 'observe_only'
+  if (value === 'use_on_internal_commits') return 'use_native_hooks'
+  return 'validate_advisory'
 }
 
-function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
+function fallbackHostContext(): HostContext {
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  if (/windows/i.test(userAgent)) {
+    return {
+      platform: 'windows',
+      environment: 'native',
+      arch: 'unknown',
+      availableShells: ['powershell', 'cmd'],
+      preferredShell: 'powershell',
+    }
+  }
+  return {
+    platform: /macintosh|mac os/i.test(userAgent) ? 'macos' : 'linux',
+    environment: 'native',
+    arch: 'unknown',
+    availableShells: ['posix'],
+    preferredShell: 'posix',
+  }
+}
+
+function normalizeHostContext(value: unknown): HostContext {
+  const candidate = isRecord(value)
+    ? {
+        platform: value.platform,
+        environment: value.environment,
+        arch: value.arch,
+        availableShells: value.availableShells ?? value.available_shells,
+        preferredShell: value.preferredShell ?? value.preferred_shell,
+      }
+    : value
+  const parsed = hostContextSchema.safeParse(candidate)
+  return parsed.success ? parsed.data : fallbackHostContext()
+}
+
+function normalizeCommands(
+  value: unknown,
+  hostContext: HostContext,
+  warnings: string[],
+  field: string,
+): CommandSpec[] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry, index) => normalizeCommand(entry, hostContext, warnings, `${field}[${index}]`))
+}
+
+function normalizeCommand(
+  value: unknown,
+  hostContext: HostContext,
+  warnings: string[],
+  field: string,
+): CommandSpec {
+  const candidate = isRecord(value) && value.timeout_ms !== undefined
+    ? { ...value, timeoutMs: value.timeout_ms }
+    : value
+  const result = normalizeCommandSpec(candidate, hostContext)
+  if (result.warning) warnings.push(`${field}: ${result.warning}`)
+  return result.command
+}
+
+function toExecutionSetupPlan(value: unknown, warnings: string[]): ExecutionSetupPlan | null {
   if (!isRecord(value)) return null
+  const hostContext = normalizeHostContext(value.hostContext ?? value.host_context)
 
   const projectCommands = isRecord(value.projectCommands)
     ? value.projectCommands
@@ -130,7 +208,7 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
   const workspaceProbes = Array.isArray(workspaceProbesRaw)
     ? workspaceProbesRaw.flatMap((probe) => !isRecord(probe) ? [] : [{
         id: typeof probe.id === 'string' ? probe.id : '',
-        command: typeof probe.command === 'string' ? probe.command : '',
+        command: normalizeCommand(probe.command, hostContext, warnings, `workspace_probes[${String(probe.id ?? '')}].command`),
         purpose: typeof probe.purpose === 'string' ? probe.purpose : '',
       } satisfies ExecutionSetupWorkspaceProbe])
     : []
@@ -145,6 +223,10 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
           path: typeof entry.path === 'string' ? entry.path : '',
           kind,
           sourceStatus,
+          category: ['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(String(entry.category))
+            ? entry.category as ExecutionSetupWorkspaceInput['category']
+            : 'other_non_reproducible',
+          ...((entry.allowLargeCopy ?? entry.allow_large_copy) === true ? { allowLargeCopy: true } : {}),
           reason: typeof entry.reason === 'string' ? entry.reason : '',
         } satisfies ExecutionSetupWorkspaceInput]
       })
@@ -156,7 +238,8 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
         name: typeof hook.name === 'string' ? hook.name : '',
         path: typeof hook.path === 'string' ? hook.path : '',
         source: typeof hook.source === 'string' ? hook.source : '',
-        executable: hook.executable === true,
+        kind: hook.kind === 'manager_config' ? 'manager_config' : 'hook',
+        runnable: hook.runnable === 'yes' || hook.runnable === 'no' ? hook.runnable : 'unknown',
         ...(typeof (hook.managerHint ?? hook.manager_hint) === 'string'
           ? { managerHint: String(hook.managerHint ?? hook.manager_hint) }
           : {}),
@@ -168,7 +251,7 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
     ? validationCommandsRaw.flatMap((entry) => !isRecord(entry) ? [] : [{
         id: typeof entry.id === 'string' ? entry.id : '',
         hook: typeof entry.hook === 'string' ? entry.hook : '',
-        command: typeof entry.command === 'string' ? entry.command : '',
+        command: normalizeCommand(entry.command, hostContext, warnings, `git_hooks.validation_commands[${String(entry.id ?? '')}].command`),
         purpose: typeof entry.purpose === 'string' ? entry.purpose : '',
       } satisfies ExecutionSetupGitHookValidationCommand])
     : []
@@ -180,7 +263,7 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
           id: typeof step.id === 'string' ? step.id : '',
           title: typeof step.title === 'string' ? step.title : '',
           purpose: typeof step.purpose === 'string' ? step.purpose : '',
-          commands: toStringArray(step.commands),
+          commands: normalizeCommands(step.commands, hostContext, warnings, `steps[${String(step.id ?? '')}].commands`),
           required: Boolean(step.required),
           rationale: typeof step.rationale === 'string' ? step.rationale : '',
           cautions: toStringArray(step.cautions),
@@ -220,6 +303,7 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
     artifact: 'execution_setup_plan',
     status: 'draft',
     summary: typeof value.summary === 'string' ? value.summary : '',
+    hostContext,
     readiness: {
       status: readinessStatus,
       actionsRequired,
@@ -236,10 +320,10 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
     },
     steps,
     projectCommands: {
-      prepare: toStringArray(projectCommands.prepare),
-      testFull: toStringArray(projectCommands.testFull ?? projectCommands.test_full),
-      lintFull: toStringArray(projectCommands.lintFull ?? projectCommands.lint_full),
-      typecheckFull: toStringArray(projectCommands.typecheckFull ?? projectCommands.typecheck_full),
+      prepare: normalizeCommands(projectCommands.prepare, hostContext, warnings, 'project_commands.prepare'),
+      testFull: normalizeCommands(projectCommands.testFull ?? projectCommands.test_full, hostContext, warnings, 'project_commands.test_full'),
+      lintFull: normalizeCommands(projectCommands.lintFull ?? projectCommands.lint_full, hostContext, warnings, 'project_commands.lint_full'),
+      typecheckFull: normalizeCommands(projectCommands.typecheckFull ?? projectCommands.typecheck_full, hostContext, warnings, 'project_commands.typecheck_full'),
     },
     qualityGatePolicy: {
       tests: typeof qualityGatePolicy.tests === 'string' ? qualityGatePolicy.tests : '',
@@ -255,38 +339,40 @@ function toExecutionSetupPlan(value: unknown): ExecutionSetupPlan | null {
   }
 }
 
-export function parseExecutionSetupPlanContent(content: string): { plan: ExecutionSetupPlan | null; error: string | null } {
+export function parseExecutionSetupPlanContent(content: string): ExecutionSetupPlanParseResult {
   const trimmed = content.trim()
   if (!trimmed) {
-    return { plan: null, error: 'Execution setup plan content is empty.' }
+    return { plan: null, error: 'Execution setup plan content is empty.', warnings: [] }
   }
 
   try {
+    const warnings: string[] = []
     const parsed = trimmed.startsWith('{') || trimmed.startsWith('[')
       ? JSON.parse(trimmed)
       : jsYaml.load(trimmed)
-    const plan = toExecutionSetupPlan(parsed)
+    const plan = toExecutionSetupPlan(parsed, warnings)
     if (!plan || !plan.summary) {
-      return { plan: null, error: 'Execution setup plan content is missing required fields.' }
+      return { plan: null, error: 'Execution setup plan content is missing required fields.', warnings }
     }
     if (plan.readiness.status === 'ready') {
       if (plan.readiness.actionsRequired) {
-        return { plan: null, error: 'Ready execution setup plans cannot require actions.' }
+        return { plan: null, error: 'Ready execution setup plans cannot require actions.', warnings }
       }
       if (plan.readiness.gaps.length > 0) {
-        return { plan: null, error: 'Ready execution setup plans cannot list unresolved gaps.' }
+        return { plan: null, error: 'Ready execution setup plans cannot list unresolved gaps.', warnings }
       }
       if (plan.steps.length > 0 || plan.workspaceInputs.length > 0) {
-        return { plan: null, error: 'Ready execution setup plans must not include setup steps or workspace inputs.' }
+        return { plan: null, error: 'Ready execution setup plans must not include setup steps or workspace inputs.', warnings }
       }
     } else if (plan.steps.length === 0 && plan.workspaceInputs.length === 0) {
-      return { plan: null, error: 'Execution setup plans with missing work must include at least one setup step or workspace input.' }
+      return { plan: null, error: 'Execution setup plans with missing work must include at least one setup step or workspace input.', warnings }
     }
-    return { plan, error: null }
+    return { plan, error: null, warnings }
   } catch (error) {
     return {
       plan: null,
       error: error instanceof Error ? error.message : 'Failed to parse execution setup plan content.',
+      warnings: [],
     }
   }
 }
@@ -298,6 +384,7 @@ export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {
     artifact: plan.artifact,
     status: plan.status,
     summary: plan.summary,
+    host_context: plan.hostContext,
     readiness: {
       status: plan.readiness.status,
       actions_required: plan.readiness.actionsRequired,
@@ -309,6 +396,8 @@ export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {
       path: input.path,
       kind: input.kind,
       source_status: input.sourceStatus,
+      category: input.category,
+      ...(input.allowLargeCopy ? { allow_large_copy: true } : {}),
       reason: input.reason,
     })),
     workspace_probes: plan.workspaceProbes,
@@ -318,7 +407,8 @@ export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {
         name: hook.name,
         path: hook.path,
         source: hook.source,
-        executable: hook.executable,
+        kind: hook.kind,
+        runnable: hook.runnable,
         ...(hook.managerHint ? { manager_hint: hook.managerHint } : {}),
       })),
       validation_commands: plan.gitHooks.validationCommands,

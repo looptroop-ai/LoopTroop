@@ -6,7 +6,7 @@ export interface CreateTicketOptions {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
-  gitHookPolicy?: 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only' | null
+  gitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks' | null
 }
 
 export function createTicket(options: CreateTicketOptions) {

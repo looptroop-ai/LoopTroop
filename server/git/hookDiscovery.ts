@@ -21,11 +21,12 @@ function displayPath(worktreePath: string, path: string): string {
   return rel && !rel.startsWith('../') ? rel : path.replace(/\\/g, '/')
 }
 
-function executable(path: string): boolean {
+function runnable(path: string): 'yes' | 'no' | 'unknown' {
+  if (process.platform === 'win32') return 'unknown'
   try {
-    return (statSync(path).mode & 0o111) !== 0
+    return (statSync(path).mode & 0o111) !== 0 ? 'yes' : 'no'
   } catch {
-    return false
+    return 'unknown'
   }
 }
 
@@ -66,12 +67,16 @@ export function discoverGitHooks(worktreePath: string): GitHookDiscoveryResult {
     ? (isAbsolute(gitHooksPathRaw) ? gitHooksPathRaw : resolve(worktreePath, gitHooksPathRaw))
     : null
 
-  const candidates = new Map<string, { source: string; managerHint?: string }>()
+  const candidates = new Map<string, {
+    source: string
+    kind: 'hook' | 'manager_config'
+    managerHint?: string
+  }>()
   const addHooks = (directory: string | null, source: string) => {
     if (!directory) return
     for (const path of listHookFiles(directory)) {
       if (!candidates.has(path)) {
-        candidates.set(path, { source, managerHint: managerHintForPath(path) })
+        candidates.set(path, { source, kind: 'hook', managerHint: managerHintForPath(path) })
       }
     }
   }
@@ -84,19 +89,29 @@ export function discoverGitHooks(worktreePath: string): GitHookDiscoveryResult {
   }
 
   const manifests = [
-    { names: ['.pre-commit-config.yaml', '.pre-commit-config.yml'], hook: 'pre-commit', manager: 'pre-commit', command: 'pre-commit run --all-files' },
-    { names: ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefthook.yaml'], hook: 'pre-commit', manager: 'lefthook', command: 'lefthook run pre-commit' },
-    { names: ['.overcommit.yml'], hook: 'pre-commit', manager: 'overcommit', command: 'overcommit --run' },
+    { names: ['.pre-commit-config.yaml', '.pre-commit-config.yml'], hook: 'pre-commit', manager: 'pre-commit', program: 'pre-commit', args: ['run', '--all-files'] },
+    { names: ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefthook.yaml'], hook: 'pre-commit', manager: 'lefthook', program: 'lefthook', args: ['run', 'pre-commit'] },
+    { names: ['.overcommit.yml'], hook: 'pre-commit', manager: 'overcommit', program: 'overcommit', args: ['--run'] },
   ]
   const suggestedValidationCommands: GitHookValidationCommandPayload[] = []
   for (const manifest of manifests) {
     const found = manifest.names.map((name) => resolve(worktreePath, name)).find(existsSync)
     if (!found) continue
-    candidates.set(found, { source: 'hook-manager-config', managerHint: manifest.manager })
+    candidates.set(found, {
+      source: 'hook-manager-config',
+      kind: 'manager_config',
+      managerHint: manifest.manager,
+    })
     suggestedValidationCommands.push({
       id: `validate-${manifest.manager}`,
       hook: manifest.hook,
-      command: manifest.command,
+      command: {
+        mode: 'process',
+        program: manifest.program,
+        args: manifest.args,
+        cwd: '.',
+        env: {},
+      },
       purpose: `Run the repository's ${manifest.manager} validation explicitly.`,
     })
   }
@@ -108,7 +123,8 @@ export function discoverGitHooks(worktreePath: string): GitHookDiscoveryResult {
         : `${metadata.managerHint ?? 'hook-manager'}-config`,
       path: displayPath(worktreePath, path),
       source: metadata.source,
-      executable: executable(path),
+      kind: metadata.kind,
+      runnable: metadata.kind === 'manager_config' ? 'no' as const : runnable(path),
       ...(metadata.managerHint ? { managerHint: metadata.managerHint } : {}),
     }))
     .sort((a, b) => a.path.localeCompare(b.path))

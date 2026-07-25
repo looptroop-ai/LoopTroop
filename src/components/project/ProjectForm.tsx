@@ -154,7 +154,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         color,
         gitHookPolicy: restoreMode
           ? gitHookPolicy
-          : gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_explicitly',
+          : gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_advisory',
         manualQaOverride: restoreMode
           ? manualQaOverride
           : manualQaOverride ?? profile?.manualQaEnabled ?? false,
@@ -185,7 +185,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           name,
           icon,
           color,
-          gitHookPolicy: gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_explicitly',
+          gitHookPolicy: gitHookPolicy ?? profile?.gitHookPolicy ?? 'validate_advisory',
           manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? false,
         },
         {
@@ -370,7 +370,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   <GitHookPolicySetting
                     value={gitHookPolicy}
                     onChange={setGitHookPolicy}
-                    inheritedPolicy={profile?.gitHookPolicy ?? 'validate_explicitly'}
+                    inheritedPolicy={profile?.gitHookPolicy ?? 'validate_advisory'}
                     compact
                   />
                 </div>

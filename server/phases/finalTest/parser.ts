@@ -1,13 +1,15 @@
 import { normalizeFinalTestCommandsOutput } from '../../structuredOutput'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
+import type { CommandSpec } from '@shared/commandSpec'
+import type { HostContext } from '@shared/hostContext'
 
 export const FINAL_TEST_COMMANDS_MARKER = '<FINAL_TEST_COMMANDS>'
 export const FINAL_TEST_COMMANDS_END = '</FINAL_TEST_COMMANDS>'
 
 export interface FinalTestCommandPlan {
   markerFound: boolean
-  commands: string[]
+  commands: CommandSpec[]
   summary: string | null
   testFiles: string[]
   modifiedFiles: string[]
@@ -20,10 +22,10 @@ export interface FinalTestCommandPlan {
   retryDiagnostic?: StructuredRetryDiagnostic
 }
 
-export function parseFinalTestCommands(output: string): FinalTestCommandPlan {
+export function parseFinalTestCommands(output: string, hostContext?: HostContext): FinalTestCommandPlan {
   const parsed = unwrapTaggedStructuredOutput(
     output,
-    normalizeFinalTestCommandsOutput(output),
+    normalizeFinalTestCommandsOutput(output, hostContext),
     { missingMarkerError: 'No final test command marker found' },
   )
 

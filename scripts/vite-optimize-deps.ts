@@ -31,6 +31,7 @@ export const FRONTEND_OPTIMIZED_DEPENDENCIES = [
   'react/jsx-dev-runtime',
   'react/jsx-runtime',
   'tailwind-merge',
+  'zod',
 ] as const
 
 export const FRONTEND_DEDUPED_DEPENDENCIES = [

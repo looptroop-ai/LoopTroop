@@ -6,6 +6,7 @@ import type {
 import type { Session } from '../../opencode/types'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
+import type { CommandSpec } from '@shared/commandSpec'
 
 export const EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE = 'execution_setup_profile'
 export const EXECUTION_SETUP_REPORT_ARTIFACT_TYPE = 'execution_setup_report'
@@ -45,8 +46,8 @@ export interface ExecutionSetupAttemptHistoryEntry {
   checkedAt: string
   summary?: string
   tempRoots: string[]
-  bootstrapCommands: string[]
-  toolingProbeCommands: string[]
+  bootstrapCommands: CommandSpec[]
+  toolingProbeCommands: CommandSpec[]
   errors: string[]
   failureReason?: string
   noteAppended?: string
@@ -69,8 +70,8 @@ export interface ExecutionSetupReport {
   maxIterations?: number | null
   attemptHistory?: ExecutionSetupAttemptHistoryEntry[]
   retryNotes?: string[]
-  approvedPlanCommands?: string[]
-  executionAddedCommands?: string[]
+  approvedPlanCommands?: CommandSpec[]
+  executionAddedCommands?: CommandSpec[]
 }
 
 export function serializeExecutionSetupRetryNotes(notes: string[]): string {
@@ -79,7 +80,7 @@ export function serializeExecutionSetupRetryNotes(notes: string[]): string {
 
 export function toExecutionSetupProfileArtifact(profile: ExecutionSetupProfile): Record<string, unknown> {
   const gitHooks = profile.gitHooks ?? {
-    policy: 'validate_explicitly' as const,
+    policy: 'validate_advisory' as const,
     detected: [],
     validationCommands: [],
   }
@@ -88,14 +89,20 @@ export function toExecutionSetupProfileArtifact(profile: ExecutionSetupProfile):
     ticket_id: profile.ticketId,
     artifact: profile.artifact,
     status: profile.status,
+    host_context: profile.hostContext,
     summary: profile.summary,
     temp_roots: profile.tempRoots,
     workspace_inputs: profile.workspaceInputs.map((input) => ({
       path: input.path,
       kind: input.kind,
       source_status: input.sourceStatus,
+      category: input.category,
+      ...(input.allowLargeCopy === undefined ? {} : { allow_large_copy: input.allowLargeCopy }),
+      ...(input.fileCount === undefined ? {} : { file_count: input.fileCount }),
+      ...(input.totalBytes === undefined ? {} : { total_bytes: input.totalBytes }),
       reason: input.reason,
     })),
+    runtime_environment: profile.runtimeEnvironment,
     bootstrap_commands: profile.bootstrapCommands,
     tooling_probe_commands: profile.toolingProbeCommands,
     workspace_probes: profile.workspaceProbes ?? [],
@@ -106,7 +113,8 @@ export function toExecutionSetupProfileArtifact(profile: ExecutionSetupProfile):
         name: hook.name,
         path: hook.path,
         source: hook.source,
-        executable: hook.executable,
+        kind: hook.kind,
+        runnable: hook.runnable,
         ...(hook.managerHint ? { manager_hint: hook.managerHint } : {}),
       })),
       validation_commands: gitHooks.validationCommands,

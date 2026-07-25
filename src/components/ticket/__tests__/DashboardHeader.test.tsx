@@ -244,7 +244,7 @@ describe('DashboardHeader', () => {
       status: 'DRAFTING_PRD',
       availableActions: ['cancel'],
       effectiveManualQaEnabled: true,
-      effectiveGitHookPolicy: 'ignore_internal_only',
+      effectiveGitHookPolicy: 'observe_only',
       lockedMainImplementer: 'openai/gpt-5.4',
     })
 
@@ -261,7 +261,7 @@ describe('DashboardHeader', () => {
     expect(within(advancedSettings as HTMLElement).getByText('Manual QA checkpoint')).toBeInTheDocument()
     expect(within(advancedSettings as HTMLElement).getByText('Enabled')).toBeInTheDocument()
     expect(within(advancedSettings as HTMLElement).getByText('Git hook policy')).toBeInTheDocument()
-    expect(within(advancedSettings as HTMLElement).getByText('Ignore')).toBeInTheDocument()
+    expect(within(advancedSettings as HTMLElement).getByText('Observe')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open documentation for ticket Git hook policy' })).toHaveAttribute(
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,

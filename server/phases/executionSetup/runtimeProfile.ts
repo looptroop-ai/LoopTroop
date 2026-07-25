@@ -2,6 +2,7 @@ import type { ExecutionSetupProfile } from './types'
 import { EXECUTION_SETUP_RUNTIME_DIR } from './types'
 import { accessSync, constants, lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 
 export const EXECUTION_SETUP_RUN_WRAPPER = `${EXECUTION_SETUP_RUNTIME_DIR}/run`
 
@@ -9,8 +10,10 @@ export function normalizeExecutionSetupCommandPath(input: string): string {
   return input.replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
 
-export function commandMentionsExecutionSetupWrapper(command: string, wrapperPath: string = EXECUTION_SETUP_RUN_WRAPPER): boolean {
-  const normalizedCommand = normalizeExecutionSetupCommandPath(command)
+export function commandMentionsExecutionSetupWrapper(command: string | CommandSpec, wrapperPath: string = EXECUTION_SETUP_RUN_WRAPPER): boolean {
+  const normalizedCommand = normalizeExecutionSetupCommandPath(
+    typeof command === 'string' ? command : renderCommandSpec(command),
+  )
   const normalizedWrapper = normalizeExecutionSetupCommandPath(wrapperPath)
   return normalizedCommand.includes(normalizedWrapper)
 }
@@ -123,7 +126,7 @@ export function hasExecutionSetupProjectCommands(profile: ExecutionSetupProfile 
     profile.projectCommands.testFull,
     profile.projectCommands.lintFull,
     profile.projectCommands.typecheckFull,
-  ].some((commands) => commands.some((command) => command.trim().length > 0))
+  ].some((commands) => commands.length > 0)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

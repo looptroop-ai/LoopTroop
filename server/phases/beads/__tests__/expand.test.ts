@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { expandBeads, validateBeadExpansion } from '../expand'
 import type { Bead, BeadSubset } from '../types'
+import type { CommandSpec } from '@shared/commandSpec'
+
+const command = (script: string): CommandSpec => ({ mode: 'shell', shell: 'posix', script, cwd: '.', env: {} })
 
 function buildSubsetBeads(): BeadSubset[] {
   return [
@@ -15,7 +18,7 @@ function buildSubsetBeads(): BeadSubset[] {
       },
       acceptanceCriteria: ['Validate attribution survives refinement'],
       tests: ['Shared tests cover refinement attribution'],
-      testCommands: ['npm run test:server'],
+      testCommands: [command('npm run test:server')],
     },
     {
       id: 'bead-2',
@@ -28,7 +31,7 @@ function buildSubsetBeads(): BeadSubset[] {
       },
       acceptanceCriteria: ['Show retry metadata alongside refinement diffs'],
       tests: ['UI tests show the correct inspiration tooltip'],
-      testCommands: ['npm run test:client'],
+      testCommands: [command('npm run test:client')],
     },
   ]
 }
@@ -123,7 +126,7 @@ describe.concurrent('validateBeadExpansion', () => {
     const expanded = buildExpandedBeads(subsets)
     expanded[0] = {
       ...expanded[0]!,
-      testCommands: ['npm run test:server -- --watch=false'],
+      testCommands: [command('npm run test:server -- --watch=false')],
     }
 
     const warnings = validateBeadExpansion(subsets, expanded)

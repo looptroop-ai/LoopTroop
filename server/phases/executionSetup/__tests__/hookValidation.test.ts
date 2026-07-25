@@ -23,25 +23,37 @@ describe('runExplicitGitHookValidation', () => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-validation-'))
     roots.push(root)
     const result = await runExplicitGitHookValidation({
-      profileContent: profile('validate_explicitly', 'node -e "process.exit(0)"'),
+      profileContent: profile('validate_advisory', 'node -e "process.exit(0)"'),
       worktreePath: root,
     })
     expect(result.errors).toEqual([])
     expect(result.receipts).toEqual([expect.objectContaining({ id: 'pre-commit', status: 'passed', exitCode: 0 })])
   })
 
-  it('returns the first explicit validation failure with output', async () => {
+  it('reports advisory validation failure without blocking', async () => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-validation-'))
     roots.push(root)
     const result = await runExplicitGitHookValidation({
-      profileContent: profile('validate_explicitly', 'node -e "process.stderr.write(\'missing prerequisite\'); process.exit(4)"'),
+      profileContent: profile('validate_advisory', 'node -e "process.stderr.write(\'missing prerequisite\'); process.exit(4)"'),
       worktreePath: root,
     })
     expect(result.receipts[0]).toMatchObject({ status: 'failed', exitCode: 4, outputExcerpt: expect.stringContaining('missing prerequisite') })
-    expect(result.errors[0]).toContain('missing prerequisite')
+    expect(result.errors).toEqual([])
+    expect(result.warnings[0]).toContain('missing prerequisite')
   })
 
-  it.each(['use_on_internal_commits', 'ignore_internal_only'] as const)('does not run explicit commands for %s', async (policy) => {
+  it('returns required validation failure as a blocking error', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-validation-'))
+    roots.push(root)
+    const result = await runExplicitGitHookValidation({
+      profileContent: profile('validate_required', 'node -e "process.exit(4)"'),
+      worktreePath: root,
+    })
+    expect(result.errors[0]).toContain('validation failed')
+    expect(result.warnings).toEqual([])
+  })
+
+  it.each(['use_native_hooks', 'observe_only'] as const)('does not run explicit commands for %s', async (policy) => {
     const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-validation-'))
     roots.push(root)
     const result = await runExplicitGitHookValidation({
@@ -69,9 +81,10 @@ describe('runExplicitGitHookValidation', () => {
     execFileSync('git', ['-C', root, 'commit', '-m', 'initial'], { stdio: 'ignore' })
 
     const result = await runExplicitGitHookValidation({
-      profileContent: profile('validate_explicitly', 'node -e "require(\'fs\').writeFileSync(\'tracked.txt\', \'after\\n\')"'),
+      profileContent: profile('validate_advisory', 'node -e "require(\'fs\').writeFileSync(\'tracked.txt\', \'after\\n\')"'),
       worktreePath: root,
     })
     expect(result.fileAudit).toMatchObject({ mutated: true, candidatePaths: ['tracked.txt'] })
+    expect((await import('node:fs')).readFileSync(join(root, 'tracked.txt'), 'utf8')).toBe('before\n')
   })
 })

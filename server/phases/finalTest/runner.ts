@@ -1,7 +1,13 @@
 import type { StructuredOutputMetadata } from '../../structuredOutput/types'
 import type { RawAttempt } from '../../council/types'
 import type { FinalTestFileEffect } from './fileEffectsAudit'
-import { runShellCommand, type ShellCommandResult } from '../../lib/shellCommand'
+import { executeCommand, type CommandExecutionResult } from '../../lib/commandExecutor'
+import { detectHostContext } from '../../lib/hostContext'
+import {
+  renderCommandSpec,
+  type CommandSpec,
+  type RuntimeEnvironment,
+} from '@shared/commandSpec'
 
 import { createRequire } from 'node:module'
 const _require = createRequire(import.meta.url)
@@ -23,9 +29,8 @@ function logCmd(
 }
 
 export interface FinalTestCommandResult {
-  command: string
-  effectiveCommand?: string
-  setupWrapperApplied?: boolean
+  command: CommandSpec
+  displayCommand: string
   exitCode: number | null
   signal: NodeJS.Signals | null
   stdout: string
@@ -39,7 +44,7 @@ export interface FinalTestAttemptHistoryEntry {
   status: 'passed' | 'failed'
   checkedAt: string
   summary?: string
-  commands: string[]
+  commands: CommandSpec[]
   testFiles: string[]
   modifiedFiles: string[]
   fileEffects: FinalTestFileEffect[]
@@ -69,11 +74,11 @@ export interface FinalTestExecutionReport {
   retryNotes?: string[]
 }
 
-function toFinalTestCommandResult(result: ShellCommandResult): FinalTestCommandResult {
+function toFinalTestCommandResult(result: CommandExecutionResult): FinalTestCommandResult {
+  const processShell = detectHostContext().platform === 'windows' ? 'cmd' : 'posix'
   return {
     command: result.command,
-    ...(result.effectiveCommand ? { effectiveCommand: result.effectiveCommand } : {}),
-    ...(result.setupWrapperApplied ? { setupWrapperApplied: true } : {}),
+    displayCommand: renderCommandSpec(result.command, processShell),
     exitCode: result.exitCode,
     signal: result.signal,
     stdout: result.stdout,
@@ -84,7 +89,7 @@ function toFinalTestCommandResult(result: ShellCommandResult): FinalTestCommandR
 }
 
 export async function executeFinalTestCommands(input: {
-  commands: string[]
+  commands: CommandSpec[]
   cwd: string
   timeoutMs?: number
   plannedBy: string
@@ -96,19 +101,18 @@ export async function executeFinalTestCommands(input: {
   modelOutput: string
   planStructuredOutput?: StructuredOutputMetadata
   rawAttempts?: RawAttempt[]
-  setupEnvironment?: {
-    commandWrapper?: string
-  }
+  runtimeEnvironment?: RuntimeEnvironment
 }): Promise<FinalTestExecutionReport> {
   const commandResults: FinalTestCommandResult[] = []
   const errors: string[] = []
 
   for (const command of input.commands) {
-    const execution = await runShellCommand({
-      command,
-      cwd: input.cwd,
-      timeoutMs: input.timeoutMs,
-      commandWrapper: input.setupEnvironment?.commandWrapper,
+    const commandWithTimeout = command.timeoutMs || !input.timeoutMs
+      ? command
+      : { ...command, timeoutMs: input.timeoutMs }
+    const execution = await executeCommand(commandWithTimeout, {
+      repoRoot: input.cwd,
+      runtimeEnvironment: input.runtimeEnvironment,
     })
     const result = toFinalTestCommandResult(execution)
     commandResults.push(result)
@@ -134,8 +138,8 @@ export async function executeFinalTestCommands(input: {
 
     if (result.exitCode !== 0 || result.timedOut) {
       errors.push(result.timedOut
-        ? `Command timed out: ${command}`
-        : `Command failed (${result.exitCode ?? 'no exit code'}): ${command}`)
+        ? `Command timed out: ${result.displayCommand}`
+        : `Command failed (${result.exitCode ?? 'no exit code'}): ${result.displayCommand}`)
       break
     }
   }

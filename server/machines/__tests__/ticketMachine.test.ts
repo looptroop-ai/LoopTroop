@@ -228,7 +228,17 @@ describe('ticketMachine execution setup flow', () => {
     actor.send({ type: 'CHECKS_PASSED' })
     expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
 
+    actor.send({ type: 'EXECUTION_SETUP_PLAN_FAILED', errors: ['Invalid generated draft'] })
+    expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(actor.getSnapshot().context.error).toBeNull()
+
     actor.send({ type: 'EXECUTION_SETUP_PLAN_READY' })
+    expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+
+    actor.send({ type: 'APPROVE_EXECUTION_SETUP_PLAN' })
+    expect(actor.getSnapshot().value).toBe('PREPARING_EXECUTION_ENV')
+
+    actor.send({ type: 'EXECUTION_SETUP_EVIDENCE_CHANGED' })
     expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
 
     actor.send({ type: 'APPROVE_EXECUTION_SETUP_PLAN' })

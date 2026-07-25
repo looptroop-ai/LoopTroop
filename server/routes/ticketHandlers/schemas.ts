@@ -1,6 +1,8 @@
 import { z } from 'zod'
+import { hostContextSchema } from '@shared/hostContext'
+import { commandSpecSchema } from '@shared/commandSpec'
 
-const gitHookPolicySchema = z.enum(['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only'])
+const gitHookPolicySchema = z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'])
 
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
@@ -80,7 +82,7 @@ const prdUserStorySchema = z.object({
   acceptance_criteria: z.array(z.string()),
   implementation_steps: z.array(z.string()),
   verification: z.object({
-    required_commands: z.array(z.string()),
+    required_commands: z.array(commandSpecSchema),
   }).strict(),
 }).strict()
 
@@ -139,6 +141,7 @@ export const executionSetupPlanSchema = z.object({
   ticketId: z.string(),
   artifact: z.literal('execution_setup_plan'),
   status: z.literal('draft'),
+  hostContext: hostContextSchema,
   summary: z.string(),
   readiness: z.object({
     status: z.enum(['ready', 'partial', 'missing']),
@@ -151,30 +154,35 @@ export const executionSetupPlanSchema = z.object({
     path: z.string(),
     kind: z.enum(['file', 'directory']),
     sourceStatus: z.enum(['ignored', 'untracked']),
+    category: z.enum(['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible']),
+    allowLargeCopy: z.boolean().optional(),
+    fileCount: z.number().int().nonnegative().optional(),
+    totalBytes: z.number().int().nonnegative().optional(),
     reason: z.string(),
   }).strict()).default([]),
   workspaceProbes: z.array(z.object({
     id: z.string(),
-    command: z.string(),
+    command: commandSpecSchema,
     purpose: z.string(),
   }).strict()).default([]),
   gitHooks: z.object({
-    policy: z.enum(['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only']),
+    policy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']),
     detected: z.array(z.object({
       name: z.string(),
       path: z.string(),
       source: z.string(),
-      executable: z.boolean(),
+      kind: z.enum(['hook', 'manager_config']),
+      runnable: z.enum(['yes', 'no', 'unknown']),
       managerHint: z.string().optional(),
     }).strict()),
     validationCommands: z.array(z.object({
       id: z.string(),
       hook: z.string(),
-      command: z.string(),
+      command: commandSpecSchema,
       purpose: z.string(),
     }).strict()),
   }).strict().default({
-    policy: 'validate_explicitly',
+    policy: 'validate_advisory',
     detected: [],
     validationCommands: [],
   }),
@@ -183,17 +191,17 @@ export const executionSetupPlanSchema = z.object({
       id: z.string(),
       title: z.string(),
       purpose: z.string(),
-      commands: z.array(z.string()),
+      commands: z.array(commandSpecSchema),
       required: z.boolean(),
       rationale: z.string(),
       cautions: z.array(z.string()),
     }).strict()
   ),
   projectCommands: z.object({
-    prepare: z.array(z.string()),
-    testFull: z.array(z.string()),
-    lintFull: z.array(z.string()),
-    typecheckFull: z.array(z.string()),
+    prepare: z.array(commandSpecSchema),
+    testFull: z.array(commandSpecSchema),
+    lintFull: z.array(commandSpecSchema),
+    typecheckFull: z.array(commandSpecSchema),
   }).strict(),
   qualityGatePolicy: z.object({
     tests: z.string(),

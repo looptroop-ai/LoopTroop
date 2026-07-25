@@ -12,7 +12,7 @@ const profileRouter = new Hono()
 const MAX_TIMEOUT_MS = 3_600_000
 
 const profileSchema = z.object({
-  gitHookPolicy: z.enum(['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only']).optional(),
+  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).optional(),
   manualQaEnabled: z.boolean().optional(),
   mainImplementer: z.string().optional(),
   mainImplementerVariant: z.string().optional(),

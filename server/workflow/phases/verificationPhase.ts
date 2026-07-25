@@ -40,7 +40,10 @@ import {
   EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
   EXECUTION_SETUP_PROFILE_MIRROR,
 } from '../../phases/executionSetup/types'
-import { getExecutionSetupCommandWrapperFromContent } from '../../phases/executionSetup/runtimeProfile'
+import {
+  runtimeEnvironmentSchema,
+  type RuntimeEnvironment,
+} from '@shared/commandSpec'
 import {
   buildFinalTestFileEffectsAudit,
   captureFinalTestDirtyFiles,
@@ -4298,20 +4301,31 @@ export async function handlePreFlight(
 
 const FINAL_TEST_RETRY_NOTES_ARTIFACT_TYPE = 'final_test_retry_notes'
 
-function resolveFinalTestSetupEnvironment(ticketId: string, worktreePath: string): { commandWrapper?: string } | undefined {
+function parseRuntimeEnvironment(content: string | null | undefined): RuntimeEnvironment | undefined {
+  if (!content) return undefined
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    const candidate = parsed.runtime_environment ?? parsed.runtimeEnvironment
+    const result = runtimeEnvironmentSchema.safeParse(candidate)
+    return result.success ? result.data : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function resolveFinalTestRuntimeEnvironment(ticketId: string, worktreePath: string): RuntimeEnvironment | undefined {
   const profileArtifact = getLatestPhaseArtifact(
     ticketId,
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
-  const artifactWrapper = getExecutionSetupCommandWrapperFromContent(profileArtifact?.content, worktreePath)
-  if (artifactWrapper) return { commandWrapper: artifactWrapper }
+  const artifactEnvironment = parseRuntimeEnvironment(profileArtifact?.content)
+  if (artifactEnvironment) return artifactEnvironment
 
   const profileMirrorPath = resolve(worktreePath, EXECUTION_SETUP_PROFILE_MIRROR)
   if (existsSync(profileMirrorPath)) {
     try {
-      const mirrorWrapper = getExecutionSetupCommandWrapperFromContent(readFileSync(profileMirrorPath, 'utf-8'), worktreePath)
-      if (mirrorWrapper) return { commandWrapper: mirrorWrapper }
+      return parseRuntimeEnvironment(readFileSync(profileMirrorPath, 'utf-8'))
     } catch {
       return undefined
     }
@@ -4363,9 +4377,8 @@ function buildFinalTestRetryErrorContext(input: {
         ? `timed out after ${command.durationMs}ms`
         : `exit ${command.exitCode ?? 'unknown'}`
       return [
-        `Command: ${command.command}`,
-        command.effectiveCommand ? `Effective Command: ${command.effectiveCommand}` : '',
-        command.setupWrapperApplied ? 'Setup Wrapper Applied: yes' : '',
+        `Command: ${command.displayCommand}`,
+        `Command Spec: ${JSON.stringify(command.command)}`,
         `Result: ${status}`,
         command.stdout ? `STDOUT:\n${command.stdout.slice(0, COMMAND_OUTPUT_SLICE_LENGTH)}` : '',
         command.stderr ? `STDERR:\n${command.stderr.slice(0, COMMAND_OUTPUT_SLICE_LENGTH)}` : '',
@@ -4554,7 +4567,7 @@ export async function handleFinalTest(
   const executionSettings = resolveExecutionRuntimeSettings(context)
   const aiResponseSettings = resolveAiResponseRuntimeSettings(context)
   const phaseStartCommit = recordWorktreeStartCommit(worktreePath)
-  const setupEnvironment = resolveFinalTestSetupEnvironment(ticketId, worktreePath)
+  const runtimeEnvironment = resolveFinalTestRuntimeEnvironment(ticketId, worktreePath)
   let finalTestBaselineDirtyFiles: FinalTestDirtyFile[] = captureFinalTestDirtyFiles(worktreePath)
   let finalTestSessionId = ''
   const streamStates = new Map<string, OpenCodeStreamState>()
@@ -4670,7 +4683,7 @@ export async function handleFinalTest(
           modelOutput: output,
           planStructuredOutput,
           rawAttempts,
-          setupEnvironment,
+          runtimeEnvironment,
         })
       },
       generateRetryNote: async ({ attempt, report, generation }) => {

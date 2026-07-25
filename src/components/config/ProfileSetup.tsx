@@ -84,7 +84,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     toolOutputMaxChars: profile?.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
     toolErrorMaxChars: profile?.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
     manualQaEnabled: profile?.manualQaEnabled ?? false,
-    gitHookPolicy: profile?.gitHookPolicy ?? 'validate_explicitly',
+    gitHookPolicy: profile?.gitHookPolicy ?? 'validate_advisory',
   })
 
   const [rawNumeric, setRawNumeric] = useState<Record<string, string>>(() => buildInitialRawNumeric({ ...formData }))
@@ -138,7 +138,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
       manualQaEnabled: profile.manualQaEnabled ?? false,
-      gitHookPolicy: profile.gitHookPolicy ?? 'validate_explicitly',
+      gitHookPolicy: profile.gitHookPolicy ?? 'validate_advisory',
     })
     setRawNumeric(buildInitialRawNumeric({
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
@@ -513,7 +513,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
               </p>
             </div>
             <GitHookPolicySetting
-              value={formData.gitHookPolicy ?? 'validate_explicitly'}
+              value={formData.gitHookPolicy ?? 'validate_advisory'}
               onChange={(value) => updateField('gitHookPolicy', value)}
               compact
             />

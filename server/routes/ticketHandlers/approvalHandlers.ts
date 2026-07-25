@@ -18,7 +18,9 @@ import { approveBeadsDocument } from '../../phases/beads/document'
 import {
   approveExecutionSetupPlan,
   readExecutionSetupPlan,
+  saveExecutionSetupPlan,
 } from '../../phases/executionSetupPlan/document'
+import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import type { ExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
@@ -442,6 +444,29 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
       currentContent: current.raw,
       expectedContentSha256,
     })
+
+    const refreshedPlan = lockExecutionSetupPlanDetectedHooks(ticketId, plan)
+    const evidenceChanged = JSON.stringify({
+      hostContext: refreshedPlan.hostContext,
+      detected: refreshedPlan.gitHooks.detected,
+    }) !== JSON.stringify({
+      hostContext: plan.hostContext,
+      detected: plan.gitHooks.detected,
+    })
+    if (evidenceChanged) {
+      const refreshed = saveExecutionSetupPlan(ticketId, refreshedPlan)
+      emitRoutePhaseLog(
+        ticketId,
+        'WAITING_EXECUTION_SETUP_APPROVAL',
+        'info',
+        'Current host or Git-hook evidence changed before approval; review the refreshed plan.',
+      )
+      return c.json({
+        error: 'Workspace evidence changed before approval. Review the refreshed plan and approve its new hash.',
+        contentSha256: refreshed.contentSha256,
+        plan: refreshed.plan,
+      }, 409)
+    }
 
     const paths = getTicketPaths(ticketId)
     if (!paths) return c.json({ error: 'Ticket workspace could not be resolved' }, 409)

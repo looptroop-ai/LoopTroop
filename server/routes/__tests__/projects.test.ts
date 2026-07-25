@@ -72,10 +72,26 @@ describe('projectRouter project cleanup', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'Hooks project', shortname: 'HKS' })
     expect(project.gitHookPolicy).toBeNull()
-    expect(updateProject(project.id, { gitHookPolicy: 'validate_explicitly' })?.gitHookPolicy).toBe('validate_explicitly')
-    expect(updateProject(project.id, { gitHookPolicy: 'use_on_internal_commits' })?.gitHookPolicy).toBe('use_on_internal_commits')
-    expect(updateProject(project.id, { gitHookPolicy: 'ignore_internal_only' })?.gitHookPolicy).toBe('ignore_internal_only')
+    expect(updateProject(project.id, { gitHookPolicy: 'observe_only' })?.gitHookPolicy).toBe('observe_only')
+    expect(updateProject(project.id, { gitHookPolicy: 'validate_advisory' })?.gitHookPolicy).toBe('validate_advisory')
+    expect(updateProject(project.id, { gitHookPolicy: 'validate_required' })?.gitHookPolicy).toBe('validate_required')
+    expect(updateProject(project.id, { gitHookPolicy: 'use_native_hooks' })?.gitHookPolicy).toBe('use_native_hooks')
     expect(updateProject(project.id, { gitHookPolicy: null })?.gitHookPolicy).toBeNull()
+  })
+
+  it.each([
+    ['validate_explicitly', 'validate_advisory'],
+    ['ignore_internal_only', 'observe_only'],
+    ['use_on_internal_commits', 'use_native_hooks'],
+  ] as const)('migrates persisted project policy %s to %s when project state opens', (legacyPolicy, expected) => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'Legacy hooks project', shortname: 'LHP' })
+    const context = getProjectContextById(project.id)
+    expect(context).toBeDefined()
+    context!.projectDb.update(projects).set({ gitHookPolicy: legacyPolicy }).run()
+    clearProjectDatabaseCache()
+
+    expect(attachExistingProject(repoDir).gitHookPolicy).toBe(expected)
   })
 
   beforeEach(() => {
@@ -197,7 +213,7 @@ describe('projectRouter project cleanup', () => {
       shortname: 'SVD',
       icon: '🔎',
       color: '#a855f7',
-      gitHookPolicy: 'ignore_internal_only',
+      gitHookPolicy: 'observe_only',
       manualQaOverride: false,
     })
     createTicket({ projectId: project.id, title: 'Draft ticket' })
@@ -228,7 +244,7 @@ describe('projectRouter project cleanup', () => {
       shortname: 'SVD',
       icon: '🔎',
       color: '#a855f7',
-      gitHookPolicy: 'ignore_internal_only',
+      gitHookPolicy: 'observe_only',
       manualQaOverride: false,
       ticketCount: 3,
       activeTicketCount: 1,
@@ -309,7 +325,7 @@ describe('projectRouter project cleanup', () => {
       color: '#a855f7',
       councilMembers: '["provider/model"]',
       maxIterations: 9,
-      gitHookPolicy: 'validate_explicitly',
+      gitHookPolicy: 'validate_advisory',
       manualQaOverride: true,
     })
     const ticket = createTicket({ projectId: project.id, title: 'Active ticket' })
@@ -386,7 +402,7 @@ describe('projectRouter project cleanup', () => {
         folderPath: repoDir,
         icon: '✨',
         color: '#123456',
-        gitHookPolicy: 'ignore_internal_only',
+        gitHookPolicy: 'observe_only',
         manualQaOverride: false,
         existingStateAction: 'clear_tickets',
       }),
@@ -401,7 +417,7 @@ describe('projectRouter project cleanup', () => {
       color: '#123456',
       councilMembers: '["provider/model"]',
       maxIterations: 9,
-      gitHookPolicy: 'ignore_internal_only',
+      gitHookPolicy: 'observe_only',
       manualQaOverride: false,
       ticketCounter: 0,
       folderPath: repoDir,

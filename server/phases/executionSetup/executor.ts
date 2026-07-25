@@ -11,6 +11,7 @@ import type {
   ExecutionSetupGenerationResult,
   ExecutionSetupReport,
 } from './types'
+import { renderCommandSpec } from '@shared/commandSpec'
 
 type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 
@@ -60,7 +61,7 @@ function countDistinctFailedProvisioningStrategies(report: ExecutionSetupReport)
     const strategyNames = new Set<string>()
     for (const attempt of requirement.provisioningAttempts) {
       if (!attempt.strategy.trim()) continue
-      if (!attempt.commands.some((command) => command.trim().length > 0)) continue
+      if (!attempt.commands.some((command) => renderCommandSpec(command).trim().length > 0)) continue
       strategyNames.add(attempt.strategy.trim().toLowerCase())
     }
     maxStrategyCount = Math.max(maxStrategyCount, strategyNames.size)
@@ -143,7 +144,7 @@ function hasCompleteFailedCommandReceipt(report: ExecutionSetupReport): boolean 
 
   return receipts.some((receipt) => (
     (receipt.status === 'failed' || receipt.status === 'timed_out')
-    && receipt.command.trim().length > 0
+    && Boolean(receipt.command && renderCommandSpec(receipt.command).trim().length > 0)
     && Number.isFinite(receipt.durationMs)
     && (receipt.status === 'timed_out' || Number.isInteger(receipt.exitCode))
   ))

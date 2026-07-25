@@ -22,6 +22,22 @@ import {
 import { parseRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { normalizeCommandSpec, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../lib/hostContext'
+
+function normalizeCommandSpecs(value: unknown, label: string, repairWarnings: string[]): CommandSpec[] {
+  if (!Array.isArray(value)) throw new Error(`${label} is missing the testCommands list`)
+  const host = detectHostContext()
+  return value.map((command, index) => {
+    try {
+      const normalized = normalizeCommandSpec(command, host)
+      if (normalized.warning) repairWarnings.push(`${label}[${index}]: ${normalized.warning}`)
+      return normalized.command
+    } catch {
+      throw new Error(`${label} contains an invalid test command`)
+    }
+  })
+}
 
 const BEAD_SEQUENCE_CHILD_KEYS = ['title', 'name', 'prdRefs', 'prd_refs', 'description', 'details', 'contextGuidance', 'context_guidance', 'acceptanceCriteria', 'acceptance_criteria', 'tests', 'testCommands', 'test_commands', 'testCommandReason', 'test_command_reason'] as const
 const BEAD_SEQUENCE_ITEM_PRIMARY_KEYS = {
@@ -163,13 +179,7 @@ function normalizeBeadSubsetEntry(value: unknown, index: number, repairWarnings:
     : `bead-${index + 1}`
 
   const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands', 'commands'])
-  if (!Array.isArray(testCommandsValue)) {
-    throw new Error(`Bead ${id} is missing the testCommands list`)
-  }
-  if (Array.isArray(testCommandsValue) && testCommandsValue.some((command) => typeof command !== 'string' || !command.trim())) {
-    throw new Error(`Bead ${id} contains an invalid test command`)
-  }
-  const testCommands = toStringArray(testCommandsValue)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead ${id}`, repairWarnings)
   const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead ${id} contains an invalid testCommandReason`)
@@ -335,7 +345,7 @@ function buildBeadItemFromSubset(bead: BeadSubset): NormalizedBeadItem {
     id: bead.id,
     label,
     detail,
-    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}\x1f${bead.testCommands.join('|')}\x1f${bead.testCommandReason ?? ''}`,
+    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}\x1f${bead.testCommands.map((command) => renderCommandSpec(command)).join('|')}\x1f${bead.testCommandReason ?? ''}`,
   }
 }
 
@@ -759,13 +769,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     : rawStatus) as Bead['status']
 
   const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands'])
-  if (!Array.isArray(testCommandsValue)) {
-    throw new Error(`Bead at index ${index} is missing the testCommands list`)
-  }
-  if (Array.isArray(testCommandsValue) && testCommandsValue.some((command) => typeof command !== 'string' || !command.trim())) {
-    throw new Error(`Bead at index ${index} contains an invalid test command`)
-  }
-  const testCommands = toStringArray(testCommandsValue)
+  const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings)
   const testCommandReasonValue = getValueByAliases(value, ['testcommandreason', 'test_command_reason'])
   if (testCommandReasonValue !== undefined && (typeof testCommandReasonValue !== 'string' || !testCommandReasonValue.trim())) {
     throw new Error(`Bead at index ${index} contains an invalid testCommandReason`)

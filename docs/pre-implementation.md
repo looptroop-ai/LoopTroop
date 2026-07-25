@@ -47,7 +47,7 @@ The execution-capability probe is stricter than a plain health check. LoopTroop 
 
 ## 2. `WAITING_EXECUTION_SETUP_APPROVAL`: reviewable setup contract
 
-After pre-flight passes, LoopTroop asks the locked main implementer to audit the approved ticket context and draft an `execution_setup_plan`. This is still a planning-style approval gate: no setup commands run until the user approves the contract.
+After pre-flight passes, LoopTroop records the current host (Windows, macOS, Linux, or WSL-as-Linux), available shells, and architecture, then asks the locked main implementer to audit the approved ticket context and propose an `execution_setup_plan`. The proposal is combined with backend-owned identity, host, hook, and policy evidence. A model cannot make the ticket fail by echoing those backend fields in the wrong shape. This is still an approval gate: no setup commands run until the user approves the contract.
 
 ### 2.1 How the draft is generated
 
@@ -59,10 +59,11 @@ The setup-plan artifact is structured around a small, explicit contract:
 | --- | --- |
 | `readiness` | Whether the environment is already `ready`, only `partial`, or still `missing` key requirements, plus supporting evidence and gaps. |
 | `temp_roots` | Repository-local or runtime-owned paths the next phase may use for temporary setup work. |
-| `workspace_inputs` | Ignored or untracked files and directories that exist in the original checkout, are missing from the ticket worktree, and are needed for setup. Each entry records a repository-relative `path`, `kind`, `source_status`, and concrete `reason`. |
-| `workspace_probes` | Ordered repository-level commands that prove the prepared checkout can actually perform project work; each entry has an `id`, `command`, and `purpose`. |
+| `host_context` | Backend-detected current host, execution environment, architecture, available shells, and preferred shell. The plan is reusable on this host, not promised to run unchanged on every host. |
+| `workspace_inputs` | Ignored or untracked non-reproducible files and directories needed for setup. Each entry records a repository-relative path, kind, category, Git status, reason, and copy preview. Generated dependencies, caches, and build output must be recreated instead of copied. |
+| `workspace_probes` | Ordered repository-level structured commands that prove the prepared checkout can actually perform project work; each entry has an `id`, `command`, and `purpose`. |
 | `git_hooks` | The resolved policy, read-only detected-hook evidence, and an ordered editable list of explicit validation commands. |
-| `steps` | Ordered setup actions with `id`, `title`, `purpose`, `commands`, `required`, `rationale`, and step-level `cautions`. |
+| `steps` | Ordered setup actions with structured commands plus `id`, `title`, `purpose`, `required`, `rationale`, and step-level `cautions`. |
 | `project_commands` | Discovered project-wide command families such as prepare, full test, lint, and typecheck. |
 | `quality_gate_policy` | The default policy later coding and final-test phases should follow for tests, lint, typecheck, and full-project fallback behavior. |
 | `cautions` | User-facing warnings or assumptions that should remain visible after approval. |
@@ -89,7 +90,9 @@ The generation report also preserves:
 
 ### 2.3 Approval handoff and rewind behavior
 
-Approving the plan stores an approval receipt with the reviewed `content_sha256`, step count, command count, approved workspace inputs, selected Git-hook policy, detected-hook evidence, workspace probes, and the exact hook-validation command list. Stale approvals fail with `409` instead of silently approving newer content. Detected hooks are read-only, while validation commands and workspace inputs can be added, edited, reordered, or removed.
+Approving the plan first refreshes the host and Git-hook evidence. If either changed, LoopTroop updates the draft hash and asks for review again. Approval then stores a receipt with the reviewed `content_sha256`, host, step count, command count, approved workspace inputs, selected ticket-run Git-hook policy, detected evidence, workspace probes, and exact validation-command list. Detected evidence is read-only, while the inherited hook policy is only the initial choice and may be overridden for this run without changing its project or profile source.
+
+If the model cannot produce a valid proposal after structured retries, the ticket stays in **Approving Workspace Setup**. Approval is disabled, and the rejected output, diagnostics, editing surface, and Regenerate action remain available. A malformed draft is not a runtime failure and does not route the whole ticket to Blocked Error.
 
 While the ticket is still in `PREPARING_EXECUTION_ENV`, editing or regenerating the setup plan triggers a **runtime rewind** rather than an in-place overwrite:
 
@@ -141,26 +144,27 @@ If required launchers or toolchains are missing, the agent must try real user-sp
 LoopTroop does not trust a superficially valid setup response. A setup result is accepted only when all of the following are true:
 
 - the structured result parses and all setup checks pass
-- declared wrappers can launch a no-op command successfully
+- the structured runtime environment contains only repository-relative PATH additions and explicit variables
 - declared `tooling_probe_commands` exist and succeed
-- approved `workspace_probes` run in order through the setup wrapper and succeed; when repository command families or bead test commands exist, at least one probe must exercise the repository rather than only print a tool version
-- approved Git-hook validation commands run with the same wrapper, timeout, output capture, and tracked-file audit rules when the policy is `validate_explicitly`
-- profiles that declare wrappers or project command families include non-mutating probes
+- approved `workspace_probes` run in order with their direct-process or named-shell semantics; when repository command families or bead test commands exist, at least one probe must exercise the repository rather than only print a tool version
+- approved Git-hook validation commands use the same structured executor, timeout, output capture, and tracked-file audit rules under Check or Require
+- profiles that declare project command families include non-mutating probes
 - failed tooling results include durable `tool_requirements` evidence:
   - either at least two distinct `provisioning_attempts` strategies with real commands
   - or a `not_provisionable` result with a concrete `failure_reason`
 
-Before setup commands run, LoopTroop validates every approved workspace input against the original checkout and Git status. It rejects missing sources, incorrect ignored or untracked classifications, paths outside the checkout, and Git or LoopTroop internal paths. Approved files are copied to the same relative path. Approved directories are copied recursively without a size limit, but tracked ticket source always wins and is never replaced. Materialized inputs are setup-only state: worktree audits and ticket commits exclude them, and setup retries rematerialize them after tracked-file resets.
+Before setup commands run, LoopTroop validates every approved workspace input against the original checkout and Git status. It rejects missing sources, reproducible dependency/cache/build categories, incorrect ignored or untracked classifications, paths outside the checkout, symlinks, and Git or LoopTroop internal paths. The approval view shows eligible file count and total bytes. Copies above the conservative default limit require an explicit per-input override. Tracked ticket source always wins and is never replaced.
 
 LoopTroop also audits the worktree after each ready-looking attempt. Committable project changes left behind by setup fail the attempt. Generated noise is kept as a warning and copied into the profile cautions with suggested `.gitignore` entries. The setup agent may not copy any additional ignored or untracked path that the user did not approve.
 
-Hook discovery is evidence, not an ecosystem assumption. LoopTroop inspects Git's resolved hook path, standard hook files, committed hook directories, and recognizable manager configuration. Known managers may supply a hint, but unknown hooks remain visible without an invented command. The ticket starts with the inherited ticket → project → profile choice, freezes that choice at Start, and records it in the approved setup plan. The three UI choices control LoopTroop-owned Git operations:
+Hook discovery is evidence, not an ecosystem assumption. LoopTroop inspects Git's resolved hook path, actual hook files, and recognizable manager configuration as different evidence kinds. Runnable state is **yes**, **no**, or **unknown**; native Windows evidence can remain unknown. Known managers may supply a hint, but unknown managers remain visible without an invented command. Ticket → project → profile inheritance provides the initial selection, and setup approval may override it for this ticket run:
 
-- **Validate** (`validate_explicitly`, recommended) bypasses hooks for internal commits and pushes, runs the approved commands during setup, and reruns them before integration
-- **Ignore** (`ignore_internal_only`) bypasses hooks and records that explicit validation was skipped
-- **Run** (`use_on_internal_commits`) leaves normal Git hook execution enabled
+- **Observe** (`observe_only`) bypasses hooks for internal commits and pushes and records that explicit validation was skipped
+- **Check** (`validate_advisory`, recommended) bypasses native hooks and runs approved commands as visible advisory checks; failure or timeout warns but does not block
+- **Require** (`validate_required`) bypasses native hooks and treats an approved validation failure as a blocking gate
+- **Run** (`use_native_hooks`) leaves normal Git hook execution enabled
 
-Validate and Run are deliberately different: Validate makes the checks explicit and auditable outside the internal Git command, while Run allows a repository hook to execute inside and potentially block that command.
+Check, Require, and Run are deliberately different. Check and Require execute reviewed commands outside Git and audit any files they change, restoring only changes those checks introduced. Run allows a repository hook to execute inside and potentially block or modify the Git operation itself.
 
 ### 3.3 Setup-scoped web tools, retries, and reset behavior
 
@@ -187,14 +191,14 @@ Successful or failed setup attempts produce durable artifacts:
 | `execution_setup_profile` | Canonical reusable profile containing temp roots, bootstrap commands, tooling and workspace probes, resolved Git-hook policy/evidence/validation commands, optional tool-requirement evidence, reusable artifacts, discovered project commands, and quality-gate policy. |
 | `execution_setup_report` | Final status, attempt history, retry notes, probe and hook outcomes, structured-output diagnostics, worktree warnings, raw attempts, and the diff between approved-plan commands and any audited execution-time additions. |
 | `.ticket/runtime/execution-setup-profile.json` | Mirror of the accepted profile for later phases that prefer reading a file path instead of loading the artifact body inline. |
-| `.ticket/runtime/execution-setup/**` | Runtime-owned temp state such as `env.sh`, `run`, caches, and tool downloads. |
+| `.ticket/runtime/execution-setup/**` | Runtime-owned temp state such as the current host's launcher, caches, and tool downloads. |
 
 ### 3.5 Impact on later phases
 
 Pre-implementation directly shapes later execution:
 
 - **Coding** receives the reusable setup profile path instead of rediscovering environment state from scratch.
-- **Final testing** reuses the validated wrapper from the setup profile when generating commands.
+- **Final testing** executes structured current-host commands with the setup profile's PATH additions and variables applied directly.
 - **Bead commits** ignore setup-owned runtime roots so prepared toolchains and caches do not become implementation diffs, and apply the approved hook policy consistently.
 - **Integration** reruns approved explicit hook validations before incorporating the candidate and exposes executed or skipped outcomes in final review.
 - **Cleanup** removes the temporary runtime roots at ticket end while leaving the audit artifacts and execution log intact.

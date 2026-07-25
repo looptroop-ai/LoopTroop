@@ -3,6 +3,7 @@ import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { profiles } from '../../db/schema'
 import { discoverGitHooks } from '../../git/hookDiscovery'
 import { isGitHookPolicy } from '../../git/hookPolicy'
+import { detectHostContext } from '../../lib/hostContext'
 import { getProjectContextById } from '../../storage/projects'
 import { getTicketContext, getTicketPaths } from '../../storage/tickets'
 import type { ExecutionSetupPlan } from './types'
@@ -27,6 +28,7 @@ export function lockExecutionSetupPlanDetectedHooks(ticketId: string, plan: Exec
   if (!paths) return plan
   return {
     ...plan,
+    hostContext: detectHostContext(),
     gitHooks: {
       ...plan.gitHooks,
       detected: discoverGitHooks(paths.worktreePath).detected,
@@ -40,7 +42,10 @@ export function enrichGeneratedExecutionSetupPlan(ticketId: string, plan: Execut
   const discovery = discoverGitHooks(paths.worktreePath)
   const commands = [...plan.gitHooks.validationCommands]
   for (const suggestion of discovery.suggestedValidationCommands) {
-    if (!commands.some((command) => command.id === suggestion.id || command.command === suggestion.command)) {
+    if (!commands.some((command) =>
+      command.id === suggestion.id
+      || JSON.stringify(command.command) === JSON.stringify(suggestion.command),
+    )) {
       commands.push(suggestion)
     }
   }

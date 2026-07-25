@@ -1,5 +1,7 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import { looksLikePromptEcho } from '../lib/promptEcho'
+import { detectHostContext } from '../lib/hostContext'
+import { normalizeCommandSpec, runtimeEnvironmentSchema } from '@shared/commandSpec'
 import type {
   BeadCompletionPayload,
   ExecutionSetupPlanPayload,
@@ -10,7 +12,6 @@ import type {
   ExecutionSetupToolRequirementStatus,
   ExecutionSetupCommandProbePayload,
   ExecutionSetupGitHooksPayload,
-  GitHookPolicy,
   FinalTestCommandPayload,
   FinalTestFileEffect,
   FinalTestFileEffectIntent,
@@ -227,7 +228,10 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
   )
 }
 
-export function normalizeFinalTestCommandsOutput(rawContent: string): StructuredOutputResult<FinalTestCommandPayload> {
+export function normalizeFinalTestCommandsOutput(
+  rawContent: string,
+  hostContext = detectHostContext(),
+): StructuredOutputResult<FinalTestCommandPayload> {
   const candidates = collectTaggedCandidates(rawContent, 'FINAL_TEST_COMMANDS')
   let lastError = 'No final test command marker found'
   let lastErrorCause: unknown = null
@@ -270,10 +274,19 @@ export function normalizeFinalTestCommandsOutput(rawContent: string): Structured
       }
 
       const rawCommands = getValueByAliases(parsed, ['commands', 'commandlist', 'command_list', 'cmds', 'cmd'])
-      const commands = toStringArray(rawCommands)
+      const commandValues = Array.isArray(rawCommands)
+        ? rawCommands
+        : typeof rawCommands === 'string'
+          ? [rawCommands]
+          : []
       if (typeof rawCommands === 'string') {
         candidateWarnings.push('Coerced commands from string to array')
       }
+      const commands = commandValues.map((command) => {
+        const normalized = normalizeCommandSpec(command, hostContext)
+        if (normalized.warning) candidateWarnings.push(normalized.warning)
+        return normalized.command
+      })
       if (commands.length === 0) {
         throw new Error('No executable final test commands were provided')
       }
@@ -368,15 +381,6 @@ function normalizeExecutionSetupStatus(value: unknown): ExecutionSetupStatus {
   throw new Error(`Invalid execution setup status: ${raw}`)
 }
 
-function normalizeExecutionSetupPlanStatus(value: unknown): 'draft' {
-  const raw = getRequiredString({ status: value }, ['status'], 'status')
-  const normalized = normalizeKey(raw)
-  if (['draft', 'planned', 'plan', 'review'].includes(normalized)) {
-    return 'draft'
-  }
-  throw new Error(`Invalid execution setup plan status: ${raw}`)
-}
-
 function normalizeExecutionSetupPath(value: unknown, fieldLabel: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`${fieldLabel} must be a non-empty string`)
@@ -400,42 +404,58 @@ function normalizeExecutionSetupPlanReadinessStatus(value: unknown): 'ready' | '
   throw new Error(`Invalid execution setup readiness status: ${raw}`)
 }
 
-function normalizeExecutionSetupProjectCommands(value: unknown, fieldLabel: string): ExecutionSetupPlanPayload['projectCommands'] {
+function normalizeExecutionSetupCommand(
+  value: unknown,
+  fieldLabel: string,
+  repairWarnings?: string[],
+) {
+  const normalized = normalizeCommandSpec(value, detectHostContext())
+  if (normalized.warning) repairWarnings?.push(`${fieldLabel}: ${normalized.warning}`)
+  return normalized.command
+}
+
+function normalizeExecutionSetupCommands(
+  value: unknown,
+  fieldLabel: string,
+  repairWarnings?: string[],
+) {
+  if (value === undefined || value === null) return []
+  const entries = Array.isArray(value) ? value : [value]
+  return entries.map((entry, index) =>
+    normalizeExecutionSetupCommand(entry, `${fieldLabel}[${index}]`, repairWarnings),
+  )
+}
+
+function normalizeExecutionSetupProjectCommands(
+  value: unknown,
+  fieldLabel: string,
+  repairWarnings?: string[],
+): ExecutionSetupPlanPayload['projectCommands'] {
   if (!isRecord(value)) throw new Error(`${fieldLabel} missing object`)
   return {
-    prepare: toStringArray(getValueByAliases(value, ['prepare', 'bootstrap', 'setup'])),
-    testFull: toStringArray(getValueByAliases(value, ['testfull', 'tests'])),
-    lintFull: toStringArray(getValueByAliases(value, ['lintfull', 'lint'])),
-    typecheckFull: toStringArray(getValueByAliases(value, ['typecheckfull', 'typecheck'])),
+    prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings),
+    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings),
+    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings),
+    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings),
   }
 }
 
-function normalizeExecutionSetupQualityGatePolicy(value: unknown, fieldLabel: string): ExecutionSetupPlanPayload['qualityGatePolicy'] {
-  if (!isRecord(value)) throw new Error(`${fieldLabel} missing object`)
-  return {
-    tests: getRequiredString(value, ['tests'], `${fieldLabel}.tests`),
-    lint: getRequiredString(value, ['lint'], `${fieldLabel}.lint`),
-    typecheck: getRequiredString(value, ['typecheck'], `${fieldLabel}.typecheck`),
-    fullProjectFallback: getRequiredString(value, ['fullprojectfallback'], `${fieldLabel}.full_project_fallback`),
-  }
-}
-
-function normalizeGitHookPolicy(value: unknown): GitHookPolicy {
-  const raw = typeof value === 'string' ? normalizeKey(value) : ''
-  if (raw === 'useoninternalcommits') return 'use_on_internal_commits'
-  if (raw === 'ignoreinternalonly') return 'ignore_internal_only'
-  if (!raw || raw === 'validateexplicitly') return 'validate_explicitly'
-  throw new Error(`Invalid Git hook policy: ${String(value)}`)
-}
-
-function normalizeExecutionSetupCommandProbes(value: unknown, label: string): ExecutionSetupCommandProbePayload[] {
+function normalizeExecutionSetupCommandProbes(
+  value: unknown,
+  label: string,
+  repairWarnings?: string[],
+): ExecutionSetupCommandProbePayload[] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value)) throw new Error(`${label} must be a list`)
   return value.map((entry, index) => {
     if (!isRecord(entry)) throw new Error(`${label}[${index}] must be an object`)
     return {
       id: getRequiredString(entry, ['id'], `${label}[${index}].id`),
-      command: getRequiredString(entry, ['command'], `${label}[${index}].command`),
+      command: normalizeExecutionSetupCommand(
+        getValueByAliases(entry, ['command']),
+        `${label}[${index}].command`,
+        repairWarnings,
+      ),
       purpose: getRequiredString(entry, ['purpose'], `${label}[${index}].purpose`),
     }
   })
@@ -458,6 +478,17 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
     if (sourceStatus !== 'ignored' && sourceStatus !== 'untracked') {
       throw new Error(`workspace_inputs[${index}].source_status must be ignored or untracked`)
     }
+    const category = getRequiredString(
+      entry,
+      ['category'],
+      `workspace_inputs[${index}].category`,
+    )
+    if (!['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(category)) {
+      throw new Error(
+        `workspace_inputs[${index}].category must be local_config, secret, fixture, dataset, or other_non_reproducible`,
+      )
+    }
+    const allowLargeCopy = getValueByAliases(entry, ['allowlargecopy'])
     return {
       path: normalizeExecutionSetupPath(
         getValueByAliases(entry, ['path']),
@@ -465,32 +496,28 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
       ),
       kind,
       sourceStatus,
+      category: category as ExecutionSetupPlanPayload['workspaceInputs'][number]['category'],
+      ...(typeof allowLargeCopy === 'boolean' ? { allowLargeCopy } : {}),
       reason: getRequiredString(entry, ['reason', 'rationale'], `workspace_inputs[${index}].reason`),
     }
   })
 }
 
-function normalizeExecutionSetupGitHooks(value: unknown): ExecutionSetupGitHooksPayload {
+function normalizeExecutionSetupGitHooks(
+  value: unknown,
+  repairWarnings?: string[],
+): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
-    return { policy: 'validate_explicitly', detected: [], validationCommands: [] }
+    return { policy: 'validate_advisory', detected: [], validationCommands: [] }
   }
   if (!isRecord(value)) throw new Error('git_hooks must be an object')
   const rawDetected = getValueByAliases(value, ['detected', 'detectedhooks'])
-  const detected = rawDetected === undefined || rawDetected === null
-    ? []
-    : Array.isArray(rawDetected)
-      ? rawDetected.map((entry, index) => {
-          if (!isRecord(entry)) throw new Error(`git_hooks.detected[${index}] must be an object`)
-          const managerHint = toOptionalString(getValueByAliases(entry, ['managerhint', 'manager']))
-          return {
-            name: getRequiredString(entry, ['name', 'hook'], `git_hooks.detected[${index}].name`),
-            path: normalizeExecutionSetupPath(getValueByAliases(entry, ['path']), `git_hooks.detected[${index}].path`),
-            source: getRequiredString(entry, ['source'], `git_hooks.detected[${index}].source`),
-            executable: Boolean(getValueByAliases(entry, ['executable', 'isexecutable'])),
-            ...(managerHint ? { managerHint } : {}),
-          }
-        })
-      : (() => { throw new Error('git_hooks.detected must be a list') })()
+  if (rawDetected !== undefined && rawDetected !== null) {
+    repairWarnings?.push('Ignored model-supplied git_hooks.detected; LoopTroop discovers hook evidence from the current workspace.')
+  }
+  if (getValueByAliases(value, ['policy']) !== undefined) {
+    repairWarnings?.push('Ignored model-supplied git_hooks.policy; LoopTroop applies the configured policy.')
+  }
   const rawCommands = getValueByAliases(value, ['validationcommands', 'commands'])
   const validationCommands = rawCommands === undefined || rawCommands === null
     ? []
@@ -500,14 +527,18 @@ function normalizeExecutionSetupGitHooks(value: unknown): ExecutionSetupGitHooks
           return {
             id: getRequiredString(entry, ['id'], `git_hooks.validation_commands[${index}].id`),
             hook: getRequiredString(entry, ['hook'], `git_hooks.validation_commands[${index}].hook`),
-            command: getRequiredString(entry, ['command'], `git_hooks.validation_commands[${index}].command`),
+            command: normalizeExecutionSetupCommand(
+              getValueByAliases(entry, ['command']),
+              `git_hooks.validation_commands[${index}].command`,
+              repairWarnings,
+            ),
             purpose: getRequiredString(entry, ['purpose'], `git_hooks.validation_commands[${index}].purpose`),
           }
         })
       : (() => { throw new Error('git_hooks.validation_commands must be a list') })()
   return {
-    policy: normalizeGitHookPolicy(getValueByAliases(value, ['policy'])),
-    detected,
+    policy: 'validate_advisory',
+    detected: [],
     validationCommands,
   }
 }
@@ -525,7 +556,10 @@ function normalizeExecutionSetupPlanReadiness(
     }
   }
 
-  const status = normalizeExecutionSetupPlanReadinessStatus(getValueByAliases(value, ['status']))
+  const rawStatus = getValueByAliases(value, ['status'])
+  const status = rawStatus === undefined
+    ? defaults.status
+    : normalizeExecutionSetupPlanReadinessStatus(rawStatus)
   const actionsRequiredRaw = getValueByAliases(value, ['actionsrequired', 'actions_required'])
   const actionsRequired = typeof actionsRequiredRaw === 'boolean'
     ? actionsRequiredRaw
@@ -568,7 +602,11 @@ function normalizeExecutionSetupPlanStep(
     id,
     title,
     purpose,
-    commands: toStringArray(getValueByAliases(entry, ['commands', 'command'])),
+    commands: normalizeExecutionSetupCommands(
+      getValueByAliases(entry, ['commands', 'command']),
+      `steps[${index}].commands`,
+      repairWarnings,
+    ),
     required: Boolean(getValueByAliases(entry, ['required', 'isrequired']) ?? false),
     rationale,
     cautions: toStringArray(getValueByAliases(entry, ['cautions', 'warnings', 'notes'])),
@@ -578,25 +616,20 @@ function normalizeExecutionSetupPlanStep(
 function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]): ExecutionSetupPlanPayload {
   if (!isRecord(value)) throw new Error('Execution setup plan is missing')
 
-  const schemaVersion = toInteger(getValueByAliases(value, ['schemaversion', 'version']))
-  if (schemaVersion == null || schemaVersion < 1) {
-    throw new Error('Execution setup plan requires schema_version >= 1')
+  for (const [aliases, label] of [
+    [['schemaversion', 'version'], 'schema_version'],
+    [['ticketid'], 'ticket_id'],
+    [['artifact'], 'artifact'],
+    [['status'], 'status'],
+    [['hostcontext'], 'host_context'],
+    [['temproots', 'temproot'], 'temp_roots'],
+    [['qualitygatepolicy', 'qualitypolicy'], 'quality_gate_policy'],
+  ] as const) {
+    if (getValueByAliases(value, [...aliases]) !== undefined) {
+      repairWarnings?.push(`Ignored model-supplied ${label}; LoopTroop owns this setup-plan field.`)
+    }
   }
-
-  const ticketId = getRequiredString(value, ['ticketid'], 'ticket_id')
-  const artifactRaw = getRequiredString(value, ['artifact'], 'artifact')
-  if (normalizeKey(artifactRaw) !== 'executionsetupplan' && artifactRaw !== 'execution_setup_plan') {
-    throw new Error(`Execution setup plan artifact must be execution_setup_plan (received ${artifactRaw})`)
-  }
-
-  const status = normalizeExecutionSetupPlanStatus(getValueByAliases(value, ['status']))
   const summary = getRequiredString(value, ['summary', 'reason'], 'summary')
-
-  const tempRoots = toStringArray(getValueByAliases(value, ['temproots', 'temproot']))
-    .map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
-  if (tempRoots.length === 0) {
-    throw new Error('Execution setup plan requires at least one temp_root')
-  }
 
   const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
     getValueByAliases(value, ['workspaceinputs']),
@@ -607,7 +640,7 @@ function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]):
     return normalizeExecutionSetupPlanStep(entry, index, repairWarnings)
   }) : []
 
-  const readiness = normalizeExecutionSetupPlanReadiness(
+  const proposedReadiness = normalizeExecutionSetupPlanReadiness(
     getValueByAliases(value, ['readiness', 'environmentreadiness', 'environment_readiness']),
     {
       status: steps.length > 0 || workspaceInputs.length > 0 ? 'partial' : 'ready',
@@ -615,48 +648,42 @@ function normalizeExecutionSetupPlan(value: unknown, repairWarnings?: string[]):
     },
   )
 
-  if (readiness.status === 'ready') {
-    if (readiness.actionsRequired) {
-      throw new Error('Execution setup plan readiness cannot be ready when actions_required is true')
-    }
-    if (readiness.gaps.length > 0) {
-      throw new Error('Execution setup plan readiness cannot list gaps when status is ready')
-    }
-    if (steps.length > 0 || workspaceInputs.length > 0) {
-      throw new Error('Execution setup plan cannot include setup steps or workspace inputs when readiness is ready')
-    }
-  } else {
-    if (!readiness.actionsRequired) {
-      throw new Error('Execution setup plan readiness must require actions unless status is ready')
-    }
-    if (steps.length === 0 && workspaceInputs.length === 0) {
-      throw new Error('Execution setup plan requires at least one setup step or workspace input when actions are required')
-    }
+  const actionsRequired = steps.length > 0 || workspaceInputs.length > 0
+  const readiness = {
+    status: actionsRequired ? ('partial' as const) : ('ready' as const),
+    actionsRequired,
+    evidence: proposedReadiness.evidence,
+    gaps: actionsRequired ? proposedReadiness.gaps : [],
   }
 
   const projectCommands = normalizeExecutionSetupProjectCommands(
     getValueByAliases(value, ['projectcommands', 'commands']),
     'Execution setup plan project_commands',
+    repairWarnings,
   )
-  const qualityGatePolicy = normalizeExecutionSetupQualityGatePolicy(
-    getValueByAliases(value, ['qualitygatepolicy', 'qualitypolicy']),
-    'Execution setup plan quality_gate_policy',
-  )
+  const qualityGatePolicy = {
+    tests: 'bead-test-commands-first',
+    lint: 'impacted-or-package',
+    typecheck: 'impacted-or-package',
+    fullProjectFallback: 'never-block-on-unrelated-baseline',
+  }
   const cautions = toStringArray(getValueByAliases(value, ['cautions', 'warnings', 'notes']))
   const workspaceProbes = normalizeExecutionSetupCommandProbes(
     getValueByAliases(value, ['workspaceprobes']),
     'workspace_probes',
+    repairWarnings,
   )
-  const gitHooks = normalizeExecutionSetupGitHooks(getValueByAliases(value, ['githooks']))
+  const gitHooks = normalizeExecutionSetupGitHooks(getValueByAliases(value, ['githooks']), repairWarnings)
 
   return {
-    schemaVersion,
-    ticketId,
+    schemaVersion: 1,
+    ticketId: '',
     artifact: 'execution_setup_plan',
-    status,
+    status: 'draft',
+    hostContext: detectHostContext(),
     summary,
     readiness,
-    tempRoots: [...new Set(tempRoots)],
+    tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
     workspaceInputs,
     workspaceProbes,
     gitHooks,
@@ -682,6 +709,7 @@ function normalizeExecutionSetupToolRequirementStatus(value: unknown, label: str
 function normalizeExecutionSetupProvisioningAttempts(
   value: unknown,
   label: string,
+  repairWarnings?: string[],
 ): ExecutionSetupProvisioningAttemptPayload[] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value)) throw new Error(`${label} must be a list`)
@@ -689,14 +717,21 @@ function normalizeExecutionSetupProvisioningAttempts(
     if (!isRecord(entry)) throw new Error(`${label}[${index}] must be an object`)
     return {
       strategy: getRequiredString(entry, ['strategy', 'name', 'approach'], `${label}[${index}].strategy`),
-      commands: toStringArray(getValueByAliases(entry, ['commands', 'provisioningcommands', 'attemptedcommands'])),
+      commands: normalizeExecutionSetupCommands(
+        getValueByAliases(entry, ['commands', 'provisioningcommands', 'attemptedcommands']),
+        `${label}[${index}].commands`,
+        repairWarnings,
+      ),
       result: getRequiredString(entry, ['result', 'status', 'outcome'], `${label}[${index}].result`),
       reason: toOptionalString(getValueByAliases(entry, ['reason', 'failure_reason', 'summary'])) ?? '',
     }
   })
 }
 
-function normalizeExecutionSetupToolRequirements(value: unknown): ExecutionSetupProfilePayload['toolRequirements'] {
+function normalizeExecutionSetupToolRequirements(
+  value: unknown,
+  repairWarnings?: string[],
+): ExecutionSetupProfilePayload['toolRequirements'] {
   if (value === undefined || value === null) return undefined
   if (!Array.isArray(value)) throw new Error('Execution setup profile tool_requirements must be a list')
   return value.map((entry, index) => {
@@ -716,6 +751,7 @@ function normalizeExecutionSetupToolRequirements(value: unknown): ExecutionSetup
           'attempts',
         ]),
         `tool_requirements[${index}].provisioning_attempts`,
+        repairWarnings,
       ),
       finalProbe: toOptionalString(getValueByAliases(entry, ['finalprobe', 'verificationprobe', 'probecommand'])) ?? '',
       failureReason: toOptionalString(getValueByAliases(entry, ['failurereason', 'reason', 'blocker'])) ?? '',
@@ -723,50 +759,43 @@ function normalizeExecutionSetupToolRequirements(value: unknown): ExecutionSetup
   })
 }
 
-function normalizeExecutionSetupProfile(value: unknown): ExecutionSetupProfilePayload {
+function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[]): ExecutionSetupProfilePayload {
   if (!isRecord(value)) throw new Error('Execution setup profile is missing')
-
-  const schemaVersion = toInteger(getValueByAliases(value, ['schemaversion', 'version']))
-  if (schemaVersion == null || schemaVersion < 1) {
-    throw new Error('Execution setup profile requires schema_version >= 1')
-  }
-
-  const ticketId = getRequiredString(value, ['ticketid'], 'ticket_id')
-  const artifactRaw = getRequiredString(value, ['artifact'], 'artifact')
-  if (normalizeKey(artifactRaw) !== 'executionsetupprofile' && artifactRaw !== 'execution_setup_profile') {
-    throw new Error(`Execution setup artifact must be execution_setup_profile (received ${artifactRaw})`)
-  }
 
   const status = normalizeExecutionSetupStatus(getValueByAliases(value, ['status']))
   const summary = getRequiredString(value, ['summary', 'reason'], 'summary')
 
   const tempRoots = toStringArray(getValueByAliases(value, ['temproots', 'temproot']))
     .map((entry) => normalizeExecutionSetupPath(entry, 'temp_roots entry'))
-  if (tempRoots.length === 0) {
-    throw new Error('Execution setup profile requires at least one temp_root')
-  }
 
-  const bootstrapCommands = toStringArray(getValueByAliases(value, ['bootstrapcommands', 'bootstrap']))
-  const toolingProbeCommands = toStringArray(getValueByAliases(value, [
+  const bootstrapCommands = normalizeExecutionSetupCommands(
+    getValueByAliases(value, ['bootstrapcommands', 'bootstrap']),
+    'bootstrap_commands',
+    repairWarnings,
+  )
+  const toolingProbeCommands = normalizeExecutionSetupCommands(getValueByAliases(value, [
     'toolingprobecommands',
     'toolingprobes',
     'probecommands',
     'verificationcommands',
-  ]))
-  const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
-    getValueByAliases(value, ['workspaceinputs']),
-  )
-  const workspaceProbes = normalizeExecutionSetupCommandProbes(
-    getValueByAliases(value, ['workspaceprobes']),
-    'workspace_probes',
-  )
-  const gitHooks = normalizeExecutionSetupGitHooks(getValueByAliases(value, ['githooks']))
+  ]), 'tooling_probe_commands', repairWarnings)
+  const workspaceInputs: ExecutionSetupPlanPayload['workspaceInputs'] = []
+  const workspaceProbes: ExecutionSetupCommandProbePayload[] = []
+  const gitHooks: ExecutionSetupGitHooksPayload = {
+    policy: 'validate_advisory',
+    detected: [],
+    validationCommands: [],
+  }
+  const runtimeEnvironmentValue = getValueByAliases(value, ['runtimeenvironment', 'environment'])
+  const runtimeEnvironment = runtimeEnvironmentValue == null
+    ? runtimeEnvironmentSchema.parse({})
+    : runtimeEnvironmentSchema.parse(runtimeEnvironmentValue)
   const toolRequirements = normalizeExecutionSetupToolRequirements(getValueByAliases(value, [
     'toolrequirements',
     'toolrequirement',
     'toolingrequirements',
     'requiredtools',
-  ]))
+  ]), repairWarnings)
 
   const rawReusableArtifacts = getValueByAliases(value, ['reusableartifacts', 'artifacts'])
   const reusableArtifacts = Array.isArray(rawReusableArtifacts)
@@ -783,22 +812,27 @@ function normalizeExecutionSetupProfile(value: unknown): ExecutionSetupProfilePa
   const projectCommands = normalizeExecutionSetupProjectCommands(
     getValueByAliases(value, ['projectcommands', 'commands']),
     'Execution setup profile project_commands',
+    repairWarnings,
   )
-  const qualityGatePolicy = normalizeExecutionSetupQualityGatePolicy(
-    getValueByAliases(value, ['qualitygatepolicy', 'qualitypolicy']),
-    'Execution setup profile quality_gate_policy',
-  )
+  const qualityGatePolicy = {
+    tests: 'bead-test-commands-first',
+    lint: 'impacted-or-package',
+    typecheck: 'impacted-or-package',
+    fullProjectFallback: 'never-block-on-unrelated-baseline',
+  }
 
   const cautions = toStringArray(getValueByAliases(value, ['cautions', 'warnings', 'notes']))
 
   return {
-    schemaVersion,
-    ticketId,
+    schemaVersion: 1,
+    ticketId: '',
     artifact: 'execution_setup_profile',
     status,
+    hostContext: detectHostContext(),
     summary,
     tempRoots: [...new Set(tempRoots)],
     workspaceInputs,
+    runtimeEnvironment,
     bootstrapCommands,
     toolingProbeCommands,
     workspaceProbes,
@@ -835,6 +869,7 @@ function toCanonicalExecutionSetupPlanPayload(value: ExecutionSetupPlanPayload):
     ticket_id: value.ticketId,
     artifact: value.artifact,
     status: value.status,
+    host_context: value.hostContext,
     summary: value.summary,
     readiness: {
       status: value.readiness.status,
@@ -847,6 +882,10 @@ function toCanonicalExecutionSetupPlanPayload(value: ExecutionSetupPlanPayload):
       path: input.path,
       kind: input.kind,
       source_status: input.sourceStatus,
+      category: input.category,
+      ...(input.allowLargeCopy === undefined ? {} : { allow_large_copy: input.allowLargeCopy }),
+      ...(input.fileCount === undefined ? {} : { file_count: input.fileCount }),
+      ...(input.totalBytes === undefined ? {} : { total_bytes: input.totalBytes }),
       reason: input.reason,
     })),
     workspace_probes: value.workspaceProbes,
@@ -856,7 +895,8 @@ function toCanonicalExecutionSetupPlanPayload(value: ExecutionSetupPlanPayload):
         name: hook.name,
         path: hook.path,
         source: hook.source,
-        executable: hook.executable,
+        kind: hook.kind,
+        runnable: hook.runnable,
         ...(hook.managerHint ? { manager_hint: hook.managerHint } : {}),
       })),
       validation_commands: value.gitHooks.validationCommands,
@@ -895,14 +935,20 @@ function toCanonicalExecutionSetupResultPayload(value: ExecutionSetupResultPaylo
       ticket_id: value.profile.ticketId,
       artifact: value.profile.artifact,
       status: value.profile.status,
+      host_context: value.profile.hostContext,
       summary: value.profile.summary,
       temp_roots: value.profile.tempRoots,
       workspace_inputs: value.profile.workspaceInputs.map((input) => ({
         path: input.path,
         kind: input.kind,
         source_status: input.sourceStatus,
+        category: input.category,
+        ...(input.allowLargeCopy === undefined ? {} : { allow_large_copy: input.allowLargeCopy }),
+        ...(input.fileCount === undefined ? {} : { file_count: input.fileCount }),
+        ...(input.totalBytes === undefined ? {} : { total_bytes: input.totalBytes }),
         reason: input.reason,
       })),
+      runtime_environment: value.profile.runtimeEnvironment,
       bootstrap_commands: value.profile.bootstrapCommands,
       tooling_probe_commands: value.profile.toolingProbeCommands,
       workspace_probes: value.profile.workspaceProbes,
@@ -913,7 +959,8 @@ function toCanonicalExecutionSetupResultPayload(value: ExecutionSetupResultPaylo
           name: hook.name,
           path: hook.path,
           source: hook.source,
-          executable: hook.executable,
+          kind: hook.kind,
+          runnable: hook.runnable,
           ...(hook.managerHint ? { manager_hint: hook.managerHint } : {}),
         })),
         validation_commands: value.profile.gitHooks.validationCommands,
@@ -1068,7 +1115,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
 
       const status = normalizeExecutionSetupStatus(getValueByAliases(parsed, ['status']))
       const summary = getRequiredString(parsed, ['summary', 'reason'], 'summary')
-      const profile = normalizeExecutionSetupProfile(getValueByAliases(parsed, ['profile']))
+      const profile = normalizeExecutionSetupProfile(getValueByAliases(parsed, ['profile']), candidateWarnings)
       const checks = normalizeExecutionSetupChecks(getValueByAliases(parsed, ['checks']))
 
       if (profile.status !== status) {

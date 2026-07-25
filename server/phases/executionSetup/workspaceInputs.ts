@@ -4,6 +4,15 @@ import { spawnSync } from 'node:child_process'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../structuredOutput/types'
 
 const INTERNAL_ROOTS = ['.git', '.ticket', '.looptroop'] as const
+export const WORKSPACE_INPUT_DEFAULT_MAX_FILES = 10_000
+export const WORKSPACE_INPUT_DEFAULT_MAX_BYTES = 100 * 1024 * 1024
+
+export interface WorkspaceInputCopyPreview {
+  path: string
+  fileCount: number
+  totalBytes: number
+  exceedsDefaultLimit: boolean
+}
 
 function normalizeRelativePath(input: string): string {
   return input.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
@@ -63,13 +72,69 @@ function isTracked(projectRoot: string, path: string): boolean {
   return runGit(projectRoot, ['ls-files', '--error-unmatch', '--', path]).status === 0
 }
 
+function inspectEligiblePath(input: {
+  projectRoot: string
+  worktreePath: string
+  path: string
+  sourceStatus: ExecutionSetupWorkspaceInputPayload['sourceStatus']
+}): { fileCount: number; totalBytes: number } {
+  const sourcePath = resolve(input.projectRoot, input.path)
+  assertResolvedWithin(input.projectRoot, sourcePath, input.path)
+  const stat = lstatSync(sourcePath)
+  if (stat.isSymbolicLink()) throw new Error(`Workspace input contains a symbolic link: ${input.path}`)
+  if (stat.isDirectory()) {
+    return readdirSync(sourcePath).reduce(
+      (total, child) => {
+        const childResult = inspectEligiblePath({ ...input, path: `${input.path}/${child}` })
+        return {
+          fileCount: total.fileCount + childResult.fileCount,
+          totalBytes: total.totalBytes + childResult.totalBytes,
+        }
+      },
+      { fileCount: 0, totalBytes: 0 },
+    )
+  }
+  if (
+    !stat.isFile()
+    || isTracked(input.projectRoot, input.path)
+    || isTracked(input.worktreePath, input.path)
+    || !sourceStatusMatches(input.projectRoot, input.path, input.sourceStatus)
+  ) {
+    return { fileCount: 0, totalBytes: 0 }
+  }
+  return { fileCount: 1, totalBytes: stat.size }
+}
+
+export function previewExecutionSetupWorkspaceInputs(input: {
+  projectRoot: string
+  worktreePath: string
+  workspaceInputs: ExecutionSetupWorkspaceInputPayload[]
+}): WorkspaceInputCopyPreview[] {
+  const workspaceInputs = validateExecutionSetupWorkspaceInputs(input)
+  return workspaceInputs.map((entry) => {
+    const totals = inspectEligiblePath({
+      projectRoot: input.projectRoot,
+      worktreePath: input.worktreePath,
+      path: entry.path,
+      sourceStatus: entry.sourceStatus,
+    })
+    return {
+      path: entry.path,
+      ...totals,
+      exceedsDefaultLimit:
+        totals.fileCount > WORKSPACE_INPUT_DEFAULT_MAX_FILES
+        || totals.totalBytes > WORKSPACE_INPUT_DEFAULT_MAX_BYTES,
+    }
+  })
+}
+
 export function validateExecutionSetupWorkspaceInputs(input: {
   projectRoot: string
   worktreePath: string
   workspaceInputs: ExecutionSetupWorkspaceInputPayload[]
 }): ExecutionSetupWorkspaceInputPayload[] {
   const seen = new Set<string>()
-  return input.workspaceInputs.map((entry) => {
+  const validated = input.workspaceInputs.map((entry) => {
     const path = assertSafeWorkspaceInputPath(entry.path)
     if (seen.has(path)) throw new Error(`Workspace input path is duplicated: ${path}`)
     seen.add(path)
@@ -91,6 +156,19 @@ export function validateExecutionSetupWorkspaceInputs(input: {
       throw new Error(`Workspace input is not ${entry.sourceStatus} in the original checkout: ${path}`)
     }
     return { ...entry, path, reason: entry.reason.trim() }
+  })
+  return validated.map((entry) => {
+    const totals = inspectEligiblePath({
+      projectRoot: input.projectRoot,
+      worktreePath: input.worktreePath,
+      path: entry.path,
+      sourceStatus: entry.sourceStatus,
+    })
+    return {
+      ...entry,
+      fileCount: totals.fileCount,
+      totalBytes: totals.totalBytes,
+    }
   })
 }
 
@@ -131,10 +209,19 @@ export function materializeExecutionSetupWorkspaceInputs(input: {
   projectRoot: string
   worktreePath: string
   workspaceInputs: ExecutionSetupWorkspaceInputPayload[]
-}): { copiedPaths: string[] } {
+}): { copiedPaths: string[]; previews: WorkspaceInputCopyPreview[] } {
   const workspaceInputs = validateExecutionSetupWorkspaceInputs(input)
+  const previews = previewExecutionSetupWorkspaceInputs({ ...input, workspaceInputs })
   const copiedPaths: string[] = []
-  for (const entry of workspaceInputs) {
+  for (const [index, entry] of workspaceInputs.entries()) {
+    const preview = previews[index]
+    if (preview?.exceedsDefaultLimit && !entry.allowLargeCopy) {
+      const sizeMiB = (preview.totalBytes / (1024 * 1024)).toFixed(1)
+      throw new Error(
+        `Workspace input ${entry.path} contains ${preview.fileCount} files (${sizeMiB} MiB), `
+        + 'which exceeds the default copy limit. Review the preview and explicitly allow the large copy to continue.',
+      )
+    }
     const copied = copyEligiblePath({
       projectRoot: input.projectRoot,
       worktreePath: input.worktreePath,
@@ -143,5 +230,5 @@ export function materializeExecutionSetupWorkspaceInputs(input: {
     })
     if (copied > 0 || entry.kind === 'directory') copiedPaths.push(entry.path)
   }
-  return { copiedPaths }
+  return { copiedPaths, previews }
 }

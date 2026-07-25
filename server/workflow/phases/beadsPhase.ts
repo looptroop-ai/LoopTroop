@@ -7,6 +7,7 @@ import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
 import { draftBeads, buildBeadsContextBuilder } from '../../phases/beads/draft'
 import { hydrateExpandedBeads, validateBeadExpansion } from '../../phases/beads/expand'
 import type { Bead, BeadSubset } from '../../phases/beads/types'
+import type { CommandSpec } from '@shared/commandSpec'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { Message, PromptPart, StreamEvent } from '../../opencode/types'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt } from '../../storage/tickets'
@@ -1011,6 +1012,13 @@ export function updateTicketProgressFromBeads(ticketId: string, beads: Bead[]) {
 }
 
 export function buildMockBeadSubsets(context: TicketContext): BeadSubset[] {
+  const command = (script: string): CommandSpec => ({
+    mode: 'shell',
+    shell: 'posix',
+    script,
+    cwd: '.',
+    env: {},
+  })
   return [
     {
       id: 'bead-1',
@@ -1023,7 +1031,7 @@ export function buildMockBeadSubsets(context: TicketContext): BeadSubset[] {
       },
       acceptanceCriteria: ['All ticket files resolve under <project>/.looptroop/worktrees/<ticket-id>/.ticket/.'],
       tests: ['Create a ticket and verify its meta and execution log paths.'],
-      testCommands: ['npm run test -- server/routes'],
+      testCommands: [command('npm run test -- server/routes')],
     },
     {
       id: 'bead-2',
@@ -1036,7 +1044,7 @@ export function buildMockBeadSubsets(context: TicketContext): BeadSubset[] {
       },
       acceptanceCriteria: ['Routes, SSE, and UI all accept string ticket refs.'],
       tests: ['Fetch and open a ticket using its string ref.'],
-      testCommands: ['npm run test -- src/hooks'],
+      testCommands: [command('npm run test -- src/hooks')],
     },
     {
       id: 'bead-3',
@@ -1049,7 +1057,7 @@ export function buildMockBeadSubsets(context: TicketContext): BeadSubset[] {
       },
       acceptanceCriteria: ['A ticket reaches COMPLETED in mock mode without external AI dependencies.'],
       tests: ['Run the browser lifecycle script end-to-end.'],
-      testCommands: ['npm run test'],
+      testCommands: [command('npm run test')],
     },
   ]
 }

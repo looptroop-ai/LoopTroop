@@ -324,7 +324,7 @@ describe('commitBeadChanges', () => {
     expect(result.error).toMatch(/push failed/)
   })
 
-  it.each(['validate_explicitly', 'ignore_internal_only'] as const)('bypasses failing internal hooks for %s', (policy) => {
+  it.each(['observe_only', 'validate_advisory', 'validate_required'] as const)('bypasses failing internal hooks for %s', (policy) => {
     const dir = makeFreshRepo()
     const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
     writeFileSync(hookPath, '#!/bin/sh\nexit 7\n')
@@ -336,14 +336,14 @@ describe('commitBeadChanges', () => {
     expect(commitBeadChanges(dir, 'bead-hook', 'Hook policy')).toMatchObject({ committed: true })
   })
 
-  it('runs failing internal hooks for use_on_internal_commits', () => {
+  it('runs failing internal hooks for use_native_hooks', () => {
     const dir = makeFreshRepo()
     const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
     writeFileSync(hookPath, '#!/bin/sh\nexit 7\n')
     chmodSync(hookPath, 0o755)
     mkdirSync(join(dir, '.ticket/runtime'), { recursive: true })
     writeFileSync(join(dir, '.ticket/runtime/execution-setup-profile.json'), JSON.stringify({
-      git_hooks: { policy: 'use_on_internal_commits' },
+      git_hooks: { policy: 'use_native_hooks' },
     }))
     writeFileSync(join(dir, 'feature.ts'), 'export const policy = true\n')
 

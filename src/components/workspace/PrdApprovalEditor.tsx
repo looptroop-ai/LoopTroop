@@ -8,6 +8,7 @@ import {
   PRD_TECHNICAL_SECTION_CONFIG,
 } from '@/lib/prdDocument'
 import { CollapsibleSection } from './ArtifactContentViewer'
+import { CommandSpecListEditor } from './CommandSpecListEditor'
 
 interface PrdApprovalEditorProps {
   draft: PrdApprovalDraft
@@ -225,17 +226,14 @@ function StoryEditor({
             addLabel="Add Step"
             onChange={(implementation_steps) => onChange({ ...story, implementation_steps })}
           />
-          <StringListEditor
-            label="Verification Commands"
-            items={story.verification.required_commands}
-            disabled={disabled}
-            emptyLabel="No verification commands recorded."
-            addLabel="Add Command"
-            onChange={(required_commands) => onChange({
-              ...story,
-              verification: { required_commands },
-            })}
-          />
+          <div>
+            <div className="section-label mb-2">Verification Commands</div>
+            <CommandSpecListEditor
+              commands={story.verification.required_commands}
+              disabled={disabled}
+              onChange={(required_commands) => onChange({ ...story, verification: { required_commands } })}
+            />
+          </div>
         </div>
       </div>
     </article>

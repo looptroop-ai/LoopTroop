@@ -422,8 +422,8 @@ export interface ExecutionSetupCommandReceiptData {
 }
 
 export interface ExecutionSetupGitHooksData {
-  policy: 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only'
-  detected: Array<{ name: string; path: string; source: string; executable: boolean; managerHint?: string }>
+  policy: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+  detected: Array<{ name: string; path: string; source: string; kind: 'hook' | 'manager_config'; runnable: 'yes' | 'no' | 'unknown'; managerHint?: string }>
   validationCommands: Array<{ id: string; hook: string; command: string; purpose: string }>
   validationReceipts: ExecutionSetupCommandReceiptData[]
 }
@@ -439,6 +439,8 @@ export interface ExecutionSetupProfileData {
     path: string
     kind: 'file' | 'directory'
     sourceStatus: 'ignored' | 'untracked'
+    category: 'local_config' | 'secret' | 'fixture' | 'dataset' | 'other_non_reproducible'
+    allowLargeCopy?: boolean
     reason: string
   }>
   bootstrapCommands: string[]
@@ -1206,6 +1208,10 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
           path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
           kind: getValueByAliases(entry, ['kind']) === 'directory' ? 'directory' : 'file',
           sourceStatus: getValueByAliases(entry, ['sourceStatus', 'source_status']) === 'untracked' ? 'untracked' : 'ignored',
+          category: ['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(String(getValueByAliases(entry, ['category'])))
+            ? getValueByAliases(entry, ['category']) as ExecutionSetupProfileData['workspaceInputs'][number]['category']
+            : 'other_non_reproducible',
+          ...(getValueByAliases(entry, ['allowLargeCopy', 'allow_large_copy']) === true ? { allowLargeCopy: true } : {}),
           reason: normalizeOptionalString(getValueByAliases(entry, ['reason'])) ?? '',
         }))
       : [],
@@ -1214,15 +1220,18 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
     workspaceProbes,
     workspaceProbeReceipts: parseReceipts(workspaceProbeReceiptsRaw),
     gitHooks: {
-      policy: getValueByAliases(gitHooks, ['policy']) === 'use_on_internal_commits' || getValueByAliases(gitHooks, ['policy']) === 'ignore_internal_only'
+      policy: ['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'].includes(String(getValueByAliases(gitHooks, ['policy'])))
         ? getValueByAliases(gitHooks, ['policy']) as ExecutionSetupGitHooksData['policy']
-        : 'validate_explicitly',
+        : 'validate_advisory',
       detected: Array.isArray(detectedRaw)
         ? detectedRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
             name: normalizeOptionalString(getValueByAliases(entry, ['name'])) ?? '',
             path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
             source: normalizeOptionalString(getValueByAliases(entry, ['source'])) ?? '',
-            executable: getValueByAliases(entry, ['executable']) === true,
+            kind: getValueByAliases(entry, ['kind']) === 'manager_config' ? 'manager_config' : 'hook',
+            runnable: getValueByAliases(entry, ['runnable']) === 'yes' || getValueByAliases(entry, ['runnable']) === 'no'
+              ? getValueByAliases(entry, ['runnable']) as 'yes' | 'no'
+              : 'unknown',
             ...(normalizeOptionalString(getValueByAliases(entry, ['managerHint', 'manager_hint']))
               ? { managerHint: normalizeOptionalString(getValueByAliases(entry, ['managerHint', 'manager_hint']))! }
               : {}),

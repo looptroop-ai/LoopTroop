@@ -28,14 +28,10 @@ import type { ExecutionSetupPlan, ExecutionSetupPlanGenerationResult, ExecutionS
 
 const EXECUTION_SETUP_PLAN_SCHEMA_REMINDER = [
   'Return exactly one <EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN> block and nothing else.',
-  'Inside the marker, return a single JSON or YAML object with top-level keys: schema_version, ticket_id, artifact, status, summary, readiness, temp_roots, workspace_inputs, workspace_probes, git_hooks, steps, project_commands, quality_gate_policy, cautions.',
-  'artifact must be execution_setup_plan.',
-  'status must be draft.',
-  'readiness.status must be ready, partial, or missing.',
-  'readiness.actions_required must be false only when readiness.status is ready.',
-  'temp_roots may name any repository-local or tool-cache path needed by the approved setup commands.',
-  'workspace_inputs must list only concrete ignored or untracked files and directories needed by setup.',
-  'steps and workspace_inputs must both be empty when readiness says the environment is ready; otherwise at least one must be non-empty.',
+  'Inside the marker, return a single JSON or YAML proposal with top-level keys: summary, readiness, workspace_inputs, workspace_probes, git_hooks, steps, project_commands, cautions.',
+  'LoopTroop supplies ticket identity, schema/artifact/status, temp roots, host facts, Git policy/detection, quality policy, and derived readiness; do not return those fields.',
+  'readiness contains only evidence and gaps.',
+  'workspace_inputs must list only concrete ignored or untracked non-reproducible files and directories needed by setup, including category.',
   'Every setup step must include id, title, purpose, commands, required, rationale, and cautions. Use cautions: [] when there are no step-specific cautions.',
 ].join('\n')
 

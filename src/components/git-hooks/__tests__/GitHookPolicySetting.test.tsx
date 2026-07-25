@@ -10,7 +10,7 @@ function renderSetting() {
     <TooltipProvider>
       <GitHookPolicySetting
         value={null}
-        inheritedPolicy="ignore_internal_only"
+        inheritedPolicy="observe_only"
         onChange={onChange}
       />
     </TooltipProvider>,
@@ -19,21 +19,22 @@ function renderSetting() {
 }
 
 describe('GitHookPolicySetting', () => {
-  it('shows the inherited policy as one of three simple choices', () => {
+  it('shows the inherited policy as one of four simple choices', () => {
     const onChange = renderSetting()
 
-    expect(screen.getAllByRole('radio')).toHaveLength(3)
-    expect(screen.getByRole('radio', { name: 'Ignore' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getAllByRole('radio')).toHaveLength(4)
+    expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText(/Inherited default is selected/)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Validate' }))
-    expect(onChange).toHaveBeenCalledWith('validate_explicitly')
+    fireEvent.click(screen.getByRole('radio', { name: 'Check' }))
+    expect(onChange).toHaveBeenCalledWith('validate_advisory')
   })
 
   it.each([
-    ['Validate', 'runs the approved validation commands as visible steps'],
-    ['Ignore', 'does not run the explicit hook validation commands'],
-    ['Run', 'A hook can block or modify those Git operations'],
+    ['Observe', 'does not run separate validation commands'],
+    ['Check', 'does not block the ticket'],
+    ['Require', 'blocks the ticket'],
+    ['Run', 'A hook can block or modify those operations'],
   ])('explains the %s choice on hover', async (label, expectedText) => {
     renderSetting()
     fireEvent.focus(screen.getByRole('radio', { name: label }))
@@ -41,11 +42,11 @@ describe('GitHookPolicySetting', () => {
   })
 
   it('resolves ticket, project, then profile precedence', () => {
-    expect(resolveGitHookPolicySetting('ignore_internal_only', 'use_on_internal_commits', 'validate_explicitly'))
-      .toEqual({ policy: 'ignore_internal_only', source: 'ticket' })
-    expect(resolveGitHookPolicySetting(null, 'use_on_internal_commits', 'validate_explicitly'))
-      .toEqual({ policy: 'use_on_internal_commits', source: 'project' })
-    expect(resolveGitHookPolicySetting(null, null, 'validate_explicitly'))
-      .toEqual({ policy: 'validate_explicitly', source: 'profile' })
+    expect(resolveGitHookPolicySetting('observe_only', 'use_native_hooks', 'validate_advisory'))
+      .toEqual({ policy: 'observe_only', source: 'ticket' })
+    expect(resolveGitHookPolicySetting(null, 'use_native_hooks', 'validate_advisory'))
+      .toEqual({ policy: 'use_native_hooks', source: 'project' })
+    expect(resolveGitHookPolicySetting(null, null, 'validate_advisory'))
+      .toEqual({ policy: 'validate_advisory', source: 'profile' })
   })
 })

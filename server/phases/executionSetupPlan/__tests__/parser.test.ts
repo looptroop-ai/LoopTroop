@@ -8,10 +8,6 @@ function wrapPlan(body: string): string {
 
 function buildPlanPayload(steps: unknown[], workspaceInputs: unknown[] = []) {
   return {
-    schema_version: 1,
-    ticket_id: 'T-1',
-    artifact: 'execution_setup_plan',
-    status: 'draft',
     summary: 'Workspace needs setup before coding.',
     readiness: {
       status: 'partial',
@@ -19,12 +15,9 @@ function buildPlanPayload(steps: unknown[], workspaceInputs: unknown[] = []) {
       evidence: ['Project manifest exists.'],
       gaps: ['Dependencies are missing.'],
     },
-    temp_roots: ['.ticket/runtime/execution-setup'],
     workspace_inputs: workspaceInputs,
     workspace_probes: [{ id: 'workspace-1', command: 'project inspect', purpose: 'load the repository project' }],
     git_hooks: {
-      policy: 'validate_explicitly',
-      detected: [],
       validation_commands: [],
     },
     steps,
@@ -33,12 +26,6 @@ function buildPlanPayload(steps: unknown[], workspaceInputs: unknown[] = []) {
       test_full: ['project test'],
       lint_full: [],
       typecheck_full: [],
-    },
-    quality_gate_policy: {
-      tests: 'bead-test-commands-first',
-      lint: 'impacted-or-package',
-      typecheck: 'impacted-or-package',
-      full_project_fallback: 'never-block-on-unrelated-baseline',
     },
     cautions: [],
   }
@@ -60,23 +47,39 @@ describe('parseExecutionSetupPlanResult', () => {
     ]))
 
     expect(parsed.errors).toEqual([])
-    expect(parsed.plan?.workspaceProbes).toEqual([{ id: 'workspace-1', command: 'project inspect', purpose: 'load the repository project' }])
-    expect(parsed.plan?.gitHooks.policy).toBe('validate_explicitly')
+    expect(parsed.plan?.workspaceProbes).toEqual([{
+      id: 'workspace-1',
+      command: {
+        mode: 'shell',
+        shell: 'posix',
+        script: 'project inspect',
+        cwd: '.',
+        env: {},
+      },
+      purpose: 'load the repository project',
+    }])
+    expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')
     expect(parsed.plan?.steps[0]).toMatchObject({
       id: 'setup-step-1',
       title: 'Install locked dependencies before running project-native tests.',
       purpose: 'Install locked dependencies before running project-native tests.',
       rationale: 'Install locked dependencies before running project-native tests.',
-      commands: ['project bootstrap'],
+      commands: [{
+        mode: 'shell',
+        shell: 'posix',
+        script: 'project bootstrap',
+        cwd: '.',
+        env: {},
+      }],
       required: true,
       cautions: [],
     })
     expect(parsed.repairApplied).toBe(true)
-    expect(parsed.repairWarnings).toEqual([
+    expect(parsed.repairWarnings).toEqual(expect.arrayContaining([
       'Filled missing execution setup plan step id at index 0 from list position.',
       'Filled missing execution setup plan step title at index 0 from existing purpose text.',
       'Filled missing execution setup plan step rationale at index 0 from existing purpose text.',
-    ])
+    ]))
   })
 
   it('repairs the retry shape that has id but still omits title and rationale', () => {
@@ -95,10 +98,10 @@ describe('parseExecutionSetupPlanResult', () => {
       title: 'Install locked dependencies before running project-native tests.',
       rationale: 'Install locked dependencies before running project-native tests.',
     })
-    expect(parsed.repairWarnings).toEqual([
+    expect(parsed.repairWarnings).toEqual(expect.arrayContaining([
       'Filled missing execution setup plan step title at index 0 from existing purpose text.',
       'Filled missing execution setup plan step rationale at index 0 from existing purpose text.',
-    ])
+    ]))
   })
 
   it('repairs execution_setup_plan wrapper objects around the payload', () => {
@@ -139,12 +142,14 @@ describe('parseExecutionSetupPlanResult', () => {
         path: 'packages/runtime/package.json',
         kind: 'file',
         source_status: 'ignored',
+        category: 'local_config',
         reason: 'The workspace package manifest is required to resolve repository imports.',
       },
       {
         path: 'fixtures/generated',
         kind: 'directory',
         source_status: 'untracked',
+        category: 'fixture',
         reason: 'Repository tests load generated fixtures from this directory.',
       },
     ])
@@ -164,12 +169,14 @@ describe('parseExecutionSetupPlanResult', () => {
         path: 'packages/runtime/package.json',
         kind: 'file',
         sourceStatus: 'ignored',
+        category: 'local_config',
         reason: 'The workspace package manifest is required to resolve repository imports.',
       },
       {
         path: 'fixtures/generated',
         kind: 'directory',
         sourceStatus: 'untracked',
+        category: 'fixture',
         reason: 'Repository tests load generated fixtures from this directory.',
       },
     ])
@@ -179,20 +186,23 @@ describe('parseExecutionSetupPlanResult', () => {
         path: 'packages/runtime/package.json',
         kind: 'file',
         source_status: 'ignored',
+        category: 'local_config',
         reason: 'The workspace package manifest is required to resolve repository imports.',
       },
       {
         path: 'fixtures/generated',
         kind: 'directory',
         source_status: 'untracked',
+        category: 'fixture',
         reason: 'Repository tests load generated fixtures from this directory.',
       },
     ])
   })
 
   it.each([
-    ['unsupported kind', { path: 'local/input', kind: 'tree', source_status: 'ignored', reason: 'Needed.' }, 'kind must be file or directory'],
-    ['unsupported source status', { path: 'local/input', kind: 'file', source_status: 'tracked', reason: 'Needed.' }, 'source_status must be ignored or untracked'],
+    ['unsupported kind', { path: 'local/input', kind: 'tree', source_status: 'ignored', category: 'local_config', reason: 'Needed.' }, 'kind must be file or directory'],
+    ['unsupported source status', { path: 'local/input', kind: 'file', source_status: 'tracked', category: 'local_config', reason: 'Needed.' }, 'source_status must be ignored or untracked'],
+    ['reproducible category', { path: 'local/input', kind: 'file', source_status: 'ignored', category: 'cache', reason: 'Needed.' }, 'category must be local_config'],
   ])('rejects workspace inputs with an %s', (_label, workspaceInput, expectedError) => {
     const parsed = parseExecutionSetupPlanResult(wrapPlan(JSON.stringify(buildPlanPayload([], [workspaceInput]))))
 
@@ -205,6 +215,7 @@ describe('parseExecutionSetupPlanResult', () => {
       path: 'local/input',
       kind: 'file',
       source_status: 'ignored',
+      category: 'local_config',
       reason: 'Needed by the workspace.',
     }])
     payload.readiness = {
@@ -216,7 +227,55 @@ describe('parseExecutionSetupPlanResult', () => {
 
     const parsed = parseExecutionSetupPlanResult(wrapPlan(JSON.stringify(payload)))
 
-    expect(parsed.plan).toBeNull()
-    expect(parsed.errors.join(' ')).toContain('cannot include setup steps or workspace inputs when readiness is ready')
+    expect(parsed.errors).toEqual([])
+    expect(parsed.plan?.readiness).toMatchObject({ status: 'partial', actionsRequired: true })
+  })
+
+  it('ignores malformed backend-owned fields and keeps model-owned hook suggestions', () => {
+    const payload = {
+      ...buildPlanPayload([]),
+      schema_version: 'wrong',
+      ticket_id: { invented: true },
+      artifact: 'not-a-plan',
+      status: 'blocked',
+      temp_roots: false,
+      quality_gate_policy: 'wrong',
+      git_hooks: {
+        policy: { invalid: true },
+        detected: [{ invented: true }],
+        validation_commands: [{
+          id: 'hook-check',
+          hook: 'pre-commit',
+          command: 'project lint',
+          purpose: 'Run the configured validation.',
+        }],
+      },
+    }
+
+    const parsed = parseExecutionSetupPlanResult(wrapPlan(JSON.stringify(payload)))
+
+    expect(parsed.errors).toEqual([])
+    expect(parsed.plan).toMatchObject({
+      schemaVersion: 1,
+      ticketId: '',
+      artifact: 'execution_setup_plan',
+      status: 'draft',
+      gitHooks: {
+        policy: 'validate_advisory',
+        detected: [],
+        validationCommands: [{
+          id: 'hook-check',
+          command: expect.objectContaining({
+            mode: 'shell',
+            shell: 'posix',
+            script: 'project lint',
+          }),
+        }],
+      },
+    })
+    expect(parsed.repairWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('Ignored model-supplied ticket_id'),
+      expect.stringContaining('Ignored model-supplied git_hooks.detected'),
+    ]))
   })
 })

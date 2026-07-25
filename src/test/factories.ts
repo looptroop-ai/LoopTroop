@@ -4,6 +4,7 @@
  */
 import type { Ticket } from '@/hooks/useTickets'
 import type { PrdDocument } from '@/lib/prdDocument'
+import { createShellCommandSpec } from '@shared/commandSpec'
 
 // ---------------------------------------------------------------------------
 // Generic test constants — never reference real ticket/project names
@@ -174,7 +175,7 @@ export function makePrdDocument(overrides: Partial<PrdDocument> = {}): PrdDocume
             title: 'As a user, I can perform the test action.',
             acceptance_criteria: ['Test criterion is met.'],
             implementation_steps: ['Render the test panel.'],
-            verification: { required_commands: ['npm test'] },
+            verification: { required_commands: [createShellCommandSpec('npm test')] },
           },
         ],
       },

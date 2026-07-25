@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { parseFinalTestCommands } from '../parser'
+import { parseFinalTestCommands as parseFinalTestCommandsForHost } from '../parser'
+import type { HostContext } from '@shared/hostContext'
+
+const HOST: HostContext = {
+  platform: 'linux',
+  environment: 'native',
+  arch: 'x64',
+  availableShells: ['posix'],
+  preferredShell: 'posix',
+}
+const parseFinalTestCommands = (output: string) => parseFinalTestCommandsForHost(output, HOST)
 
 describe.concurrent('parseFinalTestCommands', () => {
   it('requires the structured final test marker', () => {
@@ -35,7 +45,13 @@ describe.concurrent('parseFinalTestCommands', () => {
 
     const result = parseFinalTestCommands(output)
     expect(result.markerFound).toBe(true)
-    expect(result.commands).toEqual(['npm test'])
+    expect(result.commands).toEqual([{
+      mode: 'shell',
+      shell: 'posix',
+      script: 'npm test',
+      cwd: '.',
+      env: {},
+    }])
     expect(result.summary).toBeNull()
     expect(result.testFiles).toEqual([])
     expect(result.modifiedFiles).toEqual([])
@@ -58,7 +74,13 @@ describe.concurrent('parseFinalTestCommands', () => {
 
     const result = parseFinalTestCommands(output)
     expect(result.markerFound).toBe(true)
-    expect(result.commands).toEqual(['npm run test:server'])
+    expect(result.commands).toEqual([{
+      mode: 'shell',
+      shell: 'posix',
+      script: 'npm run test:server',
+      cwd: '.',
+      env: {},
+    }])
     expect(result.summary).toBe('verify structured output flows')
     expect(result.errors).toEqual([])
     expect(result.repairApplied).toBe(true)

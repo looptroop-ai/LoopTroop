@@ -13,6 +13,7 @@ import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { PhaseAttemptSelector } from './PhaseAttemptSelector'
 import { BeadDiffViewer } from './BeadDiffViewer'
+import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { LogEntryRow } from './LogLine'
 import { filterBeadLogEntries, formatLogLine } from './logFormat'
 import { LogColorLegend } from './LogColorLegend'
@@ -51,7 +52,7 @@ interface TicketBead {
   prdRefs: string[]
   acceptanceCriteria: string[]
   tests: string[]
-  testCommands: string[]
+  testCommands: CommandSpec[]
   testCommandReason?: string
   targetFiles: string[]
   contextGuidance: { patterns: string[]; anti_patterns: string[] }
@@ -222,7 +223,7 @@ function normalizeBead(input: {
   prdRefs?: string[]
   acceptanceCriteria?: string[]
   tests?: string[]
-  testCommands?: string[]
+  testCommands?: CommandSpec[]
   testCommandReason?: string
   targetFiles?: string[]
   contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
@@ -356,7 +357,7 @@ async function fetchTicketBeads(ticketId: string): Promise<TicketBead[]> {
           prdRefs?: string[]
           acceptanceCriteria?: string[]
           tests?: string[]
-          testCommands?: string[]
+          testCommands?: CommandSpec[]
           testCommandReason?: string
           targetFiles?: string[]
           contextGuidance?: { patterns?: string[]; anti_patterns?: string[] }
@@ -1856,8 +1857,8 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                       <div>
                         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">Planned Test Commands</div>
                         <div className="space-y-1">
-                          {viewedBead.testCommands.map((command) => (
-                            <code key={command} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono">{command}</code>
+                          {viewedBead.testCommands.map((command, index) => (
+                            <code key={index} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono">{renderCommandSpec(command)}</code>
                           ))}
                         </div>
                       </div>

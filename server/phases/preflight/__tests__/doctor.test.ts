@@ -6,6 +6,7 @@ import { runPreFlightChecks } from '../doctor'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
 import { TEST } from '../../../test/factories'
+import { createShellCommandSpec } from '@shared/commandSpec'
 import type { WorktreeChangeEntry, WorktreeChangeSummary } from '../../../git/worktreeChanges'
 
 function makeBead(overrides: Partial<Bead> = {}): Bead {
@@ -17,7 +18,7 @@ function makeBead(overrides: Partial<Bead> = {}): Bead {
     contextGuidance: { patterns: [], anti_patterns: [] },
     acceptanceCriteria: ['ac1'],
     tests: ['test1'],
-    testCommands: ['npm test'],
+    testCommands: [createShellCommandSpec('npm test')],
     priority: 1,
     status: 'pending',
     issueType: 'task',

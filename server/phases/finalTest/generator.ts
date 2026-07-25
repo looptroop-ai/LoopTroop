@@ -20,11 +20,14 @@ import type { StructuredOutputMetadata } from '../../structuredOutput/types'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
+import { detectHostContext } from '../../lib/hostContext'
+import { getCommandSpecPromptExample } from '@shared/commandSpec'
 
 const FINAL_TEST_SCHEMA_REMINDER = [
   'Return exactly one <FINAL_TEST_COMMANDS>...</FINAL_TEST_COMMANDS> block and nothing else.',
   'Inside the marker, return a single JSON or YAML object with a non-empty commands field.',
-  'commands must contain executable shell commands. A single command string is acceptable only if it is the full command to run.',
+  `commands must contain CommandSpec objects shaped like ${JSON.stringify(getCommandSpecPromptExample())}.`,
+  'Prefer mode "process" with a program and args. Use mode "shell" only when repository evidence requires shell syntax.',
   'test_files must list the paths of all test files you created or modified (relative to the project root).',
   'modified_files must list every permanent repository file created or modified during the final-test phase that should remain in the final candidate. It must include every path from test_files.',
   'summary is optional. tests_count is optional.',
@@ -57,7 +60,15 @@ export async function generateFinalTests(
     onPromptCompleted?: (entry: { stage: FinalTestPromptStage; event: OpenCodePromptCompletedEvent }) => void
   },
 ): Promise<FinalTestGenerationResult> {
-  const promptContent = buildPromptFromTemplate(PROM52, ticketContext)
+  const hostContext = detectHostContext()
+  const promptContent = buildPromptFromTemplate(PROM52, [
+    ...ticketContext,
+    {
+      type: 'text',
+      source: 'host_context',
+      content: JSON.stringify(hostContext, null, 2),
+    },
+  ])
   const promptParts = [{ type: 'text', content: promptContent }] as PromptPart[]
   const initialInput = formatPromptText(promptParts)
   let sessionId = ''

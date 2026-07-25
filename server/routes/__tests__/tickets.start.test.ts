@@ -263,29 +263,29 @@ describe('ticketRouter POST /tickets/:id/start', () => {
   it('freezes the effective Git hook policy and its inheritance source at start', async () => {
     sqlite.exec(`
       INSERT INTO profiles (main_implementer, council_members, git_hook_policy)
-      VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', 'ignore_internal_only');
+      VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', 'observe_only');
     `)
     const inherited = setupStartTicketApp()
     expect((await inherited.app.request(`/api/tickets/${inherited.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
     expect(getTicketByRef(inherited.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'ignore_internal_only',
+      lockedGitHookPolicy: 'observe_only',
       lockedGitHookPolicySource: 'profile',
     })
 
     const projectOverride = setupStartTicketApp()
-    updateProject(projectOverride.project.id, { gitHookPolicy: 'use_on_internal_commits' })
+    updateProject(projectOverride.project.id, { gitHookPolicy: 'use_native_hooks' })
     expect((await projectOverride.app.request(`/api/tickets/${projectOverride.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
     expect(getTicketByRef(projectOverride.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'use_on_internal_commits',
+      lockedGitHookPolicy: 'use_native_hooks',
       lockedGitHookPolicySource: 'project',
     })
 
     const overridden = setupStartTicketApp()
-    updateProject(overridden.project.id, { gitHookPolicy: 'use_on_internal_commits' })
-    updateTicket(overridden.ticket.id, { gitHookPolicy: 'validate_explicitly' })
+    updateProject(overridden.project.id, { gitHookPolicy: 'use_native_hooks' })
+    updateTicket(overridden.ticket.id, { gitHookPolicy: 'validate_required' })
     expect((await overridden.app.request(`/api/tickets/${overridden.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
     expect(getTicketByRef(overridden.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'validate_explicitly',
+      lockedGitHookPolicy: 'validate_required',
       lockedGitHookPolicySource: 'ticket',
     })
 

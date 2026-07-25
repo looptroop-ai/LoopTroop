@@ -6,6 +6,7 @@ import type { Bead } from '../../beads/types'
 import { PROFILE_DEFAULTS } from '../../../db/defaults'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
+import { createShellCommandSpec } from '@shared/commandSpec'
 import {
   BEAD_AGENT_RESPONSE_INVALID,
   BEAD_ITERATION_TIMEOUT,
@@ -123,7 +124,7 @@ describe('executeBead', () => {
     adapter.mockResponses.set('mock-session-1#1', doneMarker)
     const result = await executeBead(
       adapter,
-      buildBead({ testCommands: ['node -e "process.exit(1)"'] }),
+      buildBead({ testCommands: [createShellCommandSpec('node -e "process.exit(1)"')] }),
       [{ type: 'text', content: 'Bead context' }],
       '/tmp/test',
       1,

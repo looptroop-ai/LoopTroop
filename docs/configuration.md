@@ -107,7 +107,7 @@ This is meant to answer two quick questions without opening logs or artifacts:
 | [PRD Coverage Passes](#prd-coverage-passes) | 5 | 2–20 | Coverage | ticket start lock |
 | [Beads Coverage Passes](#beads-coverage-passes) | 5 | 2–20 | Coverage | ticket start lock |
 | [Manual QA](#manual-qa) | disabled | enabled / disabled | Post-Implementation | ticket start lock |
-| [Git Hook Policy](#git-hook-policy) | Validate | Validate / Ignore / Run | Pre-Implementation | ticket start lock |
+| [Git Hook Policy](#git-hook-policy) | Check | Observe / Check / Require / Run | Pre-Implementation | setup-plan approval |
 | [Per-Iteration Timeout](#per-iteration-timeout) | 1200 s | 0–3600 s | Implementation & Workspace Setup | next coding/final-test attempt |
 | [Execution Setup Timeout](#execution-setup-timeout) | 1200 s | 0–3600 s | Implementation & Workspace Setup | next execution-setup attempt |
 | [Max Bead Retries](#max-bead-retries) | 5 | 0–20 | Implementation & Workspace Setup | next execution/final-test attempt |
@@ -532,15 +532,16 @@ Once coverage is clean or this cap is reached, LoopTroop advances to `EXPANDING_
 **Type:** three-choice policy
 **Default:** **Validate** (recommended)
 
-Choose how LoopTroop handles repository hooks. The same linked buttons appear in Configuration, Project **Advanced** settings, and the new-ticket **Advanced** settings; Draft tickets can also change their choice before Start. The active inherited choice is highlighted, so there is no separate or duplicate **Inherit** option. Hovering each button summarizes whether hooks are bypassed, whether explicit checks run, and whether a hook can block an internal Git operation.
+Choose how LoopTroop handles repository hooks. The same linked buttons appear in Configuration, Project **Advanced** settings, and the new-ticket **Advanced** settings; Draft tickets can change their initial choice before Start. The setup-plan approval editor may then override that inherited choice for the current ticket run without changing the parent setting. Hovering each button summarizes whether hooks are bypassed, whether explicit checks run, and whether a failure can block.
 
 | Choice | Stored value | What LoopTroop does |
 | --- | --- | --- |
-| **Validate** (recommended) | `validate_explicitly` | Bypasses hooks on LoopTroop-owned Git operations, then runs the visible approved validation commands during setup and again before integration |
-| **Ignore** | `ignore_internal_only` | Bypasses hooks on LoopTroop-owned Git operations and records that hook validation was skipped |
-| **Run** | `use_on_internal_commits` | Lets Git run repository hooks normally on LoopTroop-owned commits and pushes; it does not add separate hook-equivalent commands |
+| **Observe** | `observe_only` | Bypasses hooks on LoopTroop-owned Git operations and records that explicit validation was skipped |
+| **Check** (recommended) | `validate_advisory` | Bypasses native hooks and runs the visible approved validation commands; failures and timeouts are warnings |
+| **Require** | `validate_required` | Bypasses native hooks and blocks when an approved validation command fails or times out |
+| **Run** | `use_native_hooks` | Lets Git run repository hooks normally on LoopTroop-owned commits and pushes; hooks may block or modify the Git operation |
 
-**Validate and Run are not the same.** Validate turns off hooks for internal Git commands and performs the approved checks explicitly, where they are visible and auditable. Run leaves the repository hooks active inside those Git commands, so a hook can directly block an internal commit or push.
+**Check, Require, and Run are not the same.** Check and Require turn off hooks for internal Git commands and perform the reviewed commands explicitly, where output and file effects are auditable. Check continues with a warning; Require blocks. Run leaves repository hooks active inside Git itself.
 
 Resolution is deterministic:
 
@@ -548,7 +549,7 @@ Resolution is deterministic:
 2. otherwise a non-null project `gitHookPolicy` wins;
 3. otherwise the profile `gitHookPolicy` is used.
 
-LoopTroop freezes the effective choice and its source when the ticket starts. Only Draft tickets may change the ticket override, and later profile or project edits do not change a started ticket. The approved execution setup plan records the ticket-specific policy alongside detected hooks and editable validation commands.
+LoopTroop resolves the initial choice and source when the ticket starts. Later profile or project edits do not change that starting choice, but the setup approval editor can choose a non-strict ticket-run override. The approved plan becomes authoritative for that run; regeneration preserves the override.
 
 Execution setup shows detected hooks as read-only evidence and lets you add, edit, reorder, or remove validation commands. An unknown hook never causes LoopTroop to invent an ecosystem-specific command. Removing all validation commands is allowed and the approval receipt records that exact decision.
 
@@ -593,11 +594,11 @@ LoopTroop generates a context wipe note summarizing the failure when possible, a
 **Default:** 1200 s (20 minutes)  
 **Range:** 0–3600 s
 
-The maximum total active-work budget for one `PREPARING_EXECUTION_ENV` attempt, which runs after the setup plan is approved and before any coding begins. One deadline is shared by session acquisition, the initial and fallback prompts, OpenCode provider recovery, progress continuations, structured-output corrections, setup-scoped online lookup, backend wrapper/probe/hook validation, worktree inspection, and retry-note generation. None of those steps restarts the current attempt's clock.
+The maximum total active-work budget for one `PREPARING_EXECUTION_ENV` attempt, which runs after the current-host setup plan is approved and before coding begins. One deadline is shared by session acquisition, prompts, provider recovery, continuations, structured-output corrections, setup-scoped online lookup, backend command/probe/hook validation, worktree inspection, and retry-note generation. None of those steps restarts the current attempt's clock.
 
 **What execution setup does:**
 
-The setup phase can materialize user-approved ignored or untracked files and directories from the original checkout, install user-space toolchains under `.ticket/runtime/execution-setup/tool-cache`, warm caches, build native dependencies, or prepare repository-local runtime artifacts. It runs in the ticket's worktree before coding, records reusable wrapper commands when prepared runtime environment variables are needed, and validates declared tooling probes, repository-level workspace probes, and approved explicit Git-hook commands before the workflow enters coding. Setup follows repository evidence without assuming a language, build system, package manager, shell, or operating system. LoopTroop automatically recovers the canonical executable `.ticket/runtime/execution-setup/run` when a setup result omits its declaration, records the repair, and uses a non-login nested shell so the wrapper's prepared `PATH` is preserved. The agent must return an honest `ready` result when every check passes or `blocked` when any check fails; only ready profiles become reusable runtime state. If required launcher setup fails, a blocked profile records `tool_requirements.provisioning_attempts` evidence showing distinct attempted temp-root provisioning strategies and commands, or why no safe provisioning path exists. Workspace inputs have no size limit and use the setup plan approval gate rather than a separate configuration setting. Manual approval authorizes the listed paths. A future unattended mode must limit materialization to paths covered by a project allowlist.
+The setup phase can materialize user-approved non-reproducible ignored or untracked inputs, install user-space toolchains under `.ticket/runtime/execution-setup/tool-cache`, warm caches, build native dependencies, or prepare repository-local runtime artifacts. Commands are stored as either a direct program with arguments or a script for an explicit POSIX, Command Prompt, or PowerShell shell. Working directories stay repository-relative; environment variables and PATH additions are structured data applied directly to subprocesses. A host-specific launcher is generated only when the coding agent needs the same prepared environment. The plan targets the detected current host, including WSL as Linux, while remaining agnostic to programming language, build system, and project layout. Workspace-input previews use conservative default file-count and size limits; a reviewed per-input override can allow a larger copy.
 
 The long setup timeout remains available for real provisioning work such as toolchain downloads. When a completed setup turn contains only a short progress update, LoopTroop continues the same session up to two times without consuming a setup attempt or structured-output repair, but each continuation receives only the time remaining on the current attempt. Completed but malformed results use the separate Structured Output Retries setting under that same deadline. OpenCode Retry Limit and Retry Grace Window still apply within each prompt, but cannot extend the setup attempt beyond its deadline. A third progress-only response fails that attempt with a plain incomplete-setup explanation. Actionable blocked results can use the normal setup-attempt budget; a blocked result proving that no safe provisioning path exists stops immediately.
 

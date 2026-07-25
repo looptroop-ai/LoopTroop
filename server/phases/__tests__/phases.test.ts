@@ -3,6 +3,7 @@ import { createBatches, processAnswers, calculateFollowUpLimit } from '../interv
 import { expandBeads } from '../beads/expand'
 import type { InterviewQuestion } from '../interview/types'
 import type { BeadSubset } from '../beads/types'
+import { createShellCommandSpec } from '@shared/commandSpec'
 
 describe('Interview Q&A', () => {
   const questions: InterviewQuestion[] = [
@@ -40,7 +41,7 @@ describe('Beads Expansion', () => {
     const subsets: BeadSubset[] = [
       { id: 'b1', title: 'T1', prdRefs: [], description: 'd',
         contextGuidance: { patterns: ['Keep the draft aligned with PRD refs.'], anti_patterns: ['Do not drop later beads when output is long.'] },
-        acceptanceCriteria: ['ac'], tests: ['t'], testCommands: ['cmd'] },
+        acceptanceCriteria: ['ac'], tests: ['t'], testCommands: [createShellCommandSpec('cmd')] },
     ]
     const expanded = expandBeads(subsets)
     expect(expanded.length).toBe(1)

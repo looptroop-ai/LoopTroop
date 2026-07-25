@@ -10,6 +10,7 @@ import type {
   FinalTestAttemptHistoryEntry,
   FinalTestExecutionReport,
 } from './runner'
+import { renderCommandSpec } from '@shared/commandSpec'
 
 type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 
@@ -30,11 +31,12 @@ function buildDeterministicFinalTestRetryNote(input: {
     ? report.commands
       .map((command) => (
         command.timedOut
-          ? `${command.command} (timed out after ${command.durationMs}ms)`
-          : `${command.command} (exit ${command.exitCode ?? 'unknown'})`
+          ? `${command.displayCommand} (timed out after ${command.durationMs}ms)`
+          : `${command.displayCommand} (exit ${command.exitCode ?? 'unknown'})`
       ))
       .join('; ')
-    : generation.commandPlan.commands.join('; ') || 'No executable final-test commands were returned.'
+    : generation.commandPlan.commands.map((command) => renderCommandSpec(command)).join('; ')
+      || 'No executable final-test commands were returned.'
   const failureReason = report.errors[0]
     ?? generation.commandPlan.errors[0]
     ?? 'Final-test verification did not pass.'

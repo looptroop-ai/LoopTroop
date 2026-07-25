@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import type { CommandSpec } from '@shared/commandSpec'
 import type {
   ExecutionSetupPlan,
   ExecutionSetupGitHookValidationCommand,
@@ -9,6 +10,168 @@ import type {
   ExecutionSetupWorkspaceProbe,
   ExecutionSetupWorkspaceInput,
 } from '@/lib/executionSetupPlan'
+
+function emptyProcessCommand(): CommandSpec {
+  return { mode: 'process', program: '', args: [], cwd: '.', env: {} }
+}
+
+function EnvironmentEditor({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: Record<string, string>
+  disabled?: boolean
+  onChange: (value: Record<string, string>) => void
+}) {
+  const entries = Object.entries(value)
+  return (
+    <div className="space-y-1">
+      {entries.map(([key, entryValue], index) => (
+        <div key={`${key}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
+          <input
+            aria-label={`Environment variable ${index + 1} name`}
+            value={key}
+            disabled={disabled}
+            onChange={(event) => {
+              const next = { ...value }
+              delete next[key]
+              next[event.target.value] = entryValue
+              onChange(next)
+            }}
+            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+            placeholder="NAME"
+          />
+          <input
+            aria-label={`Environment variable ${index + 1} value`}
+            value={entryValue}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...value, [key]: event.target.value })}
+            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+            placeholder="Value"
+          />
+          <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => {
+            const next = { ...value }
+            delete next[key]
+            onChange(next)
+          }} className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive">×</Button>
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
+        let key = 'VARIABLE'
+        let suffix = 1
+        while (key in value) key = `VARIABLE_${++suffix}`
+        onChange({ ...value, [key]: '' })
+      }} className="h-7 text-xs">+ Variable</Button>
+    </div>
+  )
+}
+
+function CommandSpecEditor({
+  command,
+  disabled,
+  label,
+  onChange,
+}: {
+  command: CommandSpec
+  disabled?: boolean
+  label: string
+  onChange: (command: CommandSpec) => void
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/10 p-2">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Mode
+          <select
+            aria-label={`${label} mode`}
+            value={command.mode}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value === 'shell'
+              ? { mode: 'shell', shell: 'posix', script: '', cwd: command.cwd, env: command.env, ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}) }
+              : { mode: 'process', program: '', args: [], cwd: command.cwd, env: command.env, ...(command.timeoutMs ? { timeoutMs: command.timeoutMs } : {}) })}
+            className="block w-full rounded-md border border-input bg-background px-2 py-1 text-xs normal-case tracking-normal text-foreground"
+          >
+            <option value="process">Direct process (preferred)</option>
+            <option value="shell">Shell script</option>
+          </select>
+        </label>
+        {command.mode === 'shell' ? (
+          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Shell
+            <select aria-label={`${label} shell`} value={command.shell} disabled={disabled} onChange={(event) => onChange({ ...command, shell: event.target.value as 'posix' | 'cmd' | 'powershell' })} className="block w-full rounded-md border border-input bg-background px-2 py-1 text-xs normal-case tracking-normal text-foreground">
+              <option value="posix">POSIX (sh)</option>
+              <option value="powershell">PowerShell</option>
+              <option value="cmd">Windows Command Prompt</option>
+            </select>
+          </label>
+        ) : (
+          <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Program
+            <input aria-label={`${label} program`} value={command.program} disabled={disabled} onChange={(event) => onChange({ ...command, program: event.target.value })} className="block w-full rounded-md border border-input bg-background px-2 py-1 font-mono text-xs normal-case tracking-normal text-foreground" placeholder="Executable name or path" />
+          </label>
+        )}
+      </div>
+      {command.mode === 'shell' ? (
+        <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Script
+          <textarea aria-label={`${label} script`} value={command.script} disabled={disabled} onChange={(event) => onChange({ ...command, script: event.target.value })} rows={3} className="block w-full resize-y rounded-md border border-input bg-background px-2 py-1 font-mono text-xs normal-case tracking-normal text-foreground" />
+        </label>
+      ) : (
+        <div>
+          <SectionLabel>Arguments</SectionLabel>
+          <StringListEditor items={command.args} onChange={(args) => onChange({ ...command, args })} disabled={disabled} placeholder="One argument (spaces are preserved)" />
+        </div>
+      )}
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Working directory
+          <input aria-label={`${label} working directory`} value={command.cwd} disabled={disabled} onChange={(event) => onChange({ ...command, cwd: event.target.value })} className="block w-full rounded-md border border-input bg-background px-2 py-1 font-mono text-xs normal-case tracking-normal text-foreground" placeholder="." />
+        </label>
+        <label className="space-y-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Timeout (milliseconds)
+          <input aria-label={`${label} timeout`} type="number" min={100} max={1_800_000} value={command.timeoutMs ?? ''} disabled={disabled} onChange={(event) => {
+            const next = { ...command }
+            if (event.target.value) next.timeoutMs = Number(event.target.value)
+            else delete next.timeoutMs
+            onChange(next)
+          }} className="block w-full rounded-md border border-input bg-background px-2 py-1 text-xs normal-case tracking-normal text-foreground" placeholder="Optional, max 1800000" />
+        </label>
+      </div>
+      <div>
+        <SectionLabel>Environment</SectionLabel>
+        <EnvironmentEditor value={command.env} onChange={(env) => onChange({ ...command, env })} disabled={disabled} />
+      </div>
+    </div>
+  )
+}
+
+function CommandListEditor({
+  items,
+  disabled,
+  label,
+  onChange,
+}: {
+  items: CommandSpec[]
+  disabled?: boolean
+  label: string
+  onChange: (items: CommandSpec[]) => void
+}) {
+  return (
+    <div className="space-y-2">
+      {items.map((command, index) => (
+        <div key={index} className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold text-muted-foreground">{label} {index + 1}</span>
+            <Button type="button" variant="ghost" size="sm" aria-label={`Remove ${label} ${index + 1}`} disabled={disabled} onClick={() => onChange(items.filter((_, itemIndex) => itemIndex !== index))} className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive">×</Button>
+          </div>
+          <CommandSpecEditor command={command} disabled={disabled} label={`${label} ${index + 1}`} onChange={(nextCommand) => onChange(items.map((item, itemIndex) => itemIndex === index ? nextCommand : item))} />
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => onChange([...items, emptyProcessCommand()])} className="h-7 text-xs">+ Command</Button>
+    </div>
+  )
+}
 
 function StringListEditor({
   items,
@@ -99,7 +262,7 @@ function PolicyField({
   )
 }
 
-function CommandRecordEditor<T extends { id: string; command: string; purpose: string }>({
+function CommandRecordEditor<T extends { id: string; command: CommandSpec; purpose: string }>({
   title,
   items,
   disabled,
@@ -151,7 +314,7 @@ function CommandRecordEditor<T extends { id: string; command: string; purpose: s
           {extraField ? (
             <input aria-label={`${title} ${index + 1} ${extraField.label}`} value={String(item[extraField.key] ?? '')} disabled={disabled} onChange={(event) => updateItem(index, { [extraField.key]: event.target.value } as Partial<T>)} className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs" placeholder={extraField.placeholder} />
           ) : null}
-          <textarea aria-label={`${title} ${index + 1} command`} value={item.command} disabled={disabled} onChange={(event) => updateItem(index, { command: event.target.value } as Partial<T>)} rows={2} className="w-full resize-y rounded-md border border-input bg-background px-2 py-1 font-mono text-xs" placeholder="Repository command" />
+          <CommandSpecEditor command={item.command} disabled={disabled} label={`${title} ${index + 1} command`} onChange={(command) => updateItem(index, { command } as Partial<T>)} />
           <input aria-label={`${title} ${index + 1} purpose`} value={item.purpose} disabled={disabled} onChange={(event) => updateItem(index, { purpose: event.target.value } as Partial<T>)} className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs" placeholder="Why this command is needed" />
         </div>
       ))}
@@ -183,7 +346,7 @@ function WorkspaceInputEditor({
           variant="outline"
           size="sm"
           disabled={disabled}
-          onClick={() => onChange([...items, { path: '', kind: 'file', sourceStatus: 'ignored', reason: '' }])}
+          onClick={() => onChange([...items, { path: '', kind: 'file', sourceStatus: 'ignored', category: 'other_non_reproducible', reason: '' }])}
           className="h-7 text-xs"
         >
           Add
@@ -217,7 +380,7 @@ function WorkspaceInputEditor({
               ×
             </Button>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-2 sm:grid-cols-3">
             <select
               aria-label={`Workspace input ${index + 1} kind`}
               value={item.kind}
@@ -238,6 +401,19 @@ function WorkspaceInputEditor({
               <option value="ignored">Ignored</option>
               <option value="untracked">Untracked</option>
             </select>
+            <select
+              aria-label={`Workspace input ${index + 1} category`}
+              value={item.category}
+              disabled={disabled}
+              onChange={(event) => updateItem(index, { category: event.target.value as ExecutionSetupWorkspaceInput['category'] })}
+              className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+            >
+              <option value="local_config">Local configuration</option>
+              <option value="secret">Secret</option>
+              <option value="fixture">Fixture</option>
+              <option value="dataset">Dataset</option>
+              <option value="other_non_reproducible">Other non-reproducible input</option>
+            </select>
           </div>
           <input
             aria-label={`Workspace input ${index + 1} reason`}
@@ -247,6 +423,16 @@ function WorkspaceInputEditor({
             className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
             placeholder="Why setup needs this path"
           />
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              aria-label={`Workspace input ${index + 1} allow large copy`}
+              checked={item.allowLargeCopy === true}
+              disabled={disabled}
+              onChange={(event) => updateItem(index, { allowLargeCopy: event.target.checked || undefined })}
+            />
+            Allow this input to exceed the normal copy-size limit after reviewing its preview
+          </label>
         </div>
       ))}
     </div>
@@ -357,6 +543,13 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
           Review the readiness assessment, approved workspace inputs, and setup steps before approval.
           Use the raw tab for full-power editing.
         </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-[10px]" aria-label="Current setup host">
+          <Badge variant="outline">{plan.hostContext.platform}</Badge>
+          <Badge variant="outline">{plan.hostContext.environment}</Badge>
+          <Badge variant="outline">{plan.hostContext.arch}</Badge>
+          <Badge variant="outline">available shells: {plan.hostContext.availableShells.join(', ')}</Badge>
+          <Badge variant="outline">preferred shell: {plan.hostContext.preferredShell}</Badge>
+        </div>
       </div>
 
       <WorkspaceInputEditor
@@ -393,7 +586,7 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
           items={plan.workspaceProbes}
           disabled={disabled}
           emptyLabel="No repository-level workspace probes are recorded."
-          createItem={(index) => ({ id: `workspace-probe-${index + 1}`, command: '', purpose: '' })}
+          createItem={(index) => ({ id: `workspace-probe-${index + 1}`, command: emptyProcessCommand(), purpose: '' })}
           onChange={(workspaceProbes) => updatePlan({ workspaceProbes })}
         />
         <div className="space-y-3 rounded-lg border border-border bg-background p-3">
@@ -405,9 +598,10 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
               disabled={disabled}
               className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
             >
-              <option value="validate_explicitly">Validate explicitly</option>
-              <option value="use_on_internal_commits">Use on internal commits</option>
-              <option value="ignore_internal_only">Ignore for internal commits</option>
+              <option value="observe_only">Observe — bypass hooks, no validation</option>
+              <option value="validate_advisory">Check — warn if validation fails</option>
+              <option value="validate_required">Require — block if validation fails</option>
+              <option value="use_native_hooks">Run hooks — allow Git hooks to act normally</option>
             </select>
           </div>
           <div>
@@ -418,7 +612,7 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
               <div className="space-y-2">
                 {plan.gitHooks.detected.map((hook, index) => (
                   <div key={`${hook.path}-${index}`} className="rounded border border-border bg-muted/20 p-2 text-xs">
-                    <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{hook.name}</span><Badge variant={hook.executable ? 'outline' : 'secondary'} className="h-5 text-[10px]">{hook.executable ? 'executable' : 'not executable'}</Badge>{hook.managerHint ? <Badge variant="outline" className="h-5 text-[10px]">{hook.managerHint}</Badge> : null}</div>
+                    <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{hook.name}</span><Badge variant="outline" className="h-5 text-[10px]">{hook.kind === 'manager_config' ? 'manager configuration' : 'hook file'}</Badge><Badge variant={hook.runnable === 'yes' ? 'outline' : 'secondary'} className="h-5 text-[10px]">runnable: {hook.runnable}</Badge>{hook.managerHint ? <Badge variant="outline" className="h-5 text-[10px]">{hook.managerHint}</Badge> : null}</div>
                     <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground">{hook.path}</div>
                     <div className="mt-1 text-[10px] text-muted-foreground">Source: {hook.source || 'unknown'}</div>
                   </div>
@@ -434,7 +628,7 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
         items={plan.gitHooks.validationCommands}
         disabled={disabled}
         emptyLabel="No explicit Git-hook validation commands are approved. This is allowed and will be recorded as skipped."
-        createItem={(index) => ({ id: `git-hook-validation-${index + 1}`, hook: '', command: '', purpose: '' })}
+        createItem={(index) => ({ id: `git-hook-validation-${index + 1}`, hook: '', command: emptyProcessCommand(), purpose: '' })}
         extraField={{ label: 'hook', key: 'hook', placeholder: 'Hook name, for example pre-commit' }}
         onChange={(validationCommands) => updatePlan({ gitHooks: { ...plan.gitHooks, validationCommands } })}
       />
@@ -500,38 +694,38 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
       <div className="grid gap-3 md:grid-cols-2">
         <div>
           <SectionLabel>Prepare / Bootstrap Commands</SectionLabel>
-          <StringListEditor
+          <CommandListEditor
             items={plan.projectCommands.prepare}
             onChange={(prepare) => updatePlan({ projectCommands: { ...plan.projectCommands, prepare } })}
             disabled={disabled}
-            placeholder="Repository-native prepare or bootstrap command"
+            label="Prepare command"
           />
         </div>
         <div>
           <SectionLabel>Full Test Commands</SectionLabel>
-          <StringListEditor
+          <CommandListEditor
             items={plan.projectCommands.testFull}
             onChange={(testFull) => updatePlan({ projectCommands: { ...plan.projectCommands, testFull } })}
             disabled={disabled}
-            placeholder="Repository-native full test command"
+            label="Full test command"
           />
         </div>
         <div>
           <SectionLabel>Full Lint Commands</SectionLabel>
-          <StringListEditor
+          <CommandListEditor
             items={plan.projectCommands.lintFull}
             onChange={(lintFull) => updatePlan({ projectCommands: { ...plan.projectCommands, lintFull } })}
             disabled={disabled}
-            placeholder="Repository-native full lint command"
+            label="Full lint command"
           />
         </div>
         <div>
           <SectionLabel>Full Typecheck Commands</SectionLabel>
-          <StringListEditor
+          <CommandListEditor
             items={plan.projectCommands.typecheckFull}
             onChange={(typecheckFull) => updatePlan({ projectCommands: { ...plan.projectCommands, typecheckFull } })}
             disabled={disabled}
-            placeholder="Repository-native full typecheck command"
+            label="Full typecheck command"
           />
         </div>
       </div>
@@ -668,11 +862,11 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
                   </div>
                   <div>
                     <SectionLabel>Commands</SectionLabel>
-                    <StringListEditor
+                    <CommandListEditor
                       items={step.commands}
                       onChange={(commands) => updateStep(index, { commands })}
                       disabled={disabled}
-                      placeholder="Repository-native setup command"
+                      label="Setup command"
                     />
                   </div>
                   <div>

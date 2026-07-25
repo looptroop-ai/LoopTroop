@@ -14,6 +14,7 @@ import {
   clearAllPendingSessionContinuationsForTests,
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
+import { createShellCommandSpec } from '@shared/commandSpec'
 
 const {
   executeExecutionSetupWithRetriesMock,
@@ -102,6 +103,8 @@ function readyExecutionSetupReport(ticketId: string): ExecutionSetupReport {
       ticketId,
       artifact: 'execution_setup_profile' as const,
       status: 'ready' as const,
+      hostContext: { platform: 'linux', environment: 'native', arch: 'x64', availableShells: ['posix'], preferredShell: 'posix' },
+      runtimeEnvironment: { pathPrepend: [], variables: {} },
       summary: 'ready',
       tempRoots: ['.ticket/runtime/execution-setup'],
       workspaceInputs: [],
@@ -109,7 +112,7 @@ function readyExecutionSetupReport(ticketId: string): ExecutionSetupReport {
       toolingProbeCommands: [],
       workspaceProbes: [],
       gitHooks: {
-        policy: 'validate_explicitly',
+        policy: 'validate_advisory',
         detected: [],
         validationCommands: [],
       },
@@ -378,7 +381,7 @@ describe('handleExecutionSetup', () => {
         generation: buildExecutionSetupGeneration({
           profile: {
             ...readyExecutionSetupProfile(ticket.externalId),
-            toolingProbeCommands: [slowProbe],
+            toolingProbeCommands: [createShellCommandSpec(slowProbe)],
           },
         }),
         timing: {
@@ -546,7 +549,7 @@ describe('handleExecutionSetup', () => {
         failedToolRequirementWithAttempts([
           {
             strategy: 'official archive',
-            commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+            commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
             result: 'failed',
             reason: 'official archive download returned 404',
           },
@@ -559,13 +562,13 @@ describe('handleExecutionSetup', () => {
         failedToolRequirementWithAttempts([
           {
             strategy: 'official archive',
-            commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+            commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
             result: 'failed',
             reason: 'official archive download returned 404',
           },
           {
             strategy: 'official archive',
-            commands: ['./install-project-tool --channel stable --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+            commands: [createShellCommandSpec('./install-project-tool --channel stable --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
             result: 'failed',
             reason: 'same strategy label should not count twice',
           },
@@ -584,7 +587,7 @@ describe('handleExecutionSetup', () => {
           },
           {
             strategy: 'repository version manager',
-            commands: ['   '],
+            commands: [createShellCommandSpec('   ')],
             result: 'failed',
             reason: 'blank commands should not count',
           },
@@ -667,13 +670,13 @@ describe('handleExecutionSetup', () => {
           provisioningAttempts: [
             {
               strategy: 'official archive',
-              commands: ['./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool'],
+              commands: [createShellCommandSpec('./install-project-tool --prefix .ticket/runtime/execution-setup/tool-cache/project-tool')],
               result: 'failed',
               reason: 'official archive download returned 404',
             },
             {
               strategy: 'repository version manager',
-              commands: ['./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool'],
+              commands: [createShellCommandSpec('./repo-toolchain install --cache .ticket/runtime/execution-setup/tool-cache/project-tool')],
               result: 'failed',
               reason: 'repository version manager could not resolve the requested version',
             },
@@ -766,7 +769,7 @@ describe('handleExecutionSetup', () => {
       ],
       projectCommands: {
         prepare: [],
-        testFull: ['project test'],
+        testFull: [createShellCommandSpec('project test')],
         lintFull: [],
         typecheckFull: [],
       },
@@ -816,7 +819,7 @@ describe('handleExecutionSetup', () => {
           purpose: 'sources prepared runtime before commands',
         },
       ],
-      toolingProbeCommands: [`./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`],
+      toolingProbeCommands: [createShellCommandSpec(`./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`)],
     }
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
@@ -842,7 +845,7 @@ describe('handleExecutionSetup', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
-      errors: [expect.stringContaining('does not exist')],
+      errors: [expect.stringContaining('not found')],
     })
     expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })
@@ -857,11 +860,11 @@ describe('handleExecutionSetup', () => {
       ...readyExecutionSetupProfile(ticket.externalId),
       projectCommands: {
         prepare: [],
-        testFull: [`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`],
+        testFull: [createShellCommandSpec(`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(0)')}`)],
         lintFull: [],
         typecheckFull: [],
       },
-      toolingProbeCommands: [`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(3)')}`],
+      toolingProbeCommands: [createShellCommandSpec(`${quoteShellArg(process.execPath)} -e ${quoteShellArg('process.exit(3)')}`)],
     }
 
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
@@ -912,7 +915,7 @@ describe('handleExecutionSetup', () => {
         },
       ],
       toolingProbeCommands: [
-        `./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")}`,
+        createShellCommandSpec(`./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg("if (process.env.LOOP_SETUP_WRAPPER !== '1') process.exit(9)")}`),
       ],
     }
 
@@ -941,7 +944,7 @@ describe('handleExecutionSetup', () => {
     expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'EXECUTION_SETUP_FAILED' }))
   })
 
-  it.runIf(process.platform !== 'win32')('discovers, applies, and persists an omitted canonical setup wrapper', async () => {
+  it.runIf(process.platform !== 'win32')('does not silently apply an unapproved setup wrapper', async () => {
     const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
       title: 'Execution setup canonical wrapper fallback',
     })
@@ -1002,7 +1005,7 @@ describe('handleExecutionSetup', () => {
     const profile = {
       ...readyExecutionSetupProfile(ticket.externalId),
       reusableArtifacts: [],
-      toolingProbeCommands: [bareProbeCommand],
+      toolingProbeCommands: [createShellCommandSpec(bareProbeCommand)],
     }
     executeExecutionSetupWithRetriesMock.mockImplementationOnce(async (...args: unknown[]) => {
       const callbacks = args[5] as {
@@ -1025,39 +1028,11 @@ describe('handleExecutionSetup', () => {
       new AbortController().signal,
     )
 
-    expect(sendEvent).toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
-    expect(sendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'EXECUTION_SETUP_FAILED' }))
-
-    const profileArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_profile', 'PREPARING_EXECUTION_ENV')
-    const persistedProfile = JSON.parse(profileArtifact?.content ?? '{}') as {
-      reusable_artifacts?: Array<{ path: string; kind: string }>
-      cautions?: string[]
-      workspace_probe_receipts?: Array<{
-        command: string
-        status: string
-        setupWrapperApplied?: boolean
-        effectiveCommand?: string
-        outputExcerpt?: string
-      }>
-    }
-    expect(persistedProfile.reusable_artifacts).toEqual(expect.arrayContaining([{
-      path: '.ticket/runtime/execution-setup/run',
-      kind: 'command-wrapper',
-      purpose: expect.any(String),
-    }]))
-    expect(persistedProfile.reusable_artifacts?.filter(
-      (artifact) => artifact.path === '.ticket/runtime/execution-setup/run',
-    )).toHaveLength(1)
-    expect(persistedProfile.cautions).toEqual(expect.arrayContaining([
-      expect.stringContaining('detected and recorded'),
-    ]))
-    expect(persistedProfile.workspace_probe_receipts).toEqual([expect.objectContaining({
-      command: bareProbeCommand,
-      status: 'passed',
-      setupWrapperApplied: true,
-      effectiveCommand: expect.stringContaining('.ticket/runtime/execution-setup/run'),
-      outputExcerpt: 'prepared-workspace',
-    })])
+    expect(sendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'EXECUTION_SETUP_FAILED',
+      errors: expect.arrayContaining([expect.stringContaining('not found')]),
+    }))
+    expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })
 
   it('rejects a ready setup result when setup leaves committable project changes', async () => {

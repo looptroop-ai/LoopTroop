@@ -4,6 +4,7 @@ import type {
   RefinementChangeAttributionStatus,
   RefinementChangeItem,
 } from '@shared/refinementChanges'
+import { renderCommandSpec } from '@shared/commandSpec'
 import { isRecord } from '@shared/typeGuards'
 import type { PromptPart } from '../../opencode/types'
 import type {
@@ -89,7 +90,9 @@ function buildUserStoryContentFingerprint(story: PrdUserStory): string {
     title: story.title.trim(),
     acceptanceCriteria: normalizeFingerprintList(story.acceptance_criteria),
     implementationSteps: normalizeFingerprintList(story.implementation_steps),
-    verificationCommands: normalizeFingerprintList(story.verification?.required_commands),
+    verificationCommands: normalizeFingerprintList(
+      story.verification?.required_commands.map((command) => renderCommandSpec(command)),
+    ),
   })
 }
 

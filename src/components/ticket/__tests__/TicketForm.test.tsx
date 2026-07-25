@@ -14,7 +14,7 @@ vi.mock('@/hooks/useProjects', () => ({
 }))
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_explicitly' } }),
+  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory' } }),
 }))
 
 vi.mock('@/hooks/useTickets', async () => {
@@ -80,7 +80,7 @@ describe('TicketForm', () => {
         minCouncilQuorum: null,
         interviewQuestions: null,
         manualQaOverride: true,
-        gitHookPolicy: 'ignore_internal_only',
+        gitHookPolicy: 'observe_only',
         ticketCounter: 1,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
@@ -121,7 +121,7 @@ describe('TicketForm', () => {
     expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Ignore' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('aria-checked', 'true')
     const helpLink = screen.getByRole('link', { name: 'Open documentation for ticket Manual QA checkpoint' })
     expect(helpLink).toHaveAttribute(
       'href',
@@ -137,7 +137,7 @@ describe('TicketForm', () => {
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
     expect(mockUseCreateTicket().mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ manualQaOverride: true, gitHookPolicy: 'ignore_internal_only' }),
+      expect.objectContaining({ manualQaOverride: true, gitHookPolicy: 'observe_only' }),
       expect.any(Object),
     )
   })

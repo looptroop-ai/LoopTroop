@@ -14,6 +14,17 @@ import { ManualQaSummarySchema } from '../../phases/manualQa/types'
 import { readManualQaDeliverySummary as readCanonicalManualQaDeliverySummary } from '../../phases/manualQa/delivery'
 import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE } from '../../phases/executionSetup/types'
 import { runExplicitGitHookValidation } from '../../phases/executionSetup/hookValidation'
+import { discoverGitHooks } from '../../git/hookDiscovery'
+
+function readApprovedHookEvidence(profileContent: string): unknown[] {
+  try {
+    const profile = JSON.parse(profileContent) as Record<string, unknown>
+    const hooks = (profile.git_hooks ?? profile.gitHooks) as Record<string, unknown> | undefined
+    return Array.isArray(hooks?.detected) ? hooks.detected : []
+  } catch {
+    return []
+  }
+}
 
 function readFinalTestFilesToStage(ticketId: string): string[] {
   const artifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
@@ -93,6 +104,25 @@ export async function handleIntegration(
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
+  const currentHookEvidence = discoverGitHooks(paths.worktreePath).detected
+  const approvedHookEvidence = setupProfileArtifact
+    ? readApprovedHookEvidence(setupProfileArtifact.content)
+    : []
+  const hookEvidenceDrift = {
+    changed: JSON.stringify(approvedHookEvidence) !== JSON.stringify(currentHookEvidence),
+    approved: approvedHookEvidence,
+    current: currentHookEvidence,
+  }
+  if (hookEvidenceDrift.changed) {
+    emitPhaseLog(
+      ticketId,
+      context.externalId,
+      'INTEGRATING_CHANGES',
+      'info',
+      'Git-hook evidence changed after setup approval; integration recorded the drift and kept the approved policy.',
+      { source: 'system', audience: 'all', hookEvidenceDrift },
+    )
+  }
   const hookValidation = setupProfileArtifact
     ? await runExplicitGitHookValidation({
         profileContent: setupProfileArtifact.content,
@@ -100,14 +130,25 @@ export async function handleIntegration(
         signal,
       })
     : {
-        policy: 'validate_explicitly' as const,
+        policy: 'validate_advisory' as const,
         receipts: [{
-          id: 'git-hook-policy', command: '', status: 'skipped' as const, exitCode: null, durationMs: 0,
+          id: 'git-hook-policy', status: 'skipped' as const, exitCode: null, durationMs: 0,
           outputExcerpt: 'No execution setup profile was available for explicit Git hook validation.',
         }],
         errors: [],
+        warnings: [],
         fileAudit: { mutated: false, candidatePaths: [], temporaryPaths: [], internalPaths: [] },
       }
+  if (hookValidation.warnings.length > 0) {
+    emitPhaseLog(
+      ticketId,
+      context.externalId,
+      'INTEGRATING_CHANGES',
+      'info',
+      `Advisory Git hook validation reported: ${hookValidation.warnings.join('; ')}`,
+      { source: 'system', audience: 'all', gitHookValidation: hookValidation },
+    )
+  }
   if (hookValidation.errors.length > 0) {
     const message = `Explicit Git hook validation failed before integration: ${hookValidation.errors.join('; ')}`
     insertPhaseArtifact(ticketId, {
@@ -118,6 +159,7 @@ export async function handleIntegration(
         completedAt: new Date().toISOString(),
         baseBranch: paths.baseBranch,
         gitHookValidation: hookValidation,
+        hookEvidenceDrift,
         message,
       }),
     })
@@ -182,6 +224,7 @@ export async function handleIntegration(
     pushError: null,
     manualQa: readManualQaDeliverySummary(ticketId),
     gitHookValidation: hookValidation,
+    hookEvidenceDrift,
     message: squash.success
       ? 'Integration phase completed. Draft pull request creation is next.'
       : squash.message,

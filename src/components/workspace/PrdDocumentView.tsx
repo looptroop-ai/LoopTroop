@@ -242,7 +242,7 @@ export function PrdDocumentView({
                           <div className="rounded-xl border border-border/70 bg-muted/20 p-3 md:col-span-1">
                             <div className="section-label">Verification Commands</div>
                             <div className="mt-2">
-                              <StringList items={story.verification.required_commands} emptyLabel="No verification commands recorded." />
+                              <StringList items={story.verification.required_commands.map((command) => renderCommandSpec(command))} emptyLabel="No verification commands recorded." />
                             </div>
                           </div>
                         </div>
@@ -258,3 +258,4 @@ export function PrdDocumentView({
     </div>
   )
 }
+import { renderCommandSpec } from '@shared/commandSpec'

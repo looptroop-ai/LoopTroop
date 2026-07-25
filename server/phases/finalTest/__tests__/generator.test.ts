@@ -6,6 +6,10 @@ import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { generateFinalTests } from '../generator'
 import type { OpenCodePromptDispatchEvent } from '../../../workflow/runOpenCodePrompt'
+import { detectHostContext } from '../../../lib/hostContext'
+import { normalizeCommandSpec } from '@shared/commandSpec'
+
+const LEGACY_TEST_COMMAND = normalizeCommandSpec('npm run test:server', detectHostContext())
 
 class SequencedMockOpenCodeAdapter extends MockOpenCodeAdapter {
   private promptCounts = new Map<string, number>()
@@ -77,7 +81,7 @@ describe('generateFinalTests', () => {
 
     expect(result.commandPlan).toEqual({
       markerFound: true,
-      commands: ['npm run test:server'],
+      commands: [LEGACY_TEST_COMMAND.command],
       summary: 'verify end-to-end ticket coverage',
       testFiles: [],
       modifiedFiles: [],
@@ -89,6 +93,7 @@ describe('generateFinalTests', () => {
         'Unwrapped markdown code fence wrapping the YAML payload.',
         'Removed wrapper key "command_plan" from top level.',
         'Coerced commands from string to array',
+        LEGACY_TEST_COMMAND.warning,
       ],
     })
     expect(result.output).toContain('<FINAL_TEST_COMMANDS>')
@@ -98,6 +103,7 @@ describe('generateFinalTests', () => {
         'Unwrapped markdown code fence wrapping the YAML payload.',
         'Removed wrapper key "command_plan" from top level.',
         'Coerced commands from string to array',
+        LEGACY_TEST_COMMAND.warning,
       ],
       autoRetryCount: 1,
       validationError: 'No final test command marker found',
@@ -141,20 +147,20 @@ describe('generateFinalTests', () => {
 
     expect(result.commandPlan).toEqual({
       markerFound: true,
-      commands: ['npm run test:server'],
+      commands: [LEGACY_TEST_COMMAND.command],
       summary: 'verify end-to-end ticket coverage',
       testFiles: [],
       modifiedFiles: [],
       fileEffects: [],
       testsCount: null,
       errors: [],
-      repairApplied: false,
-      repairWarnings: [],
+      repairApplied: true,
+      repairWarnings: [LEGACY_TEST_COMMAND.warning],
     })
     expect(result.output).toContain('<FINAL_TEST_COMMANDS>')
     expect(result.structuredOutput).toMatchObject({
-      repairApplied: false,
-      repairWarnings: [],
+      repairApplied: true,
+      repairWarnings: [LEGACY_TEST_COMMAND.warning],
       autoRetryCount: 1,
       validationError: 'No final test command marker found',
     })
@@ -202,7 +208,7 @@ describe('generateFinalTests', () => {
       '/tmp/test',
     )
 
-    expect(result.commandPlan.commands).toEqual(['npm run test:server'])
+    expect(result.commandPlan.commands).toEqual([LEGACY_TEST_COMMAND.command])
     expect(result.structuredOutput).toMatchObject({
       autoRetryCount: 1,
       validationError: 'No final test command marker found',
@@ -251,7 +257,7 @@ describe('generateFinalTests', () => {
       },
     )
 
-    expect(result.commandPlan.commands).toEqual(['npm run test:server'])
+    expect(result.commandPlan.commands).toEqual([LEGACY_TEST_COMMAND.command])
     expect(adapter.sessionCreateCalls).toHaveLength(2)
     expect(adapter.sessionCreateCalls.every((call) => (
       JSON.stringify(call.options?.permission) === JSON.stringify(OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS)

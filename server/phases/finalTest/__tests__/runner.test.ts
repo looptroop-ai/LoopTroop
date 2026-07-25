@@ -1,26 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { executeFinalTestCommands } from '../runner'
-import { quoteShellArg } from '../../../lib/shellCommand'
+import type { CommandSpec } from '@shared/commandSpec'
+
+function nodeCommand(script: string, overrides: Partial<CommandSpec> = {}): CommandSpec {
+  return {
+    mode: 'process',
+    program: process.execPath,
+    args: ['-e', script],
+    cwd: '.',
+    env: {},
+    ...overrides,
+  } as CommandSpec
+}
 
 describe('executeFinalTestCommands', () => {
-  function makeTempWorktree(): string {
-    return mkdtempSync(join(tmpdir(), 'looptroop-final-test-runner-'))
-  }
-
-  function writeWrapper(worktree: string, body: string): string {
-    const wrapperPath = join(worktree, '.ticket', 'runtime', 'execution-setup', 'run')
-    mkdirSync(join(worktree, '.ticket', 'runtime', 'execution-setup'), { recursive: true })
-    writeFileSync(wrapperPath, body)
-    chmodSync(wrapperPath, 0o755)
-    return wrapperPath
-  }
-
   it('caps captured command output', async () => {
     const report = await executeFinalTestCommands({
-      commands: ['node -e "process.stdout.write(\'x\'.repeat(1000100))"'],
+      commands: [nodeCommand("process.stdout.write('x'.repeat(1000100))")],
       cwd: process.cwd(),
       plannedBy: 'test-vendor/test-model',
       modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
@@ -30,121 +29,83 @@ describe('executeFinalTestCommands', () => {
     expect(report.commands[0]?.stdout).toContain('LoopTroop truncated command output')
   })
 
-  it('keeps command execution timeout separate from model prompt timeout metadata', async () => {
+  it('applies the phase timeout when a command has no explicit timeout', async () => {
     const report = await executeFinalTestCommands({
-      commands: ['node -e "setTimeout(() => console.log(\'late\'), 200)"'],
+      commands: [nodeCommand("setTimeout(() => console.log('late'), 200)")],
       cwd: process.cwd(),
       timeoutMs: 25,
       plannedBy: 'test-vendor/test-model',
-      modelOutput: '<FINAL_TEST_COMMANDS>{"commands":["node -e \\"setTimeout(() => console.log(\\\'late\\\'), 200)\\""]}</FINAL_TEST_COMMANDS>',
+      modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
     })
 
     expect(report.passed).toBe(false)
     expect(report.commands[0]).toMatchObject({
-      command: expect.stringContaining('setTimeout'),
+      command: expect.objectContaining({ mode: 'process', program: process.execPath }),
+      displayCommand: expect.stringContaining(process.execPath),
       timedOut: true,
     })
     expect(report.errors[0]).toContain('Command timed out')
   })
 
-  it('executes commands exactly as today when no setup wrapper exists', async () => {
-    const command = `${quoteShellArg(process.execPath)} -e ${quoteShellArg("console.log('plain')")}`
+  it('preserves process arguments, repository-relative cwd, and command environment', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'looptroop-final-test-runner-'))
+    try {
+      mkdirSync(join(worktree, 'folder with spaces'))
+      const report = await executeFinalTestCommands({
+        commands: [nodeCommand(
+          "console.log(JSON.stringify({cwd:process.cwd(),arg:process.argv[1],env:process.env.LOOP_VALUE}))",
+          { args: ['-e', "console.log(JSON.stringify({cwd:process.cwd(),arg:process.argv[1],env:process.env.LOOP_VALUE}))", 'héllo world'], cwd: 'folder with spaces', env: { LOOP_VALUE: '✓' } },
+        )],
+        cwd: worktree,
+        plannedBy: 'test-vendor/test-model',
+        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
+      })
+
+      expect(report.passed).toBe(true)
+      expect(report.commands[0]?.stdout).toContain('"arg":"héllo world"')
+      expect(report.commands[0]?.stdout).toContain('"env":"✓"')
+      expect(report.commands[0]?.stdout).toContain('folder with spaces')
+    } finally {
+      rmSync(worktree, { recursive: true, force: true })
+    }
+  })
+
+  it('applies the structured runtime environment directly', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'looptroop-final-test-runtime-'))
+    try {
+      mkdirSync(join(worktree, 'local-bin'))
+      const report = await executeFinalTestCommands({
+        commands: [nodeCommand("console.log(process.env.LOOP_RUNTIME); console.log(process.env.PATH)")],
+        cwd: worktree,
+        plannedBy: 'test-vendor/test-model',
+        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
+        runtimeEnvironment: {
+          pathPrepend: ['local-bin'],
+          variables: { LOOP_RUNTIME: 'ready' },
+        },
+      })
+
+      expect(report.passed).toBe(true)
+      expect(report.commands[0]?.stdout).toContain('ready')
+      expect(report.commands[0]?.stdout).toContain(join(worktree, 'local-bin'))
+    } finally {
+      rmSync(worktree, { recursive: true, force: true })
+    }
+  })
+
+  it('stops after the first failed structured command', async () => {
     const report = await executeFinalTestCommands({
-      commands: [command],
+      commands: [
+        nodeCommand('process.exit(7)'),
+        nodeCommand("console.log('must not run')"),
+      ],
       cwd: process.cwd(),
       plannedBy: 'test-vendor/test-model',
       modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
     })
 
-    expect(report.passed).toBe(true)
-    expect(report.commands[0]).toMatchObject({
-      command,
-      stdout: expect.stringContaining('plain'),
-    })
-    expect(report.commands[0]?.effectiveCommand).toBeUndefined()
-    expect(report.commands[0]?.setupWrapperApplied).toBeUndefined()
-  })
-
-  it('runs final-test commands through the declared setup wrapper', async () => {
-    const worktree = makeTempWorktree()
-    try {
-      writeWrapper(worktree, '#!/usr/bin/env sh\nexport LOOP_FINAL_TEST_WRAPPER=1\nexec "$@"\n')
-      const command = `${quoteShellArg(process.execPath)} -e ${quoteShellArg("if (process.env.LOOP_FINAL_TEST_WRAPPER !== '1') process.exit(7); console.log('wrapped')")}`
-
-      const report = await executeFinalTestCommands({
-        commands: [command],
-        cwd: worktree,
-        plannedBy: 'test-vendor/test-model',
-        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
-        setupEnvironment: {
-          commandWrapper: '.ticket/runtime/execution-setup/run',
-        },
-      })
-
-      expect(report.passed).toBe(true)
-      expect(report.commands[0]).toMatchObject({
-        command,
-        setupWrapperApplied: true,
-        stdout: expect.stringContaining('wrapped'),
-      })
-      expect(report.commands[0]?.effectiveCommand).toContain('.ticket/runtime/execution-setup/run')
-    } finally {
-      rmSync(worktree, { recursive: true, force: true })
-    }
-  })
-
-  it('does not double-wrap commands that already use the setup wrapper', async () => {
-    const worktree = makeTempWorktree()
-    try {
-      writeWrapper(worktree, '#!/usr/bin/env sh\nexport LOOP_FINAL_TEST_WRAPPER=1\nexec "$@"\n')
-      const command = `./.ticket/runtime/execution-setup/run ${quoteShellArg(process.execPath)} -e ${quoteShellArg("if (process.env.LOOP_FINAL_TEST_WRAPPER !== '1') process.exit(7); console.log('already wrapped')")}`
-
-      const report = await executeFinalTestCommands({
-        commands: [command],
-        cwd: worktree,
-        plannedBy: 'test-vendor/test-model',
-        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
-        setupEnvironment: {
-          commandWrapper: '.ticket/runtime/execution-setup/run',
-        },
-      })
-
-      expect(report.passed).toBe(true)
-      expect(report.commands[0]).toMatchObject({
-        command,
-        stdout: expect.stringContaining('already wrapped'),
-      })
-      expect(report.commands[0]?.effectiveCommand).toBeUndefined()
-      expect(report.commands[0]?.setupWrapperApplied).toBeUndefined()
-    } finally {
-      rmSync(worktree, { recursive: true, force: true })
-    }
-  })
-
-  it('fails clearly when the declared setup wrapper is missing', async () => {
-    const worktree = makeTempWorktree()
-    try {
-      const command = `${quoteShellArg(process.execPath)} -e ${quoteShellArg("console.log('should not run')")}`
-
-      const report = await executeFinalTestCommands({
-        commands: [command],
-        cwd: worktree,
-        plannedBy: 'test-vendor/test-model',
-        modelOutput: '<FINAL_TEST_COMMANDS>{"commands":[]}</FINAL_TEST_COMMANDS>',
-        setupEnvironment: {
-          commandWrapper: '.ticket/runtime/execution-setup/run',
-        },
-      })
-
-      expect(report.passed).toBe(false)
-      expect(report.commands[0]).toMatchObject({
-        command,
-        setupWrapperApplied: true,
-        stderr: expect.stringContaining('was declared but does not exist'),
-      })
-      expect(report.commands[0]?.effectiveCommand).toContain('.ticket/runtime/execution-setup/run')
-    } finally {
-      rmSync(worktree, { recursive: true, force: true })
-    }
+    expect(report.passed).toBe(false)
+    expect(report.commands).toHaveLength(1)
+    expect(report.errors[0]).toContain('Command failed (7)')
   })
 })

@@ -28,6 +28,8 @@ import type {
   ManualQaEvidenceRef,
   ManualQaModelCapabilitySnapshot,
 } from './types'
+import { normalizeCommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../../lib/hostContext'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './storage'
 
 export const MANUAL_QA_FIX_BEADS_TAG = 'MANUAL_QA_FIX_BEADS'
@@ -440,7 +442,9 @@ export function hydrateManualQaFixBeads(input: {
       contextGuidance: candidate.contextGuidance,
       acceptanceCriteria: candidate.acceptanceCriteria,
       tests: candidate.tests,
-      testCommands: candidate.testCommands,
+      testCommands: candidate.testCommands.map(
+        (command) => normalizeCommandSpec(command, detectHostContext()).command,
+      ),
       ...(candidate.testCommandReason ? { testCommandReason: candidate.testCommandReason } : {}),
       priority: maxPriority + index + 1,
       status: 'pending',

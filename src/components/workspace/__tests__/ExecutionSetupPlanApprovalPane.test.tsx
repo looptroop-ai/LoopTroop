@@ -39,6 +39,7 @@ function buildPlan(summary = 'Prepare the workspace runtime.') {
     artifact: 'execution_setup_plan' as const,
     status: 'draft' as const,
     summary,
+    hostContext: { platform: 'linux' as const, environment: 'wsl' as const, arch: 'x64', availableShells: ['posix' as const], preferredShell: 'posix' as const },
     readiness: {
       status: 'partial' as const,
       actionsRequired: true,
@@ -46,24 +47,25 @@ function buildPlan(summary = 'Prepare the workspace runtime.') {
       gaps: ['Workspace setup outputs still need to be prepared.'],
     },
     tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
-    workspaceProbes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
-    gitHooks: { policy: 'validate_explicitly' as const, detected: [], validationCommands: [] },
+    workspaceInputs: [],
+    workspaceProbes: [{ id: 'workspace', command: { mode: 'process' as const, program: 'project', args: ['test', '--list'], cwd: '.', env: {} }, purpose: 'Load the workspace.' }],
+    gitHooks: { policy: 'validate_advisory' as const, detected: [], validationCommands: [] },
     steps: [
       {
         id: 'bootstrap-workspace',
         title: 'Bootstrap workspace',
         purpose: 'Prepare the runtime for later coding.',
-        commands: ['project bootstrap'],
+        commands: [{ mode: 'process' as const, program: 'project', args: ['bootstrap'], cwd: '.', env: {} }],
         required: true,
         rationale: 'Repository-native setup must run before execution can continue.',
         cautions: ['Can take a while on cold cache.'],
       },
     ],
     projectCommands: {
-      prepare: ['project bootstrap'],
-      testFull: ['project test'],
-      lintFull: ['project lint'],
-      typecheckFull: ['project typecheck'],
+      prepare: [{ mode: 'process' as const, program: 'project', args: ['bootstrap'], cwd: '.', env: {} }],
+      testFull: [{ mode: 'process' as const, program: 'project', args: ['test'], cwd: '.', env: {} }],
+      lintFull: [{ mode: 'process' as const, program: 'project', args: ['lint'], cwd: '.', env: {} }],
+      typecheckFull: [{ mode: 'process' as const, program: 'project', args: ['typecheck'], cwd: '.', env: {} }],
     },
     qualityGatePolicy: {
       tests: 'bead-test-commands-first',
@@ -90,7 +92,7 @@ function buildRawPlan(summary = 'Prepare the workspace runtime.') {
     },
     temp_roots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
     workspace_probes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
-    git_hooks: { policy: 'validate_explicitly', detected: [], validation_commands: [] },
+    git_hooks: { policy: 'validate_advisory', detected: [], validation_commands: [] },
     steps: [
       {
         id: 'bootstrap-workspace',

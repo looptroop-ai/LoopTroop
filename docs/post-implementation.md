@@ -37,9 +37,9 @@ The model returns test commands plus language-agnostic `file_effects` declaratio
 
 Malformed final-test plans do not silently pass through. LoopTroop applies the normal structured-output retry flow, preserves raw attempts for inspection, and records the accepted or rejected output in the final-test artifacts.
 
-### 1.2 Executing commands with the approved runtime profile
+### 1.2 Executing current-host commands with the approved runtime profile
 
-The generated commands run sequentially in the ticket worktree. If pre-implementation produced a reusable execution wrapper, LoopTroop automatically applies it to generated commands that do not already use it. The final test report records both the original command and the effective wrapped command when wrapping is used.
+The generated commands run sequentially in the ticket worktree as structured command objects. A direct process records its program and argument list without shell parsing. A shell command names POSIX, Command Prompt, or PowerShell explicitly and carries its script unchanged. Both forms use a repository-relative working directory, structured variables, and an optional bounded timeout. PATH additions from pre-implementation are applied directly; reports derive readable display text from the command object.
 
 The resulting `final_test_report` captures:
 
@@ -145,7 +145,7 @@ Before creating a candidate commit, LoopTroop resolves the latest `final_test_fi
 
 ### 3.2 Approved Git-hook policy gate
 
-Integration reads the ticket's accepted execution setup profile. Under `validate_explicitly`, it reruns the exact approved ordered hook-validation commands through the setup wrapper with timeouts, output receipts, and before/after tracked-file auditing. A failed command blocks integration; file effects are recorded rather than silently absorbed. `use_on_internal_commits` leaves hooks active for LoopTroop's Git operations, while `ignore_internal_only` bypasses them and records the skipped outcome. Unknown or detected hooks with no approved command remain visible as skipped evidence.
+Integration reads the ticket's approved setup snapshot, refreshes current Git-hook evidence, and records drift. `observe_only` bypasses native hooks and records a skip. `validate_advisory` runs the exact approved structured validation commands with timeouts, output receipts, and before/after file auditing, but failure only warns. `validate_required` uses the same explicit checks as a blocking gate. `use_native_hooks` leaves hooks active inside LoopTroop's Git operations. Validation cleanup restores only changes introduced by the check; unrelated user or agent work is preserved.
 
 ### 3.3 Squashing bead history into one candidate
 

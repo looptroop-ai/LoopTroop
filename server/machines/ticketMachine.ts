@@ -397,7 +397,7 @@ export const ticketMachine = setup({
         EXECUTION_SETUP_PLAN_READY: {},
         REGENERATE_EXECUTION_SETUP_PLAN: {},
         APPROVE_EXECUTION_SETUP_PLAN: { target: 'PREPARING_EXECUTION_ENV' },
-        EXECUTION_SETUP_PLAN_FAILED: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
+        EXECUTION_SETUP_PLAN_FAILED: {},
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         CANCEL: { target: 'CANCELED' },
       },
@@ -407,6 +407,7 @@ export const ticketMachine = setup({
         { type: 'updateStatus', params: { status: 'PREPARING_EXECUTION_ENV' } },
       ],
       on: {
+        EXECUTION_SETUP_EVIDENCE_CHANGED: { target: 'WAITING_EXECUTION_SETUP_APPROVAL' },
         EXECUTION_SETUP_READY: { target: 'CODING' },
         EXECUTION_SETUP_FAILED: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },

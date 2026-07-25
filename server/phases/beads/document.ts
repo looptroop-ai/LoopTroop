@@ -4,6 +4,7 @@ import { upsertLatestPhaseArtifact } from '../../storage/ticketArtifacts'
 import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
+import { commandSpecSchema } from '@shared/commandSpec'
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
@@ -78,7 +79,7 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
       throw new Error(`Bead ${record.id} is missing the testCommands list`)
     }
     for (const command of record.testCommands) {
-      if (typeof command !== 'string' || !command.trim()) {
+      if (!commandSpecSchema.safeParse(command).success) {
         throw new Error(`Bead ${record.id} contains an invalid test command`)
       }
     }

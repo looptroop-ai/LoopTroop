@@ -45,7 +45,7 @@ vi.mock('@/components/shared/useToast', () => ({
 }))
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_explicitly' } }),
+  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory' } }),
 }))
 
 vi.mock('../FolderPicker', () => ({
@@ -116,7 +116,7 @@ describe('ProjectForm', () => {
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#manual-qa`,
     )
-    expect(screen.getByRole('radio', { name: 'Validate' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Check' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('link', { name: 'Open documentation for project Git hook policy' })).toHaveAttribute(
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
@@ -184,7 +184,7 @@ describe('ProjectForm', () => {
           ticketCounter: 7,
           ticketCount: 7,
           activeTicketCount: 2,
-          gitHookPolicy: 'use_on_internal_commits',
+          gitHookPolicy: 'use_native_hooks',
           manualQaOverride: true,
         },
       }),
@@ -213,7 +213,7 @@ describe('ProjectForm', () => {
         shortname: 'MESE',
         folderPath: '/work/meili',
         existingStateAction: 'restore',
-        gitHookPolicy: 'use_on_internal_commits',
+        gitHookPolicy: 'use_native_hooks',
         manualQaOverride: true,
       }),
       expect.any(Object),

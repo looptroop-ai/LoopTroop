@@ -6,6 +6,7 @@ import * as jsYaml from 'js-yaml'
 import type { InterviewDocument, InterviewDocumentQuestion } from '@shared/interviewArtifact'
 import type { PrdDocument } from '../structuredOutput/types'
 import type { TicketContext } from '../machines/types'
+import { createShellCommandSpec } from '@shared/commandSpec'
 
 interface TicketLike {
   id: string
@@ -335,7 +336,7 @@ export function buildPrdDocument(ticketId: string, interviewContentSha256: strin
             acceptance_criteria: ['Import is retried with exponential backoff', 'Retry count is tracked'],
             implementation_steps: ['Create retry handler', 'Update imports table schema'],
             verification: {
-              required_commands: ['npm test -- --grep "retry"'],
+              required_commands: [createShellCommandSpec('npm test -- --grep "retry"')],
             },
           },
         ],

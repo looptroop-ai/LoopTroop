@@ -92,7 +92,7 @@ Planning is intentionally artifact-driven.
 | Interview council | Ticket details, relevant files | Interview document and answer session | Forces ambiguity out before specs |
 | PRD council | Ticket details, interview, relevant files, member-specific Full Answers | PRD document | Produces the feature contract |
 | Beads council | Ticket details, PRD, relevant files | Execution bead plan | Converts the spec into execution units |
-| Execution setup planning | Ticket details, PRD, beads, execution profile, original checkout and ticket worktree | Reviewable setup plan with approved workspace inputs | Makes the coding environment and any required ignored or untracked inputs explicit before code changes begin |
+| Execution setup planning | Ticket details, PRD, beads, backend-detected host and Git evidence, original checkout and ticket worktree | Reviewable current-host setup plan with structured commands and approved workspace inputs | Separates the model proposal from backend-owned identity, policy, and evidence before code changes begin |
 
 The planning phases are not one long conversation. Each stage assembles a new context window from durable artifacts and runs in its own session scope.
 
@@ -107,15 +107,15 @@ Human approval gates are content-addressed. The API exposes the current artifact
 Execution is built around beads, not around one monolithic coding prompt.
 
 1. `PRE_FLIGHT_CHECK` verifies the ticket can enter pre-implementation setup, including worktree cleanliness before setup starts.
-2. `WAITING_EXECUTION_SETUP_APPROVAL` pauses for setup-plan review before setup commands run.
-3. `PREPARING_EXECUTION_ENV` validates and materializes approved ignored or untracked workspace inputs from the original checkout without replacing tracked ticket source, then follows repository evidence and the approved setup plan without assuming a language, build system, shell, or operating system. It verifies or prepares only the missing temporary runtime pieces, validates wrappers and declared probes, and must report an honest `Ready` or `Blocked` result. One Execution Setup Timeout deadline covers all active work in an attempt, including prompts, provider recovery, continuations, structured repair, backend validation, worktree checks, and retry-note generation; each genuine retry receives a fresh budget. Safe process/session cleanup and workspace restoration may complete after the deadline. A `Blocked` result stays diagnostic-only and cannot become the reusable runtime profile used by coding or final testing.
+2. `WAITING_EXECUTION_SETUP_APPROVAL` pauses for review of a plan composed from the AI proposal plus backend-owned current-host, identity, policy, and hook evidence. A malformed proposal remains at this gate with diagnostics and regeneration controls instead of becoming a global workflow block.
+3. `PREPARING_EXECUTION_ENV` validates and materializes approved non-reproducible workspace inputs without replacing tracked ticket source, then follows repository evidence and the approved plan without assuming a programming language, build system, or project layout. Direct processes and explicitly named POSIX, Command Prompt, or PowerShell scripts run with repository-relative working directories and structured environment data. One Execution Setup Timeout deadline covers all active work in an attempt; each genuine retry receives a fresh budget.
 4. `CODING` selects the next runnable bead from the scheduler.
 5. `executeBead()` starts or reattaches to the owned OpenCode session for that bead attempt.
 6. The model must emit the expected structured bead status markers. Missing or malformed markers trigger a structured retry path instead of silently progressing.
 7. The coding agent runs the smallest appropriate bead-scoped checks, adapting planned commands when repository evidence requires it, and returns a structured `done/pass` marker. LoopTroop validates that marker and proceeds to local finalization without independently rerunning frozen bead commands; ticket-level Final Testing remains backend executed and mandatory.
 8. If the shared coding/verification deadline expires, LoopTroop appends a structured Failed Iteration Note, abandons the session, resets the worktree to the bead start commit, and retries in fresh context.
 9. Only after all declared commands pass does LoopTroop finalize the bead locally. Changed work must be committed, true no-op work may complete without a commit, push failures are warnings, and fatal finalization failures append a separate ANSI-free Finalization Failure Note before routing to manual `BLOCKED_ERROR` recovery.
-10. `RUNNING_FINAL_TEST`, optional Manual QA, `INTEGRATING_CHANGES`, and `CREATING_PULL_REQUEST` package the result for post-implementation delivery. The Git-hook policy inherited ticket → project → profile and frozen at Start controls internal commits/pushes; explicit validation is rerun before integration and surfaced in final review.
+10. `RUNNING_FINAL_TEST`, optional Manual QA, `INTEGRATING_CHANGES`, and `CREATING_PULL_REQUEST` package the result for delivery. Git-hook inheritance supplies the initial Observe, Check, Require, or Run choice; setup approval may override it for the ticket run. Integration refreshes drift evidence and applies the approved advisory, required, or native-hook behavior.
 11. During all non-terminal execution states, runtime projections and execution logs are updated so a restarted backend or reloaded browser can restore the ticket from durable state rather than from memory.
 
 See [Beads & Execution](beads.md).

@@ -174,5 +174,20 @@ export function initializeDatabase() {
   ensureColumn('profiles', 'tool_output_max_chars', `INTEGER DEFAULT ${PROFILE_DEFAULTS.toolOutputMaxChars}`)
   ensureColumn('profiles', 'tool_error_max_chars', `INTEGER DEFAULT ${PROFILE_DEFAULTS.toolErrorMaxChars}`)
 
+  sqlite.exec(`
+    UPDATE profiles
+    SET git_hook_policy = CASE git_hook_policy
+      WHEN 'validate_explicitly' THEN 'validate_advisory'
+      WHEN 'ignore_internal_only' THEN 'observe_only'
+      WHEN 'use_on_internal_commits' THEN 'use_native_hooks'
+      ELSE git_hook_policy
+    END
+    WHERE git_hook_policy IN (
+      'validate_explicitly',
+      'ignore_internal_only',
+      'use_on_internal_commits'
+    );
+  `)
+
   logIfVerbose('[db] App database initialized')
 }

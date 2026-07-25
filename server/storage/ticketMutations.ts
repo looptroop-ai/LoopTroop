@@ -76,7 +76,7 @@ const CreateTicketInputSchema = z.object({
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
-  gitHookPolicy: z.enum(['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only']).nullable().optional(),
+  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).nullable().optional(),
 })
 
 function truncateLoggedValue(value: string, maxLength = 200): string {
@@ -379,7 +379,7 @@ export function createTicket(input: {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
-  gitHookPolicy?: 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only' | null
+  gitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks' | null
 }): PublicTicket {
   const parsedInput = CreateTicketInputSchema.safeParse(input)
   if (!parsedInput.success) {
@@ -622,7 +622,7 @@ export function lockTicketStartConfiguration(
     lockedStructuredRetryCount: number
     lockedManualQaEnabled?: boolean
     lockedManualQaSource?: 'profile' | 'project' | 'ticket'
-    lockedGitHookPolicy?: 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only'
+    lockedGitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
     lockedGitHookPolicySource?: 'profile' | 'project' | 'ticket'
   },
 ): PublicTicket | undefined {
@@ -654,7 +654,7 @@ export function lockTicketStartConfiguration(
     lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
   })
   assertLockedGitHookConfigurationMutable(context.localTicket, {
-    lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_explicitly',
+    lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
   })
 
@@ -679,7 +679,7 @@ export function lockTicketStartConfiguration(
       lockedStructuredRetryCount: input.lockedStructuredRetryCount,
       lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
       lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
-      lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_explicitly',
+      lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
       lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
       startedAt: meta.startedAt ?? input.startedAt,
       updatedAt: new Date().toISOString(),

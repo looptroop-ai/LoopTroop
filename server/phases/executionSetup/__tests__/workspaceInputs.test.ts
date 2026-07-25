@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../../structuredOutput/types'
@@ -44,7 +44,13 @@ function input(
   kind: ExecutionSetupWorkspaceInputPayload['kind'],
   sourceStatus: ExecutionSetupWorkspaceInputPayload['sourceStatus'],
 ): ExecutionSetupWorkspaceInputPayload {
-  return { path, kind, sourceStatus, reason: 'Required by the workspace setup.' }
+  return {
+    path,
+    kind,
+    sourceStatus,
+    category: kind === 'file' ? 'local_config' : 'fixture',
+    reason: 'Required by the workspace setup.',
+  }
 }
 
 afterEach(() => {
@@ -65,8 +71,8 @@ describe('execution setup workspace inputs', () => {
         input('untracked-inputs', 'directory', 'untracked'),
       ],
     })).toEqual([
-      input('ignored-file.json', 'file', 'ignored'),
-      input('untracked-inputs', 'directory', 'untracked'),
+      { ...input('ignored-file.json', 'file', 'ignored'), fileCount: 1, totalBytes: 3 },
+      { ...input('untracked-inputs', 'directory', 'untracked'), fileCount: 1, totalBytes: 8 },
     ])
   })
 
@@ -155,5 +161,17 @@ describe('execution setup workspace inputs', () => {
     materializeExecutionSetupWorkspaceInputs({ ...fixture, workspaceInputs })
 
     expect(readFileSync(join(fixture.worktreePath, 'ignored-inputs', 'nested', 'state.txt'), 'utf8')).toBe('prepared input\n')
+  })
+
+  it('requires an explicit override before copying a large workspace input', () => {
+    const fixture = createWorkspaceFixture()
+    const path = join(fixture.projectRoot, 'ignored-file.json')
+    writeFileSync(path, '')
+    truncateSync(path, 101 * 1024 * 1024)
+
+    expect(() => materializeExecutionSetupWorkspaceInputs({
+      ...fixture,
+      workspaceInputs: [input('ignored-file.json', 'file', 'ignored')],
+    })).toThrow('exceeds the default copy limit')
   })
 })

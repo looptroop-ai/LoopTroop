@@ -1714,7 +1714,9 @@ describe.concurrent('structured output normalization', () => {
     if (!result.ok) return
     expect(result.value.product.problem_statement).toBe('Ship a deterministic planning pipeline.')
     expect(result.value.scope.in_scope).toEqual(['Prompt hardening'])
-    expect(result.value.epics[0]?.user_stories[0]?.verification.required_commands).toEqual(['npm run test:server'])
+    expect(result.value.epics[0]?.user_stories[0]?.verification.required_commands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: 'npm run test:server' }),
+    ])
     expect(result.repairApplied).toBe(true)
     expect(result.repairWarnings.join('\n')).toContain('Canonicalized source_interview.content_sha256')
   })
@@ -2208,7 +2210,9 @@ describe.concurrent('structured output normalization', () => {
       '\'pink\' is accepted as a valid theme value in UIState.',
       'Parser preserves the original visible scalar text.',
     ])
-    expect(result.value[0]?.testCommands).toEqual([command])
+    expect(result.value[0]?.testCommands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: command }),
+    ])
   })
 
   it('accepts bead subset YAML after escaping invalid double-quoted regex backslashes', () => {
@@ -2237,7 +2241,9 @@ describe.concurrent('structured output normalization', () => {
     if (!result.ok) return
     expect(result.repairApplied).toBe(true)
     expect(result.repairWarnings).toContain('Escaped invalid YAML double-quoted scalar backslash sequences before reparsing.')
-    expect(result.value[0]?.testCommands).toEqual([command])
+    expect(result.value[0]?.testCommands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: command }),
+    ])
   })
 
   it('canonicalizes object-form bead context guidance into the runtime string format', () => {
@@ -2860,7 +2866,11 @@ describe.concurrent('structured output normalization', () => {
       () => normalizeFinalTestCommandsOutput([
         '<FINAL_TEST_COMMANDS>',
         'commands:',
-        '  - npm run test:server',
+        '  - mode: process',
+        '    program: npm',
+        '    args: [run, "test:server"]',
+        '    cwd: "."',
+        '    env: {}',
         'summary: verify the whole workflow',
         '</FINAL_TEST_COMMANDS>',
       ].join('\n')),
@@ -3040,12 +3050,24 @@ describe.concurrent('structured output normalization', () => {
       '  summary: verify the whole workflow',
       '```',
       '</FINAL_TEST_COMMANDS>',
-    ].join('\n'))
+    ].join('\n'), {
+      platform: 'linux',
+      environment: 'native',
+      arch: 'x64',
+      availableShells: ['posix'],
+      preferredShell: 'posix',
+    })
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.value).toEqual({
-      commands: ['npm run test:server'],
+      commands: [{
+        mode: 'shell',
+        shell: 'posix',
+        script: 'npm run test:server',
+        cwd: '.',
+        env: {},
+      }],
       summary: 'verify the whole workflow',
       testFiles: [],
       modifiedFiles: [],
@@ -3083,7 +3105,11 @@ describe.concurrent('structured output normalization', () => {
       '<FINAL_TEST_COMMANDS>',
       'command_plan:',
       '  commands:',
-      '    - npm run test:server',
+      '    - mode: process',
+      '      program: npm',
+      '      args: [run, "test:server"]',
+      '      cwd: "."',
+      '      env: {}',
       '  summary: verify the whole workflow',
       '</FINAL_TEST_COMMANDS>',
     ].join('\n'))

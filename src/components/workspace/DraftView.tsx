@@ -127,7 +127,7 @@ export function DraftView({ ticket }: DraftViewProps) {
   const effectiveGitHookPolicy = resolveGitHookPolicySetting(
     gitHookPolicy,
     project?.gitHookPolicy ?? null,
-    profile?.gitHookPolicy ?? 'validate_explicitly',
+    profile?.gitHookPolicy ?? 'validate_advisory',
   )
 
   // Sync draft from prop — use useEffect to avoid setting state during render

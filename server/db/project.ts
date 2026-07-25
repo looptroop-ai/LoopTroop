@@ -268,6 +268,19 @@ function initializeProjectSqlite(sqlite: Database.Database) {
   ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
 
   sqlite.exec(`
+    UPDATE projects
+    SET git_hook_policy = CASE git_hook_policy
+      WHEN 'validate_explicitly' THEN 'validate_advisory'
+      WHEN 'ignore_internal_only' THEN 'observe_only'
+      WHEN 'use_on_internal_commits' THEN 'use_native_hooks'
+      ELSE git_hook_policy
+    END
+    WHERE git_hook_policy IN (
+      'validate_explicitly',
+      'ignore_internal_only',
+      'use_on_internal_commits'
+    );
+
     UPDATE phase_artifacts
     SET phase_attempt = COALESCE(phase_attempt, 1)
     WHERE phase_attempt IS NULL;

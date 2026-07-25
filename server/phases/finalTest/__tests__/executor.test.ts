@@ -3,13 +3,18 @@ import type { PromptPart } from '../../../opencode/types'
 import { executeFinalTestWithRetries } from '../executor'
 import type { FinalTestGenerationResult } from '../generator'
 import type { FinalTestExecutionReport } from '../runner'
+import type { CommandSpec } from '@shared/commandSpec'
+
+function shellCommand(script: string): CommandSpec {
+  return { mode: 'shell', shell: 'posix', script, cwd: '.', env: {} }
+}
 
 function buildGeneration(overrides: Partial<FinalTestGenerationResult> = {}): FinalTestGenerationResult {
   return {
     output: '<FINAL_TEST_COMMANDS>{"commands":["npm run test:final"],"test_files":["src/final.test.ts"],"modified_files":["src/final.test.ts"]}</FINAL_TEST_COMMANDS>',
     commandPlan: {
       markerFound: true,
-      commands: ['npm run test:final'],
+      commands: [shellCommand('npm run test:final')],
       summary: 'verify final behavior',
       testFiles: ['src/final.test.ts'],
       modifiedFiles: ['src/final.test.ts'],
@@ -42,7 +47,8 @@ function buildReport(overrides: Partial<FinalTestExecutionReport> = {}): FinalTe
     modelOutput: '<FINAL_TEST_COMMANDS>{"commands":["npm run test:final"]}</FINAL_TEST_COMMANDS>',
     commands: [
       {
-        command: 'npm run test:final',
+        command: shellCommand('npm run test:final'),
+        displayCommand: 'npm run test:final',
         exitCode: 0,
         signal: null,
         stdout: 'ok',
@@ -100,7 +106,7 @@ describe('executeFinalTestWithRetries', () => {
       expect.objectContaining({
         attempt: 1,
         status: 'passed',
-        commands: ['npm run test:final'],
+        commands: [shellCommand('npm run test:final')],
       }),
     ])
   })
@@ -116,7 +122,7 @@ describe('executeFinalTestWithRetries', () => {
       return buildGeneration({
         commandPlan: {
           markerFound: true,
-          commands: [`npm run test:final --attempt=${attemptCounter}`],
+          commands: [shellCommand(`npm run test:final --attempt=${attemptCounter}`)],
           summary: `verify final behavior attempt ${attemptCounter}`,
           testFiles: ['src/final.test.ts'],
           modifiedFiles: ['src/final.test.ts'],
@@ -135,7 +141,8 @@ describe('executeFinalTestWithRetries', () => {
         passed: false,
         commands: [
           {
-            command: 'npm run test:final --attempt=1',
+            command: shellCommand('npm run test:final --attempt=1'),
+            displayCommand: 'npm run test:final --attempt=1',
             exitCode: 1,
             signal: null,
             stdout: '',
@@ -150,7 +157,8 @@ describe('executeFinalTestWithRetries', () => {
         checkedAt: '2026-04-09T10:01:00.000Z',
         commands: [
           {
-            command: 'npm run test:final --attempt=2',
+            command: shellCommand('npm run test:final --attempt=2'),
+            displayCommand: 'npm run test:final --attempt=2',
             exitCode: 0,
             signal: null,
             stdout: 'ok',
@@ -219,7 +227,8 @@ describe('executeFinalTestWithRetries', () => {
         passed: false,
         commands: [
           {
-            command: 'npm run test:final',
+            command: shellCommand('npm run test:final'),
+            displayCommand: 'npm run test:final',
             exitCode: 1,
             signal: null,
             stdout: '',
@@ -236,7 +245,8 @@ describe('executeFinalTestWithRetries', () => {
         checkedAt: '2026-04-09T10:02:00.000Z',
         commands: [
           {
-            command: 'npm run test:final',
+            command: shellCommand('npm run test:final'),
+            displayCommand: 'npm run test:final',
             exitCode: 1,
             signal: null,
             stdout: '',
@@ -297,7 +307,7 @@ describe('executeFinalTestWithRetries', () => {
       return buildGeneration({
         commandPlan: {
           markerFound: true,
-          commands: [`npm run test:final --attempt=${attempts}`],
+          commands: [shellCommand(`npm run test:final --attempt=${attempts}`)],
           summary: 'verify final behavior',
           testFiles: ['src/final.test.ts'],
           modifiedFiles: ['src/final.test.ts'],
@@ -316,7 +326,8 @@ describe('executeFinalTestWithRetries', () => {
           passed: false,
           commands: [
             {
-              command: `npm run test:final --attempt=${attempts}`,
+              command: shellCommand(`npm run test:final --attempt=${attempts}`),
+              displayCommand: `npm run test:final --attempt=${attempts}`,
               exitCode: 1,
               signal: null,
               stdout: '',
@@ -330,7 +341,8 @@ describe('executeFinalTestWithRetries', () => {
         : buildReport({
           commands: [
             {
-              command: 'npm run test:final --attempt=3',
+              command: shellCommand('npm run test:final --attempt=3'),
+              displayCommand: 'npm run test:final --attempt=3',
               exitCode: 0,
               signal: null,
               stdout: 'ok',
@@ -385,7 +397,8 @@ describe('executeFinalTestWithRetries', () => {
           passed: false,
           commands: [
             {
-              command: 'npm run test:final',
+              command: shellCommand('npm run test:final'),
+              displayCommand: 'npm run test:final',
               exitCode: 1,
               signal: null,
               stdout: '',

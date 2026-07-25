@@ -50,7 +50,7 @@ export function TicketForm({ onClose }: TicketFormProps) {
   const effectiveGitHookPolicy = resolveGitHookPolicySetting(
     gitHookPolicy,
     selectedProject?.gitHookPolicy ?? null,
-    profile?.gitHookPolicy ?? 'validate_explicitly',
+    profile?.gitHookPolicy ?? 'validate_advisory',
   )
   const createInput = () => ({
     projectId: effectiveProjectId as number,

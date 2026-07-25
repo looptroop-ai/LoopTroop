@@ -1,5 +1,6 @@
 import * as jsYaml from 'js-yaml'
 import { isRecord } from './typeGuards'
+import { renderCommandSpec, type CommandSpec } from './commandSpec'
 import type {
   InterviewQuestionChange,
   InterviewQuestionChangeAttributionStatus,
@@ -64,7 +65,7 @@ interface ParsedPrdUserStory {
   acceptance_criteria?: string[]
   implementation_steps?: string[]
   verification?: {
-    required_commands?: string[]
+    required_commands?: CommandSpec[]
   }
 }
 
@@ -107,7 +108,7 @@ interface ParsedBeadSubset {
   contextGuidance?: { patterns?: string[]; anti_patterns?: string[] } | string
   acceptanceCriteria?: string[]
   tests?: string[]
-  testCommands?: string[]
+  testCommands?: CommandSpec[]
 }
 
 interface DiffSourceCandidate {
@@ -885,7 +886,7 @@ function buildPrdBlocks(content: string): DiffCandidateBlock[] {
           ? renderNamedSection('Implementation Steps', renderList(story.implementation_steps))
           : '',
         story.verification?.required_commands?.length
-          ? renderNamedSection('Verification Commands', renderList(story.verification.required_commands))
+          ? renderNamedSection('Verification Commands', renderList(story.verification.required_commands.map((command) => renderCommandSpec(command))))
           : '',
       ].filter(Boolean).join('\n\n')
       blocks.push({
@@ -1043,8 +1044,8 @@ function buildBeadText(bead: ParsedBeadSubset): string {
     normalizeStringArray(bead.tests).length
       ? renderNamedSection('Tests', renderList(bead.tests))
       : '',
-    normalizeStringArray(bead.testCommands).length
-      ? renderNamedSection('Test Commands', renderList(bead.testCommands))
+    bead.testCommands?.length
+      ? renderNamedSection('Test Commands', renderList(bead.testCommands.map((command) => renderCommandSpec(command))))
       : '',
   ].filter(Boolean).join('\n\n')
 }

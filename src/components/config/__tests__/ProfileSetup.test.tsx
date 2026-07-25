@@ -33,7 +33,7 @@ const existingProfile = {
   toolOutputMaxChars: 12000,
   toolErrorMaxChars: 6000,
   manualQaEnabled: false,
-  gitHookPolicy: 'use_on_internal_commits' as const,
+  gitHookPolicy: 'use_native_hooks' as const,
   createdAt: '2026-03-08T14:28:53.309Z',
   updatedAt: '2026-03-11T10:49:38.623Z',
 }

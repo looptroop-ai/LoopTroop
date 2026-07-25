@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as jsYaml from 'js-yaml'
+import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import {
   mergeStructuredInterventions,
   normalizeStructuredInterventions,
@@ -2412,8 +2413,8 @@ interface ParsedBead {
   acceptanceCriteria?: string[]
   acceptance_criteria?: string[]
   tests?: string[]
-  testCommands?: string[]
-  test_commands?: string[]
+  testCommands?: CommandSpec[]
+  test_commands?: CommandSpec[]
   testCommandReason?: string
   test_command_reason?: string
   priority?: number
@@ -2559,6 +2560,18 @@ function getBeadStringArray(bead: ParsedBead, keys: string[]): string[] {
       .filter((item): item is string => typeof item === 'string')
       .map((item) => item.trim())
       .filter(Boolean)
+  }
+  return []
+}
+
+function getBeadCommands(bead: ParsedBead, keys: string[]): CommandSpec[] {
+  for (const key of keys) {
+    const value = bead[key]
+    if (!Array.isArray(value)) continue
+    return value.flatMap((command) => {
+      const parsed = commandSpecSchema.safeParse(command)
+      return parsed.success ? [parsed.data] : []
+    })
   }
   return []
 }
@@ -3003,7 +3016,7 @@ export function BeadsDraftView({ content }: { content: string }) {
             const labels = getBeadStringArray(bead, ['labels'])
             const acceptanceCriteria = getBeadStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria'])
             const tests = getBeadStringArray(bead, ['tests'])
-            const testCommands = getBeadStringArray(bead, ['testCommands', 'test_commands'])
+            const testCommands = getBeadCommands(bead, ['testCommands', 'test_commands'])
             const testCommandReason = getBeadStringValue(bead, ['testCommandReason', 'test_command_reason'])
             const targetFiles = getBeadStringArray(bead, ['targetFiles', 'target_files'])
             const status = getBeadStringValue(bead, ['status']) || 'pending'
@@ -3127,9 +3140,9 @@ export function BeadsDraftView({ content }: { content: string }) {
                       {testCommands.length > 0 && (
                         <div className="space-y-1">
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Planned Test Commands</div>
-                          {testCommands.map((command) => (
-                            <code key={command} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono break-all">
-                              {command}
+                          {testCommands.map((command, commandIndex) => (
+                            <code key={commandIndex} className="block text-xs rounded bg-background border border-border px-2 py-1 font-mono break-all">
+                              {renderCommandSpec(command)}
                             </code>
                           ))}
                         </div>
@@ -4663,22 +4676,22 @@ function ExecutionSetupPlanView({
   const projectCommandGroups: Array<{ title: string; items: string[]; emptyLabel: string }> = [
     {
       title: 'Prepare Commands',
-      items: plan.projectCommands.prepare,
+      items: plan.projectCommands.prepare.map((command) => renderCommandSpec(command, plan.hostContext.preferredShell)),
       emptyLabel: 'No shared prepare commands were recorded.',
     },
     {
       title: 'Full Test Commands',
-      items: plan.projectCommands.testFull,
+      items: plan.projectCommands.testFull.map((command) => renderCommandSpec(command, plan.hostContext.preferredShell)),
       emptyLabel: 'No full test commands were recorded.',
     },
     {
       title: 'Full Lint Commands',
-      items: plan.projectCommands.lintFull,
+      items: plan.projectCommands.lintFull.map((command) => renderCommandSpec(command, plan.hostContext.preferredShell)),
       emptyLabel: 'No full lint commands were recorded.',
     },
     {
       title: 'Full Typecheck Commands',
-      items: plan.projectCommands.typecheckFull,
+      items: plan.projectCommands.typecheckFull.map((command) => renderCommandSpec(command, plan.hostContext.preferredShell)),
       emptyLabel: 'No full typecheck commands were recorded.',
     },
   ]
@@ -4746,13 +4759,13 @@ function ExecutionSetupPlanView({
             <div className="space-y-3">
               <ArtifactListSection
                 title="Approved Workspace Inputs"
-                items={plan.workspaceInputs.map((input) => `${input.path} (${input.kind}, ${input.sourceStatus}): ${input.reason}`)}
+                items={plan.workspaceInputs.map((input) => `${input.path} (${input.kind}, ${input.sourceStatus}, ${input.category}${input.allowLargeCopy ? ', large-copy override' : ''}): ${input.reason}`)}
                 emptyLabel="No ignored or untracked workspace inputs were approved."
                 tone="default"
               />
               <ArtifactListSection
                 title="Workspace Probes"
-                items={plan.workspaceProbes.map((probe) => `${probe.id}: ${probe.command}${probe.purpose ? ` — ${probe.purpose}` : ''}`)}
+                items={plan.workspaceProbes.map((probe) => `${probe.id}: ${renderCommandSpec(probe.command, plan.hostContext.preferredShell)}${probe.purpose ? ` — ${probe.purpose}` : ''}`)}
                 emptyLabel="No repository-level workspace probes were recorded."
                 tone="default"
               />
@@ -4761,13 +4774,13 @@ function ExecutionSetupPlanView({
               <MetadataCard label="Git Hook Policy" value={plan.gitHooks.policy.replaceAll('_', ' ')} tone="info" />
               <ArtifactListSection
                 title="Detected Git Hooks"
-                items={plan.gitHooks.detected.map((hook) => `${hook.name}: ${hook.path} (${hook.source || 'unknown source'}; ${hook.executable ? 'executable' : 'not executable'}${hook.managerHint ? `; ${hook.managerHint}` : ''})`)}
+                items={plan.gitHooks.detected.map((hook) => `${hook.name}: ${hook.path} (${hook.kind === 'manager_config' ? 'manager configuration' : 'hook file'}; ${hook.source || 'unknown source'}; runnable ${hook.runnable}${hook.managerHint ? `; ${hook.managerHint}` : ''})`)}
                 emptyLabel="No Git hooks were detected."
                 tone="default"
               />
               <ArtifactListSection
                 title="Git Hook Validation Commands"
-                items={plan.gitHooks.validationCommands.map((entry) => `${entry.hook || 'hook'}: ${entry.command}${entry.purpose ? ` — ${entry.purpose}` : ''}`)}
+                items={plan.gitHooks.validationCommands.map((entry) => `${entry.hook || 'hook'}: ${renderCommandSpec(entry.command, plan.hostContext.preferredShell)}${entry.purpose ? ` — ${entry.purpose}` : ''}`)}
                 emptyLabel="No explicit hook validations were approved; hook validation will be recorded as skipped."
                 tone="default"
               />

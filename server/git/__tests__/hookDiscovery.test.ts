@@ -33,7 +33,8 @@ describe('discoverGitHooks', () => {
     expect(discoverGitHooks(root).detected).toContainEqual(expect.objectContaining({
       name: 'pre-commit',
       source: 'git-hooks-directory',
-      executable: true,
+      kind: 'hook',
+      runnable: process.platform === 'win32' ? 'unknown' : 'yes',
     }))
   })
 
@@ -49,6 +50,7 @@ describe('discoverGitHooks', () => {
       name: 'pre-push',
       path: '.husky/pre-push',
       source: 'core.hooksPath',
+      kind: 'hook',
       managerHint: 'husky',
     }))
   })
@@ -59,10 +61,13 @@ describe('discoverGitHooks', () => {
     writeFileSync(join(root, 'lefthook.yml'), 'pre-commit: {}\n')
 
     const result = discoverGitHooks(root)
-    expect(result.detected.map((hook) => hook.managerHint)).toEqual(expect.arrayContaining(['pre-commit', 'lefthook']))
+    expect(result.detected).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'manager_config', managerHint: 'pre-commit', runnable: 'no' }),
+      expect.objectContaining({ kind: 'manager_config', managerHint: 'lefthook', runnable: 'no' }),
+    ]))
     expect(result.suggestedValidationCommands.map((command) => command.command)).toEqual(expect.arrayContaining([
-      'pre-commit run --all-files',
-      'lefthook run pre-commit',
+      expect.objectContaining({ mode: 'process', program: 'pre-commit', args: ['run', '--all-files'] }),
+      expect.objectContaining({ mode: 'process', program: 'lefthook', args: ['run', 'pre-commit'] }),
     ]))
   })
 
@@ -74,5 +79,18 @@ describe('discoverGitHooks', () => {
     const result = discoverGitHooks(root)
     expect(result.detected).toContainEqual(expect.objectContaining({ name: 'commit-msg', path: '.githooks/commit-msg' }))
     expect(result.suggestedValidationCommands).toEqual([])
+  })
+
+  it('reports a non-runnable hook without treating it as manager configuration', () => {
+    const root = createRepository()
+    const hooksDirRaw = execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'hooks'], { encoding: 'utf8' }).trim()
+    const hooksDir = isAbsolute(hooksDirRaw) ? hooksDirRaw : resolve(root, hooksDirRaw)
+    writeFileSync(join(hooksDir, 'pre-commit'), '#!/bin/sh\nexit 0\n')
+
+    expect(discoverGitHooks(root).detected).toContainEqual(expect.objectContaining({
+      name: 'pre-commit',
+      kind: 'hook',
+      runnable: process.platform === 'win32' ? 'unknown' : 'no',
+    }))
   })
 })

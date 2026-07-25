@@ -230,8 +230,8 @@ export function buildExecutionSetupPlanContent(summary = 'Prepare workspace runt
     temp_roots: [DEFAULT_EXECUTION_SETUP_ROOT, `${DEFAULT_EXECUTION_SETUP_ROOT}/tool-cache`],
     workspace_probes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the actual workspace.' }],
     git_hooks: {
-      policy: 'validate_explicitly',
-      detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'husky', executable: true, manager_hint: 'husky' }],
+      policy: 'validate_advisory',
+      detected: [{ name: 'pre-commit', path: '.husky/pre-commit', source: 'husky', kind: 'hook', runnable: 'yes', manager_hint: 'husky' }],
       validation_commands: [{ id: 'pre-commit-check', hook: 'pre-commit', command: 'project check', purpose: 'Run the pre-commit checks explicitly.' }],
     },
     steps: [
@@ -287,7 +287,7 @@ export function buildExecutionSetupProfileContent(summary = 'Runtime cache and c
     tooling_probe_commands: ['project --version'],
     workspace_probes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
     workspace_probe_receipts: [{ id: 'workspace', command: 'project test --list', status: 'passed', exitCode: 0, durationMs: 40, outputExcerpt: 'tests discovered' }],
-    git_hooks: { policy: 'validate_explicitly', detected: [], validation_commands: [], validation_receipts: [] },
+    git_hooks: { policy: 'validate_advisory', detected: [], validation_commands: [], validation_receipts: [] },
     reusable_artifacts: [
       {
         path: `${DEFAULT_EXECUTION_SETUP_ROOT}/cache.json`,
@@ -323,7 +323,7 @@ export function buildExecutionSetupProfileArtifactContent() {
     tooling_probe_commands: ['project --version'],
     workspace_probes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
     workspace_probe_receipts: [{ id: 'workspace', command: 'project test --list', status: 'passed', exitCode: 0, durationMs: 40, outputExcerpt: 'tests discovered' }],
-    git_hooks: { policy: 'validate_explicitly', detected: [], validation_commands: [], validation_receipts: [] },
+    git_hooks: { policy: 'validate_advisory', detected: [], validation_commands: [], validation_receipts: [] },
     reusable_artifacts: [
       {
         path: `${DEFAULT_EXECUTION_SETUP_ROOT}/cache.json`,
@@ -365,7 +365,7 @@ export function buildExecutionSetupRuntimeReportContent() {
       toolingProbeCommands: ['project --version'],
       workspaceProbes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
       workspaceProbeReceipts: [{ id: 'workspace', command: 'project test --list', status: 'passed', exitCode: 0, durationMs: 40, outputExcerpt: 'tests discovered' }],
-      gitHooks: { policy: 'validate_explicitly', detected: [], validationCommands: [], validationReceipts: [] },
+      gitHooks: { policy: 'validate_advisory', detected: [], validationCommands: [], validationReceipts: [] },
       reusableArtifacts: [
         {
           path: `${DEFAULT_EXECUTION_SETUP_ROOT}/cache.json`,
@@ -437,7 +437,7 @@ export function buildExecutionSetupReportArtifactContent() {
       toolingProbeCommands: ['project --version'],
       workspaceProbes: [{ id: 'workspace', command: 'project test --list', purpose: 'Load the workspace.' }],
       workspaceProbeReceipts: [{ id: 'workspace', command: 'project test --list', status: 'passed', exitCode: 0, durationMs: 40, outputExcerpt: 'tests discovered' }],
-      gitHooks: { policy: 'validate_explicitly', detected: [], validationCommands: [], validationReceipts: [] },
+      gitHooks: { policy: 'validate_advisory', detected: [], validationCommands: [], validationReceipts: [] },
       reusableArtifacts: [
         {
           path: `${DEFAULT_EXECUTION_SETUP_ROOT}/cache.json`,

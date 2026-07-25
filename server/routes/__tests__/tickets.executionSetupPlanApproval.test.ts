@@ -22,6 +22,14 @@ import { ticketRouter } from '../tickets'
 import { contentSha256 } from '../../lib/contentHash'
 import { revertTicketToApprovalStatus } from '../../machines/persistence'
 
+const shellCommand = (script: string) => ({
+  mode: 'shell' as const,
+  shell: 'posix' as const,
+  script,
+  cwd: '.',
+  env: {},
+})
+
 function buildPlan(ticketId: string, summary = 'Prepare the workspace runtime.'): Record<string, unknown> {
   return {
     schema_version: 1,
@@ -73,6 +81,13 @@ function buildStructuredPlan(ticketId: string, summary = 'Prepare the workspace 
     ticketId,
     artifact: 'execution_setup_plan' as const,
     status: 'draft' as const,
+    hostContext: {
+      platform: 'linux' as const,
+      environment: 'native' as const,
+      arch: 'x64',
+      availableShells: ['posix' as const],
+      preferredShell: 'posix' as const,
+    },
     summary,
     readiness: {
       status: 'partial' as const,
@@ -81,22 +96,29 @@ function buildStructuredPlan(ticketId: string, summary = 'Prepare the workspace 
       gaps: ['Reusable workspace setup outputs have not been prepared yet.'],
     },
     tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
+    workspaceInputs: [],
+    workspaceProbes: [],
+    gitHooks: {
+      policy: 'validate_advisory' as const,
+      detected: [],
+      validationCommands: [],
+    },
     steps: [
       {
         id: 'bootstrap-workspace',
         title: 'Bootstrap workspace',
         purpose: 'Prepare the runtime for later beads.',
-        commands: ['npm run bootstrap'],
+        commands: [shellCommand('npm run bootstrap')],
         required: true,
         rationale: 'Repository-native setup is required before later execution can reuse the workspace.',
         cautions: ['May take a while on the first run.'],
       },
     ],
     projectCommands: {
-      prepare: ['npm run bootstrap'],
-      testFull: ['npm test'],
-      lintFull: ['npm run lint'],
-      typecheckFull: ['npm run typecheck'],
+      prepare: [shellCommand('npm run bootstrap')],
+      testFull: [shellCommand('npm test')],
+      lintFull: [shellCommand('npm run lint')],
+      typecheckFull: [shellCommand('npm run typecheck')],
     },
     qualityGatePolicy: {
       tests: 'bead-test-commands-first',
@@ -358,42 +380,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: {
-          schemaVersion: 1,
-          ticketId: ticket.externalId,
-          artifact: 'execution_setup_plan',
-          status: 'draft',
-          summary: 'Structured save',
-          readiness: {
-            status: 'partial',
-            actionsRequired: true,
-            evidence: ['Manifest files were found.'],
-            gaps: ['Workspace setup outputs still need a bootstrap step.'],
-          },
-          tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
-          steps: [
-            {
-              id: 'bootstrap-workspace',
-              title: 'Bootstrap workspace',
-              purpose: 'Prepare the runtime for later beads.',
-              commands: ['npm run bootstrap'],
-              required: true,
-              rationale: 'Repository-native setup is required.',
-              cautions: [],
-            },
-          ],
-          projectCommands: {
-            prepare: ['npm run bootstrap'],
-            testFull: ['npm test'],
-            lintFull: ['npm run lint'],
-            typecheckFull: ['npm run typecheck'],
-          },
-          qualityGatePolicy: {
-            tests: 'bead-test-commands-first',
-            lint: 'impacted-or-package',
-            typecheck: 'impacted-or-package',
-            fullProjectFallback: 'never-block-on-unrelated-baseline',
-          },
-          cautions: [],
+          ...buildStructuredPlan(ticket.externalId, 'Structured save'),
         },
       }),
     })
@@ -429,11 +416,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: {
-          schemaVersion: 1,
-          ticketId: ticket.externalId,
-          artifact: 'execution_setup_plan',
-          status: 'draft',
-          summary: 'Workspace already looks ready.',
+          ...buildStructuredPlan(ticket.externalId, 'Workspace already looks ready.'),
           readiness: {
             status: 'ready',
             actionsRequired: false,
@@ -448,13 +431,6 @@ describe('ticketRouter execution setup plan approval routes', () => {
             lintFull: [],
             typecheckFull: [],
           },
-          qualityGatePolicy: {
-            tests: 'bead-test-commands-first',
-            lint: 'impacted-or-package',
-            typecheck: 'impacted-or-package',
-            fullProjectFallback: 'never-block-on-unrelated-baseline',
-          },
-          cautions: [],
         },
       }),
     })
@@ -468,7 +444,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(payload.plan.steps).toHaveLength(0)
   })
 
-  it('rejects inconsistent structured execution setup plans', async () => {
+  it('derives readiness from structured setup work instead of trusting an inconsistent edit', async () => {
     const { app, ticket } = setupExecutionSetupPlanTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
@@ -476,11 +452,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         plan: {
-          schemaVersion: 1,
-          ticketId: ticket.externalId,
-          artifact: 'execution_setup_plan',
-          status: 'draft',
-          summary: 'Invalid plan',
+          ...buildStructuredPlan(ticket.externalId, 'Invalid plan'),
           readiness: {
             status: 'ready',
             actionsRequired: false,
@@ -493,7 +465,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
               id: 'still-has-step',
               title: 'This should not be allowed',
               purpose: 'Contradicts ready status.',
-              commands: ['echo invalid'],
+              commands: [shellCommand('echo invalid')],
               required: false,
               rationale: 'Invalid by design for the test.',
               cautions: [],
@@ -505,22 +477,16 @@ describe('ticketRouter execution setup plan approval routes', () => {
             lintFull: [],
             typecheckFull: [],
           },
-          qualityGatePolicy: {
-            tests: 'bead-test-commands-first',
-            lint: 'impacted-or-package',
-            typecheck: 'impacted-or-package',
-            fullProjectFallback: 'never-block-on-unrelated-baseline',
-          },
-          cautions: [],
         },
       }),
     })
 
-    expect(response.status).toBe(400)
-    const payload = await response.json() as { error: string; details: string }
-    expect(payload.error).toBe('Failed to save execution setup plan')
-    expect(payload.details).toContain('cannot include setup steps or workspace inputs when readiness is ready')
-    expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')).toBeUndefined()
+    expect(response.status).toBe(200)
+    const payload = await response.json() as {
+      plan: { readiness: { status: string; actionsRequired: boolean } }
+    }
+    expect(payload.plan.readiness).toMatchObject({ status: 'partial', actionsRequired: true })
+    expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')).toBeDefined()
   })
 
   it('regenerates the execution setup plan with commentary (returns immediately, generates in background)', async () => {

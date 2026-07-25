@@ -1,5 +1,6 @@
 import * as jsYaml from 'js-yaml'
 import { isRecord } from '@shared/typeGuards'
+import { commandSpecSchema, type CommandSpec } from '@shared/commandSpec'
 
 function toStringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
@@ -19,13 +20,18 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
-function normalizeVerification(value: unknown): { required_commands: string[] } {
+function normalizeVerification(value: unknown): { required_commands: CommandSpec[] } {
   if (!isRecord(value)) {
     return { required_commands: [] }
   }
 
   return {
-    required_commands: toStringArray(value.required_commands),
+    required_commands: Array.isArray(value.required_commands)
+      ? value.required_commands.flatMap((command) => {
+          const parsed = commandSpecSchema.safeParse(command)
+          return parsed.success ? [parsed.data] : []
+        })
+      : [],
   }
 }
 
@@ -35,7 +41,7 @@ export interface PrdUserStory {
   acceptance_criteria: string[]
   implementation_steps: string[]
   verification: {
-    required_commands: string[]
+    required_commands: CommandSpec[]
   }
 }
 

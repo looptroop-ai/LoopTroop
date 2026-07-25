@@ -101,7 +101,7 @@ describe('ticket start configuration locking', () => {
     expect(lockedTicket?.lockedStructuredRetryCount).toBe(3)
     expect(lockedTicket?.lockedManualQaEnabled).toBe(false)
     expect(lockedTicket?.lockedManualQaSource).toBe('profile')
-    expect(lockedTicket?.lockedGitHookPolicy).toBe('validate_explicitly')
+    expect(lockedTicket?.lockedGitHookPolicy).toBe('validate_advisory')
     expect(lockedTicket?.lockedGitHookPolicySource).toBe('profile')
     expect(lockedTicket?.startedAt).toBe(startedAt)
 
@@ -154,7 +154,7 @@ describe('ticket start configuration locking', () => {
     })).toThrow(/Manual QA configuration is immutable after start/i)
 
     expect(() => patchTicket(ticket.id, {
-      lockedGitHookPolicy: 'ignore_internal_only',
+      lockedGitHookPolicy: 'observe_only',
     })).toThrow(/Git hook configuration is immutable after start/i)
 
     const progressUpdate = patchTicket(ticket.id, {
@@ -173,22 +173,22 @@ describe('ticket start configuration locking', () => {
       folderPath: repoDir,
       name: 'LoopTroop Hook Settings',
       shortname: 'HOOK',
-      gitHookPolicy: 'ignore_internal_only',
+      gitHookPolicy: 'observe_only',
     })
     const ticket = createTicket({ projectId: project.id, title: 'Draft hook override', gitHookPolicy: null })
 
     expect(ticket).toMatchObject({
       gitHookPolicy: null,
-      effectiveGitHookPolicy: 'ignore_internal_only',
+      effectiveGitHookPolicy: 'observe_only',
       effectiveGitHookPolicySource: 'project',
     })
-    expect(updateTicket(ticket.id, { gitHookPolicy: 'use_on_internal_commits' })).toMatchObject({
-      gitHookPolicy: 'use_on_internal_commits',
-      effectiveGitHookPolicy: 'use_on_internal_commits',
+    expect(updateTicket(ticket.id, { gitHookPolicy: 'use_native_hooks' })).toMatchObject({
+      gitHookPolicy: 'use_native_hooks',
+      effectiveGitHookPolicy: 'use_native_hooks',
       effectiveGitHookPolicySource: 'ticket',
     })
     patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
-    expect(() => updateTicket(ticket.id, { gitHookPolicy: 'validate_explicitly' })).toThrow(/DRAFT status/)
+    expect(() => updateTicket(ticket.id, { gitHookPolicy: 'validate_required' })).toThrow(/DRAFT status/)
   })
 
   it('recovers the same improvement ticket after database creation but before origin files exist', () => {

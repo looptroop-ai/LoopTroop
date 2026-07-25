@@ -11,6 +11,8 @@ import { normalizeBeadRefinementOutput } from '../../structuredOutput'
 import { normalizeStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { attachStructuredRetryDiagnostic, buildStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import type { BeadSubset } from './types'
+import { normalizeCommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../../lib/hostContext'
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -632,7 +634,9 @@ function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinem
         : []
       const tests = Array.isArray(entry.tests) ? normalizeFingerprintList(entry.tests as string[]) : []
       const testCommands = Array.isArray(entry.testCommands) || Array.isArray(entry.test_commands)
-        ? normalizeFingerprintList((entry.testCommands ?? entry.test_commands) as string[])
+        ? ((entry.testCommands ?? entry.test_commands) as unknown[]).map(
+            (command) => normalizeCommandSpec(command, detectHostContext()).command,
+          )
         : []
       const rawTestCommandReason = entry.testCommandReason ?? entry.test_command_reason
       const testCommandReason = typeof rawTestCommandReason === 'string'

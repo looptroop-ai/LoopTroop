@@ -1,6 +1,8 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
+import type { HostContext } from '@shared/hostContext'
+import type { CommandSpec, RuntimeEnvironment } from '@shared/commandSpec'
 
 export interface StructuredOutputSuccess<T> {
   ok: true
@@ -89,7 +91,7 @@ export interface BeadCompletionPayload {
 }
 
 export interface FinalTestCommandPayload {
-  commands: string[]
+  commands: CommandSpec[]
   summary: string | null
   testFiles: string[]
   modifiedFiles: string[]
@@ -115,7 +117,7 @@ export type ExecutionSetupToolRequirementStatus = 'available' | 'provisioned' | 
 
 export interface ExecutionSetupProvisioningAttemptPayload {
   strategy: string
-  commands: string[]
+  commands: CommandSpec[]
   result: string
   reason: string
 }
@@ -134,7 +136,7 @@ export interface ExecutionSetupPlanStepPayload {
   id: string
   title: string
   purpose: string
-  commands: string[]
+  commands: CommandSpec[]
   required: boolean
   rationale: string
   cautions: string[]
@@ -149,27 +151,35 @@ export interface ExecutionSetupPlanReadinessPayload {
 
 export type ExecutionSetupWorkspaceInputKind = 'file' | 'directory'
 export type ExecutionSetupWorkspaceInputSourceStatus = 'ignored' | 'untracked'
+export type ExecutionSetupWorkspaceInputCategory =
+  | 'local_config'
+  | 'secret'
+  | 'fixture'
+  | 'dataset'
+  | 'other_non_reproducible'
 
 export interface ExecutionSetupWorkspaceInputPayload {
   path: string
   kind: ExecutionSetupWorkspaceInputKind
   sourceStatus: ExecutionSetupWorkspaceInputSourceStatus
+  category: ExecutionSetupWorkspaceInputCategory
+  allowLargeCopy?: boolean
+  fileCount?: number
+  totalBytes?: number
   reason: string
 }
 
-export type GitHookPolicy = 'validate_explicitly' | 'use_on_internal_commits' | 'ignore_internal_only'
+export type GitHookPolicy = 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
 
 export interface ExecutionSetupCommandProbePayload {
   id: string
-  command: string
+  command: CommandSpec
   purpose: string
 }
 
 export interface ExecutionSetupCommandReceiptPayload {
   id: string
-  command: string
-  effectiveCommand?: string
-  setupWrapperApplied?: boolean
+  command?: CommandSpec
   status: 'passed' | 'failed' | 'timed_out' | 'skipped'
   exitCode: number | null
   durationMs: number
@@ -180,7 +190,8 @@ export interface DetectedGitHookPayload {
   name: string
   path: string
   source: string
-  executable: boolean
+  kind: 'hook' | 'manager_config'
+  runnable: 'yes' | 'no' | 'unknown'
   managerHint?: string
 }
 
@@ -200,6 +211,7 @@ export interface ExecutionSetupPlanPayload {
   ticketId: string
   artifact: 'execution_setup_plan'
   status: 'draft'
+  hostContext: HostContext
   summary: string
   readiness: ExecutionSetupPlanReadinessPayload
   tempRoots: string[]
@@ -208,10 +220,10 @@ export interface ExecutionSetupPlanPayload {
   gitHooks: ExecutionSetupGitHooksPayload
   steps: ExecutionSetupPlanStepPayload[]
   projectCommands: {
-    prepare: string[]
-    testFull: string[]
-    lintFull: string[]
-    typecheckFull: string[]
+    prepare: CommandSpec[]
+    testFull: CommandSpec[]
+    lintFull: CommandSpec[]
+    typecheckFull: CommandSpec[]
   }
   qualityGatePolicy: {
     tests: string
@@ -229,21 +241,23 @@ export interface ExecutionSetupProfilePayload {
   ticketId: string
   artifact: 'execution_setup_profile'
   status: ExecutionSetupStatus
+  hostContext: HostContext
   summary: string
   tempRoots: string[]
   workspaceInputs: ExecutionSetupWorkspaceInputPayload[]
-  bootstrapCommands: string[]
-  toolingProbeCommands: string[]
+  runtimeEnvironment: RuntimeEnvironment
+  bootstrapCommands: CommandSpec[]
+  toolingProbeCommands: CommandSpec[]
   workspaceProbes: ExecutionSetupCommandProbePayload[]
   workspaceProbeReceipts?: ExecutionSetupCommandReceiptPayload[]
   gitHooks: ExecutionSetupGitHooksPayload
   toolRequirements?: ExecutionSetupToolRequirementPayload[]
   reusableArtifacts: ExecutionSetupReusableArtifactPayload[]
   projectCommands: {
-    prepare: string[]
-    testFull: string[]
-    lintFull: string[]
-    typecheckFull: string[]
+    prepare: CommandSpec[]
+    testFull: CommandSpec[]
+    lintFull: CommandSpec[]
+    typecheckFull: CommandSpec[]
   }
   qualityGatePolicy: {
     tests: string
@@ -312,7 +326,7 @@ export interface PrdDocument {
       acceptance_criteria: string[]
       implementation_steps: string[]
       verification: {
-        required_commands: string[]
+        required_commands: CommandSpec[]
       }
     }>
   }>

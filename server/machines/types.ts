@@ -72,6 +72,7 @@ export type TicketEvent =
   | { type: 'EXECUTION_SETUP_PLAN_FAILED'; errors?: string[] }
   | { type: 'REGENERATE_EXECUTION_SETUP_PLAN' }
   | { type: 'APPROVE_EXECUTION_SETUP_PLAN' }
+  | { type: 'EXECUTION_SETUP_EVIDENCE_CHANGED' }
   | { type: 'EXECUTION_SETUP_READY' }
   | { type: 'EXECUTION_SETUP_FAILED'; errors?: string[] }
   | { type: 'CHECKS_FAILED'; errors: string[] }

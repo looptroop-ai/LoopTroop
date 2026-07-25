@@ -39,6 +39,7 @@ import {
 } from '../../prompts/index'
 import { enrichGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/hookEvidence'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
+import { detectHostContext } from '../../lib/hostContext'
 
 function buildExecutionSetupPlanReport(input: {
   generatedBy: string
@@ -156,12 +157,17 @@ async function generateAndPersistExecutionSetupPlan(input: {
       ticket_worktree: paths.worktreePath,
     }, null, 2),
   }
+  const hostContext: PromptPart = {
+    type: 'text',
+    source: 'host_context',
+    content: JSON.stringify(detectHostContext(), null, 2),
+  }
   const notes = input.note
     ? appendExecutionSetupPlanNotes(input.ticketId, [input.note])
     : readExecutionSetupPlanNotes(input.ticketId)
   const promptContext = input.source === 'regenerate'
-    ? buildRegenerateContext([...baseContext, workspaceLocations], input.currentPlan ?? null, input.note ?? null, notes)
-    : [...baseContext, workspaceLocations]
+    ? buildRegenerateContext([...baseContext, workspaceLocations, hostContext], input.currentPlan ?? null, input.note ?? null, notes)
+    : [...baseContext, workspaceLocations, hostContext]
 
   emitPhaseLog(
     input.ticketId,
@@ -190,6 +196,18 @@ async function generateAndPersistExecutionSetupPlan(input: {
       promptTemplate: input.source === 'regenerate'
         ? PROM_EXECUTION_SETUP_PLAN_REGENERATE
         : PROM_EXECUTION_SETUP_PLAN,
+      validatePlan: (plan) => {
+        try {
+          validateExecutionSetupWorkspaceInputs({
+            projectRoot: paths.projectRoot,
+            worktreePath: paths.worktreePath,
+            workspaceInputs: plan.workspaceInputs,
+          })
+          return []
+        } catch (error) {
+          return [error instanceof Error ? error.message : String(error)]
+        }
+      },
       onSessionCreated: (sessionId) => {
         emitAiMilestone(
           input.ticketId,
@@ -246,12 +264,17 @@ async function generateAndPersistExecutionSetupPlan(input: {
     try {
       generation.plan = enrichGeneratedExecutionSetupPlan(input.ticketId, {
         ...generation.plan,
+        ticketId: input.context.externalId,
+        hostContext: detectHostContext(),
         workspaceInputs: validateExecutionSetupWorkspaceInputs({
           projectRoot: paths.projectRoot,
           worktreePath: paths.worktreePath,
           workspaceInputs: generation.plan.workspaceInputs,
         }),
       })
+      if (input.source === 'regenerate' && input.currentPlan) {
+        generation.plan.gitHooks.policy = input.currentPlan.gitHooks.policy
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       generation.parse.errors.push(message)
@@ -333,8 +356,9 @@ export async function handleExecutionSetupPlanApprovalState(
         sendEvent({ type: 'EXECUTION_SETUP_PLAN_READY' })
         return
       }
-
-      sendEvent({ type: 'EXECUTION_SETUP_PLAN_FAILED', errors: report.errors })
+      // A malformed AI draft is a reviewable generation failure, not a ticket-wide
+      // runtime failure. Keep the ticket in approval so the raw output can be
+      // inspected and the draft regenerated.
     },
     (phase, type, content) => emitPhaseLog(ticketId, context.externalId, phase, type, content, { source: 'system', audience: 'all' }),
   )

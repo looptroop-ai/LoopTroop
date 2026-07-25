@@ -3,6 +3,7 @@ import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../council/types'
 import { GLOBAL_RULES, SAME_SESSION_RULES, CONVERSATIONAL_RULES } from './globalRules'
 import { buildCompletionInstructions } from '../phases/execution/completionSchema'
+import { getCommandSpecPromptExample } from '@shared/commandSpec'
 
 interface PromptTemplate {
   id: string
@@ -20,6 +21,7 @@ const MAX_VOTE_CATEGORY_SCORE = 20
 const MAX_VOTE_TOTAL_SCORE = 100
 const EXAMPLE_DRAFT_A_SCORES = [18, 17, 16, 15, 18]
 const EXAMPLE_DRAFT_B_SCORES = [14, 15, 14, 16, 13]
+const COMMAND_SPEC_PROMPT_EXAMPLE = JSON.stringify(getCommandSpecPromptExample())
 
 function buildStrictVoteOutputInstruction(categories: string[]): string {
   const renderExampleDraft = (label: string, scores: number[]) => [
@@ -56,7 +58,7 @@ const PRD_OUTPUT_FORMAT = [
   '`scope` keys: `in_scope`, `out_of_scope`.',
   '`technical_requirements` keys: `architecture_constraints`, `data_model`, `api_contracts`, `security_constraints`, `performance_constraints`, `reliability_constraints`, `error_handling_rules`, `tooling_assumptions`.',
   '`epics` must be a non-empty list. Each epic: `id`, `title`, `objective`, `implementation_steps`, `user_stories`.',
-  'Each user story: `id`, `title`, `acceptance_criteria`, `implementation_steps`, `verification.required_commands`.',
+  'Each user story: `id`, `title`, `acceptance_criteria`, `implementation_steps`, `verification.required_commands`. Every command is a structured process or current-host shell command; prefer direct process execution.',
   'YAML Safety: Any one-line scalar or list item that begins with backticks or `@`, or contains `: ` in plain text, must be double-quoted.',
   'Example:',
   '```yaml',
@@ -99,7 +101,11 @@ const PRD_OUTPUT_FORMAT = [
   '          - "..."',
   '        verification:',
   '          required_commands:',
-  '            - "npm test"',
+  '            - mode: "process"',
+  '              program: "npm"',
+  '              args: ["test"]',
+  '              cwd: "."',
+  '              env: {}',
   'risks:',
   '  - "..."',
   'approval:',
@@ -131,9 +137,13 @@ const BEAD_SUBSET_OUTPUT_FORMAT = [
   '    tests:',
   '      - "Unit test verifies table creation."',
   '    testCommands:',
-  '      - "npm run test -- server/db"',
+  '      - mode: "process"',
+  '        program: "npm"',
+  '        args: ["run", "test", "--", "server/db"]',
+  '        cwd: "."',
+  '        env: {}',
   '```',
-  '`testCommands` must always be a YAML list. When it is empty, add `testCommandReason` as a non-empty string; otherwise omit `testCommandReason`.',
+  '`testCommands` must always be a YAML list of structured commands. Prefer `{mode: process, program, args, cwd: ".", env: {}}`; use `{mode: shell, shell: posix|cmd|powershell, script, cwd: ".", env: {}}` only when repository evidence requires shell syntax. When the list is empty, add `testCommandReason` as a non-empty string; otherwise omit it.',
   'YAML Safety: For any field value or list item that contains dense punctuation, quotes, backslashes, `: `, brackets, braces, shell metacharacters, or other code-like inline syntax, prefer a block scalar (`|-`) and otherwise use a double-quoted YAML string.',
   'When using double-quoted YAML strings, escape literal backslashes as `\\\\` (for example `\\\\|` in regex-like text), or use a block scalar for commands and regex-like text.',
   'For `testCommands` containing regex backslashes such as `\\+`, prefer a block scalar list item (`- |-`) or escape every literal backslash as `\\\\+`; never put raw `\\+` inside a double-quoted YAML string.',
@@ -736,7 +746,7 @@ export const PROM_MANUAL_QA_FIX_BEADS: PromptTemplate = {
     '      anti_patterns: ["Specific approach to avoid"]',
     '    acceptanceCriteria: ["Observable completion criterion"]',
     '    tests: ["Concrete automated regression test"]',
-    '    testCommands: ["Bead-scoped verification command"]',
+    '    testCommands: [{mode: "process", program: "tool", args: ["test"], cwd: ".", env: {}}]',
     '    # When testCommands is [], add: testCommandReason: "Why no appropriate automated command exists"',
     '    labels: ["manual-qa", "domain-label"]',
     '    blockedByGroupIds: []',
@@ -781,21 +791,23 @@ export const PROM_EXECUTION_SETUP_PLAN: PromptTemplate = {
   instructions: [
     'Scope: Your job is to audit current readiness first, then plan only the missing workspace preparation. Do not assume setup is needed just because this phase exists.',
     'Read-Only Discovery: Inspect the ticket details, relevant files, PRD, beads plan, any prior setup-plan notes, and any existing execution_setup_profile context. You may inspect repository files, manifests, lockfiles, runtime directories, and generated temp artifacts, but do not edit files, install dependencies, or run mutating commands.',
-    'Existing Readiness First: Determine whether the current worktree already has what later coding beads need. Manifests, lockfiles, or scripts prove the project type, but they do not prove readiness unless the command launchers needed by required prepare/test/lint/typecheck commands are available or already prepared. If the environment is already ready, set `readiness.status` to `ready`, set `readiness.actions_required` to `false`, record concrete evidence, leave `readiness.gaps` empty, and return an empty `steps` list.',
-    'Missing Work Only: If the environment is not fully ready, set `readiness.status` to `partial` or `missing`, set `readiness.actions_required` to `true`, record concrete gaps, and include only the smallest credible set of setup steps needed to close those gaps. Missing command launchers or toolchains for discovered command families are setup gaps, not cautions on a ready plan.',
+    'Existing Readiness First: Determine whether the current worktree already has what later coding beads need. Manifests, lockfiles, or scripts prove the project type, but they do not prove readiness unless the command launchers needed by required prepare/test/lint/typecheck commands are available or already prepared. If the environment is already ready, record concrete evidence, leave `readiness.gaps` and `steps` empty.',
+    'Missing Work Only: If the environment is not fully ready, record concrete gaps and include only the smallest credible set of setup steps needed to close those gaps. Missing command launchers or toolchains for discovered command families are setup gaps, not cautions on a ready plan.',
     'Runtime Command Readiness: Inspect the launchers required by the approved beads and project commands so the setup plan can provision missing runtime tooling without redesigning the approved work.',
-    'Readiness Contradictions: Never return `readiness.status: ready` with `actions_required: false` when any workspace probe, bead test command, or project command needs a launcher that is unavailable or still needs provisioning. A caution cannot downgrade a missing required launcher into a ready environment.',
+    'Backend-Owned Fields: Return only your proposal. LoopTroop supplies schema and ticket identity, artifact/status, current-host facts, temp roots, Git policy and detected-hook evidence, quality policy, and derives readiness status/actions from the proposed work. Do not echo or guess those fields.',
     EXECUTION_SETUP_PROJECT_AGNOSTIC_RULE,
     'Workspace Setup Policy: The setup plan may propose repository-native bootstrap commands. Prefer LoopTroop-owned temporary roots under `.ticket/runtime/execution-setup/**`, especially `.ticket/runtime/execution-setup/tool-cache/**`, for execution-only toolchains, dependency caches, build caches, generated outputs, or tool caches. Do not propose ticket feature implementation as part of setup.',
     'Tracked Change Boundary: If a setup command is likely to modify tracked manifests, lockfiles, generated assets, or configuration, prefer a non-mutating or temp-root alternative. If readiness truly requires a permanent repository change, record the exact need in `cautions` instead of trying to make that change during setup.',
     'Plan Structure: Return ordered setup steps when commands are required. Each step must include `id`, `title`, `purpose`, `commands`, `required`, `rationale`, and `cautions`; use `cautions: []` when no step-specific cautions apply. A plan whose only required action is materializing approved workspace inputs may use a non-empty `workspace_inputs` list with an empty `steps` list.',
+    `Structured Commands: Every machine command is an object matching the shared command schema. Prefer a direct process such as \`${COMMAND_SPEC_PROMPT_EXAMPLE}\`. Use \`{"mode":"shell","shell":"posix|cmd|powershell","script":"unchanged script","cwd":".","env":{}}\` only when repository evidence requires shell syntax. Never assume a shell from the programming language.`,
     'Command Families: Discover project-level command families for prepare/bootstrap, full test, full lint, and full typecheck when possible. If a family is unavailable, return an empty list rather than inventing commands.',
     'Quality Gate Policy: Default to bead test commands first, then impacted-or-package scoped lint/typecheck, and never block later phases on unrelated baseline debt.',
     'Functional Workspace Probes: Propose at least one safe repository-level command that loads or discovers the actual project whenever project command families or bead test commands exist. Tool/runtime version checks alone are not workspace probes.',
     'Git Hook Validation: Inspect repository hook configuration and propose explicit, safe validation commands for hooks you can identify. Do not invent commands for unknown hooks. The backend supplies read-only detected-hook evidence and the configured policy.',
     'Original Checkout Audit: Compare the current ticket worktree with the original checkout provided in `workspace_locations`. Check whether the original checkout contains an ignored or untracked file or directory that explains a setup failure or readiness gap. Confirm that it is absent from the ticket worktree and needed to prepare, load, build, test, lint, or otherwise operate the project.',
     'Workspace Input Evidence: Add an item only when concrete repository evidence or a prior workspace-setup failure connects it to a readiness problem. Do not list unrelated ignored files, caches, dependencies, temporary output, or the complete ignored-file inventory.',
-    'Workspace Inputs: Record every necessary ignored or untracked file or directory in `workspace_inputs`. Use repository-relative paths. For each item, record whether it is a file or directory, whether it is ignored or untracked, and a concise reason it is needed. Do not include file contents and do not add shell copy commands to `steps`.',
+    'Workspace Inputs: Record every necessary ignored or untracked file or directory in `workspace_inputs`. Use repository-relative paths. For each item, record whether it is a file or directory, whether it is ignored or untracked, its category (`local_config`, `secret`, `fixture`, `dataset`, or `other_non_reproducible`), and a concise reason it is needed. Do not include file contents and do not add shell copy commands to `steps`.',
+    'Reproducible Inputs: Never propose generated dependencies, dependency directories, caches, or build output as workspace inputs. Setup commands must recreate reproducible state.',
     'Approved Materialization: The user reviews and may edit `workspace_inputs` as part of the normal execution setup plan. Approval authorizes LoopTroop to copy only those listed inputs from the original checkout into the same relative paths in the ticket worktree before setup commands run.',
     'Workspace Input Boundaries: Never propose `.git`, `.ticket`, `.looptroop`, or paths outside the original checkout as workspace inputs.',
     'Workspace Input Readiness: A non-empty `workspace_inputs` list counts as required setup work. Set `readiness.actions_required` to true when those inputs are needed, even when no additional setup command is required.',
@@ -804,47 +816,31 @@ export const PROM_EXECUTION_SETUP_PLAN: PromptTemplate = {
   ],
   outputFormat: `JSON or YAML inside \`<EXECUTION_SETUP_PLAN>...</EXECUTION_SETUP_PLAN>\` with this exact shape:
 {
-  "schema_version": 1,
-  "ticket_id": "PROJ-123",
-  "artifact": "execution_setup_plan",
-  "status": "draft",
   "summary": "short human-readable summary",
   "readiness": {
-    "status": "ready",
-    "actions_required": false,
     "evidence": ["observed fact proving readiness"],
     "gaps": []
   },
-  "temp_roots": [".ticket/runtime/execution-setup", ".ticket/runtime/execution-setup/tool-cache"],
-  "workspace_inputs": [{"path":"relative/path","kind":"file|directory","source_status":"ignored|untracked","reason":"why setup needs it"}],
-  "workspace_probes": [{"id": "workspace-1", "command": "<safe repository-level command>", "purpose": "prove the project can be loaded"}],
+  "workspace_inputs": [{"path":"relative/path","kind":"file|directory","source_status":"ignored|untracked","category":"local_config|secret|fixture|dataset|other_non_reproducible","reason":"why setup needs it"}],
+  "workspace_probes": [{"id": "workspace-1", "command": {"mode":"process","program":"tool","args":["test"],"cwd":".","env":{},"timeoutMs":120000}, "purpose": "prove the project can be loaded"}],
   "git_hooks": {
-    "policy": "validate_explicitly",
-    "detected": [],
-    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": "<project validation command>", "purpose": "run the hook check explicitly"}]
+    "validation_commands": [{"id": "hook-1", "hook": "pre-commit", "command": {"mode":"process","program":"tool","args":["check"],"cwd":".","env":{}}, "purpose": "run the hook check explicitly"}]
   },
   "steps": [],
   "project_commands": {
-    "prepare": ["<repository-native prepare command when discovered>"],
-    "test_full": ["..."],
-    "lint_full": ["..."],
-    "typecheck_full": ["..."]
-  },
-  "quality_gate_policy": {
-    "tests": "bead-test-commands-first",
-    "lint": "impacted-or-package",
-    "typecheck": "impacted-or-package",
-    "full_project_fallback": "never-block-on-unrelated-baseline"
+    "prepare": [{"mode":"process","program":"tool","args":["prepare"],"cwd":".","env":{}}],
+    "test_full": [{"mode":"process","program":"tool","args":["test"],"cwd":".","env":{}}],
+    "lint_full": [],
+    "typecheck_full": []
   },
   "cautions": ["..."]
 }
-\`steps\` and \`workspace_inputs\` must both be empty when \`readiness.status\` is \`ready\` and \`readiness.actions_required\` is \`false\`. When actions are required, at least one of those lists must be non-empty.
 Each setup step must have this exact shape:
 {
   "id": "setup-step-1",
   "title": "short step title",
   "purpose": "why this workspace setup step is needed",
-  "commands": ["<repository-native setup command>"],
+  "commands": [{"mode":"process","program":"tool","args":["prepare"],"cwd":".","env":{},"timeoutMs":120000}],
   "required": true,
   "rationale": "evidence or reasoning for this step",
   "cautions": []
@@ -890,15 +886,15 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
     'Temporary Scope and Safety: Put execution-only toolchains, dependency/build caches, generated outputs, logs, and reusable setup artifacts under approved temp roots, preferably `.ticket/runtime/execution-setup/**` and `.ticket/runtime/execution-setup/tool-cache/**`. Do not use privileged or global installation, arbitrary source-tree install paths, or permanent repository changes.',
     'Gitignore Suggestions: If setup commands create untracked generated or local outputs outside approved temp roots because repository ignore coverage is missing, do not edit `.gitignore` during setup. Record the exact paths and recommended `.gitignore` entries in `cautions`, and prefer moving reusable setup outputs under approved temp roots when possible.',
     'Missing Tool Recovery: A failed version or information probe only discovers a missing tool. Before reporting it as failed, try at least two distinct safe user-space strategies that actually obtain, install, or activate a compatible launcher under the approved temp roots, unless repository evidence proves no safe strategy exists. Wrapper creation, cache inspection, PATH edits, and probes are not provisioning attempts. Resolve declared version constraints from repository metadata, consult official release metadata when needed, record the evidence and commands used, and never repeat an unchanged failed approach.',
-    'Reusable Runtime Wrapper: When you provision a launcher off the normal PATH or need prepared runtime environment variables, you MUST create `.ticket/runtime/execution-setup/env.sh` and executable `.ticket/runtime/execution-setup/run`. The `run` wrapper must source `env.sh` and execute the command arguments. Record `env.sh` as an environment artifact and `run` as a `command-wrapper` reusable artifact. LoopTroop independently routes the approved plan\'s bare workspace probes, explicit hook checks, and later project commands through this declared wrapper; do not rewrite approved probes merely to prefix the wrapper.',
+    'Runtime Environment: Report the PATH additions and environment variables needed by prepared tools as reusable runtime information. LoopTroop applies that environment to subprocesses and creates any host-appropriate coding-agent launcher; do not require or assume POSIX env.sh/run wrappers.',
+    'Structured Commands: Return every machine command as a direct process object or an explicit POSIX, cmd, or PowerShell shell object, using the same command schema shown in the approved plan. Prefer direct processes.',
     'Tracked Change Boundary: If a repository-native setup command changes tracked manifests, lockfiles, generated assets, or configuration, do not leave those changes behind. Record the exact need in `cautions` and return `blocked` if readiness depends on a permanent repository change.',
     'Minimum Necessary Work: If the environment is already ready or only partially missing one prerequisite, do only the missing temporary work. Do not rebuild or re-bootstrap the environment from scratch without evidence.',
     'Audited Augmentations: If the approved plan is insufficient and you must run additional setup commands, keep those additions minimal and make sure `bootstrap_commands` lists every command actually used, including additions beyond the approved plan.',
     'Reusable Outputs: Record any reusable dependency directory, build cache, generated temp artifact, tool cache, or setup note path in `temp_roots` or `reusable_artifacts`. Prefer runtime-owned paths under `.ticket/runtime/execution-setup/**`; use another setup-created location only when the repository itself requires it.',
     'Discovery Goal: Discover project-level command families for prepare/bootstrap, full test, full lint, and full typecheck when possible. If a command family is unavailable, return an empty list for that field instead of inventing a fake command.',
-    'Tooling Probes: Record non-mutating, rerunnable `tooling_probe_commands` that prove the prepared environment works. If a wrapper is required, the probe command itself should use that wrapper, for example `./.ticket/runtime/execution-setup/run <tool> --version`; LoopTroop also applies the resolved wrapper centrally and avoids double wrapping. LoopTroop reruns these probes before coding and rejects profiles with broken wrappers or missing probes for declared command families.',
-    'Workspace Probes: Copy the approved `workspace_probes` into the profile. They must be repository-level functional checks, not tool version probes. LoopTroop executes them independently before coding.',
-    'Git Hooks: Copy the approved `git_hooks.policy` and editable `git_hooks.validation_commands` into the profile. Do not modify backend-supplied `git_hooks.detected` evidence. LoopTroop runs explicit commands itself when the policy is `validate_explicitly`.',
+    'Tooling Probes: Record non-mutating, rerunnable `tooling_probe_commands` that prove the prepared environment works. LoopTroop reruns these probes before coding.',
+    'Backend-Owned Runtime Fields: Do not echo the approved workspace inputs/probes, Git hook policy/evidence/validations, ticket/schema identity, temp roots, or quality policy. LoopTroop copies those approved fields into the runtime profile after parsing your result.',
     'Approved Workspace Inputs: LoopTroop materializes the approved `workspace_inputs` before this setup session begins. Use those inputs as part of the prepared worktree. Do not copy additional ignored or untracked paths that are not present in the approved plan. If an approved input is unavailable or materialization failed, report the exact path as a workspace failure.',
     'Quality Gate Policy: Default to bead test commands first, then impacted-or-package scoped lint/typecheck, and never block later phases on unrelated baseline debt.',
     EXECUTION_SETUP_HONEST_OUTCOME_RULE,
@@ -910,21 +906,11 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
   "status": "<ready|blocked>",
   "summary": "short human-readable summary",
   "profile": {
-    "schema_version": 1,
-    "ticket_id": "PROJ-123",
-    "artifact": "execution_setup_profile",
     "status": "<ready|blocked>",
     "summary": "environment initialized and reusable",
-    "temp_roots": [".ticket/runtime/execution-setup", ".ticket/runtime/execution-setup/tool-cache"],
-    "workspace_inputs": [{"path":"relative/path","kind":"file|directory","source_status":"ignored|untracked","reason":"approved setup input"}],
-    "bootstrap_commands": ["..."],
-    "tooling_probe_commands": ["./.ticket/runtime/execution-setup/run <tool> --version"],
-    "workspace_probes": [{"id": "workspace-1", "command": "<safe repository-level command>", "purpose": "prove the project can be loaded"}],
-    "git_hooks": {
-      "policy": "validate_explicitly",
-      "detected": [],
-      "validation_commands": []
-    },
+    "runtime_environment": {"pathPrepend":[".ticket/runtime/execution-setup/tool-cache/bin"],"variables":{}},
+    "bootstrap_commands": [{"mode":"process","program":"tool","args":["prepare"],"cwd":".","env":{}}],
+    "tooling_probe_commands": [{"mode":"process","program":"tool","args":["--version"],"cwd":".","env":{}}],
     "tool_requirements": [
       {
         "launcher": "<required command launcher>",
@@ -934,7 +920,7 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
         "provisioning_attempts": [
           {
             "strategy": "<distinct safe provisioning strategy name>",
-            "commands": ["<safe temp-root provisioning command attempted for this strategy>"],
+            "commands": [{"mode":"shell","shell":"powershell","script":"<current-host provisioning script>","cwd":".","env":{}}],
             "result": "<available|provisioned|failed|not_run>",
             "reason": "<short outcome or failure reason>"
           }
@@ -948,29 +934,13 @@ export const PROM_EXECUTION_SETUP: PromptTemplate = {
         "path": ".ticket/runtime/execution-setup/tool-cache",
         "kind": "cache",
         "purpose": "why this exists"
-      },
-      {
-        "path": ".ticket/runtime/execution-setup/env.sh",
-        "kind": "environment",
-        "purpose": "exports PATH and cache variables for prepared runtime tooling"
-      },
-      {
-        "path": ".ticket/runtime/execution-setup/run",
-        "kind": "command-wrapper",
-        "purpose": "sources env.sh before executing project commands"
       }
     ],
     "project_commands": {
-      "prepare": ["..."],
-      "test_full": ["..."],
-      "lint_full": ["..."],
-      "typecheck_full": ["..."]
-    },
-    "quality_gate_policy": {
-      "tests": "bead-test-commands-first",
-      "lint": "impacted-or-package",
-      "typecheck": "impacted-or-package",
-      "full_project_fallback": "never-block-on-unrelated-baseline"
+      "prepare": [{"mode":"process","program":"tool","args":["prepare"],"cwd":".","env":{}}],
+      "test_full": [{"mode":"process","program":"tool","args":["test"],"cwd":".","env":{}}],
+      "lint_full": [],
+      "typecheck_full": []
     },
     "cautions": ["..."]
   },
@@ -1012,7 +982,7 @@ export const PROM_CODING: PromptTemplate = {
     'Read and Understand: Read the bead specification from the `bead_data` context — including bead id, description, acceptance criteria, target files, and test commands. `bead_data` identifies which bead you are implementing.',
     'Check Prior Notes: If bead notes exist from prior iteration failures, carefully read them and avoid repeating the same mistakes. These notes describe what went wrong previously and what to do differently.',
     'Execution Setup Reference: The full setup profile is available at `.ticket/runtime/execution-setup-profile.json`. Treat it as read-only runtime context; read it only when setup, tooling, prepared-artifact, or project-command details are needed, and prefer it over rediscovering those details from scratch.',
-    'Prepared Runtime Wrapper: If the setup profile records `.ticket/runtime/execution-setup/run` or project commands already use that wrapper, run setup-dependent commands through `./.ticket/runtime/execution-setup/run ...` so the prepared PATH and cache variables from `env.sh` are applied.',
+    'Prepared Runtime Launcher: When the setup profile records a `command-launcher` reusable artifact, invoke setup-dependent tools through that host-specific `.sh`, `.ps1`, or `.cmd` launcher. Do not assume POSIX syntax; use the launcher matching `host_context.preferredShell`. Machine commands in the profile are structured objects, so read their program/args or explicit shell/script fields rather than treating the JSON as command text.',
     'Implement Changes: Make the necessary code changes in the worktree to fulfill the bead requirements. Follow existing code patterns and conventions in the project.',
     'Environment Readiness: If the setup profile file is missing, unreadable, or invalid, do only the minimum safe discovery needed to proceed. Do not rediscover or rebuild the full environment unless the existing setup is missing or invalid. If a required command launcher or toolchain is missing and no approved temp root from the setup profile can hold execution-only tooling, report an environment failure instead of installing into arbitrary repository paths.',
     'Execution-Only Tooling: If you must prepare a missed execution-only toolchain or cache during coding, create it only under an existing approved temp root from `.ticket/runtime/execution-setup-profile.json`, preferably `.ticket/runtime/execution-setup/**`. Never download or install toolchains, SDKs, package managers, or large caches into arbitrary project paths.',
@@ -1067,12 +1037,12 @@ export const PROM52: PromptTemplate = {
     'File Effects Contract: Also record `file_effects` for every repository file you expect final testing to create or leave dirty. Use `{"path":"relative/path","intent":"candidate"}` for files that should be included in the PR, `{"path":"relative/path","intent":"temporary"}` for files that are expected test byproducts and must stay out of the PR, and `{"path":"relative/path","intent":"unexpected","reason":"..."}` for dirty files you did not intend as permanent. Paths must be repository-relative and language/framework agnostic.',
     'Ephemeral Runtime Exclusion: LoopTroop-owned internals such as `.ticket/**`, `.ticket/runtime/execution-setup/**`, `.ticket/runtime/execution-setup-profile.json`, and `.looptroop/**` are temporary runtime state and must never appear in `modified_files` or `file_effects`.',
     'Mandatory Self-Execution: Before returning `<FINAL_TEST_COMMANDS>`, you MUST run the exact command(s) you plan to return in this same worktree.',
-    'Execution Setup Reference: If `.ticket/runtime/execution-setup-profile.json` records `.ticket/runtime/execution-setup/run` or project commands already use that wrapper, run setup-dependent final-test commands through `./.ticket/runtime/execution-setup/run ...` so the prepared PATH and cache variables from `env.sh` are applied. LoopTroop will also execute returned commands through the declared setup wrapper when one is available, so the backend reuses the prepared environment even if the command text omits it.',
+    'Execution Setup Reference: Read `.ticket/runtime/execution-setup-profile.json` for the approved runtime environment and project commands. LoopTroop applies its structured PATH additions and variables directly when it executes returned commands.',
     'Repair Loop: If any planned command fails, inspect the real failure output, fix the underlying implementation and/or the final test files, and rerun the same command(s). Repeat until the exact planned command(s) pass or you run out of time.',
     'Scope Discipline: You may modify production code and test files during this phase, but keep changes minimal and strictly within the approved ticket, PRD, and Beads scope.',
     'Do Not Game The Tests: Do not weaken assertions, delete coverage, lower thresholds, or narrow test scope just to get a pass. Only change a failing test if it is demonstrably broader than the approved requirements.',
-    'Test Commands: Provide the exact commands to run the final test(s). Commands must target only your test files — do not run the entire project test suite.',
-    'Command Marker: End your response with `<FINAL_TEST_COMMANDS>{"commands":["<cmd1>","<cmd2>"],"test_files":["path/to/test-file"],"modified_files":["path/to/test-file","src/feature-file"],"file_effects":[{"path":"path/to/test-file","intent":"candidate"},{"path":"tmp/test-output","intent":"temporary","reason":"created by the final-test command"}],"summary":"short explanation"}</FINAL_TEST_COMMANDS>`.',
+    'Test Commands: Provide exact structured commands targeting only your test files. Prefer `{"mode":"process","program":"tool","args":["test"],"cwd":".","env":{}}`; use `{"mode":"shell","shell":"posix|cmd|powershell","script":"...","cwd":".","env":{}}` only when repository evidence requires shell syntax. Use the current host context supplied below; plans are for this host.',
+    'Command Marker: End your response with `<FINAL_TEST_COMMANDS>{"commands":[{"mode":"process","program":"tool","args":["test","path/to/test-file"],"cwd":".","env":{}}],"test_files":["path/to/test-file"],"modified_files":["path/to/test-file","src/feature-file"],"file_effects":[{"path":"path/to/test-file","intent":"candidate"},{"path":"tmp/test-output","intent":"temporary","reason":"created by the final-test command"}],"summary":"short explanation"}</FINAL_TEST_COMMANDS>`.',
     'Output Discipline: Return exactly one `<FINAL_TEST_COMMANDS>...</FINAL_TEST_COMMANDS>` block and nothing else outside it. Inside the marker, return only the machine-readable object with a non-empty `commands` field, a non-empty `test_files` field, a non-empty `modified_files` field, and `file_effects` entries for expected dirty files.',
     'Do not claim the tests passed yourself. LoopTroop will execute the commands and determine pass/fail from the real exit codes.',
     'Final Gate: Return `<FINAL_TEST_COMMANDS>` only after the exact listed command(s) have passed locally in your own session on the current branch state.',
@@ -1080,7 +1050,7 @@ export const PROM52: PromptTemplate = {
     STRUCTURED_SELF_CHECK,
   ],
   outputFormat: 'Test file(s) + execution commands',
-  contextInputs: ['ticket_details', 'prd', 'beads', 'final_test_notes'],
+  contextInputs: ['ticket_details', 'prd', 'beads', 'final_test_notes', 'host_context'],
   toolPolicy: 'default',
 }
 

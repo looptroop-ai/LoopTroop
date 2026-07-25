@@ -96,7 +96,7 @@ function collectNarrativeStringDrift(fieldPath: string, left: string, right: str
 }
 
 function collectNarrativeArrayDrift(fieldPath: string, left: string[], right: string[]): PreservedNarrativeDrift {
-  if (compareExactStringArrays(left, right)) {
+  if (JSON.stringify(left) === JSON.stringify(right)) {
     return { cosmeticPaths: [], substantivePaths: [] }
   }
   if (left.length !== right.length) {
@@ -113,8 +113,8 @@ function collectNarrativeArrayDrift(fieldPath: string, left: string[], right: st
   return { cosmeticPaths, substantivePaths }
 }
 
-function collectPreservedCommandArrayDrift(fieldPath: string, left: string[], right: string[]): string[] {
-  if (compareExactStringArrays(left, right)) {
+function collectPreservedCommandArrayDrift(fieldPath: string, left: unknown[], right: unknown[]): string[] {
+  if (JSON.stringify(left) === JSON.stringify(right)) {
     return []
   }
   if (left.length !== right.length) {
@@ -123,7 +123,7 @@ function collectPreservedCommandArrayDrift(fieldPath: string, left: string[], ri
 
   const commandPaths: string[] = []
   for (let index = 0; index < left.length; index += 1) {
-    if ((left[index] ?? '') !== (right[index] ?? '')) {
+    if (JSON.stringify(left[index] ?? '') !== JSON.stringify(right[index] ?? '')) {
       commandPaths.push(`${fieldPath}[${index}]`)
     }
   }

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import type { GenerateExecutionSetupResult } from '../generator'
 import type { ExecutionSetupReport } from '../types'
+import { createShellCommandSpec } from '@shared/commandSpec'
+import type { ExecutionSetupProvisioningAttemptPayload } from '../../../structuredOutput/types'
 
 const { generateExecutionSetupMock } = vi.hoisted(() => ({
   generateExecutionSetupMock: vi.fn(),
@@ -34,16 +36,16 @@ function buildGeneration(attempt: number): GenerateExecutionSetupResult {
 
 function buildToolingFailureReport(
   attempt: number,
-  provisioningAttempts = [
+  provisioningAttempts: ExecutionSetupProvisioningAttemptPayload[] = [
     {
       strategy: 'official archive',
-      commands: ['./install-go --prefix .ticket/runtime/execution-setup/tool-cache/go'],
+      commands: [createShellCommandSpec('./install-go --prefix .ticket/runtime/execution-setup/tool-cache/go')],
       result: 'failed',
       reason: 'download failed',
     },
     {
       strategy: 'repository version manager',
-      commands: ['./repo-toolchain install go'],
+      commands: [createShellCommandSpec('./repo-toolchain install go')],
       result: 'failed',
       reason: 'version manager failed',
     },
@@ -60,6 +62,8 @@ function buildToolingFailureReport(
       ticketId: 'T-1',
       artifact: 'execution_setup_profile',
       status: 'ready',
+      hostContext: { platform: 'linux', environment: 'native', arch: 'x64', availableShells: ['posix'], preferredShell: 'posix' },
+      runtimeEnvironment: { pathPrepend: [], variables: {} },
       summary: 'Go toolchain could not be prepared.',
       tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
       workspaceInputs: [],
@@ -67,7 +71,7 @@ function buildToolingFailureReport(
       toolingProbeCommands: [],
       workspaceProbes: [],
       gitHooks: {
-        policy: 'validate_explicitly',
+        policy: 'validate_advisory',
         detected: [],
         validationCommands: [],
       },
@@ -91,7 +95,7 @@ function buildToolingFailureReport(
       ],
       projectCommands: {
         prepare: [],
-        testFull: ['./.ticket/runtime/execution-setup/run go test ./...'],
+        testFull: [createShellCommandSpec('./.ticket/runtime/execution-setup/run go test ./...')],
         lintFull: [],
         typecheckFull: [],
       },
@@ -154,14 +158,14 @@ function buildBackendValidationFailureReport(
           summary: 'Workspace validation did not pass.',
           workspaceProbes: [{
             id: 'workspace',
-            command: 'project-test',
+            command: createShellCommandSpec('project-test'),
             purpose: 'Validate the prepared workspace.',
           }],
           ...(receipt
             ? {
                 workspaceProbeReceipts: [{
                   id: 'workspace',
-                  command: 'project-test',
+                  command: createShellCommandSpec('project-test'),
                   status: receipt.status,
                   exitCode: receipt.exitCode,
                   durationMs: 12,
@@ -397,7 +401,7 @@ describe('executeExecutionSetupWithRetries', () => {
     const oneStrategyAttempt = [
       {
         strategy: 'official archive',
-        commands: ['./install-go --prefix .ticket/runtime/execution-setup/tool-cache/go'],
+        commands: [createShellCommandSpec('./install-go --prefix .ticket/runtime/execution-setup/tool-cache/go')],
         result: 'failed',
         reason: 'download failed',
       },
@@ -480,7 +484,7 @@ describe('executeExecutionSetupWithRetries', () => {
       {
         evaluateGeneration: async ({ attempt }) => buildToolingFailureReport(attempt, [{
           strategy: 'official archive',
-          commands: ['./install-go'],
+          commands: [createShellCommandSpec('./install-go')],
           result: 'failed',
           reason: 'download failed',
         }]),
@@ -676,7 +680,7 @@ describe('executeExecutionSetupWithRetries', () => {
       {
         evaluateGeneration: async ({ attempt }) => buildToolingFailureReport(attempt, [{
           strategy: 'official archive',
-          commands: ['./install-go'],
+          commands: [createShellCommandSpec('./install-go')],
           result: 'failed',
           reason: 'download failed',
         }]),

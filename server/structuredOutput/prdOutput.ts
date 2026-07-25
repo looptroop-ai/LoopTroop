@@ -20,6 +20,8 @@ import {
 import { parseRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { normalizeCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../lib/hostContext'
 
 const PRD_NESTED_MAPPING_CHILDREN = {
   source_interview: ['content_sha256'],
@@ -61,10 +63,22 @@ function readOptionalString(record: Record<string, unknown>, aliases: string[]):
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function normalizeVerification(record: Record<string, unknown>): { required_commands: string[] } {
+function normalizeVerification(
+  record: Record<string, unknown>,
+  repairWarnings: string[],
+): { required_commands: CommandSpec[] } {
   const verification = getNestedRecord(record, ['verification'])
+  const rawCommands = getValueByAliases(verification, ['requiredcommands', 'required_commands', 'commands'])
+  const commands = Array.isArray(rawCommands) ? rawCommands : []
+  const host = detectHostContext()
   return {
-    required_commands: toStringArray(getValueByAliases(verification, ['requiredcommands', 'required_commands', 'commands'])),
+    required_commands: commands.map((value, index) => {
+      const normalized = normalizeCommandSpec(value, host)
+      if (normalized.warning) {
+        repairWarnings.push(`verification.required_commands[${index}]: ${normalized.warning}`)
+      }
+      return normalized.command
+    }),
   }
 }
 
@@ -142,7 +156,7 @@ function normalizeUserStory(
     title: getRequiredString(value, ['title', 'name'], `user story title at index ${storyIndex}`),
     acceptance_criteria: toStringArray(getValueByAliases(value, ['acceptancecriteria', 'acceptance_criteria'])),
     implementation_steps: toStringArray(getValueByAliases(value, ['implementationsteps', 'implementation_steps', 'steps'])),
-    verification: normalizeVerification(value),
+    verification: normalizeVerification(value, repairWarnings),
   }
 }
 

@@ -30,6 +30,7 @@ import {
   useDebouncedApprovalUiState,
 } from './approvalHooks'
 import { AutosaveStatus } from './AutosaveStatus'
+import { commandSpecSchema } from '@shared/commandSpec'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -90,6 +91,16 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
     }
     return ''
   }
+  const getCommands = (record: Record<string, unknown>, keys: string[]) => {
+    for (const key of keys) {
+      if (!Array.isArray(record[key])) continue
+      return (record[key] as unknown[]).flatMap((value) => {
+        const parsed = commandSpecSchema.safeParse(value)
+        return parsed.success ? [parsed.data] : []
+      })
+    }
+    return []
+  }
   const deps = (bead.dependencies ?? {}) as Record<string, unknown>
   const guidance = (bead.contextGuidance ?? bead.context_guidance ?? {}) as Record<string, unknown>
   return {
@@ -100,7 +111,7 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
     prdRefs: getStringArray(bead, ['prdRefs', 'prd_refs', 'prd_references']),
     acceptanceCriteria: getStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria']),
     tests: getStringArray(bead, ['tests']),
-    testCommands: getStringArray(bead, ['testCommands', 'test_commands']),
+    testCommands: getCommands(bead, ['testCommands', 'test_commands']),
     testCommandReason: getString(bead, ['testCommandReason', 'test_command_reason']) || undefined,
     targetFiles: getStringArray(bead, ['targetFiles', 'target_files']),
     contextGuidance: {

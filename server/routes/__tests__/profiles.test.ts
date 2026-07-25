@@ -74,7 +74,7 @@ describe('profileRouter numeric validation', () => {
 
     expect(response.status).toBe(201)
     await expect(response.json()).resolves.toMatchObject({
-      gitHookPolicy: 'validate_explicitly',
+      gitHookPolicy: 'validate_advisory',
       structuredRetryCount: 1,
       opencodeRetryLimit: 10,
       opencodeRetryDelay: 60_000,
@@ -82,7 +82,7 @@ describe('profileRouter numeric validation', () => {
 
     const stored = db.select().from(profiles).get()
     expect(stored?.structuredRetryCount).toBe(1)
-    expect(stored?.gitHookPolicy).toBe('validate_explicitly')
+    expect(stored?.gitHookPolicy).toBe('validate_advisory')
     expect(stored?.manualQaEnabled).toBe(false)
     expect(stored?.opencodeRetryLimit).toBe(10)
     expect(stored?.opencodeRetryDelay).toBe(60_000)
@@ -94,7 +94,7 @@ describe('profileRouter numeric validation', () => {
       councilMembers: '["openai/gpt-5.4"]',
     }).run()
     const app = createProfileApp()
-    for (const gitHookPolicy of ['validate_explicitly', 'use_on_internal_commits', 'ignore_internal_only'] as const) {
+    for (const gitHookPolicy of ['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'] as const) {
       const response = await app.request('/api/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -103,6 +103,22 @@ describe('profileRouter numeric validation', () => {
       expect(response.status).toBe(200)
       await expect(response.json()).resolves.toMatchObject({ gitHookPolicy })
     }
+  })
+
+  it.each([
+    ['validate_explicitly', 'validate_advisory'],
+    ['ignore_internal_only', 'observe_only'],
+    ['use_on_internal_commits', 'use_native_hooks'],
+  ] as const)('migrates persisted profile policy %s to %s', (legacyPolicy, expected) => {
+    db.insert(profiles).values({
+      mainImplementer: 'openai/gpt-5.4',
+      councilMembers: '["openai/gpt-5.4"]',
+      gitHookPolicy: legacyPolicy,
+    }).run()
+
+    initializeDatabase()
+
+    expect(db.select().from(profiles).get()?.gitHookPolicy).toBe(expected)
   })
 
   it('persists the global Manual QA toggle', async () => {

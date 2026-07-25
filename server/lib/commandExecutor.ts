@@ -1,0 +1,185 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { isAbsolute, relative, resolve } from 'node:path'
+import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
+import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
+import { FORCE_KILL_DELAY_MS } from './constants'
+
+const MAX_COMMAND_OUTPUT_BYTES = 1_000_000
+
+export interface CommandInvocation {
+  bin: string
+  args: string[]
+}
+
+export interface CommandExecutionResult extends CommandInvocation {
+  command: CommandSpec
+  cwd: string
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  stdout: string
+  stderr: string
+  durationMs: number
+  timedOut: boolean
+}
+
+export interface CommandExecutorOptions {
+  platform?: HostPlatform
+  env?: NodeJS.ProcessEnv
+  shellBinaries?: Partial<Record<CommandShellKind, string>>
+  pathExists?: (path: string) => boolean
+  spawnProcess?: typeof spawn
+  runtimeEnvironment?: RuntimeEnvironment
+}
+
+export function resolveCommandCwd(repoRoot: string, cwd: string): string {
+  if (isAbsolute(cwd) || /^[a-zA-Z]:[\\/]/.test(cwd) || cwd.replace(/\\/g, '/').split('/').includes('..')) {
+    throw new Error('Command working directory must stay within the repository root')
+  }
+  const root = resolve(repoRoot)
+  const resolved = resolve(root, cwd)
+  const relativePath = relative(root, resolved)
+  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error('Command working directory must stay within the repository root')
+  }
+  return resolved
+}
+
+function resolvePowerShell(
+  pathExists: (path: string) => boolean,
+  configured?: string,
+): string {
+  if (configured) return configured
+  return pathExists('/usr/bin/pwsh') ? '/usr/bin/pwsh' : 'powershell.exe'
+}
+
+export function buildCommandInvocation(
+  command: CommandSpec,
+  options: CommandExecutorOptions = {},
+): CommandInvocation {
+  if (command.mode === 'process') {
+    return { bin: command.program, args: command.args }
+  }
+
+  const pathExists = options.pathExists ?? existsSync
+  if (command.shell === 'cmd') {
+    return {
+      bin: options.shellBinaries?.cmd ?? options.env?.ComSpec ?? process.env.ComSpec ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', command.script],
+    }
+  }
+  if (command.shell === 'powershell') {
+    return {
+      bin: resolvePowerShell(pathExists, options.shellBinaries?.powershell),
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command.script],
+    }
+  }
+  return {
+    bin: options.shellBinaries?.posix ?? (pathExists('/bin/sh') ? '/bin/sh' : 'sh'),
+    args: ['-c', command.script],
+  }
+}
+
+function appendBoundedOutput(current: string, chunk: Buffer | string): string {
+  if (Buffer.byteLength(current, 'utf8') >= MAX_COMMAND_OUTPUT_BYTES) return current
+  const text = chunk.toString()
+  const remaining = MAX_COMMAND_OUTPUT_BYTES - Buffer.byteLength(current, 'utf8')
+  const appended = text.slice(0, remaining)
+  const next = `${current}${appended}`
+  return Buffer.byteLength(current, 'utf8') + Buffer.byteLength(appended, 'utf8') >= MAX_COMMAND_OUTPUT_BYTES
+    ? `${next}\n[LoopTroop truncated command output at ${MAX_COMMAND_OUTPUT_BYTES} bytes]`
+    : next
+}
+
+function terminateProcessTree(child: ChildProcess, platform: HostPlatform, signal: NodeJS.Signals): void {
+  if (!child.pid) return
+  if (platform === 'windows') {
+    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => undefined)
+    return
+  }
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    child.kill(signal)
+  }
+}
+
+export async function executeCommand(
+  command: CommandSpec,
+  input: CommandExecutorOptions & { repoRoot: string },
+): Promise<CommandExecutionResult> {
+  const startedAt = Date.now()
+  const cwd = resolveCommandCwd(input.repoRoot, command.cwd)
+  const invocation = buildCommandInvocation(command, input)
+  const platform = input.platform ?? (
+    process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
+  )
+  const spawnProcess = input.spawnProcess ?? spawn
+  const baseEnvironment = input.env ?? process.env
+  const pathSeparator = platform === 'windows' ? ';' : ':'
+  const pathPrepend = input.runtimeEnvironment?.pathPrepend.map((path) =>
+    resolveCommandCwd(input.repoRoot, path),
+  ) ?? []
+  const environment = {
+    ...baseEnvironment,
+    ...input.runtimeEnvironment?.variables,
+    ...command.env,
+  }
+  if (pathPrepend.length > 0) {
+    environment.PATH = [
+      ...pathPrepend,
+      baseEnvironment.PATH ?? baseEnvironment.Path ?? '',
+    ].filter(Boolean).join(pathSeparator)
+  }
+
+  return await new Promise<CommandExecutionResult>((resolveExecution) => {
+    const child = spawnProcess(invocation.bin, invocation.args, {
+      cwd,
+      env: environment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: platform !== 'windows',
+    })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timedOut = false
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return
+      settled = true
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+      resolveExecution({
+        command,
+        cwd,
+        ...invocation,
+        exitCode,
+        signal,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+      })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout = appendBoundedOutput(stdout, chunk)
+    })
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr = appendBoundedOutput(stderr, chunk)
+    })
+    child.on('error', (error) => {
+      stderr = `${stderr}${error.message}`
+      finish(null, null)
+    })
+    child.on('close', finish)
+
+    if (command.timeoutMs) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true
+        terminateProcessTree(child, platform, 'SIGTERM')
+        setTimeout(() => terminateProcessTree(child, platform, 'SIGKILL'), FORCE_KILL_DELAY_MS).unref()
+      }, command.timeoutMs)
+    }
+  })
+}

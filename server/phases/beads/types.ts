@@ -1,3 +1,5 @@
+import type { CommandSpec } from '@shared/commandSpec'
+
 export interface BeadDependencies {
   blocked_by: string[]
   blocks: string[]
@@ -56,7 +58,7 @@ export interface Bead {
   contextGuidance: BeadContextGuidance    // Field 10 — patterns and anti-patterns
   acceptanceCriteria: string[]            // Field 11
   tests: string[]                         // Field 14
-  testCommands: string[]                  // Field 15
+  testCommands: CommandSpec[]             // Field 15
   testCommandReason?: string              // Required only when testCommands is empty
 
   // Expanded fields (terminal expansion phase — PROM25)

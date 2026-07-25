@@ -1,7 +1,7 @@
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
 
 export const PROFILE_DEFAULTS = {
-  gitHookPolicy: 'validate_explicitly',
+  gitHookPolicy: 'validate_advisory',
   manualQaEnabled: false,
   minCouncilQuorum: 2,
   perIterationTimeout: 1200000,

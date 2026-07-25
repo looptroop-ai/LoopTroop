@@ -31,6 +31,7 @@ import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { Bead } from '../phases/beads/types'
 import { parseExecutionSetupPlanNotes } from '../phases/executionSetupPlan/types'
 import { parseExecutionSetupRetryNotes } from '../phases/executionSetup/types'
+import { renderCommandSpec } from '@shared/commandSpec'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import { getOpenCodeBasicAuthHeader } from '../../shared/opencodeAuth'
 import {
@@ -139,7 +140,7 @@ function formatBeadContext(bead: Bead): string {
     ...bead.tests.map((item) => `- ${item}`),
     '',
     `## Test Commands`,
-    ...bead.testCommands.map((item) => `- ${item}`),
+    ...bead.testCommands.map((item) => `- ${renderCommandSpec(item)}`),
     '',
     `## Dependencies (blocked by)`,
     ...(blockedBy.length > 0 ? blockedBy.map((item) => `- ${item}`) : ['- None']),

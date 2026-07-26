@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  classifyAuditMaintenanceFailure,
   chooseAgedDependencyTarget,
   collectLockfilePackageUpdates,
   decideDailyMaintenanceTask,
@@ -12,14 +13,17 @@ import {
   formatHeldAuditPackageUpdate,
   formatHeldDependencyReleaseDetail,
   formatUpdatedDependencyRange,
+  getAuditStartupDisposition,
   getDependencyUpdateReleaseDetails,
   getHeldAuditPackageReleaseDetails,
   getHeldDependencyReleaseDetails,
   getRegistryHostedRemotePolicyFailureUrl,
+  getStandaloneAuditExitCode,
   isExpectedAuditFindingsExit,
   isPeerResolutionFailure,
   parseNpmViewPublishTimes,
   recordDailyMaintenanceSuccess,
+  shouldRetryAuditMaintenanceFailure,
   summarizePeerResolutionFailure,
   type DailyMaintenanceState,
 } from '../scripts/dev-maintenance'
@@ -111,6 +115,74 @@ describe('daily dev maintenance decisions', () => {
     expect(decision.shouldRun).toBe(true)
     expect(decision.reason).toBe('new-day')
     expect(decision.deferred).toBe(false)
+  })
+})
+
+describe('audit maintenance failure policy', () => {
+  it('defers malformed registry responses without allowing them to block startup', () => {
+    const failure = classifyAuditMaintenanceFailure(
+      'npm warn audit invalid json response body at https://registry.npmjs.org/-/npm/v1/security/advisories/bulk',
+      'registry_command',
+    )
+
+    expect(failure).toMatchObject({
+      kind: 'invalid_registry_response',
+      startupBlocking: false,
+    })
+    expect(shouldRetryAuditMaintenanceFailure(failure)).toBe(true)
+    expect(getAuditStartupDisposition({ failures: [failure] })).toEqual({
+      shouldBlockStartup: false,
+      shouldRecordSuccess: false,
+    })
+    expect(getStandaloneAuditExitCode({ failures: [failure] })).toBe(1)
+  })
+
+  it.each([
+    'npm error code EAI_AGAIN',
+    'npm error code ECONNRESET',
+    'npm error network timeout',
+    'npm error 429 Too Many Requests',
+    'npm error 503 Service Unavailable',
+    'npm error code ENOAUDIT',
+  ])('treats a temporary registry failure as retryable: %s', (message) => {
+    const failure = classifyAuditMaintenanceFailure(message, 'registry_command')
+
+    expect(failure.kind).toBe('registry_unavailable')
+    expect(failure.startupBlocking).toBe(false)
+    expect(shouldRetryAuditMaintenanceFailure(failure)).toBe(true)
+  })
+
+  it('keeps local integrity failures and unknown command failures startup-blocking', () => {
+    const localFailure = classifyAuditMaintenanceFailure(
+      'Unable to read package-lock.json before npm audit remediation.',
+      'local_integrity',
+    )
+    const unknownFailure = classifyAuditMaintenanceFailure(
+      'npm audit terminated for an unknown reason',
+      'registry_command',
+    )
+
+    expect(localFailure).toMatchObject({
+      kind: 'local_integrity_failure',
+      startupBlocking: true,
+    })
+    expect(unknownFailure).toMatchObject({
+      kind: 'command_failure',
+      startupBlocking: true,
+    })
+    expect(shouldRetryAuditMaintenanceFailure(localFailure)).toBe(false)
+    expect(getAuditStartupDisposition({ failures: [localFailure] })).toEqual({
+      shouldBlockStartup: true,
+      shouldRecordSuccess: false,
+    })
+  })
+
+  it('records successful maintenance only when no audit failure occurred', () => {
+    expect(getAuditStartupDisposition({ failures: [] })).toEqual({
+      shouldBlockStartup: false,
+      shouldRecordSuccess: true,
+    })
+    expect(getStandaloneAuditExitCode({ failures: [] })).toBe(0)
   })
 })
 

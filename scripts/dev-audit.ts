@@ -1,6 +1,7 @@
 import {
   formatAuditPackageUpdate,
   formatHeldAuditPackageUpdate,
+  getStandaloneAuditExitCode,
   getAuditPackageUpdateDetails,
   getHeldAuditPackageReleaseDetails,
   readDailyMaintenanceState,
@@ -55,6 +56,8 @@ if (report.errors.length > 0) {
   for (const error of report.errors) {
     console.error(`[audit:remediate] ${error}`)
   }
+}
+if (getStandaloneAuditExitCode(report) !== 0) {
   process.exit(1)
 }
 

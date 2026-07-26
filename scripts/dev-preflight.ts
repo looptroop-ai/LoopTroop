@@ -7,6 +7,7 @@ import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
   ensureInstallIfNeeded,
+  getAuditStartupDisposition,
   getMissingBins,
   readDailyMaintenanceState,
   recordDailyMaintenanceSuccess,
@@ -337,17 +338,23 @@ const auditReport = shouldSkipDependencyMaintenance
         total: 0,
       },
       errors: [],
+      failures: [],
       lastCompletedAt: auditDecision.lastCompletedAt,
       nextEligibleAt: auditDecision.nextEligibleAt,
     }
 
-for (const error of auditReport.errors) {
-  console.error(`[dev-preflight] ${error}`)
+const auditDisposition = getAuditStartupDisposition(auditReport)
+for (const failure of auditReport.failures) {
+  const prefix = failure.startupBlocking
+    ? '[dev-preflight]'
+    : '[dev-preflight] npm audit maintenance deferred; startup will continue:'
+  const log = failure.startupBlocking ? console.error : console.warn
+  log(`${prefix} ${failure.message}`)
 }
-if (auditReport.errors.length > 0) {
+if (auditDisposition.shouldBlockStartup) {
   process.exit(1)
 }
-if (!shouldSkipDependencyMaintenance && auditDecision.shouldRun && auditReport.errors.length === 0) {
+if (!shouldSkipDependencyMaintenance && auditDecision.shouldRun && auditDisposition.shouldRecordSuccess) {
   recordDailyMaintenanceSuccess(maintenanceState, 'audit')
 }
 

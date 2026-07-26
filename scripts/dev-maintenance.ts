@@ -102,6 +102,33 @@ export interface AuditIssue {
   url?: string
 }
 
+export type AuditMaintenanceFailureKind =
+  | 'registry_unavailable'
+  | 'invalid_registry_response'
+  | 'local_integrity_failure'
+  | 'command_failure'
+
+export interface AuditMaintenanceFailure {
+  kind: AuditMaintenanceFailureKind
+  message: string
+  startupBlocking: boolean
+}
+
+export function getAuditStartupDisposition(
+  report: Pick<AuditRemediationReport, 'failures'>,
+): { shouldBlockStartup: boolean; shouldRecordSuccess: boolean } {
+  return {
+    shouldBlockStartup: report.failures.some((failure) => failure.startupBlocking),
+    shouldRecordSuccess: report.failures.length === 0,
+  }
+}
+
+export function getStandaloneAuditExitCode(
+  report: Pick<AuditRemediationReport, 'failures'>,
+): 0 | 1 {
+  return report.failures.length > 0 ? 1 : 0
+}
+
 export interface AuditRemediationReport {
   skipped: boolean
   deferred: boolean
@@ -114,6 +141,7 @@ export interface AuditRemediationReport {
   unresolved: AuditIssue[]
   totals: AuditTotals
   errors: string[]
+  failures: AuditMaintenanceFailure[]
   lastCompletedAt?: string
   nextEligibleAt?: string
 }
@@ -812,6 +840,58 @@ function parseJson<T>(text: string): T | null {
   } catch {
     return null
   }
+}
+
+export function classifyAuditMaintenanceFailure(
+  message: string,
+  source: 'registry_command' | 'local_integrity',
+): AuditMaintenanceFailure {
+  if (source === 'local_integrity') {
+    return {
+      kind: 'local_integrity_failure',
+      message,
+      startupBlocking: true,
+    }
+  }
+
+  const normalized = message.toLowerCase()
+  if (
+    normalized.includes('invalid json response body') ||
+    normalized.includes('audit endpoint returned an error') ||
+    normalized.includes('unable to parse npm audit output')
+  ) {
+    return {
+      kind: 'invalid_registry_response',
+      message,
+      startupBlocking: false,
+    }
+  }
+
+  if (
+    /\b(eai_again|econnreset|econnrefused|enetunreach|etimedout|enotfound|enetwork)\b/i.test(message) ||
+    /\b(429|5\d\d)\b/.test(message) ||
+    normalized.includes('network timeout') ||
+    normalized.includes('network request') ||
+    normalized.includes('socket hang up') ||
+    normalized.includes('service unavailable') ||
+    normalized.includes('enoaudit')
+  ) {
+    return {
+      kind: 'registry_unavailable',
+      message,
+      startupBlocking: false,
+    }
+  }
+
+  return {
+    kind: 'command_failure',
+    message,
+    startupBlocking: true,
+  }
+}
+
+export function shouldRetryAuditMaintenanceFailure(failure: AuditMaintenanceFailure): boolean {
+  return !failure.startupBlocking
 }
 
 function parseStableSemver(version: string | undefined): StableSemver | null {
@@ -1685,11 +1765,13 @@ export function remediateAudit(
       unresolved: [],
       totals: emptyTotals(),
       errors: [],
+      failures: [],
     }
   }
 
   const lockContentsBefore = readFileIfPresent(packageLockPath)
   const errors: string[] = []
+  const failures: AuditMaintenanceFailure[] = []
   const heldPackageUpdates: HeldAuditPackageUpdate[] = []
   let appliedPackageUpdates: LockfilePackageUpdate[] = []
   let didFixRun = false
@@ -1697,20 +1779,37 @@ export function remediateAudit(
   let compatibilityHold: string | undefined
 
   if (!lockContentsBefore) {
-    errors.push('Unable to read package-lock.json before npm audit remediation.')
+    const message = 'Unable to read package-lock.json before npm audit remediation.'
+    errors.push(message)
+    failures.push(classifyAuditMaintenanceFailure(message, 'local_integrity'))
   } else {
-    const preview = previewAuditFixLockfile({ verbose })
+    let preview = previewAuditFixLockfile({ verbose })
+    if (
+      preview.error &&
+      shouldRetryAuditMaintenanceFailure(
+        classifyAuditMaintenanceFailure(preview.error, 'registry_command'),
+      )
+    ) {
+      preview = previewAuditFixLockfile({ verbose })
+    }
 
     if (preview.compatibilityHold) {
       fixHeld = true
       compatibilityHold = preview.compatibilityHold
     } else if (preview.error) {
-      errors.push(`Unable to preview npm audit fix: ${preview.error}`)
+      const message = `Unable to preview npm audit fix: ${preview.error}`
+      errors.push(message)
+      failures.push(classifyAuditMaintenanceFailure(message, 'registry_command'))
     } else if (!preview.packageContents || !preview.lockContents) {
-      errors.push('Unable to read npm audit fix lockfile preview.')
+      const message = 'Unable to read npm audit fix lockfile preview.'
+      errors.push(message)
+      failures.push(classifyAuditMaintenanceFailure(message, 'local_integrity'))
     } else {
       const lockfileUpdates = collectLockfilePackageUpdates(lockContentsBefore, preview.lockContents)
       errors.push(...lockfileUpdates.errors)
+      failures.push(...lockfileUpdates.errors.map((message) => (
+        classifyAuditMaintenanceFailure(message, 'local_integrity')
+      )))
 
       if (lockfileUpdates.errors.length === 0) {
         heldPackageUpdates.push(...findHeldAuditPackageUpdates(lockfileUpdates.updates, { verbose }))
@@ -1723,7 +1822,9 @@ export function remediateAudit(
             applyResolvedDependencyFiles(preview.packageContents, preview.lockContents, { verbose })
           } catch (error) {
             appliedPackageUpdates = []
-            errors.push(getErrorMessage(error))
+            const message = getErrorMessage(error)
+            errors.push(message)
+            failures.push(classifyAuditMaintenanceFailure(message, 'local_integrity'))
           }
         }
       }
@@ -1733,8 +1834,29 @@ export function remediateAudit(
   const lockContentsAfter = readFileIfPresent(packageLockPath)
   const fixChanged = lockContentsBefore !== lockContentsAfter
 
-  const auditResult = runCommand(['audit', '--json'], 'npm audit --json', { verbose: false })
-  const auditJson = parseJson<{
+  let auditResult: NpmCommandResult
+  try {
+    auditResult = runCommand(['audit', '--json'], 'npm audit --json', { verbose: false })
+  } catch (error) {
+    const message = getErrorMessage(error)
+    errors.push(message)
+    failures.push(classifyAuditMaintenanceFailure(message, 'registry_command'))
+    return {
+      skipped: false,
+      deferred: false,
+      didFixRun,
+      fixChanged,
+      fixHeld,
+      appliedPackageUpdates,
+      heldPackageUpdates,
+      compatibilityHold,
+      unresolved: [],
+      totals: emptyTotals(),
+      errors,
+      failures,
+    }
+  }
+  let auditJson = parseJson<{
     vulnerabilities?: Record<string, {
       name: string
       severity: keyof AuditTotals
@@ -1746,9 +1868,38 @@ export function remediateAudit(
   }>(auditResult.stdout)
 
   if (!auditJson) {
+    let message = auditResult.stderr || auditResult.stdout
+    if (
+      message &&
+      shouldRetryAuditMaintenanceFailure(
+        classifyAuditMaintenanceFailure(message, 'registry_command'),
+      )
+    ) {
+      try {
+        auditResult = runCommand(['audit', '--json'], 'npm audit --json', { verbose: false })
+        auditJson = parseJson<{
+          vulnerabilities?: Record<string, {
+            name: string
+            severity: keyof AuditTotals
+            effects?: string[]
+          }>
+          metadata?: {
+            vulnerabilities?: AuditTotals
+          }
+        }>(auditResult.stdout)
+        message = auditResult.stderr || auditResult.stdout
+      } catch (error) {
+        message = getErrorMessage(error)
+      }
+    }
+  }
+
+  if (!auditJson) {
     const message = auditResult.stderr || auditResult.stdout
     if (message) {
-      errors.push(`Unable to parse npm audit output: ${message}`)
+      const formatted = `Unable to parse npm audit output: ${message}`
+      errors.push(formatted)
+      failures.push(classifyAuditMaintenanceFailure(formatted, 'registry_command'))
     }
   }
 
@@ -1764,6 +1915,7 @@ export function remediateAudit(
     unresolved: summarizeAuditIssues(auditJson?.vulnerabilities),
     totals: auditJson?.metadata?.vulnerabilities ?? emptyTotals(),
     errors,
+    failures,
   }
 }
 

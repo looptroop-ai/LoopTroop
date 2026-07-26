@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
 - Humanized and updated the `ticket-lifecycle-screenshots.md` documentation page to detail available user actions across all ticket workflow statuses, project creation, and configuration using clear, human technical writing guidelines.
@@ -26,6 +27,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
 
 ### Fixed
+- Retried and safely deferred temporary npm audit transport or malformed-response failures during startup while preserving strict standalone audit failures and blocking local dependency-integrity errors.
 - Preserved OpenRouter routing suffixes after validating their base models so saved Configuration selections remain active when reopened.
 - Prevented malformed model-owned setup fields, fake Git-hook evidence, and invalid setup drafts from routing tickets to Blocked Error before user review.
 - Kept refreshed backend-owned workspace evidence stable across setup-plan saves so approval no longer enters a repeated “evidence changed” loop.

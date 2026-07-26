@@ -157,7 +157,7 @@ Pick the model you trust most for sustained reasoning and code generation. Other
 
 If the model supports effort or thinking variants (see [Effort / Thinking Variant](#effort--thinking-variant)), prefer a higher-effort variant for complex tickets.
 
-For OpenRouter models, LoopTroop supports the routing choices shown in the configuration UI, including `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`. **None** is selected by default, which sends the base model ID with no routing suffix. LoopTroop saves any selected suffix and registers that exact model ID with its managed OpenCode server before a ticket runs.
+For OpenRouter models, LoopTroop supports the routing choices shown in the configuration UI, including `:floor`, `:nitro`, `:thinking`, `:extended`, and `:free`. **None** is selected by default, which sends the base model ID with no routing suffix. LoopTroop saves any selected suffix, highlights it again when Configuration is reopened, and registers that exact model ID with its managed OpenCode server before a ticket runs. Routing changes affect the selected model ID and its OpenCode registration; effort remains a separate per-slot setting.
 
 ::: tip
 You can change the main implementer between tickets. The choice is locked per-ticket once work starts, so adjustments to the profile only affect future tickets.

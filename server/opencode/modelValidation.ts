@@ -35,9 +35,14 @@ export async function validateModelSelection(
   }
 
   const parsedCouncilMembers = parseCouncilMembers(councilMembersRaw)
-  const normalizedCouncilMembers = Array.from(new Set(
-    [mainImplementer, ...parsedCouncilMembers].map(cleanModelId),
-  ))
+  const councilMembersByBaseId = new Map<string, string>()
+  for (const memberId of [mainImplementer, ...parsedCouncilMembers]) {
+    const baseId = cleanModelId(memberId)
+    if (!councilMembersByBaseId.has(baseId)) {
+      councilMembersByBaseId.set(baseId, memberId)
+    }
+  }
+  const normalizedCouncilMembers = Array.from(councilMembersByBaseId.values())
 
   if (normalizedCouncilMembers.length < 2) {
     throw new Error('At least two distinct council members are required, including the main implementer.')
@@ -47,14 +52,14 @@ export async function validateModelSelection(
   }
 
   const invalidCouncilMembers = normalizedCouncilMembers.filter((memberId) => {
-    return !connectedModelIds.has(memberId)
+    return !connectedModelIds.has(cleanModelId(memberId))
   })
   if (invalidCouncilMembers.length > 0) {
     throw new Error(`Council member models are not configured in OpenCode: ${invalidCouncilMembers.join(', ')}`)
   }
 
   return {
-    mainImplementer: cleanMain,
+    mainImplementer,
     councilMembers: normalizedCouncilMembers,
   }
 }

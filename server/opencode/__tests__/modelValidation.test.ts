@@ -25,7 +25,7 @@ describe('validateModelSelection', () => {
     ).rejects.toThrow('At most 10 distinct council members are allowed, including the main implementer.')
   })
 
-  it('normalizes OpenRouter request suffixes before persisting the selection', async () => {
+  it('validates OpenRouter routing suffixes against base models without removing them', async () => {
     const openRouterModels = [
       'openrouter/deepseek/deepseek-v4-flash',
       'openrouter/openrouter/free',
@@ -38,8 +38,34 @@ describe('validateModelSelection', () => {
         JSON.stringify(['openrouter/deepseek/deepseek-v4-flash:floor', 'openrouter/openrouter/free:free']),
       ),
     ).resolves.toEqual({
-      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash',
-      councilMembers: ['openrouter/deepseek/deepseek-v4-flash', 'openrouter/openrouter/free'],
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: [
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'openrouter/openrouter/free:free',
+      ],
+    })
+  })
+
+  it('counts OpenRouter routing variants of the same base model only once', async () => {
+    vi.mocked(fetchConnectedModelIds).mockResolvedValue([
+      'openrouter/deepseek/deepseek-v4-flash',
+      'provider/reviewer',
+    ])
+
+    await expect(
+      validateModelSelection(
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        JSON.stringify([
+          'openrouter/deepseek/deepseek-v4-flash:nitro',
+          'provider/reviewer',
+        ]),
+      ),
+    ).resolves.toEqual({
+      mainImplementer: 'openrouter/deepseek/deepseek-v4-flash:floor',
+      councilMembers: [
+        'openrouter/deepseek/deepseek-v4-flash:floor',
+        'provider/reviewer',
+      ],
     })
   })
 })

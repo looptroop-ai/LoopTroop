@@ -1066,7 +1066,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Retry → Previous Status: Retry archives the active phase attempt with `manual_retry_after_blocked_error`, creates the next active attempt, and returns the workflow to the previously blocked status for every non-implementation phase. CODING keeps its special failed-bead reset before re-entering and does not create phase versions. For a live CODING block, Retry with extra note... performs the same safe recovery and appends a timestamped entry only to User Retry Notes after the bead can be identified and reset. OpenCode retry-budget or provider and session blocks may use Continue instead when the session is still addressable by exact id.',
       'Setup Retry With Note → Preparing Workspace Runtime: Retry with extra note... requires a preserved setup session. It keeps the current phase attempt, sends only the entered note to that session, and allows exactly one extra manual setup attempt. The user note is not appended to setup retry notes or later setup context.',
       'Continue → Previous Status: Continue is available only for eligible OpenCode or provider interruptions with a preserved active session addressable by exact id, including transient provider stalls, provider or session timeouts, selected 5xx or 529 and 408 or 429 responses, transport failures, and `HTTP 402 Payment Required` blocks that can be cleared outside the session. It is not available for CODING workflow-owned iteration timeouts, which keep resetting and retrying until the bead budget is exhausted. Eligible sessions survive backend, OpenCode, WSL, OS, and machine restarts when the unresolved error occurrence, previous phase, and exact remote session still match. Temporary verification failures preserve the active record for a later check, while only confirmed absence or stale ownership abandons it. Continue returns to the previous status without archiving or creating phase attempts and sends exactly `continue please` into that same session. For CODING provider interruptions, the blocked view treats the bead as paused instead of actively counting down. After Continue, LoopTroop starts a fresh per-iteration timeout window while reusing the preserved OpenCode session.',
-      'Cancel → Canceled: Cancel moves the ticket to the terminal Canceled state. Artifacts and error history are preserved by default, and the cancellation dialog offers optional cleanup of AI-generated artifacts and or the execution log.',
+      'Cancel → Canceled: Cancel moves the ticket to the terminal Canceled state. Artifacts and error history are preserved by default, and the cancellation dialog offers optional cleanup of AI-generated artifacts or the execution log.',
     ],
     notes: [
       'Past error occurrences stay reviewable even after the ticket moves on through retry or is canceled. Error history is never deleted.',
@@ -1161,7 +1161,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'DRAFT',
     label: 'Backlog',
-    description: 'The ticket is in backlog. You can still edit its core details and ticket-level settings before the workflow starts.',
+    description: 'The ticket is still in backlog, so nothing is running yet. You can edit the core details, priority, and ticket-level settings before LoopTroop locks the current ticket text and starts planning.',
     details: WORKFLOW_PHASE_DETAILS.DRAFT,
     kanbanPhase: 'todo',
     groupId: 'todo',
@@ -1173,7 +1173,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'SCANNING_RELEVANT_FILES',
     label: 'Scanning Relevant Files',
-    description: 'LoopTroop is finding the files that matter for this ticket and saving accepted paths, excerpts, and reasons as shared planning context.',
+    description: 'LoopTroop is finding the files that matter for this ticket and saving accepted paths, excerpts, and reasons as shared planning context. This is a read-only grounding step for the council, PRD, and blueprint phases that follow.',
     details: WORKFLOW_PHASE_DETAILS.SCANNING_RELEVANT_FILES,
     kanbanPhase: 'in_progress',
     groupId: 'discovery',
@@ -1185,7 +1185,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COUNCIL_DELIBERATING',
     label: 'Council Drafting Questions',
-    description: 'Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one.',
+    description: 'Each council model is drafting interview questions on its own so the workflow can compare different approaches before choosing one. Models work in parallel from the same context, and only valid drafts move forward to voting.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_DELIBERATING,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1197,7 +1197,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COUNCIL_VOTING_INTERVIEW',
     label: 'Voting on Questions',
-    description: 'The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship.',
+    description: 'The council is scoring the interview drafts and choosing the strongest question set. Drafts are anonymized so the vote stays about quality, not authorship, and the winner becomes the basis for the interactive interview.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_INTERVIEW,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1209,7 +1209,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COMPILING_INTERVIEW',
     label: 'Refining Interview',
-    description: 'LoopTroop is turning the winning draft into the interview you will actually answer, including normalized questions, batch state, and UI metadata.',
+    description: 'LoopTroop is turning the winning draft into the interview you will actually answer, including normalized questions, batch state, and UI metadata. This is the step that converts the council winner into a consistent interactive artifact.',
     details: WORKFLOW_PHASE_DETAILS.COMPILING_INTERVIEW,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1221,7 +1221,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_INTERVIEW_ANSWERS',
     label: 'Interviewing',
-    description: 'Answer the interview questions that will shape the PRD. Draft answers autosave with visible state and last-save time. Coverage may send the ticket back here with a focused follow-up batch.',
+    description: 'Answer the interview questions that will shape the PRD. Draft answers autosave with visible state and last-save time. Non-final submissions can load another batch, and coverage may send the ticket back here with focused follow-up questions.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_ANSWERS,
     kanbanPhase: 'needs_input',
     groupId: 'interview',
@@ -1234,7 +1234,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_INTERVIEW_COVERAGE',
     label: 'Coverage Check (Interview)',
-    description: 'LoopTroop is checking whether the interview gathered enough information. If important gaps remain, it creates a focused follow-up round before approval.',
+    description: 'LoopTroop is checking whether the interview gathered enough information. If important gaps remain, it creates a focused follow-up round before approval. The loop is budgeted so the interview still converges instead of running indefinitely.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_INTERVIEW_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'interview',
@@ -1246,7 +1246,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_INTERVIEW_APPROVAL',
     label: 'Approving Interview',
-    description: 'Review and approve the final interview before PRD drafting starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact.',
+    description: 'Review and approve the final interview before PRD drafting starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approval then locks this interview as the source of truth for PRD drafting.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'interview',
@@ -1259,7 +1259,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'DRAFTING_PRD',
     label: 'Council Drafting Specs',
-    description: 'The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs.',
+    description: 'The council is filling skipped answers where needed and drafting competing PRDs. Each model works from its own completed answer set so the vote can compare both assumptions and specs. Invalid Full Answers stay diagnostic-only instead of turning into broken drafts.',
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1272,7 +1272,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COUNCIL_VOTING_PRD',
     label: 'Voting on Specs',
-    description: 'The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec.',
+    description: 'The council is scoring the PRD drafts and choosing the best starting point. The winner is the baseline for refinement, not the final approved spec, and the weighted rubric focuses on completeness, clarity, and testable requirements.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1284,7 +1284,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'REFINING_PRD',
     label: 'Refining Specs',
-    description: 'LoopTroop is strengthening the winning PRD with the best missing details from the other drafts and producing PRD Candidate v1.',
+    description: 'LoopTroop is strengthening the winning PRD with the best missing details from the other drafts and producing PRD Candidate v1. Stable identifiers and text-preserving repairs keep the candidate reviewable before coverage begins.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1296,7 +1296,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_PRD_COVERAGE',
     label: 'Coverage Check (PRD)',
-    description: 'LoopTroop is checking the current PRD candidate against the winning Full Answers, using focused read-only repository inspection only when needed to confirm repository-specific claims. It revises in place until the candidate is clean or the pass cap is reached.',
+    description: 'LoopTroop is checking the current PRD candidate against the winning Full Answers, using focused read-only repository inspection only when needed to confirm repository-specific claims. It revises in place until the candidate is clean or the pass cap is reached, and remaining gaps can still move forward with warnings.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_PRD_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'prd',
@@ -1308,7 +1308,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_PRD_APPROVAL',
     label: 'Approving Specs',
-    description: 'Review and approve the PRD before implementation planning starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact.',
+    description: 'Review and approve the PRD before implementation planning starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Coverage warnings and the read-only Full Answers context stay available while you decide.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PRD_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'prd',
@@ -1321,7 +1321,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'DRAFTING_BEADS',
     label: 'Council Drafting Blueprint',
-    description: 'The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and verification intent.',
+    description: 'The council is breaking the approved PRD into competing semantic bead plans with tasks, dependencies, and verification intent. These drafts stay at the planning level, so exact file targets and runtime metadata are added later.',
     details: WORKFLOW_PHASE_DETAILS.DRAFTING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1333,7 +1333,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COUNCIL_VOTING_BEADS',
     label: 'Voting on Blueprint',
-    description: 'The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage.',
+    description: 'The council is scoring the blueprint drafts and choosing the most credible implementation plan before refinement and coverage. The vote focuses on decomposition quality, dependency logic, feasibility, and testability.',
     details: WORKFLOW_PHASE_DETAILS.COUNCIL_VOTING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1345,7 +1345,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'REFINING_BEADS',
     label: 'Refining Blueprint',
-    description: 'LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, and constraints from the other drafts, using focused read-only repository inspection when needed.',
+    description: 'LoopTroop is improving the winning semantic blueprint with stronger tasks, tests, and constraints from the other drafts, using focused read-only repository inspection when needed. This still stays at the semantic layer, before execution-specific metadata is added.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1357,7 +1357,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'VERIFYING_BEADS_COVERAGE',
     label: 'Coverage Check (Beads)',
-    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It revises the blueprint until the required work is covered or the pass cap is reached.',
+    description: 'LoopTroop checks the semantic beads blueprint against the approved PRD, using focused read-only inspection when required. It revises the blueprint until the required work is covered or the pass cap is reached, while keeping this stage semantic before expansion adds execution metadata.',
     details: WORKFLOW_PHASE_DETAILS.VERIFYING_BEADS_COVERAGE,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1370,7 +1370,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'EXPANDING_BEADS',
     label: 'Expanding Blueprint',
-    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with the concrete fields the coding loop needs.',
+    description: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with the concrete fields the coding loop needs. This adds file targets, dependency ordering, labels, and runtime metadata without redesigning the approved plan.',
     details: WORKFLOW_PHASE_DETAILS.EXPANDING_BEADS,
     kanbanPhase: 'in_progress',
     groupId: 'beads',
@@ -1383,7 +1383,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_BEADS_APPROVAL',
     label: 'Approving Blueprint',
-    description: 'Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact.',
+    description: 'Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. This is the last planning checkpoint before automated code changes begin.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_BEADS_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'beads',
@@ -1396,7 +1396,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'PRE_FLIGHT_CHECK',
     label: 'Checking Readiness',
-    description: 'LoopTroop is running the last readiness checks before execution starts so coding does not begin from a broken workspace or plan.',
+    description: 'LoopTroop is running the last readiness checks before execution starts so coding does not begin from a broken workspace or plan. It verifies repo state, required artifacts, coding-agent access, and bead dependency integrity.',
     details: WORKFLOW_PHASE_DETAILS.PRE_FLIGHT_CHECK,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
@@ -1408,7 +1408,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_EXECUTION_SETUP_APPROVAL',
     label: 'Approving Workspace Setup',
-    description: 'Review the host-aware setup plan before any runtime setup commands run. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact.',
+    description: 'Review the host-aware setup plan before any runtime setup commands run. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. You can still adjust commands, probes, and ticket-run hook behavior here.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_EXECUTION_SETUP_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'pre_implementation',
@@ -1421,7 +1421,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'PREPARING_EXECUTION_ENV',
     label: 'Preparing Workspace Runtime',
-    description: 'LoopTroop is preparing the current host for this ticket with the approved setup plan. The phase must finish with an honest Ready or Blocked result before coding can start.',
+    description: 'LoopTroop is preparing the current host for this ticket with the approved setup plan. The phase must finish with an honest Ready or Blocked result before coding can start. Any temporary tooling, inputs, and environment changes are recorded in the reusable runtime profile.',
     details: WORKFLOW_PHASE_DETAILS.PREPARING_EXECUTION_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
@@ -1433,7 +1433,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'CODING',
     label: 'Implementing (Bead ?/?)',
-    description: 'LoopTroop is implementing the ticket one bead at a time. Each bead must finish its own checks before the workflow moves to the next one.',
+    description: 'LoopTroop is implementing the ticket one bead at a time. Each bead must finish its own checks before the workflow moves to the next one. Success creates bead-level execution history, while failures reset safely or pause for manual recovery.',
     details: WORKFLOW_PHASE_DETAILS.CODING,
     kanbanPhase: 'in_progress',
     groupId: 'implementation',
@@ -1446,7 +1446,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'RUNNING_FINAL_TEST',
     label: 'Testing Implementation',
-    description: 'LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration.',
+    description: 'LoopTroop is running whole-ticket verification against the implemented result. This is the mandatory automated gate before Manual QA or final integration. The phase also audits file effects so local-only outputs stay out of delivery.',
     details: WORKFLOW_PHASE_DETAILS.RUNNING_FINAL_TEST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1458,7 +1458,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'GENERATING_QA_CHECKLIST',
     label: 'Preparing Manual QA',
-    description: 'LoopTroop is preparing the next Manual QA checklist and candidate checkpoint from the passing implementation. This phase stays automatic and never controls your app.',
+    description: 'LoopTroop is preparing the next Manual QA checklist and candidate checkpoint from the passing implementation. This phase stays automatic and never controls your app. It also computes advisory PRD coverage and writes the next checklist version.',
     details: WORKFLOW_PHASE_DETAILS.GENERATING_QA_CHECKLIST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1471,7 +1471,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_MANUAL_QA',
     label: 'Manual QA',
-    description: 'Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit finishes the round, and failed checks create QA-fix work.',
+    description: 'Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit finishes the round, and failed checks create QA-fix work. Improvements and evidence stay attached to the versioned checklist history.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_MANUAL_QA,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
@@ -1484,7 +1484,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'INTEGRATING_CHANGES',
     label: 'Preparing Final Commit',
-    description: 'LoopTroop is turning the bead commits into one review-ready candidate commit while applying the approved hook policy and final file audit.',
+    description: 'LoopTroop is turning the bead commits into one review-ready candidate commit while applying the approved hook policy and final file audit. This is where the local execution history becomes the clean commit that will back the draft PR.',
     details: WORKFLOW_PHASE_DETAILS.INTEGRATING_CHANGES,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1496,7 +1496,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'CREATING_PULL_REQUEST',
     label: 'Creating Pull Request',
-    description: 'LoopTroop is auditing the candidate files, drafting the PR text, pushing the ticket branch, and creating or updating the draft pull request.',
+    description: 'LoopTroop is auditing the candidate files, drafting the PR text, pushing the ticket branch, and creating or updating the draft pull request. This packages the final diff for review without merging anything yet.',
     details: WORKFLOW_PHASE_DETAILS.CREATING_PULL_REQUEST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1508,7 +1508,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. This is the last human gate before cleanup and terminal completion.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
@@ -1520,7 +1520,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'CLEANING_ENV',
     label: 'Cleaning Up',
-    description: 'LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect.',
+    description: 'LoopTroop is removing temporary runtime data while keeping the artifacts and logs you may still want to inspect. Cleanup warnings remain visible, but they do not turn a successful delivery into a failure.',
     details: WORKFLOW_PHASE_DETAILS.CLEANING_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
@@ -1532,7 +1532,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'COMPLETED',
     label: 'Done',
-    description: 'The ticket finished successfully. The workflow is now read-only, and the full planning, execution, PR, and cleanup history stays available.',
+    description: 'The ticket finished successfully. The workflow is now read-only, and the full planning, execution, PR, and cleanup history stays available. Cleanup warnings, if any, remain visible without changing the successful outcome.',
     details: WORKFLOW_PHASE_DETAILS.COMPLETED,
     kanbanPhase: 'done',
     groupId: 'done',
@@ -1544,7 +1544,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'CANCELED',
     label: 'Canceled',
-    description: 'The ticket was canceled. No more automation will run, but existing artifacts stay available unless you chose to delete them at cancel time.',
+    description: 'The ticket was canceled. No more automation will run, but existing artifacts stay available unless you chose to delete them at cancel time. This terminal state preserves the work completed so far for later review.',
     details: WORKFLOW_PHASE_DETAILS.CANCELED,
     kanbanPhase: 'done',
     groupId: 'done',
@@ -1556,7 +1556,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'BLOCKED_ERROR',
     label: 'Error (reason)',
-    description: 'A phase failed and LoopTroop is waiting for your recovery decision. The ticket keeps the error context, logs, and the exact phase that needs retry or continuation.',
+    description: 'A phase failed and LoopTroop is waiting for your recovery decision. The ticket keeps the error context, logs, and the exact phase that needs retry or continuation. The detailed view explains what failed and which recovery actions are actually available.',
     details: WORKFLOW_PHASE_DETAILS.BLOCKED_ERROR,
     kanbanPhase: 'needs_input',
     groupId: 'errors',

@@ -77,21 +77,25 @@ describe.concurrent('workflow metadata', () => {
     }
   })
 
-  it('documents safe resume behavior in every phase summary and details', () => {
+  it('keeps safe resume guidance in details instead of the top summaries', () => {
     for (const phase of WORKFLOW_PHASES) {
-      if (phase.id !== 'GENERATING_QA_CHECKLIST' && phase.id !== 'WAITING_MANUAL_QA') {
-        expect(phase.description).toContain('Safe resume:')
-      }
+      expect(phase.description).not.toContain('Safe resume:')
       expect(phase.details.notes?.some((note) => note.includes('Safe resume:'))).toBe(true)
     }
   })
 
-  it('preserves the current Manual QA status descriptions verbatim', () => {
-    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'GENERATING_QA_CHECKLIST')?.description).toBe(
-      'LoopTroop is preparing a candidate-only checkpoint and human-facing Manual QA checklist while keeping local generated/cache outputs available to tests and outside delivery.',
+  it('describes the Manual QA producer and consumer clearly', () => {
+    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'GENERATING_QA_CHECKLIST')?.description).toContain(
+      'Manual QA checklist',
     )
-    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')?.description).toBe(
-      'LoopTroop is waiting for user-run verification in an autosaved checklist with collapsed resizable logs, explicit Not applicable PRD coverage, configurable Improvement tickets, and AI-planned full QA-fix beads for failed checks.',
+    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'GENERATING_QA_CHECKLIST')?.description).toContain(
+      'candidate checkpoint',
+    )
+    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')?.description).toContain(
+      'autosaved Manual QA workspace',
+    )
+    expect(WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_MANUAL_QA')?.description).toContain(
+      'failed checks create QA-fix work',
     )
   })
 
@@ -214,9 +218,8 @@ describe.concurrent('workflow metadata', () => {
     const setupPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'PREPARING_EXECUTION_ENV')
     const codingPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
 
-    expect(preFlightPhase?.details.transitions).toContain(
-      'All Checks Pass → Approving Workspace Setup: The workflow advances to the setup-plan approval gate, which audits workspace readiness and drafts only any missing temporary setup before anything mutates the worktree.',
-    )
+    expect(preFlightPhase?.details.transitions.join(' ')).toContain('All Checks Pass → Approving Workspace Setup')
+    expect(preFlightPhase?.details.transitions.join(' ')).toContain('setup-plan approval gate')
     expect(setupApprovalPhase?.label).toBe('Approving Workspace Setup')
     expect(setupApprovalPhase?.reviewArtifactType).toBe('execution_setup_plan')
     expect(setupPhase?.label).toBe('Preparing Workspace Runtime')

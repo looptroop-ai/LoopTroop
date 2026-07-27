@@ -778,6 +778,14 @@ When a council member proposes changes to an existing artifact draft, it emits a
 
 Valid `type` values: `modified`, `added`, `removed` (case-insensitive).
 
+**Stable identifier repair**
+
+PRD and Beads refinements require a `modified` item to preserve its winning-artifact ID. If a model gives a genuinely new item that ID and shifts the surviving item to an otherwise unused ID, LoopTroop can restore the two identifiers. The repair is applied only when the winning artifact, final artifact, one mismatched `modified` entry, and one explicit `added` entry establish a unique two-item mapping. It updates identifiers and their change records only; it never creates or rewrites item text. Ambiguous mappings remain validation failures.
+
+Repeated PRD `modified` entries that resolve to the same canonical before/after item are collapsed into one change. If their inspiration metadata conflicts, attribution is cleared instead of guessed.
+
+**Warning:** *Restored PRD refinement ID stability at change index 8: reassigned surviving user_story "Documentation" from US-16 to US-15 and reassigned newly added user_story "Performance safeguards" from US-15 to US-16.*
+
 **Inspiration item lenient parsing**
 
 The `inspiration` field (pointing to the losing draft that inspired the change) is parsed leniently:

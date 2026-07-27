@@ -303,4 +303,75 @@ describe.concurrent('structured output metadata helpers', () => {
       }),
     ]))
   })
+
+  it.each([
+    {
+      artifact: 'PRD',
+      warning: 'Restored PRD refinement ID stability at change index 8: reassigned surviving user_story "Plugin documentation is available" from US-16 to US-15 and reassigned newly added user_story "Precomputed holiday Set for performance" from US-15 to US-16.',
+      itemType: 'user_story',
+      survivingLabel: 'Plugin documentation is available',
+      survivingBefore: 'US-16',
+      survivingAfter: 'US-15',
+      addedLabel: 'Precomputed holiday Set for performance',
+      addedBefore: 'US-15',
+      addedAfter: 'US-16',
+    },
+    {
+      artifact: 'Beads',
+      warning: 'Restored Beads refinement ID stability at change index 2: reassigned surviving bead "Keep stable references" from BEAD-4 to BEAD-3 and reassigned newly added bead "Validate new references" from BEAD-3 to BEAD-4.',
+      itemType: 'bead',
+      survivingLabel: 'Keep stable references',
+      survivingBefore: 'BEAD-4',
+      survivingAfter: 'BEAD-3',
+      addedLabel: 'Validate new references',
+      addedBefore: 'BEAD-3',
+      addedAfter: 'BEAD-4',
+    },
+  ])('presents a detailed $artifact refinement ID-stability repair', ({
+    artifact,
+    warning,
+    itemType,
+    survivingLabel,
+    survivingBefore,
+    survivingAfter,
+    addedLabel,
+    addedBefore,
+    addedAfter,
+  }) => {
+    const metadata = buildStructuredOutputMetadata(undefined, {
+      repairApplied: true,
+      repairWarnings: [warning],
+    })
+
+    expect(metadata.interventions).toEqual([
+      expect.objectContaining({
+        code: 'cleanup_refinement_id_stability',
+        stage: 'semantic_validation',
+        category: 'cleanup',
+        title: 'Restored refinement identifier stability',
+        why: expect.stringContaining('matched uniquely'),
+        how: expect.stringContaining('no item text was created or rewritten'),
+        rule: {
+          id: 'cleanup_refinement_id_stability',
+          label: 'Refinement ID Stability Repair',
+        },
+        exactCorrection: expect.stringContaining(`At ${artifact} refinement change index`),
+        examples: [
+          {
+            scope: `Surviving ${itemType}: ${survivingLabel}`,
+            before: survivingBefore,
+            after: survivingAfter,
+            note: 'Restored the identifier from the winning artifact.',
+          },
+          {
+            scope: `Newly added ${itemType}: ${addedLabel}`,
+            before: addedBefore,
+            after: addedAfter,
+            note: 'Assigned the unused identifier freed by restoring the surviving item.',
+          },
+        ],
+        rawMessages: [warning],
+      }),
+    ])
+  })
 })

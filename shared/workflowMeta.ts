@@ -407,17 +407,17 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
   },
   REFINING_PRD: {
-    overview: 'The winning PRD draft is upgraded into PRD Candidate v1 by selectively pulling in useful improvements from the losing drafts — additional requirements, stronger acceptance criteria, edge cases, or test scenarios that the winner missed. The winning model performs this refinement, preserving its own structure while incorporating the best elements from competitors. It can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim it needs to retain or adopt.',
+    overview: 'The winning PRD draft is upgraded into PRD Candidate v1 by selectively pulling in useful improvements from the losing drafts — additional requirements, stronger acceptance criteria, edge cases, or test scenarios that the winner missed. The winning model performs this refinement, preserving its own structure and stable item identifiers while incorporating the best elements from competitors. When a model unambiguously shifts a surviving item because a new item reused its ID, LoopTroop restores both IDs without changing their text. It can use focused read-only repository inspection when the supplied context does not substantiate a repository-specific claim it needs to retain or adopt.',
     steps: [
       'Context Assembly: LoopTroop gives the winning model its own winning draft plus all the losing drafts, clearly labeled. The prompt instructs it to keep the winning draft\'s structure and core content intact while selectively merging stronger elements from the losers. It reviews relevant files first and may use focused read-only inspection only when concrete repository evidence is missing.',
       'Selective Merging: The model reviews each losing draft for requirements, acceptance criteria, edge cases, or test scenarios that are present in the losing draft but absent from the winner. It incorporates these improvements without duplicating existing content or breaking the winning draft\'s organizational structure.',
-      'Output Validation: The refinement output is normalized and validated as a proper PRD document — checking for consistent structure, non-empty requirement sections, valid acceptance criteria format, and overall document integrity. Automatic structured retries use the ticket\'s configured count, run in fresh sessions by design for council refinement, and are preserved as Raw attempt variants; only the accepted normalized PRD becomes canonical downstream context.',
-      'Diff Metadata: LoopTroop optionally generates refinement diff metadata that describes what changed between the original winning draft and the refined candidate. This helps you understand what was added during refinement when you review the PRD later.',
+      'Output Validation: The refinement output is normalized and validated as a proper PRD document — checking for consistent structure, stable epic and user-story IDs, non-empty requirement sections, valid acceptance criteria format, and overall document integrity. A displaced surviving ID is repaired only when the winning artifact, final artifact, and explicit change records prove one unique swap with a newly added item; ambiguous cases still retry or fail. Automatic structured retries use the ticket\'s configured count, run in fresh sessions by design for council refinement, and are preserved as Raw attempt variants; only the accepted normalized PRD becomes canonical downstream context.',
+      'Diff Metadata: LoopTroop validates refinement metadata against the winning and final records, collapses duplicate entries for the same canonical modification, and records any safe ID correction as a detailed intervention. This helps you understand exactly what changed when you review the PRD later.',
       'Candidate Promotion: The resulting document becomes PRD Candidate v1 — the first versioned candidate that enters the coverage verification loop. This is not yet the final PRD; coverage may produce additional versions before approval until the configured cap is reached.',
     ],
     outputs: [
       'Refined PRD candidate artifact (PRD Candidate v1) — the winning draft enhanced with the best elements from losing drafts.',
-      'Optional refinement diff metadata showing what was added or changed during the refinement process.',
+      'Canonical refinement diff metadata showing each changed item once, plus detailed intervention warnings for any safe identifier correction.',
       'Normalized PRD content ready for the coverage verification loop, with rejected refinement model text kept diagnostic-only in Raw attempts.',
     ],
     transitions: [
@@ -428,6 +428,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'The refinement is done by the winning model (from the vote), ensuring the refiner understands the winning approach and can merge additions coherently.',
       'Context available: Relevant Files + Ticket Details + Full Answers + Competing Drafts (the winner is labeled, losers are provided for mining improvements). Focused read-only repository inspection is available only when that context is insufficient for a concrete repository-specific claim.',
       'Competing draft artifacts reviewed here show their validated canonical draft in Raw, matching the content the refinement prompt used. Refinement model retries keep their own Raw attempt diagnostics separately.',
+      'Identifier repairs never create requirements or rewrite item text. LoopTroop applies them only to one uniquely proven survivor/addition displacement and rejects ambiguous mappings.',
       'PRD Candidate v1 is a versioned identifier — coverage may produce later versions if gaps are found and revisions are needed.',
       'Why refine? The winning draft scored highest overall, but losing drafts often contain individual insights that the winner lacks. Refinement captures those insights without losing the winning structure.',
     ],
@@ -1317,7 +1318,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'REFINING_PRD',
     label: 'Refining Specs',
-    description: 'Winning draft is consolidated into PRD Candidate v1 using useful ideas from losing drafts and, when needed, focused read-only repository inspection; previous draft Raw views are validated-only, while refinement retries remain inspectable.',
+    description: 'Winning draft is consolidated into PRD Candidate v1 with stable item IDs, canonical change metadata, safe non-inventive repairs, and focused read-only inspection when needed; previous draft Raw views are validated-only, while retries remain inspectable.',
     details: WORKFLOW_PHASE_DETAILS.REFINING_PRD,
     kanbanPhase: 'in_progress',
     groupId: 'prd',

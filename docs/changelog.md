@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Kept Specs and Blueprint refinement moving when models unambiguously displace stable item IDs or repeat equivalent change records.
 - Added clarifying reassurance to the interview Skip All confirmation message noting that skipped questions will be answered by AI models at the beginning of the PRD phase.
 - Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
@@ -31,6 +32,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 
 ### Fixed
+- Safely restored displaced PRD and Beads item IDs from uniquely matching winner/final records, collapsed duplicate PRD modifications, surfaced exact UI repair details, and continued rejecting ambiguous mappings without inventing text.
 - Retried and safely deferred temporary npm audit transport or malformed-response failures during startup while preserving strict standalone audit failures and blocking local dependency-integrity errors.
 - Preserved OpenRouter routing suffixes after validating their base models so saved Configuration selections remain active when reopened.
 - Prevented malformed model-owned setup fields, fake Git-hook evidence, and invalid setup drafts from routing tickets to Blocked Error before user review.

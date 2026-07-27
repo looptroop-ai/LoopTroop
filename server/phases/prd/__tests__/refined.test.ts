@@ -266,6 +266,113 @@ describe.concurrent('PRD refined artifacts', () => {
       .toThrow('reuses a winning-draft item already referenced by another change')
   })
 
+  it('restores stable IDs when one explicit addition reused a surviving story ID and shifted that survivor', () => {
+    const winnerDraftContent = buildPrdContent({ includeStoryTwo: false })
+    const parsed = jsYaml.load(buildPrdContent({ includeStoryTwo: false })) as {
+      epics: Array<{ user_stories: Array<ReturnType<typeof story>> }>
+      changes?: unknown[]
+    }
+    const firstEpic = parsed.epics[0]!
+    const existingStory = firstEpic.user_stories[0]!
+    firstEpic.user_stories = [
+      {
+        ...existingStory,
+        id: 'US-3',
+        title: 'Validate PRD refinement exactly',
+      },
+      story(
+        'US-1',
+        'Add parser diagnostics',
+        'Every safe parser repair is visible.',
+        'Record an exact non-inventive repair warning.',
+      ),
+    ]
+    parsed.changes = [
+      {
+        type: 'modified',
+        item_type: 'user_story',
+        before: { id: 'US-1', title: 'Validate PRD refinement' },
+        after: { id: 'US-3', title: 'Validate PRD refinement exactly' },
+        inspiration: null,
+      },
+      {
+        type: 'added',
+        item_type: 'user_story',
+        before: null,
+        after: { id: 'US-1', title: 'Add parser diagnostics' },
+        inspiration: null,
+      },
+    ]
+
+    const result = validatePrdRefinementOutput(
+      jsYaml.dump(parsed, { lineWidth: 120, noRefs: true }),
+      validationContext({ winnerDraftContent }),
+    )
+
+    expect(result.document.epics[0]?.user_stories.map(({ id, title }) => ({ id, title }))).toEqual([
+      { id: 'US-1', title: 'Validate PRD refinement exactly' },
+      { id: 'US-3', title: 'Add parser diagnostics' },
+    ])
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'US-1' }),
+        after: expect.objectContaining({ id: 'US-1' }),
+      }),
+      expect.objectContaining({
+        type: 'added',
+        before: null,
+        after: expect.objectContaining({ id: 'US-3' }),
+      }),
+    ])
+    expect(result.refinedContent).toContain('id: US-1')
+    expect(result.repairWarnings).toContain(
+      'Restored PRD refinement ID stability at change index 0: reassigned surviving user_story "Validate PRD refinement exactly" from US-3 to US-1 and reassigned newly added user_story "Add parser diagnostics" from US-1 to US-3.',
+    )
+  })
+
+  it('rejects shifted-ID repairs when other changes make the mapping ambiguous', () => {
+    const winnerDraftContent = buildPrdContent({ includeStoryTwo: false })
+    const parsed = jsYaml.load(buildPrdContent({ includeStoryTwo: false })) as {
+      epics: Array<{ user_stories: Array<ReturnType<typeof story>> }>
+      changes?: unknown[]
+    }
+    const firstEpic = parsed.epics[0]!
+    const existingStory = firstEpic.user_stories[0]!
+    firstEpic.user_stories = [
+      { ...existingStory, id: 'US-3', title: 'Validate PRD refinement exactly' },
+      story('US-1', 'Add parser diagnostics', 'Repairs are visible.', 'Record repair warnings.'),
+    ]
+    parsed.changes = [
+      {
+        type: 'modified',
+        item_type: 'user_story',
+        before: { id: 'US-1', title: 'Validate PRD refinement' },
+        after: { id: 'US-3', title: 'Validate PRD refinement exactly' },
+        inspiration: null,
+      },
+      {
+        type: 'added',
+        item_type: 'user_story',
+        before: null,
+        after: { id: 'US-1', title: 'Add parser diagnostics' },
+        inspiration: null,
+      },
+      {
+        type: 'removed',
+        item_type: 'user_story',
+        before: { id: 'US-1', title: 'Validate PRD refinement' },
+        after: null,
+        inspiration: null,
+      },
+    ]
+
+    expect(() => validatePrdRefinementOutput(
+      jsYaml.dump(parsed, { lineWidth: 120, noRefs: true }),
+      validationContext({ winnerDraftContent }),
+    )).toThrow('with type modified must preserve the same id')
+  })
+
   it('collapses duplicate modified changes for the same PRD item instead of failing', () => {
     const winnerDraftContent = buildPrdContent({ includeStoryTwo: false })
     const result = validatePrdRefinementOutput(buildPrdContent({

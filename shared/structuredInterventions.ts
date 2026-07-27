@@ -134,6 +134,7 @@ function buildDefaultRule(code: string): StructuredInterventionRule {
     parser_wrapper_key: 'Wrapper Key',
     parser_xml_tags: 'XML Tag Strip',
     cleanup_duplicate_ids: 'Duplicate ID Repair',
+    cleanup_refinement_id_stability: 'Refinement ID Stability Repair',
     cleanup_final_free_form_empty: 'Final Free-Form Empty Answer',
     cleanup_filled_missing: 'Missing Field Fill',
     cleanup_preserved_narrative_substantive: 'Preserved Narrative Restore',
@@ -284,6 +285,41 @@ function buildExactInterventionDetails(
     if (duplicateOptionsMatch) {
       return {
         exactCorrection: `Removed duplicate option IDs for ${duplicateOptionsMatch[1]!.trim()} and kept the first occurrence of each ID.`,
+      }
+    }
+  }
+
+  if (code === 'cleanup_refinement_id_stability') {
+    const stabilityMatch = warning.match(
+      /^Restored (PRD|beads) refinement ID stability at change index (\d+): reassigned surviving (epic|user_story|bead) "(.+)" from (\S+) to (\S+) and reassigned newly added \3 "(.+)" from (\S+) to (\S+)\.$/i,
+    )
+    if (stabilityMatch) {
+      const artifact = stabilityMatch[1]!
+      const changeIndex = stabilityMatch[2]!
+      const itemType = stabilityMatch[3]!
+      const survivingLabel = stabilityMatch[4]!
+      const survivingBefore = stabilityMatch[5]!
+      const survivingAfter = stabilityMatch[6]!
+      const addedLabel = stabilityMatch[7]!
+      const addedBefore = stabilityMatch[8]!
+      const addedAfter = stabilityMatch[9]!
+
+      return {
+        exactCorrection: `At ${artifact} refinement change index ${changeIndex}, restored the surviving ${itemType} "${survivingLabel}" from ${formatQuotedValue(survivingBefore)} to ${formatQuotedValue(survivingAfter)} and reassigned the newly added ${itemType} "${addedLabel}" from ${formatQuotedValue(addedBefore)} to ${formatQuotedValue(addedAfter)}.`,
+        examples: [
+          {
+            scope: `Surviving ${itemType}: ${survivingLabel}`,
+            before: stripOuterQuotes(survivingBefore),
+            after: stripOuterQuotes(survivingAfter),
+            note: 'Restored the identifier from the winning artifact.',
+          },
+          {
+            scope: `Newly added ${itemType}: ${addedLabel}`,
+            before: stripOuterQuotes(addedBefore),
+            after: stripOuterQuotes(addedAfter),
+            note: 'Assigned the unused identifier freed by restoring the surviving item.',
+          },
+        ],
       }
     }
   }
@@ -1109,6 +1145,18 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
   }
 
   // ── Cleanup category (specific sub-patterns) ─────────────────────────
+
+  if (/^Restored (?:PRD|beads) refinement ID stability at change index \d+:/i.test(warning)) {
+    return buildIntervention(warning, {
+      code: 'cleanup_refinement_id_stability',
+      stage: 'semantic_validation',
+      category: 'cleanup',
+      title: 'Restored refinement identifier stability',
+      summary: 'A newly added item reused an existing identifier and shifted the surviving item to a different identifier.',
+      why: 'Surviving items must retain their winning-artifact identifiers so references remain stable. The displaced survivor and explicit addition could be matched uniquely from the validated winner, final artifact, and change records.',
+      how: 'LoopTroop restored the surviving item’s original identifier and moved the newly added item to the unused identifier. Only identifiers and their references were corrected; no item text was created or rewritten.',
+    })
+  }
 
   if (/collapsed duplicate.*refinement/i.test(warning)) {
     return buildIntervention(warning, {

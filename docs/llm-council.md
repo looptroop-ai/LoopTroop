@@ -214,6 +214,8 @@ A `UiRefinementDiffArtifact` contains:
 
 For PRD refinements, `shared/refinementDiffArtifacts.ts` also defines `ParsedPrdDocument`, `ParsedPrdEpic`, and `ParsedPrdUserStory` types used to compare before/after PRD versions and extract meaningful structural diffs.
 
+PRD and Beads refinement validators also protect stable item identifiers. They reject `modified` records whose before/after IDs differ unless the validated winner, final artifact, and explicit addition prove one unique displacement: a new item reused a survivor's ID and moved that survivor to an unused ID. In that bounded case, LoopTroop restores both IDs without changing text and exposes the exact correction in the artifact intervention details. PRD duplicate change entries that resolve to the same canonical modification are collapsed; conflicting attribution is discarded rather than inferred. Interview refinement is unchanged because its `replaced` change type intentionally permits different IDs.
+
 ## Related Docs
 
 - [Context Engineering](context-engineering.md)

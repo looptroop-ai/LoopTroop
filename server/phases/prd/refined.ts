@@ -14,7 +14,7 @@ import type {
 } from '../../structuredOutput'
 import { getPrdDraftMetrics, normalizePrdYamlOutput } from '../../structuredOutput'
 import { normalizeStructuredOutputMetadata } from '../../structuredOutput/metadata'
-import { normalizeKey } from '../../structuredOutput/yamlUtils'
+import { buildYamlDocument, normalizeKey } from '../../structuredOutput/yamlUtils'
 import { attachStructuredRetryDiagnostic, buildStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 
 type PrdRefinementItemType = 'epic' | 'user_story'
@@ -150,6 +150,127 @@ function buildItemLookup(items: NormalizedPrdRefinementItem[]) {
   }
 
   return { byLookupKey, byIdentityKey, byId }
+}
+
+function findMutableDocumentItems(
+  document: PrdDocument,
+  itemType: PrdRefinementItemType,
+  id: string,
+  label: string,
+): Array<PrdEpic | PrdUserStory> {
+  if (itemType === 'epic') {
+    return document.epics.filter((epic) => epic.id === id && epic.title === label)
+  }
+
+  return document.epics.flatMap((epic) =>
+    epic.user_stories.filter((story) => story.id === id && story.title === label),
+  )
+}
+
+function repairShiftedAddedPrdIds(params: {
+  document: PrdDocument
+  winnerDocument: PrdDocument
+  changes: RefinementChange[]
+}): {
+  repairApplied: boolean
+  repairWarnings: string[]
+} {
+  const repairWarnings: string[] = []
+
+  for (const [index, change] of params.changes.entries()) {
+    if (
+      change.type !== 'modified'
+      || !change.before
+      || !change.after
+      || change.before.id === change.after.id
+    ) {
+      continue
+    }
+
+    const itemType = normalizePrdItemType(change.itemType)
+    if (!itemType) continue
+
+    const oldId = change.before.id
+    const shiftedId = change.after.id
+    const winnerItems = buildDocumentItems(params.winnerDocument)
+    const finalItems = buildDocumentItems(params.document)
+    const winnerLookup = buildItemLookup(winnerItems)
+    const finalLookup = buildItemLookup(finalItems)
+    const winnerBefore = winnerLookup.byLookupKey.get(buildItemLookupKey({
+      itemType,
+      id: oldId,
+      label: change.before.label,
+    }))
+    const shiftedSurvivor = finalLookup.byLookupKey.get(buildItemLookupKey({
+      itemType,
+      id: shiftedId,
+      label: change.after.label,
+    }))
+    const reusedOldIdItems = finalLookup.byIdentityKey.get(buildItemIdentityKey({ itemType, id: oldId })) ?? []
+
+    if (
+      !winnerBefore
+      || !shiftedSurvivor
+      || reusedOldIdItems.length !== 1
+      || (winnerLookup.byIdentityKey.get(buildItemIdentityKey({ itemType, id: shiftedId }))?.length ?? 0) !== 0
+    ) {
+      continue
+    }
+
+    const newlyAddedItem = reusedOldIdItems[0]!
+    const addedCandidates = params.changes
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(({ candidate }) =>
+        candidate.type === 'added'
+        && normalizePrdItemType(candidate.itemType) === itemType
+        && candidate.before === null
+        && candidate.after?.id === oldId
+        && candidate.after.label === newlyAddedItem.label,
+      )
+    if (addedCandidates.length !== 1) continue
+
+    const addedCandidate = addedCandidates[0]!
+    const affectedReferences = params.changes
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(({ candidate }) =>
+        normalizePrdItemType(candidate.itemType) === itemType
+        && [candidate.before?.id, candidate.after?.id].some((id) => id === oldId || id === shiftedId),
+      )
+    if (
+      affectedReferences.length !== 2
+      || !affectedReferences.some(({ candidateIndex }) => candidateIndex === index)
+      || !affectedReferences.some(({ candidateIndex }) => candidateIndex === addedCandidate.candidateIndex)
+    ) {
+      continue
+    }
+
+    const mutableSurvivors = findMutableDocumentItems(
+      params.document,
+      itemType,
+      shiftedId,
+      shiftedSurvivor.label,
+    )
+    const mutableAdditions = findMutableDocumentItems(
+      params.document,
+      itemType,
+      oldId,
+      newlyAddedItem.label,
+    )
+    if (mutableSurvivors.length !== 1 || mutableAdditions.length !== 1) continue
+
+    mutableSurvivors[0]!.id = oldId
+    mutableAdditions[0]!.id = shiftedId
+    change.after.id = oldId
+    addedCandidate.candidate.after!.id = shiftedId
+    repairWarnings.push(
+      `Restored PRD refinement ID stability at change index ${index}: reassigned surviving ${itemType} "${shiftedSurvivor.label}" from ${shiftedId} to ${oldId} and reassigned newly added ${itemType} "${newlyAddedItem.label}" from ${oldId} to ${shiftedId}.`,
+    )
+  }
+
+  return {
+    repairApplied: repairWarnings.length > 0,
+    repairWarnings,
+  }
 }
 
 function cloneCanonicalItem(item: NormalizedPrdRefinementItem): RefinementChangeItem {
@@ -463,6 +584,11 @@ export function validatePrdRefinementOutput(
   }
 
   const winnerDocument = winnerResult.value
+  const idStabilityRepair = repairShiftedAddedPrdIds({
+    document: refinedDocument,
+    winnerDocument,
+    changes,
+  })
   const winnerItems = buildDocumentItems(winnerDocument)
   const finalItems = buildDocumentItems(refinedDocument)
   const winnerLookup = buildItemLookup(winnerItems)
@@ -475,10 +601,10 @@ export function validatePrdRefinementOutput(
   const usedAfterIdentityKeys = new Set<string>()
   const usedBeforeContentKeys = new Set<string>()
   const usedAfterContentKeys = new Set<string>()
-  const repairWarnings = [...refinementResult.repairWarnings]
+  const repairWarnings = [...refinementResult.repairWarnings, ...idStabilityRepair.repairWarnings]
   const preparedChanges: PreparedPrdRefinementChange[] = []
   const validatedChanges: RefinementChange[] = []
-  let repairApplied = refinementResult.repairApplied
+  let repairApplied = refinementResult.repairApplied || idStabilityRepair.repairApplied
 
   for (const [index, change] of changes.entries()) {
     let itemType = normalizePrdItemType(change.itemType)
@@ -628,7 +754,9 @@ export function validatePrdRefinementOutput(
   return {
     document: refinedDocument,
     metrics: getPrdDraftMetrics(refinedDocument),
-    refinedContent: refinementResult.normalizedContent,
+    refinedContent: idStabilityRepair.repairApplied
+      ? buildYamlDocument(refinedDocument)
+      : refinementResult.normalizedContent,
     winnerDraftContent: winnerResult.normalizedContent,
     changes: validatedChanges,
     repairApplied,

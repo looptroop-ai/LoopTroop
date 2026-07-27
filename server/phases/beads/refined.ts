@@ -83,6 +83,13 @@ interface PreparedBeadRefinementChange {
   attributionStatus: RefinementChangeAttributionStatus
 }
 
+interface BeadIdShiftRepair {
+  winnerId: string
+  shiftedId: string
+  modifiedChangeIndex: number
+  addedChangeIndex: number
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -158,6 +165,66 @@ function cloneCanonicalItem(item: NormalizedBeadRefinementItem): RefinementChang
   return item.detail
     ? { id: item.id, label: item.label, detail: item.detail }
     : { id: item.id, label: item.label }
+}
+
+function findUnambiguousBeadIdShiftRepair(
+  changes: RefinementChange[],
+  winnerLookup: ReturnType<typeof buildBeadItemLookup>,
+  refinedLookup: ReturnType<typeof buildBeadItemLookup>,
+): BeadIdShiftRepair | null {
+  const mismatched = changes
+    .map((change, index) => ({ change, index }))
+    .filter(({ change }) => change.type === 'modified' && change.before && change.after && change.before.id !== change.after.id)
+  if (mismatched.length !== 1) return null
+
+  const { change, index: modifiedChangeIndex } = mismatched[0]!
+  const winnerId = change.before!.id
+  const shiftedId = change.after!.id
+  const winnerItem = winnerLookup.byId.get(winnerId)
+  const shiftedItem = refinedLookup.byId.get(shiftedId)
+  const reusedIdItem = refinedLookup.byId.get(winnerId)
+  if (!winnerItem || !shiftedItem || !reusedIdItem || winnerLookup.byId.has(shiftedId)) return null
+
+  const winnerLabelMatches = winnerLookup.byLabel.get(winnerItem.label.toLowerCase().trim())
+  const refinedLabelMatches = refinedLookup.byLabel.get(winnerItem.label.toLowerCase().trim())
+  if (
+    winnerLabelMatches?.length !== 1
+    || refinedLabelMatches?.length !== 1
+    || refinedLabelMatches[0]?.id !== shiftedId
+    || reusedIdItem.contentFingerprint === shiftedItem.contentFingerprint
+  ) {
+    return null
+  }
+
+  const addedMatches = changes
+    .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+    .filter(({ candidate }) => candidate.type === 'added' && candidate.after?.id === winnerId)
+  if (addedMatches.length !== 1) return null
+
+  return {
+    winnerId,
+    shiftedId,
+    modifiedChangeIndex,
+    addedChangeIndex: addedMatches[0]!.candidateIndex,
+  }
+}
+
+function applyBeadIdShiftToNormalizedContent(
+  normalizedContent: string,
+  repair: BeadIdShiftRepair,
+): string {
+  const parsed = jsYaml.load(normalizedContent)
+  if (!isRecord(parsed) || !Array.isArray(parsed.beads)) {
+    throw new Error('Cannot safely repair beads refinement ids because the normalized document shape is unavailable.')
+  }
+
+  for (const entry of parsed.beads) {
+    if (!isRecord(entry)) continue
+    if (entry.id === repair.shiftedId) entry.id = repair.winnerId
+    else if (entry.id === repair.winnerId) entry.id = repair.shiftedId
+  }
+
+  return jsYaml.dump(parsed, { noRefs: true, lineWidth: -1 }).trimEnd()
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +514,8 @@ export function validateBeadsRefinementOutput(
     )
   }
 
-  const { beads: refinedBeads, changes: rawChanges, normalizedContent } = refinementResult.value
+  const { beads: refinedBeads, changes: rawChanges } = refinementResult.value
+  let normalizedContent = refinementResult.value.normalizedContent
   const repairWarnings = [...refinementResult.repairWarnings]
   let repairApplied = refinementResult.repairApplied
 
@@ -463,11 +531,30 @@ export function validateBeadsRefinementOutput(
     }
   }
 
-  // Build canonical items for enhanced validation
+  // Build canonical items for enhanced validation and repair the one safe form of
+  // ID drift: a new bead reused a survivor's ID while that survivor moved to a
+  // previously unused ID.
   const winnerItems = parseWinnerBeadItems(options.winnerDraftContent)
-  const refinedItems = refinedBeads.map(buildBeadItemFromSubset)
   const winnerLookup = buildBeadItemLookup(winnerItems)
-  const refinedLookup = buildBeadItemLookup(refinedItems)
+  let refinedItems = refinedBeads.map(buildBeadItemFromSubset)
+  let refinedLookup = buildBeadItemLookup(refinedItems)
+  const idShiftRepair = findUnambiguousBeadIdShiftRepair(rawChanges, winnerLookup, refinedLookup)
+  if (idShiftRepair) {
+    const survivingBead = refinedBeads.find((bead) => bead.id === idShiftRepair.shiftedId)!
+    const addedBead = refinedBeads.find((bead) => bead.id === idShiftRepair.winnerId)!
+    normalizedContent = applyBeadIdShiftToNormalizedContent(normalizedContent, idShiftRepair)
+    survivingBead.id = idShiftRepair.winnerId
+    addedBead.id = idShiftRepair.shiftedId
+    rawChanges[idShiftRepair.modifiedChangeIndex]!.after!.id = idShiftRepair.winnerId
+    rawChanges[idShiftRepair.addedChangeIndex]!.after!.id = idShiftRepair.shiftedId
+    repairApplied = true
+    repairWarnings.push(
+      `Restored Beads refinement ID stability at change index ${idShiftRepair.modifiedChangeIndex}: reassigned surviving bead "${survivingBead.title}" from ${idShiftRepair.shiftedId} to ${idShiftRepair.winnerId} and reassigned newly added bead "${addedBead.title}" from ${idShiftRepair.winnerId} to ${idShiftRepair.shiftedId}.`,
+    )
+    refinedItems = refinedBeads.map(buildBeadItemFromSubset)
+    refinedLookup = buildBeadItemLookup(refinedItems)
+  }
+
   const usedBeforeIds = new Set<string>()
   const usedAfterIds = new Set<string>()
   const usedBeforeContentKeys = new Set<string>()
@@ -486,6 +573,18 @@ export function validateBeadsRefinementOutput(
         repairApplied = true
         repairWarnings.push(`Skipped beads refinement change at index ${index}: modified change has no resolvable before or after item.`)
         continue
+      }
+      if (before.id !== after.id) {
+        throw attachStructuredRetryDiagnostic(
+          new Error(
+            `Beads refinement change at index ${index} is invalid: modified bead ids must remain stable (before "${before.id}", after "${after.id}").`,
+          ),
+          buildStructuredRetryDiagnostic({
+            attempt: 1,
+            rawResponse: rawContent,
+            validationError: `Modified bead ids must remain stable (before "${before.id}", after "${after.id}").`,
+          }),
+        )
       }
     } else if (change.type === 'added') {
       if (!after) {

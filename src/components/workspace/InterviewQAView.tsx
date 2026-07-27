@@ -243,6 +243,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             <DialogDescription>
               This keeps the answers you already submitted, preserves anything currently typed in this batch,
               marks every other unanswered interview question as skipped, and moves the ticket to Interview Approval.
+              Don't worry, the skipped questions will be answered by AI models at the beginning of the PRD phase.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">

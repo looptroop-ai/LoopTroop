@@ -299,6 +299,7 @@ describe('InterviewQAView', () => {
 
     expect(screen.getByRole('heading', { name: /skip remaining interview questions/i })).toBeInTheDocument()
     expect(screen.getByText(/preserves anything currently typed in this batch/i)).toBeInTheDocument()
+    expect(screen.getByText(/the skipped questions will be answered by AI models at the beginning of the PRD phase/i)).toBeInTheDocument()
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /skip to approval/i }))

@@ -135,7 +135,7 @@ If the follow-up budget is exhausted, the interview still moves to approval, but
 If the user chooses **skip all**, LoopTroop:
 
 1. preserves anything already answered
-2. marks every remaining unanswered question as skipped
+2. marks every remaining unanswered question as skipped (which are answered by AI models at the beginning of the PRD phase)
 3. advances directly to interview approval
 4. writes a **synthetic clean coverage record** for audit continuity
 

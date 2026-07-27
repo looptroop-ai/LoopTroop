@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Added clarifying reassurance to the interview Skip All confirmation message noting that skipped questions will be answered by AI models at the beginning of the PRD phase.
 - Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
@@ -23,6 +24,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Updated the interview Skip All confirmation modal message and workflow metadata to reassure users that skipped questions are answered by AI models during the initial PRD phase.
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
 - Refined `docs/ticket-lifecycle-screenshots.md` writing style by eliminating AI patterns, removing em-dashes, and updating status action details to match canonical state machine behavior.
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.

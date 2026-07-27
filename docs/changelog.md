@@ -15,6 +15,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
 - Humanized and updated the `ticket-lifecycle-screenshots.md` documentation page to detail available user actions across all ticket workflow statuses, project creation, and configuration using clear, human technical writing guidelines.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
+- Consolidated Manual QA checkpoint and Git hook policy options into a collapsed-by-default Advanced section in the backlog workspace view.
 
 ### Added
 - Added direct-process and explicit POSIX, Command Prompt, and PowerShell command specifications with repository-relative working directories, structured environments, and bounded timeouts.
@@ -25,6 +26,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
 - Refined `docs/ticket-lifecycle-screenshots.md` writing style by eliminating AI patterns, removing em-dashes, and updating status action details to match canonical state machine behavior.
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
+- Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 
 ### Fixed
 - Retried and safely deferred temporary npm audit transport or malformed-response failures during startup while preserving strict standalone audit failures and blocking local dependency-integrity errors.

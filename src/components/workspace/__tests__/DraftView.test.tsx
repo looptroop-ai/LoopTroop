@@ -119,11 +119,18 @@ describe('DraftView', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows only enabled and disabled Manual QA settings for ordinary Draft tickets', async () => {
+  it('shows Manual QA and Git hook options inside a collapsed Advanced section for ordinary Draft tickets', async () => {
     const ordinaryTicket = makeTicket({ availableActions: ['start', 'cancel'] })
     renderWithProviders(<DraftView ticket={ordinaryTicket} />)
 
     expect(await screen.findByText('Current Council Members')).toBeInTheDocument()
+    const advancedButton = screen.getByRole('button', { name: /Advanced/ })
+    expect(advancedButton.parentElement).toHaveClass('border-2')
+    expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Manual QA checkpoint')).not.toBeInTheDocument()
+
+    fireEvent.click(advancedButton)
+    expect(advancedButton).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('Manual QA checkpoint')).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Disabled' })).toHaveAttribute('aria-checked', 'true')

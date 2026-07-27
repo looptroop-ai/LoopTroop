@@ -7,7 +7,8 @@ import { useTicketAction, useUpdateTicket } from '@/hooks/useTickets'
 import type { Ticket } from '@/hooks/useTickets'
 import { useProjects } from '@/hooks/useProjects'
 import { useProfile } from '@/hooks/useProfile'
-import { CalendarDays } from 'lucide-react'
+import { CalendarDays, ChevronDown } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { EffortBadge } from '@/components/shared/EffortBadge'
 import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePhaseLogSection'
 import { TicketDescriptionTabs, type TicketDescriptionMode } from '@/components/ticket/TicketDescriptionTabs'
@@ -98,6 +99,7 @@ export function DraftView({ ticket }: DraftViewProps) {
   const [descriptionError, setDescriptionError] = useState<string | null>(null)
   const [lastSyncedDescription, setLastSyncedDescription] = useState(ticket.description ?? '')
   const [shouldSkipNextSync, setShouldSkipNextSync] = useState(false)
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(ticket.manualQaOverride ?? null)
   const [manualQaError, setManualQaError] = useState<string | null>(null)
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicyOverride>(ticket.gitHookPolicy ?? null)
@@ -315,47 +317,58 @@ export function DraftView({ ticket }: DraftViewProps) {
             </div>
           )}
 
-          <div className="w-full rounded-md border border-border px-3 py-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <h4 className="text-xs font-medium">Manual QA checkpoint</h4>
-                <ConfigurationDocsLink
-                  docsPath="/configuration#manual-qa"
-                  label="ticket Manual QA checkpoint"
-                  description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
-                />
-              </div>
-              <ManualQaSetting
-                idPrefix="draft-manual-qa"
-                value={manualQaOverride}
-                onChange={(value) => { void handleManualQaChange(value) }}
-                inheritedEnabled={effectiveManualQa.enabled}
-                disabled={isSavingDescription}
-                compact
-              />
-            </div>
-            {manualQaError && <p role="alert" className="mt-2 text-xs text-destructive">{manualQaError}</p>}
-          </div>
+          <div className="w-full rounded-md border-2 border-border">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-medium"
+              onClick={() => setIsAdvancedOpen((open) => !open)}
+              aria-expanded={isAdvancedOpen}
+            >
+              Advanced
+              <ChevronDown className={cn('h-4 w-4 transition-transform', isAdvancedOpen && 'rotate-180')} />
+            </button>
+            {isAdvancedOpen && (
+              <div className="space-y-3 border-t border-border px-3 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <h4 className="text-xs font-medium">Manual QA checkpoint</h4>
+                    <ConfigurationDocsLink
+                      docsPath="/configuration#manual-qa"
+                      label="ticket Manual QA checkpoint"
+                      description="Choose whether this ticket pauses for your verification after final tests. Open the Manual QA documentation."
+                    />
+                  </div>
+                  <ManualQaSetting
+                    idPrefix="draft-manual-qa"
+                    value={manualQaOverride}
+                    onChange={(value) => { void handleManualQaChange(value) }}
+                    inheritedEnabled={effectiveManualQa.enabled}
+                    disabled={isSavingDescription}
+                    compact
+                  />
+                </div>
+                {manualQaError && <p role="alert" className="mt-2 text-xs text-destructive">{manualQaError}</p>}
 
-          <div className="w-full rounded-md border border-border px-3 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <h4 className="text-xs font-medium">Git hook policy</h4>
-                <ConfigurationDocsLink
-                  docsPath="/configuration#git-hook-policy"
-                  label="ticket Git hook policy"
-                  description="Choose how this ticket handles repository hooks before implementation. Open the Git hook policy documentation."
-                />
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <h4 className="text-xs font-medium">Git hook policy</h4>
+                    <ConfigurationDocsLink
+                      docsPath="/configuration#git-hook-policy"
+                      label="ticket Git hook policy"
+                      description="Choose how this ticket handles repository hooks before implementation. Open the Git hook policy documentation."
+                    />
+                  </div>
+                  <GitHookPolicySetting
+                    value={gitHookPolicy}
+                    onChange={(value) => { void handleGitHookPolicyChange(value) }}
+                    inheritedPolicy={effectiveGitHookPolicy.policy}
+                    disabled={isSavingDescription}
+                    compact
+                  />
+                </div>
+                {gitHookPolicyError && <p role="alert" className="mt-2 text-xs text-destructive">{gitHookPolicyError}</p>}
               </div>
-              <GitHookPolicySetting
-                value={gitHookPolicy}
-                onChange={(value) => { void handleGitHookPolicyChange(value) }}
-                inheritedPolicy={effectiveGitHookPolicy.policy}
-                disabled={isSavingDescription}
-                compact
-              />
-            </div>
-            {gitHookPolicyError && <p role="alert" className="mt-2 text-xs text-destructive">{gitHookPolicyError}</p>}
+            )}
           </div>
 
           <div className="w-full rounded-md border border-border p-3">

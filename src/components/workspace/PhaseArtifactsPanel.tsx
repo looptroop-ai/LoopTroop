@@ -41,7 +41,6 @@ import {
   unwrapArtifactCompanionPayloadContent,
 } from './artifactCompanionUtils'
 import { ArtifactContent, RawContentView, InterviewAnswersView, PrdDraftView } from './ArtifactContentViewer'
-import { extractBeadNumber, serializeBeadCommitsDiffContent } from './diffUtils'
 import { ArtifactList } from './ArtifactList'
 import { ArtifactTypeFilter } from './ArtifactTypeFilter'
 import { getSupplementalArtifacts } from './supplementalArtifacts'
@@ -383,7 +382,6 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           }
         })
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-        .sort((a, b) => extractBeadNumber(a, 0) - extractBeadNumber(b, 0))
       const netDiff = extractCandidateDiffPatch(
         findExactArtifact(CANDIDATE_DIFF_ARTIFACT)?.content
         ?? reversedArtifacts.find((artifact) => artifact.artifactType === CANDIDATE_DIFF_ARTIFACT)?.content,

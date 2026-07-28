@@ -6493,16 +6493,6 @@ function BeadDiffSection({ bead, index }: { bead: ReturnType<typeof parseBeadCom
 }
 
 function FileGroupSection({ group }: { group: FileDiffGroup }) {
-  const sortedOccurrences = useMemo(
-    () =>
-      [...group.occurrences].sort((a, b) => {
-        const aNum = extractBeadNumber({ beadId: a.beadId, beadLabel: a.beadLabel, beadIndex: a.beadIndex }, a.beadIndex)
-        const bNum = extractBeadNumber({ beadId: b.beadId, beadLabel: b.beadLabel, beadIndex: b.beadIndex }, b.beadIndex)
-        return aNum - bNum
-      }),
-    [group.occurrences],
-  )
-
   return (
     <CollapsibleSection
       title={(
@@ -6517,7 +6507,7 @@ function FileGroupSection({ group }: { group: FileDiffGroup }) {
       scrollOnOpen={false}
     >
       <div className="space-y-2">
-        {sortedOccurrences.map((occurrence, index) => {
+        {group.occurrences.map((occurrence, index) => {
           const beadNum = extractBeadNumber({ beadId: occurrence.beadId, beadLabel: occurrence.beadLabel, beadIndex: occurrence.beadIndex }, occurrence.beadIndex)
           return (
             <div key={`${group.filename}:${occurrence.beadId ?? occurrence.beadIndex}:${index}`} className="space-y-1">
@@ -6557,10 +6547,6 @@ function BeadCommitsDiffView({
   const beadDiff = useMemo(() => buildCombinedDiffFromBeads(parsed.beads), [parsed.beads])
   const beadStats = useMemo(() => parseDiffStats(beadDiff), [beadDiff])
   const fileGroups = useMemo(() => groupFileDiffsByPath(parsed.beads), [parsed.beads])
-  const sortedBeads = useMemo(
-    () => [...parsed.beads].sort((a, b) => extractBeadNumber(a, 0) - extractBeadNumber(b, 0)),
-    [parsed.beads],
-  )
 
   useEffect(() => {
     setViewMode(defaultMode)
@@ -6623,7 +6609,7 @@ function BeadCommitsDiffView({
       {effectiveMode === 'bead' ? (
         <div className="flex flex-col gap-1.5">
           <DiffStatsRow label="Per-bead git commits" stats={beadStats} />
-          {sortedBeads.map((bead, index) => (
+          {parsed.beads.map((bead, index) => (
             <BeadDiffSection key={`${bead.beadId}:${index}`} bead={bead} index={index} />
           ))}
         </div>

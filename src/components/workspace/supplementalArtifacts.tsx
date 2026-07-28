@@ -63,7 +63,7 @@ export function getSupplementalArtifacts(phase: string, isCompleted = false): Ar
   }
   if (phase === 'CODING') {
     return isCompleted
-      ? [{ id: 'bead-commits', label: 'Bead Commits', description: 'Per-bead git commits', icon: <FileText className="h-3.5 w-3.5" /> }]
+      ? [{ id: 'bead-commits', label: 'Bead Commits', description: 'Per-bead/file git commits', icon: <FileText className="h-3.5 w-3.5" /> }]
       : []
   }
   if (phase === 'RUNNING_FINAL_TEST') {
@@ -86,7 +86,7 @@ export function getSupplementalArtifacts(phase: string, isCompleted = false): Ar
       { id: 'test-results', label: 'Test Results', description: 'Full test suite results', icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
       { id: 'commit-summary', label: 'Integration Report', description: 'Squash commit and integration details', icon: <FileText className="h-3.5 w-3.5" /> },
       { id: 'pull-request-report', label: 'Pull Request Report', description: 'Draft pull request metadata and body', icon: <FileText className="h-3.5 w-3.5" /> },
-      { id: 'bead-commits', label: 'Bead Commits', description: 'Per-bead git commits', icon: <FileText className="h-3.5 w-3.5" /> },
+      { id: 'bead-commits', label: 'Bead Commits', description: 'Per-bead/file git commits', icon: <FileText className="h-3.5 w-3.5" /> },
     ]
   }
   if (phase === 'CLEANING_ENV') {

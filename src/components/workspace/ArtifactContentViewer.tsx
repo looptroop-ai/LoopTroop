@@ -6573,7 +6573,7 @@ function BeadCommitsDiffView({ content }: { content: string }) {
 
       {effectiveMode === 'bead' ? (
         <div className="flex flex-col gap-1.5">
-          <DiffStatsRow label="Cumulative bead activity" stats={beadStats} />
+          <DiffStatsRow label="Per-bead git commits" stats={beadStats} />
           {parsed.beads.map((bead, index) => (
             <BeadDiffSection key={`${bead.beadId}:${index}`} bead={bead} index={index} />
           ))}
@@ -6582,7 +6582,7 @@ function BeadCommitsDiffView({ content }: { content: string }) {
 
       {effectiveMode === 'file' ? (
         <div className="flex flex-col gap-1.5">
-          <DiffStatsRow label="Grouped bead file touches" stats={beadStats} />
+          <DiffStatsRow label="Per-file git commits" stats={beadStats} />
           {fileGroups.length > 0
             ? fileGroups.map((group) => <FileGroupSection key={group.filename} group={group} />)
             : <EmptyDiffState>No bead file touches were captured.</EmptyDiffState>}

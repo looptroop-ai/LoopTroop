@@ -496,14 +496,14 @@ items:
     expect(screen.getByRole('button', { name: 'By Bead' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'By File' })).toBeInTheDocument()
     expect(screen.getByText('Final PR net diff')).toBeInTheDocument()
-    expect(screen.queryByText('Cumulative bead activity')).not.toBeInTheDocument()
+    expect(screen.queryByText('Per-bead git commits')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'By Bead' }))
-    expect(screen.getByText('Cumulative bead activity')).toBeInTheDocument()
+    expect(screen.getByText('Per-bead git commits')).toBeInTheDocument()
     expect(screen.getByText(/bead-1/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'By File' }))
-    expect(screen.getByText('Grouped bead file touches')).toBeInTheDocument()
+    expect(screen.getByText('Per-file git commits')).toBeInTheDocument()
     expect(screen.getByText(/touched in 2 beads/)).toBeInTheDocument()
   })
 

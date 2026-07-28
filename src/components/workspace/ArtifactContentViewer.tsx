@@ -78,6 +78,7 @@ import {
   parseBeadCommitsDiffContent,
   parseDiffStats,
   parseFileDiffs,
+  sortBeadCommitsByPriority,
   computeLineNumbersWithWordDiff,
   type FileDiff,
   type FileDiffGroup,
@@ -6467,7 +6468,11 @@ function DiffFileList({ diff }: { diff: string }) {
 
 function BeadDiffSection({ bead, index }: { bead: ReturnType<typeof parseBeadCommitsDiffContent>['beads'][number]; index: number }) {
   const stats = parseDiffStats(bead.diff)
-  const label = bead.label ? `${bead.beadId} · ${bead.label}` : bead.beadId
+  const label = [
+    bead.priority != null ? `#${bead.priority}` : null,
+    bead.beadId,
+    bead.label,
+  ].filter(Boolean).join(' · ')
 
   return (
     <CollapsibleSection
@@ -6506,8 +6511,15 @@ function FileGroupSection({ group }: { group: FileDiffGroup }) {
           <div key={`${group.filename}:${occurrence.beadId ?? occurrence.beadIndex}:${index}`} className="space-y-1">
             <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               {occurrence.beadLabel
-                ? `${occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`} · ${occurrence.beadLabel}`
-                : occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`}
+                ? [
+                    occurrence.beadPriority != null ? `#${occurrence.beadPriority}` : null,
+                    occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`,
+                    occurrence.beadLabel,
+                  ].filter(Boolean).join(' · ')
+                : [
+                    occurrence.beadPriority != null ? `#${occurrence.beadPriority}` : null,
+                    occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`,
+                  ].filter(Boolean).join(' · ')}
             </div>
             <DiffFileSection file={occurrence} />
           </div>
@@ -6525,9 +6537,10 @@ function BeadCommitsDiffView({ content }: { content: string }) {
   const defaultMode = hasNetDiff ? 'net' : hasBeadDiffs ? 'bead' : 'net'
   const [viewMode, setViewMode] = useState<'net' | 'bead' | 'file'>(defaultMode)
   const netStats = parseDiffStats(netDiff)
-  const beadDiff = useMemo(() => buildCombinedDiffFromBeads(parsed.beads), [parsed.beads])
+  const orderedBeads = useMemo(() => sortBeadCommitsByPriority(parsed.beads), [parsed.beads])
+  const beadDiff = useMemo(() => buildCombinedDiffFromBeads(orderedBeads), [orderedBeads])
   const beadStats = useMemo(() => parseDiffStats(beadDiff), [beadDiff])
-  const fileGroups = useMemo(() => groupFileDiffsByPath(parsed.beads), [parsed.beads])
+  const fileGroups = useMemo(() => groupFileDiffsByPath(orderedBeads), [orderedBeads])
 
   useEffect(() => {
     setViewMode(defaultMode)
@@ -6580,7 +6593,7 @@ function BeadCommitsDiffView({ content }: { content: string }) {
       {effectiveMode === 'bead' ? (
         <div className="flex flex-col gap-1.5">
           <DiffStatsRow label="Per-bead git commits" stats={beadStats} />
-          {parsed.beads.map((bead, index) => (
+          {orderedBeads.map((bead, index) => (
             <BeadDiffSection key={`${bead.beadId}:${index}`} bead={bead} index={index} />
           ))}
         </div>

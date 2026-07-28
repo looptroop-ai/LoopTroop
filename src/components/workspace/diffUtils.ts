@@ -38,6 +38,7 @@ export interface FileDiff {
 export interface BeadCommitDiffEntry {
   beadId: string
   label?: string
+  priority?: number
   diff: string
   createdAt?: string
   updatedAt?: string
@@ -53,6 +54,7 @@ export interface BeadCommitsDiffContent {
 export interface FileDiffOccurrence extends FileDiff {
   beadId?: string
   beadLabel?: string
+  beadPriority?: number
   beadIndex: number
 }
 
@@ -79,6 +81,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+function normalizeOptionalPriority(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
 function normalizeBeadDiffEntry(value: unknown, index: number): BeadCommitDiffEntry | null {
   if (!isRecord(value)) return null
 
@@ -97,10 +103,12 @@ function normalizeBeadDiffEntry(value: unknown, index: number): BeadCommitDiffEn
     ?? normalizeOptionalString(value.created_at)
   const updatedAt = normalizeOptionalString(value.updatedAt)
     ?? normalizeOptionalString(value.updated_at)
+  const priority = normalizeOptionalPriority(value.priority)
 
   return {
     beadId,
     ...(label ? { label } : {}),
+    ...(priority ? { priority } : {}),
     diff,
     ...(createdAt ? { createdAt } : {}),
     ...(updatedAt ? { updatedAt } : {}),
@@ -190,6 +198,21 @@ export function getBeadCommitsDiffStats(content: string): DiffStats {
 
 export function buildCombinedDiffFromBeads(beads: BeadCommitDiffEntry[]): string {
   return joinDiffs(beads.map((bead) => bead.diff))
+}
+
+/**
+ * Execution priority is the canonical bead order. Keep legacy entries without
+ * a priority after planned beads while preserving their source order.
+ */
+export function sortBeadCommitsByPriority(beads: BeadCommitDiffEntry[]): BeadCommitDiffEntry[] {
+  return beads
+    .map((bead, index) => ({ bead, index }))
+    .sort((left, right) => {
+      const leftPriority = left.bead.priority ?? Number.POSITIVE_INFINITY
+      const rightPriority = right.bead.priority ?? Number.POSITIVE_INFINITY
+      return leftPriority - rightPriority || left.index - right.index
+    })
+    .map(({ bead }) => bead)
 }
 
 function isAdditionLine(line: string): boolean {
@@ -341,6 +364,7 @@ export function groupFileDiffsByPath(beads: BeadCommitDiffEntry[]): FileDiffGrou
         ...file,
         beadId: bead.beadId,
         beadLabel: bead.label,
+        beadPriority: bead.priority,
         beadIndex,
       })
       groups.set(file.filename, existing)

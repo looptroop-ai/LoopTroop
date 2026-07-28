@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TEST } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
 import {
@@ -55,6 +55,45 @@ const { makeArtifact, resetArtifactIds } = createArtifactFactory()
 describe('PhaseArtifactsPanel', () => {
   beforeEach(() => {
     resetArtifactIds()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('adds each bead title and execution priority to completed commit artifacts', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 'bead-2', title: 'Second commit', priority: 2 },
+        { id: 'bead-1', title: 'First commit', priority: 1 },
+      ],
+    }))
+    const firstDiff = makeArtifact({
+      phase: 'CODING',
+      artifactType: 'bead_diff:bead-1',
+      content: 'diff --git a/src/first.ts b/src/first.ts',
+    })
+    const secondDiff = makeArtifact({
+      phase: 'CODING',
+      artifactType: 'bead_diff:bead-2',
+      content: 'diff --git a/src/second.ts b/src/second.ts',
+    })
+
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="WAITING_PR_REVIEW"
+        isCompleted
+        ticketId={TEST.ticketId}
+        preloadedArtifacts={[firstDiff, secondDiff]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Bead Commits/i }))
+    await waitFor(() => {
+      expect(screen.getByText('#1 · bead-1 · First commit')).toBeInTheDocument()
+      expect(screen.getByText('#2 · bead-2 · Second commit')).toBeInTheDocument()
+    })
   })
 
   it('opens the generated Manual QA checklist artifact with readable results', () => {

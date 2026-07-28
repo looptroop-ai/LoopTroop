@@ -88,10 +88,25 @@ interface PhaseArtifactsPanelProps {
   preloadedArtifacts?: DBartifact[]
 }
 
+interface BeadCommitMetadata {
+  id: string
+  title: string
+  priority: number
+}
+
+function normalizeBeadCommitMetadata(value: unknown): BeadCommitMetadata | null {
+  if (!isRecord(value)) return null
+  const { id, title, priority } = value
+  if (typeof id !== 'string' || !id.trim() || typeof title !== 'string' || !title.trim()) return null
+  if (typeof priority !== 'number' || !Number.isInteger(priority) || priority < 1) return null
+  return { id, title, priority }
+}
+
 export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, preloadedArtifacts }: PhaseArtifactsPanelProps) {
   const supplementalArtifacts = useMemo(() => getSupplementalArtifacts(phase, isCompleted), [phase, isCompleted])
   const [viewingSelection, setViewingSelection] = useState<ViewingArtifactSelection | null>(null)
   const [fallbackArtifacts, setFallbackArtifacts] = useState<DBartifact[]>([])
+  const [beadCommitMetadata, setBeadCommitMetadata] = useState<BeadCommitMetadata[]>([])
   const hasPreloadedArtifacts = preloadedArtifacts !== undefined
   const { artifacts: cachedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticketId, { skipFetch: hasPreloadedArtifacts })
   const normalizedCachedArtifacts = useMemo(() => cachedArtifacts ?? [], [cachedArtifacts])
@@ -120,6 +135,32 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       cancelled = true
     }
   }, [hasPreloadedArtifacts, normalizedCachedArtifacts.length, ticketId])
+
+  useEffect(() => {
+    if (viewingSelection?.kind !== 'supplemental' || viewingSelection.id !== 'bead-commits' || !ticketId) return
+
+    let cancelled = false
+    void fetch(`/api/tickets/${ticketId}/beads`)
+      .then(async (response) => response.ok ? response.json() : [])
+      .then((payload: unknown) => {
+        if (cancelled) return
+        setBeadCommitMetadata(Array.isArray(payload)
+          ? payload.map(normalizeBeadCommitMetadata).filter((bead): bead is BeadCommitMetadata => bead !== null)
+          : [])
+      })
+      .catch(() => {
+        if (!cancelled) setBeadCommitMetadata([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [ticketId, viewingSelection])
+
+  const beadCommitMetadataById = useMemo(
+    () => new Map(beadCommitMetadata.map((bead) => [bead.id, bead])),
+    [beadCommitMetadata],
+  )
 
   const dbArtifacts = useMemo(
     () => (hasPreloadedArtifacts
@@ -373,11 +414,13 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           const diff = artifact.content?.trim()
           if (!diff) return null
           const beadId = artifact.artifactType.slice('bead_diff:'.length).trim()
+          const metadata = beadCommitMetadataById.get(beadId)
           return {
             beadId: beadId || `bead-${artifact.id}`,
             diff,
             createdAt: artifact.createdAt,
             updatedAt: artifact.updatedAt,
+            ...(metadata ? { label: metadata.title, priority: metadata.priority } : {}),
           }
         })
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
@@ -397,7 +440,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
     const match = resolveStaticArtifact(artifactDef, phase, reversedArtifacts)
     return match?.content ?? null
-  }, [findCompanionArtifact, findExactArtifact, phase, reversedArtifacts])
+  }, [beadCommitMetadataById, findCompanionArtifact, findExactArtifact, phase, reversedArtifacts])
 
   const findReportContent = useCallback((artifactDef: ArtifactDef): string | null => {
     if (artifactDef.id !== 'execution-setup-plan') return null

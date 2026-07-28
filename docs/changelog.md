@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Ordered Bead Commits activity views by execution priority and made each bead label show its number and title.
 - Warned during project attachment when the active GitHub account cannot write ticket branches to the selected origin.
 - Rewrote and expanded every ticket-view workflow status summary and Details explanation in clearer, human-first language across the full lifecycle.
 - Kept Specs and Blueprint refinement moving when models unambiguously displace stable item IDs or repeat equivalent change records.
@@ -28,6 +29,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Updated Bead Commits so By Bead shows per-bead git commits and By File shows per-file git commits, with every bead occurrence labeled and ordered by its execution priority.
 - Rewrote the ticket-view workflow status summaries and Details dialog copy in `shared/workflowMeta.ts` so every phase reads more clearly for humans, expanded the top summaries to fuller explanations, and moved Safe resume guidance out of the top summary into the detailed notes while preserving the same workflow behavior, recovery semantics, and context expectations.
 - Updated the interview Skip All confirmation modal message and workflow metadata to reassure users that skipped questions are answered by AI models during the initial PRD phase.
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.

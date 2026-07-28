@@ -466,6 +466,7 @@ items:
             {
               beadId: 'bead-1',
               label: 'First pass',
+              priority: 2,
               diff: [
                 'diff --git a/src/final.ts b/src/final.ts',
                 '--- a/src/final.ts',
@@ -478,6 +479,7 @@ items:
             {
               beadId: 'bead-2',
               label: 'Second pass',
+              priority: 1,
               diff: [
                 'diff --git a/src/final.ts b/src/final.ts',
                 '--- a/src/final.ts',
@@ -500,11 +502,15 @@ items:
 
     fireEvent.click(screen.getByRole('button', { name: 'By Bead' }))
     expect(screen.getByText('Per-bead git commits')).toBeInTheDocument()
-    expect(screen.getByText(/bead-1/)).toBeInTheDocument()
+    expect(screen.getByText('#1 · bead-2 · Second pass')).toBeInTheDocument()
+    expect(screen.getByText('#2 · bead-1 · First pass')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'By File' }))
     expect(screen.getByText('Per-file git commits')).toBeInTheDocument()
     expect(screen.getByText(/touched in 2 beads/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /src\/final\.ts/i }))
+    const beadLabels = screen.getAllByText(/#\d · bead-\d · .+ pass/).map((element) => element.textContent)
+    expect(beadLabels).toEqual(['#1 · bead-2 · Second pass', '#2 · bead-1 · First pass'])
   })
 
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {

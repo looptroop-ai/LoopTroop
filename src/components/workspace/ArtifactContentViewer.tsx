@@ -6473,6 +6473,9 @@ function BeadDiffSection({ bead, index }: { bead: ReturnType<typeof parseBeadCom
     <CollapsibleSection
       title={(
         <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
+            #{index + 1}
+          </span>
           <span className="font-mono text-[11px]">{label || `bead-${index + 1}`}</span>
           <span className="text-[10px] text-muted-foreground">
             {stats.files} file{stats.files !== 1 ? 's' : ''} · +{stats.additions} -{stats.deletions}
@@ -6504,10 +6507,15 @@ function FileGroupSection({ group }: { group: FileDiffGroup }) {
       <div className="space-y-2">
         {group.occurrences.map((occurrence, index) => (
           <div key={`${group.filename}:${occurrence.beadId ?? occurrence.beadIndex}:${index}`} className="space-y-1">
-            <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {occurrence.beadLabel
-                ? `${occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`} · ${occurrence.beadLabel}`
-                : occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`}
+            <div className="flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <span className="rounded bg-muted/80 px-1 py-0.5 font-mono text-[9px] text-foreground">
+                #{occurrence.beadIndex + 1}
+              </span>
+              <span>
+                {occurrence.beadLabel
+                  ? `${occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`} · ${occurrence.beadLabel}`
+                  : occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`}
+              </span>
             </div>
             <DiffFileSection file={occurrence} />
           </div>

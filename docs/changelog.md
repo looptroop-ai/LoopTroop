@@ -19,7 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
 - Humanized and updated the `ticket-lifecycle-screenshots.md` documentation page to detail available user actions across all ticket workflow statuses, project creation, and configuration using clear, human technical writing guidelines.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
-- Dynamically updated the Bead Commits modal description to 'Per-bead git commits', 'Per-file git commits', or 'Final PR net diff' depending on the active view tab, displayed original bead priority numbers (`#3`, `#5`, etc.) in diff headers, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
+- Dynamically updated the Bead Commits modal description to 'Per-bead git commits', 'Per-file git commits', or 'Final PR net diff' depending on the active view tab, displayed and sorted entries by original bead priority numbers (`#1`, `#2`, `#5`, etc.) in diff headers and file occurrences, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
 
 ### Added
 - Added an advisory GitHub origin permission check to project attachment, including clear fork/remotes guidance while keeping read-only repositories attachable.

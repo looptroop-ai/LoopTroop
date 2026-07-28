@@ -3688,6 +3688,42 @@ items:
     expect(screen.queryByText('Retries 1')).not.toBeInTheDocument()
   })
 
+  it('renders a structured final-test command using its display text', () => {
+    render(
+      <ArtifactContent
+        artifactId="test-results"
+        phase="RUNNING_FINAL_TEST"
+        content={JSON.stringify({
+          status: 'passed',
+          passed: true,
+          checkedAt: '2026-07-28T14:19:10.002Z',
+          plannedBy: 'openai/gpt-5.2',
+          modelOutput: '',
+          commands: [{
+            command: {
+              cwd: '.',
+              env: {},
+              mode: 'process',
+              program: 'npx',
+              args: ['jest', '--no-coverage', 'test/plugin/businessDays.test.js'],
+              timeoutMs: 1_200_000,
+            },
+            displayCommand: 'npx jest --no-coverage test/plugin/businessDays.test.js',
+            exitCode: 0,
+            signal: null,
+            stdout: '',
+            stderr: '',
+            durationMs: 1885,
+            timedOut: false,
+          }],
+          errors: [],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('npx jest --no-coverage test/plugin/businessDays.test.js')).toBeInTheDocument()
+  })
+
   it('renders integration reports with structured metadata and deferred push guidance', () => {
     render(
       <ArtifactContent

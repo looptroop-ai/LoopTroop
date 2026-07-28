@@ -1,6 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
+import type { CommandSpec } from '@shared/commandSpec'
 import { normalizeStructuredRetryDiagnostics } from '@shared/structuredRetryDiagnostics'
 import { normalizeStructuredInterventions } from '@shared/structuredInterventions'
 import { isRecord } from '@shared/typeGuards'
@@ -340,7 +341,10 @@ export interface RelevantFilesScanData {
 }
 
 export interface FinalTestCommandResultData {
-  command: string
+  /** Structured command data is retained so the exact execution can be audited. */
+  command: CommandSpec | string
+  /** Human-readable command text emitted by the final-test runner. */
+  displayCommand?: string
   effectiveCommand?: string
   setupWrapperApplied?: boolean
   exitCode: number | null

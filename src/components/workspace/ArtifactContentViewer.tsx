@@ -5581,6 +5581,13 @@ function FinalTestResultsView({ content }: { content: string }) {
           <div className="space-y-2">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Executed Commands</div>
             {parsed.commands.map((command, index) => {
+              const commandLabel = command.displayCommand?.trim()
+                || (typeof command.command === 'string'
+                  ? command.command
+                  : (() => {
+                      const structuredCommand = commandSpecSchema.safeParse(command.command)
+                      return structuredCommand.success ? renderCommandSpec(structuredCommand.data) : 'Unknown command'
+                    })())
               const commandStatus = command.timedOut
                 ? 'Timed Out'
                 : command.exitCode === 0
@@ -5588,10 +5595,10 @@ function FinalTestResultsView({ content }: { content: string }) {
                   : 'Failed'
               return (
                 <CollapsibleSection
-                  key={`${command.command}:${index}`}
+                  key={`${commandLabel}:${index}`}
                   title={(
                     <span className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-[11px]">{command.command}</span>
+                      <span className="font-mono text-[11px]">{commandLabel}</span>
                       <span className="text-[10px] text-muted-foreground">{commandStatus}</span>
                       <span className="text-[10px] text-muted-foreground">{command.durationMs}ms</span>
                     </span>

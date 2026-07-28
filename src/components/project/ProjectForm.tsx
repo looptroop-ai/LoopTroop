@@ -31,6 +31,9 @@ interface GitCheckResponse {
   status: 'none' | 'checking' | 'valid' | 'invalid'
   message?: string
   performanceWarning?: string | null
+  githubOriginWriteAccess?: 'writable' | 'read_only' | 'unknown'
+  githubViewerPermission?: string | null
+  githubWriteWarning?: string | null
   scope?: 'root' | 'subfolder'
   repoRoot?: string
   hasLoopTroopState?: boolean
@@ -480,6 +483,19 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                       <p className="font-medium text-amber-900 dark:text-amber-100">WSL mounted-drive warning</p>
                       <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/80">
                         {gitInfo.performanceWarning}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {gitInfo.githubWriteWarning && (
+                <div className="rounded-lg border border-amber-300/70 bg-amber-50/70 p-4 text-sm dark:border-amber-700/60 dark:bg-amber-950/20">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <p className="font-medium text-amber-900 dark:text-amber-100">GitHub write access not detected</p>
+                      <p className="mt-1 text-xs text-amber-800/90 dark:text-amber-200/80">
+                        {gitInfo.githubWriteWarning}
                       </p>
                     </div>
                   </div>

@@ -22,7 +22,7 @@ import {
   replaceExistingProjectState,
   updateProject,
 } from '../storage/projects'
-import { parseGitHubRemoteUrl } from '../git/github'
+import { getGitHubRepoWriteAccess, parseGitHubRemoteUrl, type GitHubRepoWriteAccess } from '../git/github'
 import { buildRuntimeStatus } from '../runtime'
 import { normalizeFolderPath } from '../storage/paths'
 import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../../shared/wslPerformance'
@@ -67,6 +67,9 @@ interface GitRepoInfo {
   isRepoRoot?: boolean
   hasGitHubOrigin?: boolean
   githubRepoSlug?: string | null
+  githubOriginWriteAccess?: GitHubRepoWriteAccess['status']
+  githubViewerPermission?: string | null
+  githubWriteWarning?: string
   hasLoopTroopState?: boolean
   existingProject?: ExistingProjectMetadata | null
 }
@@ -118,6 +121,7 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   const repoRoot = await resolveGitRepoRootAsync(resolved)
   if (!repoRoot) return { isGit: false }
   const githubRepo = parseGitHubRemoteUrl(await readOriginRemoteUrlAsync(repoRoot))
+  const writeAccess = githubRepo ? getGitHubRepoWriteAccess(repoRoot) : null
 
   const state = resolveProjectState(repoRoot)
   return {
@@ -126,6 +130,13 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
     isRepoRoot: repoRoot === resolved,
     hasGitHubOrigin: githubRepo !== null,
     githubRepoSlug: githubRepo?.slug ?? null,
+    githubOriginWriteAccess: writeAccess?.status,
+    githubViewerPermission: writeAccess?.permission ?? null,
+    ...(githubRepo && writeAccess?.status === 'read_only'
+      ? {
+          githubWriteWarning: `The active GitHub CLI account has ${writeAccess.permission} access to ${githubRepo.slug}, which does not include branch write access. You can attach this project, but LoopTroop's bead pushes may fail unless origin uses writable credentials. Configure a writable fork or repository as origin before starting tickets.`,
+        }
+      : {}),
     hasLoopTroopState: state.exists,
     existingProject: state.existingProject,
   }
@@ -175,6 +186,9 @@ projectRouter.get('/projects/check-git', async (c) => {
       scope: gitInfo.isRepoRoot ? 'root' : 'subfolder',
       repoRoot: gitInfo.repoRoot,
       githubRepoSlug: gitInfo.githubRepoSlug ?? null,
+      githubOriginWriteAccess: gitInfo.githubOriginWriteAccess ?? 'unknown',
+      githubViewerPermission: gitInfo.githubViewerPermission ?? null,
+      ...(gitInfo.githubWriteWarning ? { githubWriteWarning: gitInfo.githubWriteWarning } : {}),
       hasLoopTroopState: gitInfo.hasLoopTroopState ?? false,
       existingProject: gitInfo.existingProject ?? null,
       message: gitInfo.isRepoRoot

@@ -142,7 +142,7 @@ Selected validation ranges that are easy to miss when calling the API directly:
 | `GET` | `/api/projects/:id/worktrees/size` | Get the total disk size of all worktrees for a project |
 | `DELETE` | `/api/projects/:id/worktrees` | Delete worktrees for completed and canceled tickets only, including same-user read-only cache trees; active ticket worktrees are left untouched |
 
-`GET /api/projects/check-git` returns attach-flow metadata in addition to simple validity. When relevant, the response also includes `scope` (`root` or `subfolder`), `repoRoot`, `githubRepoSlug`, `hasLoopTroopState`, `existingProject`, and `performanceWarning` for WSL mounted-drive performance warnings. The `existingProject` preview contains the saved `name`, `shortname`, `icon`, `color`, `ticketCounter`, total `ticketCount`, `activeTicketCount`, `gitHookPolicy`, and `manualQaOverride`. `activeTicketCount` counts statuses other than `DRAFT`, `COMPLETED`, and `CANCELED`. This lets clients show exactly which project settings and ticket data each attachment action keeps or removes before submitting.
+`GET /api/projects/check-git` returns attach-flow metadata in addition to simple validity. When relevant, the response also includes `scope` (`root` or `subfolder`), `repoRoot`, `githubRepoSlug`, `hasLoopTroopState`, `existingProject`, and `performanceWarning` for WSL mounted-drive performance warnings. GitHub origin inspection adds `githubOriginWriteAccess` (`writable`, `read_only`, or `unknown`) and `githubViewerPermission`; a confirmed `READ` or `TRIAGE` permission also adds `githubWriteWarning`. This warning is advisory and leaves `status` as `valid`, because the active GitHub CLI identity may differ from the credentials used by Git push. The `existingProject` preview contains the saved `name`, `shortname`, `icon`, `color`, `ticketCounter`, total `ticketCount`, `activeTicketCount`, `gitHookPolicy`, and `manualQaOverride`. `activeTicketCount` counts statuses other than `DRAFT`, `COMPLETED`, and `CANCELED`. This lets clients show exactly which project settings and ticket data each attachment action keeps or removes before submitting.
 
 Example existing-state preview:
 
@@ -153,6 +153,9 @@ Example existing-state preview:
   "scope": "root",
   "repoRoot": "/home/liviu/MeiliSearch",
   "githubRepoSlug": "meilisearch/meilisearch",
+  "githubOriginWriteAccess": "read_only",
+  "githubViewerPermission": "READ",
+  "githubWriteWarning": "The active GitHub CLI account has READ access to meilisearch/meilisearch, which does not include branch write access. You can attach this project, but LoopTroop's bead pushes may fail unless origin uses writable credentials. Configure a writable fork or repository as origin before starting tickets.",
   "hasLoopTroopState": true,
   "existingProject": {
     "name": "MeiliSearch",

@@ -376,7 +376,7 @@ Improvement ticket Details/audit UI reads `.ticket/meta/manual-qa-origin.json` p
 `ProjectsPanel` is more than a list modal:
 
 - it lists attached repositories, supports sort-by name/ticket-count/created/updated, and opens `ProjectForm` for create/edit flows
-- the create flow validates the selected folder with `/api/projects/check-git`, requires a git-initialized repository, and surfaces WSL mounted-drive performance warnings before attachment
+- the create flow validates the selected folder with `/api/projects/check-git`, requires a git-initialized repository, surfaces WSL mounted-drive performance warnings, and shows a non-blocking delivery warning when the active GitHub CLI account has confirmed `READ` or `TRIAGE` access to `origin`
 - if the selected repository already contains LoopTroop local state, the form previews saved project settings plus total and active ticket counts, then offers **Restore everything**, **Keep project settings, clear tickets**, or **Start fresh**
 - the comparison for each action clearly separates retained project metadata/settings from deleted tickets, artifacts, logs, and managed worktrees; the saved short name remains locked for restore/clear and becomes editable only for start-fresh
 - restore remains the default and submits immediately, while either destructive action opens a confirmation dialog that prominently names active tickets, the counter reset to `<SHORTNAME>-1`, possible collisions with surviving old branches, and the repository data that remains untouched

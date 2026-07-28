@@ -134,6 +134,65 @@ describe('server/git/github', () => {
     ])
   })
 
+  it.each(['WRITE', 'MAINTAIN', 'ADMIN'])(
+    'recognizes %s GitHub viewer permission as writable',
+    async (permission) => {
+      spawnSyncMock.mockImplementation((command: string) => {
+        if (command === 'git') {
+          return makeSpawnResult({ stdout: 'https://github.com/looptroop-ai/LoopTroop.git\n' })
+        }
+        return makeSpawnResult({ stdout: JSON.stringify({ viewerPermission: permission }) })
+      })
+
+      const github = await import('../github')
+
+      expect(github.getGitHubRepoWriteAccess('/repo')).toEqual({
+        status: 'writable',
+        permission,
+      })
+      expect(spawnSyncMock.mock.calls.at(-1)).toEqual([
+        'gh',
+        ['repo', 'view', 'looptroop-ai/LoopTroop', '--json', 'viewerPermission'],
+        expect.objectContaining({ cwd: '/repo', timeout: 5_000 }),
+      ])
+    },
+  )
+
+  it.each(['READ', 'TRIAGE'])(
+    'recognizes %s GitHub viewer permission as read-only for branch delivery',
+    async (permission) => {
+      spawnSyncMock.mockImplementation((command: string) => {
+        if (command === 'git') {
+          return makeSpawnResult({ stdout: 'git@github.com:iamkun/dayjs.git\n' })
+        }
+        return makeSpawnResult({ stdout: JSON.stringify({ viewerPermission: permission }) })
+      })
+
+      const github = await import('../github')
+
+      expect(github.getGitHubRepoWriteAccess('/repo')).toEqual({
+        status: 'read_only',
+        permission,
+      })
+    },
+  )
+
+  it('keeps malformed GitHub permission output advisory instead of claiming read-only access', async () => {
+    spawnSyncMock.mockImplementation((command: string) => {
+      if (command === 'git') {
+        return makeSpawnResult({ stdout: 'https://github.com/iamkun/dayjs.git\n' })
+      }
+      return makeSpawnResult({ stdout: 'not-json' })
+    })
+
+    const github = await import('../github')
+    const result = github.getGitHubRepoWriteAccess('/repo')
+
+    expect(result.status).toBe('unknown')
+    expect(result.permission).toBeNull()
+    expect(result.error).toContain('Failed to parse GitHub repository permission')
+  })
+
   it('omits an oversized patch instead of throwing during PR diff capture', async () => {
     spawnSyncMock.mockImplementation((_command: string, args: readonly string[]) => {
       if (args.includes('--stat')) {

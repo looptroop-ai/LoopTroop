@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { Hono } from 'hono'
@@ -32,6 +32,16 @@ import {
 import { createTicket, patchTicket } from '../../storage/ticketMutations'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { projectRouter } from '../projects'
+
+const getGitHubRepoWriteAccessMock = vi.hoisted(() => vi.fn())
+
+vi.mock('../../git/github', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../git/github')>()
+  return {
+    ...actual,
+    getGitHubRepoWriteAccess: getGitHubRepoWriteAccessMock,
+  }
+})
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-project-route-',
@@ -95,6 +105,8 @@ describe('projectRouter project cleanup', () => {
   })
 
   beforeEach(() => {
+    getGitHubRepoWriteAccessMock.mockReset()
+    getGitHubRepoWriteAccessMock.mockReturnValue({ status: 'unknown', permission: null })
     clearProjectDatabaseCache()
     initializeDatabase()
     sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
@@ -249,6 +261,33 @@ describe('projectRouter project cleanup', () => {
       ticketCount: 3,
       activeTicketCount: 1,
     })
+  })
+
+  it('warns without invalidating project attachment when the GitHub CLI account cannot write to origin', async () => {
+    const repoDir = repoManager.createRepo()
+    addGithubOrigin(repoDir)
+    getGitHubRepoWriteAccessMock.mockReturnValue({ status: 'read_only', permission: 'READ' })
+
+    const app = new Hono()
+    app.route('/api', projectRouter)
+    const response = await app.request(`/api/projects/check-git?path=${encodeURIComponent(repoDir)}`)
+    const payload = await response.json() as {
+      status: string
+      githubRepoSlug: string
+      githubOriginWriteAccess: string
+      githubViewerPermission: string
+      githubWriteWarning: string
+    }
+
+    expect(response.status).toBe(200)
+    expect(payload).toMatchObject({
+      status: 'valid',
+      githubRepoSlug: 'test/looptroop',
+      githubOriginWriteAccess: 'read_only',
+      githubViewerPermission: 'READ',
+    })
+    expect(payload.githubWriteWarning).toContain('does not include branch write access')
+    expect(payload.githubWriteWarning).toContain('You can attach this project')
   })
 
   it('restores existing state by default and updates its current repository path', async () => {

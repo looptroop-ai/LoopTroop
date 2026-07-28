@@ -21,6 +21,7 @@ function logCmd(
 
 const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 const GIT_PATCH_MAX_BUFFER_BYTES = 2 * 1024 * 1024
+const GITHUB_PERMISSION_CHECK_TIMEOUT_MS = 5_000
 
 function runCommand(
   bin: string,
@@ -72,6 +73,7 @@ function tryCommand(
     input?: string
     env?: NodeJS.ProcessEnv
     maxBuffer?: number
+    timeout?: number
   },
 ): { ok: true; stdout: string; stderr: string } | { ok: false; error: string } {
   const result = spawnSync(bin, args, {
@@ -80,6 +82,7 @@ function tryCommand(
     encoding: 'utf8',
     env: options?.env,
     maxBuffer: options?.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
+    timeout: options?.timeout,
   })
   const stdout = (result.stdout ?? '').trim()
   const stderr = (result.stderr ?? '').trim()
@@ -115,6 +118,12 @@ export interface GitHubRepoRef {
   repo: string
   slug: string
   remoteUrl: string
+}
+
+export interface GitHubRepoWriteAccess {
+  status: 'writable' | 'read_only' | 'unknown'
+  permission: string | null
+  error?: string
 }
 
 export type PullRequestState = 'draft' | 'open' | 'merged' | 'closed'
@@ -405,6 +414,51 @@ export function getGitHubRepoAccess(projectPath: string): { ok: true; repo: GitH
   return result.ok
     ? { ok: true, repo }
     : { ok: false, error: result.error }
+}
+
+export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAccess {
+  let repo: GitHubRepoRef
+  try {
+    repo = assertGitHubOrigin(projectPath)
+  } catch (error) {
+    return {
+      status: 'unknown',
+      permission: null,
+      error: error instanceof Error ? error.message : 'Failed to resolve the GitHub origin.',
+    }
+  }
+
+  const result = tryCommand('gh', ['repo', 'view', repo.slug, '--json', 'viewerPermission'], {
+    cwd: projectPath,
+    timeout: GITHUB_PERMISSION_CHECK_TIMEOUT_MS,
+  })
+  if (!result.ok) {
+    return { status: 'unknown', permission: null, error: result.error }
+  }
+
+  try {
+    const payload = JSON.parse(result.stdout) as { viewerPermission?: unknown }
+    const permission = normalizeString(payload.viewerPermission)?.toUpperCase() ?? null
+    if (permission === 'WRITE' || permission === 'MAINTAIN' || permission === 'ADMIN') {
+      return { status: 'writable', permission }
+    }
+    if (permission === 'READ' || permission === 'TRIAGE') {
+      return { status: 'read_only', permission }
+    }
+    return {
+      status: 'unknown',
+      permission,
+      error: permission
+        ? `GitHub CLI returned an unsupported viewer permission: ${permission}`
+        : 'GitHub CLI did not return a viewer permission.',
+    }
+  } catch (error) {
+    return {
+      status: 'unknown',
+      permission: null,
+      error: error instanceof Error ? `Failed to parse GitHub repository permission: ${error.message}` : 'Failed to parse GitHub repository permission.',
+    }
+  }
 }
 
 function runGhJson<T>(

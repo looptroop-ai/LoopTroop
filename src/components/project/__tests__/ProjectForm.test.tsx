@@ -140,6 +140,34 @@ describe('ProjectForm', () => {
     )
   })
 
+  it('shows a non-blocking warning when GitHub write access is not detected', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      json: async () => ({
+        isGit: true,
+        status: 'valid',
+        message: 'Git repository root selected',
+        githubRepoSlug: 'iamkun/dayjs',
+        githubOriginWriteAccess: 'read_only',
+        githubViewerPermission: 'READ',
+        githubWriteWarning:
+          "The active GitHub CLI account has READ access to iamkun/dayjs, which does not include branch write access. You can attach this project, but LoopTroop's bead pushes may fail unless origin uses writable credentials.",
+      }),
+    })))
+
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Day.js' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DAY' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/dayjs' } })
+
+    expect(await screen.findByText('GitHub write access not detected')).toBeInTheDocument()
+    expect(screen.getByText(/active GitHub CLI account has READ access to iamkun\/dayjs/i)).toBeInTheDocument()
+
+    const createButton = screen.getByRole('button', { name: 'Create Project' })
+    expect(createButton).toBeEnabled()
+    fireEvent.click(createButton)
+    expect(mockProjectMutations.create.mutate).toHaveBeenCalled()
+  })
+
   it('shows the project-local .looptroop path in edit mode', async () => {
     render(
       <ProjectForm

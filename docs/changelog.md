@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Warned during project attachment when the active GitHub account cannot write ticket branches to the selected origin.
 - Rewrote and expanded every ticket-view workflow status summary and Details explanation in clearer, human-first language across the full lifecycle.
 - Kept Specs and Blueprint refinement moving when models unambiguously displace stable item IDs or repeat equivalent change records.
 - Added clarifying reassurance to the interview Skip All confirmation message noting that skipped questions will be answered by AI models at the beginning of the PRD phase.
@@ -21,6 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Consolidated Manual QA checkpoint and Git hook policy options into a collapsed-by-default Advanced section in the backlog workspace view.
 
 ### Added
+- Added an advisory GitHub origin permission check to project attachment, including clear fork/remotes guidance while keeping read-only repositories attachable.
 - Added direct-process and explicit POSIX, Command Prompt, and PowerShell command specifications with repository-relative working directories, structured environments, and bounded timeouts.
 - Added backend-owned host context, Git-hook evidence, and previewed size limits for non-reproducible workspace inputs.
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.

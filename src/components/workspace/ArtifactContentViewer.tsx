@@ -74,6 +74,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import {
   buildCombinedDiffFromBeads,
+  extractBeadNumber,
   groupFileDiffsByPath,
   parseBeadCommitsDiffContent,
   parseDiffStats,
@@ -6467,6 +6468,7 @@ function DiffFileList({ diff }: { diff: string }) {
 
 function BeadDiffSection({ bead, index }: { bead: ReturnType<typeof parseBeadCommitsDiffContent>['beads'][number]; index: number }) {
   const stats = parseDiffStats(bead.diff)
+  const beadNum = extractBeadNumber(bead, index)
   const label = bead.label ? `${bead.beadId} · ${bead.label}` : bead.beadId
 
   return (
@@ -6474,9 +6476,9 @@ function BeadDiffSection({ bead, index }: { bead: ReturnType<typeof parseBeadCom
       title={(
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
-            #{index + 1}
+            #{beadNum}
           </span>
-          <span className="font-mono text-[11px]">{label || `bead-${index + 1}`}</span>
+          <span className="font-mono text-[11px]">{label || `bead-${beadNum}`}</span>
           <span className="text-[10px] text-muted-foreground">
             {stats.files} file{stats.files !== 1 ? 's' : ''} · +{stats.additions} -{stats.deletions}
           </span>
@@ -6505,27 +6507,36 @@ function FileGroupSection({ group }: { group: FileDiffGroup }) {
       scrollOnOpen={false}
     >
       <div className="space-y-2">
-        {group.occurrences.map((occurrence, index) => (
-          <div key={`${group.filename}:${occurrence.beadId ?? occurrence.beadIndex}:${index}`} className="space-y-1">
-            <div className="flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              <span className="rounded bg-muted/80 px-1 py-0.5 font-mono text-[9px] text-foreground">
-                #{occurrence.beadIndex + 1}
-              </span>
-              <span>
-                {occurrence.beadLabel
-                  ? `${occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`} · ${occurrence.beadLabel}`
-                  : occurrence.beadId ?? `bead-${occurrence.beadIndex + 1}`}
-              </span>
+        {group.occurrences.map((occurrence, index) => {
+          const beadNum = extractBeadNumber({ beadId: occurrence.beadId, beadLabel: occurrence.beadLabel, beadIndex: occurrence.beadIndex }, occurrence.beadIndex)
+          return (
+            <div key={`${group.filename}:${occurrence.beadId ?? occurrence.beadIndex}:${index}`} className="space-y-1">
+              <div className="flex items-center gap-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <span className="rounded bg-muted/80 px-1 py-0.5 font-mono text-[9px] text-foreground">
+                  #{beadNum}
+                </span>
+                <span>
+                  {occurrence.beadLabel
+                    ? `${occurrence.beadId ?? `bead-${beadNum}`} · ${occurrence.beadLabel}`
+                    : occurrence.beadId ?? `bead-${beadNum}`}
+                </span>
+              </div>
+              <DiffFileSection file={occurrence} />
             </div>
-            <DiffFileSection file={occurrence} />
-          </div>
-        ))}
+          )
+        })}
       </div>
     </CollapsibleSection>
   )
 }
 
-function BeadCommitsDiffView({ content }: { content: string }) {
+function BeadCommitsDiffView({
+  content,
+  onDescriptionChange,
+}: {
+  content: string
+  onDescriptionChange?: (description: string) => void
+}) {
   const parsed = useMemo(() => parseBeadCommitsDiffContent(content), [content])
   const netDiff = parsed.netDiff ?? ''
   const hasNetDiff = netDiff.trim().length > 0
@@ -6552,6 +6563,16 @@ function BeadCommitsDiffView({ content }: { content: string }) {
     { id: 'file' as const, label: 'By File', disabled: !hasBeadDiffs },
   ]
   const effectiveMode = tabs.some((tab) => tab.id === viewMode && !tab.disabled) ? viewMode : defaultMode
+
+  useEffect(() => {
+    if (effectiveMode === 'bead') {
+      onDescriptionChange?.('Per-bead git commits')
+    } else if (effectiveMode === 'file') {
+      onDescriptionChange?.('Per-file git commits')
+    } else if (effectiveMode === 'net') {
+      onDescriptionChange?.('Final PR net diff')
+    }
+  }, [effectiveMode, onDescriptionChange])
 
   return (
     <div className="flex flex-col gap-3">
@@ -6750,11 +6771,13 @@ export function ArtifactContent({
   artifactId,
   phase,
   reportContent,
+  onDescriptionChange,
 }: {
   content: string
   artifactId?: string
   phase?: string
   reportContent?: string | null
+  onDescriptionChange?: (description: string) => void
 }) {
   const logCtx = useLogs()
   const loadLogsForPhase = logCtx?.loadLogsForPhase
@@ -6830,7 +6853,7 @@ export function ArtifactContent({
     return <CleanupReportView content={content} />
   }
   if (artifactId === 'bead-commits') {
-    return <BeadCommitsDiffView content={content} />
+    return <BeadCommitsDiffView content={content} onDescriptionChange={onDescriptionChange} />
   }
   if (artifactId === 'final-interview') {
     const isCanonicalInterviewPhase = phase === 'VERIFYING_INTERVIEW_COVERAGE' || phase === 'WAITING_INTERVIEW_APPROVAL'

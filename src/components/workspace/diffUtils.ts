@@ -192,6 +192,24 @@ export function buildCombinedDiffFromBeads(beads: BeadCommitDiffEntry[]): string
   return joinDiffs(beads.map((bead) => bead.diff))
 }
 
+export function extractBeadNumber(
+  bead: { beadId?: string; priority?: number; beadIndex?: number },
+  fallbackIndex: number,
+): number {
+  if (typeof bead.priority === 'number' && Number.isFinite(bead.priority) && bead.priority > 0) {
+    return bead.priority
+  }
+  const str = bead.beadId ?? ''
+  const match = str.match(/(\d+)/)
+  if (match && match[1]) {
+    const num = parseInt(match[1], 10)
+    if (Number.isFinite(num) && num > 0) {
+      return num
+    }
+  }
+  return (bead.beadIndex ?? fallbackIndex) + 1
+}
+
 function isAdditionLine(line: string): boolean {
   return line.startsWith('+') && !line.startsWith('+++')
 }

@@ -531,34 +531,6 @@ items:
     expect(netButton).toHaveAttribute('title', 'Net diff will be available after passing the integration phase.')
   })
 
-  it('extracts original bead number and notifies onDescriptionChange when mode changes', () => {
-    const onDescriptionChange = vi.fn()
-    render(
-      <ArtifactContent
-        artifactId="bead-commits"
-        onDescriptionChange={onDescriptionChange}
-        content={serializeBeadCommitsDiffContent({
-          netDiff: '',
-          beads: [
-            {
-              beadId: 'bead-5',
-              label: 'Fifth pass',
-              diff: 'diff --git a/src/five.ts b/src/five.ts\n--- a/src/five.ts\n+++ b/src/five.ts\n@@ -1 +1 @@\n-a\n+b',
-            },
-          ],
-        })}
-      />,
-    )
-
-    expect(screen.getByText('#5')).toBeInTheDocument()
-    expect(onDescriptionChange).toHaveBeenCalledWith('Per-bead git commits')
-
-    fireEvent.click(screen.getByRole('button', { name: 'By File' }))
-    expect(onDescriptionChange).toHaveBeenCalledWith('Per-file git commits')
-    fireEvent.click(screen.getByRole('button', { name: /src\/five\.ts/ }))
-    expect(screen.getByText('#5')).toBeInTheDocument()
-  })
-
   it('hides the interview summary when the canonical interview summary is empty', () => {
     render(
       <InterviewAnswersView

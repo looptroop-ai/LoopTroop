@@ -91,7 +91,6 @@ interface PhaseArtifactsPanelProps {
 export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, preloadedArtifacts }: PhaseArtifactsPanelProps) {
   const supplementalArtifacts = useMemo(() => getSupplementalArtifacts(phase, isCompleted), [phase, isCompleted])
   const [viewingSelection, setViewingSelection] = useState<ViewingArtifactSelection | null>(null)
-  const [dynamicDescription, setDynamicDescription] = useState<string | null>(null)
   const [fallbackArtifacts, setFallbackArtifacts] = useState<DBartifact[]>([])
   const hasPreloadedArtifacts = preloadedArtifacts !== undefined
   const { artifacts: cachedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticketId, { skipFetch: hasPreloadedArtifacts })
@@ -766,7 +765,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     <>
       {artifactsBody}
 
-      <Dialog open={!!viewingArtifact} onOpenChange={(open) => { if (!open) { setViewingSelection(null); setDynamicDescription(null); } }}>
+      <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>
         <DialogContent className="max-w-2xl max-h-[80vh] min-w-0 overflow-x-hidden rounded-xl border-border/70 shadow-lg">
           <DialogHeader>
             <DialogTitle className="text-sm font-mono font-semibold flex items-center gap-2">
@@ -774,7 +773,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
               {viewingArtifact?.label}
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground font-mono">
-              {dynamicDescription ?? viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
+              {viewingArtifact?.description ?? 'Artifact details for the current council phase.'}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
@@ -792,7 +791,6 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
                       : ''}
                     phase={phase}
                     reportContent={viewingArtifact?.reportContent}
-                    onDescriptionChange={setDynamicDescription}
                   />
                 </ErrorBoundary>
               )}

@@ -507,6 +507,28 @@ items:
     expect(screen.getByText(/touched in 2 beads/)).toBeInTheDocument()
   })
 
+  it('displays tooltip on Net Diff button when net diff is not yet available', () => {
+    render(
+      <ArtifactContent
+        artifactId="bead-commits"
+        content={serializeBeadCommitsDiffContent({
+          netDiff: '',
+          beads: [
+            {
+              beadId: 'bead-1',
+              label: 'First pass',
+              diff: 'diff --git a/src/a.ts b/src/a.ts',
+            },
+          ],
+        })}
+      />,
+    )
+
+    const netButton = screen.getByRole('button', { name: 'Net Diff' })
+    expect(netButton).toBeDisabled()
+    expect(netButton).toHaveAttribute('title', 'Net diff will be available after passing the integration phase.')
+  })
+
   it('hides the interview summary when the canonical interview summary is empty', () => {
     render(
       <InterviewAnswersView

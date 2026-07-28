@@ -6534,7 +6534,12 @@ function BeadCommitsDiffView({ content }: { content: string }) {
   }, [defaultMode, content])
 
   const tabs = [
-    { id: 'net' as const, label: 'Net Diff', disabled: !hasNetDiff },
+    {
+      id: 'net' as const,
+      label: 'Net Diff',
+      disabled: !hasNetDiff,
+      tooltip: !hasNetDiff ? 'Net diff will be available after passing the integration phase.' : undefined,
+    },
     { id: 'bead' as const, label: 'By Bead', disabled: !hasBeadDiffs },
     { id: 'file' as const, label: 'By File', disabled: !hasBeadDiffs },
   ]
@@ -6549,6 +6554,7 @@ function BeadCommitsDiffView({ content }: { content: string }) {
               key={tab.id}
               type="button"
               disabled={tab.disabled}
+              title={tab.tooltip}
               onClick={() => setViewMode(tab.id)}
               className={cn(
                 'rounded px-2 py-1 text-xs font-medium transition-colors',

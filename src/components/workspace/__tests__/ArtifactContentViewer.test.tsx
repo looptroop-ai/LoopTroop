@@ -501,8 +501,6 @@ items:
     fireEvent.click(screen.getByRole('button', { name: 'By Bead' }))
     expect(screen.getByText('Per-bead git commits')).toBeInTheDocument()
     expect(screen.getByText(/bead-1/)).toBeInTheDocument()
-    expect(screen.getByText('#1')).toBeInTheDocument()
-    expect(screen.getByText('#2')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'By File' }))
     expect(screen.getByText('Per-file git commits')).toBeInTheDocument()

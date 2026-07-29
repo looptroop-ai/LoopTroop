@@ -158,6 +158,7 @@ Approved beads do not go straight into `CODING`. They first pass through a deter
 | --- | --- |
 | `WAITING_BEADS_APPROVAL` | Human approval of the expanded execution plan |
 | `PRE_FLIGHT_CHECK` | Deterministic readiness checks against the worktree, dependency graph, Git/GitHub integration, and coding-agent capability |
+| `GENERATING_EXECUTION_SETUP_PLAN` | Read-only drafting or regeneration of the runtime setup contract, with live logs and versioned artifacts |
 | `WAITING_EXECUTION_SETUP_APPROVAL` | Human review of the runtime setup contract |
 | `PREPARING_EXECUTION_ENV` | Temporary-only runtime preparation and reusable profile generation |
 | `CODING` | Bead-by-bead coding with retries, resets, and checkpoint recovery |
@@ -177,7 +178,7 @@ The current runtime no longer treats setup as a loose list of `commands`, `envir
 
 | Artifact | Produced in | Purpose |
 | --- | --- | --- |
-| `execution_setup_plan` | `WAITING_EXECUTION_SETUP_APPROVAL` | Human-reviewed contract describing whether setup is needed and, if so, which temporary steps are allowed |
+| `execution_setup_plan` | `GENERATING_EXECUTION_SETUP_PLAN`, then `WAITING_EXECUTION_SETUP_APPROVAL` | Versioned generated candidate followed by a separate human-reviewed approval copy describing whether setup is needed and, if so, which temporary steps are allowed |
 | `execution_setup_profile` | `PREPARING_EXECUTION_ENV` | Machine-validated runtime profile describing the environment that coding and final test should reuse |
 
 ### 5.1 Approved Setup Plan Shape

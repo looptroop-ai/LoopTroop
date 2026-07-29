@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
-import { CalendarDays, Loader2 } from 'lucide-react'
+import { CalendarDays, Loader2, Sparkles } from 'lucide-react'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
@@ -27,6 +27,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   )
   const councilMemberCount = councilMemberNames.length || 3
   const isDraft = phase === 'DRAFT'
+  const isExecutionSetupDraft = phase === 'GENERATING_EXECUTION_SETUP_PLAN'
   const [descriptionMode, setDescriptionMode] = useState<TicketDescriptionMode>('markdown')
   const { data: attempts = [] } = useTicketPhaseAttempts(ticket.id, phase)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
@@ -46,14 +47,14 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
   const logPhaseAttempt = attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
   const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
-  const { artifacts: preloadedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticket.id, archivedAttemptNumber != null
-    ? {
-        phase,
-        phaseAttempt: archivedAttemptNumber,
-      }
-    : undefined)
+  const artifactQueryOptions = archivedAttemptNumber != null
+    ? { phase, phaseAttempt: archivedAttemptNumber }
+    : isExecutionSetupDraft
+      ? { phase }
+      : undefined
+  const { artifacts: preloadedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticket.id, artifactQueryOptions)
 
-  if (isLoadingArtifacts) {
+  if (isLoadingArtifacts && !isExecutionSetupDraft) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
@@ -74,8 +75,31 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             onChange={setManualSelectedAttemptNumber}
           />
         ) : null}
+        {isExecutionSetupDraft && ticket.status === phase && selectedAttempt?.state !== 'archived' ? (
+          <div className="rounded-xl border border-blue-300/70 bg-blue-50/70 p-4 text-blue-950 dark:border-blue-900/60 dark:bg-blue-950/20 dark:text-blue-100">
+            <div className="flex items-start gap-3">
+              <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  Drafting the workspace setup plan
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-label="Drafting in progress" />
+                </div>
+                <p className="mt-1 text-xs leading-5">
+                  LoopTroop is auditing the approved implementation plan and pre-flight evidence, then producing a reviewable setup contract. The plan and its generation report appear below when ready.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {!isDraft && (
-          <PhaseArtifactsPanel phase={phase} isCompleted={true} ticketId={ticket.id} councilMemberCount={councilMemberCount} councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined} preloadedArtifacts={preloadedArtifacts} />
+          <PhaseArtifactsPanel
+            phase={phase}
+            isCompleted={selectedAttempt?.state === 'archived' || ticket.status !== phase}
+            ticketId={ticket.id}
+            councilMemberCount={councilMemberCount}
+            councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
+            preloadedArtifacts={preloadedArtifacts}
+          />
         )}
       </div>
 
@@ -129,10 +153,12 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
         </div>
       ) : (
         <CollapsiblePhaseLogSection
+          key={`${phase}:${selectedAttempt?.attemptNumber ?? 'active'}`}
           phase={phase}
           phaseAttempt={logPhaseAttempt}
           logMode={logMode}
           ticket={ticket}
+          defaultExpanded={isExecutionSetupDraft}
           className="px-4 pb-4"
         />
       )}

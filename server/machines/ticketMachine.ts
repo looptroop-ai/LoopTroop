@@ -27,6 +27,7 @@ const BLOCKED_ERROR_RESUME_STATUSES = [
   'EXPANDING_BEADS',
   'WAITING_BEADS_APPROVAL',
   'PRE_FLIGHT_CHECK',
+  'GENERATING_EXECUTION_SETUP_PLAN',
   'WAITING_EXECUTION_SETUP_APPROVAL',
   'PREPARING_EXECUTION_ENV',
   'CODING',
@@ -98,6 +99,13 @@ export const ticketMachine = setup({
         return null
       },
     }),
+    rememberExecutionSetupPlanRequest: assign({
+      pendingExecutionSetupPlanRequestArtifactId: ({ event }) =>
+        event.type === 'REGENERATE_EXECUTION_SETUP_PLAN' ? event.requestArtifactId : null,
+    }),
+    clearExecutionSetupPlanRequest: assign({
+      pendingExecutionSetupPlanRequestArtifactId: () => null,
+    }),
     updateStatus: assign({
       previousStatus: ({ context }) => context.status,
       status: (_, params: { status: string }) => params.status,
@@ -132,6 +140,7 @@ export const ticketMachine = setup({
     lockedStructuredRetryCount: input.lockedStructuredRetryCount ?? null,
     lockedManualQaEnabled: input.lockedManualQaEnabled ?? null,
     lockedManualQaSource: input.lockedManualQaSource ?? null,
+    pendingExecutionSetupPlanRequestArtifactId: null,
     previousStatus: null,
     error: null,
     errorCodes: [],
@@ -383,8 +392,25 @@ export const ticketMachine = setup({
         { type: 'updateStatus', params: { status: 'PRE_FLIGHT_CHECK' } },
       ],
       on: {
-        CHECKS_PASSED: { target: 'WAITING_EXECUTION_SETUP_APPROVAL' },
+        CHECKS_PASSED: { target: 'GENERATING_EXECUTION_SETUP_PLAN' },
         CHECKS_FAILED: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
+        ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
+        CANCEL: { target: 'CANCELED' },
+      },
+    },
+    GENERATING_EXECUTION_SETUP_PLAN: {
+      entry: [
+        { type: 'updateStatus', params: { status: 'GENERATING_EXECUTION_SETUP_PLAN' } },
+      ],
+      on: {
+        EXECUTION_SETUP_PLAN_READY: {
+          target: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          actions: ['clearExecutionSetupPlanRequest'],
+        },
+        EXECUTION_SETUP_PLAN_FAILED: {
+          target: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          actions: ['clearExecutionSetupPlanRequest'],
+        },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         CANCEL: { target: 'CANCELED' },
       },
@@ -394,10 +420,11 @@ export const ticketMachine = setup({
         { type: 'updateStatus', params: { status: 'WAITING_EXECUTION_SETUP_APPROVAL' } },
       ],
       on: {
-        EXECUTION_SETUP_PLAN_READY: {},
-        REGENERATE_EXECUTION_SETUP_PLAN: {},
+        REGENERATE_EXECUTION_SETUP_PLAN: {
+          target: 'GENERATING_EXECUTION_SETUP_PLAN',
+          actions: ['rememberExecutionSetupPlanRequest'],
+        },
         APPROVE_EXECUTION_SETUP_PLAN: { target: 'PREPARING_EXECUTION_ENV' },
-        EXECUTION_SETUP_PLAN_FAILED: {},
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         CANCEL: { target: 'CANCELED' },
       },
@@ -408,6 +435,10 @@ export const ticketMachine = setup({
       ],
       on: {
         EXECUTION_SETUP_EVIDENCE_CHANGED: { target: 'WAITING_EXECUTION_SETUP_APPROVAL' },
+        REGENERATE_EXECUTION_SETUP_PLAN: {
+          target: 'GENERATING_EXECUTION_SETUP_PLAN',
+          actions: ['rememberExecutionSetupPlanRequest'],
+        },
         EXECUTION_SETUP_READY: { target: 'CODING' },
         EXECUTION_SETUP_FAILED: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },

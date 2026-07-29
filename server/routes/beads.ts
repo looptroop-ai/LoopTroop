@@ -140,7 +140,11 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       afterItemCount: body.length,
       invalidation: {
         ...executionSetupInvalidation,
-        invalidatedPhases: ['WAITING_EXECUTION_SETUP_APPROVAL', 'PREPARING_EXECUTION_ENV'],
+        invalidatedPhases: [
+          'GENERATING_EXECUTION_SETUP_PLAN',
+          'WAITING_EXECUTION_SETUP_APPROVAL',
+          'PREPARING_EXECUTION_ENV',
+        ],
         clearedExecutionSetupState: executionSetupInvalidation.removedArtifacts > 0 || executionSetupInvalidation.removedFiles.length > 0,
       },
     })

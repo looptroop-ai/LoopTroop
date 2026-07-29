@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { TEST } from '@/test/factories'
-import { buildInterviewDiffEntries, buildRefinementDiffEntries, resolveStaticArtifact } from '../phaseArtifactTypes'
+import { buildInterviewDiffEntries, buildRefinementDiffEntries, getArtifactTargetPhases, resolveStaticArtifact } from '../phaseArtifactTypes'
 
 describe('phaseArtifactTypes', () => {
+  it('keeps generated setup candidates separate from approval copies', () => {
+    expect(getArtifactTargetPhases('GENERATING_EXECUTION_SETUP_PLAN')).toEqual(['GENERATING_EXECUTION_SETUP_PLAN'])
+    expect(getArtifactTargetPhases('WAITING_EXECUTION_SETUP_APPROVAL')).toEqual(['WAITING_EXECUTION_SETUP_APPROVAL'])
+  })
+
   it('resolves Manual QA preparation to the checklist rather than a later coverage artifact', () => {
     const checklist = {
       id: 1,

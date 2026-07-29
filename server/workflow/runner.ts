@@ -61,7 +61,7 @@ import {
 
   // Execution phase
   handleCoding,
-  handleExecutionSetupPlanApprovalState,
+  handleExecutionSetupPlanGeneration,
   handleExecutionSetup,
   handleMockExecutionUnsupported,
 
@@ -147,8 +147,8 @@ async function handleMockLifecycleState(
     case 'PRE_FLIGHT_CHECK':
       await handleMockExecutionUnsupported(ticketId, context, 'PRE_FLIGHT_CHECK', sendEvent)
       return
-    case 'WAITING_EXECUTION_SETUP_APPROVAL':
-      await handleMockExecutionUnsupported(ticketId, context, 'WAITING_EXECUTION_SETUP_APPROVAL', sendEvent)
+    case 'GENERATING_EXECUTION_SETUP_PLAN':
+      await handleMockExecutionUnsupported(ticketId, context, 'GENERATING_EXECUTION_SETUP_PLAN', sendEvent)
       return
     case 'PREPARING_EXECUTION_ENV':
       await handleMockExecutionUnsupported(ticketId, context, 'PREPARING_EXECUTION_ENV', sendEvent)
@@ -275,7 +275,7 @@ export function attachWorkflowRunner(
         'VERIFYING_BEADS_COVERAGE',
         'EXPANDING_BEADS',
         'PRE_FLIGHT_CHECK',
-        'WAITING_EXECUTION_SETUP_APPROVAL',
+        'GENERATING_EXECUTION_SETUP_PLAN',
         'PREPARING_EXECUTION_ENV',
         'CODING',
         'RUNNING_FINAL_TEST',
@@ -528,13 +528,13 @@ export function attachWorkflowRunner(
         .finally(() => {
           runningPhases.delete(key)
         })
-    } else if (state === 'WAITING_EXECUTION_SETUP_APPROVAL') {
+    } else if (state === 'GENERATING_EXECUTION_SETUP_PLAN') {
       runningPhases.add(key)
-      handleExecutionSetupPlanApprovalState(ticketId, context, sendEvent, signal)
+      handleExecutionSetupPlanGeneration(ticketId, context, sendEvent, signal)
         .catch(err => {
           if (isCancellationError(err, signal)) return
           const errMsg = getErrorMessage(err)
-          emitPhaseLog(ticketId, context.externalId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'error', errMsg)
+          emitPhaseLog(ticketId, context.externalId, 'GENERATING_EXECUTION_SETUP_PLAN', 'error', errMsg)
           sendEvent(buildWorkflowErrorEvent(errMsg, ['EXECUTION_SETUP_PLAN_FAILED'], err))
         })
         .finally(() => {

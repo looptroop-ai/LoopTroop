@@ -67,4 +67,14 @@ describe('ContextTree', () => {
     expect(screen.getByLabelText('Selected draft used to build the interview.')).toBeInTheDocument()
     expect(screen.queryByText('Council Votes')).toBeNull()
   })
+
+  it('shows the generated setup-plan candidate as the drafting output', () => {
+    renderWithProviders(<ContextTree selectedPhase="GENERATING_EXECUTION_SETUP_PLAN" ticketId={TEST.ticketId} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /context & output/i }))
+
+    expect(screen.getByText('Output')).toBeInTheDocument()
+    expect(screen.getByText('Setup Plan Candidate')).toBeInTheDocument()
+    expect(screen.getByLabelText('Generated readiness assessment and setup contract for approval.')).toBeInTheDocument()
+  })
 })

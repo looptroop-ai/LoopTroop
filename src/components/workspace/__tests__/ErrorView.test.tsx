@@ -112,6 +112,31 @@ describe('ErrorView', () => {
     expect(screen.getByRole('heading', { name: 'Workspace setup failed' })).toBeInTheDocument()
   })
 
+  it('identifies operational failures from workspace setup drafting', () => {
+    const ticket = makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'GENERATING_EXECUTION_SETUP_PLAN',
+      availableActions: ['retry', 'cancel'],
+      activeErrorOccurrenceId: 'setup-drafting-failure',
+      errorOccurrences: [{
+        id: 'setup-drafting-failure',
+        occurrenceNumber: 1,
+        blockedFromStatus: 'GENERATING_EXECUTION_SETUP_PLAN',
+        errorMessage: 'Provider request failed.',
+        errorCodes: [],
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        resolvedAt: null,
+        resolutionStatus: null,
+        resumedToStatus: null,
+      }],
+    })
+
+    renderWithProviders(<ErrorView ticket={ticket} />)
+
+    expect(screen.getByRole('heading', { name: 'Workspace setup drafting failed' })).toBeInTheDocument()
+    expect(screen.getByText(/retry the drafting phase/i)).toBeInTheDocument()
+  })
+
   it('requires confirmation before canceling a blocked ticket', () => {
     const cancelMutate = vi.fn()
     mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })

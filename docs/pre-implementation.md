@@ -2,12 +2,13 @@
 
 Pre-implementation is the execution-band handoff between approved planning and real code changes. It verifies that the ticket can safely leave planning, turns the setup contract into a reviewable artifact, and prepares temporary runtime state that later coding and final-test phases can reuse.
 
-LoopTroop splits this into three workflow statuses:
+LoopTroop splits this into four workflow statuses so active model work and human approval are never represented by the same state:
 
 | Status | Purpose | Main outputs |
 | --- | --- | --- |
 | `PRE_FLIGHT_CHECK` | Deterministic readiness gate before any setup or coding work starts. | `preflight_report` artifact + per-check SYS log entries |
-| `WAITING_EXECUTION_SETUP_APPROVAL` | Drafts and pauses on the reviewable setup contract. | `execution_setup_plan`, generation report, notes, approval receipt, edit receipts |
+| `GENERATING_EXECUTION_SETUP_PLAN` | Drafts or regenerates the reviewable setup contract without modifying project files. | Generated `execution_setup_plan`, generation report, raw attempts and diagnostics |
+| `WAITING_EXECUTION_SETUP_APPROVAL` | Pauses for human review of a separately published approval copy. | Approval-copy `execution_setup_plan`, notes, approval receipt, edit receipts |
 | `PREPARING_EXECUTION_ENV` | Executes only the approved temporary setup and emits the reusable runtime profile. | `execution_setup_profile`, `execution_setup_report`, runtime files under `.ticket/runtime/execution-setup/**` |
 
 ---
@@ -45,13 +46,19 @@ The execution-capability probe is stricter than a plain health check. LoopTroop 
 
 ---
 
-## 2. `WAITING_EXECUTION_SETUP_APPROVAL`: reviewable setup contract
+## 2. `GENERATING_EXECUTION_SETUP_PLAN`: draft the setup contract
 
-After pre-flight passes, LoopTroop records the current host (Windows, macOS, Linux, or WSL-as-Linux), available shells, and architecture, then asks the locked main implementer to audit the approved ticket context and propose an `execution_setup_plan`. The proposal is combined with backend-owned identity, host, hook, and policy evidence. A model cannot make the ticket fail by echoing those backend fields in the wrong shape. This is still an approval gate: no setup commands run until the user approves the contract.
+After pre-flight passes, LoopTroop enters **Drafting Workspace Setup Plan**. It records the current host (Windows, macOS, Linux, or WSL-as-Linux), available shells, and architecture, then asks the locked main implementer to audit the approved ticket context and propose an `execution_setup_plan`. The proposal is combined with backend-owned identity, host, hook, and policy evidence. A model cannot make the ticket fail by echoing those backend fields in the wrong shape.
 
-### 2.1 How the draft is generated
+This is an active `in_progress` phase, but it remains read-only with respect to project files. No setup commands run until a later approval. Its workspace is intentionally nonblank: the live generation log is expanded, an artifact placeholder explains what is being produced, and the full structured plan plus generation report appears when ready. Archived drafting attempts are available from the version selector.
+
+### 2.1 Generation and artifact ownership
 
 `server/workflow/phases/executionSetupPlanPhase.ts` assembles the execution-setup planning context from durable artifacts, including ticket details, relevant files, approved beads, and any prior reusable execution-setup profile. On first entry, the draft is generated automatically if no current setup-plan artifact exists.
+
+A valid result remains attached to the drafting attempt, then LoopTroop creates a fresh `WAITING_EXECUTION_SETUP_APPROVAL` attempt and publishes a self-contained approval copy of the plan and report. This separation keeps the original generated candidate and diagnostics in drafting history while ensuring runtime setup later reads the user-reviewed approval copy.
+
+If structured-output retries are exhausted, LoopTroop preserves the rejected output, generation report, raw attempts, and diagnostics in the drafting attempt, then still advances to approval. The approval view disables Approve and Edit but keeps Regenerate available. Malformed draft text is never treated as an approved plan, and this reviewable outcome does not route the ticket to `BLOCKED_ERROR`. Unexpected operational failures still use `BLOCKED_ERROR`; Retry returns to the drafting status.
 
 The setup-plan artifact is structured around a small, explicit contract:
 
@@ -72,42 +79,39 @@ The planning prompt receives the original checkout and ticket worktree as read-o
 
 If the workspace is already ready, LoopTroop treats that as a first-class result: `steps` can be empty, and the artifact stays reviewable instead of inventing filler setup commands. A non-empty `workspace_inputs` list still counts as required setup work because LoopTroop must materialize those inputs before validation.
 
-### 2.2 Edit, regenerate, and version semantics
+## 3. `WAITING_EXECUTION_SETUP_APPROVAL`: review the setup contract
 
-This approval gate is more than a single draft:
+The approval status contains no automatic model work. The user reviews the published plan, including its backend-owned current-host, identity, policy, and hook evidence, before authorizing runtime setup.
 
-1. **Manual edit** updates the structured plan or raw content directly. LoopTroop saves the canonical normalized artifact and records append-only `user_edit_receipt:execution_setup_plan` history with before/after hashes.
-2. **Regenerate** appends the commentary into `execution_setup_plan_notes`, archives the active attempt, and starts a fresh background generation using the current plan plus the user's note as context.
-3. **Archived attempts stay read-only.** Older setup-plan versions remain available through phase-attempt history, but explicit writes to archived attempts are rejected.
+### 3.1 Edit, regenerate, and version semantics
 
-The generation report also preserves:
+1. **Manual edit** updates the structured approval copy or raw content directly. LoopTroop saves the canonical normalized artifact and records append-only `user_edit_receipt:execution_setup_plan` history with before/after hashes.
+2. **Regenerate** durably records the commentary and the current structured or unsaved raw baseline, archives the current drafting and approval attempts, creates fresh attempts, and transitions immediately to `GENERATING_EXECUTION_SETUP_PLAN`. The runner consumes that request after a restart or blocked-error retry as well as during uninterrupted operation.
+3. **Each regeneration is a version.** The completed generation publishes a new approval copy; older drafting and approval attempts remain read-only through phase-attempt history.
 
-- the raw model output
-- validation errors
-- structured-output retry diagnostics
-- rejected/accepted raw attempts when formatting or schema repair was needed
-- regenerate commentary history
+The drafting attempt's generation report preserves raw model output, validation errors, structured-output retry diagnostics, rejected or accepted raw attempts, and regeneration commentary. Approval history separately preserves the exact copies the user reviewed or edited.
 
-### 2.3 Approval handoff and rewind behavior
+### 3.2 Approval handoff and rewind behavior
 
 Approving the plan first refreshes the host and Git-hook evidence. If either changed, LoopTroop updates the draft hash and asks for review again. Approval then stores a receipt with the reviewed `content_sha256`, host, step count, command count, approved workspace inputs, selected ticket-run Git-hook policy, detected evidence, workspace probes, and exact validation-command list. Detected evidence is read-only, while the inherited hook policy is only the initial choice and may be overridden for this run without changing its project or profile source.
-
-If the model cannot produce a valid proposal after structured retries, the ticket stays in **Approving Workspace Setup**. Approval is disabled, and the rejected output, diagnostics, editing surface, and Regenerate action remain available. A malformed draft is not a runtime failure and does not route the whole ticket to Blocked Error.
 
 While the ticket is still in `PREPARING_EXECUTION_ENV`, editing or regenerating the setup plan triggers a **runtime rewind** rather than an in-place overwrite:
 
 - the active setup session is stopped
-- the current setup-plan attempt and runtime attempt are archived
+- the relevant setup-plan and runtime attempts are archived
 - stale runtime outputs are cleared
 - `.ticket/runtime/execution-setup/tool-cache` is preserved
-- the ticket returns to `WAITING_EXECUTION_SETUP_APPROVAL`
+- manual editing returns directly to `WAITING_EXECUTION_SETUP_APPROVAL` with the current plan
+- regeneration enters `GENERATING_EXECUTION_SETUP_PLAN` with a durable baseline/commentary request
 - approval is required again before setup restarts
 
 That keeps the approved contract explicit and prevents a running setup session from drifting away from what the user last reviewed.
 
+Current-host or Git-hook evidence changes detected while approving do not require another model generation. LoopTroop refreshes the existing approval copy and stays in `WAITING_EXECUTION_SETUP_APPROVAL` so the user can review the changed evidence.
+
 ---
 
-## 3. `PREPARING_EXECUTION_ENV`: temporary runtime setup
+## 4. `PREPARING_EXECUTION_ENV`: temporary runtime setup
 
 Once the plan is approved, LoopTroop moves to `server/workflow/phases/executionSetupPhase.ts`. This phase is AI-driven and retryable, but it is still **not** a bead: it never creates commits, never pushes, and never counts as implementation progress.
 
@@ -125,7 +129,7 @@ flowchart TD
     H -- No --> J[Retry or BLOCKED_ERROR]
 ```
 
-### 3.1 Approved-plan-first execution
+### 4.1 Approved-plan-first execution
 
 The setup agent reads the **approved** plan first. User edits override the model's original draft. If the approved plan says the environment is already ready and that still holds, the phase should stay nearly no-op: verify the claim, emit the reusable profile, and move on without inventing bootstrap work.
 
@@ -139,7 +143,7 @@ When setup is still needed, the agent may:
 
 If required launchers or toolchains are missing, the agent must try real user-space provisioning strategies under approved temp roots before reporting failure. Simple PATH edits, wrapper creation, cache inspection, or version probes do **not** count as provisioning strategies.
 
-### 3.2 Validation rules before a profile is accepted
+### 4.2 Validation rules before a profile is accepted
 
 LoopTroop does not trust a superficially valid setup response. A setup result is accepted only when all of the following are true:
 
@@ -166,7 +170,7 @@ Hook discovery is evidence, not an ecosystem assumption. LoopTroop inspects Git'
 
 Check, Require, and Run are deliberately different. Check and Require execute reviewed commands outside Git and audit any files they change, restoring only changes those checks introduced. Run allows a repository hook to execute inside and potentially block or modify the Git operation itself.
 
-### 3.3 Setup-scoped web tools, retries, and reset behavior
+### 4.3 Setup-scoped web tools, retries, and reset behavior
 
 This is the one execution-band phase where LoopTroop can enable setup-scoped `websearch` and `webfetch` so the agent can look up official release or launcher metadata when repository files do not identify a required tool artifact locally.
 
@@ -180,9 +184,9 @@ If an attempt fails:
 
 The final report keeps the retry notes and per-attempt history so the user can see how setup evolved and why it eventually succeeded or blocked.
 
-When the automatic retry budget ends in `BLOCKED_ERROR`, the live error view offers two setup-specific recovery actions. **Retry with extra note...** opens a dialog and sends only the entered text to the preserved `PREPARING_EXECUTION_ENV` OpenCode session. It keeps the current runtime phase attempt, does not add the note to future setup context, and allows exactly one manual setup attempt beyond the configured automatic budget. **Edit setup plan...** opens a confirmation dialog. After confirmation, it archives the failed runtime attempt, returns the ticket to `WAITING_EXECUTION_SETUP_APPROVAL`, and opens the current plan for editing or regeneration. Regeneration receives the cleaned setup failure so it can propose a missing workspace input when the evidence supports one. Historical error occurrences remain read-only.
+When the automatic retry budget ends in `BLOCKED_ERROR`, the live error view offers two setup-specific recovery actions. **Retry with extra note...** opens a dialog and sends only the entered text to the preserved `PREPARING_EXECUTION_ENV` OpenCode session. It keeps the current runtime phase attempt, does not add the note to future setup context, and allows exactly one manual setup attempt beyond the configured automatic budget. **Edit setup plan...** opens a confirmation dialog. After confirmation, it archives the failed runtime attempt, returns the ticket directly to `WAITING_EXECUTION_SETUP_APPROVAL`, and opens the current plan for editing. Choosing Regenerate from there sends the cleaned setup failure and current plan through a new `GENERATING_EXECUTION_SETUP_PLAN` version so the model can propose a missing workspace input when the evidence supports one. Historical error occurrences remain read-only.
 
-### 3.4 What gets persisted
+### 4.4 What gets persisted
 
 Successful or failed setup attempts produce durable artifacts:
 
@@ -193,7 +197,7 @@ Successful or failed setup attempts produce durable artifacts:
 | `.ticket/runtime/execution-setup-profile.json` | Mirror of the accepted profile for later phases that prefer reading a file path instead of loading the artifact body inline. |
 | `.ticket/runtime/execution-setup/**` | Runtime-owned temp state such as the current host's launcher, caches, and tool downloads. |
 
-### 3.5 Impact on later phases
+### 4.5 Impact on later phases
 
 Pre-implementation directly shapes later execution:
 

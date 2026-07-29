@@ -325,6 +325,55 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
   })
 
+  it('treats a missing approval plan as failed generation with diagnostics and regenerate available', async () => {
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: [
+        {
+          id: 41,
+          ticketId: TEST.ticketId,
+          phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          phaseAttempt: 1,
+          artifactType: 'execution_setup_plan_report',
+          filePath: null,
+          content: JSON.stringify({
+            status: 'failed',
+            ready: false,
+            errors: ['The model response could not be parsed after structured retries.'],
+            rawAttempts: [{ attempt: 1, content: 'invalid output' }],
+          }),
+          createdAt: '2026-03-25T10:15:00.000Z',
+        },
+      ],
+      isLoading: false,
+    })
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input)
+      if (url === `/api/tickets/${TEST.ticketId}/execution-setup-plan`) {
+        return Promise.resolve(new Response(JSON.stringify({
+          exists: false,
+          raw: null,
+          contentSha256: null,
+          plan: null,
+          updatedAt: null,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
+
+    expect(await screen.findByText('Setup plan generation needs another attempt')).toBeInTheDocument()
+    expect(screen.getByText('The model response could not be parsed after structured retries.')).toBeInTheDocument()
+    expect(screen.getByText('Generation diagnostics')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Regenerate ...' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
+    expect(screen.queryByText('Building the setup plan.')).not.toBeInTheDocument()
+  })
+
   it('shows draft autosave status beside Save only while editing the active plan', async () => {
     renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })} />)
 

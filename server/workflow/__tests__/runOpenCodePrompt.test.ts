@@ -584,23 +584,23 @@ describe('runOpenCodePrompt', () => {
     })
   })
 
-  it('classifies planning-phase prompt metadata as AI response timeout by default', async () => {
+  it('classifies setup-plan drafting prompt metadata as AI response timeout by default', async () => {
     resetTestDb()
     const { ticket } = createInitializedTestTicket(repoManager, {
       title: 'AI response timeout metadata',
     })
-    patchTicket(ticket.id, { status: 'CREATING_PULL_REQUEST' })
+    patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
     const adapter = new TestOpenCodeAdapter(['assistant response'])
     let dispatchedEvent: OpenCodePromptDispatchEvent | null = null
 
     await runOpenCodePrompt({
       adapter,
       projectPath: '/tmp/project',
-      parts: [{ type: 'text', content: 'PR draft body' }],
+      parts: [{ type: 'text', content: 'Workspace setup-plan draft body' }],
       timeoutMs: 2_000,
       sessionOwnership: {
         ticketId: ticket.id,
-        phase: 'CREATING_PULL_REQUEST',
+        phase: 'GENERATING_EXECUTION_SETUP_PLAN',
       },
       onPromptDispatched: (event) => {
         dispatchedEvent = event

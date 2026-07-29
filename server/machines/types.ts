@@ -20,6 +20,7 @@ export interface TicketContext {
   lockedStructuredRetryCount: number | null
   lockedManualQaEnabled: boolean | null
   lockedManualQaSource: ManualQaConfigurationSource | null
+  pendingExecutionSetupPlanRequestArtifactId: number | null
   previousStatus: string | null
   error: string | null
   errorCodes: string[]
@@ -70,7 +71,7 @@ export type TicketEvent =
   | { type: 'CHECKS_PASSED' }
   | { type: 'EXECUTION_SETUP_PLAN_READY' }
   | { type: 'EXECUTION_SETUP_PLAN_FAILED'; errors?: string[] }
-  | { type: 'REGENERATE_EXECUTION_SETUP_PLAN' }
+  | { type: 'REGENERATE_EXECUTION_SETUP_PLAN'; requestArtifactId: number }
   | { type: 'APPROVE_EXECUTION_SETUP_PLAN' }
   | { type: 'EXECUTION_SETUP_EVIDENCE_CHANGED' }
   | { type: 'EXECUTION_SETUP_READY' }
@@ -120,6 +121,7 @@ export const STATUS_TO_PHASE: Record<string, KanbanPhase> = {
   EXPANDING_BEADS: 'in_progress',
   WAITING_BEADS_APPROVAL: 'needs_input',
   PRE_FLIGHT_CHECK: 'in_progress',
+  GENERATING_EXECUTION_SETUP_PLAN: 'in_progress',
   WAITING_EXECUTION_SETUP_APPROVAL: 'needs_input',
   PREPARING_EXECUTION_ENV: 'in_progress',
   CODING: 'in_progress',

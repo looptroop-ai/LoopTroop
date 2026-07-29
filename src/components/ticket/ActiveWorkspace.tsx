@@ -87,6 +87,10 @@ export function ActiveWorkspace({ ticket, selectedPhase, selectedErrorOccurrence
     content = <FullLogView ticket={ticket} />
   } else if (activeErrorOccurrence) {
     content = <ErrorView ticket={ticket} occurrence={activeErrorOccurrence} readOnly={!isLiveErrorOccurrence} />
+  } else if (selectedPhase === 'GENERATING_EXECUTION_SETUP_PLAN') {
+    // Keep setup-plan drafting on the artifact-and-log review surface even if
+    // older workflow metadata is briefly cached while the application updates.
+    content = <PhaseReviewView phase={selectedPhase} ticket={ticket} />
   } else if (isViewingPast) {
     const pastPhaseMeta = phaseMap[selectedPhase]
     if (selectedPhase === 'CODING') {
@@ -130,6 +134,9 @@ export function ActiveWorkspace({ ticket, selectedPhase, selectedErrorOccurrence
         content = phaseMeta.reviewArtifactType && phaseMeta.reviewArtifactType !== 'manual_qa_checklist'
           ? <ApprovalView ticket={ticket} phase={selectedPhase} artifactType={phaseMeta.reviewArtifactType} />
           : <PhaseReviewView phase={selectedPhase} ticket={ticket} />
+        break
+      case 'phase_review':
+        content = <PhaseReviewView phase={selectedPhase} ticket={ticket} />
         break
       case 'coding':
         content = <CodingView ticket={ticket} />

@@ -94,6 +94,7 @@ function buildMachineContext(
     lockedStructuredRetryCount: input.lockedStructuredRetryCount ?? null,
     lockedManualQaEnabled: input.lockedManualQaEnabled ?? null,
     lockedManualQaSource: input.lockedManualQaSource ?? null,
+    pendingExecutionSetupPlanRequestArtifactId: null,
     previousStatus: options.previousStatus ?? null,
     error: options.error ?? null,
     errorCodes: options.errorCodes ?? [],
@@ -166,6 +167,12 @@ function reconcileSnapshotForTicket(
   context.lockedStructuredRetryCount = input.lockedStructuredRetryCount ?? null
   context.lockedManualQaEnabled = input.lockedManualQaEnabled ?? null
   context.lockedManualQaSource = input.lockedManualQaSource ?? null
+  if (
+    typeof context.pendingExecutionSetupPlanRequestArtifactId !== 'number'
+    || !Number.isFinite(context.pendingExecutionSetupPlanRequestArtifactId)
+  ) {
+    context.pendingExecutionSetupPlanRequestArtifactId = null
+  }
 
   if (
     dbStatus === 'BLOCKED_ERROR'

@@ -101,7 +101,7 @@ const CONTEXT_LABELS: Record<string, ContextItem> = {
     id: 'execution_setup_plan',
     label: 'Setup Plan',
     icon: '🧾',
-    description: 'Approved workspace setup plan used before coding.',
+    description: 'Generated or approved workspace setup plan used before coding.',
   },
   execution_setup_plan_notes: {
     id: 'execution_setup_plan_notes',
@@ -211,6 +211,9 @@ const PHASE_OUTPUTS: Record<string, ContextItem[]> = {
   ],
   PRE_FLIGHT_CHECK: [
     outputItem('preflight-report', 'Preflight Report', 'tests', 'Readiness check before setup.'),
+  ],
+  GENERATING_EXECUTION_SETUP_PLAN: [
+    outputItem('setup-plan-candidate', 'Setup Plan Candidate', 'execution_setup_plan', 'Generated readiness assessment and setup contract for approval.'),
   ],
   WAITING_EXECUTION_SETUP_APPROVAL: [
     outputItem('setup-plan', 'Setup Plan', 'execution_setup_plan', 'Approved contract for setup.'),

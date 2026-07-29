@@ -72,6 +72,54 @@ afterEach(() => {
 })
 
 describe('PhaseReviewView', () => {
+  it('shows a nonblank drafting surface, version selector, artifacts, and expanded log', async () => {
+    const ticket = makeTicket({ status: 'GENERATING_EXECUTION_SETUP_PLAN' })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url === `/api/tickets/${ticket.id}/phases/GENERATING_EXECUTION_SETUP_PLAN/attempts`) {
+        return createJsonResponse([
+          {
+            ticketId: ticket.id,
+            phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+            attemptNumber: 2,
+            state: 'active',
+            archivedReason: null,
+            createdAt: '2026-03-25T10:20:00.000Z',
+            archivedAt: null,
+          },
+          {
+            ticketId: ticket.id,
+            phase: 'GENERATING_EXECUTION_SETUP_PLAN',
+            attemptNumber: 1,
+            state: 'archived',
+            archivedReason: 'regenerated',
+            createdAt: '2026-03-25T10:00:00.000Z',
+            archivedAt: '2026-03-25T10:19:00.000Z',
+          },
+        ])
+      }
+      if (url.startsWith(`/api/tickets/${encodeURIComponent(ticket.id)}/logs?`)) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={ticket.status}>
+        <PhaseReviewView phase="GENERATING_EXECUTION_SETUP_PLAN" ticket={ticket} />
+      </LogProvider>,
+    )
+
+    expect(screen.getByText('Drafting the workspace setup plan')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Workspace Setup Plan' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Generation Report' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'true')
+
+    expect(await screen.findByText('Current version (2)')).toBeInTheDocument()
+    expect(screen.getByText('Archived version 1')).toBeInTheDocument()
+  })
+
   it('shows projected draft logs when revisiting backlog after start', async () => {
     const ticket = makeTicket({
       status: 'SCANNING_RELEVANT_FILES',

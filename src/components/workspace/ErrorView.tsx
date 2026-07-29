@@ -194,6 +194,13 @@ function explainBlockedError(
       recommendation: 'Retry with an extra note that clarifies the approach or the remaining problem.',
     }
   }
+  if (blockedFromStatus === 'GENERATING_EXECUTION_SETUP_PLAN') {
+    return {
+      title: 'Workspace setup drafting failed',
+      description: 'LoopTroop could not finish generating the workspace setup plan because an operational step failed.',
+      recommendation: 'Retry the drafting phase after resolving the reported provider or environment problem.',
+    }
+  }
   if (blockedFromStatus === 'PREPARING_EXECUTION_ENV' || blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL') {
     return {
       title: 'Workspace setup failed',

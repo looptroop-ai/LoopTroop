@@ -373,7 +373,7 @@ Submit, skip, and drift decisions carry `actionId`, `expectedChecklistHash`, and
 
 Only PNG, JPEG, GIF, WebP, and AVIF may be served inline. SVG, HTML, executable/unknown content, and all other files are sent with `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, and `Cache-Control: private, no-store`. Evidence links in results accept HTTP or HTTPS only.
 
-Ticket projections expose `visitedStatuses`, monotonic `workflowRevision`, and `manualQa`. The Manual QA projection distinguishes reservations from checklist-backed versions and maps each available version to its phase attempt, so clients never request an unavailable active reservation and can bind historical artifacts and logs to the same version. These fields also let SSE and polling clients reconcile a deliberate reverse transition (`WAITING_MANUAL_QA → CODING`) without comparing status positions in a linear list.
+Ticket projections expose `visitedStatuses`, monotonic `workflowRevision`, and `manualQa`. REST and SSE status fields may include `GENERATING_EXECUTION_SETUP_PLAN` between pre-flight and setup approval, including when regeneration returns immediately in that state; request and response envelopes otherwise remain unchanged. The Manual QA projection distinguishes reservations from checklist-backed versions and maps each available version to its phase attempt, so clients never request an unavailable active reservation and can bind historical artifacts and logs to the same version. These fields also let SSE and polling clients reconcile a deliberate reverse transition (`WAITING_MANUAL_QA → CODING`) without comparing status positions in a linear list.
 
 ### Workflow Actions
 
@@ -567,7 +567,7 @@ Edit-answer payload:
 | `GET` | `/api/tickets/:id/execution-setup-plan` | Read the current setup plan |
 | `POST` | `/api/tickets/:id/edit-execution-setup-plan` | Return a blocked workspace runtime setup to setup-plan approval |
 | `PUT` | `/api/tickets/:id/execution-setup-plan` | Save setup plan as raw content or structured plan |
-| `POST` | `/api/tickets/:id/regenerate-execution-setup-plan` | Regenerate the plan with commentary |
+| `POST` | `/api/tickets/:id/regenerate-execution-setup-plan` | Persist regeneration input and enter setup-plan drafting |
 
 Execution setup plan read response:
 
@@ -640,13 +640,15 @@ Execution setup plan read response:
 }
 ```
 
-Execution setup plan reads may select archived versions with `phaseAttempt`. Archived reads stay available, but explicit writes to non-current phase attempts return `409` because archived versions are read-only. Invalid `phaseAttempt` values return `400`. Successful manual saves write `user_edit_receipt:execution_setup_plan`.
+Execution setup plan reads may select archived versions with `phaseAttempt`. Drafting attempts preserve the generated candidate, generation report, and diagnostics; approval attempts hold the separately published, potentially user-edited copy used by runtime setup. Archived reads stay available, but explicit writes to non-current phase attempts return `409` because archived versions are read-only. Invalid `phaseAttempt` values return `400`. Successful manual saves write `user_edit_receipt:execution_setup_plan`.
 
 Successful `PUT /execution-setup-plan` responses return the saved `raw`, normalized `plan`, `contentSha256`, and current route state (`status`, `state`, `ticket`) so the client does not need an immediate follow-up fetch.
 
 `workspaceInputs`, `workspaceProbes`, and `gitHooks.validationCommands` are ordered editable lists. Each workspace input contains `path`, `kind`, `sourceStatus`, and `reason`; the server checks it against the original checkout before accepting the plan. `gitHooks.detected` is refreshed from repository/Git evidence and cannot be changed through the plan editor. An empty validation-command list is valid; no waiver field or secondary confirmation is required.
 
-`PUT /execution-setup-plan` and `POST /regenerate-execution-setup-plan` are normally accepted only while the ticket is in `WAITING_EXECUTION_SETUP_APPROVAL`. They are also accepted from `PREPARING_EXECUTION_ENV` as a one-step runtime rewind: LoopTroop stops active runtime setup, archives the approved setup-plan attempt and current runtime attempt with `execution_setup_runtime_rewind`, clears stale setup profile/runtime outputs while preserving `.ticket/runtime/execution-setup/tool-cache`, returns the ticket to `WAITING_EXECUTION_SETUP_APPROVAL`, and requires approval again. During that route-driven rewind, the restored approval actor does not auto-draft from the empty fresh attempt; manual edits save the supplied plan, and regenerate starts only the requested commented generation. `POST /regenerate-execution-setup-plan` returns immediately after scheduling background regeneration; the new draft then arrives through normal artifact/log/SSE updates. These routes still reject from `CODING` and later statuses.
+`PUT /execution-setup-plan` and `POST /regenerate-execution-setup-plan` are normally accepted only while the ticket is in `WAITING_EXECUTION_SETUP_APPROVAL`. A manual save stays at approval. Regeneration durably preserves the commentary plus the supplied structured or raw baseline, archives the current drafting/approval attempts, creates fresh attempts, and immediately returns `GENERATING_EXECUTION_SETUP_PLAN`; the runner later publishes the new plan/report into approval through normal artifact, log, and SSE updates. The request reference survives backend restart and blocked-error retry so one requested version is neither lost nor duplicated.
+
+Both routes are also accepted from `PREPARING_EXECUTION_ENV` as a runtime rewind. LoopTroop stops active runtime setup, archives the relevant setup-plan/runtime attempts, clears stale setup profile/runtime outputs, and preserves `.ticket/runtime/execution-setup/tool-cache`. Manual editing uses the `execution_setup_runtime_rewind` archival reason and returns directly to `WAITING_EXECUTION_SETUP_APPROVAL` with the supplied plan. Regeneration uses `execution_setup_runtime_regenerate`, enters `GENERATING_EXECUTION_SETUP_PLAN`, and returns to approval only after the fresh version is produced. These routes still reject from `CODING` and later statuses. Host or Git-hook evidence refresh during approval remains in `WAITING_EXECUTION_SETUP_APPROVAL` because it updates the existing plan without model generation.
 
 Regeneration payload:
 

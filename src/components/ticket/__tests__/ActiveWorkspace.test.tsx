@@ -112,6 +112,19 @@ describe('ActiveWorkspace', () => {
     expect(await screen.findByText('approval view:live')).toBeInTheDocument()
   })
 
+  it('renders execution setup drafting on the artifact-and-log review surface', async () => {
+    renderWithProviders(
+      <ActiveWorkspace
+        ticket={makeTicket({ status: 'GENERATING_EXECUTION_SETUP_PLAN' })}
+        selectedPhase="GENERATING_EXECUTION_SETUP_PLAN"
+        previousStatus="PRE_FLIGHT_CHECK"
+      />,
+    )
+
+    expect(await screen.findByText('review:GENERATING_EXECUTION_SETUP_PLAN')).toBeInTheDocument()
+    expect(screen.queryByText(/approval view/i)).not.toBeInTheDocument()
+  })
+
   it('opens live error mode when the ticket is currently blocked', async () => {
     const ticket = makeTicket({ status: 'BLOCKED_ERROR' })
     ticket.errorOccurrences = [

@@ -22,6 +22,7 @@ import {
   buildCoverageArtifactContent,
   getArtifactTargetPhases,
   parseRefinementArtifact,
+  parseExecutionSetupPlanReport,
   parseExecutionSetupProfile,
   parseExecutionSetupRuntimeReport,
   parsePullRequestReport,
@@ -521,6 +522,27 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     const content = findDbContent(artifact)
     if (!content) return {}
     const council = tryParseCouncilResult(content)
+
+    if (artifact.id === 'execution-setup-plan' || artifact.id === 'execution-setup-plan-report') {
+      const reportContent = artifact.id === 'execution-setup-plan-report'
+        ? content
+        : findReportContent(artifact)
+      const report = reportContent ? parseExecutionSetupPlanReport(reportContent) : null
+      const failed = report?.ready === false || report?.status === 'failed'
+      const detailParts = [
+        report?.source === 'regenerate' ? 'regenerated' : report?.source === 'auto' ? 'initial draft' : null,
+        report?.rawAttempts?.length
+          ? `${report.rawAttempts.length} raw attempt${report.rawAttempts.length === 1 ? '' : 's'}`
+          : null,
+        report?.errors.length
+          ? `${report.errors.length} diagnostic${report.errors.length === 1 ? '' : 's'}`
+          : null,
+      ].filter((part): part is string => Boolean(part))
+      return {
+        outcome: failed ? 'invalid_output' : isCompleted ? 'completed' : 'pending',
+        detail: detailParts.join(' · ') || undefined,
+      }
+    }
 
     if (artifact.id === 'bead-commits') {
       const stats = getBeadCommitsDiffStats(content)

@@ -104,7 +104,7 @@ export async function generateExecutionSetupPlan(
         ? {
             sessionOwnership: {
               ticketId: callbacks.ticketId,
-              phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+              phase: 'GENERATING_EXECUTION_SETUP_PLAN',
               phaseAttempt: callbacks.phaseAttempt ?? 1,
               keepActive: true,
               step: 'execution_setup_plan',
@@ -236,7 +236,7 @@ export async function generateExecutionSetupPlan(
             ? {
                 sessionOwnership: {
                   ticketId: callbacks.ticketId,
-                  phase: 'WAITING_EXECUTION_SETUP_APPROVAL',
+                  phase: 'GENERATING_EXECUTION_SETUP_PLAN',
                   phaseAttempt: callbacks.phaseAttempt ?? 1,
                   keepActive: true,
                   step: 'execution_setup_plan',

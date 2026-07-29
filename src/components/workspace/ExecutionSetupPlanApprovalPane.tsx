@@ -206,6 +206,34 @@ function RejectedSetupPlanDraftBanner({
   )
 }
 
+function FailedSetupPlanGenerationBanner({
+  reportContent,
+}: {
+  reportContent?: string | null
+}) {
+  const report = reportContent ? parseExecutionSetupPlanReport(reportContent) : null
+  const errors = report?.errors ?? []
+
+  return (
+    <div className="rounded-md border border-red-300/70 bg-red-50/80 px-3 py-3 text-red-950 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-100">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">Setup plan generation needs another attempt</div>
+          <p className="mt-1 text-xs leading-5">
+            The drafting run finished without a valid setup plan. Review the diagnostics below, then regenerate with commentary describing what should change.
+          </p>
+          {errors.length > 0 ? (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+              {errors.map((error, index) => <li key={`${index}:${error}`}>{error}</li>)}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SupersededApprovedSetupPlanBanner({
   receipt,
   updatedAt,
@@ -322,17 +350,16 @@ export function ExecutionSetupPlanApprovalPane({
       return response.json() as Promise<ExecutionSetupPlanApprovalResponse>
     },
     staleTime: QUERY_STALE_TIME_5M,
-    refetchInterval: (query) => {
-      const data = query.state.data as ExecutionSetupPlanApprovalResponse | undefined
-      // Only poll for loading state when viewing the live active attempt
-      return phaseAttempt == null && ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL' && !data?.exists ? 2000 : false
-    },
   })
 
   const rawContent = fetchedPlan?.raw ?? ''
   const currentContentSha256 = fetchedPlan?.contentSha256 ?? null
   const plan = fetchedPlan?.plan ?? null
-  const isPlanGenerating = ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL' && !plan && (isLoading || isFetching || !fetchedPlan?.exists)
+  const isPlanLoading = !fetchedPlan && (isLoading || isFetching)
+  const generationFailed = ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL'
+    && !isArchivedAttempt
+    && !isPlanLoading
+    && !plan
   const executionSetupPlanReportContent = useMemo(() => {
     const matchingArtifact = [...artifacts].reverse().find((artifact) => (
       artifact.artifactType === 'execution_setup_plan_report'
@@ -354,7 +381,7 @@ export function ExecutionSetupPlanApprovalPane({
     [executionSetupPlanReportContent],
   )
   const artifactPanelPhase = readOnly || isRuntimeSetupRewindMode ? 'WAITING_EXECUTION_SETUP_APPROVAL' : ticket.status
-  const isSetupPlanVisible = !isPlanGenerating && rawContent.trim().length > 0
+  const isSetupPlanVisible = !isPlanLoading && rawContent.trim().length > 0
   const shouldExpandSetupPlanLog = !isSetupPlanVisible
 
   const {
@@ -389,7 +416,7 @@ export function ExecutionSetupPlanApprovalPane({
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
   useEffect(() => {
-    if (restoredDraftRef.current || (!plan && !isPlanGenerating)) return
+    if (restoredDraftRef.current || !plan) return
 
     const persisted = persistedUiState?.data
     const nextEditMode = Boolean(persisted?.isEditMode)
@@ -412,7 +439,7 @@ export function ExecutionSetupPlanApprovalPane({
       commentary: nextCommentary,
     })
     restoredDraftRef.current = true
-  }, [isPlanGenerating, persistedUiState, plan, rawContent, readOnly, setIsEditMode])
+  }, [persistedUiState, plan, rawContent, readOnly, setIsEditMode])
 
   useEffect(() => {
     if (!readOnly) return
@@ -524,12 +551,16 @@ export function ExecutionSetupPlanApprovalPane({
       queryClient.invalidateQueries({
         queryKey: getTicketPhaseAttemptsQueryKey(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL'),
       })
+      queryClient.invalidateQueries({
+        queryKey: getTicketPhaseAttemptsQueryKey(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN'),
+      })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
 
-      // Close dialog and navigate back to ticket view. The ticket remains in
-      // WAITING_EXECUTION_SETUP_APPROVAL, with a fresh active attempt generating.
+      // Drafting is its own visible workflow phase. Navigate there immediately
+      // so the new version's artifacts and live logs are never presented as an
+      // approval task that is still generating.
       setIsRegenerateDialogOpen(false)
-      requestWorkspacePhaseNavigation({ ticketId: ticket.id, phase: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+      requestWorkspacePhaseNavigation({ ticketId: ticket.id, phase: 'GENERATING_EXECUTION_SETUP_PLAN' })
       setIsRegenerating(false)
     } catch (error) {
       setRegenerateError(error instanceof Error ? error.message : 'Failed to regenerate execution setup plan')
@@ -734,7 +765,7 @@ export function ExecutionSetupPlanApprovalPane({
                 size="sm"
                 onClick={handleOpenRegenerate}
                 className="text-xs shrink-0"
-                disabled={isPlanGenerating || isSaving || isApproving || isRegenerating}
+                disabled={isPlanLoading || isSaving || isApproving || isRegenerating}
               >
                 Regenerate ...
               </Button>
@@ -834,12 +865,32 @@ export function ExecutionSetupPlanApprovalPane({
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />
 
-          {isPlanGenerating ? (
+          {isPlanLoading ? (
             <div className="rounded-2xl border border-border bg-muted/20 p-6 text-sm">
-              <div className="font-semibold">Building the setup plan.</div>
+              <div className="font-semibold">Loading the setup plan.</div>
               <p className="mt-2 text-xs text-muted-foreground">
-                LoopTroop is auditing workspace readiness and drafting any missing setup now. Live logs remain available below while the draft is being generated.
+                LoopTroop is loading the completed drafting result for review.
               </p>
+            </div>
+          ) : generationFailed ? (
+            <div className="space-y-3">
+              <FailedSetupPlanGenerationBanner reportContent={executionSetupPlanReportContent} />
+              {executionSetupPlanReportContent ? (
+                <div className="rounded-2xl border border-border bg-background p-4">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Generation diagnostics
+                  </div>
+                  <ArtifactContent
+                    artifactId="execution-setup-plan-report"
+                    content={executionSetupPlanReportContent}
+                    phase="WAITING_EXECUTION_SETUP_APPROVAL"
+                  />
+                </div>
+              ) : (
+                <div className="rounded-md border border-amber-300/70 bg-amber-50/70 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
+                  No generation report was published. Regenerate the setup plan to start a new version.
+                </div>
+              )}
             </div>
           ) : !readOnly && isEditMode ? (
             <div className="space-y-3 rounded-2xl border border-border bg-muted/20 p-3">

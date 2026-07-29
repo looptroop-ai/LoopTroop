@@ -18,6 +18,7 @@ DRAFT
   -> PRD loop
   -> Beads loop
   -> PRE_FLIGHT_CHECK
+  -> GENERATING_EXECUTION_SETUP_PLAN
   -> WAITING_EXECUTION_SETUP_APPROVAL
   -> PREPARING_EXECUTION_ENV
   -> CODING bead loop
@@ -40,8 +41,8 @@ WAITING_MANUAL_QA -> failed submission -> CODING -> fresh RUNNING_FINAL_TEST -> 
 
 Useful mental model:
 
-- **Before `PRE_FLIGHT_CHECK`** you are still in editable planning territory: interview, PRD, beads, and setup artifacts can create archived versions and restart downstream work.
-- **From `PRE_FLIGHT_CHECK` onward** the workflow is in execution territory: repository mutations become isolated and tightly controlled, and recovery is driven by execution locks, retries, or explicit blocked-error decisions.
+- **Before `PRE_FLIGHT_CHECK`** you are still in editable requirements territory: interview, PRD, and beads artifacts can create archived versions and restart downstream planning.
+- **From `PRE_FLIGHT_CHECK` onward** the workflow is in execution territory: setup-plan drafting/regeneration has its own archived versions, repository mutations become isolated and tightly controlled, and recovery is driven by execution locks, retries, approval rewinds, or explicit blocked-error decisions.
 - **`CODING` is the versioning exception**: retries reset the active bead/checkpoint instead of creating phase-attempt versions.
 - **Ticket Details timing**: **Actual implementation time** sums `CODING` periods for originally planned beads only, so a ticket paused in `BLOCKED_ERROR` while awaiting Retry or Continue does not inflate bead execution time and Manual QA fix-bead work remains separate. Its tooltip separately reports `PREPARING_EXECUTION_ENV`, `RUNNING_FINAL_TEST`, and Manual QA fix-bead time. The displayed final-bead timestamp belongs to the final originally planned bead, so later Manual QA fix beads do not replace it.
 
@@ -51,7 +52,7 @@ Useful mental model:
 
 The flowchart below visualizes how tickets progress through planning, execution, and delivery, and how recovery pathways branch back to active phases:
 
-The diagrams in this document are embedded SVGs so they render consistently in VS Code Markdown Preview.
+The diagrams in this document are embedded SVGs so they render consistently in VS Code Markdown Preview. Mermaid source for the two cross-phase diagrams is kept beside the generated SVGs so lifecycle changes can update the nodes and transitions without editing SVG layout coordinates.
 
 ![Detailed ticket flow diagram](./media/ticket-flow/01-2-detailed-flow-diagram.svg)
 
@@ -127,7 +128,8 @@ Coverage budgets and limits apply independently per phase. Interview coverage bu
 The execution band (`server/workflow/executionBand.ts`) is the set of statuses between pre-flight readiness and environment cleanup:
 
 ```
-PRE_FLIGHT_CHECK → WAITING_EXECUTION_SETUP_APPROVAL → PREPARING_EXECUTION_ENV
+PRE_FLIGHT_CHECK → GENERATING_EXECUTION_SETUP_PLAN
+  → WAITING_EXECUTION_SETUP_APPROVAL → PREPARING_EXECUTION_ENV
   → CODING → RUNNING_FINAL_TEST → GENERATING_QA_CHECKLIST → WAITING_MANUAL_QA
   → INTEGRATING_CHANGES
   → CREATING_PULL_REQUEST → WAITING_PR_REVIEW → CLEANING_ENV
@@ -163,7 +165,7 @@ The UI and API categorize all ticket states into distinct lifecycle groups:
 | `interview` | Questionnaire compilation, Q&A batching, coverage, and interview approval. |
 | `prd` | Requirements spec drafting, voting, refinement, coverage, and PRD approval. |
 | `beads` | Execution blueprint drafting, voting, refinement, coverage, expansion, and approval. |
-| `pre_implementation` | Pre-flight readiness verification, runtime setup plan drafting, and tool environment setup. |
+| `pre_implementation` | Pre-flight readiness verification, runtime setup-plan drafting and approval, and tool environment setup. |
 | `implementation` | Bead-by-bead isolated coding loop. |
 | `post_implementation` | Holistic testing, branch squashing, PR publishing, review gates, and worktree cleanup. |
 | `done` | Successful completion or cancellation. |
@@ -209,8 +211,9 @@ The canonical properties for every workflow phase are detailed in the inventory 
 | `EXPANDING_BEADS` | Expanding Blueprint | `beads` | `council` | `in_progress` | — | yes | no | — |
 | `WAITING_BEADS_APPROVAL` | Approving Blueprint | `beads` | `approval` | `needs_input` | `beads` | yes | no | — |
 | `PRE_FLIGHT_CHECK` | Checking Readiness | `pre_implementation` | `coding` | `in_progress` | — | yes | no | — |
-| `WAITING_EXECUTION_SETUP_APPROVAL` | Approving Setup | `pre_implementation` | `approval` | `needs_input` | `execution_setup_plan` | yes | no | — |
-| `PREPARING_EXECUTION_ENV` | Preparing Runtime | `pre_implementation` | `coding` | `in_progress` | — | no | no | — |
+| `GENERATING_EXECUTION_SETUP_PLAN` | Drafting Workspace Setup Plan | `pre_implementation` | `phase_review` | `in_progress` | — | no | no | — |
+| `WAITING_EXECUTION_SETUP_APPROVAL` | Approving Workspace Setup | `pre_implementation` | `approval` | `needs_input` | `execution_setup_plan` | yes | no | — |
+| `PREPARING_EXECUTION_ENV` | Preparing Workspace Runtime | `pre_implementation` | `coding` | `in_progress` | — | no | no | — |
 | `CODING` | Implementing | `implementation` | `coding` | `in_progress` | — | no | no | `beads` |
 | `RUNNING_FINAL_TEST` | Testing | `post_implementation` | `coding` | `in_progress` | — | no | no | — |
 | `GENERATING_QA_CHECKLIST` | Preparing Manual QA | `post_implementation` | `coding` | `in_progress` | `manual_qa_checklist` | no | no | — |
@@ -270,7 +273,8 @@ The state machine metadata directly drives the React user interface. Developers 
 
 ### Pre-Implementation
 - **`PRE_FLIGHT_CHECK`:** Verifies workspace sanitation, Git worktree hygiene, OpenCode reachability, and execution locks. Committable changes outside LoopTroop fail the checks.
-- **`WAITING_EXECUTION_SETUP_APPROVAL`:** The setup-plan draft presents the readiness assessment, approved ignored or untracked workspace inputs, required temporary setup steps, ordered workspace probes, detected Git hooks, the policy inherited from ticket → project → profile and frozen at Start, editable explicit hook commands, and regenerate history. The user can review each proposed file or directory, edit the plan, or regenerate it with commentary. The editor visibly autosaves its draft, while **Save** remains required to update the authoritative setup plan and apply its downstream effects.
+- **`GENERATING_EXECUTION_SETUP_PLAN`:** The Main Implementer drafts the workspace setup contract without changing project files. The active view keeps its log expanded, shows a placeholder until the artifact is ready, and then exposes the complete generated plan and generation report. Structured retry diagnostics and rejected raw attempts remain inspectable when generation is malformed. Every regeneration returns here in a fresh phase attempt, preserving the current approval draft and commentary in a durable request so restarts cannot lose the requested version.
+- **`WAITING_EXECUTION_SETUP_APPROVAL`:** The generated plan is published into a separate approval attempt for user review. It presents the readiness assessment, approved ignored or untracked workspace inputs, required temporary setup steps, ordered workspace probes, detected Git hooks, the policy inherited from ticket → project → profile and frozen at Start, editable explicit hook commands, and version history. The user can review each proposed file or directory, edit the plan, or regenerate it with commentary. The editor visibly autosaves its draft, while **Save** remains required to update the authoritative approval copy and apply its downstream effects. A malformed draft remains reviewable here with Approve/Edit disabled and Regenerate available.
 - **`PREPARING_EXECUTION_ENV`:** Materializes approved workspace inputs without replacing tracked ticket source, runs only the approved temporary setup, verifies wrappers/tooling probes and functional repository probes, executes approved explicit hook validations, and audits tracked effects without assuming a language or project type. The agent must finish with an honest `ready` or `blocked` result. Progress-only replies receive two same-session continuations without consuming a setup attempt; only a validated ready profile is installed under `.ticket/runtime/execution-setup/**` and allowed to advance into coding.
 
 ### Implementation (Coding)
@@ -286,7 +290,7 @@ The state machine metadata directly drives the React user interface. Developers 
 - **`CLEANING_ENV`:** Deletes transient lockfiles, wrapper hooks, and session directories, preserving planning files and audit trails.
 
 ### Error & Terminal States
-- **`BLOCKED_ERROR`:** Recovery gate that preserves `previousStatus`, structured diagnostics, and any continuation candidate. Depending on the failure, the user can retry, send a note to the preserved execution-setup session, add guidance to a fresh implementation retry, edit a failed workspace setup plan, continue a preserved OpenCode session, or cancel. Final-test local-only file classification does not create a blocked-error action. Displayed errors remove terminal control sequences and repeated warning noise while raw logs remain unchanged.
+- **`BLOCKED_ERROR`:** Recovery gate that preserves `previousStatus`, structured diagnostics, and any continuation candidate. Depending on the failure, the user can retry setup-plan drafting or another interrupted phase, send a note to the preserved execution-setup session, add guidance to a fresh implementation retry, edit a failed workspace setup plan, continue a preserved OpenCode session, or cancel. Exhausted setup-plan parsing is reviewed at approval instead of becoming a blocked error; only unexpected drafting operations fail here. Final-test local-only file classification does not create a blocked-error action. Displayed errors remove terminal control sequences and repeated warning noise while raw logs remain unchanged.
 - **`COMPLETED`:** Terminal success state after cleanup finishes and execution locks are released. Ticket artifacts, logs, and archived attempts remain available for audit.
 - **`CANCELED`:** Terminal stop state for user-driven cancellation or intentional planning rewinds. Existing artifacts/history remain, but no further automation continues.
 
@@ -301,7 +305,7 @@ The state machine metadata directly drives the React user interface. Developers 
 | `DRAFT` | `start`, `cancel` | `start` locks the ticket's model/configuration choices and creates the isolated workspace. |
 | `WAITING_INTERVIEW_ANSWERS` | batch answer, edit answer, skip all, `cancel` | Interview input is batch-oriented; `skip all` writes a synthetic clean coverage result and jumps straight to interview approval. |
 | Approval gates | `approve`, `cancel` | Interview, PRD, beads, and setup-plan approvals require `expectedContentSha256`; stale approvals return `409` instead of advancing. |
-| `WAITING_EXECUTION_SETUP_APPROVAL` / `PREPARING_EXECUTION_ENV` | edit, regenerate, approve/rewind | Setup-plan saves or regenerations during runtime setup stop the active setup session, archive the current setup/runtime attempts, preserve the tool cache, and require approval again. |
+| `WAITING_EXECUTION_SETUP_APPROVAL` / `PREPARING_EXECUTION_ENV` | edit, regenerate, approve/rewind | Approval-phase regeneration enters `GENERATING_EXECUTION_SETUP_PLAN` in a fresh version. During runtime setup, manual editing stops setup and rewinds directly to approval with the current plan; regeneration also archives the setup-plan/runtime attempts, preserves the tool cache, and enters the drafting status before approval is required again. |
 | `WAITING_PR_REVIEW` | `merge`, `close_unmerged`, `cancel` | Review resolution decides whether the ticket exits with a merged PR or a closed unmerged branch. |
 | `WAITING_MANUAL_QA` | autosave, evidence upload/remove, submit, skip, include/discard drift, `cancel` | There is no manual Save action. Every mutation uses an action id, expected checklist hash, and expected draft revision. Skip bypasses normal result/group validation, snapshots all entered data read-only, and creates no drafted improvement/fix work. |
 | `BLOCKED_ERROR` | `retry`, optional retry with extra note, optional edit setup plan, optional `continue`, `cancel` | **Retry with extra note...** appears for a live error from `CODING` or `PREPARING_EXECUTION_ENV` and sits beside **Retry**. Coding starts its existing fresh-bead retry. Setup sends only the note to the preserved session and grants one manual attempt beyond the automatic budget. **Edit setup plan...** appears only for setup and opens a confirmation dialog before rewinding to approval. `continue` appears only when a preserved OpenCode session is still live. Final-test local-only files are resolved automatically and expose no blocked recovery action. |
@@ -312,7 +316,7 @@ The state machine metadata directly drives the React user interface. Developers 
 Approved interview and PRD documents can still be edited manually while in planning (before `PRE_FLIGHT_CHECK`). Saving manual changes triggers session cancellation downstream to keep artifacts consistent:
 - Editing **Interview** from PRD/Beads archives the approved interview, aborts downstream sessions, clears downstream drafts, saves/approves the edit, and jumps to `DRAFTING_PRD`.
 - Editing **PRD** from Beads archives the approved PRD, aborts downstream sessions, clears downstream blueprint drafts, saves/approves the edit, and jumps to `DRAFTING_BEADS`.
-- Editing or regenerating the **Execution Setup Plan** while `PREPARING_EXECUTION_ENV` is active performs a runtime rewind: LoopTroop stops setup, archives both setup attempts, preserves `.ticket/runtime/execution-setup/tool-cache`, clears stale runtime outputs, returns to `WAITING_EXECUTION_SETUP_APPROVAL`, and requires a fresh approval before setup resumes.
+- Editing the **Execution Setup Plan** while `PREPARING_EXECUTION_ENV` is active performs a runtime rewind: LoopTroop stops setup, archives the relevant setup attempts, preserves `.ticket/runtime/execution-setup/tool-cache`, clears stale runtime outputs, returns directly to `WAITING_EXECUTION_SETUP_APPROVAL`, and requires a fresh approval before setup resumes. Regenerating performs the same cleanup but enters `GENERATING_EXECUTION_SETUP_PLAN`, creates a new version from the durable commentary/baseline request, and returns to approval only after drafting finishes.
 
 ---
 
@@ -386,7 +390,7 @@ Several orchestrator modules drive the complex mechanics behind the scenes:
 - **Session Logging (`server/workflow/sessionStatusLogging.ts`)**: Handles the durable recording of session state transitions and OpenCode interactions.
 - **Integration Phase (`server/workflow/phases/integrationPhase.ts`)**: Orchestrates the commit squashing and target branch integration logic after coding and final tests are complete.
 - **Pre-Flight Check (`handlePreFlight` in `server/workflow/phases/verificationPhase.ts`, backed by `server/phases/preflight/doctor.ts`)**: Runs the pre-flight readiness checks before execution setup begins.
-- **Execution Setup Plan (`server/workflow/phases/executionSetupPlanPhase.ts`)**: Handles setup-plan approval state and draft regeneration, explicitly separating environment prep from active bead coding.
+- **Execution Setup Plan (`server/workflow/phases/executionSetupPlanPhase.ts`)**: Handles the active versioned drafting/regeneration phase and publishes its result into the separate approval state, explicitly separating planning, human review, and environment prep from bead coding.
 - **Ticket Handlers (`server/routes/ticketHandlers/**`)**: Implement the route-driven behaviors that sit around the state machine edges, including approval hashes, planning restarts, setup rewinds, blocked-error recovery actions, and OpenCode question replies.
 
 ---

@@ -4,7 +4,9 @@ import { ArchivedArtifactWriteError, assertCurrentEditablePhaseAttempt } from '.
 import {
   appendExecutionSetupPlanNotes,
   readExecutionSetupPlan,
+  readExecutionSetupPlanNotes,
   saveExecutionSetupPlan,
+  writeExecutionSetupPlanRegenerationRequest,
 } from '../../phases/executionSetupPlan/document'
 import {
   EXECUTION_SETUP_PLAN_RESULT_END,
@@ -12,7 +14,6 @@ import {
   serializeExecutionSetupPlan,
   type ExecutionSetupPlan,
 } from '../../phases/executionSetupPlan/types'
-import { regenerateExecutionSetupPlanDraft } from '../../workflow/phases/executionSetupPlanPhase'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { normalizeExecutionSetupPlanOutput } from '../../structuredOutput'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -20,13 +21,14 @@ import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
-  getMachineContext,
   getTicketParam,
   prepareExecutionSetupPlanRestart,
+  prepareExecutionSetupRuntimeRegeneration,
   prepareExecutionSetupRuntimeRewind,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
+import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   rawExecutionSetupPlanSaveSchema,
   regenerateExecutionSetupPlanSchema,
@@ -287,25 +289,40 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
     currentPlan = readExecutionSetupPlan(ticketId).plan
   }
 
-  // Archive old attempt, create new empty attempt
+  const existingNotes = readExecutionSetupPlanNotes(ticketId)
+
+  // Archive old attempts and create fresh generation/approval versions.
   if (rewindsRuntimeSetup) {
-    await prepareExecutionSetupRuntimeRewind(ticketId)
+    await prepareExecutionSetupRuntimeRegeneration(ticketId)
   } else {
     await prepareExecutionSetupPlanRestart(ticketId)
   }
 
-  const machineContext = getMachineContext(ticketId)
-
-  // Fire-and-forget: generate new plan in background with commentary + old plan context
-  void regenerateExecutionSetupPlanDraft({
-    ticketId,
-    context: machineContext,
-    commentary: parsed.data.commentary,
-    currentPlan,
-  }).catch((err: unknown) => {
+  let requestArtifactId: number
+  try {
+    requestArtifactId = writeExecutionSetupPlanRegenerationRequest(ticketId, {
+      commentary: parsed.data.commentary,
+      currentPlan,
+      notes: [...existingNotes, parsed.data.commentary],
+    })
+    ensureActorForTicket(ticketId)
+    sendTicketEvent(ticketId, {
+      type: 'REGENERATE_EXECUTION_SETUP_PLAN',
+      requestArtifactId,
+    })
+  } catch (err) {
     const errMsg = getErrorMessage(err)
-    emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'error', `Background regeneration failed: ${errMsg}`)
-  })
+    emitRoutePhaseLog(
+      ticketId,
+      'GENERATING_EXECUTION_SETUP_PLAN',
+      'error',
+      `Failed to start background regeneration: ${errMsg}`,
+    )
+    return c.json({
+      error: 'Failed to start execution setup plan regeneration',
+      details: errMsg,
+    }, 500)
+  }
 
   return c.json({ success: true, ...buildRouteStatePayload(ticketId) })
 }

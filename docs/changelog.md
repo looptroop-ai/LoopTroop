@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
 - Ordered Bead Commits activity views by execution priority and made each bead label show its number and title.
 - Warned during project attachment when the active GitHub account cannot write ticket branches to the selected origin.
@@ -24,12 +25,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated Bead Commits description to 'Per-bead/file git commits', updated dynamic diff view labels for 'By Bead' and 'By File' modes, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
 
 ### Added
+- Added **Drafting Workspace Setup Plan** (`GENERATING_EXECUTION_SETUP_PLAN`) with an expanded live log, plan/report artifacts, malformed-output diagnostics, and archived generation versions before setup approval.
 - Added an advisory GitHub origin permission check to project attachment, including clear fork/remotes guidance while keeping read-only repositories attachable.
 - Added direct-process and explicit POSIX, Command Prompt, and PowerShell command specifications with repository-relative working directories, structured environments, and bounded timeouts.
 - Added backend-owned host context, Git-hook evidence, and previewed size limits for non-reproducible workspace inputs.
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Changed setup-plan regeneration to durably preserve commentary and the current structured/raw baseline, enter a fresh drafting version, and publish a separate approval copy while runtime edits continue to rewind directly to approval.
 - Updated Bead Commits so By Bead shows per-bead git commits and By File shows per-file git commits, with every bead occurrence labeled and ordered by its execution priority.
 - Rewrote the ticket-view workflow status summaries and Details dialog copy in `shared/workflowMeta.ts` so every phase reads more clearly for humans, expanded the top summaries to fuller explanations, and moved Safe resume guidance out of the top summary into the detailed notes while preserving the same workflow behavior, recovery semantics, and context expectations.
 - Updated the interview Skip All confirmation modal message and workflow metadata to reassure users that skipped questions are answered by AI models during the initial PRD phase.

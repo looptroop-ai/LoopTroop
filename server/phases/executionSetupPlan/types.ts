@@ -10,6 +10,7 @@ import type { CommandSpec } from '@shared/commandSpec'
 export const EXECUTION_SETUP_PLAN_ARTIFACT_TYPE = 'execution_setup_plan'
 export const EXECUTION_SETUP_PLAN_REPORT_ARTIFACT_TYPE = 'execution_setup_plan_report'
 export const EXECUTION_SETUP_PLAN_NOTES_ARTIFACT_TYPE = 'execution_setup_plan_notes'
+export const EXECUTION_SETUP_PLAN_REGENERATION_REQUEST_ARTIFACT_TYPE = 'execution_setup_plan_regeneration_request'
 export const EXECUTION_SETUP_PLAN_RESULT_MARKER = '<EXECUTION_SETUP_PLAN>'
 export const EXECUTION_SETUP_PLAN_RESULT_END = '</EXECUTION_SETUP_PLAN>'
 
@@ -47,6 +48,13 @@ export interface ExecutionSetupPlanReport {
   rawAttempts?: RawAttempt[]
   notes?: string[]
   source: 'auto' | 'regenerate'
+}
+
+export interface ExecutionSetupPlanRegenerationRequest {
+  commentary: string
+  currentPlanRaw: string | null
+  notes: string[]
+  createdAt: string
 }
 
 export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {

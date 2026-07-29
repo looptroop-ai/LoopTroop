@@ -139,87 +139,6 @@ function approvalPayload(raw: string) {
   }
 }
 
-vi.mock('../../workflow/phases/executionSetupPlanPhase', async () => {
-  const storage = await import('../../storage/tickets')
-  return {
-    regenerateExecutionSetupPlanDraft: vi.fn(async ({ ticketId, commentary }: { ticketId: string; commentary: string }) => {
-      const ticket = storage.getTicketByRef(ticketId)
-      const nextPlan = buildPlan(ticket?.externalId ?? 'T-1', `Regenerated: ${commentary}`)
-      storage.upsertLatestPhaseArtifact(
-        ticketId,
-        'execution_setup_plan',
-        'WAITING_EXECUTION_SETUP_APPROVAL',
-        JSON.stringify(nextPlan, null, 2),
-      )
-      storage.upsertLatestPhaseArtifact(
-        ticketId,
-        'execution_setup_plan_report',
-        'WAITING_EXECUTION_SETUP_APPROVAL',
-        JSON.stringify({
-          status: 'draft',
-          ready: true,
-          generatedAt: new Date().toISOString(),
-          generatedBy: 'mock-model',
-          summary: nextPlan.summary,
-          plan: nextPlan,
-          modelOutput: JSON.stringify(nextPlan),
-          errors: [],
-          source: 'regenerate',
-        }),
-      )
-      return {
-        status: 'draft',
-        ready: true,
-        generatedAt: new Date().toISOString(),
-        generatedBy: 'mock-model',
-        summary: nextPlan.summary,
-        plan: {
-          schemaVersion: 1,
-          ticketId: ticket?.externalId ?? 'T-1',
-          artifact: 'execution_setup_plan',
-          status: 'draft',
-          summary: nextPlan.summary as string,
-          readiness: {
-            status: 'partial',
-            actionsRequired: true,
-            evidence: ['Repository manifest files are present.'],
-            gaps: ['Reusable workspace setup outputs have not been prepared yet.'],
-          },
-          tempRoots: ['.ticket/runtime/execution-setup', '.ticket/runtime/execution-setup/tool-cache'],
-          steps: [
-            {
-              id: 'bootstrap-workspace',
-              title: 'Bootstrap workspace',
-              purpose: 'Prepare the runtime for later beads.',
-              commands: ['npm run bootstrap'],
-              required: true,
-              rationale: 'Repository-native setup is required before later execution can reuse the workspace.',
-              cautions: ['May take a while on the first run.'],
-            },
-          ],
-          projectCommands: {
-            prepare: ['npm run bootstrap'],
-            testFull: ['npm test'],
-            lintFull: ['npm run lint'],
-            typecheckFull: ['npm run typecheck'],
-          },
-          qualityGatePolicy: {
-            tests: 'bead-test-commands-first',
-            lint: 'impacted-or-package',
-            typecheck: 'impacted-or-package',
-            fullProjectFallback: 'never-block-on-unrelated-baseline',
-          },
-          cautions: ['Repository-native bootstrap may create local dependency caches.'],
-        },
-        modelOutput: JSON.stringify(nextPlan),
-        errors: [],
-        notes: [commentary],
-        source: 'regenerate',
-      }
-    }),
-  }
-})
-
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
   return {
@@ -228,6 +147,8 @@ vi.mock('../../machines/persistence', async () => {
     sendTicketEvent: vi.fn((ticketRef: string | number, event: { type: string }) => {
       if (event.type === 'APPROVE_EXECUTION_SETUP_PLAN') {
         storage.patchTicket(String(ticketRef), { status: 'PREPARING_EXECUTION_ENV' })
+      } else if (event.type === 'REGENERATE_EXECUTION_SETUP_PLAN') {
+        storage.patchTicket(String(ticketRef), { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
       }
       return { value: event.type }
     }),
@@ -491,7 +412,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')).toBeDefined()
   })
 
-  it('regenerates the execution setup plan with commentary (returns immediately, generates in background)', async () => {
+  it('starts durable background regeneration with the submitted commentary', async () => {
     const { app, ticket } = setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
@@ -507,13 +428,22 @@ describe('ticketRouter execution setup plan approval routes', () => {
     })
 
     expect(response.status).toBe(200)
-    const payload = await response.json() as { success: boolean; plan?: unknown }
+    const payload = await response.json() as { success: boolean; plan?: unknown; status?: string }
     expect(payload.success).toBe(true)
     expect(payload.plan).toBeUndefined()
+    expect(payload.status).toBe('GENERATING_EXECUTION_SETUP_PLAN')
 
-    // Background generation (mock) runs synchronously — artifact should be saved to new active attempt
-    const stored = getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')
-    expect(stored?.content).toContain('Use the project-native bootstrap command.')
+    const request = getLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan_regeneration_request',
+      'GENERATING_EXECUTION_SETUP_PLAN',
+    )
+    expect(request?.content).toContain('Use the project-native bootstrap command.')
+    expect(getLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+    )).toBeUndefined()
   })
 
   it('archives the current attempt and creates a new one on regenerate', async () => {
@@ -533,21 +463,39 @@ describe('ticketRouter execution setup plan approval routes', () => {
 
     expect(response.status).toBe(200)
 
-    const attempts = listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')
-    expect(attempts).toHaveLength(2)
+    const approvalAttempts = listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(approvalAttempts).toHaveLength(2)
     // listPhaseAttempts returns newest first
-    expect(attempts[0]!.state).toBe('active')
-    expect(attempts[0]!.attemptNumber).toBe(2)
-    expect(attempts[1]!.state).toBe('archived')
-    expect(attempts[1]!.attemptNumber).toBe(1)
+    expect(approvalAttempts[0]!.state).toBe('active')
+    expect(approvalAttempts[0]!.attemptNumber).toBe(2)
+    expect(approvalAttempts[1]!.state).toBe('archived')
+    expect(approvalAttempts[1]!.attemptNumber).toBe(1)
+    expect(listPhaseAttempts(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN')).toEqual([
+      expect.objectContaining({ attemptNumber: 2, state: 'active' }),
+      expect.objectContaining({
+        attemptNumber: 1,
+        state: 'archived',
+        archivedReason: 'execution_setup_plan_regenerate',
+      }),
+    ])
 
     // Old plan preserved in archived attempt 1
     const oldArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL', 1)
     expect(oldArtifact?.content).toContain('Original plan.')
 
-    // New plan saved to active attempt 2
-    const newArtifact = getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')
-    expect(newArtifact?.content).toContain('New commentary.')
+    // The new active version starts with a durable request; the runner publishes
+    // the replacement plan only after the drafting status finishes.
+    const request = getLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan_regeneration_request',
+      'GENERATING_EXECUTION_SETUP_PLAN',
+    )
+    expect(request?.content).toContain('New commentary.')
+    expect(getLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan',
+      'WAITING_EXECUTION_SETUP_APPROVAL',
+    )).toBeUndefined()
   })
 
   it('reads an archived execution setup plan by phase attempt number', async () => {
@@ -573,12 +521,12 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(archivePayload.exists).toBe(true)
     expect(archivePayload.plan?.summary).toBe('Attempt 1 plan.')
 
-    // GET without param returns the active (attempt 2) plan
+    // The active approval attempt remains empty while the new drafting phase runs.
     const activeResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`)
     expect(activeResponse.status).toBe(200)
     const activePayload = await activeResponse.json() as { exists: boolean; plan: { summary: string } | null }
-    expect(activePayload.exists).toBe(true)
-    expect(activePayload.plan?.summary).toContain('New run.')
+    expect(activePayload.exists).toBe(false)
+    expect(activePayload.plan).toBeNull()
   })
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {
@@ -613,6 +561,9 @@ describe('ticketRouter execution setup plan approval routes', () => {
 
     expect(listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')).toEqual([
       expect.objectContaining({ attemptNumber: 2, state: 'active', archivedReason: null }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_rewind' }),
+    ])
+    expect(listPhaseAttempts(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN')).toEqual([
       expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_rewind' }),
     ])
     expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
@@ -655,22 +606,28 @@ describe('ticketRouter execution setup plan approval routes', () => {
     expect(response.status).toBe(200)
     const payload = await response.json() as { status?: string; success: boolean }
     expect(payload.success).toBe(true)
-    expect(payload.status).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
-    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
-    expect(vi.mocked(revertTicketToApprovalStatus)).toHaveBeenCalledWith(
-      ticket.id,
-      'WAITING_EXECUTION_SETUP_APPROVAL',
-      { skipInitialWorkflowRun: true },
-    )
+    expect(payload.status).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(getTicketByRef(ticket.id)?.status).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(vi.mocked(revertTicketToApprovalStatus)).not.toHaveBeenCalled()
 
     expect(listPhaseAttempts(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL')).toEqual([
       expect.objectContaining({ attemptNumber: 2, state: 'active', archivedReason: null }),
-      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_rewind' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_regenerate' }),
+    ])
+    expect(listPhaseAttempts(ticket.id, 'GENERATING_EXECUTION_SETUP_PLAN')).toEqual([
+      expect.objectContaining({ attemptNumber: 2, state: 'active', archivedReason: null }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_regenerate' }),
     ])
     expect(listPhaseAttempts(ticket.id, 'PREPARING_EXECUTION_ENV')).toEqual([
-      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_rewind' }),
+      expect.objectContaining({ attemptNumber: 1, state: 'archived', archivedReason: 'execution_setup_runtime_regenerate' }),
     ])
-    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL')?.content)
+    expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_plan', 'WAITING_EXECUTION_SETUP_APPROVAL', 1)?.content)
+      .toContain('Approved plan before regenerate rewind.')
+    expect(getLatestPhaseArtifact(
+      ticket.id,
+      'execution_setup_plan_regeneration_request',
+      'GENERATING_EXECUTION_SETUP_PLAN',
+    )?.content)
       .toContain('Regenerate after runtime setup started.')
   })
 

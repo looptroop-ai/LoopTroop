@@ -36,6 +36,7 @@ Each section shows the status as it appears in the app, its available actions, a
 | **Blueprint (Beads)** | [Expanding Blueprint](#expanding-blueprint) | Watch the blueprint become execution-ready bead records |
 | **Blueprint (Beads)** | [Approving Blueprint](#approving-blueprint) | Review the execution plan, inspect dependencies and file targets, fix gaps with AI, approve, or cancel |
 | **Pre-Implementation** | [Checking Readiness](#checking-readiness) | Monitor workspace, worktree, agent connectivity, and graph checks |
+| **Pre-Implementation** | [Drafting Workspace Setup Plan](#drafting-workspace-setup-plan) | Watch setup-plan generation, live logs, artifacts, diagnostics, and version history |
 | **Pre-Implementation** | [Approving Workspace Setup](#approving-workspace-setup) | Review and edit the setup plan, regenerate it with commentary, approve, or cancel |
 | **Pre-Implementation** | [Preparing Workspace Runtime](#preparing-workspace-runtime) | Watch environment preparation, tool provisioning, and probe checks |
 | **Implementation** | [Implementing](#implementing) | Monitor bead-by-bead execution, live logs, progress counters, and ETA range |
@@ -461,7 +462,15 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Approving Workspace Setup [?](pre-implementation.md#2-waiting_execution_setup_approval-reviewable-setup-contract "Open full documentation")
+### Drafting Workspace Setup Plan [?](pre-implementation.md#2-generating_execution_setup_plan-draft-the-setup-contract "Open full documentation")
+
+This active status keeps its generation log expanded and shows an artifact placeholder immediately, followed by the complete generated setup plan and generation report. Use the version selector to inspect archived generations. If structured retries cannot repair a malformed response, the rejected output and diagnostics remain available before LoopTroop hands the result to the approval gate with only Regenerate enabled.
+
+There is no new screenshot for this status yet; this guide intentionally documents the new lifecycle step without capturing an end-to-end run.
+
+---
+
+### Approving Workspace Setup [?](pre-implementation.md#3-waiting_execution_setup_approval-review-the-setup-contract "Open full documentation")
 
 ::: details Screenshot
 ![Approving Workspace Setup](media/ticket-lifecycle/23-waiting-execution-setup-approval.png)
@@ -471,11 +480,11 @@ Each section shows the status as it appears in the app, its available actions, a
 **What you can do:**
 - Review readiness assessment, temporary setup steps, workspace probes, command families, read-only detected Git hooks, and editable validation commands
 - Edit setup steps or validation commands
-- Click **Regenerate with commentary** to archive the current draft and generate a fresh setup plan based on additional input
+- Click **Regenerate with commentary** to preserve the current draft and input durably, archive the current generation/approval attempts, and enter **Drafting Workspace Setup Plan** for a fresh version
 
 ---
 
-### Preparing Workspace Runtime [?](pre-implementation.md#3-preparing_execution_env-temporary-runtime-setup "Open full documentation")
+### Preparing Workspace Runtime [?](pre-implementation.md#4-preparing_execution_env-temporary-runtime-setup "Open full documentation")
 
 ::: details Screenshot
 ![Preparing Workspace Runtime](media/ticket-lifecycle/24-preparing-execution-env.png)

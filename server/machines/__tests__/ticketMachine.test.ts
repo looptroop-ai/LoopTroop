@@ -191,7 +191,7 @@ describe('ticketMachine execution setup flow', () => {
     expect(actor.getSnapshot().context.errorDiagnostics).toBeNull()
   })
 
-  it('routes approval through pre-flight, setup-plan approval, and execution setup before coding', () => {
+  it('routes approval through pre-flight, setup-plan drafting, approval, and execution setup before coding', () => {
     const actor = createActor(ticketMachine, {
       input: {
         ticketId: '1:T-1',
@@ -226,14 +226,19 @@ describe('ticketMachine execution setup flow', () => {
     actor.send({ type: 'APPROVE' })
 
     actor.send({ type: 'CHECKS_PASSED' })
-    expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(actor.getSnapshot().value).toBe('GENERATING_EXECUTION_SETUP_PLAN')
 
     actor.send({ type: 'EXECUTION_SETUP_PLAN_FAILED', errors: ['Invalid generated draft'] })
     expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
     expect(actor.getSnapshot().context.error).toBeNull()
 
+    actor.send({ type: 'REGENERATE_EXECUTION_SETUP_PLAN', requestArtifactId: 41 })
+    expect(actor.getSnapshot().value).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(actor.getSnapshot().context.pendingExecutionSetupPlanRequestArtifactId).toBe(41)
+
     actor.send({ type: 'EXECUTION_SETUP_PLAN_READY' })
     expect(actor.getSnapshot().value).toBe('WAITING_EXECUTION_SETUP_APPROVAL')
+    expect(actor.getSnapshot().context.pendingExecutionSetupPlanRequestArtifactId).toBeNull()
 
     actor.send({ type: 'APPROVE_EXECUTION_SETUP_PLAN' })
     expect(actor.getSnapshot().value).toBe('PREPARING_EXECUTION_ENV')
@@ -244,8 +249,69 @@ describe('ticketMachine execution setup flow', () => {
     actor.send({ type: 'APPROVE_EXECUTION_SETUP_PLAN' })
     expect(actor.getSnapshot().value).toBe('PREPARING_EXECUTION_ENV')
 
+    actor.send({ type: 'REGENERATE_EXECUTION_SETUP_PLAN', requestArtifactId: 42 })
+    expect(actor.getSnapshot().value).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(actor.getSnapshot().context.pendingExecutionSetupPlanRequestArtifactId).toBe(42)
+
+    actor.send({ type: 'EXECUTION_SETUP_PLAN_READY' })
+    actor.send({ type: 'APPROVE_EXECUTION_SETUP_PLAN' })
     actor.send({ type: 'EXECUTION_SETUP_READY' })
     expect(actor.getSnapshot().value).toBe('CODING')
+  })
+
+  it('preserves a pending regeneration request through blocked-error retry', () => {
+    const actor = createActor(ticketMachine, {
+      snapshot: {
+        status: 'active',
+        value: 'GENERATING_EXECUTION_SETUP_PLAN',
+        historyValue: {},
+        context: {
+          ticketId: '1:T-1',
+          projectId: 1,
+          externalId: 'T-1',
+          title: 'Restart-safe setup-plan regeneration',
+          status: 'GENERATING_EXECUTION_SETUP_PLAN',
+          lockedMainImplementer: 'model-a',
+          lockedMainImplementerVariant: null,
+          lockedCouncilMembers: ['model-a'],
+          lockedCouncilMemberVariants: null,
+          lockedInterviewQuestions: null,
+          lockedCoverageFollowUpBudgetPercent: null,
+          lockedMaxCoveragePasses: null,
+          lockedMaxPrdCoveragePasses: null,
+          lockedMaxBeadsCoveragePasses: null,
+          lockedStructuredRetryCount: null,
+          lockedManualQaEnabled: false,
+          lockedManualQaSource: 'profile',
+          pendingExecutionSetupPlanRequestArtifactId: 73,
+          previousStatus: 'WAITING_EXECUTION_SETUP_APPROVAL',
+          error: null,
+          errorCodes: [],
+          errorDiagnostics: null,
+          blockedErrorResolution: null,
+          beadProgress: { total: 1, completed: 0, current: null },
+          iterationCount: 0,
+          maxIterations: 5,
+          councilResults: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        children: {},
+      } as unknown as never,
+      input: {},
+    })
+
+    actor.start()
+    actor.send({ type: 'ERROR', message: 'Provider interrupted setup-plan drafting' })
+
+    expect(actor.getSnapshot().value).toBe('BLOCKED_ERROR')
+    expect(actor.getSnapshot().context.previousStatus).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(actor.getSnapshot().context.pendingExecutionSetupPlanRequestArtifactId).toBe(73)
+
+    actor.send({ type: 'RETRY' })
+
+    expect(actor.getSnapshot().value).toBe('GENERATING_EXECUTION_SETUP_PLAN')
+    expect(actor.getSnapshot().context.pendingExecutionSetupPlanRequestArtifactId).toBe(73)
   })
 
   it('retries back into PREPARING_EXECUTION_ENV from blocked error', () => {

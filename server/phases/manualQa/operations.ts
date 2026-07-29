@@ -1119,6 +1119,7 @@ export async function submitManualQa(input: {
           lockedStructuredRetryCount: ticket.lockedStructuredRetryCount,
           lockedManualQaEnabled: ticket.lockedManualQaEnabled,
           lockedManualQaSource: ticket.lockedManualQaSource,
+          pendingExecutionSetupPlanRequestArtifactId: null,
           previousStatus: ticket.previousStatus,
           error: null,
           errorCodes: [],

@@ -176,10 +176,16 @@ export async function preparePlanningRestart(
 
 export async function prepareExecutionSetupPlanRestart(ticketId: string): Promise<PhaseRestartSummary> {
   const restartReason = 'execution_setup_plan_regenerate'
-  emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'info', 'Archiving current execution setup plan attempt for versioned regenerate.')
+  emitRoutePhaseLog(
+    ticketId,
+    'GENERATING_EXECUTION_SETUP_PLAN',
+    'info',
+    'Archiving the current workspace setup draft and approval attempt for versioned regeneration.',
+  )
   cancelTicket(ticketId)
   await abortTicketSessions(ticketId)
   clearContextCache(ticketId)
+  ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES, restartReason)
   const createdAttempts = createFreshPhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES)
@@ -198,10 +204,11 @@ export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Prom
   cancelTicket(ticketId)
   await abortTicketSessions(ticketId)
   clearContextCache(ticketId)
+  ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
   ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
   ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
   const archivedAttempts = archiveActivePhaseAttempts(ticketId, EXECUTION_SETUP_RUNTIME_REWIND_PHASES, restartReason)
-  const createdAttempts = createFreshPhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES)
+  const createdAttempts = createFreshPhaseAttempts(ticketId, ['WAITING_EXECUTION_SETUP_APPROVAL'])
   const removedFiles = clearExecutionSetupRuntimeArtifacts(ticketId, { preserveToolCache: true })
   if (removedFiles.length > 0) {
     emitRoutePhaseLog(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', 'info', 'Cleared stale workspace runtime setup outputs after rewind.', {
@@ -216,6 +223,50 @@ export async function prepareExecutionSetupRuntimeRewind(ticketId: string): Prom
   revertTicketToApprovalStatus(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL', {
     skipInitialWorkflowRun: true,
   })
+
+  return {
+    reason: restartReason,
+    archivedAttempts,
+    createdAttempts,
+  }
+}
+
+export async function prepareExecutionSetupRuntimeRegeneration(
+  ticketId: string,
+): Promise<PhaseRestartSummary> {
+  const restartReason = 'execution_setup_runtime_regenerate'
+  emitRoutePhaseLog(
+    ticketId,
+    'GENERATING_EXECUTION_SETUP_PLAN',
+    'info',
+    'Stopping workspace runtime setup and starting a versioned workspace setup draft.',
+  )
+  cancelTicket(ticketId)
+  await abortTicketSessions(ticketId)
+  clearContextCache(ticketId)
+  ensureActivePhaseAttempt(ticketId, 'GENERATING_EXECUTION_SETUP_PLAN')
+  ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
+  ensureActivePhaseAttempt(ticketId, 'PREPARING_EXECUTION_ENV')
+  const archivedAttempts = archiveActivePhaseAttempts(
+    ticketId,
+    EXECUTION_SETUP_RUNTIME_REWIND_PHASES,
+    restartReason,
+  )
+  const createdAttempts = createFreshPhaseAttempts(ticketId, EXECUTION_SETUP_PLAN_RESTART_PHASES)
+  const removedFiles = clearExecutionSetupRuntimeArtifacts(ticketId, { preserveToolCache: true })
+  if (removedFiles.length > 0) {
+    emitRoutePhaseLog(
+      ticketId,
+      'GENERATING_EXECUTION_SETUP_PLAN',
+      'info',
+      'Cleared stale workspace runtime setup outputs before regeneration.',
+      {
+        removedFiles,
+        preserveToolCache: true,
+      },
+    )
+  }
+  ensureActorForTicket(ticketId)
 
   return {
     reason: restartReason,

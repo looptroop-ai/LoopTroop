@@ -56,6 +56,7 @@ function buildMachineContextFromTicket(ticket: PublicTicket): TicketContext {
       || ticket.lockedManualQaSource === 'ticket'
       ? ticket.lockedManualQaSource
       : null,
+    pendingExecutionSetupPlanRequestArtifactId: null,
     previousStatus: ticket.previousStatus,
     error: ticket.errorMessage,
     errorCodes: ticket.errorOccurrences.at(-1)?.errorCodes ?? [],

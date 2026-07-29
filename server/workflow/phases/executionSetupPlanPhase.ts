@@ -27,11 +27,13 @@ import {
   type ExecutionSetupPlanReport,
 } from '../../phases/executionSetupPlan/types'
 import {
-  appendExecutionSetupPlanNotes,
-  readExecutionSetupPlan,
+  EXECUTION_SETUP_PLAN_GENERATION_PHASE,
+  publishExecutionSetupPlanGeneration,
+  readExecutionSetupPlanRegenerationRequest,
   readExecutionSetupPlanNotes,
-  saveExecutionSetupPlan,
-  writeExecutionSetupPlanReport,
+  readGeneratedExecutionSetupPlanReport,
+  saveGeneratedExecutionSetupPlan,
+  writeGeneratedExecutionSetupPlanReport,
 } from '../../phases/executionSetupPlan/document'
 import {
   PROM_EXECUTION_SETUP_PLAN,
@@ -135,6 +137,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
   source: 'auto' | 'regenerate'
   currentPlan?: ExecutionSetupPlan | null
   note?: string | null
+  notes?: string[]
 }): Promise<ExecutionSetupPlanReport> {
   const paths = getTicketPaths(input.ticketId)
   if (!paths) {
@@ -162,9 +165,10 @@ async function generateAndPersistExecutionSetupPlan(input: {
     source: 'host_context',
     content: JSON.stringify(detectHostContext(), null, 2),
   }
-  const notes = input.note
-    ? appendExecutionSetupPlanNotes(input.ticketId, [input.note])
-    : readExecutionSetupPlanNotes(input.ticketId)
+  const notes = input.notes
+    ?? (input.note
+      ? [...readExecutionSetupPlanNotes(input.ticketId), input.note]
+      : readExecutionSetupPlanNotes(input.ticketId))
   const promptContext = input.source === 'regenerate'
     ? buildRegenerateContext([...baseContext, workspaceLocations, hostContext], input.currentPlan ?? null, input.note ?? null, notes)
     : [...baseContext, workspaceLocations, hostContext]
@@ -172,14 +176,14 @@ async function generateAndPersistExecutionSetupPlan(input: {
   emitPhaseLog(
     input.ticketId,
     input.context.externalId,
-    'WAITING_EXECUTION_SETUP_APPROVAL',
+    EXECUTION_SETUP_PLAN_GENERATION_PHASE,
     'info',
     input.source === 'auto'
       ? 'Auditing workspace readiness and drafting the execution setup plan for review.'
       : 'Regenerating the readiness assessment and execution setup plan from user commentary.',
   )
 
-  const phaseAttempt = ensureActivePhaseAttempt(input.ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
+  const phaseAttempt = ensureActivePhaseAttempt(input.ticketId, EXECUTION_SETUP_PLAN_GENERATION_PHASE)
 
   const generation = await generateExecutionSetupPlan(
     adapter,
@@ -212,7 +216,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
         emitAiMilestone(
           input.ticketId,
           input.context.externalId,
-          'WAITING_EXECUTION_SETUP_APPROVAL',
+          EXECUTION_SETUP_PLAN_GENERATION_PHASE,
           `${input.source === 'auto' ? 'Setup-plan draft' : 'Setup-plan regenerate'} session created for ${planModelId} (session=${sessionId}).`,
           `${sessionId}:execution-setup-plan:${input.source}`,
           {
@@ -228,7 +232,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
         emitOpenCodeStreamEvent(
           input.ticketId,
           input.context.externalId,
-          'WAITING_EXECUTION_SETUP_APPROVAL',
+          EXECUTION_SETUP_PLAN_GENERATION_PHASE,
           planModelId,
           sessionId,
           event,
@@ -239,7 +243,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
         emitOpenCodePromptLog(
           input.ticketId,
           input.context.externalId,
-          'WAITING_EXECUTION_SETUP_APPROVAL',
+          EXECUTION_SETUP_PLAN_GENERATION_PHASE,
           planModelId,
           event,
         )
@@ -248,7 +252,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
         emitOpenCodeSessionLogs(
           input.ticketId,
           input.context.externalId,
-          'WAITING_EXECUTION_SETUP_APPROVAL',
+          EXECUTION_SETUP_PLAN_GENERATION_PHASE,
           planModelId,
           event.session.id,
           stage,
@@ -291,14 +295,14 @@ async function generateAndPersistExecutionSetupPlan(input: {
   })
 
   if (report.plan) {
-    saveExecutionSetupPlan(input.ticketId, report.plan)
+    saveGeneratedExecutionSetupPlan(input.ticketId, report.plan)
   }
 
-  writeExecutionSetupPlanReport(input.ticketId, JSON.stringify(report))
+  writeGeneratedExecutionSetupPlanReport(input.ticketId, report)
 
   persistUiArtifactCompanionArtifact(
     input.ticketId,
-    'WAITING_EXECUTION_SETUP_APPROVAL',
+    EXECUTION_SETUP_PLAN_GENERATION_PHASE,
     EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
     {
       response: report.modelOutput,
@@ -316,7 +320,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
   emitPhaseLog(
     input.ticketId,
     input.context.externalId,
-    'WAITING_EXECUTION_SETUP_APPROVAL',
+    EXECUTION_SETUP_PLAN_GENERATION_PHASE,
     report.ready ? 'info' : 'error',
     report.ready
       ? 'Execution setup readiness plan is ready for review.'
@@ -326,63 +330,85 @@ async function generateAndPersistExecutionSetupPlan(input: {
   return report
 }
 
-export async function handleExecutionSetupPlanApprovalState(
+function publishGenerationForApproval(
+  ticketId: string,
+  report: ExecutionSetupPlanReport,
+) {
+  const notes = report.notes ?? []
+  ensureActivePhaseAttempt(ticketId, 'WAITING_EXECUTION_SETUP_APPROVAL')
+  publishExecutionSetupPlanGeneration(ticketId, report, notes)
+  persistUiArtifactCompanionArtifact(
+    ticketId,
+    'WAITING_EXECUTION_SETUP_APPROVAL',
+    EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
+    {
+      response: report.modelOutput,
+      normalizedContent: report.plan ? JSON.stringify(report.plan) : null,
+      parsed: report.plan,
+      structuredOutput: report.structuredOutput,
+      rawAttempts: report.rawAttempts,
+      status: report.status,
+      errors: report.errors,
+      notes,
+      source: report.source,
+    },
+  )
+}
+
+export async function handleExecutionSetupPlanGeneration(
   ticketId: string,
   context: TicketContext,
   sendEvent: (event: TicketEvent) => void,
   signal: AbortSignal,
 ) {
   if (isMockOpenCodeMode()) {
-    await handleMockExecutionUnsupported(ticketId, context, 'WAITING_EXECUTION_SETUP_APPROVAL', sendEvent)
+    await handleMockExecutionUnsupported(
+      ticketId,
+      context,
+      EXECUTION_SETUP_PLAN_GENERATION_PHASE,
+      sendEvent,
+    )
     return
   }
 
   return withCommandLoggingAsync(
-    ticketId, context.externalId, 'WAITING_EXECUTION_SETUP_APPROVAL',
+    ticketId, context.externalId, EXECUTION_SETUP_PLAN_GENERATION_PHASE,
     async () => {
       throwIfAborted(signal, ticketId)
-      const existingPlan = readExecutionSetupPlan(ticketId)
-      if (existingPlan.plan) return
+      const existingReport = readGeneratedExecutionSetupPlanReport(ticketId)
+      if (existingReport) {
+        publishGenerationForApproval(ticketId, existingReport)
+        if (existingReport.ready) {
+          sendEvent({ type: 'EXECUTION_SETUP_PLAN_READY' })
+        } else {
+          sendEvent({ type: 'EXECUTION_SETUP_PLAN_FAILED', errors: existingReport.errors })
+        }
+        return
+      }
+
+      const requestArtifactId = context.pendingExecutionSetupPlanRequestArtifactId
+      const request = requestArtifactId == null
+        ? null
+        : readExecutionSetupPlanRegenerationRequest(ticketId, requestArtifactId)
 
       const report = await generateAndPersistExecutionSetupPlan({
         ticketId,
         context,
         signal,
-        source: 'auto',
+        source: request ? 'regenerate' : 'auto',
+        currentPlan: request?.currentPlan ?? null,
+        note: request?.commentary ?? null,
+        notes: request?.notes,
       })
       throwIfAborted(signal, ticketId)
+      publishGenerationForApproval(ticketId, report)
 
       if (report.ready) {
         sendEvent({ type: 'EXECUTION_SETUP_PLAN_READY' })
         return
       }
-      // A malformed AI draft is a reviewable generation failure, not a ticket-wide
-      // runtime failure. Keep the ticket in approval so the raw output can be
-      // inspected and the draft regenerated.
+      sendEvent({ type: 'EXECUTION_SETUP_PLAN_FAILED', errors: report.errors })
     },
     (phase, type, content) => emitPhaseLog(ticketId, context.externalId, phase, type, content, { source: 'system', audience: 'all' }),
-  )
-}
-
-export async function regenerateExecutionSetupPlanDraft(input: {
-  ticketId: string
-  context: TicketContext
-  commentary: string
-  currentPlan?: ExecutionSetupPlan | null
-}) {
-  const signal = AbortSignal.timeout(120000)
-  return withCommandLoggingAsync(
-    input.ticketId,
-    input.context.externalId,
-    'WAITING_EXECUTION_SETUP_APPROVAL',
-    async () => await generateAndPersistExecutionSetupPlan({
-      ticketId: input.ticketId,
-      context: input.context,
-      signal,
-      source: 'regenerate',
-      currentPlan: input.currentPlan ?? null,
-      note: input.commentary,
-    }),
-    (phase, type, content) => emitPhaseLog(input.ticketId, input.context.externalId, phase, type, content, { source: 'system', audience: 'all' }),
   )
 }

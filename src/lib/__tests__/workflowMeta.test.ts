@@ -214,14 +214,26 @@ describe.concurrent('workflow metadata', () => {
 
   it('adds a dedicated preparing-workspace execution phase before coding', () => {
     const preFlightPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'PRE_FLIGHT_CHECK')
+    const setupDraftingPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'GENERATING_EXECUTION_SETUP_PLAN')
     const setupApprovalPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'WAITING_EXECUTION_SETUP_APPROVAL')
     const setupPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'PREPARING_EXECUTION_ENV')
     const codingPhase = WORKFLOW_PHASES.find((phase) => phase.id === 'CODING')
 
-    expect(preFlightPhase?.details.transitions.join(' ')).toContain('All Checks Pass → Approving Workspace Setup')
-    expect(preFlightPhase?.details.transitions.join(' ')).toContain('setup-plan approval gate')
+    expect(preFlightPhase?.details.transitions.join(' ')).toContain('All Checks Pass → Drafting Workspace Setup Plan')
+    expect(setupDraftingPhase?.label).toBe('Drafting Workspace Setup Plan')
+    expect(setupDraftingPhase?.kanbanPhase).toBe('in_progress')
+    expect(setupDraftingPhase?.editable).toBe(false)
+    expect(setupDraftingPhase?.details.steps.join(' ')).toContain('Visible Progress And Artifacts')
+    expect(setupDraftingPhase?.details.outputs.join(' ')).toContain('versioned `execution_setup_plan` candidate')
+    expect(setupDraftingPhase?.details.transitions.join(' ')).toContain(
+      'Valid Draft → Approving Workspace Setup',
+    )
     expect(setupApprovalPhase?.label).toBe('Approving Workspace Setup')
+    expect(setupApprovalPhase?.kanbanPhase).toBe('needs_input')
     expect(setupApprovalPhase?.reviewArtifactType).toBe('execution_setup_plan')
+    expect(setupApprovalPhase?.details.steps.join(' ')).toContain(
+      'Opening the approval screen does not start AI work',
+    )
     expect(setupPhase?.label).toBe('Preparing Workspace Runtime')
     expect(setupPhase?.description).toContain('honest Ready or Blocked result')
     expect(setupPhase?.details.steps).toEqual(expect.arrayContaining([

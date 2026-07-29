@@ -315,6 +315,7 @@ export const PHASE_LOG_DESCRIPTIONS: Record<string, string> = {
   EXPANDING_BEADS: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with commands, file targets, and dependency graphs.',
   WAITING_BEADS_APPROVAL: 'Beads breakdown ready for user review and approval.',
   PRE_FLIGHT_CHECK: 'Validating OpenCode connectivity, git safety, tool availability, artifact paths, beads graph integrity.',
+  GENERATING_EXECUTION_SETUP_PLAN: 'Auditing workspace readiness and drafting a versioned execution setup plan for user review.',
   PREPARING_EXECUTION_ENV: 'Verifying workspace readiness, provisioning missing required tooling in ticket-owned temp roots, using setup-scoped online lookup for unresolved launcher artifacts, validating setup wrappers/probes, recording provisioning-attempt evidence, and persisting a setup profile for later phases.',
   CODING: 'AI coding agent executes beads with retry loop (Ralph Wiggum loop) until all tasks + tests pass.',
   RUNNING_FINAL_TEST: 'Generating and running final tests from ticket details, PRD, beads, retry notes, and any validated setup wrapper.',

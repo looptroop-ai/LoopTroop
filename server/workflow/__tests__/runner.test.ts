@@ -28,6 +28,7 @@ const {
   handleCodingMock,
   handleFinalTestMock,
   handlePrdRefineMock,
+  handleExecutionSetupPlanGenerationMock,
   handleMockExecutionUnsupportedMock,
   emitPhaseLogMock,
   isMockOpenCodeModeMock,
@@ -35,6 +36,7 @@ const {
   handleCodingMock: vi.fn(),
   handleFinalTestMock: vi.fn(),
   handlePrdRefineMock: vi.fn(),
+  handleExecutionSetupPlanGenerationMock: vi.fn(),
   handleMockExecutionUnsupportedMock: vi.fn(),
   emitPhaseLogMock: vi.fn(),
   isMockOpenCodeModeMock: vi.fn(),
@@ -55,6 +57,7 @@ vi.mock('../phases', async () => {
     handleCoding: handleCodingMock,
     handleFinalTest: handleFinalTestMock,
     handlePrdRefine: handlePrdRefineMock,
+    handleExecutionSetupPlanGeneration: handleExecutionSetupPlanGenerationMock,
     handleMockExecutionUnsupported: handleMockExecutionUnsupportedMock,
     emitPhaseLog: emitPhaseLogMock,
   }
@@ -78,6 +81,7 @@ describe('attachWorkflowRunner', () => {
     handleCodingMock.mockReset()
     handleFinalTestMock.mockReset()
     handlePrdRefineMock.mockReset()
+    handleExecutionSetupPlanGenerationMock.mockReset()
     handleMockExecutionUnsupportedMock.mockReset()
     emitPhaseLogMock.mockReset()
     isMockOpenCodeModeMock.mockReset()
@@ -270,7 +274,7 @@ describe('attachWorkflowRunner', () => {
     expect(actor.getSnapshot().context.error).toBeNull()
   })
 
-  it('routes WAITING_EXECUTION_SETUP_APPROVAL through the mock execution guard in mock mode', async () => {
+  it('routes GENERATING_EXECUTION_SETUP_PLAN through the mock execution guard in mock mode', async () => {
     isMockOpenCodeModeMock.mockReturnValue(true)
 
     const actor = createSnapshotActor('PRE_FLIGHT_CHECK', {
@@ -287,11 +291,39 @@ describe('attachWorkflowRunner', () => {
     await vi.waitFor(() => {
       expect(handleMockExecutionUnsupportedMock).toHaveBeenCalledWith(
         TEST.ticketId,
-        expect.objectContaining({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' }),
-        'WAITING_EXECUTION_SETUP_APPROVAL',
+        expect.objectContaining({ status: 'GENERATING_EXECUTION_SETUP_PLAN' }),
+        'GENERATING_EXECUTION_SETUP_PLAN',
         expect.any(Function),
       )
     })
+  })
+
+  it('resumes a restored setup-plan drafting snapshot with its durable request reference', async () => {
+    isMockOpenCodeModeMock.mockReturnValue(false)
+    handleExecutionSetupPlanGenerationMock.mockResolvedValue(undefined)
+
+    const actor = createSnapshotActor('GENERATING_EXECUTION_SETUP_PLAN', {
+      title: 'Runner restored setup-plan drafting test',
+      status: 'GENERATING_EXECUTION_SETUP_PLAN',
+      previousStatus: 'WAITING_EXECUTION_SETUP_APPROVAL',
+      pendingExecutionSetupPlanRequestArtifactId: 73,
+    })
+
+    actor.start()
+    attachWorkflowRunner(TEST.ticketId, actor, (event) => actor.send(event))
+
+    await vi.waitFor(() => {
+      expect(handleExecutionSetupPlanGenerationMock).toHaveBeenCalledTimes(1)
+    })
+    expect(handleExecutionSetupPlanGenerationMock).toHaveBeenCalledWith(
+      TEST.ticketId,
+      expect.objectContaining({
+        status: 'GENERATING_EXECUTION_SETUP_PLAN',
+        pendingExecutionSetupPlanRequestArtifactId: 73,
+      }),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
   })
 
   it('routes PREPARING_EXECUTION_ENV through the mock execution guard in mock mode', async () => {

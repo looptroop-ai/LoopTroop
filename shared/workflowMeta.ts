@@ -11,7 +11,7 @@ export type WorkflowGroupId =
   | 'post_implementation'
   | 'done'
   | 'errors'
-type WorkflowUIView = 'draft' | 'council' | 'interview_qa' | 'approval' | 'coding' | 'manual_qa' | 'error' | 'done' | 'canceled'
+type WorkflowUIView = 'draft' | 'council' | 'interview_qa' | 'approval' | 'phase_review' | 'coding' | 'manual_qa' | 'error' | 'done' | 'canceled'
 /** Artifact types that support user editing from an approval gate. */
 export type EditableArtifactType = 'interview' | 'prd' | 'beads' | 'execution_setup_plan'
 export type ReviewArtifactType = EditableArtifactType | 'manual_qa_checklist'
@@ -672,14 +672,14 @@ const WORKFLOW_PHASE_DETAILS = {
       'Bead Availability Check: LoopTroop confirms that the approved beads data file exists, can be parsed, and contains at least one runnable bead with valid structure.',
       'Dependency Graph Validation: LoopTroop checks the bead dependency graph for circular dependencies, references to missing beads, and at least one bead with no dependencies so execution has a valid starting point.',
       'Pre-Flight Report: LoopTroop writes a structured report with pass, warning, and failure entries for every check. The report is saved whether the phase passes or fails so you can inspect the exact results.',
-      'Execution Handoff: If everything passes, LoopTroop moves to execution setup. Bead progress does not start here. Coding still begins later at bead 1/N.',
+      'Execution Handoff: If everything passes, LoopTroop moves to Drafting Workspace Setup Plan. Bead progress does not start here. Coding still begins later at bead 1/N.',
     ],
     outputs: [
       'A pre-flight report artifact with pass, warning, and failure entries for each validation, including worktree-cleanliness diagnostics.',
       'An execution-readiness decision, either ready to draft the setup plan or blocked with a specific reason.',
     ],
     transitions: [
-      'All Checks Pass → Approving Workspace Setup: The workflow moves to the setup-plan approval gate, where LoopTroop reviews readiness and drafts only the temporary setup that is still missing.',
+      'All Checks Pass → Drafting Workspace Setup Plan: The workflow starts a read-only, host-aware setup-plan generation attempt before asking for approval.',
       'Any Critical Failure → Blocked Error: Connectivity failures, missing artifacts, dependency-graph problems, committable pre-existing worktree changes, or workspace-integrity issues move the ticket to Blocked Error with a specific failure reason.',
     ],
     notes: [
@@ -688,14 +688,42 @@ const WORKFLOW_PHASE_DETAILS = {
       'Warning-level results, such as untracked generated or local outputs, are recorded but do not block execution. Only critical failures stop the coding path.',
     ],
   },
-  WAITING_EXECUTION_SETUP_APPROVAL: {
-    overview: 'LoopTroop inspects the current host and workspace, drafts a setup plan, then stops for review before any setup commands run. The plan is specific to the machine that will execute the ticket. Commands are stored as explicit programs and arguments or as scripts for a named shell. Workspace probes show that repository commands really work. Detected Git hooks and manager configuration stay backend-owned and read-only. Draft edits autosave with a visible last-save status, but the authoritative setup plan changes only when you explicitly Save.',
+  GENERATING_EXECUTION_SETUP_PLAN: {
+    overview: 'LoopTroop is drafting a host-aware workspace setup plan before any setup commands run. This is an active, read-only generation phase: the locked main implementer inspects approved planning artifacts and current host evidence, emits a structured proposal, and leaves a visible log and versioned artifacts for review.',
     steps: [
-      'Automatic Readiness Audit On Entry: When this state opens, LoopTroop asks the locked main implementer to inspect the approved ticket details, relevant files, PRD, beads, the current worktree, and any prior reusable setup profile under the configured AI Response Timeout, then decide whether temporary setup is actually needed. If no current setup-plan artifact exists, the draft is created automatically.',
+      'Durable Attempt Start: LoopTroop opens a versioned drafting attempt and records the active generation request before dispatching AI work, so a backend or machine restart can resume without silently duplicating the request.',
+      'Context And Host Audit: The locked main implementer reads ticket details, relevant files, the approved PRD and beads, the current worktree, detected Git evidence, and any reusable setup profile. A regeneration also receives the preserved commentary and structured or raw baseline from the durable regeneration-request artifact.',
+      'Read-Only Drafting: The model decides whether temporary setup is needed and proposes only the missing preparation. It may inspect the repository, but this phase does not run setup commands or modify project files.',
+      'Structured Validation And Repair: The proposal is parsed and validated with the existing structured retry and safe formatting-repair rules. Backend-owned identity, schema, host, Git-hook, and quality-policy fields remain authoritative if the model echoes them incorrectly.',
+      'Visible Progress And Artifacts: The phase keeps its live log expanded, shows an artifact placeholder while work is active, and publishes the complete structured plan and generation report when valid. Exhausted invalid output remains available with the report, raw attempts, parser diagnostics, and repair warnings.',
+      'Versioned Handoff: A completed draft is retained under this drafting attempt, then copied with its report into a fresh approval attempt. Regeneration archives the previous drafting and approval attempts and creates a new version instead of overwriting history.',
+    ],
+    outputs: [
+      'A versioned `execution_setup_plan` candidate containing the complete structured, host-aware setup proposal.',
+      'A generation report, live execution log, and raw-attempt diagnostics that explain validation, repairs, and any exhausted malformed result.',
+      'A self-contained approval attempt containing the candidate and report needed for review.',
+    ],
+    transitions: [
+      'Valid Draft → Approving Workspace Setup: The complete candidate and generation report are published to a fresh approval attempt.',
+      'Invalid Draft After Structured Retries → Approving Workspace Setup: The rejected output and diagnostics remain reviewable, while Approve and Edit stay disabled and Regenerate remains available.',
+      'Operational Failure → Blocked Error: Provider, session, timeout, persistence, or other unexpected failures pause for recovery and retain the durable regeneration request when one exists.',
+      'Cancel → Canceled: Cancellation stops generation while preserving completed logs and artifacts for audit.',
+    ],
+    notes: [
+      'This phase is in progress, not a user-input gate. Approval begins only after generation reaches a valid or reviewable-invalid result.',
+      'No temporary setup or permanent repository mutation is allowed here. Approved setup actions run only in Preparing Workspace Runtime.',
+      'The drafting attempt keeps the original generated candidate and diagnostics even after a user edits the separate approval copy.',
+      'AI Response Timeout bounds setup-plan drafting. The owned OpenCode session is completed for a valid report and abandoned for invalid or failed output so a later attempt starts from clean durable context.',
+    ],
+  },
+  WAITING_EXECUTION_SETUP_APPROVAL: {
+    overview: 'The host-aware workspace setup plan is ready for review before any setup commands run. The plan is specific to the machine that will execute the ticket. Commands are stored as explicit programs and arguments or as scripts for a named shell. Workspace probes show that repository commands really work. Detected Git hooks and manager configuration stay backend-owned and read-only. Draft edits autosave with a visible last-save status, but the authoritative setup plan changes only when you explicitly Save.',
+    steps: [
+      'Generated Draft Handoff: This approval attempt receives the full setup-plan candidate and generation report produced by Drafting Workspace Setup Plan. Opening the approval screen does not start AI work.',
       'Structured Setup Plan: The draft combines an AI-written proposal with backend-owned ticket identity, schema, current-host facts, detected Git evidence, the initial hook policy, quality policy, and derived readiness. If the model echoes backend-owned fields incorrectly, LoopTroop ignores those copies and shows a repair warning instead of invalidating the draft. Commands use either a program plus arguments or an explicit POSIX, Command Prompt, or PowerShell script. Direct programs are preferred.',
       'No-Action Cases Are First-Class: If the audit finds that the environment is already ready, the plan stays reviewable but contains no setup steps. You can approve it as-is or edit it to add temporary preparation if you want.',
       'User Review, Editing, And Draft Autosave: The approval UI lets you edit structured setup commands and probes, review the current-host banner, choose Observe, Check, Require, or Run hooks for this ticket run, and edit explicit hook-validation commands. Detected evidence is not editable. Large workspace inputs show file-count and size information and need an explicit override. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last acknowledged save time. Draft autosave does not update the authoritative setup plan. Explicit Save applies the draft and records before-and-after hashes.',
-      'Regenerate With Commentary: If the plan is close but wrong, you can send commentary describing what should change. LoopTroop archives the current plan as a prior version, then regenerates a new draft in the background. You return to the ticket overview right away while generation runs. Older versions stay available through the VERSION dropdown. If this is triggered from Preparing Workspace Runtime, LoopTroop first does the same one-step rewind, then starts only the requested fresh draft.',
+      'Regenerate With Commentary: If the plan is close but wrong, you can send commentary describing what should change. LoopTroop preserves the commentary and any unsaved structured or raw baseline in a durable regeneration request, archives the current drafting and approval attempts, creates a new version, and returns the ticket to Drafting Workspace Setup Plan. Older versions stay available through the VERSION dropdown.',
       'Evidence Refresh And Approval Handoff: Right before approval, LoopTroop refreshes current-host and Git-hook evidence. If anything meaningful changed, the review hash changes and the plan must be reviewed again. Once approved, runtime uses that exact host-aware snapshot, ticket-run hook policy, command order, workspace inputs, probes, and setup steps.',
     ],
     outputs: [
@@ -706,7 +734,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     transitions: [
       'Approve → Preparing Workspace Runtime: The workflow moves into execution setup, which verifies the approved readiness assessment, performs only the missing temporary setup, and writes the reusable runtime profile.',
-      'Regenerate → Returns To Overview: LoopTroop archives the current setup-plan draft as a prior version, starts a new empty draft in loading state, runs generation in the background, and returns you to the ticket overview immediately. Prior versions stay available through the VERSION dropdown. If runtime setup is active, LoopTroop stops it first, archives the runtime attempt, clears stale setup-profile outputs while preserving the tool cache, returns to this approval gate, and runs only the requested regenerate draft for the fresh attempt.',
+      'Regenerate → Drafting Workspace Setup Plan: LoopTroop durably records the commentary and current baseline, archives the prior drafting and approval attempts, creates a new version, and enters the active drafting phase. If runtime setup is active, LoopTroop stops it first, archives the runtime attempt, and clears stale setup-profile outputs while preserving the tool cache.',
       'Invalid Draft → Stay For Review: If LoopTroop cannot produce a valid AI proposal after structured retries, the ticket stays at Approving Workspace Setup. Approval remains disabled, while rejected output, parser diagnostics, and Regenerate stay available.',
     ],
     notes: [
@@ -715,7 +743,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Read APIs expose `contentSha256`, and write APIs reject explicit archived phase attempts with 409 so older setup-plan versions stay immutable. The only post-approval write window is the one-step rewind from Preparing Workspace Runtime back to this gate. CODING and later phases are read-only for setup-plan changes.',
       'If setup-plan generation fails, the rejected `modelOutput` is diagnostic-only. The structured view shows the failure state and errors, and the full malformed output stays in Raw diagnostics. The ticket is not globally blocked.',
       'The approved setup plan is not the same thing as the final execution setup profile. The profile is created only in the next phase after readiness is verified and any approved temporary setup is run inside LoopTroop-owned runtime paths, preferably under `.ticket/runtime/execution-setup/**`.',
-      'Setup-plan generation owns its OpenCode session only while creating the draft. AI Response Timeout bounds the draft and regenerate prompt, session creation uses the shared 1s/3s/7s OpenCode retry wrapper, ready reports complete the session, and invalid or failed reports abandon it so the next retry starts from clean durable context.',
+      'Setup-plan generation and its OpenCode session belong to Drafting Workspace Setup Plan. This approval gate does not run AI work merely because it is open.',
     ],
   },
   PREPARING_EXECUTION_ENV: {
@@ -745,6 +773,7 @@ const WORKFLOW_PHASE_DETAILS = {
     transitions: [
       'Setup Ready → Implementing: A valid setup profile with passing wrapper and probe validation advances the workflow into coding, where the first real bead starts at 1/N.',
       'Setup Blocked Or Failed → Blocked Error: A terminal honest Blocked result, retry exhaustion, repeated tooling blockers, provider or session failures, or committable project changes left by setup move the ticket to Blocked Error with the setup report preserved for diagnosis. Retry with extra note... can send one direct prompt to the preserved setup session. Edit setup plan... asks for confirmation before rewinding to approval.',
+      'Edit Or Regenerate Plan → Approval Or Drafting: Manual editing rewinds one step to Approving Workspace Setup with the current plan. Regeneration archives the runtime and plan attempts, clears stale runtime outputs while preserving the tool cache, records a durable regeneration request, and enters Drafting Workspace Setup Plan.',
     ],
     notes: [
       'This phase is not a real bead. It does not change bead counts, is not part of final-testing scope, and never produces commits or pushes.',
@@ -1072,6 +1101,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Past error occurrences stay reviewable even after the ticket moves on through retry or is canceled. Error history is never deleted.',
       'Manual retry versions for non-implementation phases are reviewed through the phase previous-version selector. Automatic structured retries inside a version are reviewed through artifact Raw attempt tabs, with parser and retry intervention warnings summarized on the main artifact tab. CODING retry history stays bead-scoped.',
       'Retry with extra note... is shown only on the live Blocked Error view when `previousStatus` is CODING or PREPARING_EXECUTION_ENV. It requires between 1 and 20,000 characters after whitespace-only input is rejected. Coding appends the text unchanged to User Retry Notes and starts a fresh bead recovery. Workspace setup sends it directly to the preserved session for one manual attempt. Historical errors and blocks from other phases do not offer note-bearing retry.',
+      'When Drafting Workspace Setup Plan blocks during regeneration, Retry returns to that drafting version with the same durable regeneration-request artifact id. The request is cleared only after a valid or reviewable-invalid draft reaches approval.',
       'Continue is intentionally narrower than Retry. It is hidden unless the active error has a session id, the matching OpenCode session is preserved locally and addressable by exact id, and diagnostics point to a continuable provider or session condition such as `HTTP 402 Payment Required`, transient limits, overload, provider or session timeout, selected 5xx or 529 and 408 or 429 responses, or transport interruption, rather than a LoopTroop-owned iteration timeout, auth, non-402 quota, configuration, invalid-request, model-not-found, or request-size error. Restart reconciliation uses this same centralized eligibility classifier for every continuable error type instead of special-casing usage limits.',
       'Final-test file classification is unattended. Explicit candidate intent and tracked or staged changes are preserved, recognized local outputs stay on disk but out of delivery, unknown untracked files get one classification retry and then a warning, and unresolved tracked changes stay candidates for PR audit.',
       'Context available: Current Bead Data, if the failure happened during coding, plus Error Context with error message, codes, phase, and timing.',
@@ -1396,7 +1426,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'PRE_FLIGHT_CHECK',
     label: 'Checking Readiness',
-    description: 'LoopTroop is running the last readiness checks before execution starts so coding does not begin from a broken workspace or plan. It verifies repo state, required artifacts, coding-agent access, and bead dependency integrity.',
+    description: 'LoopTroop is running the last readiness checks before setup-plan drafting starts so execution does not begin from a broken workspace or plan. It verifies repo state, required artifacts, coding-agent access, and bead dependency integrity.',
     details: WORKFLOW_PHASE_DETAILS.PRE_FLIGHT_CHECK,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
@@ -1404,6 +1434,26 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     editable: true,
     multiModelLogs: false,
     contextSummary: [],
+  },
+  {
+    id: 'GENERATING_EXECUTION_SETUP_PLAN',
+    label: 'Drafting Workspace Setup Plan',
+    description: 'LoopTroop is creating a read-only, host-aware workspace setup proposal for review. Live generation logs and versioned artifacts stay visible, and no setup command runs until a valid plan is explicitly approved in the next phase.',
+    details: WORKFLOW_PHASE_DETAILS.GENERATING_EXECUTION_SETUP_PLAN,
+    kanbanPhase: 'in_progress',
+    groupId: 'pre_implementation',
+    uiView: 'phase_review',
+    editable: false,
+    multiModelLogs: false,
+    contextSummary: [
+      'ticket_details',
+      'relevant_files',
+      'prd',
+      'beads',
+      'execution_setup_profile',
+      'execution_setup_plan',
+      'execution_setup_plan_notes',
+    ],
   },
   {
     id: 'WAITING_EXECUTION_SETUP_APPROVAL',

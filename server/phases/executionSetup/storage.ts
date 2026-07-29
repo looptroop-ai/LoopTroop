@@ -161,6 +161,7 @@ export function clearExecutionSetupState(ticketId: string): {
     if (
       artifact.phase !== 'PREPARING_EXECUTION_ENV'
       && artifact.phase !== 'WAITING_EXECUTION_SETUP_APPROVAL'
+      && artifact.phase !== 'GENERATING_EXECUTION_SETUP_PLAN'
       && artifactType !== EXECUTION_SETUP_PROFILE_UI_COMPANION_ARTIFACT_TYPE
       && artifactType !== EXECUTION_SETUP_PLAN_UI_COMPANION_ARTIFACT_TYPE
       && artifactType !== EXECUTION_SETUP_PLAN_ARTIFACT_TYPE

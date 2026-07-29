@@ -33,6 +33,19 @@ describe.concurrent('getSupplementalArtifacts', () => {
     expect(getSupplementalArtifacts('WAITING_EXECUTION_SETUP_APPROVAL')).toEqual([])
   })
 
+  it('keeps the setup plan and generation report visible while drafting', () => {
+    expect(getSupplementalArtifacts('GENERATING_EXECUTION_SETUP_PLAN')).toEqual([
+      expect.objectContaining({
+        id: 'execution-setup-plan',
+        label: 'Workspace Setup Plan',
+      }),
+      expect.objectContaining({
+        id: 'execution-setup-plan-report',
+        label: 'Generation Report',
+      }),
+    ])
+  })
+
   it('combines execution setup runtime profile and report into one review artifact', () => {
     const artifacts = getSupplementalArtifacts('PREPARING_EXECUTION_ENV')
 

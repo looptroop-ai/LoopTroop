@@ -53,6 +53,12 @@ export function getSupplementalArtifacts(phase: string, isCompleted = false): Ar
   if (phase === 'PRE_FLIGHT_CHECK') {
     return [{ id: 'diagnostics', label: 'Doctor Diagnostics', description: 'Pre-flight validation report', icon: <CheckCircle2 className="h-3.5 w-3.5" /> }]
   }
+  if (phase === 'GENERATING_EXECUTION_SETUP_PLAN') {
+    return [
+      { id: 'execution-setup-plan', label: 'Workspace Setup Plan', description: 'Full generated readiness assessment and workspace setup contract', icon: <FileText className="h-3.5 w-3.5" /> },
+      { id: 'execution-setup-plan-report', label: 'Generation Report', description: 'Structured-output validation, raw attempts, diagnostics, and regeneration context', icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+    ]
+  }
   if (phase === 'WAITING_EXECUTION_SETUP_APPROVAL') {
     return []
   }

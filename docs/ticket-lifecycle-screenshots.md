@@ -1,3 +1,7 @@
+---
+pageClass: ticket-lifecycle-page
+---
+
 # Ticket lifecycle screenshots and configuration
 
 A visual walkthrough of one LoopTroop ticket, from project setup to completion.
@@ -48,9 +52,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Setup
+## Setup [?](getting-started.md#5-attaching-your-first-project "Open full documentation")
 
-### Project Creation
+### Project Creation [?](getting-started.md#5-attaching-your-first-project "Open full documentation")
 
 ::: details Screenshot
 ![Project Creation](media/ticket-lifecycle/01-project-creation.png)
@@ -66,7 +70,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Configuration
+### Configuration [?](configuration.md "Open full documentation")
 
 ::: details Screenshot
 ![Configuration](media/ticket-lifecycle/02-configuration.png)
@@ -75,44 +79,44 @@ Each section shows the status as it appears in the app, its available actions, a
 
 **What you can do:**
 
-- Select the main implementer. This model is also a council member and handles implementation and other single-model steps.
-- Select models for multi-model planning phases.
-- Set supported effort levels for each council member and, where available, an OpenRouter routing variant such as `:floor` or `:nitro`.
-- Configure the Git-hook policy: validate explicitly, run hooks for internal commits, or ignore internal-only hooks.
-- Enable or disable Manual QA for tickets in this project.
-- Set the log preview length for model tool calls. This limits only the text shown in the AI Model logs, not the content sent to the tool.
+- Select the main implementer. This model is also a council member and handles implementation and other single-model steps. [?](configuration.md#main-implementer-model "Open full documentation")
+- Select models for multi-model planning phases. [?](configuration.md#council-members "Open full documentation")
+- Set supported effort levels for each council member and, where available, an OpenRouter routing variant such as `:floor` or `:nitro`. [?](configuration.md#effort--thinking-variant "Open full documentation")
+- Configure the Git-hook policy: validate explicitly, run hooks for internal commits, or ignore internal-only hooks. [?](configuration.md#git-hook-policy "Open full documentation")
+- Enable or disable Manual QA for tickets in this project. [?](configuration.md#manual-qa "Open full documentation")
+- Set the log preview length for model tool calls. This limits only the text shown in the AI Model logs, not the content sent to the tool. [?](configuration.md#logging "Open full documentation")
 
-**OpenCode provider recovery**
+**OpenCode provider recovery** [?](configuration.md#opencode-provider-recovery "Open full documentation")
 
-1. **OpenCode Retry Limit:** Number of failed requests OpenCode can retry before the phase fails.
-2. **OpenCode Retry Grace Window:** Time OpenCode may remain in a retrying state before LoopTroop treats the request as failed.
-3. **OpenCode Max Steps:** Maximum steps OpenCode may take before its session closes. `0` allows unlimited steps.
+1. **OpenCode Retry Limit:** Number of failed requests OpenCode can retry before the phase fails. [?](configuration.md#opencode-retry-limit "Open full documentation")
+2. **OpenCode Retry Grace Window:** Time OpenCode may remain in a retrying state before LoopTroop treats the request as failed. [?](configuration.md#opencode-retry-grace-window "Open full documentation")
+3. **OpenCode Max Steps:** Maximum steps OpenCode may take before its session closes. `0` allows unlimited steps. [?](configuration.md#opencode-max-steps "Open full documentation")
 
-**AI thinking**
+**AI thinking** [?](configuration.md#ai-thinking "Open full documentation")
 
-1. **AI Response Timeout:** Time allowed for a planning-phase model request to complete. The default is 20 minutes.
-2. **Minimum Council Quorum:** Minimum number of council members required for voting phases.
-3. **Maximum Interview Questions:** Maximum questions generated during the interview.
-4. **Structured Output Retries:** Number of fresh attempts allowed when a model returns invalid structured output.
+1. **AI Response Timeout:** Time allowed for a planning-phase model request to complete. The default is 20 minutes. [?](configuration.md#ai-response-timeout "Open full documentation")
+2. **Minimum Council Quorum:** Minimum number of council members required for voting phases. [?](configuration.md#min-council-quorum "Open full documentation")
+3. **Maximum Interview Questions:** Maximum questions generated during the interview. [?](configuration.md#max-interview-questions "Open full documentation")
+4. **Structured Output Retries:** Number of fresh attempts allowed when a model returns invalid structured output. [?](configuration.md#structured-output-retries "Open full documentation")
 
-**Coverage**
+**Coverage** [?](configuration.md#coverage "Open full documentation")
 
-1. **Coverage Follow-Up Budget:** Maximum follow-up questions generated during interview coverage checks.
-2. **Interview Coverage Passes:** Number of coverage checks that can return the ticket to the interview when gaps remain.
-3. **PRD Coverage Passes:** Number of PRD coverage checks when gaps remain.
-4. **Beads Coverage Passes:** Number of blueprint coverage checks when gaps remain.
+1. **Coverage Follow-Up Budget:** Maximum follow-up questions generated during interview coverage checks. [?](configuration.md#coverage-follow-up-budget "Open full documentation")
+2. **Interview Coverage Passes:** Number of coverage checks that can return the ticket to the interview when gaps remain. [?](configuration.md#interview-coverage-passes "Open full documentation")
+3. **PRD Coverage Passes:** Number of PRD coverage checks when gaps remain. [?](configuration.md#prd-coverage-passes "Open full documentation")
+4. **Beads Coverage Passes:** Number of blueprint coverage checks when gaps remain. [?](configuration.md#beads-coverage-passes "Open full documentation")
 
-**Implementation and workspace setup**
+**Implementation and workspace setup** [?](configuration.md#implementation--workspace-setup "Open full documentation")
 
-1. **Max Bead Retries:** Number of times a bead can retry before the phase fails.
-2. **Per-Iteration Timeout:** Time allowed for a bead iteration before it fails. The default is 20 minutes.
-3. **Execution Setup Timeout:** Time allowed for workspace setup before it fails. The default is 20 minutes.
+1. **Max Bead Retries:** Number of times a bead can retry before the phase fails. [?](configuration.md#max-bead-retries "Open full documentation")
+2. **Per-Iteration Timeout:** Time allowed for a bead iteration before it fails. The default is 20 minutes. [?](configuration.md#per-iteration-timeout "Open full documentation")
+3. **Execution Setup Timeout:** Time allowed for workspace setup before it fails. The default is 20 minutes. [?](configuration.md#execution-setup-timeout "Open full documentation")
 
 ---
 
-## To Do
+## To Do [?](ticket-flow.md#4-workflow-groups--board-locations "Open full documentation")
 
-### Backlog
+### Backlog [?](ticket-flow.md#5-phase-inventory "Open full documentation")
 
 ::: details Screenshot
 ![Backlog](media/ticket-lifecycle/03-draft.png)
@@ -129,9 +133,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Discovery
+## Discovery [?](ticket-flow.md#3-state-machine-transition-model "Open full documentation")
 
-### Scanning Relevant Files
+### Scanning Relevant Files [?](ticket-flow.md#5-phase-inventory "Open full documentation")
 
 ::: details Screenshot
 ![Scanning Relevant Files](media/ticket-lifecycle/04-scanning-relevant-files.png)
@@ -146,9 +150,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Interview
+## Interview [?](interview.md "Open full documentation")
 
-### Council Drafting Questions
+### Council Drafting Questions [?](interview.md#3-how-questions-are-designed "Open full documentation")
 
 ::: details Screenshot
 ![Council Drafting Questions](media/ticket-lifecycle/05-council-deliberating.png)
@@ -160,14 +164,14 @@ Each section shows the status as it appears in the app, its available actions, a
 - View each model's progress and completed draft.
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/05-interview-draft.png" alt="Example interview draft" />
+![Example interview draft](media/ticket-lifecycle/05-interview-draft.png)
 *An interview draft proposed by a council member.*
 :::
 
 
 ---
 
-### Voting on Questions
+### Voting on Questions [?](interview.md#3-how-questions-are-designed "Open full documentation")
 
 ::: details Screenshot
 ![Voting on Questions](media/ticket-lifecycle/06-council-voting-interview.png)
@@ -180,14 +184,14 @@ Each section shows the status as it appears in the app, its available actions, a
 - Inspect the score breakdown and winning draft selection
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/06-interview-voting-example.png" alt="Example anonymized voting results" />
+![Example anonymized voting results](media/ticket-lifecycle/06-interview-voting-example.png)
 *Example anonymized voting results.*
 :::
 
 
 ---
 
-### Refining Interview
+### Refining Interview [?](interview.md#5-live-interview-session-behavior "Open full documentation")
 
 ::: details Screenshot
 ![Refining Interview](media/ticket-lifecycle/07-compiling-interview.png)
@@ -198,13 +202,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - Monitor interview compilation progress
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/07-refining-example.png" alt="Example interview refinement" />
+![Example interview refinement](media/ticket-lifecycle/07-refining-example.png)
 *Example of a question revised using an idea from another draft.*
 :::
 
 ---
 
-### Interviewing
+### Interviewing [?](interview.md#5-live-interview-session-behavior "Open full documentation")
 
 ::: details Screenshot
 ![Interviewing](media/ticket-lifecycle/08-waiting-interview-answers.png)
@@ -219,7 +223,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Coverage Check (Interview)
+### Coverage Check (Interview) [?](interview.md#6-skips-final-free-form-and-coverage "Open full documentation")
 
 ::: details Screenshot
 ![Coverage Check (Interview)](media/ticket-lifecycle/09-verifying-interview-coverage.png)
@@ -232,7 +236,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Approving Interview
+### Approving Interview [?](interview.md#8-approval-editing-and-downstream-impact "Open full documentation")
 
 ::: details Screenshot
 ![Approving Interview](media/ticket-lifecycle/10-waiting-interview-approval.png)
@@ -247,9 +251,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Specs (PRD)
+## Specs (PRD) [?](prd.md "Open full documentation")
 
-### Council Drafting Specs
+### Council Drafting Specs [?](prd.md#3-part-1-full-answers "Open full documentation")
 
 ::: details Screenshot
 ![Council Drafting Specs](media/ticket-lifecycle/11-drafting-prd.png)
@@ -261,18 +265,18 @@ Each section shows the status as it appears in the app, its available actions, a
 - Monitor Part 2 progress: council members draft complete PRD specifications from relevant files and Full Answers
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/11-ai-answers.png" alt="Example Full Answers artifact" />
+![Example Full Answers artifact](media/ticket-lifecycle/11-ai-answers.png)
 *Each model provides answers only for the interview questions the user skipped.*
 :::
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/11-prd-example.png" alt="Example PRD draft" />
+![Example PRD draft](media/ticket-lifecycle/11-prd-example.png)
 *Each model then creates its own PRD draft.*
 :::
 
 ---
 
-### Voting on Specs
+### Voting on Specs [?](prd.md#4-part-2-drafting-voting-and-refining "Open full documentation")
 
 ::: details Screenshot
 ![Voting on Specs](media/ticket-lifecycle/12-council-voting-prd.png)
@@ -286,7 +290,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Refining Specs
+### Refining Specs [?](prd.md#4-part-2-drafting-voting-and-refining "Open full documentation")
 
 ::: details Screenshot
 ![Refining Specs](media/ticket-lifecycle/13-refining-prd.png)
@@ -304,7 +308,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Coverage Check (PRD)
+### Coverage Check (PRD) [?](prd.md#6-coverage-and-candidate-versioning "Open full documentation")
 
 ::: details Screenshot
 ![Coverage Check (PRD)](media/ticket-lifecycle/14-verifying-prd-coverage.png)
@@ -317,13 +321,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - Observe live version progress.
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/14-coverage-prd-example.png" alt="Example PRD coverage gap" />
+![Example PRD coverage gap](media/ticket-lifecycle/14-coverage-prd-example.png)
 *Example coverage gap identified during PRD verification.*
 :::
 
 ---
 
-### Approving Specs
+### Approving Specs [?](prd.md#7-approval-editing-and-downstream-impact "Open full documentation")
 
 ::: details Screenshot
 ![Approving Specs](media/ticket-lifecycle/15-waiting-prd-approval.png)
@@ -338,9 +342,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Blueprint (Beads)
+## Blueprint (Beads) [?](beads.md "Open full documentation")
 
-### Council Drafting Blueprint
+### Council Drafting Blueprint [?](beads.md#2-what-an-approved-bead-contains "Open full documentation")
 
 ::: details Screenshot
 ![Council Drafting Blueprint](media/ticket-lifecycle/16-drafting-beads.png)
@@ -352,13 +356,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - View task counts, dependency graph structures, and beads structure for each council member's draft
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/16-bead-draft-example.png" alt="Example bead blueprint" />
+![Example bead blueprint](media/ticket-lifecycle/16-bead-draft-example.png)
 *Example bead blueprint. During implementation, each bead is the model's primary task context.*
 :::
 
 ---
 
-### Voting on Blueprint
+### Voting on Blueprint [?](beads.md#2-what-an-approved-bead-contains "Open full documentation")
 
 ::: details Screenshot
 ![Voting on Blueprint](media/ticket-lifecycle/17-council-voting-beads.png)
@@ -372,7 +376,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Refining Blueprint
+### Refining Blueprint [?](beads.md#3-storage-editing-and-approval-semantics "Open full documentation")
 
 ::: details Screenshot
 ![Refining Blueprint](media/ticket-lifecycle/18-refining-beads.png)
@@ -384,13 +388,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - Inspect blueprint diff metadata
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/18-refined-bead-example.png" alt="Example refined bead" />
+![Example refined bead](media/ticket-lifecycle/18-refined-bead-example.png)
 *Example changes to a bead after incorporating ideas from another draft.*
 :::
 
 ---
 
-### Coverage Check (Beads)
+### Coverage Check (Beads) [?](beads.md#3-storage-editing-and-approval-semantics "Open full documentation")
 
 ::: details Screenshot
 ![Coverage Check (Beads)](media/ticket-lifecycle/19-verifying-beads-coverage.png)
@@ -403,13 +407,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - Observe live version progress
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/19-beads-coverage-clean.png" alt="Clean beads coverage report" />
+![Clean beads coverage report](media/ticket-lifecycle/19-beads-coverage-clean.png)
 *Example of a clean coverage report.*
 :::
 
 ---
 
-### Expanding Blueprint
+### Expanding Blueprint [?](beads.md#2-what-an-approved-bead-contains "Open full documentation")
 
 ::: details Screenshot
 ![Expanding Blueprint](media/ticket-lifecycle/20-expanding-beads.png)
@@ -422,7 +426,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Approving Blueprint
+### Approving Blueprint [?](beads.md#3-storage-editing-and-approval-semantics "Open full documentation")
 
 ::: details Screenshot
 ![Approving Blueprint](media/ticket-lifecycle/21-waiting-beads-approval.png)
@@ -437,9 +441,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Pre-Implementation
+## Pre-Implementation [?](pre-implementation.md "Open full documentation")
 
-### Checking Readiness
+### Checking Readiness [?](pre-implementation.md#1-pre_flight_check-deterministic-readiness-gate "Open full documentation")
 
 ::: details Screenshot
 ![Checking Readiness](media/ticket-lifecycle/22-pre-flight-check.png)
@@ -451,13 +455,13 @@ Each section shows the status as it appears in the app, its available actions, a
 - Review generated pre-flight report detailing pass, warning, and failure entries
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/22-doctor-results.png" alt="Successful readiness check" />
+![Successful readiness check](media/ticket-lifecycle/22-doctor-results.png)
 *Example of a successful readiness check.*
 :::
 
 ---
 
-### Approving Workspace Setup
+### Approving Workspace Setup [?](pre-implementation.md#2-waiting_execution_setup_approval-reviewable-setup-contract "Open full documentation")
 
 ::: details Screenshot
 ![Approving Workspace Setup](media/ticket-lifecycle/23-waiting-execution-setup-approval.png)
@@ -471,7 +475,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Preparing Workspace Runtime
+### Preparing Workspace Runtime [?](pre-implementation.md#3-preparing_execution_env-temporary-runtime-setup "Open full documentation")
 
 ::: details Screenshot
 ![Preparing Workspace Runtime](media/ticket-lifecycle/24-preparing-execution-env.png)
@@ -489,9 +493,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Implementation
+## Implementation [?](beads.md#7-the-single-bead-execution-cycle "Open full documentation")
 
-### Implementing
+### Implementing [?](beads.md#7-the-single-bead-execution-cycle "Open full documentation")
 
 ::: details Screenshot
 ![Implementing](media/ticket-lifecycle/25-coding.png)
@@ -522,15 +526,15 @@ Each section shows the status as it appears in the app, its available actions, a
 :::
 
 ::: details Screenshot
-<img class="ticket-lifecycle-example" src="./media/ticket-lifecycle/25-bead-final-changes.png" alt="Final implementation changes" />
+![Final implementation changes](media/ticket-lifecycle/25-bead-final-changes.png)
 *All changes made during implementation, shown at the end of the phase.*
 :::
 
 ---
 
-## Post-Implementation
+## Post-Implementation [?](post-implementation.md "Open full documentation")
 
-### Testing Implementation
+### Testing Implementation [?](post-implementation.md#1-running_final_test-ticket-level-verification "Open full documentation")
 
 ::: details Screenshot
 ![Testing Implementation](media/ticket-lifecycle/26-running-final-test.png)
@@ -545,13 +549,13 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Preparing Manual QA
+### Preparing Manual QA [?](post-implementation.md#15-optional-manual-qa-route "Open full documentation")
 
 - Watch the main implementer generate the checklist from the PRD and bead context.
 
 ---
 
-### Manual QA
+### Manual QA [?](post-implementation.md#15-optional-manual-qa-route "Open full documentation")
 
 ::: details Screenshot
 ![Manual QA](media/ticket-lifecycle/28-waiting-manual-qa.png)
@@ -570,7 +574,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Preparing Final Commit
+### Preparing Final Commit [?](post-implementation.md#3-integrating_changes-building-the-local-candidate-commit "Open full documentation")
 
 ::: details Screenshot
 ![Preparing Final Commit](media/ticket-lifecycle/29-integrating-changes.png)
@@ -579,7 +583,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Creating Pull Request
+### Creating Pull Request [?](post-implementation.md#4-creating_pull_request-final-diff-audit-and-draft-pr-creation "Open full documentation")
 
 ::: details Screenshot
 ![Creating Pull Request](media/ticket-lifecycle/30-creating-pull-request.png)
@@ -588,7 +592,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Reviewing Pull Request
+### Reviewing Pull Request [?](post-implementation.md#5-waiting_pr_review-human-merge-or-finish-gate "Open full documentation")
 
 ::: details Screenshot
 ![Reviewing Pull Request](media/ticket-lifecycle/31-waiting-pr-review.png)
@@ -604,7 +608,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Cleaning Up
+### Cleaning Up [?](post-implementation.md#6-cleaning_env-remove-runtime-state-keep-the-evidence "Open full documentation")
 
 ::: details Screenshot
 ![Cleaning Up](media/ticket-lifecycle/32-cleaning-env.png)
@@ -616,9 +620,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Done
+## Done [?](ticket-flow.md#5-phase-inventory "Open full documentation")
 
-### Done
+### Done [?](ticket-flow.md#5-phase-inventory "Open full documentation")
 
 
 **What you can do:**
@@ -628,7 +632,7 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-### Canceled
+### Canceled [?](ticket-flow.md#9-retry-continue-and-blocked-error-semantics "Open full documentation")
 
 
 **What you can do:**
@@ -638,9 +642,9 @@ Each section shows the status as it appears in the app, its available actions, a
 
 ---
 
-## Errors
+## Errors [?](ticket-flow.md#9-retry-continue-and-blocked-error-semantics "Open full documentation")
 
-### Error (reason)
+### Error (reason) [?](ticket-flow.md#9-retry-continue-and-blocked-error-semantics "Open full documentation")
 
 ::: details Screenshot
 ![Error (reason)](media/ticket-lifecycle/35-blocked-error.png)

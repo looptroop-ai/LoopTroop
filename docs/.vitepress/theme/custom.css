@@ -66,7 +66,25 @@
   border-radius: 8px;
 }
 
-.VPDoc details.custom-block .ticket-lifecycle-example {
+.ticket-lifecycle-page .VPDoc details.custom-block {
+  margin: 1.5rem 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.ticket-lifecycle-page .VPDoc details.custom-block summary {
+  display: none;
+}
+
+.ticket-lifecycle-page .VPDoc details.custom-block:not([open]) > :not(summary) {
+  display: block;
+}
+
+.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Example"],
+.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Clean"],
+.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Successful"],
+.ticket-lifecycle-page .VPDoc details.custom-block img[alt="Final implementation changes"] {
   display: block;
   width: min(100%, 36rem);
   margin: 0.75rem auto 0;

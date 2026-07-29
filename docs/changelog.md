@@ -19,7 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
-- Humanized and updated the `ticket-lifecycle-screenshots.md` documentation page to detail available user actions across all ticket workflow statuses, project creation, and configuration using clear, human technical writing guidelines.
+- Updated the ticket lifecycle screenshots guide with direct image previews and contextual links to the full documentation.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
 - Updated Bead Commits description to 'Per-bead/file git commits', updated dynamic diff view labels for 'By Bead' and 'By File' modes, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
 
@@ -34,7 +34,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Rewrote the ticket-view workflow status summaries and Details dialog copy in `shared/workflowMeta.ts` so every phase reads more clearly for humans, expanded the top summaries to fuller explanations, and moved Safe resume guidance out of the top summary into the detailed notes while preserving the same workflow behavior, recovery semantics, and context expectations.
 - Updated the interview Skip All confirmation modal message and workflow metadata to reassure users that skipped questions are answered by AI models during the initial PRD phase.
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
-- Refined `docs/ticket-lifecycle-screenshots.md` writing style by eliminating AI patterns, removing em-dashes, and updating status action details to match canonical state machine behavior.
+- Refined `docs/ticket-lifecycle-screenshots.md` writing style, status action details, direct screenshot rendering, and contextual `?` links to the relevant detailed documentation.
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 

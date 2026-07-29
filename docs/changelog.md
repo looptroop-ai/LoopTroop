@@ -19,7 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
-- Updated the ticket lifecycle screenshots guide with direct, appropriately sized image previews and contextual links to the full documentation.
+- Updated the ticket lifecycle screenshots guide with direct, compact image previews and contextual links to the full documentation.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
 - Updated Bead Commits description to 'Per-bead/file git commits', updated dynamic diff view labels for 'By Bead' and 'By File' modes, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
 

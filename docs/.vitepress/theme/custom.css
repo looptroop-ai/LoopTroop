@@ -95,7 +95,7 @@
 .ticket-lifecycle-page .VPDoc img[src*="22-doctor-results"],
 .ticket-lifecycle-page .VPDoc img[src*="25-bead-final-changes"] {
   display: block;
-  width: min(100%, 36rem);
+  width: min(100%, 30rem);
   margin: 0.75rem auto 0;
   border: 1px solid var(--vp-c-divider);
   border-radius: 8px;

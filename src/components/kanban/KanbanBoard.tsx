@@ -434,11 +434,11 @@ export function KanbanBoard() {
           <div className="flex items-center gap-1">
             <span className="text-xs font-semibold text-muted-foreground mr-1.5">Priority</span>
             {[
-              { label: 'VH', val: 1, text: 'Very High', activeColor: 'border-red-500 bg-red-500/10 text-red-600 dark:text-red-400 dark:bg-red-500/5 shadow-[0_0_8px_rgba(239,68,68,0.12)] border-red-500/70' },
-              { label: 'H', val: 2, text: 'High', activeColor: 'border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400 dark:bg-orange-500/5 shadow-[0_0_8px_rgba(249,115,22,0.12)] border-orange-500/70' },
-              { label: 'N', val: 3, text: 'Normal', activeColor: 'border-gray-500 bg-gray-500/10 text-gray-700 dark:text-gray-300 dark:bg-gray-500/5 border-gray-500/70' },
-              { label: 'L', val: 4, text: 'Low', activeColor: 'border-blue-400 bg-blue-400/10 text-blue-600 dark:text-blue-400 dark:bg-blue-400/5 shadow-[0_0_8px_rgba(96,165,250,0.12)] border-blue-400/70' },
-              { label: 'VL', val: 5, text: 'Very Low', activeColor: 'border-indigo-400 bg-indigo-400/10 text-indigo-600 dark:text-indigo-400 dark:bg-indigo-400/5 shadow-[0_0_8px_rgba(129,140,248,0.12)] border-indigo-400/70' },
+              { label: 'VH', val: 1, text: 'Very High', activeColor: 'border-zinc-800 bg-zinc-900 text-zinc-100 dark:border-zinc-200 dark:bg-zinc-100 dark:text-zinc-900 font-bold' },
+              { label: 'H', val: 2, text: 'High', activeColor: 'border-zinc-500/50 bg-zinc-500/30 text-zinc-900 dark:text-zinc-100 font-bold' },
+              { label: 'N', val: 3, text: 'Normal', activeColor: 'border-zinc-500/40 bg-zinc-500/20 text-zinc-700 dark:text-zinc-300 font-semibold' },
+              { label: 'L', val: 4, text: 'Low', activeColor: 'border-zinc-500/30 bg-zinc-500/12 text-zinc-600 dark:text-zinc-400 font-medium' },
+              { label: 'VL', val: 5, text: 'Very Low', activeColor: 'border-zinc-500/20 bg-zinc-500/7 text-zinc-500 dark:text-zinc-400/80 font-medium' },
             ].map(({ label, val, text, activeColor }) => {
               const active = selectedPriority?.includes(val) ?? false
               return (

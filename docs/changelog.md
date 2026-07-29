@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
 - Ordered Bead Commits activity views by execution priority and made each bead label show its number and title.
 - Warned during project attachment when the active GitHub account cannot write ticket branches to the selected origin.
 - Rewrote and expanded every ticket-view workflow status summary and Details explanation in clearer, human-first language across the full lifecycle.

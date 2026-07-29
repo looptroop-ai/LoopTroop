@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { Loader2, AlertTriangle, ChevronUp, ChevronDown, Minus, HelpCircle } from 'lucide-react'
+import { Loader2, AlertTriangle, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Minus, HelpCircle } from 'lucide-react'
 import { useUI } from '@/context/useUI'
 import { useAIQuestions } from '@/context/useAIQuestions'
 import { STATUS_DESCRIPTIONS, STATUS_TO_PHASE, getStatusUserLabel } from '@/lib/workflowMeta'
@@ -72,9 +72,8 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 font-mono text-[10px] font-bold shadow-2xs whitespace-nowrap">
-              <ChevronUp className="h-3 w-3 -mr-1 shrink-0" strokeWidth={3} />
-              <ChevronUp className="h-3 w-3 shrink-0" strokeWidth={3} />
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-900 text-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 border border-zinc-800 dark:border-zinc-200 font-mono text-[10px] font-bold shadow-2xs whitespace-nowrap">
+              <ChevronsUp className="h-3.5 w-3.5 shrink-0" strokeWidth={2.5} />
               <span>P1</span>
             </span>
           </TooltipTrigger>
@@ -85,7 +84,7 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 font-mono text-[10px] font-bold shadow-2xs whitespace-nowrap">
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/30 text-zinc-900 dark:text-zinc-100 border border-zinc-500/45 dark:border-zinc-400/45 font-mono text-[10px] font-bold shadow-2xs whitespace-nowrap">
               <ChevronUp className="h-3 w-3 shrink-0" strokeWidth={2.5} />
               <span>P2</span>
             </span>
@@ -97,7 +96,7 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20 font-mono text-[10px] font-medium whitespace-nowrap">
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/20 text-zinc-700 dark:text-zinc-300 border border-zinc-500/30 dark:border-zinc-400/30 font-mono text-[10px] font-semibold whitespace-nowrap">
               <Minus className="h-3 w-3 shrink-0" strokeWidth={2} />
               <span>P3</span>
             </span>
@@ -109,7 +108,7 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30 font-mono text-[10px] font-medium whitespace-nowrap">
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/12 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20 dark:border-zinc-500/20 font-mono text-[10px] font-medium whitespace-nowrap">
               <ChevronDown className="h-3 w-3 shrink-0" strokeWidth={2} />
               <span>P4</span>
             </span>
@@ -121,9 +120,8 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-slate-500/15 text-slate-600 dark:text-slate-400 border border-slate-500/30 font-mono text-[10px] font-medium whitespace-nowrap">
-              <ChevronDown className="h-3 w-3 -mr-1 shrink-0" strokeWidth={2} />
-              <ChevronDown className="h-3 w-3 shrink-0" strokeWidth={2} />
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/7 text-zinc-500 dark:text-zinc-400/80 border border-zinc-500/15 dark:border-zinc-500/15 font-mono text-[10px] font-medium whitespace-nowrap">
+              <ChevronsDown className="h-3.5 w-3.5 shrink-0" strokeWidth={2} />
               <span>P5</span>
             </span>
           </TooltipTrigger>
@@ -134,7 +132,7 @@ function PriorityArrows({ priority }: { priority: number }) {
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border border-zinc-500/20 font-mono text-[10px] font-medium whitespace-nowrap">
+            <span className="inline-flex shrink-0 items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-zinc-500/20 text-zinc-700 dark:text-zinc-300 border border-zinc-500/30 dark:border-zinc-400/30 font-mono text-[10px] font-semibold whitespace-nowrap">
               <Minus className="h-3 w-3 shrink-0" strokeWidth={2} />
               <span>P3</span>
             </span>

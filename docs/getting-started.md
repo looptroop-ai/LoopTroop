@@ -146,6 +146,7 @@ For the full lifecycle, see [Ticket Flow](ticket-flow.md).
 ## Next Steps
 
 - [Ticket Flow](ticket-flow.md) — end-to-end lifecycle from ticket to PR
+- [Ticket Lifecycle Screenshots](ticket-lifecycle-screenshots.md) — visual walkthrough of every workflow status
 - [Core Philosophy](core-philosophy.md) — context engineering, councils, retries, approvals
 - [Configuration](configuration.md) — all profile settings with defaults, ranges, and trade-offs
 - [Operations Guide](operations.md) — runtime storage, environment variables, startup maintenance, diagnostics, and troubleshooting

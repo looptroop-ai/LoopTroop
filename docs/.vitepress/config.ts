@@ -21,6 +21,7 @@ const sidebar = [
     collapsed: false,
     items: [
       { text: 'Ticket Flow', link: '/ticket-flow' },
+      { text: 'Lifecycle Screenshots', link: '/ticket-lifecycle-screenshots' },
       { text: 'Interview', link: '/interview' },
       { text: 'PRD', link: '/prd' },
       { text: 'LLM Council', link: '/llm-council' },

@@ -107,6 +107,7 @@ flowchart TD
 ### Workflow
 
 - [Ticket Flow & State Machine](ticket-flow.md): end-to-end ticket lifecycle, state machine transitions, artifacts, user actions, retries, and outcomes.
+- [Ticket Lifecycle Screenshots](ticket-lifecycle-screenshots.md): visual walkthrough of every workflow status with screenshots and quick action summaries.
 - [Interview](interview.md): adaptive clarification batches, skipped questions, coverage follow-ups, artifact structure, and approval.
 - [PRD](prd.md): Full Answers, skipped-answer resolution, council drafting/voting/refining, PRD structure, coverage, and approval.
 - [LLM Council](llm-council.md): draft, vote, refine, and coverage orchestration.

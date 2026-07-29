@@ -66,6 +66,14 @@
   border-radius: 8px;
 }
 
+.VPDoc details.custom-block .ticket-lifecycle-example {
+  display: block;
+  width: min(100%, 36rem);
+  margin: 0.75rem auto 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+}
+
 .docs-clickable-image {
   cursor: zoom-in;
 }

@@ -29,6 +29,12 @@ function decorateImages() {
   })
 }
 
+function revealLifecycleScreenshots() {
+  document.querySelectorAll<HTMLDetailsElement>('.ticket-lifecycle-page .VPDoc details.custom-block').forEach((details) => {
+    details.open = true
+  })
+}
+
 function openImage(image: HTMLImageElement) {
   const src = image.currentSrc || image.src
   if (!src) {
@@ -79,6 +85,7 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
+  revealLifecycleScreenshots()
   decorateImages()
   document.addEventListener('click', handleClick)
   document.addEventListener('keydown', handleKeydown)
@@ -94,7 +101,10 @@ watch(
   () => route.path,
   () => {
     closeImage()
-    void nextTick(decorateImages)
+    void nextTick(() => {
+      revealLifecycleScreenshots()
+      decorateImages()
+    })
   },
 )
 </script>

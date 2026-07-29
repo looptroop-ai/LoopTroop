@@ -81,10 +81,19 @@
   display: block;
 }
 
-.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Example"],
-.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Clean"],
-.ticket-lifecycle-page .VPDoc details.custom-block img[alt^="Successful"],
-.ticket-lifecycle-page .VPDoc details.custom-block img[alt="Final implementation changes"] {
+.ticket-lifecycle-page .VPDoc img[src*="01-project-creation"],
+.ticket-lifecycle-page .VPDoc img[src*="03-draft"],
+.ticket-lifecycle-page .VPDoc img[src*="05-interview-draft"],
+.ticket-lifecycle-page .VPDoc img[src*="06-interview-voting-example"],
+.ticket-lifecycle-page .VPDoc img[src*="07-refining-example"],
+.ticket-lifecycle-page .VPDoc img[src*="11-ai-answers"],
+.ticket-lifecycle-page .VPDoc img[src*="11-prd-example"],
+.ticket-lifecycle-page .VPDoc img[src*="14-coverage-prd-example"],
+.ticket-lifecycle-page .VPDoc img[src*="16-bead-draft-example"],
+.ticket-lifecycle-page .VPDoc img[src*="18-refined-bead-example"],
+.ticket-lifecycle-page .VPDoc img[src*="19-beads-coverage-clean"],
+.ticket-lifecycle-page .VPDoc img[src*="22-doctor-results"],
+.ticket-lifecycle-page .VPDoc img[src*="25-bead-final-changes"] {
   display: block;
   width: min(100%, 36rem);
   margin: 0.75rem auto 0;

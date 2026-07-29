@@ -888,19 +888,19 @@ describe('TicketDashboard', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+      expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Select backlog' }))
 
     await waitFor(() => {
-      expect(screen.getByText(/Ticket created but inactive; its saved title and description will seed AI context when the backlog item starts\./)).toBeInTheDocument()
+      expect(screen.getByText(/The ticket is still in backlog, so nothing is running yet\./)).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
 
     await waitFor(() => {
-      expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+      expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
     })
   })
 
@@ -984,25 +984,25 @@ describe('TicketDashboard', () => {
     renderDashboard()
 
     await waitFor(() => {
-      expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+      expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Council Drafting Specs' }))
 
     await waitFor(() => {
-      expect(screen.queryByText(/competing PRD drafts\./)).not.toBeInTheDocument()
+      expect(screen.queryByText(/drafting competing PRDs\./)).not.toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Select backlog' }))
 
     await waitFor(() => {
-      expect(screen.queryByText(/Ticket created but inactive; its saved title and description will seed AI context when the backlog item starts\./)).not.toBeInTheDocument()
+      expect(screen.queryByText(/The ticket is still in backlog, so nothing is running yet\./)).not.toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to live' }))
 
     await waitFor(() => {
-      expect(screen.queryByText(/competing PRD drafts\./)).not.toBeInTheDocument()
+      expect(screen.queryByText(/drafting competing PRDs\./)).not.toBeInTheDocument()
     })
   })
 

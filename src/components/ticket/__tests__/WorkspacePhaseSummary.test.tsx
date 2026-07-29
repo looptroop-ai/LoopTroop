@@ -83,13 +83,13 @@ describe('WorkspacePhaseSummary', () => {
       <WorkspacePhaseSummary phase="DRAFTING_PRD" ticket={ticket} />,
     )
 
-    expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+    expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /show detailed explanation for council drafting specs/i }))
 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText(/Part 1 — Answering Skipped Questions/)).toBeInTheDocument()
-    expect(screen.getByText(/Competing PRD drafts — one from each council member/)).toBeInTheDocument()
-    expect(screen.getByText(/When enough valid PRD drafts are ready \(meeting the configured quorum threshold\), the workflow advances to the PRD voting phase\./)).toBeInTheDocument()
+    expect(screen.getByText(/Part 1, Full Answers: For each skipped interview question/)).toBeInTheDocument()
+    expect(screen.getByText(/Part 2, PRD drafting: Each model uses its own completed answer set/)).toBeInTheDocument()
+    expect(screen.getByText(/Quorum Met → Voting on Specs: The workflow advances once enough valid PRDs exist to score\./)).toBeInTheDocument()
   })
 
   it('collapses and re-expands the description when clicking the phase name', () => {
@@ -100,13 +100,13 @@ describe('WorkspacePhaseSummary', () => {
     )
 
     const toggle = screen.getByRole('button', { name: 'Council Drafting Specs' })
-    expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+    expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
 
     fireEvent.click(toggle)
-    expect(screen.queryByText(/competing PRD drafts\./)).not.toBeInTheDocument()
+    expect(screen.queryByText(/drafting competing PRDs\./)).not.toBeInTheDocument()
 
     fireEvent.click(toggle)
-    expect(screen.getByText(/competing PRD drafts\./)).toBeInTheDocument()
+    expect(screen.getByText(/drafting competing PRDs\./)).toBeInTheDocument()
   })
 
   it('shows the failed phase, actual error, and live recovery choices for a blocked error', () => {
@@ -194,7 +194,7 @@ describe('WorkspacePhaseSummary', () => {
     )
 
     expect(screen.getByRole('button', { name: 'Implementing (working on bead 2 of 4)' })).toBeInTheDocument()
-    expect(screen.getByText(/Executes beads one at a time, independently runs every declared test command/)).toBeInTheDocument()
+    expect(screen.getByText(/LoopTroop is implementing the ticket one bead at a time/)).toBeInTheDocument()
   })
 
   it('shows live coding bead and iteration progress in the main title', () => {

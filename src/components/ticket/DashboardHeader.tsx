@@ -350,8 +350,8 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
   const ringColor = getStatusRingColor(ticket.status)
   return (
     <div className="border-b border-border bg-background">
-      <div className="flex items-center justify-between px-4 py-2">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 px-3 sm:px-4 py-2">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 min-w-0 flex-1">
           <div className="flex items-center gap-1.5 shrink-0">
             <ProjectIcon icon={project?.icon} imageClassName="h-4 w-4" emojiClassName="text-sm" />
             <TicketExternalId
@@ -364,7 +364,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
           {isEditingTitle ? (
             <input
               ref={inputRef}
-              className="text-base font-semibold truncate w-full max-w-[400px] bg-transparent border-b border-primary outline-none focus:ring-0 px-0.5 py-0"
+              className="text-base font-semibold truncate w-full max-w-[200px] sm:max-w-[300px] md:max-w-[400px] bg-transparent border-b border-primary outline-none focus:ring-0 px-0.5 py-0"
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
               onKeyDown={handleKeyDown}
@@ -372,7 +372,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
             />
           ) : (
             <div className="flex items-center gap-1.5 group min-w-0">
-              <h2 className="text-base font-semibold truncate max-w-[400px]">{ticket.title}</h2>
+              <h2 className="text-base font-semibold truncate max-w-[180px] sm:max-w-[300px] md:max-w-[400px]">{ticket.title}</h2>
               {ticket.status === 'DRAFT' && (
                 <Tooltip>
                                     <TooltipTrigger asChild>
@@ -438,7 +438,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className="grid grid-cols-2 gap-3 text-sm overflow-y-auto pr-1 max-h-[calc(80vh-6rem)] [scrollbar-width:thin] [scrollbar-color:transparent_transparent] hover:[scrollbar-color:var(--border)_transparent]"
+            className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm overflow-y-auto pr-1 max-h-[calc(80vh-6rem)] [scrollbar-width:thin] [scrollbar-color:transparent_transparent] hover:[scrollbar-color:var(--border)_transparent]"
           >
             <div className={project ? '' : 'col-span-2'}>
               <span className="text-xs font-medium text-muted-foreground">Title</span>

@@ -407,7 +407,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                 </div>
                 <span className="text-sm text-muted-foreground font-mono">{projectStatePath}</span>
               </div>
-              <div className="grid grid-cols-2 gap-4 border-t border-border pt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-border pt-4">
                 <div>
                   <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1 block">Project Created</label>
                   <Tooltip>

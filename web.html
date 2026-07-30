@@ -225,14 +225,14 @@
           </div>
 
           <!-- CTA buttons -->
-          <div class="flex flex-wrap gap-3 mb-6">
-            <a href="#how-it-works" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-500 rounded-xl shadow-lg shadow-brand-600/25 hover:shadow-brand-600/35 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
+          <div class="flex flex-col sm:flex-row flex-wrap gap-3 mb-6 w-full sm:w-auto">
+            <a href="#how-it-works" class="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-500 rounded-xl shadow-lg shadow-brand-600/25 hover:shadow-brand-600/35 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
               <i class="fa-solid fa-rocket text-xs"></i> Get Started Free
             </a>
-            <a href="https://github.com/looptroop-ai/LoopTroop" target="_blank" rel="noopener" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
+            <a href="https://github.com/looptroop-ai/LoopTroop" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
               <i class="fa-solid fa-star text-amber-400 text-xs"></i> Star on GitHub
             </a>
-            <a href="/docs/" class="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
+            <a href="/docs/" class="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-semibold text-zinc-800 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800/80 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl border border-zinc-200 dark:border-zinc-700 transition-all duration-200 hover:-translate-y-0.5 active:scale-[0.98]">
               <i class="fa-solid fa-book text-xs"></i> Docs
             </a>
           </div>
@@ -272,7 +272,7 @@
   <!-- ============ TECH LOGO WALL (Under Hero) ============ -->
   <section class="py-8 border-y border-zinc-200/60 dark:border-zinc-800/60 bg-zinc-50/50 dark:bg-zinc-900/30">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex flex-wrap items-center justify-center gap-8 sm:gap-14 opacity-70 grayscale hover:grayscale-0 transition-all duration-300 text-zinc-600 dark:text-zinc-400">
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-6 sm:gap-8 items-center justify-items-center opacity-70 grayscale hover:grayscale-0 transition-all duration-300 text-zinc-600 dark:text-zinc-400">
         <div class="flex items-center gap-2 text-xs font-mono font-semibold tracking-wider uppercase">
           <i class="fa-solid fa-terminal text-brand-500"></i> OpenCode
         </div>
@@ -341,8 +341,8 @@
               </div>
 
               <!-- Pipeline visualization -->
-              <div class="why-item flex items-center gap-3 p-4 rounded-2xl bg-gradient-to-r from-brand-50 via-white to-amber-50 dark:from-brand-900/10 dark:via-zinc-800/50 dark:to-amber-900/10 border border-zinc-100 dark:border-zinc-700/30">
-                <div class="flex flex-wrap items-center gap-2 text-sm font-medium w-full justify-center">
+              <div class="why-item flex items-center gap-3 p-4 rounded-2xl bg-gradient-to-r from-brand-50 via-white to-amber-50 dark:from-brand-900/10 dark:via-zinc-800/50 dark:to-amber-900/10 border border-zinc-100 dark:border-zinc-700/30 overflow-hidden">
+                <div class="flex items-center gap-2 text-sm font-medium w-full overflow-x-auto pb-1 scrollbar-hide justify-start sm:justify-center">
                   <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-sm">
                     <i class="fa-solid fa-comments text-brand-500 text-xs"></i> Interview
                   </span>
@@ -799,14 +799,14 @@
 
       <!-- Timeline -->
       <div class="relative">
-        <!-- Vertical line (desktop) -->
-        <div class="hidden md:block absolute left-1/2 -translate-x-px top-0 bottom-0 w-0.5 rounded-full overflow-hidden">
+        <!-- Vertical line (mobile & desktop) -->
+        <div class="block absolute left-4 md:left-1/2 -translate-x-px top-0 bottom-0 w-0.5 rounded-full overflow-hidden">
           <div class="w-full h-full bg-gradient-to-b from-brand-600 via-brand-400 to-brand-600 dark:from-brand-400 dark:via-brand-300 dark:to-brand-400 opacity-30"></div>
           <div id="timelineProgress" class="absolute top-0 left-0 right-0 bg-gradient-to-b from-brand-600 via-brand-400 to-brand-400 dark:from-brand-400 dark:via-brand-300 dark:to-brand-300 transition-all duration-500 ease-out" style="height: 0%;"></div>
         </div>
 
         <!-- Step 1: Draft State -->
-        <div class="timeline-step relative md:grid md:grid-cols-2 md:gap-16 mb-16 md:mb-20">
+        <div class="timeline-step relative pl-10 md:pl-0 md:grid md:grid-cols-2 md:gap-16 mb-12 md:mb-20">
           <div class="md:text-right md:pr-4">
             <div class="inline-flex items-center gap-3 px-4 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-sm mb-4">
               <span class="w-8 h-8 flex items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/40 text-brand-600 dark:text-brand-400 font-bold text-sm">01</span>

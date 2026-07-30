@@ -1471,7 +1471,7 @@ describe('PhaseLogPanel', () => {
       />,
     )
 
-    expect(screen.getByText('[TOOL-openai/gpt-5-mini]')).toHaveClass('text-cyan-500')
+    expect(screen.getByText('[TOOL-openai/gpt-5-mini]')).toHaveClass('text-cyan-600')
     expect(screen.getByText('Input:')).toHaveClass('text-sky-700')
     expect(screen.getByText('Output:')).toHaveClass('text-emerald-700')
     expect(screen.getByText('Error:')).toHaveClass('text-rose-700')

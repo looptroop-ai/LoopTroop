@@ -146,18 +146,18 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
               <button
                 onClick={onOpenTicket}
                 disabled={isModalOpen}
-                className="group relative inline-flex items-center gap-1.5 rounded-lg bg-foreground text-background px-3.5 py-1.5 text-sm font-medium transition-all hover:opacity-95 active:scale-[0.98] disabled:opacity-50 shadow-xs cursor-pointer"
+                className="group relative inline-flex items-center gap-1.5 rounded-lg bg-foreground text-background px-3 py-1.5 text-sm font-medium transition-all hover:opacity-95 active:scale-[0.98] disabled:opacity-50 shadow-xs cursor-pointer"
               >
                 <Plus className="h-4 w-4 transition-transform group-hover:rotate-90 duration-200" />
-                <span>New Ticket</span>
+                <span className="hidden sm:inline">New Ticket</span>
               </button>
             </TooltipTrigger>
             <TooltipContent>Create new ticket</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen} className="rounded-lg">
-                <FolderOpen className="h-4 w-4 mr-1.5" />
+              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen} className="rounded-lg px-2 sm:px-3">
+                <FolderOpen className="h-4 w-4 sm:mr-1.5" />
                 <span className="hidden sm:inline">Projects</span>
               </Button>
             </TooltipTrigger>
@@ -165,19 +165,19 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen} className="rounded-lg">
-                <Settings className="h-4 w-4 mr-1.5" />
-                Configuration
+              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen} className="rounded-lg px-2 sm:px-3">
+                <Settings className="h-4 w-4 md:mr-1.5" />
+                <span className="hidden md:inline">Configuration</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>Configuration</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" asChild className="rounded-lg">
+              <Button variant="ghost" size="sm" asChild className="rounded-lg px-2 sm:px-3">
                 <a href={docsOrigin} target="_blank" rel="noreferrer noopener">
-                  <BookOpen className="h-4 w-4 mr-1.5" />
-                  Docs
+                  <BookOpen className="h-4 w-4 md:mr-1.5" />
+                  <span className="hidden md:inline">Docs</span>
                 </a>
               </Button>
             </TooltipTrigger>

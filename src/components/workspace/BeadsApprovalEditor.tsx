@@ -218,7 +218,7 @@ export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApproval
                 {/* Read-only metadata */}
                 <div className="rounded-md border border-border bg-muted/30 p-2 space-y-1">
                   <div className="text-[10px] font-semibold uppercase tracking-widest text-foreground/60 mb-1">Metadata (read-only)</div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
                     <span className="text-muted-foreground">ID:</span><span className="font-mono">{bead.id}</span>
                     <span className="text-muted-foreground">Issue Type:</span><span>{String(bead.issueType || 'task')}</span>
                     <span className="text-muted-foreground">Priority:</span><span>{String(bead.priority ?? index + 1)}</span>

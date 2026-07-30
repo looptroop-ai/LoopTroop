@@ -454,7 +454,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
           <p className="mb-3 text-xs text-muted-foreground">
             Handles OpenCode rate-limit, usage-limit, overload, timeout, and network retry events across all phases.
           </p>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField fieldKey="opencodeRetryLimit" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Continuable OpenCode retry events before blocking any phase prompt (0–50)." />
             <NumericField fieldKey="opencodeRetryDelay" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum OpenCode retry grace window before blocking any phase prompt (0–3600s)." />
             <NumericField fieldKey="opencodeSteps" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max steps per OpenCode session (0 = no limit, OpenCode default). Each step ≈ 2 messages in the log." />
@@ -464,7 +464,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           {/* ── AI Thinking ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">AI Thinking</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField
               fieldKey="councilResponseTimeout"
               rawNumeric={rawNumeric}
@@ -485,11 +485,11 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           {/* ── Coverage ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Coverage</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField fieldKey="coverageFollowUpBudgetPercent" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum interview follow-up budget for interview coverage passes (0–100%)." />
             <NumericField fieldKey="maxCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Interview coverage executions allowed before approval fallback (1–10)." />
           </div>
-          <div className="grid grid-cols-2 gap-3 mt-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
             <NumericField fieldKey="maxPrdCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum PRD coverage executions before approval fallback (2–20)." />
             <NumericField fieldKey="maxBeadsCoveragePasses" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum beads coverage executions before approval fallback (2–20)." />
           </div>
@@ -523,7 +523,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           {/* ── Implementation & Workspace Setup ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Implementation &amp; Workspace Setup</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField fieldKey="maxIterations" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Maximum automatic retries per bead during coding (0–20). Final test retries use the same limit." />
             <NumericField fieldKey="perIterationTimeout" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Timeout for each attempt (10–3600s)" />
           </div>
@@ -566,7 +566,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           {/* ── Logging ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Logging</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField fieldKey="toolInputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool input in logs (500–50K)." />
             <NumericField fieldKey="toolOutputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool output in logs (1K–100K)." />
             <NumericField fieldKey="toolErrorMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool error in logs (500–50K)." />

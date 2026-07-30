@@ -48,7 +48,7 @@ export function EmojiPickerSection({ icon, onIconChange, isIconPickerOpen, onIco
           </button>
         }
       >
-        <div className="w-80">
+        <div className="w-[280px] sm:w-80 max-w-[85vw]">
           <div className="mb-2 rounded-md border border-input bg-muted/30 p-2">
             <div className="text-xs text-muted-foreground mb-1">
               Upload your own image or select one below.
@@ -234,7 +234,7 @@ export function ColorPickerSection({ color, onColorChange, isColorPickerOpen, on
           </button>
         }
       >
-        <div className="w-64">
+        <div className="w-[240px] sm:w-64 max-w-[85vw]">
           <div className="grid grid-cols-4 gap-2">
             {PROJECT_COLORS.map(c => (
               <Tooltip>

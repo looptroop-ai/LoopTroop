@@ -745,7 +745,7 @@ export function KanbanBoard() {
           </div>
         </div>
       )}
-      <div className="grid flex-1 grid-cols-1 gap-4 p-4 md:p-5 md:grid-cols-2 lg:grid-cols-[1fr_2.2fr_2.2fr_1fr] overflow-hidden bg-background/50 relative">
+      <div className="grid flex-1 grid-cols-1 gap-4 p-4 md:p-5 md:grid-cols-2 lg:grid-cols-[1fr_2.2fr_2.2fr_1fr] overflow-y-auto md:overflow-hidden bg-background/50 relative">
         {ticketsByPhase.map((col) => (
           <KanbanColumn
             key={col.id}

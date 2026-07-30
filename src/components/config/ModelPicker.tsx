@@ -14,11 +14,11 @@ interface ModelPickerProps {
 }
 
 function costLabel(input: number): { label: string; color: string } {
-  if (input === 0) return { label: 'Free', color: 'text-emerald-600 bg-emerald-50' }
-  if (input < 0.5) return { label: 'Cheap', color: 'text-green-700 bg-green-50' }
-  if (input < 2) return { label: '$', color: 'text-yellow-700 bg-yellow-50' }
-  if (input < 8) return { label: '$$', color: 'text-orange-700 bg-orange-50' }
-  return { label: '$$$', color: 'text-red-700 bg-red-50' }
+  if (input === 0) return { label: 'Free', color: 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60' }
+  if (input < 0.5) return { label: 'Cheap', color: 'text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/60' }
+  if (input < 2) return { label: '$', color: 'text-amber-800 dark:text-amber-300 bg-yellow-50 dark:bg-amber-950/60' }
+  if (input < 8) return { label: '$$', color: 'text-orange-800 dark:text-orange-300 bg-orange-50 dark:bg-orange-950/60' }
+  return { label: '$$$', color: 'text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/60' }
 }
 
 function ctxLabel(ctx: number): string {
@@ -88,17 +88,17 @@ function ModelRow({ model, selected, disabled, onSelect }: {
             </span>
           )}
           {model.canReason && (
-            <span className="flex items-center gap-0.5 text-[10px] text-purple-600">
+            <span className="flex items-center gap-0.5 text-[10px] text-purple-600 dark:text-purple-400">
               <Brain className="h-2.5 w-2.5" aria-hidden="true" />reasoning
             </span>
           )}
           {model.canSeeImages && (
-            <span className="flex items-center gap-0.5 text-[10px] text-blue-600">
+            <span className="flex items-center gap-0.5 text-[10px] text-blue-600 dark:text-blue-400">
               <Eye className="h-2.5 w-2.5" aria-hidden="true" />vision
             </span>
           )}
           {model.canUseTools && (
-            <span className="flex items-center gap-0.5 text-[10px] text-slate-500">
+            <span className="flex items-center gap-0.5 text-[10px] text-slate-500 dark:text-slate-400">
               <Wrench className="h-2.5 w-2.5" aria-hidden="true" />tools
             </span>
           )}

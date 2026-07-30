@@ -101,14 +101,14 @@ export function getCanonicalLogEntries(entries: LogEntry[]): LogEntry[] {
 }
 
 export function getEntryColor(entry: LogEntry): string {
-  if (entry.audience === 'debug' || entry.source === 'debug' || (hasLeadingLogTag(entry, 'DEBUG') && !isAiDetailOutput(entry))) return 'text-amber-600'
-  if (entry.kind === 'tool' || entry.line.includes('[TOOL]')) return 'text-cyan-500'
-  if (entry.kind === 'error' || entry.source === 'error' || (hasLeadingLogTag(entry, 'ERROR') && !isAiDetailOutput(entry))) return 'text-red-500'
-  if (hasLeadingLogTag(entry, 'CMD')) return 'text-cyan-500'
-  if (entry.kind === 'reasoning') return 'text-purple-400'
-  if (entry.kind === 'prompt') return 'text-blue-500'
-  if (entry.kind === 'text') return 'text-emerald-600'
-  if (entry.audience === 'ai' || entry.source === 'opencode' || entry.source.startsWith('model:')) return 'text-green-500'
+  if (entry.audience === 'debug' || entry.source === 'debug' || (hasLeadingLogTag(entry, 'DEBUG') && !isAiDetailOutput(entry))) return 'text-amber-600 dark:text-amber-400'
+  if (entry.kind === 'tool' || entry.line.includes('[TOOL]')) return 'text-cyan-600 dark:text-cyan-400'
+  if (entry.kind === 'error' || entry.source === 'error' || (hasLeadingLogTag(entry, 'ERROR') && !isAiDetailOutput(entry))) return 'text-red-600 dark:text-red-400'
+  if (hasLeadingLogTag(entry, 'CMD')) return 'text-cyan-600 dark:text-cyan-400'
+  if (entry.kind === 'reasoning') return 'text-purple-600 dark:text-purple-400'
+  if (entry.kind === 'prompt') return 'text-blue-600 dark:text-blue-400'
+  if (entry.kind === 'text') return 'text-emerald-600 dark:text-emerald-400'
+  if (entry.audience === 'ai' || entry.source === 'opencode' || entry.source.startsWith('model:')) return 'text-green-600 dark:text-green-400'
   return 'text-foreground'
 }
 

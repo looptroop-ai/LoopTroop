@@ -40,9 +40,14 @@ export function YamlEditor({ value, onChange, readOnly = false, className }: Yam
         }),
         readOnlyCompartmentRef.current.of(EditorState.readOnly.of(initialReadOnlyRef.current)),
         EditorView.theme({
-          '&': { fontSize: '12px', height: '100%' },
+          '&': { fontSize: '12px', height: '100%', backgroundColor: 'transparent', color: 'var(--color-foreground)' },
           '.cm-scroller': { overflow: 'auto' },
-          '.cm-content': { fontFamily: 'ui-monospace, monospace' },
+          '.cm-content': { fontFamily: 'var(--font-mono, ui-monospace, monospace)', caretColor: 'var(--color-foreground)' },
+          '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-foreground)' },
+          '.cm-gutters': { backgroundColor: 'var(--color-muted)', color: 'var(--color-muted-foreground)', borderRight: '1px solid var(--color-border)' },
+          '.cm-activeLineGutter': { backgroundColor: 'var(--color-accent)' },
+          '.cm-activeLine': { backgroundColor: 'var(--color-accent)' },
+          '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--color-brand-500)', opacity: '0.3' },
         }),
       ],
     })

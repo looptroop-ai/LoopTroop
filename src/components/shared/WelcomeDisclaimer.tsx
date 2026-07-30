@@ -12,46 +12,46 @@ export function WelcomeDisclaimer({ open, onDismiss, appPathWarning }: WelcomeDi
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-[#1a1a1a] text-white rounded-2xl shadow-xl max-w-md w-full mx-4 p-6">
-        <h2 className="text-xl font-bold mb-3">Welcome to LoopTroop</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-card text-card-foreground border border-border rounded-2xl shadow-xl max-w-md w-full p-6">
+        <h2 className="text-xl font-bold mb-3 text-foreground">Welcome to LoopTroop</h2>
 
-        <p className="text-sm text-gray-300 mb-4">
+        <p className="text-sm text-muted-foreground mb-4">
           LoopTroop runs long AI-driven planning and execution workflows.
         </p>
 
-        <div className="space-y-3 mb-4 text-sm text-gray-300">
+        <div className="space-y-3 mb-4 text-sm text-muted-foreground">
           <p>
-            🔮 <span className="font-bold">Interview phase</span> may take{' '}
-            <span className="font-bold">1+ hour</span> depending on project complexity and council
+            🔮 <span className="font-bold text-foreground">Interview phase</span> may take{' '}
+            <span className="font-bold text-foreground">1+ hour</span> depending on project complexity and council
             size.
           </p>
           <p>
-            🔮 <span className="font-bold">Execution phase</span> may take{' '}
-            <span className="font-bold">10+ hours</span> for large tickets with many beads.
+            🔮 <span className="font-bold text-foreground">Execution phase</span> may take{' '}
+            <span className="font-bold text-foreground">10+ hours</span> for large tickets with many beads.
           </p>
         </div>
 
         {appPathWarning && (
-          <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+          <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-100">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
               <div>
-                <p className="font-semibold text-amber-50">WSL performance warning</p>
-                <p className="mt-1 text-amber-100/90">{appPathWarning}</p>
+                <p className="font-semibold text-amber-950 dark:text-amber-50">WSL performance warning</p>
+                <p className="mt-1 text-amber-900/90 dark:text-amber-100/90">{appPathWarning}</p>
               </div>
             </div>
           </div>
         )}
 
-        <p className="text-sm text-gray-400 mb-5">
+        <p className="text-sm text-muted-foreground mb-5">
           Ensure your machine won't sleep during execution and has at least 4 GB RAM and 15 GB free
           space.
         </p>
 
         <button
           onClick={onDismiss}
-          className="w-full bg-white text-black rounded-lg py-2.5 font-medium hover:bg-gray-100 transition-colors"
+          className="w-full bg-primary text-primary-foreground rounded-lg py-2.5 font-medium hover:bg-primary/90 transition-colors cursor-pointer"
         >
           Got it, let's go!
         </button>

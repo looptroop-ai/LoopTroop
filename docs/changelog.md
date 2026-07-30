@@ -22,7 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
 - Updated the ticket lifecycle screenshots guide with direct, compact image previews and contextual links to the full documentation.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
-- Updated Bead Commits description to 'Per-bead/file git commits', updated dynamic diff view labels for 'By Bead' and 'By File' modes, and added an explanatory tooltip on hover when 'Net Diff' is disabled prior to integration.
+- Fixed dark mode contrast and theme consistency across ModelPicker badges, WelcomeDisclaimer modal tokens, CodeMirror YamlEditor themes, and workspace log text.
 
 ### Added
 - Added **Drafting Workspace Setup Plan** (`GENERATING_EXECUTION_SETUP_PLAN`) with an expanded live log, plan/report artifacts, malformed-output diagnostics, and archived generation versions before setup approval.
@@ -48,6 +48,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Prevented malformed model-owned setup fields, fake Git-hook evidence, and invalid setup drafts from routing tickets to Blocked Error before user review.
 - Kept refreshed backend-owned workspace evidence stable across setup-plan saves so approval no longer enters a repeated “evidence changed” loop.
 - Made Git-hook policy inheritance remain live until ticket start and visibly highlighted the effective selection when configuration, project, and ticket controls first open.
+- Fixed dark mode contrast and component theme integration across ModelPicker cost and feature badges, WelcomeDisclaimer dialog tokens, CodeMirror YamlEditor themes, and workspace log text entries.
 
 ---
 

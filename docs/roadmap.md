@@ -1786,7 +1786,6 @@ search: false
     *   The extended phase must run after all standard interview questions and terminal free-form input are completed.
     *   All council members must receive prior interview answers as explicit read-only context for the new phase via rolling summary + recent-answer window by default; full transcript remains in interview artifacts for final coverage checks.
     *   Persist phase linkage/ordering so each extension is traceable (`phase_index`, `parent_phase`, and cumulative context sources).
-*   **Quota/rate limits remaining:** Display the remaining quota for model/provider API usage.
 *   **LLM council optional:** Allow users to disable the council and rely solely on the main implementer for decision-making.
 *   **Execution Mode Lock:** During coding phase, implementer can execute approved beads only; design-level changes require explicit approval transition. QA fixes cannot silently expand scope or alter approved design without escalation.
 *   **Deterministic Bead Sizing + Complexity Scoring + Dependency-Order Contract (+ scope sentence test):**

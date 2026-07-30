@@ -10,6 +10,8 @@ import { getDashboardSearchMatch } from './kanbanSearch'
 import type { Ticket } from '@/hooks/useTickets'
 import type { Project } from '@/hooks/useProjects'
 
+import { cn } from '@/lib/utils'
+
 const PAGE_SIZE = 15
 
 interface KanbanColumnProps {
@@ -93,8 +95,13 @@ export function KanbanColumn({
     setPage(Number.parseInt(value, 10))
   }
 
+  const hasTickets = tickets.length > 0
+
   return (
-    <Card className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/60 backdrop-blur-xs shadow-xs transition-all">
+    <Card className={cn(
+      "flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/80 bg-card/60 backdrop-blur-xs shadow-xs transition-all",
+      hasTickets ? "min-h-[460px] md:min-h-[520px] lg:min-h-0 lg:h-full" : "min-h-0 h-auto"
+    )}>
       <CardHeader className="min-w-0 flex-shrink-0 pb-2.5 pt-3.5 px-3.5 border-b border-border/40">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -114,12 +121,12 @@ export function KanbanColumn({
           <TooltipContent className="max-w-xs text-center text-balance text-xs">{column.tooltip}</TooltipContent>
         </Tooltip>
       </CardHeader>
-      <CardContent className="min-w-0 flex-1 overflow-hidden p-2.5">
-        <ScrollArea className="h-full min-w-0" contentLayout="block">
+      <CardContent className={cn("min-w-0 flex-1 overflow-hidden p-2.5", hasTickets ? "min-h-[380px] md:min-h-[440px] lg:min-h-0" : "")}>
+        <ScrollArea className={cn("min-w-0 h-full", hasTickets ? "min-h-[360px] md:min-h-[420px] lg:min-h-0 max-h-[70vh] lg:max-h-none" : "h-auto")} contentLayout="block">
           {tickets.length === 0 ? (
-            <div className="flex h-36 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-muted/20 p-4 text-center">
-              <div className="h-8 w-8 rounded-full bg-muted/60 flex items-center justify-center text-muted-foreground mb-2">
-                <span className="text-xs font-mono font-bold">0</span>
+            <div className="flex h-24 sm:h-28 flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-muted/20 p-3 text-center">
+              <div className="h-6 w-6 rounded-full bg-muted/60 flex items-center justify-center text-muted-foreground mb-1">
+                <span className="text-[10px] font-mono font-bold">0</span>
               </div>
               <p className="text-xs font-medium text-muted-foreground">{emptyLabel}</p>
             </div>

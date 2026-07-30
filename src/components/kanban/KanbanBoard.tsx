@@ -289,10 +289,10 @@ export function KanbanBoard() {
       {/* Triage & Filter Control Bar */}
       <div
         className={cn(
-          "bg-card/45 backdrop-blur-md border-b border-border/40 transition-all duration-350 ease-in-out overflow-hidden flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.03)]",
+          "bg-card/45 backdrop-blur-md border-b border-border/40 transition-all duration-350 ease-in-out flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.03)]",
           state.showTriageBar
-            ? "max-h-24 opacity-100 py-3 px-6"
-            : "max-h-0 opacity-0 py-0 px-6 border-b-0 pointer-events-none"
+            ? "max-h-[85vh] md:max-h-none opacity-100 py-3 px-4 sm:px-6 overflow-y-auto md:overflow-visible"
+            : "max-h-0 opacity-0 py-0 px-6 border-b-0 pointer-events-none overflow-hidden"
         )}
         aria-hidden={!state.showTriageBar}
       >

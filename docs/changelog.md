@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Improved mobile and tablet responsive layouts across AppShell header, DashboardHeader, KanbanBoard container, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
+- Improved mobile and tablet responsive layouts across AppShell header, DashboardHeader, KanbanBoard container, mobile triage bar filters, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
 - Ordered Bead Commits activity views by execution priority and made each bead label show its number and title.

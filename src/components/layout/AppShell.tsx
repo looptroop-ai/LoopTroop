@@ -1,4 +1,4 @@
-import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal } from 'lucide-react'
+import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal, MoreHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -84,7 +84,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
 
   return (
     <div className="min-h-screen bg-background text-foreground antialiased selection:bg-brand-500/20 selection:text-brand-500">
-      <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border/80 bg-background/80 px-4 md:px-6 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 shadow-xs transition-all">
+      <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border/80 bg-background/80 px-2 sm:px-4 md:px-6 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 shadow-xs transition-all">
         <button
           className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => {
@@ -99,7 +99,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
               isOffline ? "bg-amber-500 animate-pulse" : "bg-emerald-500"
             )} />
           </div>
-          <div className="flex items-baseline gap-2">
+          <div className="hidden items-baseline gap-2 sm:flex">
             <span className="text-xl font-bold tracking-tight text-foreground group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
               LoopTroop
             </span>
@@ -108,7 +108,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
             </span>
           </div>
         </button>
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-2">
           <DashboardSearch isModalOpen={isModalOpen} />
           {state.activeView === 'kanban' && (
             <Tooltip>
@@ -156,7 +156,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen} className="rounded-lg px-2 sm:px-3">
+              <Button variant="ghost" size="sm" onClick={onOpenProject} disabled={isModalOpen} className="hidden rounded-lg px-2 lg:inline-flex lg:px-3">
                 <FolderOpen className="h-4 w-4 sm:mr-1.5" />
                 <span className="hidden sm:inline">Projects</span>
               </Button>
@@ -165,7 +165,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen} className="rounded-lg px-2 sm:px-3">
+              <Button variant="ghost" size="sm" onClick={onOpenProfile} disabled={isModalOpen} className="hidden rounded-lg px-2 lg:inline-flex lg:px-3">
                 <Settings className="h-4 w-4 md:mr-1.5" />
                 <span className="hidden md:inline">Configuration</span>
               </Button>
@@ -174,7 +174,7 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="sm" asChild className="rounded-lg px-2 sm:px-3">
+              <Button variant="ghost" size="sm" asChild className="hidden rounded-lg px-2 lg:inline-flex lg:px-3">
                 <a href={docsOrigin} target="_blank" rel="noreferrer noopener">
                   <BookOpen className="h-4 w-4 md:mr-1.5" />
                   <span className="hidden md:inline">Docs</span>
@@ -185,18 +185,51 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button 
+              <Button
                 variant="ghost" 
                 size="icon" 
                 onClick={handleRefresh} 
                 disabled={isModalOpen || isRefreshing} 
                 aria-label="Refresh Dashboard"
+                className="hidden lg:inline-flex"
               >
                 <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
               </Button>
             </TooltipTrigger>
             <TooltipContent>Refresh</TooltipContent>
           </Tooltip>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" aria-label="More navigation actions" className="lg:hidden">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>More</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={onOpenProject} disabled={isModalOpen}>
+                <FolderOpen className="mr-2 h-4 w-4" />
+                Projects
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onOpenProfile} disabled={isModalOpen}>
+                <Settings className="mr-2 h-4 w-4" />
+                Configuration
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a href={docsOrigin} target="_blank" rel="noreferrer noopener">
+                  <BookOpen className="mr-2 h-4 w-4" />
+                  Docs
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => void handleRefresh()} disabled={isModalOpen || isRefreshing}>
+                <RefreshCw className={cn("mr-2 h-4 w-4", isRefreshing && "animate-spin")} />
+                Refresh
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <DropdownMenu>
             <Tooltip>
               <TooltipTrigger asChild>

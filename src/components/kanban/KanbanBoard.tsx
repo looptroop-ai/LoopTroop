@@ -284,7 +284,7 @@ export function KanbanBoard() {
   const resetFiltersKey = `${searchQuery}-${selectedProjectId}-${selectedPriority?.join(',')}-${selectedStatus?.join(',')}-${selectedPhase?.join(',')}-${selectedStuckDays}-${errorState}-${showMocks}-${sortBy}`
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+    <div className="flex h-[calc(100vh-3.5rem)] flex-col supports-[height:100dvh]:h-[calc(100dvh-3.5rem)]">
       {/* Triage & Filter Control Bar */}
       {/* Triage & Filter Control Bar */}
       <div
@@ -745,7 +745,7 @@ export function KanbanBoard() {
           </div>
         </div>
       )}
-      <div className="grid flex-1 grid-cols-1 gap-4 p-4 md:p-5 md:grid-cols-2 lg:grid-cols-[1fr_2.2fr_2.2fr_1fr] overflow-y-auto md:overflow-hidden bg-background/50 relative">
+      <div className="grid flex-1 grid-cols-1 gap-4 p-4 md:p-5 md:grid-cols-2 lg:grid-cols-[1fr_2.2fr_2.2fr_1fr] overflow-y-auto lg:overflow-hidden bg-background/50 relative">
         {ticketsByPhase.map((col) => (
           <KanbanColumn
             key={col.id}

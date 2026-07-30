@@ -172,6 +172,26 @@ describe('DashboardHeader', () => {
     expect(within(projectSection as HTMLElement).getByText('🧭')).toBeInTheDocument()
   })
 
+  it('only spans the title across two columns when the details dialog uses its wider layout', () => {
+    mockUseProjects.mockReturnValue({ data: [] })
+    const ticket = makeTicket({
+      status: 'DRAFTING_PRD',
+      availableActions: ['cancel'],
+      projectId: 999,
+    })
+
+    renderWithProviders(
+      <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+        <DashboardHeader ticket={ticket} />
+      </UIContext.Provider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+
+    expect(screen.getByText('Title').parentElement).toHaveClass('sm:col-span-2')
+    expect(screen.getByText('Title').parentElement).not.toHaveClass('col-span-2')
+  })
+
   it('shows pause-aware implementation time and its delivery breakdown in Details', async () => {
     const ticket = makeTicket({
       status: 'RUNNING_FINAL_TEST',

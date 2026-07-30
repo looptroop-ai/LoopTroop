@@ -114,7 +114,7 @@ describe('KanbanBoard', () => {
   })
 
   it('renders 4 columns', () => {
-    renderWithProviders(<KanbanBoard />)
+    const { container } = renderWithProviders(<KanbanBoard />)
     const todo = screen.getByText('To Do')
     const needsInput = screen.getByText('Needs Input')
     const inProgress = screen.getByText('In Progress')
@@ -127,6 +127,8 @@ describe('KanbanBoard', () => {
     expect(todo.compareDocumentPosition(needsInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(needsInput.compareDocumentPosition(inProgress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(inProgress.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(container.querySelector('.grid.flex-1')).toHaveClass('overflow-y-auto', 'lg:overflow-hidden')
+    expect(container.querySelector('.grid.flex-1')).not.toHaveClass('md:overflow-hidden')
   })
 
   it('shows "No tickets" in empty columns', () => {

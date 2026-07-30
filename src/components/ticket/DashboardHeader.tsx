@@ -440,7 +440,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
             onScroll={handleScroll}
             className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm overflow-y-auto pr-1 max-h-[calc(80vh-6rem)] [scrollbar-width:thin] [scrollbar-color:transparent_transparent] hover:[scrollbar-color:var(--border)_transparent]"
           >
-            <div className={project ? '' : 'col-span-2'}>
+            <div className={project ? '' : 'sm:col-span-2'}>
               <span className="text-xs font-medium text-muted-foreground">Title</span>
               <p className="mt-0.5 font-medium [overflow-wrap:anywhere]">{ticket.title}</p>
             </div>

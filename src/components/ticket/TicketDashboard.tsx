@@ -698,7 +698,9 @@ export function TicketDashboard() {
                 contextPhase={contextPhase}
               />
             </div>
-            <ResizeHandle onResize={setNavWidth} />
+            <div className="hidden md:block">
+              <ResizeHandle onResize={setNavWidth} />
+            </div>
             {/* Active Workspace */}
             <div className="flex flex-col flex-1 overflow-hidden">
               {!isFullLogOpen && (

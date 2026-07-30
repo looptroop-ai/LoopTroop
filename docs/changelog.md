@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Improved mobile and tablet responsive layouts across AppShell header, DashboardHeader, KanbanBoard column framing, mobile triage bar filters, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
+- Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
 - Ordered Bead Commits activity views by execution priority and made each bead label show its number and title.
@@ -43,7 +43,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 
 ### Fixed
-- Improved mobile and tablet responsiveness across AppShell header navigation, DashboardHeader title and details modal, KanbanBoard vertical scrolling, ProfileSetup grid fields, AppearancePickers popovers, and web landing page components.
+- Improved mobile and tablet responsiveness across AppShell navigation overflow, DashboardHeader title and details modal, dynamic-height KanbanBoard scrolling, dialog gutters, ticket workspace resizing, ProfileSetup grid fields, AppearancePickers popovers, and web landing page components.
 - Safely restored displaced PRD and Beads item IDs from uniquely matching winner/final records, collapsed duplicate PRD modifications, surfaced exact UI repair details, and continued rejecting ambiguous mappings without inventing text.
 - Retried and safely deferred temporary npm audit transport or malformed-response failures during startup while preserving strict standalone audit failures and blocking local dependency-integrity errors.
 - Preserved OpenRouter routing suffixes after validating their base models so saved Configuration selections remain active when reopened.

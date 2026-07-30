@@ -147,6 +147,16 @@ describe('AppShell', () => {
     expect(docsLink).toHaveAttribute('rel', expect.stringContaining('noopener'))
   })
 
+  it('collapses secondary navigation without overflowing phone and tablet headers', () => {
+    renderShell(uiValue)
+
+    expect(screen.getByText('LoopTroop').parentElement).toHaveClass('hidden', 'sm:flex')
+    expect(screen.getByRole('button', { name: 'More navigation actions' })).toHaveClass('lg:hidden')
+    expect(screen.getByText('Projects').closest('button')).toHaveClass('hidden', 'lg:inline-flex')
+    expect(screen.getByText('Configuration').closest('button')).toHaveClass('hidden', 'lg:inline-flex')
+    expect(screen.getByRole('button', { name: 'Refresh Dashboard' })).toHaveClass('hidden', 'lg:inline-flex')
+  })
+
   it('dispatches search filter updates immediately as the user types', () => {
     const dispatch = vi.fn()
 

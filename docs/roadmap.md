@@ -1592,7 +1592,6 @@ search: false
     *   Support layered extension configuration precedence: defaults -> project config -> local (gitignored) config -> environment variables.
     *   Support optional hook events with condition checks; disabled extensions must not run hooks or commands.
     *   Keep smart auto-selection to choose the best MCP tool/skill for the specific bead, but only from enabled and compatible extensions. ([I1](https://x.com/intellectronica/status/2013625824549969964), [I2](https://www.pulumi.com/blog/self-verifying-ai-agents-vercels-agent-browser-in-the-ralph-wiggum-loop/#when-to-use-each))
-*   **UI Enhancements:** Dark mode support.
 *   **Subagent Work:** Delegate work like planning, documentation, etc. to subagents so the main loop only receives the absolutely necessary context.
 *   **System Info + About (GUI + CLI/API):**
     *   Add `info` command/API and GUI `About` panel with: app version, runtime, OS/arch, config paths/status, active agent/tracker/provider, and template status.

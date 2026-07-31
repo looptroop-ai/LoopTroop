@@ -1,11 +1,11 @@
 import type { PromptPart } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../council/types'
-import { GLOBAL_RULES, SAME_SESSION_RULES, CONVERSATIONAL_RULES } from './globalRules'
+import { getGlobalRuleText } from './globalRules'
 import { buildCompletionInstructions } from '../phases/execution/completionSchema'
 import { getCommandSpecPromptExample } from '@shared/commandSpec'
 
-interface PromptTemplate {
+export interface PromptTemplate {
   id: string
   description: string
   systemRole: string
@@ -1083,11 +1083,34 @@ export const PROM54: PromptTemplate = {
   toolPolicy: 'default',
 }
 
+type PromptTemplateResolver = (template: PromptTemplate) => PromptTemplate
+
+let templateResolver: PromptTemplateResolver | null = null
+
+/**
+ * Registered by the prompt template store so user-customized templates are
+ * substituted at build time. Every prompt call path funnels through
+ * `buildPromptWithRules`, so no phase-level changes are required.
+ */
+export function setPromptTemplateResolver(resolver: PromptTemplateResolver | null): void {
+  templateResolver = resolver
+}
+
+export function resolvePromptTemplate(template: PromptTemplate): PromptTemplate {
+  if (!templateResolver) return template
+  try {
+    return templateResolver(template) ?? template
+  } catch {
+    return template
+  }
+}
+
 function buildPromptWithRules(
   rules: string,
-  template: PromptTemplate,
+  requestedTemplate: PromptTemplate,
   contextParts: PromptPart[],
 ): string {
+  const template = resolvePromptTemplate(requestedTemplate)
   return [
     rules,
     '',
@@ -1113,14 +1136,14 @@ export function buildPromptFromTemplate(
   template: PromptTemplate,
   contextParts: PromptPart[],
 ): string {
-  return buildPromptWithRules(GLOBAL_RULES, template, contextParts)
+  return buildPromptWithRules(getGlobalRuleText('GENERAL_GLOBAL_RULES'), template, contextParts)
 }
 
 export function buildSameSessionPromptFromTemplate(
   template: PromptTemplate,
   contextParts: PromptPart[],
 ): string {
-  return buildPromptWithRules(SAME_SESSION_RULES, template, contextParts)
+  return buildPromptWithRules(getGlobalRuleText('GENERAL_SAME_SESSION_RULES'), template, contextParts)
 }
 
 // Helper to build a conversational (multi-turn) prompt from template
@@ -1128,7 +1151,20 @@ export function buildConversationalPrompt(
   template: PromptTemplate,
   contextParts: PromptPart[],
 ): string {
-  return buildPromptWithRules(CONVERSATIONAL_RULES, template, contextParts)
+  return buildPromptWithRules(getGlobalRuleText('GENERAL_CONVERSATIONAL_RULES'), template, contextParts)
+}
+
+/**
+ * Render a template exactly as the model receives it, with the given rule block
+ * prepended and placeholder context sections. Used by the Prompts editor preview.
+ */
+export function previewPrompt(rules: string, template: PromptTemplate): string {
+  const contextParts: PromptPart[] = template.contextInputs.map((input) => ({
+    type: 'text',
+    source: input,
+    content: `<${input} content is injected here at runtime>`,
+  }))
+  return buildPromptWithRules(rules, template, contextParts)
 }
 
 export const ALL_PROMPTS = {

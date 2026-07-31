@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
@@ -26,6 +27,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed dark mode contrast and theme consistency across ModelPicker badges, WelcomeDisclaimer modal tokens, CodeMirror YamlEditor themes, and workspace log text.
 
 ### Added
+- Added a **Prompts** screen, reachable from the top-right header or the `/prompts` route, that lists every built-in prompt grouped by workflow phase and status, plus a separated **General** group containing the three general rule blocks. Prompts are labeled with their human-readable descriptions and flagged when they differ from the built-in default.
+- Added user-editable prompt templates stored as one YAML file per prompt under `<config dir>/templates` (honoring `LOOPTROOP_CONFIG_DIR` and `XDG_CONFIG_HOME`). Files are bootstrapped from the built-in defaults on first start and are never overwritten afterwards, so edits survive upgrades and the folder can be version-controlled with Git.
+- Added a CodeMirror-based prompt editor with Save, Revert, **Show default** comparison, and a **Preview** that renders the fully assembled prompt including the prepended rule block and placeholder context sections.
+- Added prompt template validation that blocks saves which change the prompt `id` or empty `description`, `systemRole`, `task`, or `outputFormat`, and warns without blocking on removed `contextInputs` placeholders, changed `toolPolicy`, or fully removed instructions.
+- Added a **Reset all to defaults** footer action behind an inline confirmation, alongside per-prompt revert.
+- Added `GET/PUT /api/prompts`, `/api/prompts/:id`, `/api/prompts/:id/preview`, `/api/prompts/:id/revert`, and `/api/prompts/reset-all` for the editor.
 - Added **Drafting Workspace Setup Plan** (`GENERATING_EXECUTION_SETUP_PLAN`) with an expanded live log, plan/report artifacts, malformed-output diagnostics, and archived generation versions before setup approval.
 - Added an advisory GitHub origin permission check to project attachment, including clear fork/remotes guidance while keeping read-only repositories attachable.
 - Added direct-process and explicit POSIX, Command Prompt, and PowerShell command specifications with repository-relative working directories, structured environments, and bounded timeouts.
@@ -33,6 +40,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Changed prompt assembly so user overrides are resolved centrally inside `buildPromptWithRules()`, meaning every existing phase call site picks up edited templates without per-phase changes. General rule blocks resolve through the same override layer.
+- Renamed the built-in rule constants to `DEFAULT_GLOBAL_RULES`, `DEFAULT_SAME_SESSION_RULES`, and `DEFAULT_CONVERSATIONAL_RULES`, and exposed them by the stable ids `GENERAL_GLOBAL_RULES`, `GENERAL_SAME_SESSION_RULES`, and `GENERAL_CONVERSATIONAL_RULES` used by the editor.
+- Extracted the app config directory resolver into `server/lib/appConfigDir.ts` so the prompt templates folder and the application database agree on one location across platforms.
 - Changed setup-plan regeneration to durably preserve commentary and the current structured/raw baseline, enter a fresh drafting version, and publish a separate approval copy while runtime edits continue to rewind directly to approval.
 - Updated Bead Commits so By Bead shows per-bead git commits and By File shows per-file git commits, with every bead occurrence labeled and ordered by its execution priority.
 - Rewrote the ticket-view workflow status summaries and Details dialog copy in `shared/workflowMeta.ts` so every phase reads more clearly for humans, expanded the top summaries to fuller explanations, and moved Safe resume guidance out of the top summary into the detailed notes while preserving the same workflow behavior, recovery semantics, and context expectations.

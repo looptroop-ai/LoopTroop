@@ -89,6 +89,14 @@ This is meant to answer two quick questions without opening logs or artifacts:
 - "Where does the app keep its own data?"
 - "Where does each project keep its local LoopTroop state?"
 
+## Prompts
+
+Prompts are configured separately from the profile, through the **Prompts** button in the top-right header (route `/prompts`). Unlike profile settings, prompt edits are stored as YAML files on disk under `<config dir>/templates` — one file per prompt — rather than in the application database.
+
+Prompt edits are read when a phase builds its prompt, so a save applies to runs started afterwards; a phase already in flight keeps the prompt it was launched with. A corrupt or invalid template file never blocks a run: LoopTroop falls back to the built-in default for that prompt and reports it as a warning banner in the Prompts screen.
+
+See [Customizing Prompts](prompts.md#customizing-prompts) for the storage layout, validation rules, and editor controls.
+
 ## Quick Reference
 
 | Setting | Default | Range | Group | Read timing |

@@ -1,4 +1,4 @@
-import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal, MoreHorizontal } from 'lucide-react'
+import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal, MoreHorizontal, MessageSquareText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 interface AppShellProps {
   children: React.ReactNode
   onOpenProfile?: () => void
+  onOpenPrompts?: () => void
   onOpenProject?: () => void
   onOpenTicket?: () => void
   isModalOpen?: boolean
@@ -66,7 +67,7 @@ function getActiveTriageFilterSummaries(filters: UIState['filters']): string[] {
   return summaries
 }
 
-export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket, isModalOpen = false }: AppShellProps) {
+export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, isModalOpen = false }: AppShellProps) {
   const { state, dispatch } = useUI()
   const theme = state.theme
   const queryClient = useQueryClient()
@@ -174,6 +175,15 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
+              <Button variant="ghost" size="sm" onClick={onOpenPrompts} disabled={isModalOpen} className="hidden rounded-lg px-2 lg:inline-flex lg:px-3">
+                <MessageSquareText className="h-4 w-4 md:mr-1.5" />
+                <span className="hidden md:inline">Prompts</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Edit workflow prompts</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button variant="ghost" size="sm" asChild className="hidden rounded-lg px-2 lg:inline-flex lg:px-3">
                 <a href={docsOrigin} target="_blank" rel="noreferrer noopener">
                   <BookOpen className="h-4 w-4 md:mr-1.5" />
@@ -217,6 +227,10 @@ export function AppShell({ children, onOpenProfile, onOpenProject, onOpenTicket,
               <DropdownMenuItem onClick={onOpenProfile} disabled={isModalOpen}>
                 <Settings className="mr-2 h-4 w-4" />
                 Configuration
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onOpenPrompts} disabled={isModalOpen}>
+                <MessageSquareText className="mr-2 h-4 w-4" />
+                Prompts
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <a href={docsOrigin} target="_blank" rel="noreferrer noopener">

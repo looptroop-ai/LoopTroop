@@ -22,9 +22,11 @@ The shared builders apply one of three rule blocks before sending a prompt:
 
 | Builder | Rule block | Session type | Purpose |
 | --- | --- | --- | --- |
-| `buildPromptFromTemplate()` | `GLOBAL_RULES` | Fresh session | Tells the model that all needed context is in the current prompt. |
-| `buildSameSessionPromptFromTemplate()` | `SAME_SESSION_RULES` | Existing session | Tells the model to use the current session history plus the provided context. |
-| `buildConversationalPrompt()` | `CONVERSATIONAL_RULES` | Multi-turn session | Supports the interactive interview loop while preserving structured tag output. |
+| `buildPromptFromTemplate()` | `GENERAL_GLOBAL_RULES` | Fresh session | Tells the model that all needed context is in the current prompt. |
+| `buildSameSessionPromptFromTemplate()` | `GENERAL_SAME_SESSION_RULES` | Existing session | Tells the model to use the current session history plus the provided context. |
+| `buildConversationalPrompt()` | `GENERAL_CONVERSATIONAL_RULES` | Multi-turn session | Supports the interactive interview loop while preserving structured tag output. |
+
+Each rule block is itself editable from the **Prompts** screen (see [Customizing Prompts](#customizing-prompts)); the built-in text lives in `server/prompts/globalRules.ts` as `DEFAULT_GLOBAL_RULE_TEXTS`.
 
 Tool policies are deliberately small:
 
@@ -2098,7 +2100,46 @@ Council draft retries have a local equivalent in `server/council/drafter.ts` bec
 
 Repairs must only correct formatting or structure. They should not invent requirements, answers, code changes, or missing user intent. See [Output Normalization](output-normalization.md) for parser repair rules, retry attempt storage, and Raw attempt diagnostics.
 
-## 6. Maintenance Notes
+## 6. Customizing Prompts
+
+Every built-in prompt and every general rule block can be edited from the app. Open **Prompts** in the top-right header (or navigate to `/prompts`).
+
+### Where Edits Are Stored
+
+On first start, LoopTroop writes one YAML file per prompt into a `templates` folder inside the LoopTroop config directory:
+
+| Platform | Default location |
+| --- | --- |
+| Linux / macOS | `$XDG_CONFIG_HOME/looptroop/templates`, falling back to `~/.config/looptroop/templates` |
+| Any platform | `$LOOPTROOP_CONFIG_DIR/templates` when `LOOPTROOP_CONFIG_DIR` is set |
+
+Bootstrapping never overwrites an existing file, so your edits survive upgrades. New prompts added by an upgrade appear as new files on the next start. The folder is plain YAML, so you can put it under Git if you want version history and diffs.
+
+### How The Editor Is Organized
+
+The left column lists workflow groups in lifecycle order (Discovery, Interview, Specs, Blueprint, Pre-Implementation, Implementation, Post-Implementation, Errors), followed by a separated **General** group holding the three rule blocks. The middle column lists the prompts for the selected group, headed by the workflow status that runs them, labeled with the prompt's human-readable description and flagged with a dot when modified.
+
+Each prompt offers:
+
+| Control | Behavior |
+| --- | --- |
+| **Save** | Validates then writes the file. Blocking errors are shown inline and nothing is written. |
+| **Show default** | Read-only view of the built-in text for comparison. |
+| **Preview** | The fully assembled prompt as the model receives it, including the prepended rule block and placeholder context sections. |
+| **Revert** | Restores that single prompt to its built-in default. |
+| **Reset all to defaults** | Footer action behind a confirmation; discards every prompt edit at once. |
+
+### Validation Rules
+
+Saving is blocked when the edit changes the prompt `id` or empties `description`, `systemRole`, `task`, or `outputFormat`. These fields are load-bearing for parsing and phase routing.
+
+Saving is allowed but warned when the edit removes a `contextInputs` placeholder that the phase still supplies, changes `toolPolicy`, or removes every instruction. These are legitimate customizations that commonly degrade output quality.
+
+### Failure Behavior
+
+A corrupt, unreadable, or invalid template file never stops a workflow. The loader logs a startup warning, surfaces it as a banner in the Prompts screen, and falls back to the built-in default for that prompt only. Saved edits take effect for runs started after the save; in-flight phases keep the prompt they were launched with.
+
+## 7. Maintenance Notes
 
 When adding or changing a prompt:
 

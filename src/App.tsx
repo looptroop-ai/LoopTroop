@@ -8,6 +8,7 @@ import { lazyWithChunkReload } from '@/lib/lazyWithChunkReload'
 const ProfileSetup = lazyWithChunkReload('ProfileSetup', () => import('@/components/config/ProfileSetup').then(m => ({ default: m.ProfileSetup })))
 const ProjectsPanel = lazyWithChunkReload('ProjectsPanel', () => import('@/components/project/ProjectsPanel').then(m => ({ default: m.ProjectsPanel })))
 const TicketForm = lazyWithChunkReload('TicketForm', () => import('@/components/ticket/TicketForm').then(m => ({ default: m.TicketForm })))
+const PromptsDialog = lazyWithChunkReload('PromptsDialog', () => import('@/components/prompts/PromptsDialog').then(m => ({ default: m.PromptsDialog })))
 import { KeyboardShortcuts } from '@/components/shared/KeyboardShortcuts'
 import { StartupRestorePopup } from '@/components/shared/StartupRestorePopup'
 import { AboutDialog } from '@/components/config/AboutDialog'
@@ -31,11 +32,13 @@ const ROUTE_ROOT = '/'
 const ROUTE_CONFIG = '/config'
 const ROUTE_PROJECT_NEW = '/project/new'
 const ROUTE_TICKET_NEW = '/ticket/new'
+const ROUTE_PROMPTS = '/prompts'
 
-function getInitialModal(pathname: string): 'profile' | 'project' | 'ticket' | null {
+function getInitialModal(pathname: string): 'profile' | 'project' | 'ticket' | 'prompts' | null {
   if (pathname === ROUTE_CONFIG) return 'profile'
   if (pathname === ROUTE_PROJECT_NEW) return 'project'
   if (pathname === ROUTE_TICKET_NEW) return 'ticket'
+  if (pathname === ROUTE_PROMPTS) return 'prompts'
   return null
 }
 
@@ -59,6 +62,7 @@ function App() {
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const [isProjectOpen, setIsProjectOpen] = useState(() => initialModal === 'project')
   const [isTicketOpen, setIsTicketOpen] = useState(() => initialModal === 'ticket')
+  const [isPromptsOpen, setIsPromptsOpen] = useState(() => initialModal === 'prompts')
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
       return !localStorage.getItem(WELCOME_DISCLAIMER_STORAGE_KEY)
@@ -70,7 +74,7 @@ function App() {
   const isRestorePopupOpen = !isWelcomeOpen
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
-  const isModalOpen = isProfileOpen || isAboutOpen || isProjectOpen || isTicketOpen || isWelcomeOpen || isRestorePopupOpen
+  const isModalOpen = isProfileOpen || isAboutOpen || isProjectOpen || isTicketOpen || isPromptsOpen || isWelcomeOpen || isRestorePopupOpen
 
   useEffect(() => {
     if (initialModal === 'profile') {
@@ -125,8 +129,13 @@ function App() {
     const handlePop = () => {
       const p = window.location.pathname
       prevPathRef.current = p
+      setIsPromptsOpen(p === ROUTE_PROMPTS)
       if (p === ROUTE_ROOT || p === '') {
         dispatch({ type: 'CLOSE_TICKET' })
+        setIsProfileOpen(false)
+        setIsProjectOpen(false)
+        setIsTicketOpen(false)
+      } else if (p === ROUTE_PROMPTS) {
         setIsProfileOpen(false)
         setIsProjectOpen(false)
         setIsTicketOpen(false)
@@ -167,6 +176,15 @@ function App() {
   const closeProfile = () => {
     window.history.pushState(null, '', prevPathRef.current)
     setIsProfileOpen(false)
+  }
+  const openPrompts = () => {
+    prevPathRef.current = window.location.pathname
+    window.history.pushState(null, '', ROUTE_PROMPTS)
+    setIsPromptsOpen(true)
+  }
+  const closePrompts = () => {
+    window.history.pushState(null, '', prevPathRef.current)
+    setIsPromptsOpen(false)
   }
   const openAbout = () => {
     setIsAboutOpen(true)
@@ -209,6 +227,7 @@ function App() {
         )}
         <AppShell
           onOpenProfile={openProfile}
+          onOpenPrompts={openPrompts}
           onOpenProject={openProject}
           onOpenTicket={openTicket}
           isModalOpen={isModalOpen}
@@ -219,6 +238,12 @@ function App() {
         <CenteredModal open={isProfileOpen} onClose={closeProfile} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>
           <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
             <ProfileSetup onClose={closeProfile} onOpenAbout={openAbout} />
+          </Suspense>
+        </CenteredModal>
+
+        <CenteredModal open={isPromptsOpen} onClose={closePrompts} title="Prompts" maxWidth="max-w-6xl">
+          <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
+            <PromptsDialog />
           </Suspense>
         </CenteredModal>
 

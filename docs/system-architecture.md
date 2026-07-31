@@ -216,7 +216,8 @@ Prompt acquisition is bounded by timeout and abort signals. OpenCode `create`, `
 | Area | Modules |
 | --- | --- |
 | Reusable council pipeline | `server/council/pipeline.ts`, `drafter.ts`, `voter.ts`, `refiner.ts`, `quorum.ts` |
-| Prompt template layer | `server/prompts/index.ts` (per-phase prompt templates), `server/prompts/globalRules.ts` (`GLOBAL_RULES`, `SAME_SESSION_RULES`, `CONVERSATIONAL_RULES`) |
+| Prompt template layer | `server/prompts/index.ts` (per-phase prompt templates), `server/prompts/globalRules.ts` (`GENERAL_GLOBAL_RULES`, `GENERAL_SAME_SESSION_RULES`, `GENERAL_CONVERSATIONAL_RULES`) |
+| User prompt overrides | `server/prompts/templateStore.ts` (YAML files under the app config dir), `server/prompts/templateFile.ts` (serialize/parse/validate), `shared/promptCatalog.ts` (phase grouping), `server/routes/prompts.ts` (editor API) |
 | Structured-output schemas and normalizers | `server/structuredOutput/*` |
 | Tagged marker extraction and repair-aware parsing | `server/phases/parserTaggedStructuredOutput.ts` |
 | Retry policy, raw-attempt capture, prompt echo detection | `server/lib/structuredOutputRetry.ts`, `structuredRawAttempts.ts`, `structuredRetryDiagnostics.ts`, `promptEcho.ts` |

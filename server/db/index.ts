@@ -1,33 +1,10 @@
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { dirname, isAbsolute, resolve } from 'path'
-import { homedir, tmpdir } from 'os'
 import { existsSync, mkdirSync } from 'fs'
-import { isMainThread, threadId } from 'worker_threads'
 import * as schema from './schema'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
-
-const isTestRuntime = process.env.NODE_ENV === 'test'
-  || process.env.VITEST === 'true'
-  || process.env.VITEST === '1'
-
-function resolveAppConfigDir(): string {
-  const configured = process.env.LOOPTROOP_CONFIG_DIR?.trim()
-  if (configured) {
-    return isAbsolute(configured) ? configured : resolve(process.cwd(), configured)
-  }
-
-  if (isTestRuntime) {
-    const workerSuffix = `${process.pid}-${isMainThread ? 'main' : `thread-${threadId}`}`
-    return resolve(tmpdir(), 'looptroop-vitest', workerSuffix)
-  }
-
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim()
-  const baseDir = xdgConfigHome
-    ? (isAbsolute(xdgConfigHome) ? xdgConfigHome : resolve(process.cwd(), xdgConfigHome))
-    : resolve(homedir(), '.config')
-  return resolve(baseDir, 'looptroop')
-}
+import { resolveAppConfigDir } from '../lib/appConfigDir'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 

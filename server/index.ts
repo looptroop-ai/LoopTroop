@@ -10,6 +10,7 @@ import { streamRouter } from './routes/stream'
 import { modelsRouter } from './routes/models'
 import { filesRouter } from './routes/files'
 import { beadsRouter } from './routes/beads'
+import { promptsRouter } from './routes/prompts'
 import { validateJson } from './middleware/validation'
 import { getAllowedBackendHost, getBackendPort, getFrontendOrigin, isLoopbackHost } from '../shared/appConfig'
 import { workflowRouter } from './routes/workflow'
@@ -90,6 +91,7 @@ app.route('/api', streamRouter)
 app.route('/api', modelsRouter)
 app.route('/api', filesRouter)
 app.route('/api', beadsRouter)
+app.route('/api', promptsRouter)
 app.route('/api', workflowRouter)
 
 const port = getBackendPort()

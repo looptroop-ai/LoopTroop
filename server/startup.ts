@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { initializeDatabase } from './db/init'
 import { startWalCheckpoint } from './db/index'
 import { createIndexes } from './db/indexes'
+import { initPromptTemplates } from './prompts/templateStore'
 import { hydrateAllTickets } from './machines/persistence'
 import { getOpenCodeAdapter } from './opencode/factory'
 import { SessionManager } from './opencode/sessionManager'
@@ -115,6 +116,20 @@ export async function startupSequence(): Promise<void> {
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()
+
+  console.log('[startup] Step 3b: Load user prompt templates')
+  try {
+    const promptWarnings = initPromptTemplates()
+    if (promptWarnings.length === 0) {
+      console.log('[startup] Prompt templates loaded')
+    } else {
+      for (const warning of promptWarnings) {
+        console.warn(`[startup] Prompt template "${warning.id}": ${warning.message}`)
+      }
+    }
+  } catch (err) {
+    console.warn(`[startup] Prompt template initialization failed, using built-in defaults: ${getErrorMessage(err)}`)
+  }
 
   console.log('[startup] Step 4: OpenCode health check')
   const adapter = getOpenCodeAdapter()

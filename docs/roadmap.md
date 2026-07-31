@@ -130,7 +130,7 @@ search: false
     * Add a future UI surface to show `planning_context`, pinned files, demoted files, ignored files, and "why selected" explanations.
     * Add a legacy migration alias so existing prompts/components that still request `relevant_files` receive `planning_context` until all phases are updated.
 *   **Optimize components:** Update each component to latest stable and optimize each component of the app, after creation, using ref.tools mcp that can read latest version of docs plus exa mcp that can search the internet and skill for each component.
-*   **Prompts editor:** In configuration, allow users to edit the system and user prompts used for each phase of the workflow, with version history and ability to revert to defaults.
+*   ~~**Prompts editor:** In configuration, allow users to edit the system and user prompts used for each phase of the workflow, with version history and ability to revert to defaults.~~ **Shipped.** The **Prompts** screen exposes every prompt and general rule block as editable YAML under `<config dir>/templates`, with preview, validation, per-prompt revert, and reset-all. Version history is intentionally delegated to Git over the templates folder rather than a bespoke history system. See [Customizing Prompts](prompts.md#customizing-prompts).
 *   **Other council members:** Implement other AI council members into the flow - at least at final test creation. If TDD is implemented, the test should be created before execution has started.
 *   **WYSIWYG editor:** A human-friendly editor for markdown files.
 *   **Comments section:** Per phase users can add comments and discuss changes, without affecting the agent's behavior.
@@ -604,11 +604,11 @@ search: false
     *   Reject candidate questions when `novelty_score` is below threshold or when the same decision is already resolved.
     *   Require minimum category coverage before closing interview: `technical_implementation`, `ui_ux`, `edge_cases`, `tradeoffs`, `integration`, `error_handling`, `performance` (or explicit `not_applicable` with rationale).
 *   **Structured output reliability + prompt-contract reliability (all AI phases + deterministic file mutation path):**
-    *   **Exposed Prompt Templates:**
-        *   Initialize `.looptroop/templates/` with default system prompts for `interview`, `prd`, `beads`, and `execution`.
-        *   Allow users to customize these markdown files to adjust council behavior/tone and phase priorities.
-        *   Backend loads prompt templates from this folder at runtime, with deterministic fallback to built-in defaults when template files are missing/corrupt.
-        *   Persist prompt-template load receipts per phase with `template_path`, `template_hash`, `fallback_used`, and `loaded_at`.
+    *   ~~**Exposed Prompt Templates:**~~ **Shipped** as part of the Prompts editor, with two deliberate deviations from the original sketch:
+        *   ~~Initialize `.looptroop/templates/` with default system prompts for `interview`, `prd`, `beads`, and `execution`.~~ Templates live in the user-space config directory (`<config dir>/templates`) rather than per-project `.looptroop/`, and cover **every** prompt individually instead of four coarse phase buckets.
+        *   ~~Allow users to customize these markdown files to adjust council behavior/tone and phase priorities.~~ Done, as YAML (matching the structured `PromptTemplate` shape) rather than freeform markdown, which lets the editor validate edits before they reach a run.
+        *   ~~Backend loads prompt templates from this folder at runtime, with deterministic fallback to built-in defaults when template files are missing/corrupt.~~ Done; a corrupt file falls back to the built-in default for that prompt only and surfaces a startup log warning plus an in-app banner.
+        *   Prompt-template load receipts (`template_path`, `template_hash`, `fallback_used`, `loaded_at`) were **intentionally skipped**; the load warnings surfaced in the Prompts screen cover the diagnostic need without a new persistence surface.
     *   Define versioned schemas per phase (`interview.v1`, `prd.v1`, `beads.v1`, `execution.v1`) and reject unknown schema versions.
     *   Add strict post-AI schema validation gate (`zod`) on every response before any artifact write or state transition.
     *   Validation path must be deterministic: `parse -> zod validate -> persist`; if validation fails, store raw response + validation errors in quarantine and auto-retry the exact same step once with the same model/settings; if retry also fails, transition to `BLOCKED_ERROR`.

@@ -2119,7 +2119,7 @@ Bootstrapping never overwrites an existing file, so your edits survive upgrades.
 
 The left column lists workflow groups in lifecycle order (Discovery, Interview, Specs, Blueprint, Pre-Implementation, Implementation, Post-Implementation, Errors), followed by a separated **General** group holding the three rule blocks. The middle column lists the prompts for the selected group, headed by the workflow status that runs them, labeled with the prompt's human-readable description and flagged with a dot when modified.
 
-Both left columns collapse together via the **Hide list** action in the bottom-left corner of the dialog footer, giving the editor the full dialog width for long prompts. While collapsed, a **Show list** action appears in the editor header to bring them back. The toggle is per-session and does not persist.
+Both left columns collapse together via the **Hide list** action in the bottom-left corner of the dialog footer, giving the editor the full dialog width for long prompts. While collapsed, a **Show list** action appears in the same bottom-left corner to bring them back. The footer is divided by the same vertical lines as the columns above it, so the phase, prompt, and editor regions visually continue into the footer. The toggle is per-session and does not persist.
 
 Each prompt offers:
 

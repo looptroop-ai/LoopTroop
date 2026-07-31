@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, PanelLeftClose, RotateCcw } from 'lucide-react'
+import { AlertTriangle, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -118,62 +118,84 @@ export function PromptsDialog() {
                 promptId={selectedPromptId}
                 wordWrap={wordWrap}
                 onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
-                onShowList={sidebarCollapsed ? () => setSidebarCollapsed(false) : undefined}
               />
             )
             : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
         </div>
       </div>
 
-      <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-4 py-2.5">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {!sidebarCollapsed && (
-            <>
+      <footer className="flex items-stretch border-t border-border/60">
+        {!sidebarCollapsed ? (
+          <>
+            {/* Aligned with the workflow-group column (w-44) */}
+            <div className="flex w-44 shrink-0 items-center px-2 py-2">
               <Button
                 variant="ghost"
                 size="sm"
-                className="-ml-2 h-7 px-2 text-xs"
+                className="h-7 px-2 text-xs"
                 onClick={() => setSidebarCollapsed(true)}
                 title="Collapse the list columns"
               >
                 <PanelLeftClose className="mr-1.5 h-3.5 w-3.5" />
                 Hide list
               </Button>
-              <span className="h-3.5 w-px bg-border" aria-hidden />
-            </>
-          )}
-          {data.modifiedCount > 0
-            ? <Badge variant="secondary">{data.modifiedCount} modified</Badge>
-            : <span>All prompts are at their defaults</span>}
-          <span className="hidden truncate font-mono sm:inline" title={data.templatesDir}>{data.templatesDir}</span>
-        </div>
-        {confirmReset ? (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">Discard all prompt edits?</span>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmReset(false)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={resetAll.isPending}
-              onClick={async () => {
-                await resetAll.mutateAsync()
-                setConfirmReset(false)
-              }}
-            >
-              Reset all
-            </Button>
-          </div>
+            </div>
+            {/* Aligned with the prompt-list column (w-64) */}
+            <div className="flex w-64 shrink-0 items-center gap-2 border-l border-border/60 px-3 py-2 text-xs text-muted-foreground">
+              {data.modifiedCount > 0
+                ? <Badge variant="secondary">{data.modifiedCount} modified</Badge>
+                : <span>All prompts are at their defaults</span>}
+            </div>
+          </>
         ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={data.modifiedCount === 0}
-            onClick={() => setConfirmReset(true)}
-          >
-            <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            Reset all to defaults
-          </Button>
+          <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setSidebarCollapsed(false)}
+              title="Restore the list columns"
+            >
+              <PanelLeftOpen className="mr-1.5 h-3.5 w-3.5" />
+              Show list
+            </Button>
+            <span className="h-3.5 w-px bg-border" aria-hidden />
+            {data.modifiedCount > 0
+              ? <Badge variant="secondary">{data.modifiedCount} modified</Badge>
+              : <span>All prompts are at their defaults</span>}
+          </div>
         )}
+        {/* Aligned with the editor column */}
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-2 border-l border-border/60 px-4 py-2">
+          <span className="hidden truncate font-mono sm:inline" title={data.templatesDir}>{data.templatesDir}</span>
+          {confirmReset ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Discard all prompt edits?</span>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmReset(false)}>Cancel</Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={resetAll.isPending}
+                onClick={async () => {
+                  await resetAll.mutateAsync()
+                  setConfirmReset(false)
+                }}
+              >
+                Reset all
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={data.modifiedCount === 0}
+              onClick={() => setConfirmReset(true)}
+            >
+              <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+              Reset all to defaults
+            </Button>
+          )}
+        </div>
       </footer>
     </div>
   )

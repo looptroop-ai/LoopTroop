@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Columns2, Eye, PanelLeftOpen, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
+import { AlertTriangle, Columns2, Eye, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { YamlEditor } from '@/components/editor/YamlEditor'
@@ -15,8 +15,6 @@ interface PromptEditorProps {
   promptId: string
   wordWrap: boolean
   onToggleWordWrap: () => void
-  /** Provided only while the prompt list is collapsed, to offer a way back. */
-  onShowList?: () => void
 }
 
 /**
@@ -26,7 +24,7 @@ interface PromptEditorProps {
  */
 type ViewMode = 'edit' | 'diff' | 'preview'
 
-export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onShowList }: PromptEditorProps) {
+export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEditorProps) {
   const { data: prompt, isLoading, error } = usePrompt(promptId)
   const savePrompt = useSavePrompt()
   const revertPrompt = useRevertPrompt()
@@ -94,12 +92,6 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onShowList 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4 py-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            {onShowList && (
-              <Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" onClick={onShowList}>
-                <PanelLeftOpen className="mr-1.5 h-3.5 w-3.5" />
-                Show list
-              </Button>
-            )}
             <h3 className="truncate text-sm font-semibold">{prompt.id}</h3>
             {prompt.modified && <Badge variant="secondary">Modified</Badge>}
             {prompt.kind === 'global_rule' && <Badge variant="outline">Global rule</Badge>}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
+import { AlertTriangle, ChevronRight, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -19,21 +19,33 @@ function firstPromptId(groups: PromptGroup[]): string | null {
 export function PromptsDialog() {
   const { data, isLoading, error } = usePromptCatalog()
   const resetAll = useResetAllPrompts()
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
   const [confirmReset, setConfirmReset] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [wordWrap, setWordWrap] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string> | null>(null)
 
   const groups = useMemo(() => data?.groups ?? [], [data])
 
   useEffect(() => {
     if (groups.length === 0) return
-    if (selectedGroupId === null) setSelectedGroupId(groups[0]?.id ?? null)
     if (selectedPromptId === null) setSelectedPromptId(firstPromptId(groups))
-  }, [groups, selectedGroupId, selectedPromptId])
+  }, [groups, selectedPromptId])
 
-  const activeGroup = groups.find((group) => group.id === selectedGroupId) ?? groups[0] ?? null
+  // Every group starts expanded so the full phase → status → prompt hierarchy is visible.
+  useEffect(() => {
+    if (groups.length === 0) return
+    setExpandedGroups((prev) => prev ?? new Set(groups.map((group) => group.id)))
+  }, [groups])
+
+  const toggleGroup = (groupId: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev ?? [])
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading prompts…</div>
@@ -61,53 +73,97 @@ export function PromptsDialog() {
 
       <div className="flex min-h-0 flex-1">
         {!sidebarCollapsed && (
-        <>
-        {/* Workflow groups */}
-        <nav className="w-44 shrink-0 overflow-y-auto border-r border-border/60 p-2">
-          {groups.map((group, index) => (
-            <div key={group.id}>
-              {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}
-              <button
-                onClick={() => setSelectedGroupId(group.id)}
-                className={cn(
-                  'w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors cursor-pointer',
-                  activeGroup?.id === group.id
-                    ? 'bg-accent font-medium text-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                )}
-              >
-                {group.label}
-              </button>
-            </div>
-          ))}
-        </nav>
+          <>
+            {/* Single sidebar: workflow groups with their statuses and prompts nested beneath, like the ticket navigator */}
+            <nav className="w-64 shrink-0 overflow-y-auto border-r border-border/60 p-2">
+              {groups.map((group, index) => {
+                const isExpanded = expandedGroups?.has(group.id) ?? false
+                const containsSelected = group.statuses.some((status) =>
+                  status.prompts.some((prompt) => prompt.id === selectedPromptId),
+                )
+                return (
+                  <div key={group.id} className="mb-1">
+                    {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}
+                    <button
+                      onClick={() => toggleGroup(group.id)}
+                      aria-expanded={isExpanded}
+                      title={isExpanded ? `Collapse ${group.label}` : `Expand ${group.label}`}
+                      className={cn(
+                        'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-xs font-semibold uppercase tracking-wider transition-colors cursor-pointer',
+                        containsSelected
+                          ? 'text-foreground'
+                          : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                      )}
+                    >
+                      <ChevronRight className={cn('h-3 w-3 shrink-0 transition-transform', isExpanded && 'rotate-90')} />
+                      <span className="min-w-0 truncate">{group.label}</span>
+                    </button>
 
-        {/* Prompts within the selected group */}
-        <div className="w-64 shrink-0 overflow-y-auto border-r border-border/60 p-2">
-          {activeGroup?.statuses.map((status) => (
-            <div key={status.status} className="mb-3">
-              <div className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {status.label}
-              </div>
-              {status.prompts.map((prompt) => (
-                <button
-                  key={prompt.id}
-                  onClick={() => setSelectedPromptId(prompt.id)}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer',
-                    selectedPromptId === prompt.id
-                      ? 'bg-accent font-medium text-foreground'
-                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate">{prompt.description}</span>
-                  {prompt.modified && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />}
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
-        </>
+                    {isExpanded && (
+                      <div className="ml-3 mt-0.5 space-y-0.5">
+                        {group.statuses.map((status) => {
+                          // A status with a single prompt opens it directly; only statuses
+                          // with multiple prompts list them beneath the status row.
+                          if (status.prompts.length === 1) {
+                            const prompt = status.prompts[0]
+                            if (!prompt) return null
+                            return (
+                              <button
+                                key={status.status}
+                                onClick={() => setSelectedPromptId(prompt.id)}
+                                title={prompt.description}
+                                className={cn(
+                                  'flex w-full flex-col rounded-md px-2.5 py-1 text-left transition-colors cursor-pointer',
+                                  selectedPromptId === prompt.id
+                                    ? 'bg-accent text-foreground'
+                                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                                )}
+                              >
+                                <span className={cn(
+                                  'truncate text-[10px] font-semibold uppercase tracking-wide',
+                                  selectedPromptId === prompt.id ? 'text-foreground/60' : 'text-muted-foreground/70',
+                                )}>
+                                  {status.label}
+                                </span>
+                                <span className="ml-2 flex min-w-0 items-center gap-1.5 text-xs">
+                                  <span className="min-w-0 flex-1 truncate">{prompt.description}</span>
+                                  {prompt.modified && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />}
+                                </span>
+                              </button>
+                            )
+                          }
+
+                          return (
+                            <div key={status.status} className="pt-1">
+                              <div className="px-2.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {status.label}
+                              </div>
+                              {status.prompts.map((prompt) => (
+                                <button
+                                  key={prompt.id}
+                                  onClick={() => setSelectedPromptId(prompt.id)}
+                                  title={prompt.description}
+                                  className={cn(
+                                    'ml-2 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer',
+                                    selectedPromptId === prompt.id
+                                      ? 'bg-accent font-medium text-foreground'
+                                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                                  )}
+                                >
+                                  <span className="min-w-0 flex-1 truncate">{prompt.description}</span>
+                                  {prompt.modified && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />}
+                                </button>
+                              ))}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </nav>
+          </>
         )}
 
         {/* Editor */}
@@ -127,8 +183,8 @@ export function PromptsDialog() {
       <footer className="flex items-stretch border-t border-border/60">
         {!sidebarCollapsed ? (
           <>
-            {/* Aligned with the workflow-group column (w-44) */}
-            <div className="flex w-44 shrink-0 items-center px-2 py-2">
+            {/* Aligned with the sidebar column (w-64) */}
+            <div className="flex w-64 shrink-0 items-center px-2 py-2">
               <Button
                 variant="ghost"
                 size="sm"

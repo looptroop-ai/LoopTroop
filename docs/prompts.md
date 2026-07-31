@@ -2117,9 +2117,9 @@ Bootstrapping never overwrites an existing file, so your edits survive upgrades.
 
 ### How The Editor Is Organized
 
-The left column lists workflow groups in lifecycle order (Discovery, Interview, Specs, Blueprint, Pre-Implementation, Implementation, Post-Implementation, Errors), followed by a separated **General** group holding the three rule blocks. The middle column lists the prompts for the selected group, headed by the workflow status that runs them, labeled with the prompt's human-readable description and flagged with a dot when modified.
+One sidebar, styled like the ticket navigator, lists the workflow groups in lifecycle order (Discovery, Interview, Specs, Blueprint, Pre-Implementation, Implementation, Post-Implementation, Errors), followed by a separated **General** group holding the three rule blocks. Each group is expandable and contains the workflow statuses that run prompts; each status is labeled with the prompt's human-readable description and flagged with a dot when modified. A status running a single prompt opens it directly, while a status running several prompts lists them beneath it. Groups start expanded and collapse via their chevron, and the group containing the currently open prompt stays highlighted.
 
-Both left columns collapse together via the **Hide list** action in the bottom-left corner of the dialog footer, giving the editor the full dialog width for long prompts. While collapsed, a **Show list** action appears in the same bottom-left corner to bring them back. A single vertical line in the footer continues the divider between the phase and prompt columns, so the **Hide list** action lines up with the phase column while the status text, templates directory, and Reset action sit together to its right. The toggle is per-session and does not persist.
+The sidebar collapses via the **Hide list** action in the bottom-left corner of the dialog footer, giving the editor the full dialog width for long prompts. While collapsed, a **Show list** action appears in the same bottom-left corner to bring them back. A single vertical line in the footer continues the sidebar divider, so the **Hide list** action lines up with the sidebar while the status text, templates directory, and Reset action sit together to its right. The toggle is per-session and does not persist.
 
 Each prompt offers:
 

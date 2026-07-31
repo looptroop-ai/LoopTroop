@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a live side-by-side diff against the built-in default, word wrap, a collapsible prompt list, per-prompt preview, validation, revert, and reset-to-defaults.
+- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a single ticket-style sidebar nesting prompts under their workflow statuses and phases, a live side-by-side diff against the built-in default, word wrap, per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
@@ -30,7 +30,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added a **Prompts** screen, reachable from the top-right header or the `/prompts` route, that lists every built-in prompt grouped by workflow phase and status, plus a separated **General** group containing the three general rule blocks. Prompts are labeled with their human-readable descriptions and flagged when they differ from the built-in default.
 - Added user-editable prompt templates stored as one YAML file per prompt under `<config dir>/templates` (honoring `LOOPTROOP_CONFIG_DIR` and `XDG_CONFIG_HOME`). Files are bootstrapped from the built-in defaults on first start and are never overwritten afterwards, so edits survive upgrades and the folder can be version-controlled with Git.
 - Added a CodeMirror-based prompt editor with Save, Revert, a **Compare to default** side-by-side diff whose right-hand pane stays fully editable while changed regions re-highlight live in subtle red/green tints, a **Word wrap** toggle for long prose instructions, and a **Preview** that renders the fully assembled prompt including the prepended rule block and placeholder context sections.
-- Added **Hide list** / **Show list** actions in the Prompts editor that collapse both the workflow-group and prompt-list columns at once, handing the full dialog width to the editor.
+- Added **Hide list** / **Show list** actions in the Prompts editor that collapse the prompt sidebar, handing the full dialog width to the editor.
 - Added prompt template validation that blocks saves which change the prompt `id` or empty `description`, `systemRole`, `task`, or `outputFormat`, and warns without blocking on removed `contextInputs` placeholders, changed `toolPolicy`, or fully removed instructions.
 - Added a **Reset all to defaults** footer action behind an inline confirmation, alongside per-prompt revert.
 - Added `GET/PUT /api/prompts`, `/api/prompts/:id`, `/api/prompts/:id/preview`, `/api/prompts/:id/revert`, and `/api/prompts/reset-all` for the editor.
@@ -41,6 +41,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Restructured the Prompts editor into a single sidebar in ticket-navigator style: collapsible workflow groups with their statuses nested beneath, where a status running a single prompt opens it directly and a status running several lists them beneath it. This replaces the previous separate workflow-group and prompt-list columns.
 - Changed prompt assembly so user overrides are resolved centrally inside `buildPromptWithRules()`, meaning every existing phase call site picks up edited templates without per-phase changes. General rule blocks resolve through the same override layer.
 - Renamed the built-in rule constants to `DEFAULT_GLOBAL_RULES`, `DEFAULT_SAME_SESSION_RULES`, and `DEFAULT_CONVERSATIONAL_RULES`, and exposed them by the stable ids `GENERAL_GLOBAL_RULES`, `GENERAL_SAME_SESSION_RULES`, and `GENERAL_CONVERSATIONAL_RULES` used by the editor.
 - Extracted the app config directory resolver into `server/lib/appConfigDir.ts` so the prompt templates folder and the application database agree on one location across platforms.
@@ -51,7 +52,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
 - Refined `docs/ticket-lifecycle-screenshots.md` writing style, status action details, direct screenshot rendering, and contextual `?` links to the relevant detailed documentation.
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
-- Moved both the **Hide list** and **Show list** actions in the Prompts editor into the bottom-left corner of the dialog footer, with a single footer divider continuing the phase/prompt column boundary while the status text, templates directory, and Reset action stay together to its right.
+- Moved both the **Hide list** and **Show list** actions in the Prompts editor into the bottom-left corner of the dialog footer, with a single footer divider continuing the sidebar boundary while the status text, templates directory, and Reset action stay together to its right.
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 
 ### Fixed

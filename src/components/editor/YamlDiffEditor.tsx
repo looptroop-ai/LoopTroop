@@ -26,6 +26,32 @@ const sharedTheme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--color-brand-500)', opacity: '0.3' },
 })
 
+/**
+ * The default merge styling only underlines changed text, which reads as noise
+ * next to YAML syntax highlighting. These themes replace it with a tinted line
+ * background plus a stronger tint on the exact changed span: red on the
+ * reference pane (text that is absent from your version) and green on the
+ * editable pane (text you added or altered). Alphas are kept low so the
+ * syntax colors underneath stay legible in both light and dark themes.
+ */
+function diffTheme(rgb: string) {
+  return EditorView.theme({
+    '.cm-changedLine': { backgroundColor: `rgba(${rgb}, 0.10)` },
+    '.cm-changedText': {
+      // Override the built-in underline gradient.
+      background: `rgba(${rgb}, 0.28)`,
+      borderRadius: '2px',
+    },
+    '.cm-changedLine .cm-changedText': { background: `rgba(${rgb}, 0.28)` },
+    '.cm-deletedChunk': { backgroundColor: 'rgba(220, 38, 38, 0.10)' },
+    '.cm-deletedChunk .cm-deletedText': { background: 'rgba(220, 38, 38, 0.28)' },
+    '.cm-changeGutter': { backgroundColor: `rgba(${rgb}, 0.18)` },
+  })
+}
+
+const DELETION_RGB = '220, 38, 38'
+const INSERTION_RGB = '22, 163, 74'
+
 function baseExtensions() {
   return [
     lineNumbers(),
@@ -63,12 +89,13 @@ export function YamlDiffEditor({ original, modified, onChange, wordWrap = false,
       parent: containerRef.current,
       a: {
         doc: initialOriginalRef.current,
-        extensions: [...baseExtensions(), EditorState.readOnly.of(true), wrapExt],
+        extensions: [...baseExtensions(), diffTheme(DELETION_RGB), EditorState.readOnly.of(true), wrapExt],
       },
       b: {
         doc: initialModifiedRef.current,
         extensions: [
           ...baseExtensions(),
+          diffTheme(INSERTION_RGB),
           wrapExt,
           EditorView.updateListener.of((update) => {
             if (update.docChanged) onChangeRef.current(update.state.doc.toString())

@@ -2119,14 +2119,14 @@ Bootstrapping never overwrites an existing file, so your edits survive upgrades.
 
 The left column lists workflow groups in lifecycle order (Discovery, Interview, Specs, Blueprint, Pre-Implementation, Implementation, Post-Implementation, Errors), followed by a separated **General** group holding the three rule blocks. The middle column lists the prompts for the selected group, headed by the workflow status that runs them, labeled with the prompt's human-readable description and flagged with a dot when modified.
 
-Both left columns collapse together via the panel toggle at the left edge of the editor, giving the editor the full dialog width for long prompts. The toggle is per-session and does not persist.
+Both left columns collapse together via the **Hide list** action at the top of the group column, giving the editor the full dialog width for long prompts. While collapsed, a **Show list** action appears in the editor header to bring them back. The toggle is per-session and does not persist.
 
 Each prompt offers:
 
 | Control | Behavior |
 | --- | --- |
 | **Save** | Validates then writes the file. Blocking errors are shown inline and nothing is written. Available in both **Edit** and **Compare to default** views. |
-| **Compare to default** | Side-by-side diff: the built-in default on the left (read-only) and your version on the right, still fully editable. Changed regions re-highlight as you type, so you can reconcile against the default without leaving the editor. Toggle it off to return to the single-pane view. |
+| **Compare to default** | Side-by-side diff: the built-in default on the left (read-only) and your version on the right, still fully editable. Changed lines carry a subtle tinted background — red on the reference pane for text your version drops, green on the editable pane for text you added or altered — with a stronger tint on the exact changed span. Highlighting recomputes as you type, so you can reconcile against the default without leaving the editor. Toggle it off to return to the single-pane view. |
 | **Word wrap** | Toggles soft wrapping in the editor, the diff view, and the preview. Off by default so YAML block scalars keep their true line structure; turn it on for long prose instructions. |
 | **Preview** | The fully assembled prompt as the model receives it, including the prepended rule block and placeholder context sections. Read-only. |
 | **Revert** | Restores that single prompt to its built-in default. |

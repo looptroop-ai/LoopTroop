@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
+import { AlertTriangle, PanelLeftClose, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { usePromptCatalog, useResetAllPrompts, type PromptGroup } from '@/hooks/usePrompts'
 import { PromptEditor } from './PromptEditor'
@@ -65,6 +64,14 @@ export function PromptsDialog() {
         <>
         {/* Workflow groups */}
         <nav className="w-44 shrink-0 overflow-y-auto border-r border-border/60 p-2">
+          <button
+            onClick={() => setSidebarCollapsed(true)}
+            aria-expanded
+            className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors cursor-pointer hover:bg-accent/50 hover:text-foreground"
+          >
+            <PanelLeftClose className="h-3.5 w-3.5 shrink-0" />
+            Hide list
+          </button>
           {groups.map((group, index) => (
             <div key={group.id}>
               {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}
@@ -112,35 +119,17 @@ export function PromptsDialog() {
         )}
 
         {/* Editor */}
-        <div className="flex min-w-0 flex-1">
-          <div className="shrink-0 border-r border-border/60 p-1.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  aria-label={sidebarCollapsed ? 'Show prompt list' : 'Hide prompt list'}
-                  aria-expanded={!sidebarCollapsed}
-                  onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-                >
-                  {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{sidebarCollapsed ? 'Show prompt list' : 'Hide prompt list'}</TooltipContent>
-            </Tooltip>
-          </div>
-          <div className="min-w-0 flex-1">
-            {selectedPromptId
-              ? (
-                <PromptEditor
-                  promptId={selectedPromptId}
-                  wordWrap={wordWrap}
-                  onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
-                />
-              )
-              : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
-          </div>
+        <div className="min-w-0 flex-1">
+          {selectedPromptId
+            ? (
+              <PromptEditor
+                promptId={selectedPromptId}
+                wordWrap={wordWrap}
+                onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
+                onShowList={sidebarCollapsed ? () => setSidebarCollapsed(false) : undefined}
+              />
+            )
+            : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
         </div>
       </div>
 

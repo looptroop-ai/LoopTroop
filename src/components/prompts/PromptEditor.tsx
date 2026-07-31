@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Columns2, Eye, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
+import { AlertTriangle, Columns2, Eye, PanelLeftOpen, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { YamlEditor } from '@/components/editor/YamlEditor'
 import { YamlDiffEditor } from '@/components/editor/YamlDiffEditor'
 import {
@@ -16,6 +15,8 @@ interface PromptEditorProps {
   promptId: string
   wordWrap: boolean
   onToggleWordWrap: () => void
+  /** Provided only while the prompt list is collapsed, to offer a way back. */
+  onShowList?: () => void
 }
 
 /**
@@ -25,7 +26,7 @@ interface PromptEditorProps {
  */
 type ViewMode = 'edit' | 'diff' | 'preview'
 
-export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEditorProps) {
+export function PromptEditor({ promptId, wordWrap, onToggleWordWrap, onShowList }: PromptEditorProps) {
   const { data: prompt, isLoading, error } = usePrompt(promptId)
   const savePrompt = useSavePrompt()
   const revertPrompt = useRevertPrompt()
@@ -93,6 +94,12 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-4 py-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
+            {onShowList && (
+              <Button variant="ghost" size="sm" className="-ml-2 h-7 px-2" onClick={onShowList}>
+                <PanelLeftOpen className="mr-1.5 h-3.5 w-3.5" />
+                Show list
+              </Button>
+            )}
             <h3 className="truncate text-sm font-semibold">{prompt.id}</h3>
             {prompt.modified && <Badge variant="secondary">Modified</Badge>}
             {prompt.kind === 'global_rule' && <Badge variant="outline">Global rule</Badge>}
@@ -100,21 +107,15 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{prompt.description}</p>
         </div>
         <div className="flex items-center gap-1.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant={wordWrap ? 'secondary' : 'ghost'}
-                size="icon"
-                className="h-8 w-8"
-                aria-label={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}
-                aria-pressed={wordWrap}
-                onClick={onToggleWordWrap}
-              >
-                <WrapText className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{wordWrap ? 'Disable word wrap' : 'Enable word wrap'}</TooltipContent>
-          </Tooltip>
+          <Button
+            variant={wordWrap ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={wordWrap}
+            onClick={onToggleWordWrap}
+          >
+            <WrapText className="mr-1.5 h-3.5 w-3.5" />
+            Word wrap
+          </Button>
           <Button
             variant={mode === 'diff' ? 'secondary' : 'ghost'}
             size="sm"

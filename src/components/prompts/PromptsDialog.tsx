@@ -67,11 +67,13 @@ export function PromptsDialog() {
           <button
             onClick={() => setSidebarCollapsed(true)}
             aria-expanded
-            className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors cursor-pointer hover:bg-accent/50 hover:text-foreground"
+            title="Collapse the list columns"
+            className="mb-2 flex w-full items-center gap-2 rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors cursor-pointer hover:border-brand-500/40 hover:bg-brand-500/10 hover:text-brand-600 dark:hover:text-brand-400"
           >
             <PanelLeftClose className="h-3.5 w-3.5 shrink-0" />
             Hide list
           </button>
+          <div className="mb-2 border-t border-border/60" />
           {groups.map((group, index) => (
             <div key={group.id}>
               {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}

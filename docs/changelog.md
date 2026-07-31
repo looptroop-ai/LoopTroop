@@ -51,6 +51,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed Git-hook handling to editable per-ticket Observe, Check, Require, and Run modes, with advisory checks as the non-blocking default.
 - Refined `docs/ticket-lifecycle-screenshots.md` writing style, status action details, direct screenshot rendering, and contextual `?` links to the relevant detailed documentation.
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
+- Made the **Hide list** action in the Prompts editor visually distinct with a dashed outline and brand-tinted hover, separated from the workflow-group list by a divider.
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
 
 ### Fixed

@@ -25,6 +25,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the ticket lifecycle screenshots guide with direct, compact image previews and contextual links to the full documentation.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
 - Fixed dark mode contrast and theme consistency across ModelPicker badges, WelcomeDisclaimer modal tokens, CodeMirror YamlEditor themes, and workspace log text.
+- Removed the backend health status circle indicator overlaid on the top navigation logo.
+
+### Removed
+- Removed the status circle indicator next to the LoopTroop logo in the AppShell header.
 
 ### Added
 - Added a **Prompts** screen, reachable from the top-right header or the `/prompts` route, that lists every built-in prompt grouped by workflow phase and status, plus a separated **General** group containing the three general rule blocks. Prompts are labeled with their human-readable descriptions and flagged when they differ from the built-in default.

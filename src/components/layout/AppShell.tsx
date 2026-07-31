@@ -93,13 +93,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
             window.history.pushState({}, '', '/')
           }}
         >
-          <div className="relative flex items-center justify-center">
-            <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
-            <span className={cn(
-              "absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full ring-2 ring-background transition-all",
-              isOffline ? "bg-amber-500 animate-pulse" : "bg-emerald-500"
-            )} />
-          </div>
+          <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
           <div className="hidden items-baseline gap-2 sm:flex">
             <span className="text-xl font-bold tracking-tight text-foreground group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
               LoopTroop

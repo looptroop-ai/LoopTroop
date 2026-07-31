@@ -63,34 +63,37 @@ export function PromptsDialog() {
         {!sidebarCollapsed && (
         <>
         {/* Workflow groups */}
-        <nav className="w-44 shrink-0 overflow-y-auto border-r border-border/60 p-2">
-          <button
-            onClick={() => setSidebarCollapsed(true)}
-            aria-expanded
-            title="Collapse the list columns"
-            className="mb-2 flex w-full items-center gap-2 rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors cursor-pointer hover:border-brand-500/40 hover:bg-brand-500/10 hover:text-brand-600 dark:hover:text-brand-400"
-          >
-            <PanelLeftClose className="h-3.5 w-3.5 shrink-0" />
-            Hide list
-          </button>
-          <div className="mb-2 border-t border-border/60" />
-          {groups.map((group, index) => (
-            <div key={group.id}>
-              {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}
-              <button
-                onClick={() => setSelectedGroupId(group.id)}
-                className={cn(
-                  'w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors cursor-pointer',
-                  activeGroup?.id === group.id
-                    ? 'bg-accent font-medium text-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                )}
-              >
-                {group.label}
-              </button>
-            </div>
-          ))}
-        </nav>
+        <div className="flex w-44 shrink-0 flex-col border-r border-border/60">
+          <div className="flex shrink-0 items-center border-b border-border/60 px-2 py-1.5">
+            <button
+              onClick={() => setSidebarCollapsed(true)}
+              aria-expanded
+              title="Collapse the list columns"
+              className="flex items-center gap-1 rounded border border-dashed border-border bg-muted/40 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors cursor-pointer hover:border-brand-500/40 hover:bg-brand-500/10 hover:text-brand-600 dark:hover:text-brand-400"
+            >
+              <PanelLeftClose className="h-3 w-3 shrink-0" />
+              Hide list
+            </button>
+          </div>
+          <nav className="min-h-0 flex-1 overflow-y-auto p-2">
+            {groups.map((group, index) => (
+              <div key={group.id}>
+                {group.id === 'general' && index > 0 && <div className="my-2 border-t border-border/60" />}
+                <button
+                  onClick={() => setSelectedGroupId(group.id)}
+                  className={cn(
+                    'w-full rounded-md px-2.5 py-1.5 text-left text-sm transition-colors cursor-pointer',
+                    activeGroup?.id === group.id
+                      ? 'bg-accent font-medium text-foreground'
+                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                  )}
+                >
+                  {group.label}
+                </button>
+              </div>
+            ))}
+          </nav>
+        </div>
 
         {/* Prompts within the selected group */}
         <div className="w-64 shrink-0 overflow-y-auto border-r border-border/60 p-2">

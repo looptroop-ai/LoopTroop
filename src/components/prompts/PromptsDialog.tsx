@@ -23,7 +23,7 @@ export function PromptsDialog() {
   const [confirmReset, setConfirmReset] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [wordWrap, setWordWrap] = useState(false)
-  const [expandedGroups, setExpandedGroups] = useState<Set<string> | null>(null)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
   const groups = useMemo(() => data?.groups ?? [], [data])
 
@@ -32,15 +32,9 @@ export function PromptsDialog() {
     if (selectedPromptId === null) setSelectedPromptId(firstPromptId(groups))
   }, [groups, selectedPromptId])
 
-  // Every group starts expanded so the full phase → status → prompt hierarchy is visible.
-  useEffect(() => {
-    if (groups.length === 0) return
-    setExpandedGroups((prev) => prev ?? new Set(groups.map((group) => group.id)))
-  }, [groups])
-
   const toggleGroup = (groupId: string) => {
     setExpandedGroups((prev) => {
-      const next = new Set(prev ?? [])
+      const next = new Set(prev)
       if (next.has(groupId)) next.delete(groupId)
       else next.add(groupId)
       return next
@@ -77,7 +71,7 @@ export function PromptsDialog() {
             {/* Single sidebar: workflow groups with their statuses and prompts nested beneath, like the ticket navigator */}
             <nav className="w-64 shrink-0 overflow-y-auto border-r border-border/60 p-2">
               {groups.map((group, index) => {
-                const isExpanded = expandedGroups?.has(group.id) ?? false
+                const isExpanded = expandedGroups.has(group.id)
                 const containsSelected = group.statuses.some((status) =>
                   status.prompts.some((prompt) => prompt.id === selectedPromptId),
                 )

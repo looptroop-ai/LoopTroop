@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a single ticket-style sidebar nesting prompts under their workflow statuses and phases, a live side-by-side diff against the built-in default, word wrap, per-prompt preview, validation, revert, and reset-to-defaults.
+- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a single ticket-style sidebar nesting prompts under their workflow statuses and phases (all collapsed by default), a live side-by-side diff against the built-in default, word wrap, per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
@@ -41,7 +41,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
-- Restructured the Prompts editor into a single sidebar in ticket-navigator style: collapsible workflow groups with their statuses nested beneath, where a status running a single prompt opens it directly and a status running several lists them beneath it. This replaces the previous separate workflow-group and prompt-list columns.
+- Restructured the Prompts editor into a single sidebar in ticket-navigator style: collapsible workflow groups with their statuses nested beneath, where a status running a single prompt opens it directly and a status running several lists them beneath it (with a small indentation). Workflow groups start collapsed by default so the sidebar stays compact until a phase is opened. This replaces the previous separate workflow-group and prompt-list columns.
 - Changed prompt assembly so user overrides are resolved centrally inside `buildPromptWithRules()`, meaning every existing phase call site picks up edited templates without per-phase changes. General rule blocks resolve through the same override layer.
 - Renamed the built-in rule constants to `DEFAULT_GLOBAL_RULES`, `DEFAULT_SAME_SESSION_RULES`, and `DEFAULT_CONVERSATIONAL_RULES`, and exposed them by the stable ids `GENERAL_GLOBAL_RULES`, `GENERAL_SAME_SESSION_RULES`, and `GENERAL_CONVERSATIONAL_RULES` used by the editor.
 - Extracted the app config directory resolver into `server/lib/appConfigDir.ts` so the prompt templates folder and the application database agree on one location across platforms.

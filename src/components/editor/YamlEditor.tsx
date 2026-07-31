@@ -9,16 +9,19 @@ interface YamlEditorProps {
   value: string
   onChange: (value: string) => void
   readOnly?: boolean
+  wordWrap?: boolean
   className?: string
 }
 
-export function YamlEditor({ value, onChange, readOnly = false, className }: YamlEditorProps) {
+export function YamlEditor({ value, onChange, readOnly = false, wordWrap = false, className }: YamlEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const initialValueRef = useRef(value)
   const initialReadOnlyRef = useRef(readOnly)
+  const initialWordWrapRef = useRef(wordWrap)
   const onChangeRef = useRef(onChange)
   const readOnlyCompartmentRef = useRef(new Compartment())
+  const wordWrapCompartmentRef = useRef(new Compartment())
   onChangeRef.current = onChange
 
   const createState = useCallback((doc: string) => {
@@ -39,6 +42,7 @@ export function YamlEditor({ value, onChange, readOnly = false, className }: Yam
           }
         }),
         readOnlyCompartmentRef.current.of(EditorState.readOnly.of(initialReadOnlyRef.current)),
+        wordWrapCompartmentRef.current.of(initialWordWrapRef.current ? EditorView.lineWrapping : []),
         EditorView.theme({
           '&': { fontSize: '12px', height: '100%', backgroundColor: 'transparent', color: 'var(--color-foreground)' },
           '.cm-scroller': { overflow: 'auto' },
@@ -73,6 +77,14 @@ export function YamlEditor({ value, onChange, readOnly = false, className }: Yam
       effects: readOnlyCompartmentRef.current.reconfigure(EditorState.readOnly.of(readOnly)),
     })
   }, [readOnly])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: wordWrapCompartmentRef.current.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+    })
+  }, [wordWrap])
 
   // Sync external value changes
   useEffect(() => {

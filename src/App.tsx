@@ -241,7 +241,7 @@ function App() {
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={isPromptsOpen} onClose={closePrompts} title="Prompts" maxWidth="max-w-6xl">
+        <CenteredModal open={isPromptsOpen} onClose={closePrompts} title="Prompts" maxWidth="max-w-[80vw]">
           <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
             <PromptsDialog />
           </Suspense>

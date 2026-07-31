@@ -10,7 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
-- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with per-prompt preview, validation, revert, and reset-to-defaults.
+- Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a live side-by-side diff against the built-in default, word wrap, a collapsible prompt list, per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
 - Updated ticket card priority indicators (P1–P5) on the dashboard to stack double arrows vertically and display a monochrome gray scale progressing in intensity from P5 to P1.
@@ -29,7 +29,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Added
 - Added a **Prompts** screen, reachable from the top-right header or the `/prompts` route, that lists every built-in prompt grouped by workflow phase and status, plus a separated **General** group containing the three general rule blocks. Prompts are labeled with their human-readable descriptions and flagged when they differ from the built-in default.
 - Added user-editable prompt templates stored as one YAML file per prompt under `<config dir>/templates` (honoring `LOOPTROOP_CONFIG_DIR` and `XDG_CONFIG_HOME`). Files are bootstrapped from the built-in defaults on first start and are never overwritten afterwards, so edits survive upgrades and the folder can be version-controlled with Git.
-- Added a CodeMirror-based prompt editor with Save, Revert, **Show default** comparison, and a **Preview** that renders the fully assembled prompt including the prepended rule block and placeholder context sections.
+- Added a CodeMirror-based prompt editor with Save, Revert, a **Compare to default** side-by-side diff whose right-hand pane stays fully editable while changed regions re-highlight live, a **Word wrap** toggle for long prose instructions, and a **Preview** that renders the fully assembled prompt including the prepended rule block and placeholder context sections.
+- Added a collapse toggle in the Prompts editor that hides both the workflow-group and prompt-list columns at once, handing the full dialog width to the editor.
 - Added prompt template validation that blocks saves which change the prompt `id` or empty `description`, `systemRole`, `task`, or `outputFormat`, and warns without blocking on removed `contextInputs` placeholders, changed `toolPolicy`, or fully removed instructions.
 - Added a **Reset all to defaults** footer action behind an inline confirmation, alongside per-prompt revert.
 - Added `GET/PUT /api/prompts`, `/api/prompts/:id`, `/api/prompts/:id/preview`, `/api/prompts/:id/revert`, and `/api/prompts/reset-all` for the editor.

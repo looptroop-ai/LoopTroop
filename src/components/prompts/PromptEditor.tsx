@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Eye, RotateCcw, Save, XCircle } from 'lucide-react'
+import { AlertTriangle, Columns2, Eye, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { YamlEditor } from '@/components/editor/YamlEditor'
+import { YamlDiffEditor } from '@/components/editor/YamlDiffEditor'
 import {
   usePrompt,
   usePromptPreview,
@@ -12,11 +14,18 @@ import {
 
 interface PromptEditorProps {
   promptId: string
+  wordWrap: boolean
+  onToggleWordWrap: () => void
 }
 
-type ViewMode = 'edit' | 'default' | 'preview'
+/**
+ * `edit` shows only the user's version; `diff` shows the built-in default
+ * side-by-side with a still-editable copy of the user's version; `preview`
+ * shows the assembled prompt the model receives.
+ */
+type ViewMode = 'edit' | 'diff' | 'preview'
 
-export function PromptEditor({ promptId }: PromptEditorProps) {
+export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEditorProps) {
   const { data: prompt, isLoading, error } = usePrompt(promptId)
   const savePrompt = useSavePrompt()
   const revertPrompt = useRevertPrompt()
@@ -77,11 +86,7 @@ export function PromptEditor({ promptId }: PromptEditorProps) {
     await preview.mutateAsync({ id: promptId, source: draft }).catch(() => undefined)
   }
 
-  const displayedValue = mode === 'default'
-    ? prompt.default
-    : mode === 'preview'
-      ? (preview.data?.preview ?? (preview.isPending ? 'Building preview…' : ''))
-      : draft
+  const previewText = preview.data?.preview ?? (preview.isPending ? 'Building preview…' : '')
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -95,12 +100,28 @@ export function PromptEditor({ promptId }: PromptEditorProps) {
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{prompt.description}</p>
         </div>
         <div className="flex items-center gap-1.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={wordWrap ? 'secondary' : 'ghost'}
+                size="icon"
+                className="h-8 w-8"
+                aria-label={wordWrap ? 'Disable word wrap' : 'Enable word wrap'}
+                aria-pressed={wordWrap}
+                onClick={onToggleWordWrap}
+              >
+                <WrapText className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{wordWrap ? 'Disable word wrap' : 'Enable word wrap'}</TooltipContent>
+          </Tooltip>
           <Button
-            variant={mode === 'default' ? 'secondary' : 'ghost'}
+            variant={mode === 'diff' ? 'secondary' : 'ghost'}
             size="sm"
-            onClick={() => setMode(mode === 'default' ? 'edit' : 'default')}
+            onClick={() => setMode(mode === 'diff' ? 'edit' : 'diff')}
           >
-            Show default
+            <Columns2 className="mr-1.5 h-3.5 w-3.5" />
+            Compare to default
           </Button>
           {prompt.kind === 'template' && (
             <Button variant={mode === 'preview' ? 'secondary' : 'ghost'} size="sm" onClick={() => void handlePreview()}>
@@ -120,7 +141,7 @@ export function PromptEditor({ promptId }: PromptEditorProps) {
           <Button
             size="sm"
             onClick={() => void handleSave()}
-            disabled={!isDirty || savePrompt.isPending || mode !== 'edit'}
+            disabled={!isDirty || savePrompt.isPending || mode === 'preview'}
           >
             <Save className="mr-1.5 h-3.5 w-3.5" />
             Save
@@ -149,24 +170,43 @@ export function PromptEditor({ promptId }: PromptEditorProps) {
           Saved. New runs will use this prompt.
         </div>
       )}
-      {mode !== 'edit' && (
+      {mode === 'diff' && (
+        <div className="flex border-b border-border/60 bg-muted/40 text-xs text-muted-foreground">
+          <span className="flex-1 border-r border-border/60 px-4 py-1.5">Built-in default (read-only)</span>
+          <span className="flex-1 px-4 py-1.5">Your version — editable</span>
+        </div>
+      )}
+      {mode === 'preview' && (
         <div className="border-b border-border/60 bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground">
-          {mode === 'default' ? 'Read-only: built-in default.' : 'Read-only: assembled prompt as the model receives it.'}
+          Read-only: assembled prompt as the model receives it.
         </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        {mode === 'preview'
-          ? <pre className="h-full overflow-auto whitespace-pre-wrap p-4 font-mono text-xs">{displayedValue}</pre>
-          : (
-            <YamlEditor
-              key={`${promptId}:${mode}`}
-              value={displayedValue}
-              onChange={setDraft}
-              readOnly={mode === 'default'}
-              className="h-full"
-            />
-          )}
+        {mode === 'preview' && (
+          <pre className={`h-full overflow-auto p-4 font-mono text-xs ${wordWrap ? 'whitespace-pre-wrap' : 'whitespace-pre'}`}>
+            {previewText}
+          </pre>
+        )}
+        {mode === 'diff' && (
+          <YamlDiffEditor
+            key={`${promptId}:diff`}
+            original={prompt.default}
+            modified={draft}
+            onChange={setDraft}
+            wordWrap={wordWrap}
+            className="h-full overflow-auto"
+          />
+        )}
+        {mode === 'edit' && (
+          <YamlEditor
+            key={`${promptId}:edit`}
+            value={draft}
+            onChange={setDraft}
+            wordWrap={wordWrap}
+            className="h-full"
+          />
+        )}
       </div>
     </div>
   )

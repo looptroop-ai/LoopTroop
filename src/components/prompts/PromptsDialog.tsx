@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, RotateCcw } from 'lucide-react'
+import { AlertTriangle, PanelLeftClose, PanelLeftOpen, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { usePromptCatalog, useResetAllPrompts, type PromptGroup } from '@/hooks/usePrompts'
 import { PromptEditor } from './PromptEditor'
@@ -22,6 +23,8 @@ export function PromptsDialog() {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [wordWrap, setWordWrap] = useState(false)
 
   const groups = useMemo(() => data?.groups ?? [], [data])
 
@@ -45,7 +48,7 @@ export function PromptsDialog() {
   }
 
   return (
-    <div className="flex h-[70vh] min-h-0 flex-col">
+    <div className="flex h-[calc(80vh-8rem)] min-h-0 flex-col">
       {data.warnings.length > 0 && (
         <div className="flex gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -58,6 +61,8 @@ export function PromptsDialog() {
       )}
 
       <div className="flex min-h-0 flex-1">
+        {!sidebarCollapsed && (
+        <>
         {/* Workflow groups */}
         <nav className="w-44 shrink-0 overflow-y-auto border-r border-border/60 p-2">
           {groups.map((group, index) => (
@@ -103,12 +108,39 @@ export function PromptsDialog() {
             </div>
           ))}
         </div>
+        </>
+        )}
 
         {/* Editor */}
-        <div className="min-w-0 flex-1">
-          {selectedPromptId
-            ? <PromptEditor promptId={selectedPromptId} />
-            : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
+        <div className="flex min-w-0 flex-1">
+          <div className="shrink-0 border-r border-border/60 p-1.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label={sidebarCollapsed ? 'Show prompt list' : 'Hide prompt list'}
+                  aria-expanded={!sidebarCollapsed}
+                  onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+                >
+                  {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{sidebarCollapsed ? 'Show prompt list' : 'Hide prompt list'}</TooltipContent>
+            </Tooltip>
+          </div>
+          <div className="min-w-0 flex-1">
+            {selectedPromptId
+              ? (
+                <PromptEditor
+                  promptId={selectedPromptId}
+                  wordWrap={wordWrap}
+                  onToggleWordWrap={() => setWordWrap((wrap) => !wrap)}
+                />
+              )
+              : <div className="p-6 text-sm text-muted-foreground">Select a prompt to edit.</div>}
+          </div>
         </div>
       </div>
 

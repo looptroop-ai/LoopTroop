@@ -72,6 +72,56 @@ afterEach(() => {
 })
 
 describe('PhaseReviewView', () => {
+  it.each([
+    'COUNCIL_DELIBERATING',
+    'COUNCIL_VOTING_INTERVIEW',
+    'COMPILING_INTERVIEW',
+  ])('starts historical council phase %s logs expanded', (phase) => {
+    const ticket = makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/phases/') && url.endsWith('/attempts')) {
+        return createJsonResponse([])
+      }
+      if (url.includes('/logs?')) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={ticket.status}>
+        <PhaseReviewView phase={phase} ticket={ticket} />
+      </LogProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('keeps non-council historical review logs collapsed by default', () => {
+    const ticket = makeTicket({ status: 'SCANNING_RELEVANT_FILES' })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/phases/') && url.endsWith('/attempts')) {
+        return createJsonResponse([])
+      }
+      if (url.includes('/logs?')) {
+        return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={ticket.status}>
+        <PhaseReviewView phase="PRE_FLIGHT_CHECK" ticket={ticket} />
+      </LogProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: /^Log$/i })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('shows a nonblank drafting surface, version selector, artifacts, and expanded log', async () => {
     const ticket = makeTicket({ status: 'GENERATING_EXECUTION_SETUP_PLAN' })
 

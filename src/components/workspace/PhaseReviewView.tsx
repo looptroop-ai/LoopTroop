@@ -6,6 +6,7 @@ import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 
 import type { Ticket } from '@/hooks/useTickets'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -21,6 +22,7 @@ interface PhaseReviewViewProps {
 }
 
 export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
+  const { phaseMap } = useWorkflowMeta()
   const councilMemberNames = useMemo(
     () => ticket.lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0),
     [ticket.lockedCouncilMembers],
@@ -28,6 +30,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   const councilMemberCount = councilMemberNames.length || 3
   const isDraft = phase === 'DRAFT'
   const isExecutionSetupDraft = phase === 'GENERATING_EXECUTION_SETUP_PLAN'
+  const isCouncilPhase = phaseMap[phase]?.uiView === 'council'
   const [descriptionMode, setDescriptionMode] = useState<TicketDescriptionMode>('markdown')
   const { data: attempts = [] } = useTicketPhaseAttempts(ticket.id, phase)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
@@ -158,7 +161,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
           phaseAttempt={logPhaseAttempt}
           logMode={logMode}
           ticket={ticket}
-          defaultExpanded={isExecutionSetupDraft}
+          defaultExpanded={isExecutionSetupDraft || isCouncilPhase}
           className="px-4 pb-4"
         />
       )}

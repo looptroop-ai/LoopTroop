@@ -22,6 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept boot-enabled LoopTroop services available during temporary npm audit outages without weakening dependency maintenance or local integrity checks.
 - Kept selected OpenRouter routing preferences saved and highlighted when reopening Configuration.
 - Made workspace setup current-host aware and non-blocking for malformed AI drafts, with portable structured commands and flexible Git-hook checks.
+- Restored expanded-by-default logs when revisiting historical council phases in ticket view.
 - Updated the ticket lifecycle screenshots guide with direct, compact image previews and contextual links to the full documentation.
 - Standardized Manual QA selection styling across global Configuration, Project settings, and Ticket forms to match Git Hook Policy's primary black highlight aesthetic.
 - Fixed dark mode contrast and theme consistency across ModelPicker badges, WelcomeDisclaimer modal tokens, CodeMirror YamlEditor themes, and workspace log text.
@@ -61,6 +62,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - Improved mobile and tablet responsiveness across AppShell navigation overflow, DashboardHeader title and details modal, dynamic-height KanbanBoard scrolling, dialog gutters, ticket workspace resizing, ProfileSetup grid fields, AppearancePickers popovers, and web landing page components.
+- Restored expanded-by-default logs for historical council drafting, voting, and refining phases while preserving collapsed defaults for approval and other review surfaces.
 - Safely restored displaced PRD and Beads item IDs from uniquely matching winner/final records, collapsed duplicate PRD modifications, surfaced exact UI repair details, and continued rejecting ambiguous mappings without inventing text.
 - Retried and safely deferred temporary npm audit transport or malformed-response failures during startup while preserving strict standalone audit failures and blocking local dependency-integrity errors.
 - Preserved OpenRouter routing suffixes after validating their base models so saved Configuration selections remain active when reopened.

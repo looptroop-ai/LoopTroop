@@ -69,7 +69,7 @@ Most modal routes and workspace views are also lazy-loaded through `lazyWithChun
 
 Additional routing rules:
 
-- historical phases usually render through `PhaseReviewView`
+- historical phases usually render through `PhaseReviewView`; historical council phases keep their log expanded by default so drafting, voting, and refining activity is immediately visible, while approval and other review-specific logs retain their collapsed defaults
 - `fullLogOpen` forces `FullLogView` until the user selects another phase or error occurrence
 - reviewable past coding still uses `CodingView` in read-only mode
 - active or selected error occurrences render `ErrorView`

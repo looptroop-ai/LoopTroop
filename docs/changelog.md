@@ -14,6 +14,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
+- Adjusted vertical padding between the Hero and Why LoopTroop sections in `web.html` to eliminate excessive empty space left after removing the tech logo wall.
 
 ### Removed
 - Removed the Tech Logo Wall section (OpenCode, Ollama, Anthropic, OpenAI, TypeScript, SQLite) from the landing page.

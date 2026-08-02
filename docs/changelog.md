@@ -9,7 +9,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
-_No unreleased changes yet._
+### Summary
+- Refined the landing page hero title layout and removed the tech logo wall strip from `web.html`.
+
+### Changed
+- Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
+
+### Removed
+- Removed the Tech Logo Wall section (OpenCode, Ollama, Anthropic, OpenAI, TypeScript, SQLite) from the landing page.
 
 ---
 

@@ -46,6 +46,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `docs/ticket-lifecycle-screenshots.md` navigation entries to VitePress sidebar under Workflow, `docs/ticket-flow.md`, and `README.md`.
 
 ### Changed
+- Updated the title of the Prompts modal window from "Prompts" to "Prompts editor" while preserving the "Prompts" label on dashboard header navigation.
 - Restructured the Prompts editor into a single sidebar in ticket-navigator style: collapsible workflow groups with their statuses nested beneath, where a status running a single prompt opens it directly and a status running several lists them beneath it (with a small indentation). Workflow groups start collapsed by default so the sidebar stays compact until a phase is opened. This replaces the previous separate workflow-group and prompt-list columns.
 - Changed prompt assembly so user overrides are resolved centrally inside `buildPromptWithRules()`, meaning every existing phase call site picks up edited templates without per-phase changes. General rule blocks resolve through the same override layer.
 - Renamed the built-in rule constants to `DEFAULT_GLOBAL_RULES`, `DEFAULT_SAME_SESSION_RULES`, and `DEFAULT_CONVERSATIONAL_RULES`, and exposed them by the stable ids `GENERAL_GLOBAL_RULES`, `GENERAL_SAME_SESSION_RULES`, and `GENERAL_CONVERSATIONAL_RULES` used by the editor.

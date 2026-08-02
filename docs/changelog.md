@@ -7,9 +7,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ## Unreleased
 
-> Changes merged since the last versioned release that have not yet shipped in a tagged version.
+> Changes merged since the last versioned release that have not yet shipped in a tagged version. They are collapsed by default — expand to preview what will land in the next release.
+
+::: details Show unreleased changes
 
 ### Summary
+- Collapsed the changelog `## Unreleased` section by default behind a VitePress `::: details` block, so the page opens on the latest tagged release.
 - Added a Prompts editor that exposes every workflow prompt and general rule block as editable YAML templates, with a single ticket-style sidebar nesting prompts under their workflow statuses and phases (all collapsed by default), a live side-by-side diff against the built-in default, word wrap, per-prompt preview, validation, revert, and reset-to-defaults.
 - Improved mobile and tablet responsive layouts across AppShell navigation, DashboardHeader and Ticket Details, KanbanBoard column framing and scrolling, dialogs, ticket workspaces, ProfileSetup forms, Project/Bead dialogs, and the web landing page.
 - Split workspace setup planning into an active drafting status and a separate human approval gate with restart-safe versioned regeneration.
@@ -60,6 +63,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Aligned Manual QA setting selector buttons with Git Hook Policy styling using primary background highlight (`bg-primary font-semibold text-primary-foreground`) and hover states across Configuration, Project, and Ticket views.
 - Moved both the **Hide list** and **Show list** actions in the Prompts editor into the bottom-left corner of the dialog footer, with a single footer divider continuing the sidebar boundary while the status text, templates directory, and Reset action stay together to its right.
 - Wrapped Manual QA checkpoint and Git hook policy settings inside a collapsed-by-default Advanced section when viewing tickets in backlog (`DraftView.tsx`), matching Ticket creation and Project configuration forms.
+- Wrapped the changelog `## Unreleased` section in a collapsed-by-default VitePress `::: details` block, preceded by an explanatory note.
 
 ### Fixed
 - Improved mobile and tablet responsiveness across AppShell navigation overflow, DashboardHeader title and details modal, dynamic-height KanbanBoard scrolling, dialog gutters, ticket workspace resizing, ProfileSetup grid fields, AppearancePickers popovers, and web landing page components.
@@ -71,6 +75,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept refreshed backend-owned workspace evidence stable across setup-plan saves so approval no longer enters a repeated “evidence changed” loop.
 - Made Git-hook policy inheritance remain live until ticket start and visibly highlighted the effective selection when configuration, project, and ticket controls first open.
 - Fixed dark mode contrast and component theme integration across ModelPicker cost and feature badges, WelcomeDisclaimer dialog tokens, CodeMirror YamlEditor themes, and workspace log text entries.
+
+:::
 
 ---
 

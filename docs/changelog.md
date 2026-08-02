@@ -7,9 +7,20 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ## Unreleased
 
-> Changes merged since the last versioned release that have not yet shipped in a tagged version. They are collapsed by default — expand to preview what will land in the next release.
+> Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
-::: details Show unreleased changes
+_No unreleased changes yet._
+
+---
+
+## 0.4.1 (2026-08-02)
+
+### Release Highlights
+- 🎨 **Visual Prompts Editor:** Full prompt customization with editable YAML templates, side-by-side diffs, live previews, validation, word wrap, and one-click revert/reset controls in a clean ticket-style sidebar.
+- 📱 **Responsive Mobile and Tablet Overhaul:** Fully refreshed layouts across the AppShell, Kanban board, ticket details, dialogs, profile setup, and landing page.
+- ⚙️ **Human-in-the-Loop Workspace Setup:** Separate AI drafting and human approval statuses with restart-safe versioned regeneration, current-host-aware commands, and resilient malformed-draft handling.
+- 📖 **Human-First Lifecycle and Copy Refresh:** Clearer ticket status summaries, detailed explanations, and reassuring guidance throughout the workflow.
+- 💅 **UI Polish and Reliability Upgrades:** Refined P1–P5 priority visuals, advisory GitHub write-permission checks, persistent OpenRouter routing preferences, stronger dark-mode contrast, and boot resilience during temporary npm audit outages.
 
 ### Summary
 - Collapsed the changelog `## Unreleased` section by default behind a VitePress `::: details` block, so the page opens on the latest tagged release.
@@ -75,8 +86,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Kept refreshed backend-owned workspace evidence stable across setup-plan saves so approval no longer enters a repeated “evidence changed” loop.
 - Made Git-hook policy inheritance remain live until ticket start and visibly highlighted the effective selection when configuration, project, and ticket controls first open.
 - Fixed dark mode contrast and component theme integration across ModelPicker cost and feature badges, WelcomeDisclaimer dialog tokens, CodeMirror YamlEditor themes, and workspace log text entries.
-
-:::
 
 ---
 

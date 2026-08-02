@@ -99,7 +99,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
               LoopTroop
             </span>
             <span className="hidden sm:inline-block text-[10px] font-mono font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/60">
-              v0.4.0
+              v0.4.1
             </span>
           </div>
         </button>

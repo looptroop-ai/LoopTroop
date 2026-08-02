@@ -13,7 +13,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 | **2. Execution** | *Ralph Loops Perfect It* | Isolated Bead Work ➔ Multi-Loop Automated Testing & Fixing |
 | **3. Shipping** | *OpenCode Worktrees Ship It* | Code Isolation ➔ Final Verification Pass ➔ Main Branch Handoff |
 
-**Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Beads & Execution](https://www.looptroop.ovh/docs/beads)
+**Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Beads & Execution](https://www.looptroop.ovh/docs/beads)
 
 ![LoopTroop workflow demo](docs/media/20260619104032-26sec-captions.gif)
 *An animated walkthrough of a ticket lifecycle and the configuration menu.*

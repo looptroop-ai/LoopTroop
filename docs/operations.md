@@ -101,6 +101,30 @@ npm run dev --opencode-logs=all
 
 These commands update the same maintenance timestamps used by opted-in startup gating. `deps:sync` and `audit:remediate` still respect `LOOPTROOP_DEV_SKIP_DEPS=1`; `opencode:upgrade` still respects `LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1`. The `LOOPTROOP_DEV_SKIP_*` and `LOOPTROOP_DEV_FORCE_MAINTENANCE` flags only affect `npm run dev` when maintenance is opted in, since it is otherwise skipped entirely.
 
+### Scheduled Dependency Updates
+
+Routine dependency updates are handled by Renovate rather than by local tooling, so the same policy applies whether or not any contributor happens to start the app. The configuration lives in `renovate.json` and is validated in CI, because an invalid rule is ignored silently at runtime rather than reported.
+
+| Policy | Setting |
+| --- | --- |
+| Schedule | Grouped pull requests, Mondays before 06:00 |
+| Release maturity | 7 days before a version is proposed |
+| Security advisories | 2 days, raised outside the weekly schedule |
+| Dev dependencies | Patch and minor grouped, auto-merged once CI is green |
+| Runtime dependencies | Grouped, always reviewed by hand |
+| Major updates | One pull request each, require dashboard approval |
+| Lockfile refresh | Monthly |
+| GitHub Actions | Pinned to commit SHAs and updated by Renovate |
+
+Dependencies with additional constraints:
+
+- **`drizzle-orm` and `drizzle-kit`** move together on the `rc` tag and stay exact-pinned. A global install re-resolves ranges on the user's machine and ignores the lockfile, so a loose range would ship an untested release candidate.
+- **`@opencode-ai/sdk`** waits 30 days. OpenCode is slated for replacement, so there is no reason to adopt its releases early; update the documented minimum version in the same pull request.
+- **`@types/node`** is held below the next major so it cannot drift ahead of the supported runtime and hide use of newer APIs.
+- **`tailwindcss`, `@tailwindcss/cli` and `@tailwindcss/vite`** are grouped, since the CLI is exact-pinned to match the library version.
+
+`npm audit` runs in CI as a report only and never applies fixes automatically; remediation is a reviewed change.
+
 ## 5. Scripts Reference
 
 All scripts are available with `npm run <name>`.

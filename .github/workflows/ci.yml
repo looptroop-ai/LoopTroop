@@ -58,6 +58,10 @@ jobs:
       - name: Verify version is single-sourced
         run: npm run verify:version
 
+      # An invalid rule is ignored silently at runtime, so validate it here.
+      - name: Validate Renovate configuration
+        run: npx --yes --package renovate@latest renovate-config-validator --strict
+
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build

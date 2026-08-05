@@ -1,0 +1,91 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Bucharest",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 0,
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps):",
+  "rangeStrategy": "bump",
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "postUpdateOptions": ["npmDedupe"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"],
+    "commitMessageAction": "Refresh"
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": "2 days",
+    "schedule": ["at any time"],
+    "labels": ["dependencies", "security"]
+  },
+  "packageRules": [
+    {
+      "description": "Dev dependencies: group patch and minor, automerge once CI is green.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "dev dependencies (non-major)",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Runtime dependencies ship to users; group them but always review by hand.",
+      "matchDepTypes": ["dependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "runtime dependencies (non-major)",
+      "automerge": false
+    },
+    {
+      "description": "Majors land one at a time so a failure is attributable.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "Drizzle tracks a release candidate; orm and kit must move together.",
+      "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
+      "groupName": "drizzle (orm + kit)",
+      "followTag": "rc",
+      "rangeStrategy": "pin",
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "OpenCode is slated for replacement; let its SDK settle before adopting, and update the documented minimum version in the same PR.",
+      "matchPackageNames": ["@opencode-ai/sdk"],
+      "minimumReleaseAge": "30 days",
+      "automerge": false,
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "opencode"]
+    },
+    {
+      "description": "Node types must stay on the supported major, never follow the current release.",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "<25",
+      "automerge": false
+    },
+    {
+      "description": "Tailwind CLI is exact-pinned to match the tailwindcss version; move both together.",
+      "matchPackageNames": ["tailwindcss", "@tailwindcss/cli", "@tailwindcss/vite"],
+      "groupName": "tailwindcss",
+      "automerge": false
+    },
+    {
+      "description": "Pin GitHub Actions to commit SHAs for supply-chain integrity.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "pinDigests": true,
+      "automerge": false
+    }
+  ]
+}

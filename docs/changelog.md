@@ -22,6 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made `npm run dev` verify-only, so starting the development environment no longer silently updates dependencies, rewrites the lockfile, or upgrades the OpenCode CLI; those updates are now explicit opt-in commands.
 - Made `package.json` the single source of truth for the application version, enforced in CI, so the version shown in the interface can no longer drift from the released version.
 - Wired the changelog to release notes: publishing a release now derives its notes from `docs/changelog.md` instead of being written by hand, so the two can no longer disagree.
+- Moved routine dependency updates onto a predictable weekly schedule with a maturity delay, so updates are reviewed in batches and security fixes still arrive quickly.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -30,6 +31,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
+- Added a Renovate configuration for scheduled dependency updates, validated in CI: weekly grouped pull requests, a 7-day release-maturity delay, a 2-day window for security advisories, auto-merge limited to development dependencies, and per-package rules holding `drizzle-orm`/`drizzle-kit` on the release-candidate tag, delaying `@opencode-ai/sdk` by 30 days, and keeping `@types/node` on the supported major. Credentials and scheduling are enabled separately.
 - Added a release-notes extractor that parses `docs/changelog.md` and emits the GitHub Release body for a given version, preferring `Release Highlights` and falling back to `Summary`. It fails loudly with the available versions rather than emitting empty notes, and the heading contract it depends on is covered by tests.
 - Added a CI gate that verifies the application version is single-sourced from `package.json`, failing with the exact file and line when a version literal is hardcoded elsewhere; historical records such as changelogs, release notes and the lockfile are allowlisted since they must retain literal versions.
 - Added a CI gate that packs the production package, installs it into a clean directory with production dependencies only, and fails if any native Node addon is present. Checking the packed tarball alone cannot detect this, because the tarball contains no installed dependency tree.

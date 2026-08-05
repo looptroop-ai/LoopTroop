@@ -108,7 +108,7 @@ All scripts are available with `npm run <name>`.
 
 | Script | Purpose |
 | --- | --- |
-| `dev` | Full stack: frontend, backend, docs server, OpenCode watcher, and dev preflight. **Standard start command.** |
+| `dev` | Full stack: frontend, backend, OpenCode watcher, and dev preflight. **Standard start command.** In-app documentation links point at the hosted docs site; set `LOOPTROOP_DEV_DOCS=1` to also run a local VitePress server. |
 | `dev:app` | Frontend and backend only — no docs server, no OpenCode watcher. Use when OpenCode is already running externally and docs are not needed locally. Note: this bypasses the `predev` preflight (the `predev` hook only runs for `dev`), so dependency sync, npm audit, OpenCode upgrade, port-conflict cleanup, and the auto-generated `OPENCODE_SERVER_PASSWORD` / `LOOPTROOP_API_TOKEN` are skipped — set those yourself when needed. |
 | `dev:frontend` | Vite dev server only. |
 | `dev:backend` | Backend Hono API server only. |
@@ -184,8 +184,9 @@ The app database is runtime-bootstrapped by `server/db/init.ts`. The committed m
 | `LOOPTROOP_TRUST_PROXY=1` | Trust `x-forwarded-for` / `x-real-ip` for rate-limit buckets; leave unset unless a trusted proxy owns those headers |
 | `LOOPTROOP_ENABLE_DEV_EVENT=1` | Enable the development-only ticket event injection route when paired with `LOOPTROOP_DEV_EVENT_TOKEN` |
 | `LOOPTROOP_DEV_EVENT_TOKEN` | Required secret for the dev-event route when it is enabled |
-| `LOOPTROOP_DOCS_PORT` | Override docs port |
-| `LOOPTROOP_DOCS_ORIGIN` | Override full docs origin URL, for example `http://my-server:5174`; takes precedence over `LOOPTROOP_DOCS_PORT` |
+| `LOOPTROOP_DEV_DOCS=1` | Run a local VitePress docs server as part of `npm run dev`; omitted by default so in-app links use the hosted docs site |
+| `LOOPTROOP_DOCS_PORT` | Override the local docs port; only relevant with `LOOPTROOP_DEV_DOCS=1` |
+| `LOOPTROOP_DOCS_ORIGIN` | Override full docs origin URL, for example `http://localhost:5174`; defaults to the hosted documentation site |
 | `LOOPTROOP_DEV_HOST` | Direct watcher fallback for LAN sharing; set to `1`, `true`, `0.0.0.0`, or a specific host/IP when not launching through `npm run dev --lan` |
 | `LOOPTROOP_OPENCODE_BASE_URL` | Point LoopTroop at a specific OpenCode server |
 | `LOOPTROOP_CONFIG_DIR` | Override the app config directory |
@@ -208,7 +209,7 @@ Default local service addresses:
 | --- | --- |
 | Frontend | `http://localhost:5173` |
 | Backend | `http://127.0.0.1:3000` |
-| Docs | `http://localhost:5174/docs/` |
+| Docs | `https://www.looptroop.ovh/docs/` (hosted; `LOOPTROOP_DEV_DOCS=1` serves `http://localhost:5174/docs/` locally) |
 | OpenCode | `http://127.0.0.1:4096` |
 
 Default port resolution and origin building are implemented in `shared/appConfig.ts`, which validates environment variables and provides fallback defaults for all four services.

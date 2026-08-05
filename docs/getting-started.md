@@ -47,7 +47,7 @@ By default the services bind to:
 | --- | --- |
 | **Frontend** (UI) | `http://localhost:5173` |
 | **Backend** (API) | `http://127.0.0.1:3000` |
-| **Docs** | `http://localhost:5174/docs/` |
+| **Docs** | `https://www.looptroop.ovh/docs/` (hosted; `LOOPTROOP_DEV_DOCS=1` serves `http://localhost:5174/docs/` locally) |
 | **OpenCode** | `http://127.0.0.1:4096` |
 
 > [!IMPORTANT]

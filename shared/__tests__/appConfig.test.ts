@@ -73,8 +73,8 @@ describe('appConfig frontend origin', () => {
 
   it('includes the VitePress base path in browser-facing documentation URLs', () => {
     delete process.env.LOOPTROOP_DOCS_ORIGIN
-    process.env.LOOPTROOP_DOCS_PORT = '6198'
-    expect(getDocsBaseUrl()).toBe('http://localhost:6198/docs')
+    // Installed users have no local docs server, so the hosted site is the default.
+    expect(getDocsBaseUrl()).toBe('https://www.looptroop.ovh/docs')
 
     process.env.LOOPTROOP_DOCS_ORIGIN = 'http://devbox.local:7000/'
     expect(getDocsBaseUrl()).toBe('http://devbox.local:7000/docs')

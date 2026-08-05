@@ -86,8 +86,11 @@ const frontendLanUrls = isWslAccessRelevant
 const docsLanUrls = isWslAccessRelevant
   ? []
   : directDocsLanUrls
+const docsServerEnabled = process.env.LOOPTROOP_DEV_DOCS === '1'
 const configuredDocsOrigin = process.env.LOOPTROOP_DOCS_ORIGIN?.trim()
-const effectiveDocsOrigin = configuredDocsOrigin || docsLanUrls[0] || getDocsOrigin()
+const localDocsOrigin = `http://localhost:${docsPort}`
+const effectiveDocsOrigin = configuredDocsOrigin
+  || (docsServerEnabled ? docsLanUrls[0] || localDocsOrigin : getDocsOrigin())
 
 if (opencodeLogMode.mode === 'all') {
   childEnv[LOOPTROOP_OPENCODE_LOGS] = 'all'
@@ -255,7 +258,7 @@ async function printLanSharingDetails() {
     printSummaryLine('WSL command', 'Run this one-liner in Windows PowerShell as Administrator; it listens on the Windows LAN IP and forwards into WSL:')
     printSummaryBlock('', wslLanAccess.setupCommands)
     printSummaryBlock('After setup', wslLanAccess.frontendUrls)
-    if (wslLanAccess.docsUrls.length > 0) {
+    if (docsServerEnabled && wslLanAccess.docsUrls.length > 0) {
       printSummaryBlock('Docs setup', wslLanAccess.docsUrls.map((url) => `${url}/docs/`))
     }
     const primaryWslFrontendUrl = wslLanAccess.frontendUrls[0]
@@ -279,7 +282,7 @@ async function printLanSharingDetails() {
   if (!primaryFrontendLanUrl) return
 
   printSummaryBlock('LAN URLs', frontendLanUrls)
-  if (docsLanUrls.length > 0) {
+  if (docsServerEnabled && docsLanUrls.length > 0) {
     printSummaryBlock('Docs LAN', docsLanUrls.map((url) => `${url}/docs/`))
   }
 
@@ -323,19 +326,24 @@ const services: DevService[] = [
     displayCommand: 'tsx scripts/dev-backend.ts',
     description: 'Watch the backend and restart it when server files change.',
   },
-  {
+]
+
+// Opt-in: in-app links point at the hosted docs by default, so most sessions
+// do not need a local VitePress server.
+if (docsServerEnabled) {
+  services.push({
     name: 'DOCS',
     prefixColor: 'bgMagenta.black',
     command: 'npm:docs:dev',
     displayCommand: 'tsx scripts/dev-docs.ts',
     description: 'Serve the VitePress documentation site alongside the app.',
-  },
-]
+  })
+}
 
 printDivider('Startup Summary')
 printSummaryLine('LoopTroop App', `http://localhost:${frontendPort}`)
 printSummaryLine('Backend', `http://localhost:${backendPort}`)
-printSummaryLine('Documentation', `${effectiveDocsOrigin}/docs/`)
+printSummaryLine('Documentation', `${effectiveDocsOrigin}/docs/${docsServerEnabled ? '' : ' (hosted; LOOPTROOP_DEV_DOCS=1 to serve locally)'}`)
 printSummaryLine('OpenCode', baseUrl)
 printSummaryLine('LAN sharing', formatLanSharingSummary())
 await printLanSharingDetails()
@@ -449,7 +457,7 @@ if (preflightReport) {
 }
 
 printDivider('Live Services')
-console.log('[dev] Launching frontend, backend, docs, and OpenCode watchers...')
+console.log(`[dev] Launching ${services.map((service) => service.name).join(', ')} watchers...`)
 
 const { commands, result } = concurrently(
   services.map((service) => ({

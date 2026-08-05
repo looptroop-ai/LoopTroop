@@ -54,7 +54,7 @@ const portAvailabilityHost = devHostMode.enabled ? devHostMode.bindHost : '127.0
 const configuredPorts = [
   { label: 'frontend', port: getFrontendPort() },
   { label: 'backend', port: getBackendPort() },
-  { label: 'docs', port: getDocsPort() },
+  ...(process.env.LOOPTROOP_DEV_DOCS === '1' ? [{ label: 'docs', port: getDocsPort() }] : []),
 ]
 
 const preflightStartedAt = Date.now()

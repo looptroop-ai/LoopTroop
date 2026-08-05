@@ -72,9 +72,14 @@ export function getFrontendOrigin(): string {
   return parseOrigin(process.env.LOOPTROOP_FRONTEND_ORIGIN, defaultFrontendOrigin, 'LOOPTROOP_FRONTEND_ORIGIN')
 }
 
+/**
+ * Public documentation site. Used as the default so in-app links work for
+ * installed users, who have no local docs server running.
+ */
+const DEFAULT_DOCS_ORIGIN = 'https://www.looptroop.ovh'
+
 export function getDocsOrigin(): string {
-  const defaultDocsOrigin = `http://localhost:${getDocsPort()}`
-  return parseOrigin(process.env.LOOPTROOP_DOCS_ORIGIN, defaultDocsOrigin, 'LOOPTROOP_DOCS_ORIGIN')
+  return parseOrigin(process.env.LOOPTROOP_DOCS_ORIGIN, DEFAULT_DOCS_ORIGIN, 'LOOPTROOP_DOCS_ORIGIN')
 }
 
 export function getDocsBaseUrl(): string {

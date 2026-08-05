@@ -21,6 +21,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Pointed in-app documentation links at the hosted documentation site and made the local docs server opt-in, so installed users get working links and `npm run dev` starts one fewer background process.
 - Made `npm run dev` verify-only, so starting the development environment no longer silently updates dependencies, rewrites the lockfile, or upgrades the OpenCode CLI; those updates are now explicit opt-in commands.
 - Made `package.json` the single source of truth for the application version, enforced in CI, so the version shown in the interface can no longer drift from the released version.
+- Wired the changelog to release notes: publishing a release now derives its notes from `docs/changelog.md` instead of being written by hand, so the two can no longer disagree.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -29,6 +30,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
+- Added a release-notes extractor that parses `docs/changelog.md` and emits the GitHub Release body for a given version, preferring `Release Highlights` and falling back to `Summary`. It fails loudly with the available versions rather than emitting empty notes, and the heading contract it depends on is covered by tests.
 - Added a CI gate that verifies the application version is single-sourced from `package.json`, failing with the exact file and line when a version literal is hardcoded elsewhere; historical records such as changelogs, release notes and the lockfile are allowlisted since they must retain literal versions.
 - Added a CI gate that packs the production package, installs it into a clean directory with production dependencies only, and fails if any native Node addon is present. Checking the packed tarball alone cannot detect this, because the tarball contains no installed dependency tree.
 - Added a SQLite behavioural contract test suite pinning value conversion, transactions and savepoints, conflict handling, `RETURNING`, foreign keys, persistence across reopen, read-only access, and the prepared-statement surface, so the forthcoming database driver change can be verified against known-good behaviour rather than assumed safe.

@@ -57,6 +57,7 @@
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
     "verify:version": "node scripts/verify-version-single-source.mjs",
+    "release:notes": "tsx scripts/print-release-notes.ts",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",

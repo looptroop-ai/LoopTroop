@@ -10,7 +10,7 @@ This guide covers the parts of LoopTroop you deal with after the first run: star
 | Task | Start here |
 | --- | --- |
 | Start the full local stack | `npm run dev` |
-| Start once without dependency/audit mutation | `LOOPTROOP_DEV_SKIP_DEPS=1 npm run dev` |
+| Start once with dependency/audit maintenance | `LOOPTROOP_DEV_MAINTENANCE=1 npm run dev` |
 | Skip only the local OpenCode CLI upgrade | `LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1 npm run dev` |
 | Inherit your external OpenCode permission mode | `LOOPTROOP_OPENCODE_PERMISSION_MODE=inherit npm run dev` |
 | Share the dashboard on a trusted local network | `npm run dev --lan` |
@@ -47,12 +47,12 @@ Before those services launch, LoopTroop runs a dev preflight that:
 
 - prints immediate progress for bootstrap checks, daily maintenance, stale-process cleanup, and port availability so startup does not appear stalled during slower checks
 - restores missing local tooling with `npm ci` when dependencies need to be restored, then verifies required local dev binaries
-- checks direct dependencies against npm publish metadata
+- checks direct dependencies against npm publish metadata (only when maintenance is opted in)
 - previews stale direct dependencies with npm's normal peer resolver and updates only compatible stable releases that are newer than the current installed version and at least 7 days old
 - holds newer releases that are still inside that 7-day delay or conflict with the current peer dependency graph; automatic maintenance never retries with `--force` or `--legacy-peer-deps`
 - previews `npm audit fix` lockfile changes with the same peer resolver, recognizes npm's expected exit code when unresolved findings remain, and runs the fix only when the proposal is compatible and every proposed npm package version has passed the same 7-day delay
 - retries temporary npm audit transport or malformed-response failures once, then defers that audit without stamping it complete so an external registry outage cannot prevent the application or a boot-enabled service from starting
-- upgrades the local `opencode` CLI to the latest available version when the binary is installed
+- upgrades the local `opencode` CLI to the latest available version when the binary is installed (only when maintenance is opted in)
 - checks and reclaims only stale LoopTroop-owned processes on configured ports
 - refuses to kill unrelated port occupants and reports which process still owns the conflicting port
 - writes the last successful preflight snapshot to `tmp/dev-preflight-report.json`
@@ -72,7 +72,7 @@ Before those services launch, LoopTroop runs a dev preflight that:
 - **Ephemeral auth:** if `OPENCODE_SERVER_PASSWORD` is not set and a new local OpenCode server is about to start, `npm run dev` generates a random credential and sets `OPENCODE_SERVER_USERNAME` to `opencode`. This credential is propagated automatically to all child processes — backend and watcher — for the duration of the session.
 - **Ephemeral API token:** if `LOOPTROOP_API_TOKEN` is not set, `npm run dev` generates one for the backend and Vite dev proxy so local same-origin `/api/*` calls are protected without embedding the token in the frontend bundle.
 
-Normal `npm run dev` can intentionally mutate local dependency files when aged direct dependency updates or audit fixes are available. The expensive networked maintenance work is daily-gated through `tmp/dev-maintenance-state.json`: direct dependency sync, npm audit remediation, and OpenCode CLI upgrade checks run on the first local dev start of the day, then run again only if their relevant inputs change later that day.
+Normal `npm run dev` is verify-only: it never rewrites `package.json`, the lockfile, or a globally installed CLI. Dependency sync, npm audit remediation, and the OpenCode CLI upgrade are opt-in through `LOOPTROOP_DEV_MAINTENANCE=1`, or run explicitly with `npm run deps:sync`, `npm run audit:remediate`, and `npm run opencode:upgrade`. When opted in, that expensive networked maintenance work is daily-gated through `tmp/dev-maintenance-state.json`: each task runs on the first local dev start of the day, then runs again only if its relevant inputs change later that day. Preflight always still runs `npm ci` when the installed tree has drifted from the lockfile, which is deterministic and introduces no new versions.
 
 Audit failure handling distinguishes external availability from local integrity. Registry timeouts, connection errors, rate limits, service errors, and malformed audit responses are retried once and then reported as deferred without blocking normal startup. Because a deferred audit is not recorded as successful, the next eligible startup retries it. Local failures such as an unreadable lockfile, an invalid staged lockfile, or a failed dependency application remain startup-blocking. The standalone `npm run audit:remediate` command remains strict and exits unsuccessfully for either category so explicit maintenance and automation can detect incomplete work.
 
@@ -91,14 +91,15 @@ npm run opencode:upgrade
 Use one-run startup flags when you want to change `npm run dev` behavior:
 
 ```bash
-LOOPTROOP_DEV_SKIP_DEPS=1 npm run dev
-LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1 npm run dev
-LOOPTROOP_DEV_FORCE_MAINTENANCE=1 npm run dev
+LOOPTROOP_DEV_MAINTENANCE=1 npm run dev
+LOOPTROOP_DEV_MAINTENANCE=1 LOOPTROOP_DEV_SKIP_DEPS=1 npm run dev
+LOOPTROOP_DEV_MAINTENANCE=1 LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1 npm run dev
+LOOPTROOP_DEV_MAINTENANCE=1 LOOPTROOP_DEV_FORCE_MAINTENANCE=1 npm run dev
 npm run dev --lan
 npm run dev --opencode-logs=all
 ```
 
-These commands update the same maintenance timestamps used by normal startup gating. `deps:sync` and `audit:remediate` still respect `LOOPTROOP_DEV_SKIP_DEPS=1`; `opencode:upgrade` still respects `LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1`.
+These commands update the same maintenance timestamps used by opted-in startup gating. `deps:sync` and `audit:remediate` still respect `LOOPTROOP_DEV_SKIP_DEPS=1`; `opencode:upgrade` still respects `LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1`. The `LOOPTROOP_DEV_SKIP_*` and `LOOPTROOP_DEV_FORCE_MAINTENANCE` flags only affect `npm run dev` when maintenance is opted in, since it is otherwise skipped entirely.
 
 ## 5. Scripts Reference
 
@@ -192,6 +193,7 @@ The app database is runtime-bootstrapped by `server/db/init.ts`. The committed m
 | `LOOPTROOP_CONFIG_DIR` | Override the app config directory |
 | `LOOPTROOP_APP_DB_PATH` | Override the app database path directly |
 | `LOOPTROOP_PROJECT_DB_PATH` | Project database target for explicit Drizzle project DB commands |
+| `LOOPTROOP_DEV_MAINTENANCE=1` | Opt in to the daily dependency sync, npm audit remediation and OpenCode CLI upgrade during `npm run dev`; these are skipped by default because they rewrite `package.json`, the lockfile, or a globally installed CLI |
 | `LOOPTROOP_DEV_SKIP_DEPS=1` | Skip automatic dependency sync and audit remediation during `npm run dev` |
 | `LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1` | Skip the automatic local OpenCode CLI upgrade during `npm run dev` |
 | `LOOPTROOP_DEV_FORCE_MAINTENANCE=1` | Bypass the once-per-day maintenance gate and force all startup maintenance checks now |

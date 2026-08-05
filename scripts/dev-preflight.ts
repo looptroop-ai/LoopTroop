@@ -37,9 +37,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
 const packageJsonPath = resolve(repoRoot, 'package.json')
 const packageLockPath = resolve(repoRoot, 'package-lock.json')
-const shouldSkipDependencyMaintenance = process.env.LOOPTROOP_DEV_SKIP_DEPS === '1'
-const shouldSkipOpenCodeUpgrade = process.env.LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE === '1'
-const shouldForceDailyMaintenance = process.env.LOOPTROOP_DEV_FORCE_MAINTENANCE === '1'
+// Preflight verifies; it does not mutate. Dependency sync, audit remediation
+// and the OpenCode upgrade rewrite package.json, the lockfile, or a globally
+// installed CLI, so they are opt-in via `npm run deps:sync`,
+// `npm run audit:remediate` and `npm run opencode:upgrade`.
+const maintenanceOptIn = process.env.LOOPTROOP_DEV_MAINTENANCE === '1'
+const shouldSkipDependencyMaintenance = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_DEPS === '1'
+const shouldSkipOpenCodeUpgrade = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE === '1'
+const shouldForceDailyMaintenance = maintenanceOptIn && process.env.LOOPTROOP_DEV_FORCE_MAINTENANCE === '1'
 const devHostMode = (() => {
   try {
     return resolveDevHostMode()
@@ -254,7 +259,9 @@ const dependencySyncDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipDependencyMaintenance) {
-  logProgress('Skipping direct dependency sync because LOOPTROOP_DEV_SKIP_DEPS=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping direct dependency sync because LOOPTROOP_DEV_SKIP_DEPS=1.'
+    : 'Dependency sync is opt-in; run `npm run deps:sync` to update dependencies.')
 } else if (dependencySyncDecision.shouldRun) {
   logProgress('Checking direct npm dependencies for eligible updates; this daily network check may take a moment.')
 } else {
@@ -305,7 +312,9 @@ const auditDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipDependencyMaintenance) {
-  logProgress('Skipping npm audit remediation because LOOPTROOP_DEV_SKIP_DEPS=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping npm audit remediation because LOOPTROOP_DEV_SKIP_DEPS=1.'
+    : 'Audit remediation is opt-in; run `npm run audit:remediate` to apply fixes.')
 } else if (auditDecision.shouldRun) {
   logProgress('Previewing npm audit remediation; this daily lockfile check may take a moment.')
 } else {
@@ -366,7 +375,9 @@ const opencodeDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipOpenCodeUpgrade) {
-  logProgress('Skipping OpenCode CLI upgrade because LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping OpenCode CLI upgrade because LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1.'
+    : 'OpenCode CLI upgrade is opt-in; run `npm run opencode:upgrade` to update it.')
 } else if (opencodeDecision.shouldRun) {
   logProgress('Checking OpenCode CLI for updates; this daily check may take a moment.')
 } else {

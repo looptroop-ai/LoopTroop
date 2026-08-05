@@ -40,6 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Made the dev preflight verify-only by default: dependency sync, npm audit remediation, and the OpenCode CLI upgrade are now opt-in through `LOOPTROOP_DEV_MAINTENANCE=1` rather than running automatically on every `npm run dev`, so the preflight never rewrites `package.json`, the lockfile, or a globally installed CLI without explicit user action.
 - Changed the default documentation origin to the hosted site so in-app links resolve for installed users, who have no local docs server, and made the local VitePress server opt-in through `LOOPTROOP_DEV_DOCS=1`; `npm run dev` now launches three services instead of four, and the docs port-availability check only runs when the docs server will actually start.
 - Replaced `better-sqlite3` with Node's built-in `node:sqlite` module across both databases, the log projection layer, and the diagnostics script, and removed the `better-sqlite3` and `@types/better-sqlite3` dependencies along with the native-build allowlist entry they required.
 - Added a small compatibility layer at `server/db/sqliteShim.ts` providing the `pragma()` and `transaction()` methods that `node:sqlite` does not expose, so existing call sites did not have to change.

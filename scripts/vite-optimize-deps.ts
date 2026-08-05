@@ -9,6 +9,7 @@ export const FRONTEND_OPTIMIZED_DEPENDENCIES = [
   '@codemirror/autocomplete',
   '@codemirror/lang-yaml',
   '@codemirror/language',
+  '@codemirror/merge',
   '@codemirror/state',
   '@codemirror/view',
   '@radix-ui/react-dialog',

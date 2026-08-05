@@ -48,6 +48,11 @@ jobs:
       - name: Build site
         run: npm run site:build
 
+      # Guards the packaging premise: a native addon needs a compiler on the
+      # user's machine and cannot go into a standalone binary.
+      - name: Verify no native addons in the production package
+        run: npm run verify:no-native-addons
+
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build

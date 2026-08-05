@@ -55,6 +55,7 @@
     "docs:preview": "vitepress preview docs",
     "site:build": "npm run docs:build && node scripts/build-site.mjs",
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
+    "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",

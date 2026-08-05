@@ -1,33 +1,17 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { appendLogEvent } from '../../log/executionLog'
+import { getCommandLogContext, withCommandLogging } from '../../log/commandLogger'
 import { attachProject } from '../../storage/projects'
 import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { TEST } from '../../test/factories'
 import { createTestRepoManager, resetTestDb } from '../../test/integration'
 import { TicketInitializationError, initializeTicket } from '../initialize'
 
-interface CommandLogContext {
-  ticketId: string
-  externalId: string
-  phase: string
-  emit: (phase: string, type: 'info' | 'error', content: string) => void
-}
-
-const STORE_KEY = Symbol.for('looptroop:commandLogStore')
 let activeWorktreePath: string | null = null
 let unsafeAppendCount = 0
-
-function getSharedCommandLogStore(): AsyncLocalStorage<CommandLogContext> {
-  const globalStore = globalThis as unknown as Record<symbol, AsyncLocalStorage<CommandLogContext> | undefined>
-  if (!globalStore[STORE_KEY]) {
-    globalStore[STORE_KEY] = new AsyncLocalStorage<CommandLogContext>()
-  }
-  return globalStore[STORE_KEY]!
-}
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
@@ -36,7 +20,7 @@ vi.mock('node:child_process', async () => {
     ...actual,
     spawnSync: vi.fn((command: string, args: readonly string[], options?: Parameters<typeof actual.spawnSync>[2]) => {
       const result = actual.spawnSync(command, args, options)
-      const ctx = getSharedCommandLogStore().getStore()
+      const ctx = getCommandLogContext()
       const targetRef = ctx?.externalId ? `refs/heads/${ctx.externalId}` : null
 
       if (
@@ -103,28 +87,26 @@ describe('initializeTicket', () => {
     )
 
     activeWorktreePath = paths.worktreePath
-    const init = getSharedCommandLogStore().run(
-      {
-        ticketId: ticket.id,
-        externalId: ticket.externalId,
-        phase: 'DRAFT',
-        emit: (phase, type, content) => {
-          const timestamp = new Date().toISOString()
-          appendLogEvent(
-            ticket.id,
-            type,
-            phase,
-            content,
-            { timestamp },
-            type === 'error' ? 'error' : 'system',
-            phase,
-          )
-        },
-      },
+    const init = withCommandLogging(
+      ticket.id,
+      ticket.externalId,
+      'DRAFT',
       () => initializeTicket({
         projectFolder: repoDir,
         externalId: ticket.externalId,
       }),
+      (phase, type, content) => {
+        const timestamp = new Date().toISOString()
+        appendLogEvent(
+          ticket.id,
+          type,
+          phase,
+          content,
+          { timestamp },
+          type === 'error' ? 'error' : 'system',
+          phase,
+        )
+      },
     )
     activeWorktreePath = null
 

@@ -35,6 +35,11 @@ function getSharedStore(): AsyncLocalStorage<CommandLogContext> {
 }
 const commandLogStore = getSharedStore()
 
+/** Current command-logging context, or undefined outside a withCommandLogging scope. */
+export function getCommandLogContext(): CommandLogContext | undefined {
+  return commandLogStore.getStore()
+}
+
 type LoggedCommandResult =
   | { ok: true; stdin?: string; stdout?: string; stderr?: string }
   | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string }

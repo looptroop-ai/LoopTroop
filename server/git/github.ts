@@ -1,9 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { getCurrentBranch } from './repository'
+import * as commandLogger from '../log/commandLogger'
 
-const _require = createRequire(import.meta.url)
-
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -11,12 +10,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch {
-    // Best-effort logging only.
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 
 const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024

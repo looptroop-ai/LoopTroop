@@ -20,12 +20,9 @@ import {
 import { getTicketBeadsDir, updateTicketMeta } from './metadata'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { getErrorMessage } from '@shared/typeGuards'
+import * as commandLogger from '../log/commandLogger'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
-
-// Lazy-load commandLogger to avoid vitest mock-resolution deadlock when
-// tickets.start.test.ts uses `importOriginal` on this module.
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -33,15 +30,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch (error) {
-    // Ignore if commandLogger can't be loaded in test isolation.
-    if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
-      console.error(`[ticket/initialize] Failed to load commandLogger: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 
 interface InitializeOptions {

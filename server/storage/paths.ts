@@ -25,9 +25,13 @@ function logCmd(
 export function normalizeFolderPath(input: string): string {
   let output = input.trim().replace(/[\\/]+$/, '')
   output = output.replace(/\\/g, '/')
-  const driveMatch = output.match(/^([A-Za-z]):\/(.*)$/)
-  if (driveMatch && driveMatch[1] && driveMatch[2] !== undefined) {
-    output = `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`
+  // Drive letters only map to /mnt/<drive> under WSL. On native Windows the
+  // drive-letter path is already correct and rewriting it breaks every lookup.
+  if (process.platform !== 'win32') {
+    const driveMatch = output.match(/^([A-Za-z]):\/(.*)$/)
+    if (driveMatch && driveMatch[1] && driveMatch[2] !== undefined) {
+      output = `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`
+    }
   }
   if (!isAbsolute(output)) {
     output = resolve(process.cwd(), output)

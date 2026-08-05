@@ -34,6 +34,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Downgraded `@types/node` from `^26.1.2` to `^24.9.5` so TypeScript rejects Node 26-only APIs at development time rather than discovering them in user installs after publishing.
 
 ### Fixed
+- Fixed `normalizeFolderPath` in `server/storage/paths.ts` to preserve drive-letter paths on native Windows rather than unconditionally rewriting them to WSL `/mnt/<drive>/...` paths, which broke every git repository lookup and project attachment on Windows.
 - Declared `@codemirror/merge` in the Vite frontend dependency optimization list so the YAML diff editor loads reliably in development; the optimizer runs with late discovery disabled, so any production browser dependency omitted from that list can fail to resolve.
 
 ### Removed

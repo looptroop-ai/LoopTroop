@@ -19,6 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a latent development-server bug where `@codemirror/merge` would fail to load in the diff editor because Vite's dependency optimizer was configured with `noDiscovery: true` but the package was missing from the pre-declared list.
 - Removed direct email and Twitter contact links from the web landing page footer.
 - Pointed in-app documentation links at the hosted documentation site and made the local docs server opt-in, so installed users get working links and `npm run dev` starts one fewer background process.
+- Made `npm run dev` verify-only, so starting the development environment no longer silently updates dependencies, rewrites the lockfile, or upgrades the OpenCode CLI; those updates are now explicit opt-in commands.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.

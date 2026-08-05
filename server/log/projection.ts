@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
-import type Database from 'better-sqlite3'
+import type { SQLInputValue } from 'node:sqlite'
+import type { Database, Statement } from '../db/sqliteShim'
 import { getProjectDatabase } from '../db/project'
 import { getTicketContext, getTicketPaths } from '../storage/tickets'
 import { extractLogFingerprint } from '@shared/logIdentity'
@@ -20,28 +21,28 @@ interface ProjectionCursor {
 }
 
 interface ProjectionStatements {
-  selectEntry: Database.Statement
-  upsertEntry: Database.Statement
-  selectCursor: Database.Statement
-  advanceCursor: Database.Statement
-  setCursor: Database.Statement
-  deleteChannel: Database.Statement
-  queryPages: Map<string, Database.Statement>
+  selectEntry: Statement
+  upsertEntry: Statement
+  selectCursor: Statement
+  advanceCursor: Statement
+  setCursor: Statement
+  deleteChannel: Statement
+  queryPages: Map<string, Statement>
 }
 
 interface ProjectionStorage {
   context: NonNullable<ReturnType<typeof getTicketContext>>
-  sqlite: Database.Database
+  sqlite: Database
   statements: ProjectionStatements
 }
 
-const initializedProjectionDatabases = new WeakSet<Database.Database>()
-const projectionStatements = new WeakMap<Database.Database, ProjectionStatements>()
+const initializedProjectionDatabases = new WeakSet<Database>()
+const projectionStatements = new WeakMap<Database, ProjectionStatements>()
 const projectionCatchUps = new Map<string, Promise<void>>()
 const PROJECTION_READ_CHUNK_BYTES = 256 * 1024
 const PROJECTION_ROWS_PER_YIELD = 250
 
-function prepareProjectionStatements(sqlite: Database.Database): ProjectionStatements {
+function prepareProjectionStatements(sqlite: Database): ProjectionStatements {
   const cached = projectionStatements.get(sqlite)
   if (cached) return cached
   const statements: ProjectionStatements = {
@@ -287,7 +288,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   const { context, sqlite } = storage
   const before = decodeCursor(query.before)
   const clauses = ['ticket_id = ?']
-  const params: unknown[] = [context.localTicketId]
+  const params: SQLInputValue[] = [context.localTicketId]
   if (query.scope === 'phase' && query.phase) { clauses.push('phase = ?'); params.push(query.phase) }
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }

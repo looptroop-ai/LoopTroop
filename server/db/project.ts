@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { Database } from './sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import { existsSync } from 'fs'
 import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
@@ -15,7 +15,7 @@ import {
 } from './schemaVersion'
 
 interface ProjectDatabase {
-  sqlite: Database.Database
+  sqlite: Database
   db: ReturnType<typeof drizzle>
 }
 
@@ -32,7 +32,7 @@ function closeCachedProjectDatabase(projectRoot: string): boolean {
 }
 
 function ensureColumn(
-  sqlite: Database.Database,
+  sqlite: Database,
   table: string,
   column: string,
   definition: string,
@@ -42,7 +42,7 @@ function ensureColumn(
   sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
-function initializeProjectSqlite(sqlite: Database.Database) {
+function initializeProjectSqlite(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,7 +310,7 @@ function initializeProjectSqlite(sqlite: Database.Database) {
   `)
 }
 
-function cleanupProjectForeignKeyOrphans(sqlite: Database.Database) {
+function cleanupProjectForeignKeyOrphans(sqlite: Database) {
   sqlite.exec(`
     DELETE FROM phase_artifacts
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
@@ -409,7 +409,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
   const projectDb: ProjectDatabase = {
     sqlite,
     // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-    db: drizzle({ client: sqlite, schema }),
+    db: drizzle({ client: sqlite.client, schema }),
   }
   projectDbCache.set(projectRoot, projectDb)
   return projectDb

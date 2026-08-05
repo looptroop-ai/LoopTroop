@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { Database } from '../sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import { eq, sql } from 'drizzle-orm'
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -36,10 +36,10 @@ const uniqueTable = sqliteTable('contract_unique', {
 
 let tempDir: string
 let dbPath: string
-let sqlite: Database.Database
+let sqlite: Database
 let db: ReturnType<typeof drizzle>
 
-function createSchema(connection: Database.Database) {
+function createSchema(connection: Database) {
   connection.exec(`
     CREATE TABLE contract_rows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +73,7 @@ beforeEach(() => {
   sqlite = new Database(dbPath)
   sqlite.pragma('journal_mode=WAL')
   createSchema(sqlite)
-  db = drizzle({ client: sqlite })
+  db = drizzle({ client: sqlite.client })
 })
 
 afterEach(() => {

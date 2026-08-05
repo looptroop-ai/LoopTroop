@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { Database } from './sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import { dirname, isAbsolute, resolve } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import * as schema from './schema'
@@ -42,10 +42,10 @@ const DB_PATH = APP_STORAGE_BOOT_FACTS.dbPath
 mkdirSync(APP_CONFIG_DIR, { recursive: true })
 mkdirSync(dirname(DB_PATH), { recursive: true })
 
-let sqliteInstance: Database.Database | null = null
+let sqliteInstance: Database | null = null
 let dbInstance: ReturnType<typeof drizzle> | null = null
 
-function getOrCreateSqlite(): Database.Database {
+function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
     sqliteInstance = new Database(DB_PATH)
     sqliteInstance.pragma('journal_mode=WAL')
@@ -61,7 +61,7 @@ function getOrCreateSqlite(): Database.Database {
 function getOrCreateDb(): ReturnType<typeof drizzle> {
   if (!dbInstance) {
     // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-    dbInstance = drizzle({ client: getOrCreateSqlite(), schema })
+    dbInstance = drizzle({ client: getOrCreateSqlite().client, schema })
   }
   return dbInstance
 }
@@ -69,7 +69,7 @@ function getOrCreateDb(): ReturnType<typeof drizzle> {
 // Lazy-initializing proxies — the actual SQLite connection is only opened on
 // first access, not at module-import time. This prevents test environments
 // that transitively import this module from creating spurious database files.
-export const sqlite = new Proxy({} as Database.Database, {
+export const sqlite = new Proxy({} as Database, {
   get(_target, prop: string | symbol) {
     const real = getOrCreateSqlite()
     const value = (real as unknown as Record<string | symbol, unknown>)[prop]

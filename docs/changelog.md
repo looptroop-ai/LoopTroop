@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Replaced the native `better-sqlite3` database driver with Node's built-in `node:sqlite`, removing the last compiled dependency from the runtime and eliminating the most common cause of failed installations.
 - Introduced schema versioning for both the application and per-project databases, so a database written by a newer LoopTroop is refused with a clear message instead of being silently and destructively downgraded.
 - Established the first CI workflow to enforce lint, typecheck, test, build, docs:build, site:build, and clean-tree checks on every push and pull request, running on Ubuntu with Node 24 as the required lane and adding non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24.
 - Pinned build-time Tailwind CLI to an exact version to eliminate non-deterministic site builds and unpinned network fetches during releases.
@@ -37,6 +38,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Replaced `better-sqlite3` with Node's built-in `node:sqlite` module across both databases, the log projection layer, and the diagnostics script, and removed the `better-sqlite3` and `@types/better-sqlite3` dependencies along with the native-build allowlist entry they required.
+- Added a small compatibility layer at `server/db/sqliteShim.ts` providing the `pragma()` and `transaction()` methods that `node:sqlite` does not expose, so existing call sites did not have to change.
 - Upgraded `drizzle-orm` and `drizzle-kit` from `0.45.2` and `0.31.10` to `1.0.0-rc.4` with exact pins, adapting to the v1 breaking change where `drizzle()` now requires `{ client }` instead of a raw connection as its first parameter.
 - Changed Windows config directory to `%APPDATA%\looptroop` rather than `%USERPROFILE%\.config\looptroop` to honour the platform convention and avoid splitting a user's data across two directories when different shells set `XDG_CONFIG_HOME`.
 - Deliberately ignored `XDG_CONFIG_HOME` on Windows since it is a freedesktop.org convention and honouring it on Windows would cause shell-dependent paths.

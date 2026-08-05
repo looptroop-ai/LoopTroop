@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { Database } from '../../db/sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import * as schema from '../../db/schema'
 import { beadExecutionMetrics } from '../../db/schema'
 import {
@@ -35,7 +35,7 @@ function makeDb() {
     );
   `)
   // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-  return drizzle({ client: sqlite, schema })
+  return drizzle({ client: sqlite.client, schema })
 }
 
 function insertMetric(

@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3'
+import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,7 +16,7 @@ const repoManager = createFixtureRepoManager({
 
 interface LoadedHealthApp {
   app: Hono
-  sqlite: Database.Database
+  sqlite: Database
   initializeDatabase: () => void
   initializeStartupState: () => unknown
   resetStartupStateForTests: () => void

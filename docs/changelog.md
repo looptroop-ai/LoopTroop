@@ -24,6 +24,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
 - Added a SQLite behavioural contract test suite pinning value conversion, transactions and savepoints, conflict handling, `RETURNING`, foreign keys, persistence across reopen, read-only access, and the prepared-statement surface, so the forthcoming database driver change can be verified against known-good behaviour rather than assumed safe.
 - Added independent schema versioning for the application database and each per-project database via `PRAGMA user_version`, recorded in the new `server/db/schemaVersion.ts` module.
 - Added a downgrade guard to both database boot paths: a database reporting a newer schema version than the running build now aborts with a message naming the file, both versions, and how to recover, rather than being opened and mutated.

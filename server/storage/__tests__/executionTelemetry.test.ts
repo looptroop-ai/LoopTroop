@@ -34,6 +34,7 @@ function makeDb() {
       cost_usd REAL
     );
   `)
+  // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
   return drizzle({ client: sqlite, schema })
 }
 

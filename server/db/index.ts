@@ -60,6 +60,7 @@ function getOrCreateSqlite(): Database.Database {
 
 function getOrCreateDb(): ReturnType<typeof drizzle> {
   if (!dbInstance) {
+    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
     dbInstance = drizzle({ client: getOrCreateSqlite(), schema })
   }
   return dbInstance

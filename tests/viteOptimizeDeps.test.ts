@@ -54,7 +54,7 @@ describe('Vite dependency optimization policy', () => {
     expect(frontendOptimizeDeps.noDiscovery).toBe(true)
     expect([...FRONTEND_OPTIMIZED_DEPENDENCIES].sort()).toEqual(collectBrowserBareImports())
     expect(frontendOptimizeDeps.include).toEqual([...FRONTEND_OPTIMIZED_DEPENDENCIES])
-  })
+  }, 30000)
 
   it('prevents restored dev pages from reusing an old React dependency graph', () => {
     expect(DEV_SERVER_RESOURCE_HEADERS).toEqual({ 'Cache-Control': 'no-store' })

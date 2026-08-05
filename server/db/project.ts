@@ -1,6 +1,5 @@
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
-import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { existsSync } from 'fs'
 import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
@@ -17,7 +16,7 @@ import {
 
 interface ProjectDatabase {
   sqlite: Database.Database
-  db: BetterSQLite3Database<typeof schema>
+  db: ReturnType<typeof drizzle>
 }
 
 const MAX_PROJECT_CACHE_SIZE = 50
@@ -409,6 +408,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   const projectDb: ProjectDatabase = {
     sqlite,
+    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
     db: drizzle({ client: sqlite, schema }),
   }
   projectDbCache.set(projectRoot, projectDb)

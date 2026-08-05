@@ -46,6 +46,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Downgraded `@types/node` from `^26.1.2` to `^24.9.5` so TypeScript rejects Node 26-only APIs at development time rather than discovering them in user installs after publishing.
 
 ### Fixed
+- Raised the timeout on the Vite dependency-optimization policy test, which parses every file under `src/` and `shared/` with ts-morph and could exceed the default budget when the suite runs fully parallel.
 - Moved the OpenRouter routing configuration out of the repository directory into the user config directory. Writing into the installation directory would fail outright once LoopTroop is installed globally, since a global install location is read-only.
 - Moved diagnostic report output from a working-directory-relative `tmp/diagnostics/` path into the user config directory, so running the diagnostics command as a global tool no longer scatters report files into whatever directory the user happened to run from.
 - Replaced the fixed `.tmp` suffix in `safeAtomicWrite` with a unique per-process suffix. Two processes writing the same target file could previously collide, with one rename clobbering the other's partial write.

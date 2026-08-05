@@ -23,6 +23,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Added a SQLite behavioural contract test suite pinning value conversion, transactions and savepoints, conflict handling, `RETURNING`, foreign keys, persistence across reopen, read-only access, and the prepared-statement surface, so the forthcoming database driver change can be verified against known-good behaviour rather than assumed safe.
 - Added independent schema versioning for the application database and each per-project database via `PRAGMA user_version`, recorded in the new `server/db/schemaVersion.ts` module.
 - Added a downgrade guard to both database boot paths: a database reporting a newer schema version than the running build now aborts with a message naming the file, both versions, and how to recover, rather than being opened and mutated.
 - Added a one-time notice when opening a pre-0.5.0 database that carries no version marker, explaining that such databases are development data, are not migrated, and can be deleted to start clean.

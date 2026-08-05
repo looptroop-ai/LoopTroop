@@ -1,8 +1,11 @@
 import { writeFileSync, renameSync, openSync, fsyncSync, closeSync, mkdirSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
+import { randomBytes } from 'crypto'
 
 export function safeAtomicWrite(filePath: string, content: string): void {
-  const tmpPath = `${filePath}.tmp`
+  // Unique suffix: a fixed ".tmp" collides when concurrent processes write the
+  // same target, and one rename then clobbers the other's partial file.
+  const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
   const dir = dirname(filePath)
 
   mkdirSync(dir, { recursive: true })

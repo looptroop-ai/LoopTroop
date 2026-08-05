@@ -389,7 +389,9 @@ const cli = parseCliArgs(process.argv.slice(2))
 const reportLines: string[] = []
 const startedAt = new Date()
 const runTimestamp = formatFileTimestamp(startedAt)
-const reportDir = resolve(process.cwd(), 'tmp', 'diagnostics')
+// User-space, not cwd: as a global command this would otherwise scatter reports
+// into whatever directory the user happened to run from.
+const reportDir = resolve(resolveAppConfigDir(process.env as Record<string, string>), 'diagnostics')
 const reportPath = resolve(reportDir, `runtime-stall-${runTimestamp}.log`)
 const commandAvailability = new Map<string, boolean>()
 
@@ -2212,6 +2214,14 @@ function resolveAppConfigDir(env: Record<string, string>): string {
   const configured = env.LOOPTROOP_CONFIG_DIR?.trim()
   if (configured) {
     return resolvePortablePath(configured)
+  }
+
+  if (process.platform === 'win32') {
+    const appData = env.APPDATA?.trim()
+    const baseDir = appData
+      ? resolvePortablePath(appData)
+      : resolve(env.USERPROFILE?.trim() || homedir(), 'AppData', 'Roaming')
+    return resolve(baseDir, 'looptroop')
   }
 
   const xdgConfigHome = env.XDG_CONFIG_HOME?.trim()

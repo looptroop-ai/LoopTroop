@@ -24,6 +24,7 @@ import { LOOPTROOP_OPENCODE_LOGS, resolveOpenCodeLogMode } from './opencode-log-
 import { getWslLanAccessPlan } from './wsl-lan-access'
 import { getErrorMessage } from '../shared/typeGuards'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
+import { resolveAppConfigDir } from '../server/lib/appConfigDir'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -41,7 +42,7 @@ delete childEnv.NO_COLOR
 delete childEnv.FORCE_COLOR
 
 if (!childEnv.OPENCODE_CONFIG?.trim()) {
-  const routingConfigPath = resolve(repoRoot, '.looptroop', 'opencode', 'openrouter-routing.json')
+  const routingConfigPath = resolve(resolveAppConfigDir(), 'opencode', 'openrouter-routing.json')
   mkdirSync(dirname(routingConfigPath), { recursive: true })
   if (!existsSync(routingConfigPath)) {
     writeFileSync(routingConfigPath, '{}\n', 'utf8')

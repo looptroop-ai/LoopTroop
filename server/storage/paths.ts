@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import { resolveBaseBranch } from '../git/repository'
 import { logCommand } from '../log/commandLogger'
@@ -27,6 +27,14 @@ export function normalizeFolderPath(input: string): string {
   }
   if (!isAbsolute(output)) {
     output = resolve(process.cwd(), output)
+  }
+  // Canonicalise symlinks so one directory always compares equal to itself:
+  // macOS maps /var to /private/var, so a stored path and the output of
+  // `git rev-parse --show-toplevel` otherwise disagree.
+  try {
+    output = realpathSync(output).replace(/\\/g, '/')
+  } catch {
+    // Not created yet, so the lexical form is the best available answer.
   }
   return output
 }

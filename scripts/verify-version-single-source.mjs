@@ -44,8 +44,43 @@ if (!version) {
   process.exit(1)
 }
 
-// Word-boundary match so 0.4.1 does not also match 10.4.1 or 0.4.10.
-const versionPattern = new RegExp(String.raw`(?<![\w.])v?${version.replace(/\./g, String.raw`\.`)}(?![\w.])`)
+const failures = []
+
+// The lockfile carries the version twice: the top-level field and the root
+// package entry. `npm version` updates both, a hand edit usually does not.
+const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'))
+const lockRootVersion = lock.packages?.['']?.version
+if (lock.version !== version) {
+  failures.push(`package-lock.json "version" is ${lock.version ?? '(missing)'}, expected ${version}.`)
+}
+if (lockRootVersion !== version) {
+  failures.push(`package-lock.json packages[""].version is ${lockRootVersion ?? '(missing)'}, expected ${version}.`)
+}
+
+/**
+ * The version immediately before the current one, taken from the changelog.
+ *
+ * This is the string a release bump leaves behind. Scanning only for the new
+ * version proves nothing: it is correct by construction the moment it is
+ * written, while the outgoing one is what actually goes stale.
+ */
+function findPreviousVersion() {
+  const headings = [...readFileSync('docs/changelog.md', 'utf8')
+    .matchAll(/^##\s+(\d+\.\d+\.\d+(?:-[\w.]+)?)\s*\(/gm)]
+    .map((match) => match[1])
+  return headings.find((candidate) => candidate !== version) ?? null
+}
+
+function versionPattern(value) {
+  // Word boundaries so 0.4.1 does not also match 10.4.1 or 0.4.10.
+  return new RegExp(String.raw`(?<![\w.])v?${value.replace(/\./g, String.raw`\.`)}(?![\w.])`)
+}
+
+const previousVersion = findPreviousVersion()
+const scans = [{ label: 'current', value: version, pattern: versionPattern(version) }]
+if (previousVersion) {
+  scans.push({ label: 'stale previous', value: previousVersion, pattern: versionPattern(previousVersion) })
+}
 
 const trackedFiles = run('git', ['ls-files']).split('\n').filter(Boolean)
 const offenders = []
@@ -62,13 +97,24 @@ for (const file of trackedFiles) {
   }
 
   for (const [index, line] of contents.split('\n').entries()) {
-    if (versionPattern.test(line)) {
-      offenders.push(`${file}:${index + 1}: ${line.trim()}`)
+    for (const scan of scans) {
+      if (scan.pattern.test(line)) {
+        offenders.push(`${file}:${index + 1}: [${scan.label} ${scan.value}] ${line.trim()}`)
+      }
     }
   }
 }
 
-console.log(`Checked ${trackedFiles.length} tracked files against version ${version}.`)
+console.log(
+  `Checked ${trackedFiles.length} tracked files against version ${version}`
+  + `${previousVersion ? ` (and stale ${previousVersion})` : ''}.`,
+)
+
+if (failures.length > 0) {
+  console.error('\nFAIL: version fields are out of sync.\n')
+  for (const failure of failures) console.error(`  ${failure}`)
+  console.error('\nRun `npm install --package-lock-only` to resync the lockfile.')
+}
 
 if (offenders.length > 0) {
   console.error(`\nFAIL: ${offenders.length} hardcoded version reference(s) found.\n`)
@@ -76,7 +122,8 @@ if (offenders.length > 0) {
   console.error('\nDerive the version from package.json instead of writing it literally.')
   console.error('If this location must keep a literal version, add it to ALLOWED_PATHS')
   console.error('in scripts/verify-version-single-source.mjs with a reason.')
-  process.exit(1)
 }
 
-console.log('PASS: no hardcoded version references outside allowlisted paths.')
+if (failures.length > 0 || offenders.length > 0) process.exit(1)
+
+console.log('PASS: version fields agree and no hardcoded references remain.')

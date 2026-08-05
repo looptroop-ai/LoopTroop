@@ -3,15 +3,15 @@ import { drizzle } from 'drizzle-orm/node-sqlite'
 import { existsSync } from 'fs'
 import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
+import { secureFile } from '../lib/appConfigDir'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
 import {
+  PROJECT_MIGRATABLE_FROM,
   PROJECT_SCHEMA_VERSION,
-  IncompatibleSchemaVersionError,
-  buildNewerSchemaMessage,
-  buildUnversionedResetMessage,
-  classifySchemaVersion,
-  inspectSchemaVersion,
+  assertSchemaCompatible,
+  shouldStampAfterInit,
   writeUserVersion,
+  type SchemaCompatibility,
 } from './schemaVersion'
 
 interface ProjectDatabase {
@@ -371,30 +371,29 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   ensureProjectStorageDirs(projectRoot)
   const sqlite = new Database(dbPath)
+  // Carries OpenCode session ownership and ticket state, so restrict it even
+  // though it lives inside the user's own repository.
+  secureFile(dbPath)
   sqlite.pragma('journal_mode=WAL')
   sqlite.pragma('locking_mode=NORMAL')
   sqlite.pragma('synchronous=NORMAL')
   sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
 
-  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes rows,
-  // so a newer database must be refused before we reach it.
-  const compatibility = classifySchemaVersion(inspectSchemaVersion(sqlite), PROJECT_SCHEMA_VERSION)
-  if (compatibility.kind === 'newer') {
-    const message = buildNewerSchemaMessage(
-      'project database',
-      dbPath,
-      compatibility.found,
-      PROJECT_SCHEMA_VERSION,
-    )
-    sqlite.close()
-    throw new IncompatibleSchemaVersionError(message, {
-      found: compatibility.found,
-      expected: PROJECT_SCHEMA_VERSION,
+  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes
+  // rows, so an incompatible database must be refused before we reach it.
+  let compatibility: SchemaCompatibility
+  try {
+    compatibility = assertSchemaCompatible({
+      store: sqlite,
+      databaseLabel: 'project database',
       databasePath: dbPath,
+      expected: PROJECT_SCHEMA_VERSION,
+      migratableFrom: PROJECT_MIGRATABLE_FROM,
+      onNotice: (message) => console.warn(message),
     })
-  }
-  if (compatibility.kind === 'unversioned') {
-    console.warn(buildUnversionedResetMessage('project database', dbPath))
+  } catch (error) {
+    sqlite.close()
+    throw error
   }
 
   initializeProjectSqlite(sqlite)
@@ -402,7 +401,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
   sqlite.pragma('foreign_keys=ON')
 
   // Stamp after DDL: project DBs use PRAGMA user_version (no new table needed).
-  if (compatibility.kind === 'fresh' || compatibility.kind === 'unversioned') {
+  if (shouldStampAfterInit(compatibility)) {
     writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
   }
 

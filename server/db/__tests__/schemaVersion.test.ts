@@ -1,14 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   APP_SCHEMA_VERSION,
   PROJECT_SCHEMA_VERSION,
   UNVERSIONED_SCHEMA_VERSION,
+  assertSchemaCompatible,
   buildNewerSchemaMessage,
+  buildUnsupportedSchemaMessage,
   buildUnversionedResetMessage,
   classifySchemaVersion,
   hasAnyUserTable,
   inspectSchemaVersion,
   readUserVersion,
+  shouldStampAfterInit,
   writeUserVersion,
   type SchemaVersionStore,
 } from '../schemaVersion'
@@ -54,6 +57,78 @@ describe('classifySchemaVersion', () => {
   it('reports an older versioned database as older', () => {
     expect(classifySchemaVersion({ found: 2, hasExistingTables: true }, 5))
       .toEqual({ kind: 'older', found: 2 })
+  })
+
+  it('reports databases below the migration floor as unsupported', () => {
+    expect(classifySchemaVersion({ found: 2, hasExistingTables: true }, 5, 3))
+      .toEqual({ kind: 'unsupported', found: 2 })
+  })
+
+  it('still upgrades a database sitting exactly on the floor', () => {
+    expect(classifySchemaVersion({ found: 3, hasExistingTables: true }, 5, 3))
+      .toEqual({ kind: 'older', found: 3 })
+  })
+})
+
+describe('shouldStampAfterInit', () => {
+  // The gap that shipped: `older` was classified but never stamped, so an
+  // upgraded database kept its previous version number.
+  it('stamps whenever DDL brought the schema forward', () => {
+    expect(shouldStampAfterInit({ kind: 'fresh' })).toBe(true)
+    expect(shouldStampAfterInit({ kind: 'unversioned' })).toBe(true)
+    expect(shouldStampAfterInit({ kind: 'older', found: 1 })).toBe(true)
+  })
+
+  it('does not rewrite a database that was already current', () => {
+    expect(shouldStampAfterInit({ kind: 'current' })).toBe(false)
+  })
+})
+
+describe('assertSchemaCompatible', () => {
+  const base = {
+    databaseLabel: 'app database',
+    databasePath: '/tmp/app.sqlite',
+    expected: 5,
+    migratableFrom: 3,
+  }
+
+  it('refuses a newer database', () => {
+    const onNotice = vi.fn()
+    expect(() => assertSchemaCompatible({ ...base, store: fakeStore(9, ['t']), onNotice }))
+      .toThrow(/created by a newer version/)
+    expect(onNotice).not.toHaveBeenCalled()
+  })
+
+  it('refuses a database below the migration floor rather than half-upgrading it', () => {
+    const onNotice = vi.fn()
+    expect(() => assertSchemaCompatible({ ...base, store: fakeStore(1, ['t']), onNotice }))
+      .toThrow(/can only upgrade databases from version 3/)
+  })
+
+  it('allows an older database through and announces the upgrade', () => {
+    const onNotice = vi.fn()
+    const result = assertSchemaCompatible({ ...base, store: fakeStore(3, ['t']), onNotice })
+    expect(result).toEqual({ kind: 'older', found: 3 })
+    expect(onNotice).toHaveBeenCalledWith(expect.stringContaining('from version 3 to 5'))
+  })
+
+  it('announces an unversioned database once', () => {
+    const onNotice = vi.fn()
+    const result = assertSchemaCompatible({ ...base, store: fakeStore(0, ['t']), onNotice })
+    expect(result).toEqual({ kind: 'unversioned' })
+    expect(onNotice).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing for a fresh or current database', () => {
+    const fresh = vi.fn()
+    expect(assertSchemaCompatible({ ...base, store: fakeStore(0, []), onNotice: fresh }))
+      .toEqual({ kind: 'fresh' })
+    expect(fresh).not.toHaveBeenCalled()
+
+    const current = vi.fn()
+    expect(assertSchemaCompatible({ ...base, store: fakeStore(5, ['t']), onNotice: current }))
+      .toEqual({ kind: 'current' })
+    expect(current).not.toHaveBeenCalled()
   })
 })
 
@@ -136,6 +211,16 @@ describe('operator messages', () => {
     expect(message).toContain('/tmp/db.sqlite')
     expect(message).toMatch(/0\.5\.0/)
     expect(message).toMatch(/delete/i)
+    // Must not claim the schema is untouched: the boot DDL does reconcile it.
+    expect(message).toMatch(/no data migration is attempted/i)
+  })
+
+  it('explains why a too-old database is refused rather than upgraded', () => {
+    const message = buildUnsupportedSchemaMessage('app database', '/tmp/app.sqlite', 1, 4)
+    expect(message).toContain('/tmp/app.sqlite')
+    expect(message).toContain('1')
+    expect(message).toContain('4')
+    expect(message).toMatch(/partially modified/i)
   })
 })
 

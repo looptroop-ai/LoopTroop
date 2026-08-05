@@ -4,7 +4,7 @@ import { dirname, isAbsolute, resolve } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import * as schema from './schema'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
-import { resolveAppConfigDir } from '../lib/appConfigDir'
+import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 
@@ -41,6 +41,7 @@ const DB_PATH = APP_STORAGE_BOOT_FACTS.dbPath
 
 mkdirSync(APP_CONFIG_DIR, { recursive: true })
 mkdirSync(dirname(DB_PATH), { recursive: true })
+ensureSecureDir(APP_CONFIG_DIR)
 
 let sqliteInstance: Database | null = null
 let dbInstance: ReturnType<typeof drizzle> | null = null
@@ -48,6 +49,9 @@ let dbInstance: ReturnType<typeof drizzle> | null = null
 function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
     sqliteInstance = new Database(DB_PATH)
+    // The database carries project paths and session state, so restrict it as
+    // soon as SQLite has created the file.
+    secureFile(DB_PATH)
     sqliteInstance.pragma('journal_mode=WAL')
     sqliteInstance.pragma('locking_mode=NORMAL')
     sqliteInstance.pragma('synchronous=NORMAL')

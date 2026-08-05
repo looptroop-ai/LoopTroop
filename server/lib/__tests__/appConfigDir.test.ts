@@ -1,5 +1,74 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { resolveAppConfigDir, type AppConfigDirDetection } from '../appConfigDir'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  CONFIG_DIR_MODE,
+  CONFIG_FILE_MODE,
+  ensureSecureDir,
+  resolveAppConfigDir,
+  secureFile,
+  type AppConfigDirDetection,
+} from '../appConfigDir'
+import { safeAtomicWrite } from '../../io/atomicWrite'
+
+const describePosix = process.platform === 'win32' ? describe.skip : describe
+
+describePosix('config directory permissions', () => {
+  let scratch: string
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'looptroop-perms-'))
+  })
+
+  afterEach(() => {
+    rmSync(scratch, { recursive: true, force: true })
+  })
+
+  function modeOf(target: string): number {
+    return statSync(target).mode & 0o777
+  }
+
+  it('creates the config directory owner-only', () => {
+    const dir = join(scratch, 'config')
+    ensureSecureDir(dir)
+    expect(modeOf(dir)).toBe(CONFIG_DIR_MODE)
+  })
+
+  it('tightens a directory left world-readable by an earlier version', () => {
+    const dir = join(scratch, 'legacy')
+    mkdirSync(dir, { recursive: true })
+    chmodSync(dir, 0o755)
+
+    ensureSecureDir(dir)
+    expect(modeOf(dir)).toBe(CONFIG_DIR_MODE)
+  })
+
+  it('restricts an existing file to owner-only', () => {
+    const file = join(scratch, 'app.sqlite')
+    writeFileSync(file, 'x')
+    chmodSync(file, 0o644)
+
+    secureFile(file)
+    expect(modeOf(file)).toBe(CONFIG_FILE_MODE)
+  })
+
+  it('does not throw when the file is missing', () => {
+    expect(() => secureFile(join(scratch, 'absent'))).not.toThrow()
+  })
+
+  it('preserves a restricted mode when atomically replaced', () => {
+    const file = join(scratch, 'secret.json')
+    safeAtomicWrite(file, '{"a":1}')
+    secureFile(file)
+    expect(modeOf(file)).toBe(CONFIG_FILE_MODE)
+
+    // Rename brings the temp file's mode with it, so a naive implementation
+    // silently widens the target back to the default.
+    safeAtomicWrite(file, '{"a":2}')
+    expect(modeOf(file)).toBe(CONFIG_FILE_MODE)
+  })
+})
 
 describe('resolveAppConfigDir', () => {
   let originalEnv: NodeJS.ProcessEnv

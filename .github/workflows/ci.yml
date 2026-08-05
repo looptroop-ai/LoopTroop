@@ -58,9 +58,10 @@ jobs:
       - name: Verify version is single-sourced
         run: npm run verify:version
 
-      # An invalid rule is ignored silently at runtime, so validate it here.
+      # Pinned, not @latest: an unpinned validator makes this check
+      # nondeterministic and can fail on a release we never chose.
       - name: Validate Renovate configuration
-        run: npx --yes --package renovate@latest renovate-config-validator --strict
+        run: npx --yes --package renovate@44.13.2 renovate-config-validator --strict
 
       # A redistributed package must declare a licence. The check also fails
       # when the committed file is out of date.
@@ -86,14 +87,14 @@ jobs:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Non-blocking while Windows and macOS remain unvalidated on real hardware.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Exact floor, not "24": `node-version: 24` resolves to the newest
+          # patch, so the version `engines` actually promises stays untested.
           - os: ubuntu-latest
-            node: 26
+            node: 24.0.0
           - os: macos-latest
             node: 24
           - os: windows-latest
@@ -103,6 +104,26 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm run test
+
+  # Node 26 is Current, not LTS. Breakage here is upstream news rather than a
+  # defect, so it warns without blocking.
+  early-warning:
+    name: Early warning (ubuntu, Node 26)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 26
           cache: npm
 
       - name: Install dependencies

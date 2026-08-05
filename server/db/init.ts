@@ -2,12 +2,10 @@ import { sqlite, APP_STORAGE_BOOT_FACTS } from './index'
 import { PROFILE_DEFAULTS } from './defaults'
 import { logIfVerbose } from '../runtime'
 import {
+  APP_MIGRATABLE_FROM,
   APP_SCHEMA_VERSION,
-  IncompatibleSchemaVersionError,
-  buildNewerSchemaMessage,
-  buildUnversionedResetMessage,
-  classifySchemaVersion,
-  inspectSchemaVersion,
+  assertSchemaCompatible,
+  shouldStampAfterInit,
   writeUserVersion,
 } from './schemaVersion'
 
@@ -127,24 +125,15 @@ function migrateLegacyProfilesTable() {
 
 export function initializeDatabase() {
   // Classify before any DDL runs: migrateLegacyProfilesTable() below drops and
-  // recreates `profiles`, so a newer database must be refused before we reach it.
-  const compatibility = classifySchemaVersion(inspectSchemaVersion(sqlite), APP_SCHEMA_VERSION)
-  if (compatibility.kind === 'newer') {
-    const message = buildNewerSchemaMessage(
-      'app database',
-      APP_STORAGE_BOOT_FACTS.dbPath,
-      compatibility.found,
-      APP_SCHEMA_VERSION,
-    )
-    throw new IncompatibleSchemaVersionError(message, {
-      found: compatibility.found,
-      expected: APP_SCHEMA_VERSION,
-      databasePath: APP_STORAGE_BOOT_FACTS.dbPath,
-    })
-  }
-  if (compatibility.kind === 'unversioned') {
-    console.warn(buildUnversionedResetMessage('app database', APP_STORAGE_BOOT_FACTS.dbPath))
-  }
+  // recreates `profiles`, so an incompatible database must be refused first.
+  const compatibility = assertSchemaCompatible({
+    store: sqlite,
+    databaseLabel: 'app database',
+    databasePath: APP_STORAGE_BOOT_FACTS.dbPath,
+    expected: APP_SCHEMA_VERSION,
+    migratableFrom: APP_MIGRATABLE_FROM,
+    onNotice: (message) => console.warn(message),
+  })
 
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS profiles (
@@ -219,7 +208,7 @@ export function initializeDatabase() {
   `)
 
   // Stamp after all DDL: the database is now at the current schema version.
-  if (compatibility.kind === 'fresh' || compatibility.kind === 'unversioned') {
+  if (shouldStampAfterInit(compatibility)) {
     writeUserVersion(sqlite, APP_SCHEMA_VERSION)
   }
 

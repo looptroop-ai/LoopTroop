@@ -16,6 +16,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Downgraded `@types/node` from 26 to 24 to prevent accidental use of Node 26-only APIs while targeting Node 24 LTS as the minimum supported runtime.
 - Declared the runtime Node floor (`engines.node`), pinned the package manager, and added `.nvmrc` so CI can enforce the minimum without testing only the latest patch.
 - Fixed a latent development-server bug where `@codemirror/merge` would fail to load in the diff editor because Vite's dependency optimizer was configured with `noDiscovery: true` but the package was missing from the pre-declared list.
+- Removed direct email and Twitter contact links from the web landing page footer.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -53,6 +54,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Removed
 - Removed the Tech Logo Wall section (OpenCode, Ollama, Anthropic, OpenAI, TypeScript, SQLite) from the landing page.
+- Removed the direct email (`contact@looptroop.ovh`) and Twitter (`@liviusa`) contact links from the landing page footer in `web.html`.
 
 ---
 

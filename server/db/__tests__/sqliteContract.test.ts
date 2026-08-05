@@ -73,7 +73,7 @@ beforeEach(() => {
   sqlite = new Database(dbPath)
   sqlite.pragma('journal_mode=WAL')
   createSchema(sqlite)
-  db = drizzle(sqlite)
+  db = drizzle({ client: sqlite })
 })
 
 afterEach(() => {

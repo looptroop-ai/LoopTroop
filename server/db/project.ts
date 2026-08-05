@@ -409,7 +409,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   const projectDb: ProjectDatabase = {
     sqlite,
-    db: drizzle(sqlite, { schema }),
+    db: drizzle({ client: sqlite, schema }),
   }
   projectDbCache.set(projectRoot, projectDb)
   return projectDb

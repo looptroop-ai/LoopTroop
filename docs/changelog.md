@@ -35,6 +35,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Upgraded `drizzle-orm` and `drizzle-kit` from `0.45.2` and `0.31.10` to `1.0.0-rc.4` with exact pins, adapting to the v1 breaking change where `drizzle()` now requires `{ client }` instead of a raw connection as its first parameter.
 - Changed Windows config directory to `%APPDATA%\looptroop` rather than `%USERPROFILE%\.config\looptroop` to honour the platform convention and avoid splitting a user's data across two directories when different shells set `XDG_CONFIG_HOME`.
 - Deliberately ignored `XDG_CONFIG_HOME` on Windows since it is a freedesktop.org convention and honouring it on Windows would cause shell-dependent paths.
 - Made `drizzle.app.config.ts` import the single config-directory resolver from `server/lib/appConfigDir.ts` instead of duplicating the logic, so future platform-specific changes apply consistently.

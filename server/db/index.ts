@@ -60,7 +60,7 @@ function getOrCreateSqlite(): Database.Database {
 
 function getOrCreateDb(): ReturnType<typeof drizzle> {
   if (!dbInstance) {
-    dbInstance = drizzle(getOrCreateSqlite(), { schema })
+    dbInstance = drizzle({ client: getOrCreateSqlite(), schema })
   }
   return dbInstance
 }

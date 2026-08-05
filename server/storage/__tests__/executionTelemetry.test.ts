@@ -34,7 +34,7 @@ function makeDb() {
       cost_usd REAL
     );
   `)
-  return drizzle(sqlite, { schema })
+  return drizzle({ client: sqlite, schema })
 }
 
 function insertMetric(

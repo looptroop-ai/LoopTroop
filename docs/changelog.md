@@ -22,6 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Established cross-platform config-directory resolution tests covering Windows `%APPDATA%`, Unix `XDG_CONFIG_HOME`, and the `LOOPTROOP_CONFIG_DIR` override, ensuring consistent behavior across all platforms.
 - Established the first continuous integration workflow at `.github/workflows/ci.yml`, enforcing lint, typecheck, test, build, docs:build, site:build, clean-tree verification, and production dependency audit on every push and pull request to main.
 - Configured the CI matrix to require Ubuntu Node 24 while running non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24 to surface platform-specific issues before the first release.
 - Added `engines.node` constraint requiring Node 24 or later to declare the minimum supported runtime before the first public release.
@@ -29,6 +30,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Changed Windows config directory to `%APPDATA%\looptroop` rather than `%USERPROFILE%\.config\looptroop` to honour the platform convention and avoid splitting a user's data across two directories when different shells set `XDG_CONFIG_HOME`.
+- Deliberately ignored `XDG_CONFIG_HOME` on Windows since it is a freedesktop.org convention and honouring it on Windows would cause shell-dependent paths.
+- Made `drizzle.app.config.ts` import the single config-directory resolver from `server/lib/appConfigDir.ts` instead of duplicating the logic, so future platform-specific changes apply consistently.
 - Exact-pinned `@tailwindcss/cli` as a dev dependency matching the installed `tailwindcss` version and stopped invoking it through unpinned `npx` in the site build, ensuring every release uses a deterministic tested CLI rather than fetching the latest untested version from the network.
 - Rewrote the site-build script to emit the compiled `web.css` to `site/` rather than overwriting the git-tracked `public/web.css`, so a clean-tree check in CI becomes possible.
 - Downgraded `@types/node` from `^26.1.2` to `^24.9.5` so TypeScript rejects Node 26-only APIs at development time rather than discovering them in user installs after publishing.

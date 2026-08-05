@@ -72,7 +72,15 @@ Before those services launch, LoopTroop runs a dev preflight that:
 - **Ephemeral auth:** if `OPENCODE_SERVER_PASSWORD` is not set and a new local OpenCode server is about to start, `npm run dev` generates a random credential and sets `OPENCODE_SERVER_USERNAME` to `opencode`. This credential is propagated automatically to all child processes — backend and watcher — for the duration of the session.
 - **Ephemeral API token:** if `LOOPTROOP_API_TOKEN` is not set, `npm run dev` generates one for the backend and Vite dev proxy so local same-origin `/api/*` calls are protected without embedding the token in the frontend bundle.
 
-Normal `npm run dev` is verify-only: it never rewrites `package.json`, the lockfile, or a globally installed CLI. Dependency sync, npm audit remediation, and the OpenCode CLI upgrade are opt-in through `LOOPTROOP_DEV_MAINTENANCE=1`, or run explicitly with `npm run deps:sync`, `npm run audit:remediate`, and `npm run opencode:upgrade`. When opted in, that expensive networked maintenance work is daily-gated through `tmp/dev-maintenance-state.json`: each task runs on the first local dev start of the day, then runs again only if its relevant inputs change later that day. Preflight always still runs `npm ci` when the installed tree has drifted from the lockfile, which is deterministic and introduces no new versions.
+Normal `npm run dev` is verify-only with respect to your dependencies: it never rewrites `package.json`, the lockfile, or a globally installed CLI. Dependency sync, npm audit remediation, and the OpenCode CLI upgrade are opt-in through `LOOPTROOP_DEV_MAINTENANCE=1`, or run explicitly with `npm run deps:sync`, `npm run audit:remediate`, and `npm run opencode:upgrade`. When opted in, that expensive networked maintenance work is daily-gated through `tmp/dev-maintenance-state.json`: each task runs on the first local dev start of the day, then runs again only if its relevant inputs change later that day.
+
+"Verify-only" is scoped to dependencies, and preflight still performs three actions on your machine:
+
+- It runs `npm ci` when the installed tree has drifted from the lockfile. This is deterministic and lockfile-driven, so it installs exactly the pinned versions and introduces nothing new.
+- It terminates stale LoopTroop-owned dev processes from a previous session in this repository, leaving unrelated processes alone.
+- It reclaims the configured ports when they are held by those stale processes, and refuses to touch a port owned by anything else.
+
+The last two exist so a crashed session does not block the next start. They apply only to processes this repository launched.
 
 Audit failure handling distinguishes external availability from local integrity. Registry timeouts, connection errors, rate limits, service errors, and malformed audit responses are retried once and then reported as deferred without blocking normal startup. Because a deferred audit is not recorded as successful, the next eligible startup retries it. Local failures such as an unreadable lockfile, an invalid staged lockfile, or a failed dependency application remain startup-blocking. The standalone `npm run audit:remediate` command remains strict and exits unsuccessfully for either category so explicit maintenance and automation can detect incomplete work.
 

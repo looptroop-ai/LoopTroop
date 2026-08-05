@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Every branch, not just main: work lands by direct push rather than pull
+  # request, so restricting this to main leaves that work unverified.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 

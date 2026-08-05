@@ -16,7 +16,17 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 
 const NATIVE_EXTENSIONS = ['.node']
-const BUILD_SCRIPT_MARKERS = ['node-gyp', 'prebuild-install', 'node-pre-gyp', 'cmake-js', 'neon', 'cargo']
+const LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall']
+
+/**
+ * Packages allowed to run install-time scripts.
+ *
+ * Empty on purpose: the production tree currently has none, so any script at
+ * all is a change worth reviewing. Matching known compiler names instead
+ * (node-gyp, prebuild-install, ...) would wave through a custom installer such
+ * as `node scripts/build.js`.
+ */
+const ALLOWED_LIFECYCLE_PACKAGES = new Set()
 
 function run(command, args, cwd) {
   return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -59,10 +69,12 @@ try {
       if (!manifest.name) return
       const label = `${manifest.name}@${manifest.version}`
       const scripts = manifest.scripts ?? {}
-      const lifecycle = [scripts.install, scripts.preinstall, scripts.postinstall].filter(Boolean).join(' ')
+      const lifecycle = LIFECYCLE_SCRIPTS
+        .filter((name) => scripts[name])
+        .map((name) => `${name}: ${scripts[name]}`)
 
-      if (BUILD_SCRIPT_MARKERS.some((marker) => lifecycle.includes(marker))) {
-        buildScriptPackages.push(`${label}: ${lifecycle.trim()}`)
+      if (lifecycle.length > 0 && !ALLOWED_LIFECYCLE_PACKAGES.has(manifest.name)) {
+        buildScriptPackages.push(`${label}: ${lifecycle.join(' | ')}`)
         return
       }
 
@@ -80,14 +92,27 @@ try {
   const packageCount = readdirSync(modulesDir).length
   console.log(`Scanned ${packageCount} top-level entries in the installed tree.`)
 
-  if (nativeBinaries.length > 0 || buildScriptPackages.length > 0) {
-    console.error('\nFAIL: the production package pulls in native code.\n')
+  // Installing on one OS cannot reveal packages gated to another, so read the
+  // constraints from the lockfile rather than the resolved tree.
+  const lock = JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8'))
+  const platformGated = Object.entries(lock.packages ?? {})
+    .filter(([path, entry]) => path.startsWith('node_modules/') && !entry.dev && (entry.os || entry.cpu))
+    .map(([path, entry]) => `${path.replace(/^node_modules\//, '')} (os=${JSON.stringify(entry.os ?? '*')}, cpu=${JSON.stringify(entry.cpu ?? '*')})`)
+
+  console.log(`Checked the lockfile for platform-gated production packages: ${platformGated.length} found.`)
+
+  if (nativeBinaries.length > 0 || buildScriptPackages.length > 0 || platformGated.length > 0) {
+    console.error('\nFAIL: the production package pulls in native or platform-specific code.\n')
     if (nativeBinaries.length > 0) {
       console.error('Compiled binaries:')
       for (const binary of nativeBinaries) console.error(`  ${binary}`)
     }
+    if (platformGated.length > 0) {
+      console.error('Platform-gated packages (invisible to an install on one OS):')
+      for (const entry of platformGated) console.error(`  ${entry}`)
+    }
     if (buildScriptPackages.length > 0) {
-      console.error('Packages compiling at install time:')
+      console.error('Packages running install-time scripts:')
       for (const entry of buildScriptPackages) console.error(`  ${entry}`)
     }
     console.error('\nNative addons require a compiler toolchain on the user\'s machine')

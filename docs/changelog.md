@@ -10,13 +10,25 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Pinned build-time Tailwind CLI to an exact version to eliminate non-deterministic site builds and unpinned network fetches during releases.
+- Downgraded `@types/node` from 26 to 24 to prevent accidental use of Node 26-only APIs while targeting Node 24 LTS as the minimum supported runtime.
+- Declared the runtime Node floor (`engines.node`), pinned the package manager, and added `.nvmrc` so CI can enforce the minimum without testing only the latest patch.
 - Fixed a latent development-server bug where `@codemirror/merge` would fail to load in the diff editor because Vite's dependency optimizer was configured with `noDiscovery: true` but the package was missing from the pre-declared list.
-- Refined the landing page hero title layout and removed the tech logo wall strip from `web.html`.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
 - Adjusted vertical padding between the Hero and Why LoopTroop sections in `web.html` to eliminate excessive empty space left after removing the tech logo wall.
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
+
+### Added
+- Added `engines.node` constraint requiring Node 24 or later to declare the minimum supported runtime before the first public release.
+- Added `.nvmrc` pinning Node 24 for automated tooling and CI.
+- Added `packageManager` field to record the tested npm version.
+
+### Changed
+- Exact-pinned `@tailwindcss/cli` as a dev dependency matching the installed `tailwindcss` version and stopped invoking it through unpinned `npx` in the site build, ensuring every release uses a deterministic tested CLI rather than fetching the latest untested version from the network.
+- Rewrote the site-build script to emit the compiled `web.css` to `site/` rather than overwriting the git-tracked `public/web.css`, so a clean-tree check in CI becomes possible.
+- Downgraded `@types/node` from `^26.1.2` to `^24.9.5` so TypeScript rejects Node 26-only APIs at development time rather than discovering them in user installs after publishing.
 
 ### Fixed
 - Declared `@codemirror/merge` in the Vite frontend dependency optimization list so the YAML diff editor loads reliably in development; the optimizer runs with late discovery disabled, so any production browser dependency omitted from that list can fail to resolve.

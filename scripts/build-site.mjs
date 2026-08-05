@@ -11,7 +11,7 @@ await rm(siteDir, { recursive: true, force: true })
 await mkdir(path.join(siteDir, 'docs'), { recursive: true })
 
 console.log('Compiling Tailwind CSS for landing page...')
-execSync('npx @tailwindcss/cli -i src/web.css -o public/web.css --minify', { stdio: 'inherit' })
+execSync('tailwindcss -i src/web.css -o site/web.css --minify', { stdio: 'inherit' })
 
 console.log('Reading package.json version...')
 const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf-8'))

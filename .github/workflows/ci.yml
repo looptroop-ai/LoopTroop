@@ -53,6 +53,11 @@ jobs:
       - name: Verify no native addons in the production package
         run: npm run verify:no-native-addons
 
+      # package.json is the single source of truth for the version; a literal
+      # copy elsewhere goes stale silently on the next release.
+      - name: Verify version is single-sourced
+        run: npm run verify:version
+
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build

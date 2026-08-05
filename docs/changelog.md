@@ -20,6 +20,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Removed direct email and Twitter contact links from the web landing page footer.
 - Pointed in-app documentation links at the hosted documentation site and made the local docs server opt-in, so installed users get working links and `npm run dev` starts one fewer background process.
 - Made `npm run dev` verify-only, so starting the development environment no longer silently updates dependencies, rewrites the lockfile, or upgrades the OpenCode CLI; those updates are now explicit opt-in commands.
+- Made `package.json` the single source of truth for the application version, enforced in CI, so the version shown in the interface can no longer drift from the released version.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -28,6 +29,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
+- Added a CI gate that verifies the application version is single-sourced from `package.json`, failing with the exact file and line when a version literal is hardcoded elsewhere; historical records such as changelogs, release notes and the lockfile are allowlisted since they must retain literal versions.
 - Added a CI gate that packs the production package, installs it into a clean directory with production dependencies only, and fails if any native Node addon is present. Checking the packed tarball alone cannot detect this, because the tarball contains no installed dependency tree.
 - Added a SQLite behavioural contract test suite pinning value conversion, transactions and savepoints, conflict handling, `RETURNING`, foreign keys, persistence across reopen, read-only access, and the prepared-statement surface, so the forthcoming database driver change can be verified against known-good behaviour rather than assumed safe.
 - Added independent schema versioning for the application database and each per-project database via `PRAGMA user_version`, recorded in the new `server/db/schemaVersion.ts` module.
@@ -55,6 +57,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Downgraded `@types/node` from `^26.1.2` to `^24.9.5` so TypeScript rejects Node 26-only APIs at development time rather than discovering them in user installs after publishing.
 
 ### Fixed
+- Fixed the version badge in the application header, which displayed a hardcoded version and would have silently shown a stale number after the next release. It now derives from `package.json`, matching the About dialog.
 - Raised the timeout on the Vite dependency-optimization policy test, which parses every file under `src/` and `shared/` with ts-morph and could exceed the default budget when the suite runs fully parallel.
 - Moved the OpenRouter routing configuration out of the repository directory into the user config directory. Writing into the installation directory would fail outright once LoopTroop is installed globally, since a global install location is read-only.
 - Moved diagnostic report output from a working-directory-relative `tmp/diagnostics/` path into the user config directory, so running the diagnostics command as a global tool no longer scatters report files into whatever directory the user happened to run from.

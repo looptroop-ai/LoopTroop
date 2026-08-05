@@ -56,6 +56,7 @@
     "site:build": "npm run docs:build && node scripts/build-site.mjs",
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
+    "verify:version": "node scripts/verify-version-single-source.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",

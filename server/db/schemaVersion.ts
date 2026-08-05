@@ -1,0 +1,135 @@
+/**
+ * Schema versioning for both SQLite databases.
+ *
+ * Pre-0.5 databases carry no version marker. They are disposable test data and
+ * are stamped with the current version on first open. From 0.5.0 onward the
+ * version is authoritative: a database written by a newer LoopTroop is refused
+ * rather than opened, because the boot path mutates schema destructively
+ * (migrateLegacyProfilesTable drops and recreates `profiles`) and an older
+ * binary cannot know what a newer one added.
+ *
+ * The two databases version independently: they evolve in separate code paths
+ * and a project database can be much older than the app database that opens it.
+ */
+
+/** Bump when the app database schema changes in a way older builds cannot read. */
+export const APP_SCHEMA_VERSION = 1
+
+/** Bump when the project database schema changes in a way older builds cannot read. */
+export const PROJECT_SCHEMA_VERSION = 1
+
+/** Version recorded for databases created before schema versioning existed. */
+export const UNVERSIONED_SCHEMA_VERSION = 0
+
+export type SchemaCompatibility =
+  | { kind: 'fresh' }
+  | { kind: 'unversioned' }
+  | { kind: 'current' }
+  | { kind: 'older'; found: number }
+  | { kind: 'newer'; found: number }
+
+export interface SchemaVersionInspection {
+  found: number
+  hasExistingTables: boolean
+}
+
+/**
+ * Classifies a database before anything mutates it.
+ *
+ * `hasExistingTables` distinguishes a brand-new file (version 0, no tables)
+ * from a pre-0.5 database (version 0, tables present). Both read as 0, but only
+ * the latter needs the reset message.
+ */
+export function classifySchemaVersion(
+  inspection: SchemaVersionInspection,
+  expected: number,
+): SchemaCompatibility {
+  const { found, hasExistingTables } = inspection
+
+  if (found === UNVERSIONED_SCHEMA_VERSION) {
+    if (!hasExistingTables) return { kind: 'fresh' }
+    return { kind: 'unversioned' }
+  }
+
+  if (found === expected) return { kind: 'current' }
+  if (found > expected) return { kind: 'newer', found }
+  return { kind: 'older', found }
+}
+
+export function buildNewerSchemaMessage(
+  databaseLabel: string,
+  databasePath: string,
+  found: number,
+  expected: number,
+): string {
+  return [
+    `The ${databaseLabel} at ${databasePath} was created by a newer version of LoopTroop.`,
+    `It reports schema version ${found}; this build supports version ${expected}.`,
+    'Opening it with this build could corrupt or delete data, so LoopTroop stopped instead.',
+    'Upgrade LoopTroop to the version that created this database, or point LoopTroop at a different location.',
+  ].join('\n')
+}
+
+export function buildUnversionedResetMessage(
+  databaseLabel: string,
+  databasePath: string,
+): string {
+  return [
+    `The ${databaseLabel} at ${databasePath} predates LoopTroop 0.5.0 and carries no schema version.`,
+    'Databases from before 0.5.0 are development data and are not migrated.',
+    'It has been stamped with the current schema version. If LoopTroop misbehaves,',
+    'delete that file and restart to begin from a clean database.',
+  ].join('\n')
+}
+
+/** Minimal surface shared by better-sqlite3 and node:sqlite, to ease the 0.9 swap. */
+export interface SchemaVersionStore {
+  pragma(source: string): unknown
+  prepare(source: string): { all(...params: unknown[]): unknown[] }
+}
+
+export function readUserVersion(store: SchemaVersionStore): number {
+  const result = store.pragma('user_version')
+  const row = Array.isArray(result) ? result[0] : result
+  const value = typeof row === 'object' && row !== null
+    ? (row as { user_version?: unknown }).user_version
+    : row
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+export function writeUserVersion(store: SchemaVersionStore, version: number): void {
+  if (!Number.isInteger(version) || version < 0) {
+    throw new Error(`Refusing to write invalid schema version: ${version}`)
+  }
+  // Interpolated because PRAGMA does not accept bound parameters; the guard
+  // above constrains this to a non-negative integer.
+  store.pragma(`user_version = ${version}`)
+}
+
+export function hasAnyUserTable(store: SchemaVersionStore): boolean {
+  const rows = store
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1")
+    .all()
+  return rows.length > 0
+}
+
+export function inspectSchemaVersion(store: SchemaVersionStore): SchemaVersionInspection {
+  return {
+    found: readUserVersion(store),
+    hasExistingTables: hasAnyUserTable(store),
+  }
+}
+
+export class IncompatibleSchemaVersionError extends Error {
+  readonly found: number
+  readonly expected: number
+  readonly databasePath: string
+
+  constructor(message: string, details: { found: number, expected: number, databasePath: string }) {
+    super(message)
+    this.name = 'IncompatibleSchemaVersionError'
+    this.found = details.found
+    this.expected = details.expected
+    this.databasePath = details.databasePath
+  }
+}

@@ -1,6 +1,15 @@
-import { sqlite } from './index'
+import { sqlite, APP_STORAGE_BOOT_FACTS } from './index'
 import { PROFILE_DEFAULTS } from './defaults'
 import { logIfVerbose } from '../runtime'
+import {
+  APP_SCHEMA_VERSION,
+  IncompatibleSchemaVersionError,
+  buildNewerSchemaMessage,
+  buildUnversionedResetMessage,
+  classifySchemaVersion,
+  inspectSchemaVersion,
+  writeUserVersion,
+} from './schemaVersion'
 
 function ensureColumn(table: string, column: string, definition: string) {
   const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
@@ -117,6 +126,26 @@ function migrateLegacyProfilesTable() {
 }
 
 export function initializeDatabase() {
+  // Classify before any DDL runs: migrateLegacyProfilesTable() below drops and
+  // recreates `profiles`, so a newer database must be refused before we reach it.
+  const compatibility = classifySchemaVersion(inspectSchemaVersion(sqlite), APP_SCHEMA_VERSION)
+  if (compatibility.kind === 'newer') {
+    const message = buildNewerSchemaMessage(
+      'app database',
+      APP_STORAGE_BOOT_FACTS.dbPath,
+      compatibility.found,
+      APP_SCHEMA_VERSION,
+    )
+    throw new IncompatibleSchemaVersionError(message, {
+      found: compatibility.found,
+      expected: APP_SCHEMA_VERSION,
+      databasePath: APP_STORAGE_BOOT_FACTS.dbPath,
+    })
+  }
+  if (compatibility.kind === 'unversioned') {
+    console.warn(buildUnversionedResetMessage('app database', APP_STORAGE_BOOT_FACTS.dbPath))
+  }
+
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,6 +217,11 @@ export function initializeDatabase() {
       'use_on_internal_commits'
     );
   `)
+
+  // Stamp after all DDL: the database is now at the current schema version.
+  if (compatibility.kind === 'fresh' || compatibility.kind === 'unversioned') {
+    writeUserVersion(sqlite, APP_SCHEMA_VERSION)
+  }
 
   logIfVerbose('[db] App database initialized')
 }

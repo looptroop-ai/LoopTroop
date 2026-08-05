@@ -5,6 +5,15 @@ import { existsSync } from 'fs'
 import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
+import {
+  PROJECT_SCHEMA_VERSION,
+  IncompatibleSchemaVersionError,
+  buildNewerSchemaMessage,
+  buildUnversionedResetMessage,
+  classifySchemaVersion,
+  inspectSchemaVersion,
+  writeUserVersion,
+} from './schemaVersion'
 
 interface ProjectDatabase {
   sqlite: Database.Database
@@ -367,9 +376,36 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
   sqlite.pragma('locking_mode=NORMAL')
   sqlite.pragma('synchronous=NORMAL')
   sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
+
+  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes rows,
+  // so a newer database must be refused before we reach it.
+  const compatibility = classifySchemaVersion(inspectSchemaVersion(sqlite), PROJECT_SCHEMA_VERSION)
+  if (compatibility.kind === 'newer') {
+    const message = buildNewerSchemaMessage(
+      'project database',
+      dbPath,
+      compatibility.found,
+      PROJECT_SCHEMA_VERSION,
+    )
+    sqlite.close()
+    throw new IncompatibleSchemaVersionError(message, {
+      found: compatibility.found,
+      expected: PROJECT_SCHEMA_VERSION,
+      databasePath: dbPath,
+    })
+  }
+  if (compatibility.kind === 'unversioned') {
+    console.warn(buildUnversionedResetMessage('project database', dbPath))
+  }
+
   initializeProjectSqlite(sqlite)
   cleanupProjectForeignKeyOrphans(sqlite)
   sqlite.pragma('foreign_keys=ON')
+
+  // Stamp after DDL: project DBs use PRAGMA user_version (no new table needed).
+  if (compatibility.kind === 'fresh' || compatibility.kind === 'unversioned') {
+    writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
+  }
 
   const projectDb: ProjectDatabase = {
     sqlite,

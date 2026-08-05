@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Introduced schema versioning for both the application and per-project databases, so a database written by a newer LoopTroop is refused with a clear message instead of being silently and destructively downgraded.
 - Established the first CI workflow to enforce lint, typecheck, test, build, docs:build, site:build, and clean-tree checks on every push and pull request, running on Ubuntu with Node 24 as the required lane and adding non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24.
 - Pinned build-time Tailwind CLI to an exact version to eliminate non-deterministic site builds and unpinned network fetches during releases.
 - Downgraded `@types/node` from 26 to 24 to prevent accidental use of Node 26-only APIs while targeting Node 24 LTS as the minimum supported runtime.
@@ -22,6 +23,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Added independent schema versioning for the application database and each per-project database via `PRAGMA user_version`, recorded in the new `server/db/schemaVersion.ts` module.
+- Added a downgrade guard to both database boot paths: a database reporting a newer schema version than the running build now aborts with a message naming the file, both versions, and how to recover, rather than being opened and mutated.
+- Added a one-time notice when opening a pre-0.5.0 database that carries no version marker, explaining that such databases are development data, are not migrated, and can be deleted to start clean.
 - Established cross-platform config-directory resolution tests covering Windows `%APPDATA%`, Unix `XDG_CONFIG_HOME`, and the `LOOPTROOP_CONFIG_DIR` override, ensuring consistent behavior across all platforms.
 - Established the first continuous integration workflow at `.github/workflows/ci.yml`, enforcing lint, typecheck, test, build, docs:build, site:build, clean-tree verification, and production dependency audit on every push and pull request to main.
 - Configured the CI matrix to require Ubuntu Node 24 while running non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24 to surface platform-specific issues before the first release.

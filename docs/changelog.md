@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Established the first CI workflow to enforce lint, typecheck, test, build, docs:build, site:build, and clean-tree checks on every push and pull request, running on Ubuntu with Node 24 as the required lane and adding non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24.
 - Pinned build-time Tailwind CLI to an exact version to eliminate non-deterministic site builds and unpinned network fetches during releases.
 - Downgraded `@types/node` from 26 to 24 to prevent accidental use of Node 26-only APIs while targeting Node 24 LTS as the minimum supported runtime.
 - Declared the runtime Node floor (`engines.node`), pinned the package manager, and added `.nvmrc` so CI can enforce the minimum without testing only the latest patch.
@@ -21,6 +22,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Established the first continuous integration workflow at `.github/workflows/ci.yml`, enforcing lint, typecheck, test, build, docs:build, site:build, clean-tree verification, and production dependency audit on every push and pull request to main.
+- Configured the CI matrix to require Ubuntu Node 24 while running non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24 to surface platform-specific issues before the first release.
 - Added `engines.node` constraint requiring Node 24 or later to declare the minimum supported runtime before the first public release.
 - Added `.nvmrc` pinning Node 24 for automated tooling and CI.
 - Added `packageManager` field to record the tested npm version.

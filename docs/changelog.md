@@ -18,6 +18,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Declared the runtime Node floor (`engines.node`), pinned the package manager, and added `.nvmrc` so CI can enforce the minimum without testing only the latest patch.
 - Fixed a latent development-server bug where `@codemirror/merge` would fail to load in the diff editor because Vite's dependency optimizer was configured with `noDiscovery: true` but the package was missing from the pre-declared list.
 - Removed direct email and Twitter contact links from the web landing page footer.
+- Pointed in-app documentation links at the hosted documentation site and made the local docs server opt-in, so installed users get working links and `npm run dev` starts one fewer background process.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -39,6 +40,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Changed the default documentation origin to the hosted site so in-app links resolve for installed users, who have no local docs server, and made the local VitePress server opt-in through `LOOPTROOP_DEV_DOCS=1`; `npm run dev` now launches three services instead of four, and the docs port-availability check only runs when the docs server will actually start.
 - Replaced `better-sqlite3` with Node's built-in `node:sqlite` module across both databases, the log projection layer, and the diagnostics script, and removed the `better-sqlite3` and `@types/better-sqlite3` dependencies along with the native-build allowlist entry they required.
 - Added a small compatibility layer at `server/db/sqliteShim.ts` providing the `pragma()` and `transaction()` methods that `node:sqlite` does not expose, so existing call sites did not have to change.
 - Upgraded `drizzle-orm` and `drizzle-kit` from `0.45.2` and `0.31.10` to `1.0.0-rc.4` with exact pins, adapting to the v1 breaking change where `drizzle()` now requires `{ client }` instead of a raw connection as its first parameter.

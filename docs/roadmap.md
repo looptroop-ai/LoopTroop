@@ -14,6 +14,17 @@ search: false
 
 ## High Priority
 
+*   **Website and Documentation Repository Separation (clean application repository):** Move the marketing website and published documentation source out of the LoopTroop application repository while preserving the existing public URLs, release/version behavior, and contributor-facing documentation links.
+    *   Create a dedicated website/documentation repository and move the site-owned source and build boundary into it: `web.html`, the landing-page stylesheet source (`src/web.css` or an extracted site-specific equivalent), `scripts/build-site.mjs`, `vercel.json`, VitePress configuration/theme files, documentation Markdown, documentation media, and site-only build dependencies/configuration.
+    *   Move website-only assets with their owning source, including landing-page screenshots, social/SEO images, fonts, `robots.txt`, `sitemap.xml`, and other assets used only by the marketing or documentation site. Do not move the entire `public/` directory without an ownership audit.
+    *   Audit every asset and reference shared by the app and website (especially logos, favicons, fonts, README screenshots, and public paths). Keep app-owned assets in the application repository, replace app references before removal, and define an explicit synchronization rule if an asset must temporarily exist in both repositories.
+    *   Preserve `https://www.looptroop.ovh/` and `https://www.looptroop.ovh/docs/` routes, canonical links, SEO metadata, social previews, and README links after the deployment moves to the dedicated repository.
+    *   Decide how repository-rendered documentation and README media will work after the move: use stable hosted URLs or retain only the minimum app-owned copies needed for GitHub and local contributor workflows. No broken relative image links may remain.
+    *   Reconfigure Vercel to build the dedicated repository and remove website-only build scripts, dependencies, configuration, and assets from the application repository once the new deployment is verified.
+    *   Keep application version and release information synchronized with the website without reintroducing a source dependency on the application checkout; validate that site version badges, documentation links, and release notes remain correct.
+    *   Add CI checks for both repositories: the application build must not depend on website files, and the website build must fail clearly when required documentation, media, or shared asset inputs are missing.
+    *   Define the migration boundary for existing Git history separately from the forward-looking repository split. If historical removal is required, plan it as an explicit coordinated history rewrite rather than assuming that moving files in a new commit removes them from existing clones or Git history.
+
 *   **Skip Reason Auditability:** Allow users to provide an optional reason any time they skip a step, prompt, question, or approval gate in the app. The reason is persisted in the relevant ticket artifact for auditability and later review.
     *   Add a skip-reason input surface on every user-facing skip action (e.g., skip interview question, skip phase review, skip approval, skip critique/research generation).
     *   The reason must be optional and not block the skip action when left blank; if blank, record `reason: null` explicitly.

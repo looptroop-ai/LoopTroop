@@ -75,13 +75,14 @@ search: false
 		- The Express/Fastify backend server must be updated to serve these static files natively, routing all non-API web traffic to `dist/frontend/index.html` to support the client-side SPA router.
 		- Spawning external hot-reloaders or dev-servers at runtime must be disallowed in production execution.
 	+ **Global User-Space Configuration Separation:** Remove reliance on local `.env` files in the installation directory, which is read-only in global installation environments.
-		- Transition environmental keys (e.g., `PROVIDER`, `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`) and state configuration to a user-space configuration file: `~/.config/looptroop/config.json` (on macOS/Linux) or `%APPDATA%\looptroop\config.json` (on Windows).
+		- Move state configuration to a user-space configuration file: `~/.config/looptroop/config.json` (on Linux/macOS, honouring `XDG_CONFIG_HOME`) or `%APPDATA%\looptroop\config.json` (on Windows). **Done in 0.5.0:** the resolver lives in `server/lib/appConfigDir.ts` and is covered by cross-platform tests.
+		- Provider credentials are explicitly out of scope. LoopTroop reads no provider API keys; they live in OpenCode's own configuration and are never handled here.
 		- Fall back to standard environment variables only if the configuration directory/file is missing or unreadable.
-		- Persist migration receipts at `.looptroop/config-migration-receipt.json` during the first global execution.
+		- No migration receipts are needed: there is no prior on-disk configuration format to migrate from.
 	+ **OIDC-Protected Registry Publication (npm, Bun, and pnpm):** Configure a secure, automated publishing pipeline using OpenID Connect (OIDC) "Trusted Publishing" with npmjs.com.
 		- On publication of a GitHub Release, compile production JavaScript targets, bundle the static assets, and run `npm publish` securely without storing long-lived, static npm tokens in GitHub secrets.
 		- Ensure the published package maps the main executable entrypoint to `"bin": { "looptroop": "dist/cli.js" }` so that `npm i -g`, `bun add -g`, and `pnpm add -g` work natively.
-	+ **Matrix Binary Compilation & Release Assets:** Configure a GitHub Actions runner matrix to compile standalone binaries for target platforms (`macos-x64`, `macos-arm64`, `linux-x64`, `win-x64`) using `pkg` or `bun build --compile`.
+	+ **Matrix Binary Compilation & Release Assets:** Configure a GitHub Actions runner matrix to compile standalone binaries for target platforms (`macos-x64`, `macos-arm64`, `linux-x64`, `win-x64`) using `@yao-pkg/pkg`, `bun build --compile`, or Node's Single Executable Applications. The original `pkg` project is archived and must not be used.
 		- Package compiled binaries inside `.tar.gz` (for macOS/Linux) and `.zip` (for Windows) containers.
 		- Automatically upload package archives to the matching GitHub Release assets on release confirmation.
 		- Generate a SHA-256 checksum manifest (`checksums.sha256`) and publish it alongside the release assets.
@@ -94,7 +95,7 @@ search: false
 	+ **Windows Scoop & WinGet Automation:** Maintain compatibility across primary Windows package management environments.
 		- The release action must commit the updated Windows target URLs and checksums to the app manifest file inside your custom `scoop-bucket` repository.
 		- Integrate the `wingetcreate` or equivalent automated tool into the workflow to automatically submit PR manifests to the upstream `microsoft/winget-pkgs` repository.
-	+ **Universal Installer Script (`curl | bash`):** Maintain a static shell script at `install.sh` in the root of the primary branch, exposed via a clean redirect (e.g., `looptroop.ai/install`).
+	+ **Universal Installer Script (`curl | bash`):** Maintain a static shell script at `install.sh` in the root of the primary branch, exposed via a clean rewrite at `looptroop.ovh/install`.
 		- The script must query the system `uname -s` and `uname -m` variables to dynamically resolve platform and architecture.
 		- Fetch the corresponding pre-compiled archive from the latest GitHub Release, extract the binary, and map it into `/usr/local/bin` using safe system permissions.
 	+ **Declarative Nix Flake Packaging (`nix profile install github:looptroop-ai/LoopTroop`):** Add a declarative `flake.nix` file to the root of your primary repository.

@@ -20,6 +20,9 @@ const ALLOWED_PATHS = [
   'CHANGELOG.md',
   '.github/releases/',
   'docs/roadmap.md',
+  'THIRD-PARTY-NOTICES.md',
+  // Documents its own matching rules using an example version.
+  'scripts/verify-version-single-source.mjs',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

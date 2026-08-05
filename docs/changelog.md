@@ -23,6 +23,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made `package.json` the single source of truth for the application version, enforced in CI, so the version shown in the interface can no longer drift from the released version.
 - Wired the changelog to release notes: publishing a release now derives its notes from `docs/changelog.md` instead of being written by hand, so the two can no longer disagree.
 - Moved routine dependency updates onto a predictable weekly schedule with a maturity delay, so updates are reviewed in batches and security fixes still arrive quickly.
+- Added governance documents (`SECURITY.md` and generated third-party notices) and wired the notices into CI, so a missing licence or stale notices file fails the build.
 
 ### Changed
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -31,6 +32,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Added
 - Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
+- Added `SECURITY.md` with a private vulnerability reporting route, a documented threat model that distinguishes intended local behaviour from genuine boundary escapes, and a statement that LoopTroop collects no telemetry and never reads provider API keys.
+- Added generated third-party licence notices covering everything redistributed: all 88 production npm packages and the bundled Inter and JetBrains Mono font files, which are SIL Open Font License 1.1 and must carry their licence. A CI gate fails when the file is out of date or a package declares no licence.
 - Added a Renovate configuration for scheduled dependency updates, validated in CI: weekly grouped pull requests, a 7-day release-maturity delay, a 2-day window for security advisories, auto-merge limited to development dependencies, and per-package rules holding `drizzle-orm`/`drizzle-kit` on the release-candidate tag, delaying `@opencode-ai/sdk` by 30 days, and keeping `@types/node` on the supported major. Credentials and scheduling are enabled separately.
 - Added a release-notes extractor that parses `docs/changelog.md` and emits the GitHub Release body for a given version, preferring `Release Highlights` and falling back to `Summary`. It fails loudly with the available versions rather than emitting empty notes, and the heading contract it depends on is covered by tests.
 - Added a CI gate that verifies the application version is single-sourced from `package.json`, failing with the exact file and line when a version literal is hardcoded elsewhere; historical records such as changelogs, release notes and the lockfile are allowlisted since they must retain literal versions.
@@ -47,6 +50,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Added a "No telemetry" statement to the landing page hero badge and footer, making the absence of usage tracking visible rather than only documented.
+- Corrected three inaccurate roadmap entries: provider API keys were never read by LoopTroop and are explicitly out of scope for user-space configuration, no configuration migration receipts are needed because there is no prior on-disk format, the archived `pkg` project is replaced by `@yao-pkg/pkg`/`bun build --compile`/Node SEA, and the installer URL is `looptroop.ovh/install`.
 - Removed all 9 `createRequire(import.meta.url)` sites and replaced them with static imports, making the codebase ESM-native and ready for bundlers; exported `getCommandLogContext()` from `commandLogger.ts` for test access, eliminating the test's reimplemented store accessor and incomplete context fixture.
 - Made the dev preflight verify-only by default: dependency sync, npm audit remediation, and the OpenCode CLI upgrade are now opt-in through `LOOPTROOP_DEV_MAINTENANCE=1` rather than running automatically on every `npm run dev`, so the preflight never rewrites `package.json`, the lockfile, or a globally installed CLI without explicit user action.
 - Changed the default documentation origin to the hosted site so in-app links resolve for installed users, who have no local docs server, and made the local VitePress server opt-in through `LOOPTROOP_DEV_DOCS=1`; `npm run dev` now launches three services instead of four, and the docs port-availability check only runs when the docs server will actually start.

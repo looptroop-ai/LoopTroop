@@ -62,6 +62,11 @@ jobs:
       - name: Validate Renovate configuration
         run: npx --yes --package renovate@latest renovate-config-validator --strict
 
+      # A redistributed package must declare a licence. The check also fails
+      # when the committed file is out of date.
+      - name: Verify third-party notices are current
+        run: npm run licenses:check
+
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
       - name: Verify working tree is clean after build

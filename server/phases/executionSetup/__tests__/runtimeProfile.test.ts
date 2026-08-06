@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../../test/tempDir'
 import type { ExecutionSetupProfile } from '../types'
 import {
   EXECUTION_SETUP_RUN_WRAPPER,
@@ -20,7 +20,7 @@ afterEach(() => {
 })
 
 function makeWorktree(): string {
-  const worktree = mkdtempSync(join(tmpdir(), 'looptroop-runtime-profile-'))
+  const worktree = makeTempDir('looptroop-runtime-profile-')
   tempDirectories.push(worktree)
   return worktree
 }

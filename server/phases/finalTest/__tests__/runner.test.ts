@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { executeFinalTestCommands } from '../runner'
+import { makeTempDir } from '../../../test/tempDir'
 import type { CommandSpec } from '@shared/commandSpec'
 
 function nodeCommand(script: string, overrides: Partial<CommandSpec> = {}): CommandSpec {
@@ -48,7 +48,7 @@ describe('executeFinalTestCommands', () => {
   })
 
   it('preserves process arguments, repository-relative cwd, and command environment', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'looptroop-final-test-runner-'))
+    const worktree = makeTempDir('looptroop-final-test-runner-')
     try {
       mkdirSync(join(worktree, 'folder with spaces'))
       const report = await executeFinalTestCommands({
@@ -71,7 +71,7 @@ describe('executeFinalTestCommands', () => {
   })
 
   it('applies the structured runtime environment directly', async () => {
-    const worktree = mkdtempSync(join(tmpdir(), 'looptroop-final-test-runtime-'))
+    const worktree = makeTempDir('looptroop-final-test-runtime-')
     try {
       mkdirSync(join(worktree, 'local-bin'))
       const report = await executeFinalTestCommands({

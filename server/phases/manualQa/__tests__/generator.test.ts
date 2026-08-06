@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { makeTempDir } from '../../../test/tempDir'
 import type { TicketContext } from '../../../machines/types'
 import type { PrdDocument } from '../../../structuredOutput/types'
 import {
@@ -23,7 +23,7 @@ afterEach(() => {
 })
 
 function root() {
-  const value = mkdtempSync(join(tmpdir(), 'looptroop-manual-qa-generator-'))
+  const value = makeTempDir('looptroop-manual-qa-generator-')
   roots.push(value)
   return value
 }

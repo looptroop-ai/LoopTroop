@@ -1,10 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ManualQaSummary } from '../types'
 import { persistManualQaSummary } from '../storage'
 import { readManualQaDeliverySummary } from '../delivery'
+import { makeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 
@@ -39,7 +38,7 @@ afterEach(() => {
 
 describe('Manual QA delivery summary', () => {
   it('uses the latest outcome while retaining created work from every completed round', () => {
-    const ticketDir = mkdtempSync(join(tmpdir(), 'manual-qa-delivery-'))
+    const ticketDir = makeTempDir('manual-qa-delivery-')
     roots.push(ticketDir)
     persistManualQaSummary(ticketDir, summary(1, {
       outcome: 'created_fixes',

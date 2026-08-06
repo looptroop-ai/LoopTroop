@@ -1,7 +1,7 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { makeTempDir } from '../../../test/tempDir'
 import {
   MAX_MANUAL_QA_EVIDENCE_BYTES,
   ManualQaEvidenceLinkSchema,
@@ -38,7 +38,7 @@ afterEach(() => {
 })
 
 function root() {
-  const value = mkdtempSync(join(tmpdir(), 'looptroop-manual-qa-'))
+  const value = makeTempDir('looptroop-manual-qa-')
   roots.push(value)
   return value
 }

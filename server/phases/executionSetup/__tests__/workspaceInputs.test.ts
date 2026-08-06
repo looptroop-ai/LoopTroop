@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../../structuredOutput/types'
 import {
   materializeExecutionSetupWorkspaceInputs,
   validateExecutionSetupWorkspaceInputs,
 } from '../workspaceInputs'
+import { makeTempDir } from '../../../test/tempDir'
 
 interface WorkspaceFixture {
   projectRoot: string
@@ -21,7 +21,7 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 function createWorkspaceFixture(): WorkspaceFixture {
-  const fixtureRoot = mkdtempSync(join(tmpdir(), 'execution-setup-workspace-inputs-'))
+  const fixtureRoot = makeTempDir('execution-setup-workspace-inputs-')
   fixtureRoots.push(fixtureRoot)
   const projectRoot = join(fixtureRoot, 'original')
   const worktreePath = join(fixtureRoot, 'ticket-worktree')

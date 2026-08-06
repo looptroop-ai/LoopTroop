@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 import {
   CONFIG_DIR_MODE,
   CONFIG_FILE_MODE,
@@ -18,7 +18,7 @@ describePosix('config directory permissions', () => {
   let scratch: string
 
   beforeEach(() => {
-    scratch = mkdtempSync(join(tmpdir(), 'looptroop-perms-'))
+    scratch = makeTempDir('looptroop-perms-')
   })
 
   afterEach(() => {

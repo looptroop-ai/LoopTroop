@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
+import { rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
-import { tmpdir } from 'os'
+import { makeTempDir } from '../../test/tempDir'
 import { ALL_PROMPTS } from '../index'
 import { PROMPT_CATALOG, buildPromptGroups, GLOBAL_RULE_PROMPT_IDS } from '@shared/promptCatalog'
 import {
@@ -14,7 +14,7 @@ let configDir: string
 const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
 
 beforeEach(() => {
-  configDir = mkdtempSync(resolve(tmpdir(), 'looptroop-prompts-'))
+  configDir = makeTempDir('looptroop-prompts-')
   process.env.LOOPTROOP_CONFIG_DIR = configDir
 })
 

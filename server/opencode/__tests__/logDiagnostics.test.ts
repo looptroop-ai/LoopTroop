@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { makeTempDir } from '../../test/tempDir'
 import {
   enrichGenericOpenCodeProviderError,
   findOpenCodeLogErrorDetails,
@@ -11,7 +11,7 @@ import {
 const tempDirs: string[] = []
 
 function makeLogDir() {
-  const dir = mkdtempSync(join(tmpdir(), 'looptroop-opencode-logs-'))
+  const dir = makeTempDir('looptroop-opencode-logs-')
   tempDirs.push(dir)
   return dir
 }

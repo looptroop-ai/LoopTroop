@@ -2,15 +2,14 @@ import { execFileSync } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeWorktree } from '../worktreeRemoval'
 
@@ -21,7 +20,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function createRepoWithWorktree() {
-  const root = mkdtempSync(resolve(tmpdir(), 'looptroop-worktree-removal-'))
+  const root = makeTempDir('looptroop-worktree-removal-')
   roots.push(root)
   const projectRoot = resolve(root, 'project')
   const worktreesRoot = resolve(projectRoot, '.looptroop', 'worktrees')
@@ -96,7 +95,7 @@ describe('removeWorktree', () => {
   })
 
   it('rejects targets outside the managed worktrees root', () => {
-    const root = mkdtempSync(resolve(tmpdir(), 'looptroop-worktree-containment-'))
+    const root = makeTempDir('looptroop-worktree-containment-')
     roots.push(root)
     const projectRoot = resolve(root, 'project')
     const worktreesRoot = resolve(projectRoot, '.looptroop', 'worktrees')

@@ -1,13 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { normalizeFolderPath } from '../paths'
+import { makeTempDir } from '../../test/tempDir'
 
 let scratchDir: string
 
 beforeEach(() => {
-  scratchDir = mkdtempSync(join(tmpdir(), 'looptroop-paths-'))
+  scratchDir = makeTempDir('looptroop-paths-')
 })
 
 afterEach(() => {

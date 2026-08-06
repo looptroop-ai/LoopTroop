@@ -1,7 +1,31 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { clearProjectDatabaseCache } from '../db/project'
+
+function closeProjectDatabases() {
+  try {
+    clearProjectDatabaseCache()
+  } catch {
+    // Nothing was opened, which is the common case for pure tests.
+  }
+}
+
+/**
+ * Temp root as the product will see it.
+ *
+ * `tmpdir()` is a symlink on macOS (/var -> /private/var) and an 8.3 short name
+ * on Windows (RUNNER~1 -> runneradmin). The product canonicalises paths, so a
+ * fixture that records the raw form compares unequal to itself on both.
+ */
+function canonicalTmpdir(): string {
+  try {
+    return realpathSync(tmpdir())
+  } catch {
+    return tmpdir()
+  }
+}
 
 interface FixtureRepoManager {
   createRepo(prefix?: string): string
@@ -38,7 +62,7 @@ export function createFixtureRepoManager(options: {
   templatePrefix: string
   files: Record<string, string>
 }): FixtureRepoManager {
-  const templateRoot = mkdtempSync(join(tmpdir(), options.templatePrefix))
+  const templateRoot = mkdtempSync(join(canonicalTmpdir(), options.templatePrefix))
   const templateRepo = resolve(templateRoot, 'repo')
   const repoDirs = new Set<string>()
 
@@ -48,13 +72,16 @@ export function createFixtureRepoManager(options: {
 
   return {
     createRepo(prefix = options.templatePrefix) {
-      const repoDir = mkdtempSync(join(tmpdir(), prefix))
+      const repoDir = mkdtempSync(join(canonicalTmpdir(), prefix))
       removeTree(repoDir)
       cpSync(templateRepo, repoDir, { recursive: true })
       repoDirs.add(repoDir)
       return repoDir
     },
     cleanup() {
+      // Windows refuses to unlink an open file, and each fixture repo may hold
+      // a cached project database handle.
+      closeProjectDatabases()
       for (const repoDir of repoDirs) {
         removeTree(repoDir)
       }

@@ -535,6 +535,9 @@ describe('projectRouter project cleanup', () => {
 
     expect(resolveProjectState(repoDir).exists).toBe(true)
 
+    // Windows refuses to unlink an open file, and attaching leaves a cached
+    // handle on <repo>/.looptroop/db.sqlite.
+    clearProjectDatabaseCache()
     rmSync(getProjectLoopTroopDir(repoDir), { recursive: true, force: true })
 
     const stateAfterDelete = resolveProjectState(repoDir)
@@ -553,7 +556,9 @@ describe('projectRouter project cleanup', () => {
     expect(reattached.shortname).toBe('NEW')
   })
 
-  it('returns a WSL mounted-drive performance warning for Windows-backed paths', async () => {
+  // WSL detection requires platform === 'linux', so this behaviour is
+  // unreachable on macOS and Windows regardless of the env var.
+  it.runIf(process.platform === 'linux')('returns a WSL mounted-drive performance warning for Windows-backed paths', async () => {
     process.env.WSL_DISTRO_NAME = 'Ubuntu'
     const app = new Hono()
     app.route('/api', projectRouter)

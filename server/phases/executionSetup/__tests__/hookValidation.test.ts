@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runExplicitGitHookValidation } from '../hookValidation'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
@@ -74,6 +74,7 @@ describe('runExplicitGitHookValidation', () => {
     const { execFileSync } = await import('node:child_process')
     const { writeFileSync } = await import('node:fs')
     execFileSync('git', ['init', root], { stdio: 'ignore' })
+    pinGitLineEndings(root)
     execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com'])
     execFileSync('git', ['-C', root, 'config', 'user.name', 'Test'])
     writeFileSync(join(root, 'tracked.txt'), 'before\n')

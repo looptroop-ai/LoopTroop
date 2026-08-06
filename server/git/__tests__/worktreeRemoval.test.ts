@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { resolve } from 'node:path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, pinGitLineEndings } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeWorktree } from '../worktreeRemoval'
 
@@ -28,6 +28,7 @@ function createRepoWithWorktree() {
 
   mkdirSync(projectRoot, { recursive: true })
   git(projectRoot, ['init', '--initial-branch=main'])
+  pinGitLineEndings(projectRoot)
   git(projectRoot, ['config', 'user.email', 'test@example.com'])
   git(projectRoot, ['config', 'user.name', 'LoopTroop Test'])
   writeFileSync(resolve(projectRoot, 'README.md'), 'fixture\n')

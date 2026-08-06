@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
 import {
   createExecutionSetupPathSnapshot,
   removeExecutionSetupPathViolations,
@@ -12,6 +12,7 @@ import {
 function createGitRepo(): string {
   const dir = makeTempDir('execution-setup-storage-')
   execFileSync('git', ['-C', dir, 'init'], { stdio: 'pipe' })
+  pinGitLineEndings(dir)
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'], { stdio: 'pipe' })
   writeFileSync(join(dir, 'hello.ts'), 'export const hello = 1\n')

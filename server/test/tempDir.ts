@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,4 +22,15 @@ export function canonicalTmpdir(): string {
 /** `mkdtempSync` under a canonicalised temp root. */
 export function makeTempDir(prefix: string): string {
   return mkdtempSync(join(canonicalTmpdir(), prefix))
+}
+
+/**
+ * Pins line-ending behaviour for a test repository.
+ *
+ * Git for Windows defaults to `autocrlf=true` and rewrites content on
+ * checkout, so byte-for-byte assertions fail there and nowhere else.
+ */
+export function pinGitLineEndings(repoDir: string): void {
+  execFileSync('git', ['-C', repoDir, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
+  execFileSync('git', ['-C', repoDir, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
 }

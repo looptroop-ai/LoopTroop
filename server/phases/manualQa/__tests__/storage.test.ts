@@ -502,6 +502,9 @@ describe('Manual QA canonical storage', () => {
   it('enforces the evidence safety contract and link protocols', () => {
     expect(MAX_MANUAL_QA_EVIDENCE_BYTES).toBe(250 * 1024 * 1024)
     expect(sanitizeEvidenceName('..\\..\\evil\u0000.exe')).toBe('evil.exe')
+    // Windows rejects these outright; ':' is the NTFS stream separator.
+    expect(sanitizeEvidenceName('evidence:one.png')).toBe('evidence_one.png')
+    expect(sanitizeEvidenceName('a<b>c:d"e|f?g*h.png')).toBe('a_b_c_d_e_f_g_h.png')
     expect(isSafeRasterMediaType('image/webp')).toBe(true)
     expect(isSafeRasterMediaType('image/svg+xml')).toBe(false)
     expect(ManualQaEvidenceLinkSchema.safeParse({ id: 'link:1', url: 'https://example.com/evidence' }).success).toBe(true)

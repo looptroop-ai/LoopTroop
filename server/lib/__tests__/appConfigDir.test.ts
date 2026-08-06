@@ -110,14 +110,17 @@ describe('resolveAppConfigDir', () => {
 
   // These assert the suffix rather than the full path: the POSIX `path` module
   // used when running tests on Linux does not treat `C:/...` as absolute, so it
-  // resolves against cwd. On real Windows `path.win32` handles it correctly.
+  // resolves against cwd. On real Windows `path.win32` handles it correctly, and
+  // emits backslashes, so the separator is matched loosely.
+  const APPDATA_SUFFIX = /AppData[\\/]Roaming[\\/]looptroop$/
+
   it('uses %APPDATA%\\looptroop on Windows when APPDATA is set', () => {
     const detection: AppConfigDirDetection = {
       platform: 'win32',
       env: { APPDATA: 'C:/Users/user/AppData/Roaming' },
       homeDir: 'C:/Users/user',
     }
-    expect(resolveAppConfigDir(detection)).toMatch(/AppData\/Roaming\/looptroop$/)
+    expect(resolveAppConfigDir(detection)).toMatch(APPDATA_SUFFIX)
   })
 
   it('falls back to %USERPROFILE%\\AppData\\Roaming\\looptroop on Windows without APPDATA', () => {
@@ -126,7 +129,7 @@ describe('resolveAppConfigDir', () => {
       env: {},
       homeDir: 'C:/Users/user',
     }
-    expect(resolveAppConfigDir(detection)).toMatch(/AppData\/Roaming\/looptroop$/)
+    expect(resolveAppConfigDir(detection)).toMatch(APPDATA_SUFFIX)
   })
 
   it('ignores XDG_CONFIG_HOME on Windows', () => {
@@ -136,8 +139,8 @@ describe('resolveAppConfigDir', () => {
       homeDir: 'C:/Users/user',
     }
     const resolved = resolveAppConfigDir(detection)
-    expect(resolved).toMatch(/AppData\/Roaming\/looptroop$/)
-    expect(resolved).not.toContain('/unix/config')
+    expect(resolved).toMatch(APPDATA_SUFFIX)
+    expect(resolved.replace(/\\/g, '/')).not.toContain('/unix/config')
   })
 
   it('uses $XDG_CONFIG_HOME/looptroop on Unix when set', () => {

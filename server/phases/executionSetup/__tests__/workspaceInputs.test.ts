@@ -7,7 +7,7 @@ import {
   materializeExecutionSetupWorkspaceInputs,
   validateExecutionSetupWorkspaceInputs,
 } from '../workspaceInputs'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
 
 interface WorkspaceFixture {
   projectRoot: string
@@ -27,6 +27,7 @@ function createWorkspaceFixture(): WorkspaceFixture {
   const worktreePath = join(fixtureRoot, 'ticket-worktree')
   mkdirSync(projectRoot, { recursive: true })
   runGit(projectRoot, ['init', '--initial-branch=main'])
+  pinGitLineEndings(projectRoot)
   runGit(projectRoot, ['config', 'user.email', 'test@example.com'])
   runGit(projectRoot, ['config', 'user.name', 'Test'])
   writeFileSync(join(projectRoot, '.gitignore'), 'ignored-inputs/\nignored-file.json\n')

@@ -526,10 +526,13 @@ export async function streamManualQaEvidence(input: {
   const itemDirectoryName = `item-${itemId.replace(/[^A-Za-z0-9._-]/g, '_')}`
   const itemDirectory = resolve(paths.evidenceDir, itemDirectoryName)
   assertContainedDirectory(itemDirectory, paths.evidenceDir)
-  const fileName = `${evidenceId}${extension}`
+  // Escaped like itemId above: IDs allow ':', which Windows rejects in a
+  // filename as the NTFS stream separator.
+  const fileStem = evidenceId.replace(/[^A-Za-z0-9._-]/g, '_')
+  const fileName = `${fileStem}${extension}`
   const storedName = `${itemDirectoryName}/${fileName}`
   const finalPath = resolve(itemDirectory, fileName)
-  const temporaryPath = resolve(itemDirectory, `.${evidenceId}.${randomUUID()}.upload`)
+  const temporaryPath = resolve(itemDirectory, `.${fileStem}.${randomUUID()}.upload`)
   if (!finalPath.startsWith(`${itemDirectory}${sep}`) || !temporaryPath.startsWith(`${itemDirectory}${sep}`)) {
     throw new Error('Evidence path escaped Manual QA storage containment.')
   }

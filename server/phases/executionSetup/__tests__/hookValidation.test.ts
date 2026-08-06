@@ -34,7 +34,9 @@ describe('runExplicitGitHookValidation', () => {
     const root = makeTempDir('looptroop-hook-validation-')
     roots.push(root)
     const result = await runExplicitGitHookValidation({
-      profileContent: profile('validate_advisory', 'node -e "process.stderr.write(\'missing prerequisite\'); process.exit(4)"'),
+      // Double quotes only: single quotes are not string delimiters in
+      // PowerShell, which is the repaired shell on Windows.
+      profileContent: profile('validate_advisory', 'node -e "process.stderr.write(\\"missing prerequisite\\"); process.exit(4)"'),
       worktreePath: root,
     })
     expect(result.receipts[0]).toMatchObject({ status: 'failed', exitCode: 4, outputExcerpt: expect.stringContaining('missing prerequisite') })

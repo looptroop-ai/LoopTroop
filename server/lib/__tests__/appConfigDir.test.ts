@@ -143,13 +143,20 @@ describe('resolveAppConfigDir', () => {
     expect(resolved.replace(/\\/g, '/')).not.toContain('/unix/config')
   })
 
+  // These compare a normalised suffix rather than the whole path: under
+  // path.win32 a POSIX-looking absolute path gains a drive letter and
+  // backslashes, which says nothing about the resolution logic being tested.
+  function posixTail(value: string): string {
+    return value.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+  }
+
   it('uses $XDG_CONFIG_HOME/looptroop on Unix when set', () => {
     const detection: AppConfigDirDetection = {
       platform: 'linux',
       env: { XDG_CONFIG_HOME: '/custom/xdg' },
       homeDir: '/home/user',
     }
-    expect(resolveAppConfigDir(detection)).toBe('/custom/xdg/looptroop')
+    expect(posixTail(resolveAppConfigDir(detection))).toBe('/custom/xdg/looptroop')
   })
 
   it('falls back to ~/.config/looptroop on Unix without XDG_CONFIG_HOME', () => {
@@ -158,7 +165,7 @@ describe('resolveAppConfigDir', () => {
       env: {},
       homeDir: '/home/user',
     }
-    expect(resolveAppConfigDir(detection)).toBe('/home/user/.config/looptroop')
+    expect(posixTail(resolveAppConfigDir(detection))).toBe('/home/user/.config/looptroop')
   })
 
   it('resolves relative XDG_CONFIG_HOME against cwd on Unix', () => {
@@ -167,7 +174,7 @@ describe('resolveAppConfigDir', () => {
       env: { XDG_CONFIG_HOME: 'relative/xdg' },
       homeDir: '/home/user',
     }
-    expect(resolveAppConfigDir(detection)).toMatch(/\/relative\/xdg\/looptroop$/)
+    expect(posixTail(resolveAppConfigDir(detection))).toMatch(/\/relative\/xdg\/looptroop$/)
   })
 
   it('works on macOS exactly like Linux', () => {
@@ -176,9 +183,9 @@ describe('resolveAppConfigDir', () => {
       env: { XDG_CONFIG_HOME: '/Users/user/.config' },
       homeDir: '/Users/user',
     }
-    expect(resolveAppConfigDir(detection)).toBe('/Users/user/.config/looptroop')
+    expect(posixTail(resolveAppConfigDir(detection))).toBe('/Users/user/.config/looptroop')
 
     detection.env = {}
-    expect(resolveAppConfigDir(detection)).toBe('/Users/user/.config/looptroop')
+    expect(posixTail(resolveAppConfigDir(detection))).toBe('/Users/user/.config/looptroop')
   })
 })

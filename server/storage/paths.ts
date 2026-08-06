@@ -29,14 +29,17 @@ export function normalizeFolderPath(input: string): string {
     output = resolve(process.cwd(), output)
   }
   // Canonicalise symlinks so one directory always compares equal to itself:
-  // macOS maps /var to /private/var, so a stored path and the output of
-  // `git rev-parse --show-toplevel` otherwise disagree.
+  // macOS maps /var to /private/var and Windows keeps 8.3 short names such as
+  // RUNNER~1, so a stored path and the output of `git rev-parse --show-toplevel`
+  // otherwise disagree. `.native` is required for the 8.3 expansion.
   try {
-    output = realpathSync(output).replace(/\\/g, '/')
+    output = realpathSync.native(output)
   } catch {
     // Not created yet, so the lexical form is the best available answer.
   }
-  return output
+  // Last: resolve() and realpathSync() both emit backslashes on Windows, and
+  // this function's contract is forward slashes throughout.
+  return output.replace(/\\/g, '/')
 }
 
 export function resolveGitRepoRoot(folderPath: string): string | null {

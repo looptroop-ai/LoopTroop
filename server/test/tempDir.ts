@@ -10,10 +10,13 @@ import { join } from 'node:path'
  * name on Windows (RUNNER~1 -> runneradmin). Product code canonicalises paths
  * before storing or comparing them, so a test that records the raw form ends up
  * asserting one spelling against the other.
+ *
+ * `.native` matters: plain realpathSync resolves symlinks but leaves 8.3 names
+ * untouched, so only the native call agrees with the product on Windows.
  */
 export function canonicalTmpdir(): string {
   try {
-    return realpathSync(tmpdir())
+    return realpathSync.native(tmpdir())
   } catch {
     return tmpdir()
   }

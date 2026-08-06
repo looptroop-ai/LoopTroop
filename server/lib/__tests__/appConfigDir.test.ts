@@ -105,7 +105,7 @@ describe('resolveAppConfigDir', () => {
       env: { LOOPTROOP_CONFIG_DIR: 'relative/config' },
       homeDir: '/home/user',
     }
-    expect(resolveAppConfigDir(detection)).toMatch(/\/relative\/config$/)
+    expect(resolveAppConfigDir(detection)).toMatch(/[\\/]relative[\\/]config$/)
   })
 
   // These assert the suffix rather than the full path: the POSIX `path` module

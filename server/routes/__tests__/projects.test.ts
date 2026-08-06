@@ -19,7 +19,7 @@ import {
   ticketStatusHistory,
   tickets,
 } from '../../db/schema'
-import { getProjectLoopTroopDir } from '../../storage/paths'
+import { getProjectLoopTroopDir, normalizeFolderPath } from '../../storage/paths'
 import {
   attachExistingProject,
   attachProject,
@@ -330,7 +330,7 @@ describe('projectRouter project cleanup', () => {
       shortname: 'SVD',
       icon: '✨',
       color: '#123456',
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
     })
     expect(getProjectContextById(project.id)?.projectDb.select().from(tickets).all())
       .toContainEqual(expect.objectContaining({ externalId: ticket.externalId }))
@@ -349,7 +349,7 @@ describe('projectRouter project cleanup', () => {
     expect(await explicitRestoreResponse.json()).toMatchObject({
       name: 'Explicit Restore',
       shortname: 'SVD',
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
     })
   })
 

@@ -35,7 +35,10 @@ describe('normalizeFolderPath', () => {
   })
 
   it('converts backslashes to forward slashes', () => {
-    expect(normalizeFolderPath('/tmp\\example\\path')).toBe('/tmp/example/path')
+    // Drive-relative on Windows, absolute on POSIX; either way the contract is
+    // that the output contains no backslashes.
+    expect(normalizeFolderPath('/tmp\\example\\path')).not.toContain('\\')
+    expect(normalizeFolderPath('/tmp\\example\\path')).toContain('/tmp/example/path')
   })
 
   // The macOS case that made CI fail: /var is a symlink to /private/var, so a

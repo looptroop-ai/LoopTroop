@@ -194,7 +194,8 @@ describe('Manual QA canonical storage', () => {
     expect(evidence.originalName).toBe('screen.png')
     expect(evidence.storedName).toMatch(/^item-qa-v1-001\//)
     expect(evidence.inlinePreview).toBe(true)
-    expect(resolveManualQaEvidence({ ticketDir, version: 1, itemId: 'qa-v1-001', evidenceId: evidence.id }).path)
+    expect(resolveManualQaEvidence({ ticketDir, version: 1, itemId: 'qa-v1-001', evidenceId: evidence.id }).path
+      .replace(/\\/g, '/'))
       .toContain('/manual-qa/v1/evidence/item-qa-v1-001/')
     expect(getManualQaEvidenceRelativePath(1, evidence)).toBe(`manual-qa/v1/evidence/${evidence.storedName}`)
 

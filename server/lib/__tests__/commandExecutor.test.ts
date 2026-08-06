@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
 import { buildCommandInvocation, executeCommand, resolveCommandCwd } from '../commandExecutor'
+import { makeTempDir } from '../../test/tempDir'
 
 const tempDirectories: string[] = []
 
@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 function makeRepo(): string {
-  const repository = mkdtempSync(join(tmpdir(), 'looptroop-command-executor-'))
+  const repository = makeTempDir('looptroop-command-executor-')
   tempDirectories.push(repository)
   return repository
 }

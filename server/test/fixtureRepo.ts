@@ -20,9 +20,18 @@ function initializeGitRepo(repoDir: string) {
   execFileSync('git', ['-C', repoDir, 'init'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'LoopTroop Tests'], { stdio: 'pipe' })
+  // Git for Windows defaults to autocrlf=true and would rewrite fixture content
+  // on checkout, so byte-for-byte assertions fail there and nowhere else.
+  execFileSync('git', ['-C', repoDir, 'config', 'core.autocrlf', 'false'], { stdio: 'pipe' })
+  execFileSync('git', ['-C', repoDir, 'config', 'core.eol', 'lf'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'add', '.'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'commit', '-m', 'init'], { stdio: 'pipe' })
   execFileSync('git', ['-C', repoDir, 'branch', '-M', 'main'], { stdio: 'pipe' })
+}
+
+/** Windows holds briefly onto files just released, so removal needs retries. */
+function removeTree(target: string) {
+  rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 
 export function createFixtureRepoManager(options: {
@@ -40,17 +49,17 @@ export function createFixtureRepoManager(options: {
   return {
     createRepo(prefix = options.templatePrefix) {
       const repoDir = mkdtempSync(join(tmpdir(), prefix))
-      rmSync(repoDir, { recursive: true, force: true })
+      removeTree(repoDir)
       cpSync(templateRepo, repoDir, { recursive: true })
       repoDirs.add(repoDir)
       return repoDir
     },
     cleanup() {
       for (const repoDir of repoDirs) {
-        rmSync(repoDir, { recursive: true, force: true })
+        removeTree(repoDir)
       }
       repoDirs.clear()
-      rmSync(templateRoot, { recursive: true, force: true })
+      removeTree(templateRoot)
     },
   }
 }

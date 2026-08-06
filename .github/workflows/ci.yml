@@ -95,7 +95,7 @@ jobs:
           # Exact floor, not "24": `node-version: 24` resolves to the newest
           # patch, so the version `engines` actually promises stays untested.
           - os: ubuntu-latest
-            node: 24.0.0
+            node: 24.15.0
           - os: macos-latest
             node: 24
           - os: windows-latest

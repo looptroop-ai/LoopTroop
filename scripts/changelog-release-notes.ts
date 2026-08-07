@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 /**
- * Extracts release notes from docs/changelog.md.
+ * Extracts release notes from the root CHANGELOG.md.
  *
  * The release workflow publishes whatever this returns, so the heading
  * contract below is load-bearing: a silent parse failure ships an empty
@@ -85,7 +85,7 @@ export function findRelease(releases: ChangelogRelease[], version: string): Chan
     const known = releases.map((candidate) => candidate.version).join(', ')
     throw new Error(
       `No changelog section found for version "${normalized}". `
-      + `Expected a heading like "## ${normalized} (YYYY-MM-DD)" in docs/changelog.md. `
+      + `Expected a heading like "## ${normalized} (YYYY-MM-DD)" in CHANGELOG.md. `
       + `Found: ${known || '(none)'}`,
     )
   }

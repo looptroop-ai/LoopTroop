@@ -117,11 +117,11 @@ describe('changelog-release-notes', () => {
   describe('extractReleaseNotes', () => {
     it('extracts from the real changelog file', () => {
       // Derived, not hardcoded: the newest tagged release changes every release.
-      const releases = parseChangelog(readFileSync('docs/changelog.md', 'utf8'))
+      const releases = parseChangelog(readFileSync('CHANGELOG.md', 'utf8'))
       const latestTagged = releases.find((release) => release.version !== 'Unreleased')
       expect(latestTagged).toBeDefined()
 
-      const notes = extractReleaseNotes('docs/changelog.md', latestTagged!.version)
+      const notes = extractReleaseNotes('CHANGELOG.md', latestTagged!.version)
       expect(notes.length).toBeGreaterThan(0)
       expect(notes.startsWith('- ')).toBe(true)
     })

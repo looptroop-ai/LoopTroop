@@ -16,10 +16,8 @@ import { readFileSync } from 'node:fs'
 const ALLOWED_PATHS = [
   'package.json',
   'package-lock.json',
-  'docs/changelog.md',
   'CHANGELOG.md',
   '.github/releases/',
-  'docs/roadmap.md',
   'THIRD-PARTY-NOTICES.md',
   // Documents its own matching rules using an example version.
   'scripts/verify-version-single-source.mjs',
@@ -65,7 +63,7 @@ if (lockRootVersion !== version) {
  * written, while the outgoing one is what actually goes stale.
  */
 function findPreviousVersion() {
-  const headings = [...readFileSync('docs/changelog.md', 'utf8')
+  const headings = [...readFileSync('CHANGELOG.md', 'utf8')
     .matchAll(/^##\s+(\d+\.\d+\.\d+(?:-[\w.]+)?)\s*\(/gm)]
     .map((match) => match[1])
   return headings.find((candidate) => candidate !== version) ?? null

@@ -47,9 +47,6 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Build site
-        run: npm run site:build
-
       # Guards the packaging premise: a native addon needs a compiler on the
       # user's machine and cannot go into a standalone binary.
       - name: Verify no native addons in the production package

@@ -12,7 +12,7 @@ const requested = process.argv[2]?.trim()
 const version = requested || JSON.parse(readFileSync('package.json', 'utf8')).version
 
 try {
-  process.stdout.write(`${extractReleaseNotes('docs/changelog.md', version)}\n`)
+  process.stdout.write(`${extractReleaseNotes('CHANGELOG.md', version)}\n`)
 } catch (error) {
   console.error(`[release-notes] ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)

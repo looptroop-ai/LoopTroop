@@ -75,8 +75,8 @@
       "automerge": false
     },
     {
-      "description": "Tailwind CLI is exact-pinned to match the tailwindcss version; move both together.",
-      "matchPackageNames": ["tailwindcss", "@tailwindcss/cli", "@tailwindcss/vite"],
+      "description": "Keep Tailwind and its Vite integration aligned.",
+      "matchPackageNames": ["tailwindcss", "@tailwindcss/vite"],
       "groupName": "tailwindcss",
       "automerge": false
     },

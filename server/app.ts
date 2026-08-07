@@ -1,5 +1,10 @@
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
+import { serveStatic } from '@hono/node-server/serve-static'
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { health } from './routes/health'
 import { profileRouter } from './routes/profiles'
 import { projectRouter } from './routes/projects'
@@ -24,6 +29,17 @@ export interface CreateAppOptions {
   mode?: 'development' | 'production'
   /** Injected rather than read from the environment so a host can own the secret. */
   apiToken?: string
+  /** Defaults to the `dist/client` beside the bundled server. */
+  clientDir?: string
+}
+
+/**
+ * The bundle lives at dist/server/index.js and the interface at dist/client, so
+ * the default is resolved from this module rather than the working directory:
+ * a globally installed daemon runs from whatever directory the user is in.
+ */
+function resolveDefaultClientDir(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), '../client')
 }
 
 const CORS_ALLOWED_HEADERS = [
@@ -111,6 +127,49 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route('/api', beadsRouter)
   app.route('/api', promptsRouter)
   app.route('/api', workflowRouter)
+
+  // Mounted after the API so a frontend route can never shadow an endpoint.
+  if (mode === 'production') {
+    const clientDir = options.clientDir ?? resolveDefaultClientDir()
+    const indexHtml = resolve(clientDir, 'index.html')
+
+    if (existsSync(indexHtml)) {
+      app.use('/*', async (c, next) => {
+        await next()
+        if (!c.res.ok) return
+
+        if (c.req.path.startsWith('/assets/')) {
+          // Asset filenames carry a content hash, so a stale response is impossible.
+          c.header('Cache-Control', 'public, max-age=31536000, immutable')
+          return
+        }
+
+        // The document must be revalidated whichever handler produced it, or a
+        // cached copy would keep pointing at asset hashes that no longer exist.
+        if (c.res.headers.get('Content-Type')?.startsWith('text/html')) {
+          c.header('Cache-Control', 'no-cache')
+        }
+      })
+
+      app.use('/*', serveStatic({ root: clientDir }))
+
+      // Deep links are client-side routes with no file behind them; the browser
+      // must revalidate this document or it would pin an old asset manifest.
+      app.get('/*', async (c, next) => {
+        // An unmatched endpoint is a 404, not a frontend route.
+        if (c.req.path === '/api' || c.req.path.startsWith('/api/')) return next()
+
+        // A missing hashed asset must 404 rather than fall back to HTML, or the
+        // browser reports a module MIME-type error instead of the real problem.
+        if (c.req.path.startsWith('/assets/')) return next()
+
+        const html = await readFile(indexHtml, 'utf8')
+        c.header('Content-Type', 'text/html; charset=utf-8')
+        c.header('Cache-Control', 'no-cache')
+        return c.body(html)
+      })
+    }
+  }
 
   return app
 }

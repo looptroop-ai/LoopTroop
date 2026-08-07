@@ -10,6 +10,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Restructured the server into an embeddable runtime that performs no work when imported, so tooling can load it without starting a server, opening the database, or installing signal handlers.
+- Added a production build that bundles the server and ships only compiled output, cutting a global installation from roughly three hundred packages to sixteen.
+- Made the production server serve the interface itself, so a single command opens a working application on one address with no separate web server to configure.
 - Moved the public website and published documentation into a dedicated repository, leaving the application checkout and development stack focused on LoopTroop itself.
 - Replaced the native `better-sqlite3` database driver with Node's built-in `node:sqlite`, removing the last compiled dependency from the runtime and eliminating the most common cause of failed installations.
 - Introduced schema versioning for both the application and per-project databases, so a database written by a newer LoopTroop is refused with a clear message instead of being silently and destructively downgraded.
@@ -23,9 +26,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Made `package.json` the single source of truth for the application version, enforced in CI, so the version shown in the app interface can no longer drift from the released version; the website independently reads the latest stable GitHub Release.
 - Wired the root changelog to release notes: publishing a release now derives its notes from `CHANGELOG.md` instead of being written by hand, so the two can no longer disagree.
 - Moved routine dependency updates onto a predictable weekly schedule with a maturity delay, so updates are reviewed in batches and security fixes still arrive quickly.
-- Added governance documents (`SECURITY.md` and generated third-party notices) and wired the notices into CI, so a missing licence or stale notices file fails the build.
+- Added governance documents (`SECURITY.md` and generated third-party notices) and wired the notices into CI, so a missing licence or stale notices file fails the build. The notices cover both the packages installed at runtime and the interface libraries compiled into the shipped bundle, which no dependency scan can see on its own.
 
 ### Changed
+- Split the server into an embeddable runtime (`createRuntime`) and a thin daemon entry point. Constructing a runtime no longer creates directories, starts timers, binds sockets, or registers signal handlers; all of that now happens explicitly when the runtime is started, and signal handling belongs to the executable rather than the library.
+- Made cross-origin request handling conditional on the build mode. Development keeps the allowances the Vite dev server needs across ports; production serves the interface and the API from a single origin and sends no cross-origin headers.
+- Reclassified twenty-one interface-only packages as development dependencies now that the interface is bundled ahead of time. A production installation no longer downloads React, Radix UI, or CodeMirror.
+- Moved the built interface to `dist/client/` and the bundled server to `dist/server/`, so the two build steps can no longer overwrite each other's output.
+- Made the development preflight aware of a running background daemon, so starting the development stack can no longer mistake the daemon for a stale process tree and terminate it.
 - Moved the canonical changelog back to root `CHANGELOG.md`, pointed contribution and release tooling at it, and changed all app documentation links to the independently hosted `looptroop-ai/LoopTroop-Website` site.
 - Changed the public landing page version badge to read the latest stable GitHub Release in the visitor's browser with a six-hour cache and graceful offline fallback, avoiding any cross-repository release synchronization.
 - Updated landing page hero headline typography scaling and wrapped phrases inline to prevent awkward per-sentence line breaks across viewports.
@@ -33,9 +41,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Added a production server build that bundles the application's own source while leaving runtime dependencies to be installed normally, so the published package runs on a plain Node installation without a TypeScript loader.
+- Added an explicit published-file allowlist covering the compiled output, licence, notices, readme and changelog. Without it the build output would have been excluded from the package, because it is deliberately untracked.
+- Added a test that asserts the runtime performs no work when imported: no files written, no timers started, no signal handlers registered, and no socket bound until the runtime is explicitly started.
+- Added static file serving to the production server, so the built interface is delivered by the same process that serves the API. Hashed build assets are served with long-lived immutable caching, while the entry document is always revalidated so a new version is picked up immediately instead of the browser reusing a stale page that points at deleted assets.
+- Added a single-page-application fallback so deep links and browser reloads resolve to the interface instead of returning a not-found error. Unknown API paths, non-`GET` requests, and requests for missing build assets still return a genuine not-found response rather than being answered with the interface document, which would otherwise surface to the browser as a confusing script type error.
 - Added an X / Twitter profile icon for `@liviusa` to the left of the main LoopTroop X icon in the landing page footer social icons block.
 - Added `SECURITY.md` with a private vulnerability reporting route, a documented threat model that distinguishes intended local behaviour from genuine boundary escapes, and a statement that LoopTroop collects no telemetry and never reads provider API keys.
-- Added generated third-party licence notices covering all 88 production npm packages redistributed with the application. A CI gate fails when the file is out of date or a package declares no licence.
+- Added generated third-party licence notices covering all 80 npm packages redistributed with the application: the 15 installed at runtime plus the 65 interface libraries compiled into the shipped bundle. The bundled set is recorded by the interface build itself rather than maintained by hand, so a new interface library cannot ship without its licence. Generating the notices requires a completed build and fails loudly without one, rather than quietly emitting a file that omits every bundled library. A CI gate fails when the file is out of date or a package declares no licence.
 - Added a Renovate configuration for scheduled dependency updates, validated in CI: weekly grouped pull requests, a 7-day release-maturity delay, a 2-day window for security advisories, auto-merge limited to development dependencies, and per-package rules holding `drizzle-orm`/`drizzle-kit` on the release-candidate tag, delaying `@opencode-ai/sdk` by 30 days, and keeping `@types/node` on the supported major. Credentials and scheduling are enabled separately.
 - Added a release-notes extractor that parses root `CHANGELOG.md` and emits the GitHub Release body for a given version, preferring `Release Highlights` and falling back to `Summary`. It fails loudly with the available versions rather than emitting empty notes, and the heading contract it depends on is covered by tests.
 - Added a CI gate that verifies the application version is single-sourced from `package.json`, failing with the exact file and line when a version literal is hardcoded elsewhere; historical records such as changelogs, release notes and the lockfile are allowlisted since they must retain literal versions.

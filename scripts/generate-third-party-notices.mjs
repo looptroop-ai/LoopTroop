@@ -13,6 +13,8 @@ import { join } from 'node:path'
 
 const OUTPUT_PATH = 'THIRD-PARTY-NOTICES.md'
 const LICENSE_FILENAMES = /^(LICENSE|LICENCE|COPYING|NOTICE)(\.(md|txt))?$/i
+// Emitted by the bundled-packages plugin in vite.config.ts.
+const BUNDLED_PACKAGES_MANIFEST = join('dist', 'client', 'bundled-packages.json')
 
 function readManifest(packageDir) {
   const manifestPath = join(packageDir, 'package.json')
@@ -98,6 +100,37 @@ function findPackageDir(name) {
   return existsSync(direct) ? direct : null
 }
 
+/**
+ * Packages inlined into the client bundle. They are devDependencies, so the
+ * production tree cannot see them, but their code ships inside the published
+ * assets and their licences must travel with it.
+ */
+function collectBundledFrontendPackages() {
+  if (!existsSync(BUNDLED_PACKAGES_MANIFEST)) return []
+
+  let names
+  try {
+    names = JSON.parse(readFileSync(BUNDLED_PACKAGES_MANIFEST, 'utf8'))
+  } catch {
+    console.error(`FAIL: ${BUNDLED_PACKAGES_MANIFEST} is not readable JSON.`)
+    process.exit(1)
+  }
+
+  const packages = []
+  for (const name of names) {
+    const packageDir = findPackageDir(name)
+    const manifest = packageDir ? readManifest(packageDir) : null
+    // A build artefact naming a package that is no longer installed means the
+    // manifest is stale; rebuilding is the fix, so say so rather than guess.
+    if (!manifest?.version) {
+      console.error(`FAIL: bundled package "${name}" is not installed. Run \`npm run build:client\` and retry.`)
+      process.exit(1)
+    }
+    packages.push({ name, version: manifest.version })
+  }
+  return packages
+}
+
 /** Apache-2.0 section 4(d) requires any NOTICE file to travel with the work. */
 function findNoticeText(packageDir) {
   for (const candidate of ['NOTICE', 'NOTICE.txt', 'NOTICE.md']) {
@@ -143,7 +176,11 @@ function render(packages) {
   ]
 
   lines.push('## npm Packages', '')
-  lines.push(`${packages.length} production packages are redistributed.`, '')
+  lines.push(
+    `${packages.length} packages are redistributed: runtime dependencies plus the`,
+    'frontend packages inlined into the client bundle.',
+    '',
+  )
   lines.push('| Package | Version | Licence | Copyright |')
   lines.push('| --- | --- | --- | --- |')
 
@@ -192,7 +229,25 @@ function render(packages) {
 
 const checkOnly = process.argv.includes('--check')
 
-const packages = collectProductionPackages().map((entry) => {
+if (!existsSync(BUNDLED_PACKAGES_MANIFEST)) {
+  console.error(`FAIL: ${BUNDLED_PACKAGES_MANIFEST} is missing.`)
+  console.error('The client bundle inlines frontend packages that the production')
+  console.error('dependency tree cannot see. Run `npm run build` first so their')
+  console.error('licences are not silently omitted.')
+  process.exit(1)
+}
+
+const seen = new Set()
+const allPackages = [...collectProductionPackages(), ...collectBundledFrontendPackages()]
+  .filter((entry) => {
+    const key = `${entry.name}@${entry.version}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
+
+const packages = allPackages.map((entry) => {
   const packageDir = findPackageDir(entry.name)
   const manifest = packageDir ? readManifest(packageDir) : null
   if (!manifest) return { ...entry, license: 'UNKNOWN', copyright: null, licenseText: null, noticeText: null }
@@ -223,7 +278,7 @@ if (checkOnly) {
     console.error('Run `npm run licenses:generate` and commit the result.')
     process.exit(1)
   }
-  console.log(`PASS: ${OUTPUT_PATH} matches the installed production tree (${packages.length} packages).`)
+  console.log(`PASS: ${OUTPUT_PATH} matches the redistributed package set (${packages.length} packages).`)
 } else {
   writeFileSync(OUTPUT_PATH, rendered)
   console.log(`Wrote ${OUTPUT_PATH} covering ${packages.length} packages.`)

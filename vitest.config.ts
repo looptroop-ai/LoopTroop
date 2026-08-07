@@ -65,6 +65,9 @@ const serverIntegrationTests = [
   // Asserts on real module state (timers, signal handlers, sockets), so it
   // cannot share a worker with files that vi.mock the same modules.
   'tests/createRuntime.test.ts',
+  // Builds the whole app, which loads the real providerCatalog and would
+  // defeat the vi.mock in a sibling sharing the non-isolated worker.
+  'tests/staticServing.test.ts',
 ] as const
 
 export default defineConfig({

@@ -8,7 +8,8 @@ this file.
 
 ## npm Packages
 
-88 production packages are redistributed.
+80 packages are redistributed: runtime dependencies plus the
+frontend packages inlined into the client bundle.
 
 | Package | Version | Licence | Copyright |
 | --- | --- | --- | --- |
@@ -31,7 +32,6 @@ this file.
 | `@opencode-ai/sdk` | 1.18.13 | MIT | — |
 | `@radix-ui/number` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/primitive` | 1.1.7 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-arrow` | 1.1.15 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-collection` | 1.1.15 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-compose-refs` | 1.1.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-context` | 1.2.2 | MIT | Copyright (c) 2022 WorkOS |
@@ -58,22 +58,15 @@ this file.
 | `@radix-ui/react-use-effect-event` | 0.0.5 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-is-hydrated` | 0.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/react-use-rect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.11 | MIT | Copyright (c) 2022 WorkOS |
-| `@radix-ui/rect` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@tanstack/query-core` | 5.101.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `@tanstack/react-query` | 5.101.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@types/react` | 19.2.17 | MIT | Copyright (c) Microsoft Corporation. |
-| `@types/react-dom` | 19.2.3 | MIT | Copyright (c) Microsoft Corporation. |
 | `argparse` | 2.0.1 | Python-2.0 | Copyright (c) 1991 - 1995, Stichting Mathematisch Centrum Amsterdam, |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | Copyright 2022 Joe Bell |
 | `clsx` | 2.1.1 | MIT | Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com) |
-| `crelt` | 1.0.6 | MIT | Copyright (C) 2020 by Marijn Haverbeke <marijn@haverbeke.berlin> |
 | `cross-spawn` | 7.0.6 | MIT | Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> |
-| `csstype` | 3.2.3 | MIT | Copyright (c) 2017-2018 Fredrik Nicol |
-| `detect-node-es` | 1.1.0 | MIT | Copyright (c) 2017 Ilya Kantor |
 | `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
 | `gpt-tokenizer` | 3.4.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
@@ -108,7 +101,7 @@ in the table above and the upstream repository.
 
 ### MIT
 
-Applies to: `@radix-ui/number@1.1.3`, `@radix-ui/primitive@1.1.7`, `@radix-ui/react-arrow@1.1.15`, `@radix-ui/react-collection@1.1.15`, `@radix-ui/react-compose-refs@1.1.5`, `@radix-ui/react-context@1.2.2`, `@radix-ui/react-dialog@1.1.23`, `@radix-ui/react-direction@1.1.4`, `@radix-ui/react-dismissable-layer@1.1.19`, `@radix-ui/react-dropdown-menu@2.1.24`, `@radix-ui/react-focus-guards@1.1.6`, `@radix-ui/react-focus-scope@1.1.16`, `@radix-ui/react-hover-card@1.1.23`, `@radix-ui/react-id@1.1.4`, `@radix-ui/react-menu@2.1.24`, `@radix-ui/react-popper@1.3.7`, `@radix-ui/react-portal@1.1.17`, `@radix-ui/react-presence@1.1.10`, `@radix-ui/react-primitive@2.1.10`, `@radix-ui/react-roving-focus@1.1.19`, `@radix-ui/react-scroll-area@1.2.18`, `@radix-ui/react-separator@1.1.15`, `@radix-ui/react-slot@1.3.3`, `@radix-ui/react-tooltip@1.2.16`, `@radix-ui/react-use-callback-ref@1.1.4`, `@radix-ui/react-use-controllable-state@1.2.6`, `@radix-ui/react-use-effect-event@0.0.5`, `@radix-ui/react-use-is-hydrated@0.1.3`, `@radix-ui/react-use-layout-effect@1.1.4`, `@radix-ui/react-use-rect@1.1.4`, `@radix-ui/react-use-size@1.1.4`, `@radix-ui/react-visually-hidden@1.2.11`, `@radix-ui/rect@1.1.3`
+Applies to: `@radix-ui/number@1.1.3`, `@radix-ui/primitive@1.1.7`, `@radix-ui/react-collection@1.1.15`, `@radix-ui/react-compose-refs@1.1.5`, `@radix-ui/react-context@1.2.2`, `@radix-ui/react-dialog@1.1.23`, `@radix-ui/react-direction@1.1.4`, `@radix-ui/react-dismissable-layer@1.1.19`, `@radix-ui/react-dropdown-menu@2.1.24`, `@radix-ui/react-focus-guards@1.1.6`, `@radix-ui/react-focus-scope@1.1.16`, `@radix-ui/react-hover-card@1.1.23`, `@radix-ui/react-id@1.1.4`, `@radix-ui/react-menu@2.1.24`, `@radix-ui/react-popper@1.3.7`, `@radix-ui/react-portal@1.1.17`, `@radix-ui/react-presence@1.1.10`, `@radix-ui/react-primitive@2.1.10`, `@radix-ui/react-roving-focus@1.1.19`, `@radix-ui/react-scroll-area@1.2.18`, `@radix-ui/react-separator@1.1.15`, `@radix-ui/react-slot@1.3.3`, `@radix-ui/react-tooltip@1.2.16`, `@radix-ui/react-use-callback-ref@1.1.4`, `@radix-ui/react-use-controllable-state@1.2.6`, `@radix-ui/react-use-effect-event@0.0.5`, `@radix-ui/react-use-is-hydrated@0.1.3`, `@radix-ui/react-use-layout-effect@1.1.4`, `@radix-ui/react-use-size@1.1.4`, `@radix-ui/react-visually-hidden@1.2.11`
 
 ```text
 MIT License
@@ -299,34 +292,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-```
-
-### MIT
-
-Applies to: `@types/react@19.2.17`, `@types/react-dom@19.2.3`
-
-```text
-MIT License
-
-    Copyright (c) Microsoft Corporation.
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE
 ```
 
 ### ISC
@@ -983,32 +948,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### MIT
 
-Applies to: `crelt@1.0.6`
-
-```text
-Copyright (C) 2020 by Marijn Haverbeke <marijn@haverbeke.berlin>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-```
-
-### MIT
-
 Applies to: `cross-spawn@7.0.6`
 
 ```text
@@ -1033,60 +972,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-```
-
-### MIT
-
-Applies to: `csstype@3.2.3`
-
-```text
-Copyright (c) 2017-2018 Fredrik Nicol
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### MIT
-
-Applies to: `detect-node-es@1.1.0`
-
-```text
-MIT License
-
-Copyright (c) 2017 Ilya Kantor
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
 
 ### MIT

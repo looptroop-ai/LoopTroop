@@ -52,6 +52,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added `packageManager` field to record the tested npm version.
 
 ### Changed
+- Disabled Renovate auto-merge for development dependency updates. Dependency PRs are now reviewed by hand until the Phase 2 release smoke test lands in CI and is added to the required status checks, so an automated merge can never slip a broken dependency update past a test that is not yet enforced.
 - Added a "No telemetry" statement to the landing page hero badge and footer, making the absence of usage tracking visible rather than only documented.
 - Corrected three inaccurate roadmap entries: provider API keys were never read by LoopTroop and are explicitly out of scope for user-space configuration, no configuration migration receipts are needed because there is no prior on-disk format, the archived `pkg` project is replaced by `@yao-pkg/pkg`/`bun build --compile`/Node SEA, and the installer URL is `looptroop.ovh/install`.
 - Removed all 9 `createRequire(import.meta.url)` sites and replaced them with static imports, making the codebase ESM-native and ready for bundlers; exported `getCommandLogContext()` from `commandLogger.ts` for test access, eliminating the test's reimplemented store accessor and incomplete context fixture.

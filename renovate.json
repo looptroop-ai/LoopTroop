@@ -29,13 +29,11 @@
   },
   "packageRules": [
     {
-      "description": "Dev dependencies: group patch and minor, automerge once CI is green.",
+      "description": "Dev dependencies: group patch and minor. Auto-merge stays off until the Phase 2 CI smoke test is green and in required checks.",
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "dev dependencies (non-major)",
-      "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": true
+      "automerge": false
     },
     {
       "description": "Runtime dependencies ship to users; group them but always review by hand.",

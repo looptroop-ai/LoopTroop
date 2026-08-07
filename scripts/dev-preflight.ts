@@ -3,6 +3,7 @@ import net from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getBackendPort, getFrontendPort } from '../shared/appConfig'
+import { readDaemonState } from '../server/lib/daemonPaths'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -37,10 +38,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
 const packageJsonPath = resolve(repoRoot, 'package.json')
 const packageLockPath = resolve(repoRoot, 'package-lock.json')
-// Preflight verifies; it does not mutate. Dependency sync, audit remediation
-// and the OpenCode upgrade rewrite package.json, the lockfile, or a globally
-// installed CLI, so they are opt-in via `npm run deps:sync`,
-// `npm run audit:remediate` and `npm run opencode:upgrade`.
+// Preflight repairs the dev environment: it runs `npm ci` when the install is
+// stale, and clears stale LoopTroop dev process trees off the configured ports.
+// Every action is announced with its reason before it runs. A daemon started by
+// `looptroop start` is protected and never treated as a stale tree.
+// Dependency sync, audit remediation and the OpenCode upgrade rewrite
+// package.json, the lockfile, or a globally installed CLI, so they stay opt-in
+// via `npm run deps:sync`, `npm run audit:remediate` and
+// `npm run opencode:upgrade`.
 const maintenanceOptIn = process.env.LOOPTROOP_DEV_MAINTENANCE === '1'
 const shouldSkipDependencyMaintenance = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_DEPS === '1'
 const shouldSkipOpenCodeUpgrade = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE === '1'
@@ -94,6 +99,19 @@ function collectProtectedPids(currentPid: number, graph: ReturnType<typeof build
   while (current) {
     protectedPids.add(current.pid)
     current = graph.byPid.get(current.ppid)
+  }
+
+  // A `looptroop start` daemon is a real user session, not a stale dev tree.
+  // Its process tree looks identical to one, so protect it explicitly.
+  const daemonState = readDaemonState()
+  if (daemonState && isProcessAlive(daemonState.pid)) {
+    for (const entry of collectProcessTree(daemonState.pid, graph)) {
+      protectedPids.add(entry.pid)
+    }
+    protectedPids.add(daemonState.pid)
+    if (daemonState.opencode?.owned && daemonState.opencode.pid) {
+      protectedPids.add(daemonState.opencode.pid)
+    }
   }
 
   return protectedPids

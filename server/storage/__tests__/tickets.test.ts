@@ -21,7 +21,7 @@ import {
   resolveLatestTicketErrorOccurrence,
   updateTicket,
 } from '../tickets'
-import { getTicketAiLogPath, getTicketDebugLogPath } from '../paths'
+import { getTicketAiLogPath, getTicketDebugLogPath, normalizeFolderPath } from '../paths'
 import {
   buildManualQaProjection,
   persistManualQaChecklist,
@@ -163,8 +163,11 @@ describe('ticket start configuration locking', () => {
 
     expect(progressUpdate?.percentComplete).toBe(25)
     expect(getTicketByRef(ticket.id)?.lockedCouncilMembers).toEqual(lockedCouncilMembers)
-    expect(getTicketPaths(ticket.id)?.debugLogPath).toBe(getTicketDebugLogPath(repoDir, ticket.externalId))
-    expect(getTicketPaths(ticket.id)?.aiLogPath).toBe(getTicketAiLogPath(repoDir, ticket.externalId))
+    // getTicketPaths derives from the stored project root, which was normalized
+    // on attach; repoDir is the raw fixture path and differs on Windows.
+    const normalizedRepoDir = normalizeFolderPath(repoDir)
+    expect(getTicketPaths(ticket.id)?.debugLogPath).toBe(getTicketDebugLogPath(normalizedRepoDir, ticket.externalId))
+    expect(getTicketPaths(ticket.id)?.aiLogPath).toBe(getTicketAiLogPath(normalizedRepoDir, ticket.externalId))
   })
 
   it('allows a Draft ticket hook override and exposes its effective inheritance source', () => {

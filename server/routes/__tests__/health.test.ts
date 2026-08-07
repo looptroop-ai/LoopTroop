@@ -320,7 +320,7 @@ describe('health startup routes', () => {
     legacyProjectDb.prepare(`
       INSERT INTO projects (name, shortname, folder_path)
       VALUES (?, ?, ?)
-    `).run('Legacy Project', 'LEG', repoDir)
+    `).run('Legacy Project', 'LEG', normalizeFolderPath(repoDir))
     legacyProjectDb.close()
 
     const seedApp = await loadHealthApp(configDir)

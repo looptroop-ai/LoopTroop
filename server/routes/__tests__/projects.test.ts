@@ -459,7 +459,7 @@ describe('projectRouter project cleanup', () => {
       gitHookPolicy: 'observe_only',
       manualQaOverride: false,
       ticketCounter: 0,
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
       createdAt: originalCreatedAt,
     })
     expect(cleared.project.updatedAt).not.toBe('2000-01-01T00:00:00.000Z')

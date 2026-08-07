@@ -16,6 +16,7 @@ import {
   getTicketDir as resolveTicketDir,
   getTicketRuntimeDir,
   getTicketWorktreePath as resolveTicketWorktreePath,
+  normalizeFolderPath,
 } from '../storage/paths'
 import { getTicketBeadsDir, updateTicketMeta } from './metadata'
 import { safeAtomicWrite } from '../io/atomicWrite'
@@ -345,32 +346,35 @@ function materializeWorktree(
 
 export function initializeTicket(options: InitializeOptions): InitializeTicketResult {
   const branchName = options.externalId
-  ensureGitRepo(options.projectFolder)
-  tryFetchOrigin(options.projectFolder)
-  const baseBranch = detectGitBaseBranch(options.projectFolder)
-  const baseBranchRef = ensureBaseBranch(options.projectFolder, baseBranch)
-  const worktreePath = getTicketWorktreePath(options.projectFolder, options.externalId)
-  const ticketDir = getTicketDir(options.projectFolder, options.externalId)
+  // Callers may pass an uncanonicalised folder; normalising here keeps every
+  // derived path byte-identical to the project root stored at attach time.
+  const projectFolder = normalizeFolderPath(options.projectFolder)
+  ensureGitRepo(projectFolder)
+  tryFetchOrigin(projectFolder)
+  const baseBranch = detectGitBaseBranch(projectFolder)
+  const baseBranchRef = ensureBaseBranch(projectFolder, baseBranch)
+  const worktreePath = getTicketWorktreePath(projectFolder, options.externalId)
+  const ticketDir = getTicketDir(projectFolder, options.externalId)
 
-  ensureLoopTroopGitExclude(options.projectFolder)
-  ensureLoopTroopRuntimeUntracked(options.projectFolder)
+  ensureLoopTroopGitExclude(projectFolder)
+  ensureLoopTroopRuntimeUntracked(projectFolder)
 
-  const reused = isValidTicketWorktree(options.projectFolder, worktreePath, branchName)
+  const reused = isValidTicketWorktree(projectFolder, worktreePath, branchName)
   if (!reused) {
-    materializeWorktree(options.projectFolder, worktreePath, branchName, baseBranchRef)
+    materializeWorktree(projectFolder, worktreePath, branchName, baseBranchRef)
   }
 
-  if (!isValidTicketWorktree(options.projectFolder, worktreePath, branchName)) {
+  if (!isValidTicketWorktree(projectFolder, worktreePath, branchName)) {
     throw new TicketInitializationError(
       'INIT_WORKTREE_INVALID',
       `Ticket worktree is invalid after initialization: ${worktreePath}`,
     )
   }
 
-  ensureTicketDirectories(options.projectFolder, options.externalId, ticketDir, baseBranch)
-  mkdirSync(getTicketRuntimeDir(options.projectFolder, options.externalId), { recursive: true })
+  ensureTicketDirectories(projectFolder, options.externalId, ticketDir, baseBranch)
+  mkdirSync(getTicketRuntimeDir(projectFolder, options.externalId), { recursive: true })
   writeRuntimeGitignore(ticketDir)
-  updateTicketMeta(options.projectFolder, options.externalId, { baseBranch })
+  updateTicketMeta(projectFolder, options.externalId, { baseBranch })
 
   return {
     worktreePath,

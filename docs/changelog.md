@@ -12,7 +12,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Summary
 - Replaced the native `better-sqlite3` database driver with Node's built-in `node:sqlite`, removing the last compiled dependency from the runtime and eliminating the most common cause of failed installations.
 - Introduced schema versioning for both the application and per-project databases, so a database written by a newer LoopTroop is refused with a clear message instead of being silently and destructively downgraded.
-- Established the first CI workflow to enforce lint, typecheck, test, build, docs:build, site:build, and clean-tree checks on every push and pull request, running on Ubuntu with Node 24 as the required lane and adding non-blocking early-warning test lanes on Ubuntu Node 26, macOS Node 24, and Windows Node 24.
+- Established the first CI workflow to enforce lint, typecheck, test, build, docs:build, site:build, and clean-tree checks on every push and pull request. Required lanes: Ubuntu Node 24 (verify + test at exact floor 24.15.0), macOS Node 24, Windows Node 24. Early-warning lane: Ubuntu Node 26.
 - Pinned build-time Tailwind CLI to an exact version to eliminate non-deterministic site builds and unpinned network fetches during releases.
 - Downgraded `@types/node` from 26 to 24 to prevent accidental use of Node 26-only APIs while targeting Node 24 LTS as the minimum supported runtime.
 - Declared the runtime Node floor (`engines.node`), pinned the package manager, and added `.nvmrc` so CI can enforce the minimum without testing only the latest patch.

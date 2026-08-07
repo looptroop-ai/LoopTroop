@@ -72,7 +72,7 @@ search: false
 		- The step must be idempotent: re-running on the same release version is a no-op when every file already carries the correct version.
 	+ **Single-Process Production Compilation (CLI Daemon Mode):** Combine the four concurrent development processes (Vite frontend, Node backend API, documentation server, and OpenCode watcher) into a single production compilation unit.
 		- The frontend Vite workspace must build statically to `dist/frontend` during compile time.
-		- The Express/Fastify backend server must be updated to serve these static files natively, routing all non-API web traffic to `dist/frontend/index.html` to support the client-side SPA router.
+		- The Hono backend server must be updated to serve these static files natively, routing all non-API web traffic to `dist/frontend/index.html` to support the client-side SPA router.
 		- Spawning external hot-reloaders or dev-servers at runtime must be disallowed in production execution.
 	+ **Global User-Space Configuration Separation:** Remove reliance on local `.env` files in the installation directory, which is read-only in global installation environments.
 		- Move state configuration to a user-space configuration file: `~/.config/looptroop/config.json` (on Linux/macOS, honouring `XDG_CONFIG_HOME`) or `%APPDATA%\looptroop\config.json` (on Windows). **Done in 0.5.0:** the resolver lives in `server/lib/appConfigDir.ts` and is covered by cross-platform tests.

@@ -10,9 +10,6 @@ console.log('Cleaning site directory...')
 await rm(siteDir, { recursive: true, force: true })
 await mkdir(path.join(siteDir, 'docs'), { recursive: true })
 
-console.log('Compiling Tailwind CSS for landing page...')
-execSync('tailwindcss -i src/web.css -o site/web.css --minify', { stdio: 'inherit' })
-
 console.log('Reading package.json version...')
 const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf-8'))
 const version = pkg.version
@@ -24,6 +21,9 @@ await writeFile(path.join(siteDir, 'index.html'), webHtml)
 
 console.log('Copying public files...')
 await cp(path.join(root, 'public'), siteDir, { recursive: true })
+
+console.log('Compiling Tailwind CSS for landing page...')
+execSync('tailwindcss -i src/web.css -o site/web.css --minify', { stdio: 'inherit' })
 
 console.log('Copying WebP screenshots to site/media...')
 const mediaDest = path.join(siteDir, 'media')

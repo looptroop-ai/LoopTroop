@@ -27,7 +27,6 @@ export type WslLanAccessPlan = {
   windowsAddresses: string[]
   wslTargetAddress?: string
   frontendUrls: string[]
-  docsUrls: string[]
   setupCommands: string[]
   cleanupCommands: string[]
 }
@@ -41,7 +40,6 @@ type WslRuntimeOptions = {
 type BuildWslLanAccessPlanOptions = {
   hostMode: ResolvedDevHostMode
   frontendPort: number
-  docsPort: number
   isWsl: boolean
   wslAddresses: string[]
   windowsAddresses: string[]
@@ -79,7 +77,6 @@ function disabled(reason: string): WslLanAccessPlan {
     reason,
     windowsAddresses: [],
     frontendUrls: [],
-    docsUrls: [],
     setupCommands: [],
     cleanupCommands: [],
   }
@@ -93,8 +90,8 @@ function buildPowerShellArray(values: string[]) {
   return `@(${values.map(quotePowerShellString).join(',')})`
 }
 
-function buildPortProxyCommands(listenAddresses: string[], frontendPort: number, docsPort: number) {
-  const ports = [frontendPort, docsPort]
+function buildPortProxyCommands(listenAddresses: string[], frontendPort: number) {
+  const ports = [frontendPort]
   const windowsAddressArray = buildPowerShellArray(listenAddresses)
   const portArray = `@(${ports.join(',')})`
   const profileCheckCommand = "$profiles=Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $ips -contains $_.IPAddress } | ForEach-Object { Get-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue } | Sort-Object InterfaceIndex -Unique; if (-not $profiles) { Write-Warning 'LoopTroop Dev LAN profile check: no Windows network profile was found for the detected LAN IP.' } else { $nonPrivate=@($profiles | Where-Object { $_.NetworkCategory -ne 'Private' }); if ($nonPrivate.Count -gt 0) { $summary=($nonPrivate | ForEach-Object { \"$($_.Name) interface $($_.InterfaceIndex) is $($_.NetworkCategory)\" }) -join ', '; $fix=($nonPrivate | ForEach-Object { \"Set-NetConnectionProfile -InterfaceIndex $($_.InterfaceIndex) -NetworkCategory Private\" }) -join '; '; Write-Warning \"LoopTroop Dev LAN profile check: Windows Firewall rule is Private-only, but $summary. If this is your trusted home/work network, run this in Admin PowerShell, then rerun this setup command: $fix\"; Write-Warning 'Windows UI path: Settings > Network & internet > Wi-Fi/Ethernet > your connected network > Network profile type > Private.' } else { Write-Host 'LoopTroop Dev LAN profile check: Windows network profile is Private.' } }"
@@ -159,7 +156,6 @@ export function getWindowsLanAddresses() {
 export function buildWslLanAccessPlan({
   hostMode,
   frontendPort,
-  docsPort,
   isWsl,
   wslAddresses,
   windowsAddresses,
@@ -184,14 +180,13 @@ export function buildWslLanAccessPlan({
     return disabled('No Windows LAN address was detected.')
   }
 
-  const { setupCommands, cleanupCommands } = buildPortProxyCommands(usableWindowsAddresses, frontendPort, docsPort)
+  const { setupCommands, cleanupCommands } = buildPortProxyCommands(usableWindowsAddresses, frontendPort)
 
   return {
     enabled: true,
     windowsAddresses: usableWindowsAddresses,
     wslTargetAddress,
     frontendUrls: usableWindowsAddresses.map((address) => formatDevHttpUrl(address, frontendPort)),
-    docsUrls: usableWindowsAddresses.map((address) => formatDevHttpUrl(address, docsPort)),
     setupCommands,
     cleanupCommands,
   }
@@ -200,7 +195,6 @@ export function buildWslLanAccessPlan({
 export function getWslLanAccessPlan(options: {
   hostMode: ResolvedDevHostMode
   frontendPort: number
-  docsPort: number
 }) {
   if (!options.hostMode.enabled) {
     return disabled('LAN sharing is disabled.')
@@ -213,7 +207,6 @@ export function getWslLanAccessPlan(options: {
   return buildWslLanAccessPlan({
     hostMode: options.hostMode,
     frontendPort: options.frontendPort,
-    docsPort: options.docsPort,
     isWsl: true,
     wslAddresses: getWslIpv4Addresses(),
     windowsAddresses: getWindowsLanAddresses(),

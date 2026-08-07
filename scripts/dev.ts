@@ -4,7 +4,7 @@ import concurrently from 'concurrently'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
-import { DEFAULT_OPENCODE_BASE_URL, getBackendPort, getDocsOrigin, getDocsPort, getFrontendPort } from '../shared/appConfig'
+import { DEFAULT_OPENCODE_BASE_URL, getBackendPort, getDocsOrigin, getFrontendPort } from '../shared/appConfig'
 import {
   formatAuditPackageUpdate,
   formatDependencyReleasePolicySummaryLines,
@@ -34,7 +34,7 @@ const childEnv = { ...process.env }
 const preflightReport = readDevPreflightReport()
 const frontendPort = getFrontendPort()
 const backendPort = getBackendPort()
-const docsPort = getDocsPort()
+const docsOrigin = getDocsOrigin()
 let shutdownSignal: NodeJS.Signals | null = null
 let shutdownStartedAtMs: number | null = null
 
@@ -76,21 +76,12 @@ const devHostMode = (() => {
   }
 })()
 
-const wslLanAccess = getWslLanAccessPlan({ hostMode: devHostMode, frontendPort, docsPort })
+const wslLanAccess = getWslLanAccessPlan({ hostMode: devHostMode, frontendPort })
 const directFrontendLanUrls = getDevLanUrls({ hostMode: devHostMode, port: frontendPort })
-const directDocsLanUrls = getDevLanUrls({ hostMode: devHostMode, port: docsPort })
 const isWslAccessRelevant = devHostMode.enabled && wslLanAccess.reason !== 'Runtime is not WSL.'
 const frontendLanUrls = isWslAccessRelevant
   ? []
   : directFrontendLanUrls
-const docsLanUrls = isWslAccessRelevant
-  ? []
-  : directDocsLanUrls
-const docsServerEnabled = process.env.LOOPTROOP_DEV_DOCS === '1'
-const configuredDocsOrigin = process.env.LOOPTROOP_DOCS_ORIGIN?.trim()
-const localDocsOrigin = `http://localhost:${docsPort}`
-const effectiveDocsOrigin = configuredDocsOrigin
-  || (docsServerEnabled ? docsLanUrls[0] || localDocsOrigin : getDocsOrigin())
 
 if (opencodeLogMode.mode === 'all') {
   childEnv[LOOPTROOP_OPENCODE_LOGS] = 'all'
@@ -98,10 +89,6 @@ if (opencodeLogMode.mode === 'all') {
 
 if (devHostMode.enabled) {
   childEnv[LOOPTROOP_DEV_HOST] = devHostMode.bindHost
-}
-
-if (devHostMode.enabled && !configuredDocsOrigin && docsLanUrls[0]) {
-  childEnv.LOOPTROOP_DOCS_ORIGIN = docsLanUrls[0]
 }
 
 const { baseUrl, note, status } = await resolveOpenCodeBaseUrl({
@@ -252,15 +239,12 @@ function formatLanSharingSummary() {
 async function printLanSharingDetails() {
   if (!devHostMode.enabled) return
 
-  printSummaryLine('LAN warning', 'Frontend/docs are visible to devices on your local network; backend/OpenCode stay loopback-only.')
+  printSummaryLine('LAN warning', 'Frontend is visible to devices on your local network; backend/OpenCode stay loopback-only.')
   if (wslLanAccess.enabled) {
     printSummaryLine('WSL note', `WSL uses a private ${wslLanAccess.wslTargetAddress ?? '172.x'} network behind Windows, so other LAN devices cannot reach it directly.`)
     printSummaryLine('WSL command', 'Run this one-liner in Windows PowerShell as Administrator; it listens on the Windows LAN IP and forwards into WSL:')
     printSummaryBlock('', wslLanAccess.setupCommands)
     printSummaryBlock('After setup', wslLanAccess.frontendUrls)
-    if (docsServerEnabled && wslLanAccess.docsUrls.length > 0) {
-      printSummaryBlock('Docs setup', wslLanAccess.docsUrls.map((url) => `${url}/docs/`))
-    }
     const primaryWslFrontendUrl = wslLanAccess.frontendUrls[0]
     if (primaryWslFrontendUrl) {
       await printMobileQr(primaryWslFrontendUrl)
@@ -282,10 +266,6 @@ async function printLanSharingDetails() {
   if (!primaryFrontendLanUrl) return
 
   printSummaryBlock('LAN URLs', frontendLanUrls)
-  if (docsServerEnabled && docsLanUrls.length > 0) {
-    printSummaryBlock('Docs LAN', docsLanUrls.map((url) => `${url}/docs/`))
-  }
-
   await printMobileQr(primaryFrontendLanUrl)
 }
 
@@ -328,22 +308,10 @@ const services: DevService[] = [
   },
 ]
 
-// Opt-in: in-app links point at the hosted docs by default, so most sessions
-// do not need a local VitePress server.
-if (docsServerEnabled) {
-  services.push({
-    name: 'DOCS',
-    prefixColor: 'bgMagenta.black',
-    command: 'npm:docs:dev',
-    displayCommand: 'tsx scripts/dev-docs.ts',
-    description: 'Serve the VitePress documentation site alongside the app.',
-  })
-}
-
 printDivider('Startup Summary')
 printSummaryLine('LoopTroop App', `http://localhost:${frontendPort}`)
 printSummaryLine('Backend', `http://localhost:${backendPort}`)
-printSummaryLine('Documentation', `${effectiveDocsOrigin}/docs/${docsServerEnabled ? '' : ' (hosted; LOOPTROOP_DEV_DOCS=1 to serve locally)'}`)
+printSummaryLine('Documentation', `${docsOrigin}/docs/ (external)`)
 printSummaryLine('OpenCode', baseUrl)
 printSummaryLine('LAN sharing', formatLanSharingSummary())
 await printLanSharingDetails()
@@ -494,7 +462,7 @@ function printReadySummary() {
   readySummaryPrinted = true
   printDivider('Ready')
   printSummaryLine('LoopTroop App', `→  http://localhost:${frontendPort}`)
-  printSummaryLine('Documentation', `→  ${effectiveDocsOrigin}/docs/`)
+  printSummaryLine('Documentation', `→  ${docsOrigin}/docs/`)
   printDivider('Open the app')
 }
 

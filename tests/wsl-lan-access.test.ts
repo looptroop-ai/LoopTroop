@@ -23,7 +23,6 @@ describe('buildWslLanAccessPlan', () => {
     const plan = buildWslLanAccessPlan({
       hostMode: enabledWildcardHostMode,
       frontendPort: 5173,
-      docsPort: 5174,
       isWsl: true,
       wslAddresses: ['172.25.190.136'],
       windowsAddresses: ['192.168.1.40', '10.0.0.4'],
@@ -35,16 +34,12 @@ describe('buildWslLanAccessPlan', () => {
       'http://192.168.1.40:5173',
       'http://10.0.0.4:5173',
     ])
-    expect(plan.docsUrls).toEqual([
-      'http://192.168.1.40:5174',
-      'http://10.0.0.4:5174',
-    ])
     expect(plan.setupCommands).toHaveLength(1)
     const setupCommand = plan.setupCommands[0] ?? ''
     expect(setupCommand).toContain('Set-Service iphlpsvc -StartupType Automatic')
     expect(setupCommand).toContain('Start-Service iphlpsvc')
     expect(setupCommand).toContain("$ips=@('192.168.1.40','10.0.0.4')")
-    expect(setupCommand).toContain('$ports=@(5173,5174)')
+    expect(setupCommand).toContain('$ports=@(5173)')
     expect(setupCommand).toContain('LoopTroop Dev LAN profile check')
     expect(setupCommand).toContain('NetworkCategory -ne \'Private\'')
     expect(setupCommand).toContain('Set-NetConnectionProfile -InterfaceIndex $($_.InterfaceIndex) -NetworkCategory Private')
@@ -56,7 +51,7 @@ describe('buildWslLanAccessPlan', () => {
     expect(setupCommand).toContain('router/AP client isolation')
     expect(plan.cleanupCommands).toEqual([
       "$ips=@('192.168.1.40','10.0.0.4'); " +
-      '$ports=@(5173,5174); ' +
+      '$ports=@(5173); ' +
       'foreach ($port in $ports) { netsh interface portproxy delete v4tov4 listenaddress=0.0.0.0 listenport=$port 2>$null | Out-Null }; ' +
       'foreach ($ip in $ips) { foreach ($port in $ports) { netsh interface portproxy delete v4tov4 listenaddress=$ip listenport=$port 2>$null | Out-Null } }; ' +
       'Remove-NetFirewallRule -DisplayName "LoopTroop Dev LAN" -ErrorAction SilentlyContinue',
@@ -67,7 +62,6 @@ describe('buildWslLanAccessPlan', () => {
     const plan = buildWslLanAccessPlan({
       hostMode: enabledWildcardHostMode,
       frontendPort: 5173,
-      docsPort: 5174,
       isWsl: true,
       wslAddresses: [],
       windowsAddresses: ['192.168.1.40'],
@@ -85,7 +79,6 @@ describe('buildWslLanAccessPlan', () => {
     expect(buildWslLanAccessPlan({
       hostMode: enabledWildcardHostMode,
       frontendPort: 5173,
-      docsPort: 5174,
       isWsl: false,
       wslAddresses: ['172.25.190.136'],
       windowsAddresses: ['192.168.1.40'],
@@ -94,7 +87,6 @@ describe('buildWslLanAccessPlan', () => {
     expect(buildWslLanAccessPlan({
       hostMode: { enabled: true, bindHost: '192.168.1.40', requestedValue: '192.168.1.40', source: 'env' },
       frontendPort: 5173,
-      docsPort: 5174,
       isWsl: true,
       wslAddresses: ['172.25.190.136'],
       windowsAddresses: ['192.168.1.40'],
@@ -105,7 +97,6 @@ describe('buildWslLanAccessPlan', () => {
     expect(buildWslLanAccessPlan({
       hostMode: enabledWildcardHostMode,
       frontendPort: 5173,
-      docsPort: 5174,
       isWsl: true,
       wslAddresses: ['172.25.190.136'],
       windowsAddresses: [],
@@ -113,7 +104,6 @@ describe('buildWslLanAccessPlan', () => {
       enabled: false,
       reason: 'No Windows LAN address was detected.',
       frontendUrls: [],
-      docsUrls: [],
     })
   })
 })

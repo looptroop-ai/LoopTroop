@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import net from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getBackendPort, getDocsPort, getFrontendPort } from '../shared/appConfig'
+import { getBackendPort, getFrontendPort } from '../shared/appConfig'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -59,7 +59,6 @@ const portAvailabilityHost = devHostMode.enabled ? devHostMode.bindHost : '127.0
 const configuredPorts = [
   { label: 'frontend', port: getFrontendPort() },
   { label: 'backend', port: getBackendPort() },
-  ...(process.env.LOOPTROOP_DEV_DOCS === '1' ? [{ label: 'docs', port: getDocsPort() }] : []),
 ]
 
 const preflightStartedAt = Date.now()
@@ -228,7 +227,7 @@ function ensureDistinctConfiguredPorts() {
     hasConflict = true
     console.error(
       `[dev-preflight] Port configuration conflict: ${labels.join(', ')} all use ${port}. ` +
-      'Set LOOPTROOP_FRONTEND_PORT, LOOPTROOP_BACKEND_PORT, and LOOPTROOP_DOCS_PORT to distinct values.',
+      'Set LOOPTROOP_FRONTEND_PORT and LOOPTROOP_BACKEND_PORT to distinct values.',
     )
   }
 

@@ -1,5 +1,4 @@
 const DEFAULT_FRONTEND_PORT = 5173
-const DEFAULT_DOCS_PORT = 5174
 const DEFAULT_BACKEND_PORT = 3000
 const DEFAULT_BACKEND_HOST = '127.0.0.1'
 export const DEFAULT_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
@@ -27,10 +26,6 @@ function parseOrigin(value: string | undefined, fallback: string, envName: strin
 
 export function getFrontendPort(): number {
   return parsePort(process.env.LOOPTROOP_FRONTEND_PORT, DEFAULT_FRONTEND_PORT)
-}
-
-export function getDocsPort(): number {
-  return parsePort(process.env.LOOPTROOP_DOCS_PORT, DEFAULT_DOCS_PORT)
 }
 
 export function getBackendPort(): number {

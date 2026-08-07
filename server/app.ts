@@ -1,0 +1,116 @@
+import { Hono, type Context } from 'hono'
+import { cors } from 'hono/cors'
+import { health } from './routes/health'
+import { profileRouter } from './routes/profiles'
+import { projectRouter } from './routes/projects'
+import { ticketRouter } from './routes/tickets'
+import { streamRouter } from './routes/stream'
+import { modelsRouter } from './routes/models'
+import { filesRouter } from './routes/files'
+import { beadsRouter } from './routes/beads'
+import { promptsRouter } from './routes/prompts'
+import { workflowRouter } from './routes/workflow'
+import { validateJson } from './middleware/validation'
+import { createApiRateLimitMiddleware } from './middleware/rateLimit'
+import { createApiAuthMiddleware, API_TOKEN_HEADER } from './middleware/apiAuth'
+import { getFrontendOrigin } from '../shared/appConfig'
+
+export interface CreateAppOptions {
+  /**
+   * `development` keeps the cross-origin allowances the Vite dev server needs on
+   * port 5173. `production` serves the built frontend from the same origin, so
+   * no CORS headers are emitted at all.
+   */
+  mode?: 'development' | 'production'
+  /** Injected rather than read from the environment so a host can own the secret. */
+  apiToken?: string
+}
+
+const CORS_ALLOWED_HEADERS = [
+  'Content-Type',
+  'Last-Event-ID',
+  // EventSource sends Cache-Control: no-cache on the CORS preflight.
+  'Cache-Control',
+  'Authorization',
+  API_TOKEN_HEADER,
+  'X-Action-Id',
+  'X-Checklist-Hash',
+  'X-Draft-Revision',
+  'X-Checklist-Item-Id',
+  'X-File-Name',
+  'X-Evidence-Id',
+]
+
+export function isLocalhostRequest(c: Context): boolean {
+  const host = c.req.header('Host')?.trim().toLowerCase()
+  if (!host) {
+    return false
+  }
+
+  const hostname: string = host.startsWith('[')
+    ? host.slice(1, host.indexOf(']') === -1 ? host.length : host.indexOf(']'))
+    : (host.split(':')[0] ?? host)
+
+  return hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || hostname === '::1'
+    || hostname === '::ffff:127.0.0.1'
+    || hostname === '::ffff:7f00:1'
+    || hostname.startsWith('127.')
+}
+
+/**
+ * Builds the API surface. Pure: no listeners, timers, files, or signal handlers.
+ */
+export function createApp(options: CreateAppOptions = {}): Hono {
+  const mode = options.mode ?? (process.env.NODE_ENV === 'production' ? 'production' : 'development')
+  const app = new Hono()
+
+  if (mode === 'development') {
+    // Chrome's Private Network Access enforcement requires this header on
+    // OPTIONS preflights when localhost:5173 reaches localhost:3000.
+    app.use('/api/*', async (c, next) => {
+      if (c.req.method === 'OPTIONS' && c.req.header('Access-Control-Request-Private-Network') === 'true') {
+        c.header('Access-Control-Allow-Private-Network', 'true')
+      }
+      await next()
+    })
+  }
+
+  app.use('/api/*', async (c, next) => {
+    c.header('X-Content-Type-Options', 'nosniff')
+    c.header('X-Frame-Options', 'DENY')
+
+    if (!isLocalhostRequest(c)) {
+      c.header('Strict-Transport-Security', 'max-age=31536000')
+    }
+
+    await next()
+  })
+
+  if (mode === 'development') {
+    app.use('/api/*', cors({
+      origin: getFrontendOrigin(),
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+      allowHeaders: CORS_ALLOWED_HEADERS,
+      credentials: true,
+    }))
+  }
+
+  app.use('/api/*', createApiRateLimitMiddleware())
+  app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
+  app.use('/api/*', validateJson)
+
+  app.route('/api', health)
+  app.route('/api', profileRouter)
+  app.route('/api', projectRouter)
+  app.route('/api', ticketRouter)
+  app.route('/api', streamRouter)
+  app.route('/api', modelsRouter)
+  app.route('/api', filesRouter)
+  app.route('/api', beadsRouter)
+  app.route('/api', promptsRouter)
+  app.route('/api', workflowRouter)
+
+  return app
+}

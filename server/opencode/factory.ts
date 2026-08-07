@@ -14,4 +14,9 @@ export function getOpenCodeAdapter(): OpenCodeAdapter {
   return singleton
 }
 
+/** Lets a host start a second runtime in-process without inheriting the old base URL. */
+export function resetOpenCodeAdapter(): void {
+  singleton = null
+}
+
 

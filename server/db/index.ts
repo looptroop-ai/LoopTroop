@@ -39,15 +39,26 @@ const APP_STORAGE_BOOT_FACTS = resolveAppStorageBootFacts()
 const APP_CONFIG_DIR = APP_STORAGE_BOOT_FACTS.configDir
 const DB_PATH = APP_STORAGE_BOOT_FACTS.dbPath
 
-mkdirSync(APP_CONFIG_DIR, { recursive: true })
-mkdirSync(dirname(DB_PATH), { recursive: true })
-ensureSecureDir(APP_CONFIG_DIR)
+let storageDirsReady = false
+
+/**
+ * Deferred so that importing this module writes nothing: an embedded host (and
+ * `looptroop --version`) must be able to load the runtime without touching disk.
+ */
+function ensureStorageDirs(): void {
+  if (storageDirsReady) return
+  mkdirSync(APP_CONFIG_DIR, { recursive: true })
+  mkdirSync(dirname(DB_PATH), { recursive: true })
+  ensureSecureDir(APP_CONFIG_DIR)
+  storageDirsReady = true
+}
 
 let sqliteInstance: Database | null = null
 let dbInstance: ReturnType<typeof drizzle> | null = null
 
 function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
+    ensureStorageDirs()
     sqliteInstance = new Database(DB_PATH)
     // The database carries project paths and session state, so restrict it as
     // soon as SQLite has created the file.
@@ -93,6 +104,7 @@ export {
   DB_PATH as APP_DB_PATH,
   APP_CONFIG_DIR,
   APP_STORAGE_BOOT_FACTS,
+  ensureStorageDirs,
   type AppStorageBootFacts,
   type AppStorageConfigSource,
 }

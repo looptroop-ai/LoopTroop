@@ -62,6 +62,9 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/runner.test.ts',
   'server/workflow/__tests__/skipAllInterviewQuestionsToApproval.test.ts',
   'server/workflow/__tests__/verificationFinalTestPhase.test.ts',
+  // Asserts on real module state (timers, signal handlers, sockets), so it
+  // cannot share a worker with files that vi.mock the same modules.
+  'tests/createRuntime.test.ts',
 ] as const
 
 export default defineConfig({

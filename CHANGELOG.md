@@ -29,6 +29,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added governance documents (`SECURITY.md` and generated third-party notices) and wired the notices into CI, so a missing licence or stale notices file fails the build. The notices cover both the packages installed at runtime and the interface libraries compiled into the shipped bundle, which no dependency scan can see on its own.
 
 ### Changed
+- Applied the loopback-only network boundary to every bind address, including one supplied directly by an embedding host rather than through the environment. There is deliberately no host setting in `config.json`, so the control interface cannot be published to a network by editing a configuration file.
 - Split the server into an embeddable runtime (`createRuntime`) and a thin daemon entry point. Constructing a runtime no longer creates directories, starts timers, binds sockets, or registers signal handlers; all of that now happens explicitly when the runtime is started, and signal handling belongs to the executable rather than the library.
 - Made cross-origin request handling conditional on the build mode. Development keeps the allowances the Vite dev server needs across ports; production serves the interface and the API from a single origin and sends no cross-origin headers.
 - Reclassified twenty-one interface-only packages as development dependencies now that the interface is bundled ahead of time. A production installation no longer downloads React, Radix UI, or CodeMirror.
@@ -41,6 +42,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Updated the "Start here" links header in `README.md` to link to Ticket Lifecycle Screenshots instead of Ticket Flow.
 
 ### Added
+- Added a settings file at `config.json` in the LoopTroop configuration directory, resolved with the precedence command-line flag, then environment variable, then file, then built-in default. Unrecognised keys are preserved when the file is rewritten, so settings written by a newer version survive being loaded by an older one, and a malformed file is ignored with a warning rather than preventing startup.
 - Added a production server build that bundles the application's own source while leaving runtime dependencies to be installed normally, so the published package runs on a plain Node installation without a TypeScript loader.
 - Added an explicit published-file allowlist covering the compiled output, licence, notices, readme and changelog. Without it the build output would have been excluded from the package, because it is deliberately untracked.
 - Added a test that asserts the runtime performs no work when imported: no files written, no timers started, no signal handlers registered, and no socket bound until the runtime is explicitly started.

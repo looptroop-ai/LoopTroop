@@ -6,10 +6,11 @@ import { startupSequence } from './startup'
 import { broadcaster } from './sse/broadcaster'
 import { closeDatabase, ensureStorageDirs } from './db/index'
 import { clearProjectDatabaseCache } from './db/project'
-import { getAllowedBackendHost, getBackendPort } from '../shared/appConfig'
+import { assertAllowedBackendHost, getAllowedBackendHost } from '../shared/appConfig'
+import { resolveSettings } from './lib/appSettings'
 
 export interface RuntimeConfig extends CreateAppOptions {
-  /** Omit to let the OS assign a free port by binding to 0. */
+  /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
   port?: number
   hostname?: string
   /** Skip the database/OpenCode boot sequence. For tests that only need the app. */
@@ -52,10 +53,12 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
 
     broadcaster.startAutoCleanup()
 
-    const hostname = config.hostname ?? getAllowedBackendHost()
-    // Bind to 0 for dynamic allocation: probing for a free port and binding it
+    const hostname = config.hostname === undefined
+      ? getAllowedBackendHost()
+      : assertAllowedBackendHost(config.hostname)
+    // Bind the requested port directly: probing for a free port and binding it
     // afterwards races against anything else claiming it in between.
-    const requestedPort = config.port ?? getBackendPort()
+    const requestedPort = config.port ?? resolveSettings().port
 
     address = await new Promise<RuntimeAddress>((resolvePort, rejectPort) => {
       try {

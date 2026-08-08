@@ -1,5 +1,5 @@
 const DEFAULT_FRONTEND_PORT = 5173
-const DEFAULT_BACKEND_PORT = 3000
+export const DEFAULT_BACKEND_PORT = 3000
 const DEFAULT_BACKEND_HOST = '127.0.0.1'
 export const DEFAULT_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
 
@@ -45,8 +45,11 @@ export function isLoopbackHost(hostname: string): boolean {
     || normalized.startsWith('127.')
 }
 
-export function getAllowedBackendHost(): string {
-  const host = getBackendHost()
+/**
+ * Enforces the loopback-only boundary for any candidate bind host, whether it
+ * came from the environment or from an embedding host.
+ */
+export function assertAllowedBackendHost(host: string): string {
   if (!isLoopbackHost(host) && process.env.LOOPTROOP_ALLOW_REMOTE_API !== '1') {
     throw new Error(
       `Refusing to bind LoopTroop API to non-loopback host "${host}". ` +
@@ -60,6 +63,10 @@ export function getAllowedBackendHost(): string {
     )
   }
   return host
+}
+
+export function getAllowedBackendHost(): string {
+  return assertAllowedBackendHost(getBackendHost())
 }
 
 export function getFrontendOrigin(): string {

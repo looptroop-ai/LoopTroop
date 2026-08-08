@@ -5,6 +5,7 @@ import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import { getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
+import { createSessionCredentials, type SessionCredentials } from '../middleware/sessionAuth'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { ensureSecureDir, secureFile } from '../lib/appConfigDir'
 import { dirname } from 'node:path'
@@ -16,6 +17,9 @@ const SHUTDOWN_FORCE_EXIT_MS = 30_000
 
 export interface DaemonHandle {
   state: DaemonState
+  credentials: SessionCredentials
+  /** One-time URL that exchanges the bootstrap nonce for a browser session. */
+  bootstrapUrl: string
   stop(): Promise<void>
 }
 
@@ -51,9 +55,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
 
   let runtime: LoopTroopRuntime | null = null
   let heartbeat: NodeJS.Timeout | null = null
+  const credentials = createSessionCredentials()
 
   try {
-    runtime = createRuntime({ settings, mode: 'production' })
+    runtime = createRuntime({ settings, mode: 'production', credentials })
     const address = await runtime.start()
 
     const state: DaemonState = {
@@ -66,6 +71,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     }
 
     writeState(state, options.configDir)
+
+    // The nonce travels in the fragment so it is never sent to the server as
+    // part of the request line, and so it stays out of access logs.
+    const bootstrapUrl =
+      `http://${address.hostname}:${address.port}/#bootstrap=${credentials.bootstrapNonce}`
 
     heartbeat = setInterval(() => lock.heartbeat(), HEARTBEAT_INTERVAL_MS)
     // The daemon's own timer must not be the reason the process stays alive.
@@ -87,7 +97,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       return stopping
     }
 
-    return { state, stop }
+    return { state, credentials, bootstrapUrl, stop }
   } catch (error) {
     if (heartbeat) clearInterval(heartbeat)
     try {

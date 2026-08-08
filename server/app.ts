@@ -18,6 +18,12 @@ import { workflowRouter } from './routes/workflow'
 import { validateJson } from './middleware/validation'
 import { createApiRateLimitMiddleware } from './middleware/rateLimit'
 import { createApiAuthMiddleware, API_TOKEN_HEADER } from './middleware/apiAuth'
+import {
+  BootstrapNonce,
+  createSessionAuthMiddleware,
+  serializeSessionCookie,
+  type SessionCredentials,
+} from './middleware/sessionAuth'
 import { getFrontendOrigin } from '../shared/appConfig'
 
 export interface CreateAppOptions {
@@ -29,6 +35,8 @@ export interface CreateAppOptions {
   mode?: 'development' | 'production'
   /** Injected rather than read from the environment so a host can own the secret. */
   apiToken?: string
+  /** Enables cookie-based browser sessions and the bootstrap exchange route. */
+  credentials?: SessionCredentials
   /** Defaults to the `dist/client` beside the bundled server. */
   clientDir?: string
 }
@@ -114,7 +122,32 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   }
 
   app.use('/api/*', createApiRateLimitMiddleware())
-  app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
+  if (options.credentials) {
+    const credentials = options.credentials
+    const nonce = new BootstrapNonce(credentials.bootstrapNonce)
+
+    // Mounted before the auth middleware: exchanging the nonce is how a browser
+    // gets the cookie, so it cannot itself require one.
+    app.post('/api/auth/exchange', async (c) => {
+      const body = await c.req.json().catch(() => null) as { nonce?: unknown } | null
+      const candidate = typeof body?.nonce === 'string' ? body.nonce : ''
+
+      if (!candidate || !nonce.consume(candidate)) {
+        return c.json({ error: 'Invalid or expired bootstrap nonce' }, 401)
+      }
+
+      c.header('Set-Cookie', serializeSessionCookie(credentials.sessionToken, 12 * 60 * 60))
+      return c.json({ ok: true })
+    })
+
+    // A container health probe holds no credentials, and the response carries
+    // no data worth protecting behind a loopback-only bind.
+    app.get('/api/health', (c) => c.json({ status: 'ok' }))
+
+    app.use('/api/*', createSessionAuthMiddleware({ credentials }))
+  } else {
+    app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
+  }
   app.use('/api/*', validateJson)
 
   app.route('/api', health)

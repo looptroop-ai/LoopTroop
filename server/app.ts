@@ -45,6 +45,11 @@ export interface CreateAppOptions {
   bootstrapNonces?: BootstrapNonceStore
   /** Reported by /api/health so a client can verify it reached this daemon. */
   instanceId?: string
+  /**
+   * Mounts an authenticated shutdown endpoint. Omitted, no route exists at all:
+   * an embedding host must never have its process stopped through this API.
+   */
+  onShutdownRequest?: () => void
   /** Defaults to the `dist/client` beside the bundled server. */
   clientDir?: string
 }
@@ -163,6 +168,23 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   } else {
     app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
   }
+
+  if (options.onShutdownRequest) {
+    const requestShutdown = options.onShutdownRequest
+
+    // Mounted after whichever auth middleware was installed above: stopping the
+    // daemon is the most destructive thing this API can do.
+    app.post('/api/daemon/shutdown', (c) => {
+      // The shutdown runs after this response, not during it: closing the server
+      // first would drop the very connection that is being answered. Connection:
+      // close then retires the socket, so a keep-alive client cannot hold the
+      // server open past its own request.
+      setTimeout(requestShutdown, 0)
+      c.header('Connection', 'close')
+      return c.json({ ok: true }, 202)
+    })
+  }
+
   app.use('/api/*', validateJson)
 
   app.route('/api', health)

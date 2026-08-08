@@ -3,17 +3,35 @@ import { openSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, clearDaemonState, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
 import { getDaemonLockPath } from '../lib/daemonPaths'
+import { clearLockOwnedBy } from '../lib/daemonLock'
+import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
 const READY_TIMEOUT_MS = 60_000
 
-/** Graceful stop budget before escalating to a forceful kill. */
-const STOP_TIMEOUT_MS = 30_000
+/**
+ * Budget for each rung of the stop escalation. Every rung is bounded, so a
+ * daemon that ignores all of them still returns control to the shell.
+ */
+export interface StopBudgets {
+  /** Waiting on the daemon's own graceful shutdown. */
+  gracefulMs: number
+  /** Waiting on SIGTERM, which the daemon handles the same way. */
+  signalMs: number
+  /** Waiting on the kill, which the OS does not negotiate. */
+  forceMs: number
+}
+
+export const DEFAULT_STOP_BUDGETS: StopBudgets = {
+  gracefulMs: 15_000,
+  signalMs: 10_000,
+  forceMs: 5_000,
+}
 
 export interface CliOptions {
   port?: number
@@ -22,16 +40,6 @@ export interface CliOptions {
 
 function moduleDir(): string {
   return dirname(fileURLToPath(import.meta.url))
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
-  }
 }
 
 /**
@@ -185,6 +193,60 @@ async function tailLog(logPath: string, lines: number): Promise<string> {
   }
 }
 
+export type StopOutcome =
+  | { kind: 'not-running' }
+  | { kind: 'stopped'; forced: boolean }
+  | { kind: 'failed'; pid: number }
+
+/**
+ * Asks the daemon to shut itself down, and escalates only as far as it must.
+ *
+ * The HTTP request is first because it is the only rung that works everywhere:
+ * it reaches the daemon's own graceful path, which closes the server, stops an
+ * OpenCode it owns and releases the lock, and Windows has no SIGTERM to fall
+ * back on. Each later rung is bounded, so an unresponsive daemon still ends.
+ */
+export async function stopRunningDaemon(
+  state: DaemonState,
+  options: { configDir?: string; budgets?: StopBudgets } = {},
+): Promise<StopOutcome> {
+  const budgets = options.budgets ?? DEFAULT_STOP_BUDGETS
+
+  const accepted = await requestShutdown(state)
+  if (accepted && await waitForExit(state.pid, budgets.gracefulMs)) {
+    return { kind: 'stopped', forced: false }
+  }
+
+  if (signalTermination(state.pid) && await waitForExit(state.pid, budgets.signalMs)) {
+    return { kind: 'stopped', forced: false }
+  }
+
+  await killProcessTree(state.pid)
+  if (!await waitForExit(state.pid, budgets.forceMs)) {
+    return { kind: 'failed', pid: state.pid }
+  }
+
+  // A killed daemon never ran its own cleanup, so the lock it still owns would
+  // make the next start wait out the full stale window for nothing.
+  clearLockOwnedBy(state.pid, options.configDir)
+  clearDaemonState(state.instanceId, options.configDir)
+  return { kind: 'stopped', forced: true }
+}
+
+/** True when the daemon accepted the request; false for any failure to reach it. */
+async function requestShutdown(state: DaemonState): Promise<boolean> {
+  try {
+    const response = await fetch(`http://${state.host}:${state.port}/api/daemon/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.apiToken}` },
+      signal: AbortSignal.timeout(5_000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 export async function stopCommand(): Promise<number> {
   const configDir = resolveAppConfigDir()
   const state = await readRunningDaemon(configDir)
@@ -197,24 +259,20 @@ export async function stopCommand(): Promise<number> {
     return 0
   }
 
-  process.kill(state.pid, 'SIGTERM')
+  const outcome = await stopRunningDaemon(state, { configDir })
 
-  const deadline = Date.now() + STOP_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(state.pid)) {
-      process.stdout.write('LoopTroop stopped.\n')
-      return 0
-    }
-    await delay(150)
+  if (outcome.kind === 'failed') {
+    process.stderr.write(
+      `LoopTroop (pid ${outcome.pid}) did not stop and could not be killed. ` +
+      'Check whether it belongs to another user.\n',
+    )
+    return 1
   }
 
-  process.stderr.write(`LoopTroop did not stop within ${STOP_TIMEOUT_MS / 1000}s; sending SIGKILL.\n`)
-  try {
-    process.kill(state.pid, 'SIGKILL')
-  } catch {
-    // Already gone between the check and the signal.
-  }
-  return 1
+  process.stdout.write(outcome.kind === 'stopped' && outcome.forced
+    ? 'LoopTroop did not shut down cleanly and was killed.\n'
+    : 'LoopTroop stopped.\n')
+  return 0
 }
 
 export async function statusCommand(json: boolean): Promise<number> {
@@ -254,6 +312,8 @@ export async function statusCommand(json: boolean): Promise<number> {
 }
 
 export async function restartCommand(options: CliOptions = {}): Promise<number> {
+  // A forced kill still counts as stopped, and `stop` has already cleared the
+  // lock in that case; only a daemon that survived every rung blocks a restart.
   const stopped = await stopCommand()
   if (stopped !== 0) return stopped
   return startCommand(options)

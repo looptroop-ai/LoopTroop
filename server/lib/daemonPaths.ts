@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { resolveAppConfigDir } from './appConfigDir'
 
 /**
@@ -70,4 +70,14 @@ export function readDaemonState(configDir?: string): DaemonState | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Removes a state file left behind by a daemon that was killed before it could
+ * clean up. Matched on the instance id so a state file written by a daemon that
+ * started in the meantime is left alone.
+ */
+export function clearDaemonState(instanceId: string, configDir?: string): void {
+  if (readDaemonState(configDir)?.instanceId !== instanceId) return
+  rmSync(getDaemonStatePath(configDir), { force: true })
 }

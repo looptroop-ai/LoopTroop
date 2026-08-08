@@ -126,6 +126,19 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
   throw new Error(`Could not acquire the LoopTroop daemon lock at ${lockPath}.`)
 }
 
+/**
+ * Removes a lock whose owner was killed rather than allowed to release it.
+ *
+ * Scoped to one pid on this host so a caller that force-killed a daemon cannot
+ * delete the lock of a different one that started in the meantime; without it
+ * the next start would wait out the full stale window for nothing.
+ */
+export function clearLockOwnedBy(pid: number, configDir?: string): void {
+  const lockPath = getDaemonLockPath(configDir)
+  const owner = readOwner(lockPath)
+  if (owner?.pid === pid && owner.host === hostname()) rmSync(lockPath, { force: true })
+}
+
 function buildHandle(lockPath: string, owner: LockOwner): AcquiredLock {
   let released = false
 

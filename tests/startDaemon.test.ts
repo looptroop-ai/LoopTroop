@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -182,5 +182,56 @@ describe('daemon startup and shutdown', () => {
 
     // A URL that stayed constant would be a reusable secret; it must not be.
     expect(handle.bootstrapUrl()).not.toBe(handle.bootstrapUrl())
+  })
+
+  it('routes an authenticated shutdown request to the process that owns the exit', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const reasons: string[] = []
+    // Stands in for the daemon process, which turns this into process.exit.
+    handle.onShutdownRequest((reason) => reasons.push(reason))
+
+    const response = await fetch(`http://${handle.state.host}:${handle.state.port}/api/daemon/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${handle.credentials.apiToken}` },
+    })
+
+    expect(response.status).toBe(202)
+    // The response comes back before anything closes, so the caller learns the
+    // request was accepted rather than seeing its connection dropped.
+    await vi.waitFor(() => { expect(reasons).toHaveLength(1) })
+  })
+
+  it('refuses to shut down for an unauthenticated caller', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const origin = `http://${handle.state.host}:${handle.state.port}`
+    handle.onShutdownRequest(() => { throw new Error('shutdown must not be reachable without a credential') })
+
+    expect((await fetch(`${origin}/api/daemon/shutdown`, { method: 'POST' })).status).toBe(401)
+    expect((await fetch(`${origin}/api/daemon/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer not-the-token' },
+    })).status).toBe(401)
+
+    // Still serving: a rejected request must not have disturbed the daemon.
+    expect((await fetch(`${origin}/api/health`)).ok).toBe(true)
+  })
+
+  it('closes the runtime itself when nothing is listening for the exit', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const origin = `http://${handle.state.host}:${handle.state.port}`
+
+    // An embedder installs no signal handlers, so the request would otherwise be
+    // accepted and then quietly ignored.
+    await fetch(`${origin}/api/daemon/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${handle.credentials.apiToken}` },
+    })
+
+    await vi.waitFor(async () => {
+      await expect(fetch(`${origin}/api/health`)).rejects.toThrow()
+    }, { timeout: 5_000 })
   })
 })

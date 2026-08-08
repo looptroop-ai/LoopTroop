@@ -28,6 +28,12 @@ export interface DaemonHandle {
    * written anywhere durable — the daemon log is a file that outlives the run.
    */
   bootstrapUrl(): string
+  /**
+   * Registers a listener for "something asked this daemon to exit" — a signal,
+   * or an authenticated call to the shutdown endpoint. The daemon process turns
+   * that into a real exit; an embedder decides for itself.
+   */
+  onShutdownRequest(listener: (reason: string) => void): void
   stop(): Promise<void>
 }
 
@@ -77,6 +83,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
   // lets a client tell this daemon from a process that inherited its pid.
   const instanceId = randomUUID()
 
+  const shutdownListeners = new Set<(reason: string) => void>()
+  // Assigned once `stop` exists below. A shutdown requested before then can only
+  // come from a caller that has not been told the daemon is ready yet.
+  let stopRuntime: () => Promise<void> = async () => undefined
+  const requestShutdown = (reason: string): void => {
+    // With no listener there is no process to exit — an embedder gets its
+    // runtime closed rather than a request that silently does nothing.
+    if (shutdownListeners.size === 0) {
+      void stopRuntime()
+      return
+    }
+    for (const listener of shutdownListeners) listener(reason)
+  }
+
   try {
     // Before the server binds: a missing OpenCode is fatal, and failing here
     // avoids a half-started daemon that cannot do any work.
@@ -86,7 +106,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const opencodeStatus = await opencode.start()
 
-    runtime = createRuntime({ settings, mode: 'production', credentials, bootstrapNonces, instanceId })
+    runtime = createRuntime({
+      settings,
+      mode: 'production',
+      credentials,
+      bootstrapNonces,
+      instanceId,
+      onShutdownRequest: () => requestShutdown('an API request'),
+    })
     const address = await runtime.start()
 
     const state: DaemonState = {
@@ -138,8 +165,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       })()
       return stopping
     }
+    stopRuntime = stop
 
-    return { state, credentials, bootstrapNonces, bootstrapUrl, stop }
+    return {
+      state,
+      credentials,
+      bootstrapNonces,
+      bootstrapUrl,
+      onShutdownRequest: (listener) => { shutdownListeners.add(listener) },
+      stop,
+    }
   } catch (error) {
     if (heartbeat) clearInterval(heartbeat)
     try {
@@ -161,10 +196,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
 export function installShutdownHandlers(handle: DaemonHandle): void {
   let shuttingDown = false
 
-  const shutdown = (signal: NodeJS.Signals): void => {
+  const shutdown = (reason: string): void => {
     if (shuttingDown) return
     shuttingDown = true
-    console.log(`[daemon] Received ${signal}; shutting down.`)
+    console.log(`[daemon] Shutting down (${reason}).`)
 
     const forceExit = setTimeout(() => {
       console.error('[daemon] Graceful shutdown timed out; forcing exit.')
@@ -181,6 +216,10 @@ export function installShutdownHandlers(handle: DaemonHandle): void {
     })
   }
 
+  // `looptroop stop` asks over HTTP first, which works on Windows where there
+  // is no real SIGTERM, and proves the daemon answered before anything is
+  // signalled at the process.
+  handle.onShutdownRequest(shutdown)
   process.on('SIGTERM', () => shutdown('SIGTERM'))
   process.on('SIGINT', () => shutdown('SIGINT'))
 }

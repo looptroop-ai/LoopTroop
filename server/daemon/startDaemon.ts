@@ -6,6 +6,7 @@ import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import { getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
 import { createSessionCredentials, type SessionCredentials } from '../middleware/sessionAuth'
+import { OpenCodeSupervisor } from '../opencode/supervisor'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { ensureSecureDir, secureFile } from '../lib/appConfigDir'
 import { dirname } from 'node:path'
@@ -55,9 +56,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
 
   let runtime: LoopTroopRuntime | null = null
   let heartbeat: NodeJS.Timeout | null = null
+  let opencode: OpenCodeSupervisor | null = null
   const credentials = createSessionCredentials()
 
   try {
+    // Before the server binds: a missing OpenCode is fatal, and failing here
+    // avoids a half-started daemon that cannot do any work.
+    opencode = new OpenCodeSupervisor({
+      baseUrl: settings.opencodeBaseUrl,
+      mock: settings.opencodeMode === 'mock',
+    })
+    const opencodeStatus = await opencode.start()
+
     runtime = createRuntime({ settings, mode: 'production', credentials })
     const address = await runtime.start()
 
@@ -68,6 +78,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       host: address.hostname,
       startedAt: new Date().toISOString(),
       version: options.version,
+      ...(opencodeStatus.kind === 'mock' ? {} : {
+        opencode: {
+          baseUrl: settings.opencodeBaseUrl,
+          owned: opencodeStatus.kind === 'managed',
+          ...(opencodeStatus.kind === 'managed' ? { pid: opencodeStatus.pid } : {}),
+        },
+      }),
     }
 
     writeState(state, options.configDir)
@@ -90,6 +107,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
         try {
           await runtime?.close()
         } finally {
+          // Only stops a server this daemon started; an adopted one is left alone.
+          await opencode?.stop()
           rmSync(getDaemonStatePath(options.configDir), { force: true })
           lock.release()
         }
@@ -102,6 +121,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     if (heartbeat) clearInterval(heartbeat)
     try {
       await runtime?.close()
+      await opencode?.stop()
     } catch {
       // The start failure is the useful error; a close failure would mask it.
     }

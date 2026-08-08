@@ -62,6 +62,8 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/runner.test.ts',
   'server/workflow/__tests__/skipAllInterviewQuestionsToApproval.test.ts',
   'server/workflow/__tests__/verificationFinalTestPhase.test.ts',
+  // Mocks the OpenCode session layer, which the daemon tests load for real.
+  'server/phases/prd/__tests__/draft.test.ts',
   // Asserts on real module state (timers, signal handlers, sockets), so it
   // cannot share a worker with files that vi.mock the same modules.
   'tests/createRuntime.test.ts',
@@ -72,6 +74,7 @@ const serverIntegrationTests = [
   // Start a real daemon: sockets, locks and the database must not be shared.
   'tests/startDaemon.test.ts',
   'tests/daemonLock.test.ts',
+  'tests/opencodeSupervisor.test.ts',
 ] as const
 
 export default defineConfig({

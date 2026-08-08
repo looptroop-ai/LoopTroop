@@ -29,8 +29,14 @@ describe('daemon startup and shutdown', () => {
   }
 
   function ephemeralSettings() {
-    // Port 0 keeps concurrent test files from colliding on a fixed port.
-    return { ...resolveSettings({ env: {}, file: {} }), port: 0, portIsExplicit: false }
+    // Port 0 keeps concurrent test files from colliding on a fixed port, and
+    // mock mode keeps the supervisor from spawning a real `opencode serve`.
+    return {
+      ...resolveSettings({ env: {}, file: {} }),
+      port: 0,
+      portIsExplicit: false,
+      opencodeMode: 'mock' as const,
+    }
   }
 
   async function start(configDir: string, onReady?: (state: DaemonState) => void) {
@@ -110,7 +116,7 @@ describe('daemon startup and shutdown', () => {
     try {
       await expect(startDaemon({
         configDir,
-        settings: { ...resolveSettings({ env: {}, file: {} }), port: taken, portIsExplicit: true },
+        settings: { ...ephemeralSettings(), port: taken, portIsExplicit: true },
         version: '0.0.0-test',
       })).rejects.toThrow(/already in use/)
 

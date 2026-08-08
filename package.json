@@ -41,6 +41,9 @@
     "npm": ">=11.12.1"
   },
   "main": "dist/server/index.js",
+  "bin": {
+    "looptroop": "dist/server/cli/launcher.cjs"
+  },
   "files": [
     "dist/",
     "!dist/client/bundled-packages.json",

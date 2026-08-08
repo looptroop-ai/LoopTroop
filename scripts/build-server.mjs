@@ -1,5 +1,5 @@
 import { build } from 'esbuild'
-import { readFileSync } from 'node:fs'
+import { copyFileSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,6 +13,9 @@ const external = Object.keys(pkg.dependencies ?? {})
 
 const entryPoints = {
   'server/index': resolve(root, 'server/index.ts'),
+  'server/cli/cli': resolve(root, 'server/cli/cli.ts'),
+  // Spawned by `start` as the detached child, so it needs its own entry.
+  'server/cli/daemonProcess': resolve(root, 'server/cli/daemonProcess.ts'),
 }
 
 const result = await build({
@@ -45,3 +48,11 @@ for (const output of outputs) {
   const { bytes } = result.metafile.outputs[output]
   console.log(`[build:server] ${output} (${(bytes / 1024).toFixed(1)} kB)`)
 }
+
+// Copied rather than bundled: the launcher must stay ES5 CommonJS so an old
+// Node parses it and prints the version message instead of a SyntaxError.
+copyFileSync(
+  resolve(root, 'server/cli/launcher.cjs'),
+  resolve(root, 'dist/server/cli/launcher.cjs'),
+)
+console.log('[build:server] dist/server/cli/launcher.cjs (copied verbatim)')

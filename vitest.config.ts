@@ -68,6 +68,10 @@ const serverIntegrationTests = [
   // Builds the whole app, which loads the real providerCatalog and would
   // defeat the vi.mock in a sibling sharing the non-isolated worker.
   'tests/staticServing.test.ts',
+  'tests/sessionAuth.test.ts',
+  // Start a real daemon: sockets, locks and the database must not be shared.
+  'tests/startDaemon.test.ts',
+  'tests/daemonLock.test.ts',
 ] as const
 
 export default defineConfig({

@@ -60,6 +60,7 @@ export const projects = sqliteTable('projects', {
   councilResponseTimeout: integer('council_response_timeout'),
   minCouncilQuorum: integer('min_council_quorum'),
   interviewQuestions: integer('interview_questions'),
+  ignoreMode: text('ignore_mode'),
   ticketCounter: integer('ticket_counter').default(0),
   createdAt: text('created_at').notNull().$defaultFn(() => new Date().toISOString()),
   updatedAt: text('updated_at').notNull().$defaultFn(() => new Date().toISOString()),

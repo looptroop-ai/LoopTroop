@@ -10,7 +10,8 @@ import {
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
-import { ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin } from '../git/repository'
+import { applyIgnoreMode, areLoopTroopPathsIgnored, ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin, type IgnoreMode } from '../git/repository'
+import { getProjectIgnoreMode } from '../storage/projects'
 import {
   detectGitBaseBranch,
   getTicketDir as resolveTicketDir,
@@ -139,13 +140,49 @@ function ensureBaseBranch(projectFolder: string, baseBranch: string): string {
   }
 }
 
-function ensureLoopTroopGitExclude(projectFolder: string) {
+/**
+ * Re-applies the ignore choice the project was attached with.
+ *
+ * The choice is honoured rather than assumed: a project attached with "skip"
+ * manages its own rules and nothing is written for it, and one attached with
+ * "repo" must not quietly acquire a `.git/info/exclude` it never asked for.
+ */
+function ensureLoopTroopGitExclude(projectFolder: string, mode: IgnoreMode) {
   try {
-    ensureLocalGitExclude(projectFolder)
+    applyIgnoreMode(projectFolder, mode)
   } catch (err) {
     throw new TicketInitializationError(
       'INIT_LOOPTROOP_EXCLUDE_FAILED',
-      `Failed to install the repo-local LoopTroop Git exclude: ${getErrorMessage(err)}`,
+      `Failed to install the LoopTroop Git ignore rules: ${getErrorMessage(err)}`,
+    )
+  }
+}
+
+/**
+ * Guarantees the ticket worktree ignores LoopTroop's runtime directories.
+ *
+ * A worktree is a separate checkout that `git add -A` runs in, and a repository
+ * .gitignore only reaches it once committed — so between attaching a project
+ * and pushing that change, the worktree would stage `.looptroop/` and
+ * `.ticket/` into the ticket's own branch.
+ *
+ * The gap is closed through `.git/info/exclude`, which git resolves to the
+ * common directory and therefore shares with every worktree. Writing the
+ * worktree's own .gitignore would work too, but it would leave an unexplained
+ * file in a checkout whose whole purpose is to contain exactly one ticket's
+ * changes. Applied only when git says the paths are not already covered, so a
+ * repository that has committed its rules is never written to at all.
+ */
+function ensureWorktreePathsIgnored(worktreePath: string, mode: IgnoreMode) {
+  if (mode === 'skip') return
+  if (areLoopTroopPathsIgnored(worktreePath)) return
+
+  try {
+    ensureLocalGitExclude(worktreePath)
+  } catch (err) {
+    throw new TicketInitializationError(
+      'INIT_LOOPTROOP_EXCLUDE_FAILED',
+      `Failed to ignore LoopTroop runtime paths in the ticket worktree: ${getErrorMessage(err)}`,
     )
   }
 }
@@ -356,9 +393,9 @@ export function initializeTicket(options: InitializeOptions): InitializeTicketRe
   const worktreePath = getTicketWorktreePath(projectFolder, options.externalId)
   const ticketDir = getTicketDir(projectFolder, options.externalId)
 
-  ensureLoopTroopGitExclude(projectFolder)
+  const ignoreMode = getProjectIgnoreMode(projectFolder)
+  ensureLoopTroopGitExclude(projectFolder, ignoreMode)
   ensureLoopTroopRuntimeUntracked(projectFolder)
-
   const reused = isValidTicketWorktree(projectFolder, worktreePath, branchName)
   if (!reused) {
     materializeWorktree(projectFolder, worktreePath, branchName, baseBranchRef)
@@ -370,6 +407,10 @@ export function initializeTicket(options: InitializeOptions): InitializeTicketRe
       `Ticket worktree is invalid after initialization: ${worktreePath}`,
     )
   }
+
+  // The worktree gets the same guarantee as the project it came from, by
+  // whichever mechanism reaches it without leaving a file behind.
+  ensureWorktreePathsIgnored(worktreePath, ignoreMode)
 
   ensureTicketDirectories(projectFolder, options.externalId, ticketDir, baseBranch)
   mkdirSync(getTicketRuntimeDir(projectFolder, options.externalId), { recursive: true })

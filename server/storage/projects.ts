@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process'
 import { db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
 import { attachedProjects, projects, tickets } from '../db/schema'
-import { ensureLocalGitExclude } from '../git/repository'
+import { applyIgnoreMode, DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '../git/repository'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
   ensureProjectStorageDirs,
@@ -62,6 +62,7 @@ interface ProjectAttachmentInput {
   councilResponseTimeout?: number
   minCouncilQuorum?: number
   interviewQuestions?: number
+  ignoreMode?: IgnoreMode
 }
 
 function hydrateProject(attached: AttachedProjectRow, project: LocalProjectRow): PublicProject {
@@ -140,6 +141,7 @@ function ensureLocalProject(projectRoot: string, input?: ProjectAttachmentInput)
       councilResponseTimeout: input.councilResponseTimeout ?? null,
       minCouncilQuorum: input.minCouncilQuorum ?? null,
       interviewQuestions: input.interviewQuestions ?? null,
+      ignoreMode: input.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })
     .returning()
     .get()
@@ -151,13 +153,25 @@ export function hasLoopTroopState(projectRoot: string): boolean {
   return !!readLocalProject(repoRoot)
 }
 
+/**
+ * The ignore choice made when the project was attached.
+ *
+ * Falls back to the default for projects attached before the choice existed, so
+ * their rules keep being maintained the way they always were.
+ */
+export function getProjectIgnoreMode(projectRoot: string): IgnoreMode {
+  const repoRoot = resolveGitRepoRoot(projectRoot) ?? projectRoot
+  const stored = readLocalProject(repoRoot)?.ignoreMode
+  return isIgnoreMode(stored) ? stored : DEFAULT_IGNORE_MODE
+}
+
 export function attachProject(input: ProjectAttachmentInput): PublicProject {
   const projectRoot = resolveGitRepoRoot(input.folderPath)
   if (!projectRoot) {
     throw new Error(`Folder is not a git repository: ${input.folderPath}`)
   }
 
-  ensureLocalGitExclude(projectRoot)
+  applyIgnoreMode(projectRoot, input.ignoreMode ?? DEFAULT_IGNORE_MODE)
   const localProject = ensureLocalProject(projectRoot, input)
   const attached = ensureAttachedProject(projectRoot)
 
@@ -171,8 +185,12 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
     throw new Error(`Folder is not a git repository: ${projectRootOrFolder}`)
   }
 
-  ensureLocalGitExclude(projectRoot)
   const localProject = ensureLocalProject(projectRoot)
+  const requestedIgnoreMode = typeof input === 'string' ? undefined : input.ignoreMode
+  const effectiveIgnoreMode = requestedIgnoreMode
+    ?? (isIgnoreMode(localProject.ignoreMode) ? localProject.ignoreMode : DEFAULT_IGNORE_MODE)
+  applyIgnoreMode(projectRoot, effectiveIgnoreMode)
+
   const patch = typeof input === 'string'
     ? null
     : {
@@ -194,6 +212,7 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
         councilResponseTimeout: input.councilResponseTimeout ?? localProject.councilResponseTimeout,
         minCouncilQuorum: input.minCouncilQuorum ?? localProject.minCouncilQuorum,
         interviewQuestions: input.interviewQuestions ?? localProject.interviewQuestions,
+        ignoreMode: effectiveIgnoreMode,
         updatedAt: new Date().toISOString(),
       }
 

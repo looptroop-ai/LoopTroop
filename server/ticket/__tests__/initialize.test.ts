@@ -169,4 +169,82 @@ describe('initializeTicket', () => {
     })
     expect(branchResult.status).not.toBe(0)
   })
+
+  /**
+   * A ticket worktree is a separate checkout, and `git add -A` runs in it during
+   * execution setup. Whatever the project chose at attach time has to reach the
+   * worktree too, or LoopTroop's own runtime directories get staged into the
+   * ticket's branch.
+   */
+  describe('ignore rules in the ticket worktree', () => {
+    function initializeFor(repoDir: string, ignoreMode: 'repo' | 'local' | 'skip') {
+      const project = attachProject({
+        folderPath: repoDir,
+        name: TEST.projectName,
+        shortname: TEST.shortname,
+        ignoreMode,
+      })
+      const ticket = createTicket({
+        projectId: project.id,
+        title: `Worktree ignores with ${ignoreMode}`,
+        description: 'Regression coverage for ignore rules inside ticket worktrees.',
+      })
+      const init = initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+
+      // Runtime directories the worktree acquires as soon as work starts.
+      mkdirSync(resolve(init.worktreePath, '.looptroop'), { recursive: true })
+      writeFileSync(resolve(init.worktreePath, '.looptroop', 'runtime.txt'), 'runtime\n')
+      return init
+    }
+
+    it('ignores LoopTroop runtime paths in a worktree the .gitignore has not reached yet', () => {
+      const repoDir = repoManager.createRepo()
+      // Deliberately not committed: this is the window between attaching a
+      // project and pushing the .gitignore change, during which a worktree
+      // branched from the base branch cannot see it.
+      const init = initializeFor(repoDir, 'repo')
+
+      // Closed through the shared exclude file, not a .gitignore of its own: a
+      // ticket worktree must contain that ticket's changes and nothing else.
+      expect(existsSync(resolve(init.worktreePath, '.gitignore'))).toBe(false)
+      expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
+    })
+
+    it('ignores LoopTroop runtime paths in the worktree via the shared exclude file', () => {
+      const repoDir = repoManager.createRepo()
+      const init = initializeFor(repoDir, 'local')
+
+      // .git/info/exclude lives in the common directory, so the worktree
+      // inherits it without any file of its own.
+      expect(existsSync(resolve(init.worktreePath, '.gitignore'))).toBe(false)
+      expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
+    })
+
+    it('writes nothing into the worktree when the project chose to skip', () => {
+      const repoDir = repoManager.createRepo()
+      const init = initializeFor(repoDir, 'skip')
+
+      expect(existsSync(resolve(init.worktreePath, '.gitignore'))).toBe(false)
+      // Untracked and visible, which is what the project asked for by taking
+      // responsibility for its own ignore rules.
+      expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('?? .looptroop/\n?? .ticket/')
+    })
+
+    it('writes no exclude file at all when the .gitignore is already committed', () => {
+      const repoDir = repoManager.createRepo()
+      writeFileSync(resolve(repoDir, '.gitignore'), '/.looptroop/\n/.ticket/\n')
+      git(repoDir, ['add', '.gitignore'])
+      git(repoDir, ['commit', '-m', 'Ignore LoopTroop state'])
+      const excludePath = resolve(repoDir, git(repoDir, ['rev-parse', '--git-path', 'info/exclude']))
+      const excludeBefore = readFileSync(excludePath, 'utf8')
+
+      const init = initializeFor(repoDir, 'repo')
+
+      expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
+      expect(readFileSync(resolve(init.worktreePath, '.gitignore'), 'utf8')).toBe('/.looptroop/\n/.ticket/\n')
+      // The committed rules already cover the worktree, so the safety net is
+      // not applied and the repository keeps exactly the files it had.
+      expect(readFileSync(excludePath, 'utf8')).toBe(excludeBefore)
+    })
+  })
 })

@@ -61,6 +61,7 @@ function initializeProjectSqlite(sqlite: Database) {
       council_response_timeout INTEGER,
       min_council_quorum INTEGER,
       interview_questions INTEGER,
+      ignore_mode TEXT,
       ticket_counter INTEGER DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -272,6 +273,7 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'projects', 'execution_setup_timeout', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'manual_qa_override', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'git_hook_policy', 'TEXT')
+  ensureColumn(sqlite, 'projects', 'ignore_mode', 'TEXT')
   ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
 

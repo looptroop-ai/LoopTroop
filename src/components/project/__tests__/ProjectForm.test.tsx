@@ -168,6 +168,77 @@ describe('ProjectForm', () => {
     expect(mockProjectMutations.create.mutate).toHaveBeenCalled()
   })
 
+  /**
+   * LoopTroop writes into the repository it works on, so where the ignore rules
+   * go is the user's call: .gitignore is a tracked file their colleagues see in
+   * a diff, and some repositories have a policy about it.
+   */
+  describe('ignore choice', () => {
+    function stubValidRepo() {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
+      })))
+    }
+
+    async function fillInValidProject() {
+      stubValidRepo()
+      render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+      fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
+      fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
+      fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
+      return await screen.findByRole('radio', { name: /Repository \.gitignore/ })
+    }
+
+    it('offers all three destinations once the folder is a repository, defaulting to .gitignore', async () => {
+      const repoOption = await fillInValidProject()
+
+      expect(repoOption).toBeChecked()
+      expect(screen.getByRole('radio', { name: /This clone only/ })).not.toBeChecked()
+      expect(screen.getByRole('radio', { name: /Do not change any file/ })).not.toBeChecked()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+      expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ ignoreMode: 'repo' }),
+        expect.any(Object),
+      )
+    })
+
+    it('submits the destination the user picked', async () => {
+      await fillInValidProject()
+
+      fireEvent.click(screen.getByRole('radio', { name: /This clone only/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+
+      expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ ignoreMode: 'local' }),
+        expect.any(Object),
+      )
+    })
+
+    it('warns about what skipping means, without blocking it', async () => {
+      await fillInValidProject()
+
+      fireEvent.click(screen.getByRole('radio', { name: /Do not change any file/ }))
+
+      expect(screen.getByText(/Git will see LoopTroop's runtime files as changes to commit/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+      expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ ignoreMode: 'skip' }),
+        expect.any(Object),
+      )
+    })
+
+    it('is not offered for a folder that is not a repository', () => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        json: async () => ({ isGit: false, status: 'invalid', message: 'Not a git repository' }),
+      })))
+      render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+
+      // Nothing can be written until there is a repository to write it into.
+      expect(screen.queryByRole('radio', { name: /Repository \.gitignore/ })).not.toBeInTheDocument()
+    })
+  })
+
   it('shows the project-local .looptroop path in edit mode', async () => {
     render(
       <ProjectForm

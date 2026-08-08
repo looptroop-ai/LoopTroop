@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
+import { rotateDaemonLog } from '../lib/daemonLog'
 import { getDaemonLockPath } from '../lib/daemonPaths'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -71,6 +72,10 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
   }
 
   ensureSecureDir(getDaemonLogDir(configDir))
+  // Rotated here rather than while the daemon runs: it holds an append handle
+  // for its whole lifetime, and renaming underneath that handle would either
+  // keep writing to the rotated file or fail outright on Windows.
+  rotateDaemonLog(configDir)
   const logPath = getDaemonLogPath(configDir)
   // The detached child outlives this process, so its output goes to the log
   // file rather than to a pipe that dies with the parent.

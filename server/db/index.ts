@@ -1,10 +1,11 @@
 import { Database } from './sqliteShim'
 import { drizzle } from 'drizzle-orm/node-sqlite'
-import { dirname, isAbsolute, resolve } from 'path'
+import { dirname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import * as schema from './schema'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
 import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
+import { resolveAppDbPath } from './appDbPath'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 
@@ -17,11 +18,8 @@ interface AppStorageBootFacts {
 
 function resolveAppStorageBootFacts(): AppStorageBootFacts {
   const configDir = resolveAppConfigDir()
-  const configuredDbPath = process.env.LOOPTROOP_APP_DB_PATH?.trim()
-  const dbPath = configuredDbPath
-    ? (isAbsolute(configuredDbPath) ? configuredDbPath : resolve(process.cwd(), configuredDbPath))
-    : resolve(configDir, 'app.sqlite')
-  const source: AppStorageConfigSource = configuredDbPath
+  const dbPath = resolveAppDbPath(configDir)
+  const source: AppStorageConfigSource = process.env.LOOPTROOP_APP_DB_PATH?.trim()
     ? 'LOOPTROOP_APP_DB_PATH'
     : process.env.LOOPTROOP_CONFIG_DIR?.trim()
       ? 'LOOPTROOP_CONFIG_DIR'

@@ -162,7 +162,34 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       ? '\nThe link signs this browser in once and then expires. Run `looptroop open` for a new one.\n'
       : '\nCould not mint a sign-in link; run `looptroop open` to try again.\n'),
   )
+
+  await hintFirstRun(state)
   return 0
+}
+
+/**
+ * Names the next step for a daemon that has nothing to work on yet.
+ *
+ * Asked over HTTP rather than read from the database: the daemon holds that
+ * file open, and a second process opening it to answer a cosmetic question is
+ * not worth the contention.
+ */
+async function hintFirstRun(state: DaemonState): Promise<void> {
+  try {
+    const response = await fetch(`http://${state.host}:${state.port}/api/projects`, {
+      headers: { Authorization: `Bearer ${state.apiToken}` },
+      signal: AbortSignal.timeout(2_000),
+    })
+    if (!response.ok) return
+
+    const projects = await response.json() as unknown
+    if (Array.isArray(projects) && projects.length === 0) {
+      process.stdout.write('\nNo projects attached yet. Run `looptroop setup` to attach one.\n')
+    }
+  } catch {
+    // Only a hint. A daemon that cannot answer has a real problem, and every
+    // other command reports it far more usefully than a missing suggestion.
+  }
 }
 
 /**
@@ -319,6 +346,24 @@ export async function restartCommand(options: CliOptions = {}): Promise<number> 
   return startCommand(options)
 }
 
+/**
+ * Hands a URL to the desktop's browser.
+ *
+ * The failure is swallowed on purpose: a headless server or a bare container
+ * has no opener at all, and an unhandled spawn error would take the whole CLI
+ * down over a convenience the caller can always perform by hand.
+ */
+export function openInBrowser(url: string): void {
+  const opener = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'cmd'
+      : 'xdg-open'
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+
+  const child = spawn(opener, args, { detached: true, stdio: 'ignore' })
+  child.on('error', () => undefined)
+  child.unref()
+}
+
 export async function openCommand(): Promise<number> {
   const state = await readRunningDaemon()
   if (!state) {
@@ -332,12 +377,7 @@ export async function openCommand(): Promise<number> {
     return 1
   }
 
-  const opener = process.platform === 'darwin' ? 'open'
-    : process.platform === 'win32' ? 'cmd'
-      : 'xdg-open'
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
-
-  spawn(opener, args, { detached: true, stdio: 'ignore' }).unref()
+  openInBrowser(url)
   // The origin, not the URL: the nonce belongs in the browser, not in a
   // terminal scrollback or a shell history file.
   process.stdout.write(`Opened http://${state.host}:${state.port}\n`)

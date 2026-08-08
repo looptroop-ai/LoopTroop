@@ -8,6 +8,7 @@ const USAGE = `LoopTroop — local AI coding orchestration
 Usage: looptroop <command> [options]
 
 Commands:
+  setup          Attach a project and open the interface
   start          Start the daemon in the background
   stop           Stop the running daemon
   restart        Stop and start again
@@ -24,6 +25,7 @@ Options:
   --follow, -f   Keep streaming (logs)
   --lines <n>    Number of log lines to show (logs)
   --apply        Actually remove what clean would delete
+  --yes, -y      Accept every default without asking (setup)
   --version      Print the version
   --help         Print this message
 `
@@ -53,6 +55,7 @@ export async function main(argv: string[]): Promise<number> {
         follow: { type: 'boolean', short: 'f' },
         lines: { type: 'string' },
         apply: { type: 'boolean' },
+        yes: { type: 'boolean', short: 'y' },
         version: { type: 'boolean' },
         help: { type: 'boolean' },
       },
@@ -85,6 +88,10 @@ export async function main(argv: string[]): Promise<number> {
   // Imported per command so metadata commands never load the database, the
   // OpenCode client, or anything else with a startup cost.
   switch (command) {
+    case 'setup': {
+      const { setupCommand } = await import('./setupCommand')
+      return setupCommand(values.yes === true ? { yes: true } : {})
+    }
     case 'start': {
       const { startCommand } = await import('./commands')
       return startCommand({

@@ -3,7 +3,7 @@ import { openSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
@@ -37,7 +37,8 @@ function isProcessAlive(pid: number): boolean {
 /**
  * A pid alone cannot prove the daemon is alive: the number may have been
  * recycled by an unrelated process. The instance id in the state file is
- * checked against the running daemon's own report before we act on it.
+ * checked against the running daemon's own report before we act on it, so a
+ * stale file can never point `stop` at somebody else's process.
  */
 export async function readRunningDaemon(configDir?: string): Promise<DaemonState | null> {
   const state = readDaemonState(configDir)
@@ -49,6 +50,11 @@ export async function readRunningDaemon(configDir?: string): Promise<DaemonState
       signal: AbortSignal.timeout(2_000),
     })
     if (!response.ok) return null
+
+    const body = await response.json() as { instanceId?: unknown }
+    // An older daemon reports no id at all; a different one reports its own.
+    // Only a mismatch is disqualifying.
+    if (typeof body.instanceId === 'string' && body.instanceId !== state.instanceId) return null
   } catch {
     return null
   }
@@ -56,19 +62,51 @@ export async function readRunningDaemon(configDir?: string): Promise<DaemonState
   return state
 }
 
+/**
+ * Asks the running daemon for a fresh single-use nonce and builds the URL that
+ * exchanges it for a browser session.
+ *
+ * The nonce is minted per call rather than kept anywhere: it is single-use and
+ * expires in minutes, so a URL printed once cannot be reused, and nothing
+ * durable ever holds a credential a browser could replay.
+ */
+export async function mintBootstrapUrl(state: DaemonState): Promise<string | null> {
+  const origin = `http://${state.host}:${state.port}`
+  try {
+    const response = await fetch(`${origin}/api/auth/bootstrap`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.apiToken}` },
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!response.ok) return null
+
+    const body = await response.json() as { nonce?: unknown }
+    if (typeof body.nonce !== 'string' || !body.nonce) return null
+    // The fragment is never sent to the server as part of the request line, so
+    // the nonce cannot reach an access log on the way in.
+    return `${origin}/#bootstrap=${body.nonce}`
+  } catch {
+    return null
+  }
+}
+
 export async function startCommand(options: CliOptions = {}): Promise<number> {
   const configDir = resolveAppConfigDir()
   const existing = await readRunningDaemon(configDir)
   if (existing) {
     process.stdout.write(
-      `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n`,
+      `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n` +
+      'Run `looptroop open` for a signed-in link.\n',
     )
     return 0
   }
 
   if (options.foreground) {
     const { runDaemonProcess } = await import('./daemonProcess')
-    await runDaemonProcess({ ...(options.port === undefined ? {} : { port: options.port }) })
+    await runDaemonProcess({
+      foreground: true,
+      ...(options.port === undefined ? {} : { port: options.port }),
+    })
     return 0
   }
 
@@ -102,12 +140,19 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
     return 1
   }
 
+  // Without a nonce the browser has no credential and every request 401s, so
+  // the signed-in link is the useful thing to print — not the bare origin.
+  const bootstrapUrl = await mintBootstrapUrl(state)
+
   process.stdout.write(
     'LoopTroop is running in the background.\n' +
-    `  URL:   http://${state.host}:${state.port}\n` +
+    `  URL:   ${bootstrapUrl ?? `http://${state.host}:${state.port}`}\n` +
     `  PID:   ${state.pid}\n` +
     `  Logs:  ${logPath}\n` +
-    `  Stop:  looptroop stop\n`,
+    `  Stop:  looptroop stop\n` +
+    (bootstrapUrl
+      ? '\nThe link signs this browser in once and then expires. Run `looptroop open` for a new one.\n'
+      : '\nCould not mint a sign-in link; run `looptroop open` to try again.\n'),
   )
   return 0
 }
@@ -177,7 +222,12 @@ export async function statusCommand(json: boolean): Promise<number> {
   const state = await readRunningDaemon(configDir)
 
   if (json) {
-    process.stdout.write(`${JSON.stringify({ running: state !== null, daemon: state }, null, 2)}\n`)
+    // Redacted: the token is a credential for this daemon, and status output is
+    // routinely piped, pasted into issues, and captured by CI logs.
+    process.stdout.write(`${JSON.stringify({
+      running: state !== null,
+      daemon: state ? redactDaemonState(state) : null,
+    }, null, 2)}\n`)
     return state ? 0 : 1
   }
 
@@ -216,14 +266,21 @@ export async function openCommand(): Promise<number> {
     return 1
   }
 
-  const url = `http://${state.host}:${state.port}`
+  const url = await mintBootstrapUrl(state)
+  if (!url) {
+    process.stderr.write('Could not obtain a sign-in link from the running daemon.\n')
+    return 1
+  }
+
   const opener = process.platform === 'darwin' ? 'open'
     : process.platform === 'win32' ? 'cmd'
       : 'xdg-open'
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
 
   spawn(opener, args, { detached: true, stdio: 'ignore' }).unref()
-  process.stdout.write(`Opened ${url}\n`)
+  // The origin, not the URL: the nonce belongs in the browser, not in a
+  // terminal scrollback or a shell history file.
+  process.stdout.write(`Opened http://${state.host}:${state.port}\n`)
   return 0
 }
 

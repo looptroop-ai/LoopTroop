@@ -17,6 +17,12 @@ function readVersion(): string {
 
 export interface DaemonProcessOptions {
   port?: number
+  /**
+   * True when stdout is the user's terminal. The detached daemon's stdout is a
+   * log file that outlives the run, so the bootstrap URL is printed only for a
+   * foreground run; `looptroop start` mints its own over the API instead.
+   */
+  foreground?: boolean
 }
 
 /**
@@ -36,7 +42,9 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
   })
 
   installShutdownHandlers(handle)
-  console.log(`[daemon] Open ${handle.bootstrapUrl}`)
+  if (options.foreground) {
+    console.log(`[daemon] Open ${handle.bootstrapUrl()}`)
+  }
 }
 
 // Executed directly when spawned as the detached child.

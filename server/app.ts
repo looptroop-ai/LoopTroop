@@ -19,7 +19,7 @@ import { validateJson } from './middleware/validation'
 import { createApiRateLimitMiddleware } from './middleware/rateLimit'
 import { createApiAuthMiddleware, API_TOKEN_HEADER } from './middleware/apiAuth'
 import {
-  BootstrapNonce,
+  BootstrapNonceStore,
   createSessionAuthMiddleware,
   serializeSessionCookie,
   type SessionCredentials,
@@ -37,6 +37,14 @@ export interface CreateAppOptions {
   apiToken?: string
   /** Enables cookie-based browser sessions and the bootstrap exchange route. */
   credentials?: SessionCredentials
+  /**
+   * Mints the one-time nonces a browser exchanges for a session. Pass the
+   * daemon's own store so `looptroop open` can issue a fresh nonce over HTTP;
+   * omitted, the app keeps a private one.
+   */
+  bootstrapNonces?: BootstrapNonceStore
+  /** Reported by /api/health so a client can verify it reached this daemon. */
+  instanceId?: string
   /** Defaults to the `dist/client` beside the bundled server. */
   clientDir?: string
 }
@@ -124,7 +132,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.use('/api/*', createApiRateLimitMiddleware())
   if (options.credentials) {
     const credentials = options.credentials
-    const nonce = new BootstrapNonce(credentials.bootstrapNonce)
+    const nonces = options.bootstrapNonces ?? new BootstrapNonceStore()
 
     // Mounted before the auth middleware: exchanging the nonce is how a browser
     // gets the cookie, so it cannot itself require one.
@@ -132,7 +140,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
       const body = await c.req.json().catch(() => null) as { nonce?: unknown } | null
       const candidate = typeof body?.nonce === 'string' ? body.nonce : ''
 
-      if (!candidate || !nonce.consume(candidate)) {
+      if (!candidate || !nonces.consume(candidate)) {
         return c.json({ error: 'Invalid or expired bootstrap nonce' }, 401)
       }
 
@@ -141,10 +149,17 @@ export function createApp(options: CreateAppOptions = {}): Hono {
     })
 
     // A container health probe holds no credentials, and the response carries
-    // no data worth protecting behind a loopback-only bind.
-    app.get('/api/health', (c) => c.json({ status: 'ok' }))
+    // no data worth protecting behind a loopback-only bind. The instance id is
+    // here so a client can tell this daemon from an unrelated process that
+    // inherited its pid.
+    app.get('/api/health', (c) => c.json({ status: 'ok', instanceId: options.instanceId ?? null }))
 
     app.use('/api/*', createSessionAuthMiddleware({ credentials }))
+
+    // Behind the auth middleware: only a caller that already holds the API
+    // token may mint a nonce, which is how `looptroop open` opens a browser
+    // without the daemon ever writing a usable secret to its log.
+    app.post('/api/auth/bootstrap', (c) => c.json({ nonce: nonces.issue() }))
   } else {
     app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
   }

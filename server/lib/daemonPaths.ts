@@ -14,12 +14,27 @@ export interface DaemonState {
   host: string
   startedAt: string
   version: string
+  /**
+   * Bearer token for talking to this daemon. It lives here because the CLI has
+   * no other way to reach a daemon it did not spawn, and the file is written
+   * owner-only for exactly that reason. Never print it: `status --json` and the
+   * daemon log both redact it.
+   */
+  apiToken: string
   opencode?: {
     baseUrl: string
     /** Only a daemon-started server may be stopped by the daemon. */
     owned: boolean
     pid?: number
   }
+}
+
+/** The same record with the token removed, for anything user-facing. */
+export type RedactedDaemonState = Omit<DaemonState, 'apiToken'>
+
+export function redactDaemonState(state: DaemonState): RedactedDaemonState {
+  const { apiToken: _apiToken, ...rest } = state
+  return rest
 }
 
 export function getDaemonStatePath(configDir = resolveAppConfigDir()): string {
@@ -44,6 +59,7 @@ function isDaemonState(value: unknown): value is DaemonState {
   return typeof candidate.instanceId === 'string'
     && typeof candidate.pid === 'number'
     && typeof candidate.port === 'number'
+    && typeof candidate.apiToken === 'string'
 }
 
 /** Returns null for every failure mode: absent, unreadable, or malformed. */

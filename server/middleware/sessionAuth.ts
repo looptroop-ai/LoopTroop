@@ -11,15 +11,12 @@ export interface SessionCredentials {
   apiToken: string
   /** Set as an HttpOnly cookie once a bootstrap nonce is exchanged. */
   sessionToken: string
-  /** Handed to the browser once, in a URL fragment, to obtain the cookie. */
-  bootstrapNonce: string
 }
 
 export function createSessionCredentials(): SessionCredentials {
   return {
     apiToken: randomBytes(32).toString('base64url'),
     sessionToken: randomBytes(32).toString('base64url'),
-    bootstrapNonce: randomBytes(32).toString('base64url'),
   }
 }
 
@@ -50,9 +47,11 @@ export function serializeSessionCookie(value: string, maxAgeSeconds: number): st
   // HttpOnly keeps the value out of reach of any script on the page.
   // SameSite=Strict stops another site from driving the control API through
   // the browser, which is the one real risk of cookie auth on loopback.
+  // Path=/api keeps the cookie off requests for the static bundle, which need
+  // no credential: a secret is not attached to traffic that cannot use it.
   return [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`,
-    'Path=/',
+    'Path=/api',
     'HttpOnly',
     'SameSite=Strict',
     `Max-Age=${maxAgeSeconds}`,
@@ -60,26 +59,64 @@ export function serializeSessionCookie(value: string, maxAgeSeconds: number): st
 }
 
 /**
- * Single-use bootstrap nonce. Consuming it invalidates it, so a nonce that
- * leaks into shell history cannot be replayed to mint a second session.
+ * Mints single-use bootstrap nonces on demand.
+ *
+ * One nonce fixed at startup could not survive its own design: it is spent by
+ * the first browser that uses it and expires five minutes in, so every later
+ * `looptroop open` would hand out a dead secret. Issuing per request keeps each
+ * nonce single-use and short-lived while `open` stays useful for the whole life
+ * of the daemon.
  */
-export class BootstrapNonce {
-  private consumed = false
-  private readonly expiresAt: number
+export class BootstrapNonceStore {
+  private readonly live = new Map<string, number>()
 
-  constructor(private readonly value: string, ttlMs = BOOTSTRAP_NONCE_TTL_MS) {
-    this.expiresAt = Date.now() + ttlMs
+  constructor(
+    private readonly ttlMs = BOOTSTRAP_NONCE_TTL_MS,
+    /** Caps memory if something calls `issue` in a loop. Oldest is dropped. */
+    private readonly maxOutstanding = 16,
+  ) {}
+
+  issue(): string {
+    this.prune()
+    while (this.live.size >= this.maxOutstanding) {
+      const oldest = this.live.keys().next()
+      if (oldest.done) break
+      this.live.delete(oldest.value)
+    }
+
+    const value = randomBytes(32).toString('base64url')
+    this.live.set(value, Date.now() + this.ttlMs)
+    return value
   }
 
+  /**
+   * Consuming invalidates the nonce, so one that leaks into shell history
+   * cannot be replayed to mint a second session. Every live nonce is compared
+   * even after a match, so the time taken cannot reveal which one matched.
+   */
   consume(candidate: string): boolean {
-    if (this.consumed || Date.now() > this.expiresAt) return false
-    if (!constantTimeEquals(candidate, this.value)) return false
-    this.consumed = true
+    this.prune()
+
+    let matched: string | null = null
+    for (const value of this.live.keys()) {
+      if (constantTimeEquals(candidate, value)) matched = value
+    }
+
+    if (matched === null) return false
+    this.live.delete(matched)
     return true
   }
 
-  get isSpent(): boolean {
-    return this.consumed || Date.now() > this.expiresAt
+  get outstanding(): number {
+    this.prune()
+    return this.live.size
+  }
+
+  private prune(): void {
+    const now = Date.now()
+    for (const [value, expiresAt] of this.live) {
+      if (expiresAt <= now) this.live.delete(value)
+    }
   }
 }
 

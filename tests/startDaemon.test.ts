@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startDaemon, type DaemonHandle } from '../server/daemon/startDaemon'
@@ -57,10 +57,11 @@ describe('daemon startup and shutdown', () => {
     const handle = await start(configDir, (state) => { readyState = state })
 
     expect(readyState).not.toBeNull()
-    // Any HTTP response proves the socket is bound and routing; the status
-    // itself depends on authentication, which the daemon gains in 2.8.
+    // Health is the one unauthenticated route, and it names the instance so a
+    // client can tell this daemon from a process that inherited its pid.
     const response = await fetch(`http://${handle.state.host}:${handle.state.port}/api/health`)
-    expect(response.ok || response.status > 0).toBe(true)
+    expect(response.ok).toBe(true)
+    expect(await response.json()).toMatchObject({ instanceId: handle.state.instanceId })
   })
 
   it('writes a state file describing the live daemon', async () => {
@@ -135,5 +136,51 @@ describe('daemon startup and shutdown', () => {
 
     const second = await start(configDir)
     expect(second.state.instanceId).not.toBe(first.state.instanceId)
+  })
+
+  it('keeps the state file owner-only because it carries the API token', async () => {
+    const configDir = makeConfigDir()
+    await start(configDir)
+
+    const state = JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8')) as DaemonState
+    expect(state.apiToken).toEqual(expect.any(String))
+
+    // Windows has no POSIX mode bits; the ACL there already restricts the user
+    // profile directory the config lives in.
+    if (process.platform !== 'win32') {
+      expect(statSync(getDaemonStatePath(configDir)).mode & 0o777).toBe(0o600)
+    }
+  })
+
+  it('persists a token that authenticates a CLI which did not start the daemon', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+    const origin = `http://${handle.state.host}:${handle.state.port}`
+
+    // Exactly what `looptroop open` does: read the state file, mint a nonce with
+    // the token in it, and hand the resulting URL to a browser.
+    const state = JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8')) as DaemonState
+    const minted = await fetch(`${origin}/api/auth/bootstrap`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.apiToken}` },
+    })
+    expect(minted.status).toBe(200)
+    const { nonce } = await minted.json() as { nonce: string }
+
+    const exchange = await fetch(`${origin}/api/auth/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nonce }),
+    })
+    expect(exchange.status).toBe(200)
+    expect(exchange.headers.get('Set-Cookie')).toContain('HttpOnly')
+  })
+
+  it('mints a fresh nonce for every bootstrap URL', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+
+    // A URL that stayed constant would be a reusable secret; it must not be.
+    expect(handle.bootstrapUrl()).not.toBe(handle.bootstrapUrl())
   })
 })

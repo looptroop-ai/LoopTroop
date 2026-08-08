@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { rmSync } from 'node:fs'
+import { closeSync, existsSync, openSync, rmSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
 import { getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
-import { createSessionCredentials, type SessionCredentials } from '../middleware/sessionAuth'
+import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor } from '../opencode/supervisor'
 import { safeAtomicWrite } from '../io/atomicWrite'
-import { ensureSecureDir, secureFile } from '../lib/appConfigDir'
+import { CONFIG_FILE_MODE, ensureSecureDir, secureFile } from '../lib/appConfigDir'
 import { dirname } from 'node:path'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
@@ -19,8 +19,15 @@ const SHUTDOWN_FORCE_EXIT_MS = 30_000
 export interface DaemonHandle {
   state: DaemonState
   credentials: SessionCredentials
-  /** One-time URL that exchanges the bootstrap nonce for a browser session. */
-  bootstrapUrl: string
+  /** Mints the single-use nonces a browser exchanges for a session cookie. */
+  bootstrapNonces: BootstrapNonceStore
+  /**
+   * One-time URL that exchanges a bootstrap nonce for a browser session.
+   *
+   * Reading it mints a nonce, so it must be handed to a person rather than
+   * written anywhere durable — the daemon log is a file that outlives the run.
+   */
+  bootstrapUrl(): string
   stop(): Promise<void>
 }
 
@@ -35,8 +42,15 @@ export interface StartDaemonOptions {
 function writeState(state: DaemonState, configDir?: string): void {
   const statePath = getDaemonStatePath(configDir)
   ensureSecureDir(dirname(statePath))
+  // The atomic write inherits the mode of an existing target, so the file is
+  // created owner-only first. Without this the API token would sit in a
+  // world-readable file for the moment between rename and chmod.
+  if (!existsSync(statePath)) {
+    closeSync(openSync(statePath, 'a', CONFIG_FILE_MODE))
+    secureFile(statePath)
+  }
   safeAtomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`)
-  // The state file names the port and instance id a client authenticates with.
+  // The state file carries the API token, the port and the instance id.
   secureFile(statePath)
 }
 
@@ -58,6 +72,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
   let heartbeat: NodeJS.Timeout | null = null
   let opencode: OpenCodeSupervisor | null = null
   const credentials = createSessionCredentials()
+  const bootstrapNonces = new BootstrapNonceStore()
+  // Minted before the app is built so /api/health can report it, which is what
+  // lets a client tell this daemon from a process that inherited its pid.
+  const instanceId = randomUUID()
 
   try {
     // Before the server binds: a missing OpenCode is fatal, and failing here
@@ -68,16 +86,19 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const opencodeStatus = await opencode.start()
 
-    runtime = createRuntime({ settings, mode: 'production', credentials })
+    runtime = createRuntime({ settings, mode: 'production', credentials, bootstrapNonces, instanceId })
     const address = await runtime.start()
 
     const state: DaemonState = {
-      instanceId: randomUUID(),
+      instanceId,
       pid: process.pid,
       port: address.port,
       host: address.hostname,
       startedAt: new Date().toISOString(),
       version: options.version,
+      // Persisted so `stop`, `open` and `doctor` can authenticate against a
+      // daemon they did not start. The file is owner-only.
+      apiToken: credentials.apiToken,
       ...(opencodeStatus.kind === 'mock' ? {} : {
         opencode: {
           baseUrl: settings.opencodeBaseUrl,
@@ -90,9 +111,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     writeState(state, options.configDir)
 
     // The nonce travels in the fragment so it is never sent to the server as
-    // part of the request line, and so it stays out of access logs.
-    const bootstrapUrl =
-      `http://${address.hostname}:${address.port}/#bootstrap=${credentials.bootstrapNonce}`
+    // part of the request line, and so it stays out of access logs. A fresh one
+    // is minted per call: a nonce is single-use and expires, so a URL captured
+    // once cannot be replayed or reused later.
+    const bootstrapUrl = (): string =>
+      `http://${address.hostname}:${address.port}/#bootstrap=${bootstrapNonces.issue()}`
 
     heartbeat = setInterval(() => lock.heartbeat(), HEARTBEAT_INTERVAL_MS)
     // The daemon's own timer must not be the reason the process stays alive.
@@ -116,7 +139,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       return stopping
     }
 
-    return { state, credentials, bootstrapUrl, stop }
+    return { state, credentials, bootstrapNonces, bootstrapUrl, stop }
   } catch (error) {
     if (heartbeat) clearInterval(heartbeat)
     try {

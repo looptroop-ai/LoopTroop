@@ -75,6 +75,8 @@ const serverIntegrationTests = [
   'tests/startDaemon.test.ts',
   'tests/daemonLock.test.ts',
   'tests/opencodeSupervisor.test.ts',
+  // Reads the real database module, which siblings replace with a mock.
+  'tests/doctorCommand.test.ts',
 ] as const
 
 export default defineConfig({

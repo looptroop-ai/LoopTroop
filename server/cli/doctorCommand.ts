@@ -123,6 +123,81 @@ async function checkDaemon(): Promise<Check> {
     : { name: 'daemon', status: 'ok', detail: 'not running' }
 }
 
+/**
+ * Reports an unopenable database here rather than leaving it to surface as a
+ * failed start, so the found and expected versions are visible before anything
+ * tries to mutate the file.
+ */
+async function checkSchema(): Promise<Check> {
+  const { APP_DB_PATH } = await import('../db/index')
+
+  if (!existsSync(APP_DB_PATH)) {
+    return { name: 'schema', status: 'ok', detail: 'no database yet' }
+  }
+
+  const [{ Database }, schema] = await Promise.all([
+    import('../db/sqliteShim'),
+    import('../db/schemaVersion'),
+  ])
+
+  let store: InstanceType<typeof Database> | null = null
+  try {
+    store = new Database(APP_DB_PATH, { readonly: true })
+    const inspection = schema.inspectSchemaVersion(store)
+    const compatibility = schema.classifySchemaVersion(
+      inspection,
+      schema.APP_SCHEMA_VERSION,
+      schema.APP_MIGRATABLE_FROM,
+    )
+
+    switch (compatibility.kind) {
+      case 'newer':
+        return {
+          name: 'schema',
+          status: 'fail',
+          detail: `database is version ${compatibility.found}, this build supports ${schema.APP_SCHEMA_VERSION}`,
+          remedy: `Upgrade LoopTroop, or point LOOPTROOP_CONFIG_DIR elsewhere. Database: ${APP_DB_PATH}`,
+        }
+      case 'unsupported':
+        return {
+          name: 'schema',
+          status: 'fail',
+          detail: `database is version ${compatibility.found}, too old to upgrade`,
+          remedy: `Delete ${APP_DB_PATH} to start clean, or run an older LoopTroop first.`,
+        }
+      case 'older':
+        return {
+          name: 'schema',
+          status: 'warn',
+          detail: `database is version ${compatibility.found}; it will be upgraded to ${schema.APP_SCHEMA_VERSION} on next start`,
+          remedy: 'No action needed. The upgrade runs automatically.',
+        }
+      case 'unversioned':
+        return {
+          name: 'schema',
+          status: 'warn',
+          detail: 'database predates 0.5.0 and carries no version marker',
+          remedy: `Delete ${APP_DB_PATH} to start clean if LoopTroop misbehaves.`,
+        }
+      default:
+        return { name: 'schema', status: 'ok', detail: `version ${schema.APP_SCHEMA_VERSION}` }
+    }
+  } catch (error) {
+    return {
+      name: 'schema',
+      status: 'fail',
+      detail: `cannot read ${APP_DB_PATH}: ${error instanceof Error ? error.message : String(error)}`,
+      remedy: 'Check the file permissions, or delete the database to start clean.',
+    }
+  } finally {
+    try {
+      store?.close()
+    } catch {
+      // Nothing useful to do if the handle is already gone.
+    }
+  }
+}
+
 export async function runChecks(): Promise<Check[]> {
   return [
     checkNode(),
@@ -130,6 +205,7 @@ export async function runChecks(): Promise<Check[]> {
     checkBinary('gh', ['--version'], false),
     checkGitHubAuth(),
     checkConfigDir(),
+    await checkSchema(),
     await checkOpenCode(),
     await checkDaemon(),
   ]

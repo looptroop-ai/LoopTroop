@@ -93,3 +93,73 @@ describe('createRuntime side-effect freedom', () => {
     }
   })
 })
+
+/**
+ * 2.5 contract: a port the user named must fail loudly when taken rather than
+ * relocate somewhere they are not pointing at. Only the untouched default may
+ * fall back to an OS-assigned port, so a first run never fails on a busy 3000.
+ */
+describe('createRuntime port allocation', () => {
+  const cleanups: Array<() => Promise<void> | void> = []
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0)) await cleanup()
+  })
+
+  async function occupyPort(): Promise<number> {
+    const { createServer } = await import('node:net')
+    const server = createServer()
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready))
+    cleanups.push(() => new Promise<void>((done) => server.close(() => done())))
+    return (server.address() as { port: number }).port
+  }
+
+  it('rejects with the requested port and its origin when an explicit port is taken', async () => {
+    const taken = await occupyPort()
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+
+    const runtime = createRuntime({
+      skipStartupSequence: true,
+      hostname: '127.0.0.1',
+      settings: resolveSettings({ env: {}, file: { port: taken } }),
+    })
+
+    await expect(runtime.start()).rejects.toThrow(`Port ${taken} is already in use`)
+    expect(runtime.address).toBeNull()
+  })
+
+  it('names config.json as the origin of an explicit port', async () => {
+    const taken = await occupyPort()
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+
+    const runtime = createRuntime({
+      skipStartupSequence: true,
+      hostname: '127.0.0.1',
+      settings: resolveSettings({ env: {}, file: { port: taken } }),
+    })
+
+    await expect(runtime.start()).rejects.toThrow('config.json')
+  })
+
+  it('falls back to an OS-assigned port when only the default is taken', async () => {
+    const taken = await occupyPort()
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+
+    // A default-sourced port may relocate, so a first run never fails on a busy 3000.
+    const settings = resolveSettings({ env: {}, file: {} })
+    const runtime = createRuntime({
+      skipStartupSequence: true,
+      hostname: '127.0.0.1',
+      settings: { ...settings, port: taken, portIsExplicit: false },
+    })
+
+    const address = await runtime.start()
+    cleanups.push(() => runtime.close())
+
+    expect(address.port).toBeGreaterThan(0)
+    expect(address.port).not.toBe(taken)
+  })
+})

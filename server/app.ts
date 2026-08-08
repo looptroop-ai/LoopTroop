@@ -18,6 +18,7 @@ import { workflowRouter } from './routes/workflow'
 import { validateJson } from './middleware/validation'
 import { createApiRateLimitMiddleware } from './middleware/rateLimit'
 import { createApiAuthMiddleware, API_TOKEN_HEADER } from './middleware/apiAuth'
+import { createHostGuardMiddleware, isLoopbackAuthority, requestAuthority } from './middleware/hostGuard'
 import {
   BootstrapNonceStore,
   createSessionAuthMiddleware,
@@ -79,21 +80,7 @@ const CORS_ALLOWED_HEADERS = [
 ]
 
 export function isLocalhostRequest(c: Context): boolean {
-  const host = c.req.header('Host')?.trim().toLowerCase()
-  if (!host) {
-    return false
-  }
-
-  const hostname: string = host.startsWith('[')
-    ? host.slice(1, host.indexOf(']') === -1 ? host.length : host.indexOf(']'))
-    : (host.split(':')[0] ?? host)
-
-  return hostname === 'localhost'
-    || hostname === '127.0.0.1'
-    || hostname === '::1'
-    || hostname === '::ffff:127.0.0.1'
-    || hostname === '::ffff:7f00:1'
-    || hostname.startsWith('127.')
+  return isLoopbackAuthority(requestAuthority(c))
 }
 
 /**
@@ -124,6 +111,10 @@ export function createApp(options: CreateAppOptions = {}): Hono {
 
     await next()
   })
+
+  // Before CORS and before any authentication: a request that did not come
+  // from this machine is refused whatever credential it carries.
+  app.use('/api/*', createHostGuardMiddleware())
 
   if (mode === 'development') {
     app.use('/api/*', cors({

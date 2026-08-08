@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { request as httpRequest } from 'node:http'
 import { startDaemon, type DaemonHandle } from '../server/daemon/startDaemon'
 import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
@@ -233,5 +234,28 @@ describe('daemon startup and shutdown', () => {
     await vi.waitFor(async () => {
       await expect(fetch(`${origin}/api/health`)).rejects.toThrow()
     }, { timeout: 5_000 })
+  })
+
+  it('refuses a request whose Host header names a rebound domain', async () => {
+    const configDir = makeConfigDir()
+    const handle = await start(configDir)
+
+    // node:http rather than fetch: the Host header is exactly what has to be
+    // forged here, and fetch refuses to set it.
+    const status = await new Promise<number>((done, fail) => {
+      const req = httpRequest({
+        host: handle.state.host,
+        port: handle.state.port,
+        path: '/api/health',
+        headers: { Host: 'looptroop.attacker.example' },
+      }, (res) => {
+        res.resume()
+        done(res.statusCode ?? 0)
+      })
+      req.on('error', fail)
+      req.end()
+    })
+
+    expect(status).toBe(403)
   })
 })

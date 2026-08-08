@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { resolveAppConfigDir, ensureSecureDir, secureFile } from './appConfigDir'
 import { safeAtomicWrite } from '../io/atomicWrite'
-import { getInstallInfo, isNewerVersion } from './installChannel'
+import { resolveInstallInfo, isNewerVersion } from './installChannel'
 
 const REGISTRY_URL = 'https://registry.npmjs.org/looptroop/latest'
 
@@ -97,7 +97,7 @@ export async function checkForUpdate(options: CheckForUpdateOptions): Promise<Up
   return {
     currentVersion: options.currentVersion,
     latestVersion,
-    upgradeCommand: getInstallInfo().upgradeCommand,
+    upgradeCommand: resolveInstallInfo({ ...(options.configDir ? { configDir: options.configDir } : {}) }).upgradeCommand,
   }
 }
 

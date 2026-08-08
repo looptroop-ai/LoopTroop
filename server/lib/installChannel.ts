@@ -1,6 +1,7 @@
 import { dirname, resolve, sep } from 'node:path'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { readSettingsFile, writeSettingsFile } from './appSettings'
 
 export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'container' | 'source' | 'unknown'
 
@@ -48,6 +49,73 @@ export function detectInstallChannel(moduleDir = dirname(fileURLToPath(import.me
 
 export function getInstallInfo(moduleDir?: string): InstallInfo {
   const channel = detectInstallChannel(moduleDir)
+  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel] }
+}
+
+/** The `install` object in `config.json`. */
+export interface RecordedInstall {
+  channel: InstallChannel
+  /**
+   * Directory detection ran against. Absent means a human wrote this entry to
+   * correct a bad guess, and the pin holds wherever the files live.
+   */
+  path?: string
+}
+
+export const INSTALL_SETTINGS_KEY = 'install'
+
+function isInstallChannel(value: unknown): value is InstallChannel {
+  return typeof value === 'string' && value in UPGRADE_COMMANDS
+}
+
+/** Reads the recorded channel, treating anything malformed as unrecorded. */
+export function readRecordedInstall(configDir?: string): RecordedInstall | null {
+  const raw: unknown = readSettingsFile(configDir)[INSTALL_SETTINGS_KEY]
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+
+  const candidate = raw as { channel?: unknown; path?: unknown }
+  if (!isInstallChannel(candidate.channel)) return null
+
+  return typeof candidate.path === 'string'
+    ? { channel: candidate.channel, path: candidate.path }
+    : { channel: candidate.channel }
+}
+
+export interface ResolveInstallOptions {
+  configDir?: string
+  moduleDir?: string
+}
+
+/**
+ * The install channel for this copy, detected once and then remembered.
+ *
+ * Detection reads the filesystem and infers from a path, which is both wasteful
+ * to repeat on every command and fragile — a package manager that relocates its
+ * files changes the answer. Recording it means the guess is made when the
+ * evidence is freshest, stays stable afterwards, and can be corrected by hand.
+ */
+export function resolveInstallInfo(options: ResolveInstallOptions = {}): InstallInfo {
+  const moduleDir = options.moduleDir ?? dirname(fileURLToPath(import.meta.url))
+  const recorded = readRecordedInstall(options.configDir)
+
+  // A recorded path that no longer matches means this copy moved, so the old
+  // answer describes an installation that is no longer the one running.
+  if (recorded && (recorded.path === undefined || recorded.path === moduleDir)) {
+    return { channel: recorded.channel, upgradeCommand: UPGRADE_COMMANDS[recorded.channel] }
+  }
+
+  const channel = detectInstallChannel(moduleDir)
+  // `unknown` is not worth recording: it is precisely the answer a later run —
+  // one with LOOPTROOP_CONTAINER set, say — deserves another attempt at.
+  if (channel !== 'unknown') {
+    try {
+      writeSettingsFile({ [INSTALL_SETTINGS_KEY]: { channel, path: moduleDir } }, options.configDir)
+    } catch {
+      // A read-only install or an unwritable config dir costs one re-detection
+      // per command and nothing else, so it must not fail the command itself.
+    }
+  }
+
   return { channel, upgradeCommand: UPGRADE_COMMANDS[channel] }
 }
 

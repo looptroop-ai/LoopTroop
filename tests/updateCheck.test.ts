@@ -1,8 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { detectInstallChannel, getInstallInfo, isNewerVersion } from '../server/lib/installChannel'
+import {
+  detectInstallChannel,
+  getInstallInfo,
+  isNewerVersion,
+  readRecordedInstall,
+  resolveInstallInfo,
+} from '../server/lib/installChannel'
 import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice } from '../server/lib/updateCheck'
 
 /**
@@ -41,6 +47,113 @@ describe('install channel detection', () => {
       .toBe('npm install -g looptroop@latest')
     expect(getInstallInfo('/opt/homebrew/Cellar/looptroop/0.5.0/dist/server/cli').upgradeCommand)
       .toBe('brew upgrade looptroop')
+  })
+})
+
+/**
+ * 2.13 contract: the channel is inferred from a path, which is both fragile and
+ * wasteful to redo on every command, so the first confident answer is written to
+ * config.json and reused until this copy moves.
+ */
+describe('recorded install channel', () => {
+  const tempDirs: string[] = []
+  const NPM_DIR = '/usr/local/lib/node_modules/looptroop/dist/server/cli'
+  const BREW_DIR = '/opt/homebrew/Cellar/looptroop/0.5.0/libexec/dist/server/cli'
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  function makeConfigDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-install-'))
+    tempDirs.push(dir)
+    return dir
+  }
+
+  function readConfig(configDir: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8')) as Record<string, unknown>
+  }
+
+  it('records the detected channel on first use', () => {
+    const configDir = makeConfigDir()
+
+    const info = resolveInstallInfo({ configDir, moduleDir: NPM_DIR })
+
+    expect(info.channel).toBe('npm')
+    expect(readRecordedInstall(configDir)).toEqual({ channel: 'npm', path: NPM_DIR })
+  })
+
+  it('reuses the recorded answer instead of detecting again', () => {
+    const configDir = makeConfigDir()
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({ install: { channel: 'homebrew', path: NPM_DIR } }),
+    )
+
+    // The path says npm; the recorded channel is what must win, which is only
+    // observable because the two disagree.
+    expect(resolveInstallInfo({ configDir, moduleDir: NPM_DIR }).channel).toBe('homebrew')
+  })
+
+  it('detects again once this copy has moved', () => {
+    const configDir = makeConfigDir()
+    resolveInstallInfo({ configDir, moduleDir: NPM_DIR })
+
+    // Same config directory, different location: reinstalled by another manager.
+    expect(resolveInstallInfo({ configDir, moduleDir: BREW_DIR }).channel).toBe('homebrew')
+    expect(readRecordedInstall(configDir)).toEqual({ channel: 'homebrew', path: BREW_DIR })
+  })
+
+  it('honours a hand-written pin wherever the files live', () => {
+    const configDir = makeConfigDir()
+    // No path: a user correcting a bad guess should not have to know where the
+    // package manager put the files.
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'scoop' } }))
+
+    const info = resolveInstallInfo({ configDir, moduleDir: NPM_DIR })
+
+    expect(info.channel).toBe('scoop')
+    expect(info.upgradeCommand).toBe('scoop update looptroop')
+    // Overwriting the pin would undo the correction on the very next command.
+    expect(readRecordedInstall(configDir)).toEqual({ channel: 'scoop' })
+  })
+
+  it('does not record an unknown channel, so a later run can still settle it', () => {
+    const configDir = makeConfigDir()
+
+    expect(resolveInstallInfo({ configDir, moduleDir: '/some/unexpected/place' }).channel).toBe('unknown')
+    expect(readRecordedInstall(configDir)).toBeNull()
+  })
+
+  it('ignores a malformed record rather than trusting it', () => {
+    const configDir = makeConfigDir()
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'apt-get' } }))
+
+    expect(readRecordedInstall(configDir)).toBeNull()
+    expect(resolveInstallInfo({ configDir, moduleDir: NPM_DIR }).channel).toBe('npm')
+  })
+
+  it('preserves unrelated settings when recording', () => {
+    const configDir = makeConfigDir()
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ port: 4711, logLevel: 'debug' }))
+
+    resolveInstallInfo({ configDir, moduleDir: NPM_DIR })
+
+    expect(readConfig(configDir)).toMatchObject({ port: 4711, logLevel: 'debug' })
+  })
+
+  it('still answers when the config directory cannot be written', () => {
+    const configDir = makeConfigDir()
+    // A read-only install (2.20) or a locked-down home directory: the answer is
+    // still correct, it just cannot be remembered.
+    writeFileSync(join(configDir, 'blocker'), '')
+
+    const info = resolveInstallInfo({ configDir: join(configDir, 'blocker', 'nested'), moduleDir: NPM_DIR })
+
+    expect(info.channel).toBe('npm')
+    expect(info.upgradeCommand).toBe('npm install -g looptroop@latest')
   })
 })
 

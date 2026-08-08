@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
-import { resolveSettings } from '../lib/appSettings'
-import { getInstallInfo } from '../lib/installChannel'
+import { resolveSettings, getSettingsPath } from '../lib/appSettings'
+import { resolveInstallInfo } from '../lib/installChannel'
 import { probePort } from '../lib/portProbe'
 import type { DaemonState } from '../lib/daemonPaths'
 import { readRunningDaemon } from './commands'
@@ -271,14 +271,14 @@ async function checkSchema(): Promise<Check> {
 }
 
 function checkInstallChannel(): Check {
-  const info = getInstallInfo()
+  const info = resolveInstallInfo()
   return info.channel === 'unknown'
     ? {
         name: 'install',
         status: 'warn',
         detail: 'could not determine how LoopTroop was installed',
         // A wrong upgrade command is worse than none, so this stays a warning.
-        remedy: info.upgradeCommand,
+        remedy: `${info.upgradeCommand}. To settle it, set "install": { "channel": "npm" } in ${getSettingsPath()}.`,
       }
     : { name: 'install', status: 'ok', detail: `${info.channel} (upgrade: ${info.upgradeCommand})` }
 }

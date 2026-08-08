@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
+import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
 import { getDaemonLockPath } from '../lib/daemonPaths'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -193,6 +194,12 @@ export async function statusCommand(json: boolean): Promise<number> {
     `  Version: ${state.version}\n` +
     `  Uptime:  ${formatDuration(uptimeMs)}\n`,
   )
+
+  // After the status itself, so a notice never obscures the answer that was
+  // asked for, and never blocks it if the registry is slow or unreachable.
+  const notice = await checkForUpdate({ currentVersion: state.version, configDir })
+  if (notice) process.stdout.write(formatUpdateNotice(notice))
+
   return 0
 }
 

@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings } from '../lib/appSettings'
+import { getInstallInfo } from '../lib/installChannel'
 import { readRunningDaemon } from './commands'
 
 type Status = 'ok' | 'warn' | 'fail'
@@ -198,6 +199,19 @@ async function checkSchema(): Promise<Check> {
   }
 }
 
+function checkInstallChannel(): Check {
+  const info = getInstallInfo()
+  return info.channel === 'unknown'
+    ? {
+        name: 'install',
+        status: 'warn',
+        detail: 'could not determine how LoopTroop was installed',
+        // A wrong upgrade command is worse than none, so this stays a warning.
+        remedy: info.upgradeCommand,
+      }
+    : { name: 'install', status: 'ok', detail: `${info.channel} (upgrade: ${info.upgradeCommand})` }
+}
+
 export async function runChecks(): Promise<Check[]> {
   return [
     checkNode(),
@@ -205,6 +219,7 @@ export async function runChecks(): Promise<Check[]> {
     checkBinary('gh', ['--version'], false),
     checkGitHubAuth(),
     checkConfigDir(),
+    checkInstallChannel(),
     await checkSchema(),
     await checkOpenCode(),
     await checkDaemon(),

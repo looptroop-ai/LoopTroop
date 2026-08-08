@@ -1249,7 +1249,7 @@ describe('runOpenCodePrompt', () => {
       [{ type: 'text', source: 'ticket_details', content: 'Build a ticket dashboard.' }],
       '/tmp/project',
       {
-        draftTimeoutMs: 1_000,
+        draftTimeoutMs: 300_000,
         minQuorum: 1,
         maxInitialQuestions: 3,
       },
@@ -1307,12 +1307,9 @@ describe('runOpenCodePrompt', () => {
       parts: [{ type: 'text', content: 'Prompt body' }],
     })
 
-    const settled = await Promise.race([
-      runPromise.then(() => 'resolved'),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 100)),
-    ])
-    expect(settled).toBe('resolved')
-
+    // The stream reports done before the SDK prompt settles, so this resolves
+    // without the deferred below. A wall-clock race here would only measure how
+    // loaded the worker is; a regression hangs and fails on the test timeout.
     const result = await runPromise
     expect(result.response).toBe('stream snapshot response')
 

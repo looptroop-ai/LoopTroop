@@ -16,6 +16,27 @@ import type { PromptPart } from '../../opencode/types'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { normalizeInterviewRefinementOutput } from '../../structuredOutput'
 
+/**
+ * A prompt that only ever settles when its caller aborts it.
+ *
+ * Timeout tests used to sleep for longer than the deadline, which made every
+ * assertion a race between two real clocks: a loaded worker could let a "late"
+ * response land first, or push a "fast" one past the deadline. Never answering
+ * on its own leaves the deadline as the only thing that can settle the prompt.
+ */
+function stalledPrompt(signal?: AbortSignal): Promise<string> {
+  return new Promise((_resolve, reject) => {
+    signal?.addEventListener('abort', () => {
+      const abortError = new Error('Aborted')
+      abortError.name = 'AbortError'
+      reject(abortError)
+    }, { once: true })
+  })
+}
+
+/** Long enough that only a stalled prompt reaches it, short enough to wait for. */
+const DEADLINE_MS = 500
+
 describe('Council Pipeline', () => {
   let adapter: MockOpenCodeAdapter
   const members: CouncilMember[] = [
@@ -202,14 +223,13 @@ describe('Council Pipeline', () => {
   })
 
   it('respects configured draft timeouts', async () => {
-    class SlowAdapter extends MockOpenCodeAdapter {
-      override async promptSession(sessionId: string, parts: PromptPart[]): Promise<string> {
-        await new Promise(resolve => setTimeout(resolve, 30))
-        return super.promptSession(sessionId, parts)
+    class StalledAdapter extends MockOpenCodeAdapter {
+      override promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
       }
     }
 
-    const slowAdapter = new SlowAdapter()
+    const slowAdapter = new StalledAdapter()
     const draftRun = await generateDrafts(
       slowAdapter,
       [members[0]!],
@@ -225,43 +245,30 @@ describe('Council Pipeline', () => {
   })
 
   it('returns partial draft results at the hard phase deadline', async () => {
-    const fastDelayMs = 5
-    const phaseTimeoutMs = 80
-    const lateResponseMs = 500
-
     class MixedLatencyAdapter extends MockOpenCodeAdapter {
       override async promptSession(sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
         if (sessionId === 'mock-session-1') {
-          await new Promise(resolve => setTimeout(resolve, fastDelayMs))
           return super.promptSession(sessionId, _parts, signal)
         }
 
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => resolve(`late response for ${sessionId}`), lateResponseMs)
-          signal?.addEventListener('abort', () => {
-            clearTimeout(timer)
-            const abortError = new Error('Aborted')
-            abortError.name = 'AbortError'
-            reject(abortError)
-          }, { once: true })
-        })
+        return stalledPrompt(signal)
       }
     }
 
-    const start = Date.now()
     const draftRun = await generateDrafts(
       new MixedLatencyAdapter(),
       members,
       [{ type: 'text', content: 'draft prompt' }],
       '/tmp/test',
-      phaseTimeoutMs,
+      DEADLINE_MS,
     )
 
-    expect(Date.now() - start).toBeLessThan(lateResponseMs)
+    // The stalled members never answer, so a deadline that failed to fire would
+    // hang this test rather than let a wall-clock comparison decide the result.
     expect(draftRun.deadlineReached).toBe(true)
     expect(draftRun.drafts.filter(d => d.outcome === 'completed')).toHaveLength(1)
     expect(draftRun.drafts.filter(d => d.outcome === 'timed_out')).toHaveLength(2)
-    expect(draftRun.drafts.filter(d => d.outcome === 'timed_out').every(d => d.duration === phaseTimeoutMs)).toBe(true)
+    expect(draftRun.drafts.filter(d => d.outcome === 'timed_out').every(d => d.duration === DEADLINE_MS)).toBe(true)
   })
 
   it('deliberateInterview proceeds when validated drafts still meet quorum', async () => {
@@ -298,15 +305,7 @@ describe('Council Pipeline', () => {
     class MixedLatencyAdapter extends MockOpenCodeAdapter {
       override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
         if (sessionId === 'mock-session-3') {
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => resolve('late response'), 200)
-            signal?.addEventListener('abort', () => {
-              clearTimeout(timer)
-              const abortError = new Error('Aborted')
-              abortError.name = 'AbortError'
-              reject(abortError)
-            }, { once: true })
-          })
+          return stalledPrompt(signal)
         }
 
         return super.promptSession(sessionId, parts, signal)
@@ -332,7 +331,7 @@ describe('Council Pipeline', () => {
       members,
       [{ type: 'text', source: 'ticket_details', content: '# Ticket: Test\nNeed a change' }],
       '/tmp/test',
-      { draftTimeoutMs: 100, minQuorum: 2, maxInitialQuestions: 10 },
+      { draftTimeoutMs: DEADLINE_MS, minQuorum: 2, maxInitialQuestions: 10 },
     )
 
     expect(result.deadlineReached).toBe(true)
@@ -341,14 +340,13 @@ describe('Council Pipeline', () => {
   })
 
   it('times out voting calls when a voter exceeds the council timeout', async () => {
-    class SlowAdapter extends MockOpenCodeAdapter {
-      override async promptSession(sessionId: string, parts: PromptPart[]): Promise<string> {
-        await new Promise(resolve => setTimeout(resolve, 30))
-        return super.promptSession(sessionId, parts)
+    class StalledAdapter extends MockOpenCodeAdapter {
+      override promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
       }
     }
 
-    const slowAdapter = new SlowAdapter()
+    const slowAdapter = new StalledAdapter()
     const voteUpdates = vi.fn()
     const voteRun = await conductVoting(
       slowAdapter,
@@ -422,15 +420,7 @@ describe('Council Pipeline', () => {
     class VoteTimeoutAdapter extends MockOpenCodeAdapter {
       override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
         if (sessionId === 'mock-session-6') {
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => resolve('late voter response'), 400)
-            signal?.addEventListener('abort', () => {
-              clearTimeout(timer)
-              const abortError = new Error('Aborted')
-              abortError.name = 'AbortError'
-              reject(abortError)
-            }, { once: true })
-          })
+          return stalledPrompt(signal)
         }
 
         return super.promptSession(sessionId, parts, signal)
@@ -442,7 +432,7 @@ describe('Council Pipeline', () => {
       members,
       contextParts: [{ type: 'text', content: 'Generate interview questions' }],
       projectPath: '/tmp/test',
-      draftTimeout: 150,
+      draftTimeout: DEADLINE_MS,
       minQuorum: 2,
     })
 
@@ -454,15 +444,7 @@ describe('Council Pipeline', () => {
     class VoteQuorumFailingAdapter extends MockOpenCodeAdapter {
       override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
         if (sessionId === 'mock-session-5' || sessionId === 'mock-session-6') {
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => resolve('late voter response'), 80)
-            signal?.addEventListener('abort', () => {
-              clearTimeout(timer)
-              const abortError = new Error('Aborted')
-              abortError.name = 'AbortError'
-              reject(abortError)
-            }, { once: true })
-          })
+          return stalledPrompt(signal)
         }
 
         return super.promptSession(sessionId, parts, signal)
@@ -474,20 +456,19 @@ describe('Council Pipeline', () => {
       members,
       contextParts: [{ type: 'text', content: 'Generate interview questions' }],
       projectPath: '/tmp/test',
-      draftTimeout: 20,
+      draftTimeout: DEADLINE_MS,
       minQuorum: 2,
     })).rejects.toThrow('quorum not met')
   })
 
   it('times out refinement calls when the winner exceeds the council timeout', async () => {
-    class SlowAdapter extends MockOpenCodeAdapter {
-      override async promptSession(sessionId: string, parts: PromptPart[]): Promise<string> {
-        await new Promise(resolve => setTimeout(resolve, 30))
-        return super.promptSession(sessionId, parts)
+    class StalledAdapter extends MockOpenCodeAdapter {
+      override promptSession(_sessionId: string, _parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+        return stalledPrompt(signal)
       }
     }
 
-    const slowAdapter = new SlowAdapter()
+    const slowAdapter = new StalledAdapter()
 
     await expect(refineDraft(
       slowAdapter,

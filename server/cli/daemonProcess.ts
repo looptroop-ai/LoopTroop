@@ -18,11 +18,26 @@ function readVersion(): string {
 export interface DaemonProcessOptions {
   port?: number
   /**
-   * True when stdout is the user's terminal. The detached daemon's stdout is a
-   * log file that outlives the run, so the bootstrap URL is printed only for a
-   * foreground run; `looptroop start` mints its own over the API instead.
+   * True when the user asked for a foreground run. The detached daemon's stdout
+   * is a log file that outlives the run, so the bootstrap URL is never printed
+   * there; `looptroop start` mints its own over the API instead.
    */
   foreground?: boolean
+}
+
+/**
+ * What a foreground daemon says about signing in.
+ *
+ * The URL carries a nonce that buys a browser session, so it is written only to
+ * a real terminal. Redirected to a file, captured by systemd or collected by
+ * `docker logs`, that same line becomes a durable credential somewhere far more
+ * readable than the daemon's own owner-only files. The URL is a thunk so a
+ * nonce that will not be shown is never minted.
+ */
+export function signInLine(bootstrapUrl: () => string, stdoutIsTerminal: boolean): string {
+  return stdoutIsTerminal
+    ? `[daemon] Open ${bootstrapUrl()}`
+    : '[daemon] Run `looptroop open` for a sign-in link.'
 }
 
 /**
@@ -43,7 +58,7 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
 
   installShutdownHandlers(handle)
   if (options.foreground) {
-    console.log(`[daemon] Open ${handle.bootstrapUrl()}`)
+    console.log(signInLine(() => handle.bootstrapUrl(), process.stdout.isTTY === true))
   }
 }
 

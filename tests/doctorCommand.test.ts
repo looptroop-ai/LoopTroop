@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, chmodSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { doctorCommand, runChecks } from '../server/cli/doctorCommand'
@@ -118,4 +119,60 @@ describe('doctor command', () => {
 
     expect(stdout.text()).toMatch(/can run LoopTroop|cannot run/)
   })
+
+  it('reports the port the next start would ask for', async () => {
+    useConfigDir()
+    // A port bound and released here rather than the default, so the check has
+    // a known answer instead of depending on what else runs on this machine.
+    const free = await reservePort()
+    process.env.LOOPTROOP_BACKEND_PORT = String(free)
+
+    try {
+      const port = (await runChecks()).find((check) => check.name === 'port')
+      expect(port?.status).toBe('ok')
+      expect(port?.detail).toContain(String(free))
+    } finally {
+      delete process.env.LOOPTROOP_BACKEND_PORT
+    }
+  })
+
+  it('fails when a port the user named is already taken', async () => {
+    useConfigDir()
+    const blocker = createServer()
+    await new Promise<void>((ready) => blocker.listen(0, '127.0.0.1', ready))
+    process.env.LOOPTROOP_BACKEND_PORT = String((blocker.address() as { port: number }).port)
+
+    try {
+      // The runtime refuses to relocate off a port the user named, so doctor
+      // must not report this as survivable.
+      const port = (await runChecks()).find((check) => check.name === 'port')
+      expect(port?.status).toBe('fail')
+      expect(port?.remedy).toBeTruthy()
+    } finally {
+      delete process.env.LOOPTROOP_BACKEND_PORT
+      await new Promise<void>((done) => blocker.close(() => done()))
+    }
+  })
+
+  it('reports the OpenCode CLI version separately from the running server', async () => {
+    useConfigDir()
+
+    const checks = await runChecks()
+    const cli = checks.find((check) => check.name === 'opencode cli')
+    const server = checks.find((check) => check.name === 'opencode')
+
+    // They answer different questions: which binary a start would launch, and
+    // whether a server is answering right now.
+    expect(cli).toBeDefined()
+    expect(server).toBeDefined()
+    expect(cli?.status).toBe('ok')
+  })
+
+  async function reservePort(): Promise<number> {
+    const server = createServer()
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready))
+    const port = (server.address() as { port: number }).port
+    await new Promise<void>((done) => server.close(() => done()))
+    return port
+  }
 })

@@ -148,6 +148,46 @@ jobs:
       - name: Pack, install globally, and drive the CLI
         run: node scripts/smoke-install.mjs
 
+  # A global install belongs to the machine, not the user: /usr/local/lib, a
+  # Homebrew cellar, C:\Program Files, a locked-down image layer. Everything
+  # above installs into a prefix the job owns, so a cache or lock dropped beside
+  # the bundle passes there and fails on the first machine where the install is
+  # not writable.
+  #
+  # Linux only, and the script says so itself rather than pretending: proving
+  # this needs a filesystem the running user cannot write to, and only the bind
+  # mount is enforced against root. macOS would need a disk image and Windows an
+  # ACL an administrator can take ownership around — machinery enough to become
+  # its own source of flakes, for a property that is not platform-specific.
+  verify-readonly:
+    name: Read-only install (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # Root for `mount --bind` (CAP_SYS_ADMIN), and the interpreter resolved
+      # before sudo so it is the Node this job pinned rather than whatever
+      # secure_path finds. Without root the script reports itself skipped and
+      # verifies nothing, which is a silent hole in exactly the check that is
+      # hardest to notice missing.
+      - name: Run a full session from a read-only install
+        env:
+          # Turns "cannot enforce read-only here" from a skip into a failure.
+          # This is the only job asserting the property, so a skip is a hole.
+          LOOPTROOP_READONLY_REQUIRED: '1'
+        run: sudo -E "$(which node)" scripts/verify-readonly-install.mjs
+
   # Node 26 is Current, not LTS. Breakage here is upstream news rather than a
   # defect, so it warns without blocking.
   early-warning:

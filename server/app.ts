@@ -307,9 +307,9 @@ export function createApp(options: CreateAppOptions = {}): Hono {
         const html = await readFile(indexHtml, 'utf8')
         c.header('Content-Type', 'text/html; charset=utf-8')
         c.header('Cache-Control', 'no-cache')
-        // HEAD must carry the same headers as GET but no body, which Hono
-        // handles: returning the body here would be stripped on the way out.
-        return c.body(c.req.method === 'HEAD' ? null : html)
+        // HEAD carries the same headers as GET and no body.
+        if (c.req.method === 'HEAD') return c.body(null)
+        return c.body(html)
       })
     }
   }

@@ -41,6 +41,16 @@ const IGNORE_MODE_LABELS: Record<IgnoreMode, string> = {
 }
 
 /**
+ * What a step was asked to do and could not, or null when there is nothing to
+ * report.
+ *
+ * Declining a step is not one of these, and neither is the report a
+ * non-interactive run prints instead of asking: in both cases nothing was
+ * requested, so nothing failed.
+ */
+type Unfinished = string | null
+
+/**
  * Walks a new install through the three things it cannot infer: which
  * repository to work on, where its own files live, and how to reach the
  * interface.
@@ -59,11 +69,24 @@ export async function setupCommand(options: SetupOptions = {}): Promise<number> 
   try {
     out('LoopTroop setup\n\n')
     const daemon = await stepDaemon(session.prompt, out, configDir)
-    await stepProject(session.prompt, out, daemon, cwd)
+    const project = await stepProject(session.prompt, out, daemon.state, cwd)
     stepPaths(out, configDir)
-    await stepBrowser(session.prompt, out, daemon, options.open ?? openInBrowser)
-    out('\nRun `looptroop setup` again at any time; it changes nothing you have not asked for.\n')
-    return 0
+    const browser = await stepBrowser(session.prompt, out, daemon.state, options.open ?? openInBrowser)
+
+    const unfinished = [daemon.problem, project, browser].filter((problem) => problem !== null)
+    if (unfinished.length === 0) {
+      out('\nRun `looptroop setup` again at any time; it changes nothing you have not asked for.\n')
+      return 0
+    }
+
+    // Non-zero, because something that was asked for did not happen. Every one
+    // of these used to be printed and then reported as success, which is what
+    // made `looptroop setup --yes` unusable in a provisioning script: a daemon
+    // that failed to start read exactly like a clean run.
+    out('\nSetup did not finish everything:\n')
+    for (const problem of unfinished) out(`  - ${problem}\n`)
+    out('Fix those and run `looptroop setup` again.\n')
+    return 1
   } finally {
     session.close()
   }
@@ -99,29 +122,38 @@ async function stepDaemon(
   prompt: SetupPrompt | null,
   out: (text: string) => void,
   configDir: string,
-): Promise<DaemonState | null> {
+): Promise<{ state: DaemonState | null; problem: Unfinished }> {
   out('1. Daemon\n')
 
   const running = await readRunningDaemon(configDir)
   if (running) {
     out(`   Already running on http://${running.host}:${running.port} (pid ${running.pid}).\n\n`)
-    return running
+    return { state: running, problem: null }
   }
 
   if (!prompt) {
     out('   Not running. Start it with `looptroop start`.\n\n')
-    return null
+    // A report, not a failed attempt: nothing here asked for it to be started.
+    return { state: null, problem: null }
   }
 
   if (!isYes(await prompt('   Not running. Start it now? [Y/n]', 'y'))) {
     out('   Skipped. The steps below that need a daemon are skipped too.\n\n')
-    return null
+    return { state: null, problem: null }
   }
 
   // Prints its own report, including the sign-in link.
-  if (await startCommand({}) !== 0) return null
+  if (await startCommand({}) !== 0) {
+    return { state: null, problem: 'the daemon did not start' }
+  }
   out('\n')
-  return await readRunningDaemon(configDir)
+
+  const started = await readRunningDaemon(configDir)
+  return started
+    ? { state: started, problem: null }
+    // `start` reported success and the daemon is still not answering: whatever
+    // is wrong, the steps below cannot run and this is not a clean setup.
+    : { state: null, problem: 'the daemon started but is not answering' }
 }
 
 async function stepProject(
@@ -129,30 +161,32 @@ async function stepProject(
   out: (text: string) => void,
   daemon: DaemonState | null,
   cwd: string,
-): Promise<void> {
+): Promise<Unfinished> {
   out('2. Project\n')
 
   if (!daemon) {
     out('   Skipped: attaching a project needs a running daemon.\n\n')
-    return
+    // The daemon step already reported whatever went wrong there; saying it
+    // twice would turn one problem into two.
+    return null
   }
 
   const attached = await api<ProjectSummary[]>(daemon, '/api/projects')
   if (!attached.ok || !Array.isArray(attached.body)) {
     out('   Could not read the project list from the daemon.\n\n')
-    return
+    return 'the project list could not be read from the daemon'
   }
 
   if (!prompt) {
     out(attached.body.length > 0
       ? `   ${attached.body.length} project(s) attached.\n\n`
       : '   Nothing attached yet. Run `looptroop setup` in a terminal to attach a repository.\n\n')
-    return
+    return null
   }
 
   if (!isYes(await prompt('   Attach a git repository? [Y/n]', 'y'))) {
     out('   Skipped.\n\n')
-    return
+    return null
   }
 
   const folderPath = await prompt(`   Repository path [${cwd}]:`, cwd)
@@ -160,7 +194,7 @@ async function stepProject(
   if (!check.ok || check.body?.status !== 'valid') {
     out(`   ${check.body?.message ?? 'That folder could not be checked.'}\n`)
     out('   Nothing was attached. Fix that and run `looptroop setup` again.\n\n')
-    return
+    return `${folderPath} could not be attached`
   }
 
   // The repository root, not the folder that was typed: attaching a subfolder
@@ -169,7 +203,7 @@ async function stepProject(
   const existing = attached.body.find((project) => project.folderPath === repoRoot)
   if (existing) {
     out(`   Already attached as ${existing.name} (${existing.shortname}).\n\n`)
-    return
+    return null
   }
 
   const name = await prompt(`   Name [${basename(repoRoot)}]:`, basename(repoRoot))
@@ -183,9 +217,14 @@ async function stepProject(
     body: JSON.stringify({ name, shortname, folderPath: repoRoot, ignoreMode }),
   })
 
-  out(created.ok
-    ? `   Attached ${name} (${shortname}); LoopTroop's files ${IGNORE_MODE_LABELS[ignoreMode]}.\n\n`
-    : `   Could not attach: ${created.body?.message ?? created.body?.error ?? `HTTP ${created.status}`}\n\n`)
+  if (created.ok) {
+    out(`   Attached ${name} (${shortname}); LoopTroop's files ${IGNORE_MODE_LABELS[ignoreMode]}.\n\n`)
+    return null
+  }
+
+  const reason = created.body?.message ?? created.body?.error ?? `HTTP ${created.status}`
+  out(`   Could not attach: ${reason}\n\n`)
+  return `${name} was not attached: ${reason}`
 }
 
 /**
@@ -224,34 +263,36 @@ async function stepBrowser(
   out: (text: string) => void,
   daemon: DaemonState | null,
   open: (url: string) => void,
-): Promise<void> {
+): Promise<Unfinished> {
   out('4. Browser\n')
 
   if (!daemon) {
     out('   Skipped: there is nothing to open until the daemon runs.\n')
-    return
+    return null
   }
 
   if (!prompt) {
     out('   Run `looptroop open` for a signed-in link.\n')
-    return
+    return null
   }
 
   if (!isYes(await prompt('   Open LoopTroop in your browser? [Y/n]', 'y'))) {
     out('   Skipped. Run `looptroop open` whenever you want it.\n')
-    return
+    return null
   }
 
   const url = await mintBootstrapUrl(daemon)
   if (!url) {
     out('   Could not obtain a sign-in link. Run `looptroop open` to try again.\n')
-    return
+    // A running daemon that will not mint a nonce leaves no way in at all.
+    return 'no sign-in link could be obtained from the daemon'
   }
 
   open(url)
   // The origin, never the URL: the nonce in it is a credential, and this line
   // ends up in scrollback, in screenshots and in pasted bug reports.
   out(`   Opened http://${daemon.host}:${daemon.port}\n`)
+  return null
 }
 
 /** Every call carries the daemon's own bearer token; nothing here is public. */

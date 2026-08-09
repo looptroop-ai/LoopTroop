@@ -36,11 +36,59 @@ interface Check {
 const REQUIRED_NODE_MAJOR = 24
 const REQUIRED_NODE_MINOR = 15
 
+/** Enough for a local binary to print its version and exit. */
+const PROBE_TIMEOUT_MS = 5_000
+/** Longer, for the one probe that reaches the network before it answers. */
+const NETWORK_PROBE_TIMEOUT_MS = 10_000
+
 function installHint(tool: string): string {
   switch (process.platform) {
     case 'darwin': return `brew install ${tool}`
     case 'win32': return `winget install ${tool}`
     default: return `Use your package manager, e.g. apt install ${tool}`
+  }
+}
+
+/** What running one of doctor's probe commands established. */
+export type ProbeResult =
+  | { kind: 'ok'; output: string }
+  | { kind: 'timed-out' }
+  /** Not on PATH, or on it and exiting non-zero. */
+  | { kind: 'unavailable' }
+
+/**
+ * Runs one of doctor's probe commands under a deadline.
+ *
+ * Every one of them normally answers instantly, and the deadline is what keeps
+ * `doctor` from becoming the thing that hangs. `gh auth status` is the sharp
+ * case: it reaches github.com to validate the token, so a black-holed proxy
+ * turns the command someone runs to diagnose a hang into a second hang, with no
+ * output and nothing to interrupt — execFileSync blocks the whole process, so
+ * there is no later point at which this could be given up on.
+ */
+export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
+  try {
+    const output = execFileSync(command, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: timeoutMs,
+    })
+    return { kind: 'ok', output }
+  } catch (error) {
+    // A command that was found and then hung is a different problem from one
+    // that is not installed, and the install hint would be wrong advice.
+    return (error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+      ? { kind: 'timed-out' }
+      : { kind: 'unavailable' }
+  }
+}
+
+/** The line to show for a probe that never came back, and what to do about it. */
+function timedOutCheck(name: string, command: string, timeoutMs: number): Omit<Check, 'status'> {
+  return {
+    name,
+    detail: `\`${command}\` did not answer within ${timeoutMs / 1000}s`,
+    remedy: `Run \`${command}\` yourself to see what it is waiting for.`,
   }
 }
 
@@ -60,30 +108,40 @@ function checkNode(): Check {
 }
 
 function checkBinary(name: string, args: string[], required: boolean): Check {
-  try {
-    const output = execFileSync(name, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-    return { name, status: 'ok', detail: output.trim().split('\n')[0] ?? 'present' }
-  } catch {
-    return {
-      name,
-      status: required ? 'fail' : 'warn',
-      detail: 'not found on PATH',
-      remedy: installHint(name),
-    }
+  const probe = runProbe(name, args, PROBE_TIMEOUT_MS)
+  if (probe.kind === 'ok') {
+    return { name, status: 'ok', detail: probe.output.trim().split('\n')[0] ?? 'present' }
+  }
+
+  if (probe.kind === 'timed-out') {
+    // Installed, and stuck. Whether that is fatal is the same question as for a
+    // missing one: git is not optional, gh is.
+    return { status: required ? 'fail' : 'warn', ...timedOutCheck(name, `${name} ${args.join(' ')}`, PROBE_TIMEOUT_MS) }
+  }
+
+  return {
+    name,
+    status: required ? 'fail' : 'warn',
+    detail: 'not found on PATH',
+    remedy: installHint(name),
   }
 }
 
 function checkGitHubAuth(): Check {
-  try {
-    execFileSync('gh', ['auth', 'status'], { stdio: 'ignore' })
-    return { name: 'gh auth', status: 'ok', detail: 'authenticated' }
-  } catch {
-    return {
-      name: 'gh auth',
-      status: 'warn',
-      detail: 'not authenticated',
-      remedy: 'Run `gh auth login`. Only needed for pull-request delivery.',
-    }
+  // The one probe that goes to the network: `gh auth status` validates the
+  // token against github.com rather than reading it locally.
+  const probe = runProbe('gh', ['auth', 'status'], NETWORK_PROBE_TIMEOUT_MS)
+  if (probe.kind === 'ok') return { name: 'gh auth', status: 'ok', detail: 'authenticated' }
+
+  if (probe.kind === 'timed-out') {
+    return { status: 'warn', ...timedOutCheck('gh auth', 'gh auth status', NETWORK_PROBE_TIMEOUT_MS) }
+  }
+
+  return {
+    name: 'gh auth',
+    status: 'warn',
+    detail: 'not authenticated',
+    remedy: 'Run `gh auth login`. Only needed for pull-request delivery.',
   }
 }
 
@@ -107,31 +165,89 @@ function checkConfigDir(): Check {
   }
 }
 
-async function checkOpenCode(): Promise<Check> {
+/** What asking the OpenCode server for its config established. */
+export type OpenCodeReachability =
+  | { kind: 'ok' }
+  | { kind: 'unreachable' }
+  | { kind: 'responded'; status: number }
+
+/**
+ * Whether this machine can run a coding operation, from the three facts that
+ * decide it: is a server answering, is a daemon already relying on one, and
+ * could a start launch one.
+ *
+ * Every one of these used to be a warning, so `doctor` exited 0 — and printed
+ * "This machine can run LoopTroop" — on a machine where `looptroop start` is
+ * refused outright for want of the binary, and on one where the daemon is up
+ * and its OpenCode has been dead for an hour. Both are the exact question the
+ * command was run to answer.
+ *
+ * Unreachable on its own is still a warning, and deliberately so: on a machine
+ * where nothing has been started yet there is no server, and the next start
+ * launches one. Reporting that as broken would fail every fresh install.
+ */
+export function judgeOpenCode(
+  reachable: OpenCodeReachability,
+  context: { baseUrl: string; daemon: DaemonState | null; cliAvailable: boolean },
+): Check {
+  const { baseUrl } = context
+  if (reachable.kind === 'ok') {
+    return { name: 'opencode', status: 'ok', detail: `reachable at ${baseUrl}` }
+  }
+
+  const detail = reachable.kind === 'responded'
+    ? `responded ${reachable.status} at ${baseUrl}`
+    : `not reachable at ${baseUrl}`
+
+  // A daemon that has an OpenCode record is one that needs a server; that it is
+  // not answering means every operation LoopTroop exists to perform fails right
+  // now. A daemon in mock mode records nothing, and is not evidence either way.
+  const daemonOpenCode = context.daemon?.opencode
+  if (daemonOpenCode) {
+    const gaveUp = daemonOpenCode.status === 'degraded' ? daemonOpenCode.detail : undefined
+    return {
+      name: 'opencode',
+      status: 'fail',
+      detail: gaveUp ? `${detail}; LoopTroop gave up on it: ${gaveUp}` : `${detail}, while LoopTroop is running`,
+      remedy: 'Run `looptroop restart`. If that does not fix it, run `opencode serve` yourself to see why.',
+    }
+  }
+
+  if (!context.cliAvailable) {
+    return {
+      name: 'opencode',
+      status: 'fail',
+      // Nothing is running and nothing could be started: the next start is
+      // refused before it binds a port, rather than launching a server.
+      detail: `${detail}, and \`opencode\` cannot be launched`,
+      remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
+    }
+  }
+
+  return {
+    name: 'opencode',
+    status: 'warn',
+    detail: `${detail}; \`looptroop start\` will launch one`,
+    remedy: 'No action needed: LoopTroop starts OpenCode itself.',
+  }
+}
+
+async function checkOpenCode(daemon: DaemonState | null, cliAvailable: boolean): Promise<Check> {
   const settings = resolveSettings()
   if (settings.opencodeMode === 'mock') {
     return { name: 'opencode', status: 'ok', detail: 'mock mode' }
   }
 
+  const reachable = await probeOpenCodeConfig(settings.opencodeBaseUrl)
+  return judgeOpenCode(reachable, { baseUrl: settings.opencodeBaseUrl, daemon, cliAvailable })
+}
+
+async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachability> {
   try {
-    const response = await fetch(`${settings.opencodeBaseUrl}/config`, {
-      signal: AbortSignal.timeout(2_000),
-    })
-    return response.ok
-      ? { name: 'opencode', status: 'ok', detail: `reachable at ${settings.opencodeBaseUrl}` }
-      : {
-          name: 'opencode',
-          status: 'warn',
-          detail: `responded ${response.status} at ${settings.opencodeBaseUrl}`,
-          remedy: 'Check the OpenCode server logs.',
-        }
+    const response = await fetch(`${baseUrl}/config`, { signal: AbortSignal.timeout(2_000) })
+    return response.ok ? { kind: 'ok' } : { kind: 'responded', status: response.status }
   } catch {
-    return {
-      name: 'opencode',
-      status: 'warn',
-      detail: `not reachable at ${settings.opencodeBaseUrl}`,
-      remedy: 'Start it with `opencode serve`, or install it from https://opencode.ai',
-    }
+    return { kind: 'unreachable' }
   }
 }
 
@@ -145,21 +261,23 @@ function checkOpenCodeVersion(): Check {
     return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
   }
 
-  try {
-    const output = execFileSync('opencode', ['--version'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    return { name: 'opencode cli', status: 'ok', detail: output.trim().split('\n')[0] || 'present' }
-  } catch {
-    return {
-      name: 'opencode cli',
-      status: 'warn',
-      // A server that is already running can still serve LoopTroop, so a
-      // missing binary is only a problem for starting one.
-      detail: 'not found on PATH',
-      remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
-    }
+  const probe = runProbe('opencode', ['--version'], PROBE_TIMEOUT_MS)
+  if (probe.kind === 'ok') {
+    return { name: 'opencode cli', status: 'ok', detail: probe.output.trim().split('\n')[0] || 'present' }
+  }
+
+  if (probe.kind === 'timed-out') {
+    return { status: 'warn', ...timedOutCheck('opencode cli', 'opencode --version', PROBE_TIMEOUT_MS) }
+  }
+
+  return {
+    name: 'opencode cli',
+    status: 'warn',
+    // A server that is already running can still serve LoopTroop, so a missing
+    // binary is only a problem for starting one. Whether that is survivable is
+    // decided by `judgeOpenCode`, which can see both facts at once.
+    detail: 'not found on PATH',
+    remedy: 'Install it from https://opencode.ai, or point LOOPTROOP_OPENCODE_BASE_URL at a running server.',
   }
 }
 
@@ -454,6 +572,9 @@ export async function runChecks(): Promise<Check[]> {
   // holding the port is our own daemon, and probing twice would be two more
   // HTTP requests for an answer that cannot have changed in between.
   const daemon = await readRunningDaemon()
+  // Run before the server check, which needs its verdict: an unreachable
+  // OpenCode is survivable only when there is a binary left to start one.
+  const opencodeCli = checkOpenCodeVersion()
 
   return [
     checkNode(),
@@ -465,8 +586,8 @@ export async function runChecks(): Promise<Check[]> {
     await checkSchema(),
     await checkLastStart(),
     await checkProjectIgnores(),
-    checkOpenCodeVersion(),
-    await checkOpenCode(),
+    opencodeCli,
+    await checkOpenCode(daemon, opencodeCli.status === 'ok'),
     await checkPort(daemon),
     checkDaemon(daemon),
   ]

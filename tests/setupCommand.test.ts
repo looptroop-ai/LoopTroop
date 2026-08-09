@@ -32,6 +32,10 @@ describe('setup command', () => {
     created: Record<string, unknown>[]
     gitCheck: { status: string; repoRoot?: string; message?: string }
     nonce: string
+    /** Overrides the reply to GET /api/projects, for a daemon that is unwell. */
+    listFailure: number | null
+    /** Overrides the reply to POST /api/projects. */
+    createFailure: { status: number; message: string } | null
   }
 
   /**
@@ -49,6 +53,8 @@ describe('setup command', () => {
       created: [],
       gitCheck: { status: 'valid', repoRoot: '/repos/demo' },
       nonce: 'nonce-value-that-must-not-be-printed',
+      listFailure: null,
+      createFailure: null,
     }
     const apiToken = 'token-for-the-fake-daemon'
     const instanceId = 'instance-under-test'
@@ -71,6 +77,10 @@ describe('setup command', () => {
       }
 
       if (url.pathname === '/api/projects' && req.method === 'GET') {
+        if (daemon.listFailure !== null) {
+          reply(daemon.listFailure, { error: 'Internal error' })
+          return
+        }
         reply(200, daemon.attached)
         return
       }
@@ -87,6 +97,10 @@ describe('setup command', () => {
         req.on('data', (chunk: Buffer) => { raw += chunk.toString() })
         req.on('end', () => {
           const body = JSON.parse(raw) as Record<string, unknown>
+          if (daemon.createFailure) {
+            reply(daemon.createFailure.status, { message: daemon.createFailure.message })
+            return
+          }
           daemon.created.push(body)
           daemon.attached.push({
             name: String(body.name),
@@ -323,6 +337,109 @@ describe('setup command', () => {
     expect(code).toBe(0)
     expect(output.text()).toContain('Not running')
     expect(output.text()).toContain('needs a running daemon')
+  })
+
+  /**
+   * The exit code, which used to be 0 no matter what happened.
+   *
+   * `looptroop setup --yes` in a provisioning script read as a clean run when
+   * the daemon had failed to start, when the daemon would not answer its own
+   * API, and when the repository was rejected — so the next command in the
+   * script ran against nothing. The distinction that matters is asked-for and
+   * failed versus declined: declining is the documented way to use this
+   * command, and must stay a success.
+   */
+  describe('what the exit code says happened', () => {
+    it('fails when the daemon will not answer for its own projects', async () => {
+      const daemon = await startFakeDaemon()
+      daemon.listFailure = 500
+      const output = capture()
+      const { prompt } = scripted(['n'])
+
+      const code = await setupCommand({
+        configDir: daemon.configDir,
+        cwd: '/repos/demo',
+        prompt,
+        out: output.out,
+        open: () => undefined,
+      })
+
+      expect(code).toBe(1)
+      // Named, so a non-zero exit is never a mystery in a CI log.
+      expect(output.text()).toContain('project list could not be read')
+    })
+
+    it('fails when the repository the user named was rejected', async () => {
+      const daemon = await startFakeDaemon()
+      daemon.gitCheck = { status: 'invalid', message: 'Not a git repository.' }
+      const output = capture()
+      const { prompt } = scripted(['y', '/repos/not-a-repo', 'n'])
+
+      const code = await setupCommand({
+        configDir: daemon.configDir,
+        cwd: '/repos/not-a-repo',
+        prompt,
+        out: output.out,
+        open: () => undefined,
+      })
+
+      expect(code).toBe(1)
+      expect(output.text()).toContain('/repos/not-a-repo could not be attached')
+    })
+
+    it('fails when the attach request is refused', async () => {
+      const daemon = await startFakeDaemon()
+      daemon.createFailure = { status: 409, message: 'That shortname is taken.' }
+      const output = capture()
+      const { prompt } = scripted(['y', '/repos/demo', 'Demo App', 'DEMO', '1', 'n'])
+
+      const code = await setupCommand({
+        configDir: daemon.configDir,
+        cwd: '/repos/demo',
+        prompt,
+        out: output.out,
+        open: () => undefined,
+      })
+
+      expect(code).toBe(1)
+      expect(output.text()).toContain('That shortname is taken.')
+    })
+
+    it('fails when a running daemon will not hand out a sign-in link', async () => {
+      const daemon = await startFakeDaemon()
+      // A daemon that mints nothing leaves no way into the interface at all.
+      daemon.nonce = ''
+      const output = capture()
+      const { prompt } = scripted(['n', 'y'])
+
+      const code = await setupCommand({
+        configDir: daemon.configDir,
+        cwd: '/repos/demo',
+        prompt,
+        out: output.out,
+        open: () => { throw new Error('there is no link to open') },
+      })
+
+      expect(code).toBe(1)
+      expect(output.text()).toContain('no sign-in link')
+    })
+
+    it('succeeds when the user declines everything, which is not a failure', async () => {
+      const daemon = await startFakeDaemon()
+      const output = capture()
+      const { prompt } = scripted(['n', 'n'])
+
+      const code = await setupCommand({
+        configDir: daemon.configDir,
+        cwd: '/repos/demo',
+        prompt,
+        out: output.out,
+        open: () => undefined,
+      })
+
+      expect(code).toBe(0)
+      expect(output.text()).not.toContain('did not finish')
+    })
   })
 
   it.each([

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, chmodSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { doctorCommand, runChecks } from '../server/cli/doctorCommand'
+import { doctorCommand, runChecks, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
+import type { DaemonState } from '../server/lib/daemonPaths'
 
 /**
  * 2.12 contract: doctor tells a user whether this machine can run LoopTroop,
@@ -258,6 +259,139 @@ describe('doctor command', () => {
 
       expect(check?.status).toBe('ok')
       expect(check?.remedy).toBeUndefined()
+    })
+  })
+
+  /**
+   * The verdict `doctor` exists to give, and the one it got wrong.
+   *
+   * Every OpenCode outcome was a warning, so the command exited 0 and printed
+   * "This machine can run LoopTroop" on a machine where `looptroop start` is
+   * refused outright for want of the binary — and on one where the daemon is up
+   * and its OpenCode died an hour ago. Both are exactly the question someone
+   * runs `doctor` to have answered.
+   */
+  describe('whether OpenCode can actually run', () => {
+    const baseUrl = 'http://127.0.0.1:4096'
+
+    function daemonWith(opencode: DaemonState['opencode']): DaemonState {
+      return {
+        instanceId: 'i-1',
+        pid: process.pid,
+        port: 4317,
+        host: '127.0.0.1',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        version: '0.0.0-test',
+        apiToken: 'secret',
+        ...(opencode === undefined ? {} : { opencode }),
+      }
+    }
+
+    it('fails when nothing is running and nothing could start one', () => {
+      const check = judgeOpenCode(
+        { kind: 'unreachable' },
+        { baseUrl, daemon: null, cliAvailable: false },
+      )
+
+      // The next start throws OpenCodeMissingError before it binds a port, so
+      // reporting this as survivable is a straight contradiction of what
+      // happens next.
+      expect(check.status).toBe('fail')
+      expect(check.remedy).toContain('opencode.ai')
+    })
+
+    it('only warns when a start would launch one', () => {
+      const check = judgeOpenCode(
+        { kind: 'unreachable' },
+        { baseUrl, daemon: null, cliAvailable: true },
+      )
+
+      // A fresh install has no server running and does not need one yet.
+      // Failing here would fail every machine before its first start.
+      expect(check.status).toBe('warn')
+      expect(check.detail).toContain('will launch one')
+    })
+
+    it('fails when a running daemon has lost the server it depends on', () => {
+      const check = judgeOpenCode(
+        { kind: 'unreachable' },
+        {
+          baseUrl,
+          daemon: daemonWith({ baseUrl, owned: true, status: 'managed', pid: 4242 }),
+          cliAvailable: true,
+        },
+      )
+
+      // The binary being installed does not help here: LoopTroop is already
+      // running, and every coding operation it is asked for fails right now.
+      expect(check.status).toBe('fail')
+      expect(check.remedy).toContain('looptroop restart')
+    })
+
+    it('repeats the reason the supervisor recorded when it gave up', () => {
+      const check = judgeOpenCode(
+        { kind: 'unreachable' },
+        {
+          baseUrl,
+          daemon: daemonWith({
+            baseUrl,
+            owned: false,
+            status: 'degraded',
+            detail: 'OpenCode exited 3 times; giving up.',
+          }),
+          cliAvailable: true,
+        },
+      )
+
+      expect(check.status).toBe('fail')
+      // Written by the daemon that watched it happen; `doctor` runs in a
+      // different process minutes later and cannot rediscover it.
+      expect(check.detail).toContain('OpenCode exited 3 times')
+    })
+
+    it('reports a reachable server as healthy whoever started it', () => {
+      expect(judgeOpenCode({ kind: 'ok' }, { baseUrl, daemon: null, cliAvailable: false }).status).toBe('ok')
+    })
+
+    it('carries the status code when something else answers on that port', () => {
+      const check = judgeOpenCode(
+        { kind: 'responded', status: 502 },
+        { baseUrl, daemon: null, cliAvailable: true },
+      )
+
+      expect(check.detail).toContain('502')
+    })
+  })
+
+  /**
+   * `doctor` is what someone runs when the machine is already misbehaving, and
+   * every probe here shells out to a binary that can hang: `gh auth status`
+   * reaches github.com, and a black-holed proxy used to turn the diagnosis into
+   * a second hang with no output. execFileSync blocks the whole process, so
+   * there is no later point at which it could be given up on.
+   */
+  describe('probing external commands', () => {
+    it('gives up on a command that does not answer', () => {
+      const started = Date.now()
+      const result = runProbe(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], 500)
+
+      expect(result.kind).toBe('timed-out')
+      // The deadline, not the command's own lifetime: without a timeout this
+      // sits for a full minute.
+      expect(Date.now() - started).toBeLessThan(30_000)
+    })
+
+    it('tells a hung command apart from a missing one', () => {
+      // Both used to report "not found on PATH", which sends someone to install
+      // a tool they already have.
+      expect(runProbe('looptroop-not-a-real-binary', ['--version'], 500).kind).toBe('unavailable')
+    })
+
+    it('returns the output of a command that answers', () => {
+      const result = runProbe(process.execPath, ['--version'], 5_000)
+
+      expect(result.kind).toBe('ok')
+      if (result.kind === 'ok') expect(result.output).toContain('v')
     })
   })
 })

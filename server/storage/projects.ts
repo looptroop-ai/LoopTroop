@@ -1,9 +1,9 @@
 import { eq, or } from 'drizzle-orm'
-import { rmSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { access, lstat, readdir } from 'fs/promises'
 import { resolve as resolvePath } from 'path'
 import { spawnSync } from 'child_process'
-import { db as appDb } from '../db/index'
+import { APP_DB_PATH, db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
 import { attachedProjects, projects, tickets } from '../db/schema'
 import { applyIgnoreMode, DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '../git/repository'
@@ -436,6 +436,35 @@ function getTerminalTicketExternalIds(projectRoot: string): string[] {
 export function listClosedTicketIds(projectRoot: string): string[] {
   try {
     return getTerminalTicketExternalIds(projectRoot)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The folder of every attached project, for a caller that needs the list before
+ * the application has ever booted.
+ *
+ * `listProjects` is the wrong tool for that: it reaches the database through the
+ * shared handle, which creates the file on first touch and then queries tables
+ * that only exist once the boot sequence has run. `clean` has to work on a
+ * machine where LoopTroop has never started successfully — and must not leave a
+ * database behind on one where it never started at all — so a missing file, a
+ * database with no tables yet, and one that cannot be read all report the same
+ * thing: nothing is known to be attached, which is never grounds to delete.
+ *
+ * Unlike `listProjects` this keeps projects whose local data has gone missing.
+ * Their worktrees are exactly the debris `clean` exists to find.
+ */
+export function listAttachedProjectRoots(): string[] {
+  if (!existsSync(APP_DB_PATH)) return []
+
+  try {
+    return appDb
+      .select({ folderPath: attachedProjects.folderPath })
+      .from(attachedProjects)
+      .all()
+      .map((row) => row.folderPath)
   } catch {
     return []
   }

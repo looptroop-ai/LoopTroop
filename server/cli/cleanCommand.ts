@@ -339,10 +339,13 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     return 1
   }
 
-  const { listProjects, listClosedTicketIds } = await import('../storage/projects')
-  const candidates = planWorktreeCleanup(listProjects().map((project) => ({
-    projectRoot: project.folderPath,
-    closedTicketIds: listClosedTicketIds(project.folderPath),
+  // Attached roots rather than fully hydrated projects: `clean` runs on machines
+  // where the app has never booted, and hydration reads tables that only exist
+  // after startup has created them.
+  const { listAttachedProjectRoots, listClosedTicketIds } = await import('../storage/projects')
+  const candidates = planWorktreeCleanup(listAttachedProjectRoots().map((projectRoot) => ({
+    projectRoot,
+    closedTicketIds: listClosedTicketIds(projectRoot),
   })))
   const orphan = inspectOrphanedOpenCode(options.configDir)
 

@@ -30,6 +30,10 @@ import {
   getWorktreeOwnerMarkerPath,
 } from '../server/storage/worktreeOwnership'
 
+/** Runs TypeScript sources directly, so the first-run test needs no build. */
+const TSX_BIN = resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs')
+const CLI_ENTRY = resolve(process.cwd(), 'server/cli/cli.ts')
+
 /**
  * 2.17 contract: `clean` lists by default and acts only under --apply; it needs
  * a managed-ownership marker before it will delete anything; it refuses dirty,
@@ -363,6 +367,38 @@ describe('clean command', () => {
       expect(existsSync(spared)).toBe(true)
       // Removed through git, not by deleting the directory behind its back.
       expect(git(project, ['worktree', 'list', '--porcelain'])).not.toContain('ticket-finished')
+    })
+
+    /**
+     * Runs the real CLI in its own process, because the contract is about a
+     * machine where nothing has ever booted: this test's own process has already
+     * created and migrated a database, so it cannot observe a first run.
+     */
+    it('works on a machine where LoopTroop has never started', () => {
+      const configDir = makeTempDir('fresh')
+      const run = (): { stdout: string, code: number } => {
+        try {
+          return {
+            stdout: execFileSync(process.execPath, [TSX_BIN, CLI_ENTRY, 'clean'], {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, LOOPTROOP_CONFIG_DIR: configDir },
+            }),
+            code: 0,
+          }
+        } catch (error) {
+          const failure = error as { status?: number, stdout?: string, stderr?: string }
+          return { stdout: `${failure.stdout ?? ''}${failure.stderr ?? ''}`, code: failure.status ?? 1 }
+        }
+      }
+
+      const { stdout, code } = run()
+
+      expect(code).toBe(0)
+      expect(stdout).toContain('Nothing to clean')
+      // Nor may it leave one behind: a diagnostic that creates the database it
+      // was asked to inspect has changed the machine it was reporting on.
+      expect(existsSync(resolve(configDir, 'app.sqlite'))).toBe(false)
     })
 
     it('refuses to run while a LoopTroop process is still alive', async () => {

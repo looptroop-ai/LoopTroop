@@ -116,6 +116,38 @@ jobs:
       - name: Test
         run: npm run test
 
+  # Everything above runs against the source tree, where the working directory
+  # already holds every file the daemon needs. This installs the tarball the way
+  # a user would and drives the CLI against it, which is the only place a
+  # mispacked asset or a cwd-relative path can fail.
+  smoke-install:
+    name: Install smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exact floor everywhere: a global install is exactly where the oldest
+        # Node the package claims to support has to work.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # The script mocks OpenCode itself, packs into its own scratch tree, and
+      # tears the whole thing down in a `finally`.
+      - name: Pack, install globally, and drive the CLI
+        run: node scripts/smoke-install.mjs
+
   # Node 26 is Current, not LTS. Breakage here is upstream news rather than a
   # defect, so it warns without blocking.
   early-warning:

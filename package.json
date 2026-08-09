@@ -66,6 +66,7 @@
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
     "verify:version": "node scripts/verify-version-single-source.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
+    "verify:install": "node scripts/smoke-install.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "release:notes": "tsx scripts/print-release-notes.ts",

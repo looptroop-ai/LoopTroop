@@ -1,3 +1,5 @@
+import type { ProcessMatch } from '../server/lib/processIdentity'
+
 export interface ProcessInfo {
   pid: number
   ppid: number
@@ -201,3 +203,90 @@ export function resolveProcessTreesToTerminate(
 export function formatProcessSummary(process: ProcessInfo): string {
   return `pid=${process.pid} ppid=${process.ppid} args=${process.args}`
 }
+
+/** The parts of daemon.json this decision reads. */
+export interface DaemonProtectionState {
+  pid: number
+  startToken?: string
+  opencode?: {
+    owned?: boolean
+    pid?: number
+    startToken?: string
+  }
+}
+
+export interface DaemonProtectionDeps {
+  isProcessAlive: (pid: number) => boolean
+  matchProcess: (pid: number, recordedToken: string | undefined) => ProcessMatch
+}
+
+export interface DaemonProtectionDecision {
+  /** Pids preflight must not terminate; the caller protects each one's tree. */
+  pids: number[]
+  /** Why a decision differs from what the record alone would have said. */
+  warnings: string[]
+}
+
+/**
+ * Which pids from daemon.json a dev preflight must leave alone.
+ *
+ * A `looptroop start` daemon is a real user session whose process tree is
+ * indistinguishable from a stale dev tree, so it has to be protected by name.
+ * The name is a pid, and a pid is not an identity: a daemon that died without
+ * clearing its record — SIGKILL, a crash, a laptop that lost power — leaves a
+ * number behind that the kernel hands to something else. Protecting on liveness
+ * alone then protects whatever inherited it, and because the whole subtree is
+ * protected with it, one recycled pid belonging to a shell or a supervisor can
+ * shield every stale dev process on the machine. Preflight cleans nothing and
+ * `npm run dev` fails on a port it was supposed to reclaim.
+ *
+ * The unverifiable case resolves the opposite way to `stop` and `clean`, which
+ * refuse to act without proof. Those commands signal processes, so uncertainty
+ * must stop them. This one decides whether to spare a process, and the costs are
+ * not symmetric: sparing a stranger wastes a port, while killing an unverified
+ * daemon takes down the session a user is working in. So `unknown` protects, and
+ * only a positive mismatch withdraws protection.
+ */
+export function decideDaemonProtection(
+  state: DaemonProtectionState | null,
+  deps: DaemonProtectionDeps,
+): DaemonProtectionDecision {
+  if (!state) return { pids: [], warnings: [] }
+  // A record whose pid is gone is the ordinary residue of a daemon that did not
+  // shut down cleanly. There is nothing to protect and nothing to report.
+  if (!deps.isProcessAlive(state.pid)) return { pids: [], warnings: [] }
+
+  const match = deps.matchProcess(state.pid, state.startToken)
+  if (match.kind === 'different') {
+    return {
+      pids: [],
+      warnings: [
+        `daemon.json names pid ${state.pid}, which now belongs to a different process. ` +
+        'Treating it as a stale record rather than as a running daemon.',
+      ],
+    }
+  }
+
+  const pids = [state.pid]
+  const warnings = match.kind === 'unknown'
+    ? [`Protecting the daemon at pid ${state.pid} without verifying it: ${match.reason}.`]
+    : []
+
+  const opencode = state.opencode
+  if (opencode?.owned && typeof opencode.pid === 'number' && opencode.pid > 0) {
+    // Usually a child of the daemon, and so already inside the protected tree.
+    // Named separately for the case where the process table cannot show that.
+    const childMatch = deps.matchProcess(opencode.pid, opencode.startToken)
+    if (childMatch.kind === 'different') {
+      warnings.push(
+        `daemon.json names an OpenCode server at pid ${opencode.pid}, which now belongs to a ` +
+        'different process. It will not be protected.',
+      )
+    } else {
+      pids.push(opencode.pid)
+    }
+  }
+
+  return { pids, warnings }
+}
+

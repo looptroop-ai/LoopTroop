@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getBackendPort, getFrontendPort } from '../shared/appConfig'
 import { readDaemonState } from '../server/lib/daemonPaths'
+import { matchProcess } from '../server/lib/processIdentity'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -21,6 +22,7 @@ import {
 import {
   buildProcessGraph,
   collectProcessTree,
+  decideDaemonProtection,
   formatProcessSummary,
   isLoopTroopDevProcess,
   findOwningRootProcess,
@@ -102,16 +104,22 @@ function collectProtectedPids(currentPid: number, graph: ReturnType<typeof build
   }
 
   // A `looptroop start` daemon is a real user session, not a stale dev tree.
-  // Its process tree looks identical to one, so protect it explicitly.
-  const daemonState = readDaemonState()
-  if (daemonState && isProcessAlive(daemonState.pid)) {
-    for (const entry of collectProcessTree(daemonState.pid, graph)) {
+  // Its process tree looks identical to one, so protect it explicitly — but only
+  // once the pid in the record has been shown to still be that daemon.
+  const protection = decideDaemonProtection(readDaemonState(), {
+    isProcessAlive,
+    matchProcess: (pid, token) => matchProcess(pid, token),
+  })
+
+  for (const warning of protection.warnings) {
+    console.warn(`[dev-preflight] ${warning}`)
+  }
+
+  for (const pid of protection.pids) {
+    for (const entry of collectProcessTree(pid, graph)) {
       protectedPids.add(entry.pid)
     }
-    protectedPids.add(daemonState.pid)
-    if (daemonState.opencode?.owned && daemonState.opencode.pid) {
-      protectedPids.add(daemonState.opencode.pid)
-    }
+    protectedPids.add(pid)
   }
 
   return protectedPids

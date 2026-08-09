@@ -37,6 +37,18 @@ export interface DaemonState {
     baseUrl: string
     /** Only a daemon-started server may be stopped by the daemon. */
     owned: boolean
+    /**
+     * Which of the three non-mock outcomes this is.
+     *
+     * `owned` alone collapsed "someone else's server, running fine" and "ours,
+     * dead, and we gave up restarting it" into the same record — so `status`
+     * reported a healthy adopted server for a daemon that could not run a
+     * single coding operation. Absent in a record written by an older build,
+     * which is why every reader treats it as unknown rather than as `adopted`.
+     */
+    status?: 'adopted' | 'managed' | 'degraded'
+    /** Why it is degraded, already written for a person. Never set otherwise. */
+    detail?: string
     pid?: number
     /**
      * Identifies the process that held `pid` when this record was written, so a

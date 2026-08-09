@@ -51,6 +51,31 @@ export interface StartDaemonOptions {
 }
 
 /**
+ * The record daemon.json should hold after OpenCode changes status, or null when
+ * it must be left exactly as it is.
+ *
+ * Separate from the write so the decision can be tested without a real
+ * `opencode serve` to crash. Two cases must not write, and both are the kind
+ * that only shows up under a race: there is no record yet to patch, and the
+ * daemon is already shutting down — where a refresh would recreate the file
+ * `stop` had just removed, leaving the next start to trust a dead daemon.
+ */
+export function nextStateForOpenCode(
+  current: DaemonState | null,
+  status: OpenCodeStatus,
+  baseUrl: string,
+  options: { released: boolean },
+): DaemonState | null {
+  if (current === null || options.released) return null
+
+  const opencode = describeOpenCode(status, baseUrl)
+  // Mock mode has no server to describe, and nothing about it can change.
+  if (opencode === undefined) return null
+
+  return { ...current, opencode }
+}
+
+/**
  * Turns a refused start into a record worth keeping, or into nothing.
  *
  * Most things that stop a start are transient and already reported while the
@@ -108,18 +133,27 @@ function recordStartFailure(error: unknown, version: string, configDir?: string)
  * cleanup with it and OpenCode is left running in its own process group. The
  * token is what lets a later `clean` reap that orphan without ever signalling an
  * unrelated process that happened to inherit the number.
+ *
+ * A degraded server is recorded as itself rather than folded in with an adopted
+ * one. Both are "not ours to stop", but only one of them means coding
+ * operations are unavailable, and a reader that cannot tell them apart reports
+ * a healthy server for a daemon that has given up.
  */
-function describeOpenCode(
+export function describeOpenCode(
   status: OpenCodeStatus,
   baseUrl: string,
 ): DaemonState['opencode'] {
   if (status.kind === 'mock') return undefined
-  if (status.kind !== 'managed') return { baseUrl, owned: false }
+  if (status.kind === 'degraded') {
+    return { baseUrl, owned: false, status: 'degraded', detail: status.reason }
+  }
+  if (status.kind === 'adopted') return { baseUrl, owned: false, status: 'adopted' }
 
   const startToken = readProcessStartToken(status.pid)
   return {
     baseUrl,
     owned: true,
+    status: 'managed',
     pid: status.pid,
     ...(startToken === null ? {} : { startToken }),
   }
@@ -148,6 +182,38 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
   // lets a client tell this daemon from a process that inherited its pid.
   const instanceId = randomUUID()
 
+  // The record the state file currently holds, so an OpenCode status change can
+  // be folded into it rather than rebuilt from scratch. Null until it is written.
+  let recordedState: DaemonState | null = null
+  // Set the moment shutdown begins: a late refresh would recreate daemon.json
+  // for a daemon that is no longer there, and the next start would trust it.
+  let stateFileReleased = false
+
+  /**
+   * Keeps daemon.json honest about OpenCode for as long as the daemon runs.
+   *
+   * Written once at startup, the record describes the server that was running
+   * then. A crash-and-restart moves the server to a new pid, and the old one is
+   * what `clean` would go looking for — a pid that is dead, or worse, reused.
+   * Giving up entirely is the other case, where the file kept claiming a
+   * reachable server for a daemon that could not run a single coding operation.
+   */
+  const recordOpenCodeStatus = (status: OpenCodeStatus): void => {
+    const next = nextStateForOpenCode(recordedState, status, settings.opencodeBaseUrl, {
+      released: stateFileReleased,
+    })
+    if (next === null) return
+
+    try {
+      writeDaemonState(next, options.configDir)
+      recordedState = next
+    } catch {
+      // Best effort: the daemon is still serving, and a refresh that failed
+      // must not take it down. The record stays stale, which every reader of
+      // it already has to tolerate — `clean` verifies identity before signalling.
+    }
+  }
+
   const shutdownListeners = new Set<(reason: string) => void>()
   // Assigned once `stop` exists below. A shutdown requested before then can only
   // come from a caller that has not been told the daemon is ready yet.
@@ -168,6 +234,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
       mock: settings.opencodeMode === 'mock',
+      onStatusChange: recordOpenCodeStatus,
     })
     const opencodeStatus = await opencode.start()
 
@@ -200,6 +267,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     }
 
     writeDaemonState(state, options.configDir)
+    // After the write, so a status change arriving from here on patches a record
+    // that exists rather than inventing one.
+    recordedState = state
 
     // The nonce travels in the fragment so it is never sent to the server as
     // part of the request line, and so it stays out of access logs. A fresh one
@@ -218,6 +288,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     const stop = (): Promise<void> => {
       stopping ??= (async () => {
         if (heartbeat) clearInterval(heartbeat)
+        // Before anything else: stopping OpenCode is what makes it change status,
+        // and a refresh landing after the rmSync below would leave daemon.json
+        // describing a daemon that has exited.
+        stateFileReleased = true
         try {
           await runtime?.close()
         } finally {
@@ -241,6 +315,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     }
   } catch (error) {
     if (heartbeat) clearInterval(heartbeat)
+    // Nothing from here on may write daemon.json: the record below is the last
+    // word on this start, and a status refresh would overwrite it with a state
+    // file for a daemon that is unwinding.
+    stateFileReleased = true
     try {
       await runtime?.close()
       await opencode?.stop()

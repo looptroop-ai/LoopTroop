@@ -3,7 +3,12 @@ import { mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
-import { startDaemon, type DaemonHandle } from '../server/daemon/startDaemon'
+import {
+  startDaemon,
+  describeOpenCode,
+  nextStateForOpenCode,
+  type DaemonHandle,
+} from '../server/daemon/startDaemon'
 import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
 
@@ -332,6 +337,113 @@ describe('daemon startup and shutdown', () => {
       // read back as a running daemon.
       const { readDaemonState } = await import('../server/lib/daemonPaths')
       expect(readDaemonState(configDir)).toBeNull()
+    })
+  })
+
+  /**
+   * What the state file says about OpenCode, which is the only thing `status`,
+   * `doctor` and `clean` have to go on once the daemon that wrote it is a pid.
+   *
+   * The record used to carry `owned` alone, so a supervisor that had given up
+   * was written down as `{ owned: false }` — byte-identical to a healthy server
+   * someone else started. `clean` read that and left nothing to reap, `status`
+   * read it and reported a working daemon, and the one machine state anybody
+   * would have wanted to see was the one the file could not express.
+   */
+  describe('OpenCode in the state file', () => {
+    const baseUrl = 'http://127.0.0.1:4096'
+
+    it('distinguishes a server it gave up on from one it never owned', () => {
+      const degraded = describeOpenCode(
+        { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
+        baseUrl,
+      )
+      const adopted = describeOpenCode({ kind: 'adopted', baseUrl }, baseUrl)
+
+      expect(degraded).toMatchObject({ status: 'degraded', owned: false, detail: 'exited 3 times' })
+      expect(adopted).toMatchObject({ status: 'adopted', owned: false })
+      expect(degraded).not.toEqual(adopted)
+    })
+
+    it('marks a managed server owned, with the pid a reaper needs', () => {
+      const managed = describeOpenCode({ kind: 'managed', baseUrl, pid: process.pid }, baseUrl)
+
+      expect(managed).toMatchObject({ status: 'managed', owned: true, pid: process.pid })
+    })
+
+    it('says nothing at all in mock mode, where there is no server', () => {
+      expect(describeOpenCode({ kind: 'mock' }, baseUrl)).toBeUndefined()
+    })
+
+    /**
+     * The refresh path: OpenCode dies an hour in, or comes back under a new pid,
+     * and the record written at startup is the only thing left describing it.
+     */
+    describe('refreshing the record after startup', () => {
+      const recorded: DaemonState = {
+        instanceId: 'i-1',
+        pid: 999,
+        port: 4317,
+        host: '127.0.0.1',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        version: '0.0.0-test',
+        apiToken: 'secret',
+        opencode: { baseUrl, owned: true, status: 'managed', pid: 111 },
+      }
+
+      it('moves the pid onto the server that is actually running', () => {
+        const next = nextStateForOpenCode(
+          recorded,
+          { kind: 'managed', baseUrl, pid: 222 },
+          baseUrl,
+          { released: false },
+        )
+
+        // The old pid is dead by now, and could belong to anything; `clean`
+        // signals what this file names.
+        expect(next?.opencode).toMatchObject({ pid: 222, owned: true })
+        // Everything else is carried through untouched, including the token the
+        // CLI authenticates with.
+        expect(next).toMatchObject({ instanceId: 'i-1', port: 4317, apiToken: 'secret' })
+      })
+
+      it('records giving up, where the file claimed a healthy server', () => {
+        const next = nextStateForOpenCode(
+          recorded,
+          { kind: 'degraded', baseUrl, reason: 'exited 3 times' },
+          baseUrl,
+          { released: false },
+        )
+
+        expect(next?.opencode).toMatchObject({ status: 'degraded', detail: 'exited 3 times' })
+      })
+
+      /**
+       * A shutdown removes daemon.json, and stopping OpenCode is itself a status
+       * change. Writing after that point resurrects the file for a daemon that
+       * has exited — and the next start reads it and believes it.
+       */
+      it('writes nothing once shutdown has released the file', () => {
+        const next = nextStateForOpenCode(
+          recorded,
+          { kind: 'degraded', baseUrl, reason: 'stopped' },
+          baseUrl,
+          { released: true },
+        )
+
+        expect(next).toBeNull()
+      })
+
+      it('writes nothing before there is a record to patch', () => {
+        const next = nextStateForOpenCode(
+          null,
+          { kind: 'managed', baseUrl, pid: 222 },
+          baseUrl,
+          { released: false },
+        )
+
+        expect(next).toBeNull()
+      })
     })
   })
 })

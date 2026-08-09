@@ -377,6 +377,31 @@ export async function stopCommand(): Promise<number> {
   return 0
 }
 
+/**
+ * One line about OpenCode for `status`.
+ *
+ * Worth a line of its own because a LoopTroop whose OpenCode has given up is
+ * still a LoopTroop that is running, and `status` answered only that narrower
+ * question — leaving the daemon looking healthy while every coding operation
+ * it exists to perform would fail.
+ */
+export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): string {
+  if (opencode === undefined) return 'mock mode (no server)'
+
+  switch (opencode.status) {
+    case 'degraded':
+      return `unavailable — ${opencode.detail ?? 'the server stopped responding'}`
+    case 'managed':
+      return `${opencode.baseUrl} (started by LoopTroop, pid ${opencode.pid ?? 'unknown'})`
+    case 'adopted':
+      return `${opencode.baseUrl} (started elsewhere)`
+    default:
+      // A record from a build that predates the status field. `owned` is all it
+      // said, and guessing beyond that would be inventing the answer.
+      return `${opencode.baseUrl}${opencode.owned ? ' (started by LoopTroop)' : ''}`
+  }
+}
+
 export async function statusCommand(json: boolean): Promise<number> {
   const configDir = resolveAppConfigDir()
   const state = await readRunningDaemon(configDir)
@@ -407,10 +432,11 @@ export async function statusCommand(json: boolean): Promise<number> {
   const uptimeMs = Date.now() - Date.parse(state.startedAt)
   process.stdout.write(
     'LoopTroop is running.\n' +
-    `  URL:     http://${state.host}:${state.port}\n` +
-    `  PID:     ${state.pid}\n` +
-    `  Version: ${state.version}\n` +
-    `  Uptime:  ${formatDuration(uptimeMs)}\n`,
+    `  URL:      http://${state.host}:${state.port}\n` +
+    `  PID:      ${state.pid}\n` +
+    `  Version:  ${state.version}\n` +
+    `  Uptime:   ${formatDuration(uptimeMs)}\n` +
+    `  OpenCode: ${describeOpenCodeForStatus(state.opencode)}\n`,
   )
 
   // After the status itself, so a notice never obscures the answer that was

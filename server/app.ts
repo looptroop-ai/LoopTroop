@@ -56,12 +56,46 @@ export interface CreateAppOptions {
 }
 
 /**
- * The bundle lives at dist/server/index.js and the interface at dist/client, so
- * the default is resolved from this module rather than the working directory:
- * a globally installed daemon runs from whatever directory the user is in.
+ * How far above this module the built interface may sit. Exactly the two depths
+ * the build produces: `dist/server/index.js` is one level below `dist/`, and
+ * `dist/server/cli/daemonProcess.js` is two. Bounded deliberately — an unbounded
+ * walk would climb out of the package and could find an unrelated `client`
+ * directory somewhere above it.
  */
-function resolveDefaultClientDir(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '../client')
+const CLIENT_SEARCH_DEPTH = 2
+
+/**
+ * The built interface, found by walking up from this module rather than from the
+ * working directory: a globally installed daemon runs from wherever the user
+ * happens to be.
+ *
+ * `dist/client` sits beside `dist/server`, but this module is inlined into three
+ * bundles at two depths, so a fixed `../client` resolves correctly from
+ * `dist/server/index.js` and points at a directory that does not exist from
+ * `dist/server/cli/daemonProcess.js` — which is the bundle the daemon actually
+ * runs. Nothing catches that locally, because the check below finds the built
+ * client through the working directory in a checkout; it surfaces only once
+ * someone installs the package, as a 404 for the entire interface.
+ *
+ * Falls back to the sibling directory when no built client is found, so the
+ * caller gets the documented default and the existsSync check below declines to
+ * mount an interface rather than serving from some directory chosen at random.
+ */
+export function resolveDefaultClientDir(
+  startDir = dirname(fileURLToPath(import.meta.url)),
+): string {
+  let dir = startDir
+
+  for (let depth = 0; depth < CLIENT_SEARCH_DEPTH; depth += 1) {
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+
+    const candidate = resolve(dir, 'client')
+    if (existsSync(resolve(candidate, 'index.html'))) return candidate
+  }
+
+  return resolve(startDir, '../client')
 }
 
 const CORS_ALLOWED_HEADERS = [

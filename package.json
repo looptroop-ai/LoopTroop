@@ -1,7 +1,6 @@
 {
   "name": "looptroop",
   "version": "0.4.1",
-  "private": true,
   "description": "Local AI coding orchestration for repo-scale work: LLM-council planning, Ralph-loop recovery, isolated OpenCode worktrees, and human-gated PR delivery.",
   "type": "module",
   "keywords": [
@@ -66,9 +65,11 @@
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
     "verify:version": "node scripts/verify-version-single-source.mjs",
+    "verify:package": "node scripts/verify-package-contents.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "release:notes": "tsx scripts/print-release-notes.ts",
+    "prepublishOnly": "npm run build && npm run licenses:check && npm run verify:package",
     "build": "tsc -b && npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "node scripts/build-server.mjs",

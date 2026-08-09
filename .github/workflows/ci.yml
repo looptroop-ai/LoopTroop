@@ -52,6 +52,11 @@ jobs:
       - name: Verify no native addons in the production package
         run: npm run verify:no-native-addons
 
+      # `files` is an allowlist, so both a missing runtime asset and a stray
+      # working-tree file are silent until someone installs the tarball.
+      - name: Verify published package contents
+        run: npm run verify:package
+
       # package.json is the single source of truth for the version; a literal
       # copy elsewhere goes stale silently on the next release.
       - name: Verify version is single-sourced

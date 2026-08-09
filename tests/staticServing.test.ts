@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createApp } from '../server/app'
+import { createApp, resolveDefaultClientDir } from '../server/app'
 
 /**
  * 2.3 contract: in production the interface and the API share one origin. The API
@@ -101,5 +101,43 @@ describe('production static serving', () => {
     const response = await makeApp(emptyDir).request('/')
 
     expect(response.status).toBe(404)
+  })
+
+  /**
+   * The default client directory is found by walking up from the module, and
+   * `server/app.ts` is inlined into bundles at two depths: `dist/server/index.js`
+   * and `dist/server/cli/daemonProcess.js`. A default that only works from one of
+   * them 404s the whole interface from the bundle the daemon actually runs, and
+   * nothing catches it in a checkout, where the built client is under cwd anyway.
+   */
+  describe('default client directory', () => {
+    function makeDistLayout(): string {
+      const root = mkdtempSync(join(tmpdir(), 'looptroop-dist-'))
+      tempDirs.push(root)
+      mkdirSync(join(root, 'client'))
+      writeFileSync(join(root, 'client', 'index.html'), '<!DOCTYPE html><title>LoopTroop</title>')
+      mkdirSync(join(root, 'server', 'cli'), { recursive: true })
+      return root
+    }
+
+    it('finds the client from the server bundle', () => {
+      const root = makeDistLayout()
+
+      expect(resolveDefaultClientDir(join(root, 'server'))).toBe(join(root, 'client'))
+    })
+
+    it('finds the client from the CLI bundle one level deeper', () => {
+      const root = makeDistLayout()
+
+      expect(resolveDefaultClientDir(join(root, 'server', 'cli'))).toBe(join(root, 'client'))
+    })
+
+    it('stops at the package rather than climbing into an unrelated client dir', () => {
+      const root = makeDistLayout()
+      const tooDeep = join(root, 'server', 'cli', 'nested', 'deeper')
+      mkdirSync(tooDeep, { recursive: true })
+
+      expect(resolveDefaultClientDir(tooDeep)).not.toBe(join(root, 'client'))
+    })
   })
 })

@@ -21,6 +21,11 @@ const ALLOWED_PATHS = [
   'THIRD-PARTY-NOTICES.md',
   // Documents its own matching rules using an example version.
   'scripts/verify-version-single-source.mjs',
+  // Fixtures for the version comparator itself. The literals are inputs to
+  // `isNewerVersion`, not references to this package's version: a case proving
+  // 0.4.0 sorts below 0.4.1 has to name both, and stays true after a bump.
+  // Scoped to this one file so the rule still binds everywhere else.
+  'tests/updateCheck.test.ts',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

@@ -80,6 +80,8 @@ const serverIntegrationTests = [
   'tests/cleanCommand.test.ts',
   // Reads the real database module, which siblings replace with a mock.
   'tests/doctorCommand.test.ts',
+  // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
+  'tests/opencodeRuntimeConfig.test.ts',
 ] as const
 
 export default defineConfig({

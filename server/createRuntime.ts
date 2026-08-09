@@ -8,6 +8,8 @@ import { closeDatabase, ensureStorageDirs } from './db/index'
 import { clearProjectDatabaseCache } from './db/project'
 import { assertAllowedBackendHost, getAllowedBackendHost } from '../shared/appConfig'
 import { resolveSettings, type ResolvedSettings, type SettingSource } from './lib/appSettings'
+import { configureOpenCodeRuntime } from './opencode/runtimeConfig'
+import { resetOpenCodeAdapter } from './opencode/factory'
 
 export interface RuntimeConfig extends CreateAppOptions {
   /** Overrides the resolved settings. Use 0 to let the OS assign a free port. */
@@ -84,6 +86,15 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   async function start(): Promise<RuntimeAddress> {
     if (address) return address
 
+    const settings = config.settings ?? resolveSettings()
+
+    // Before the startup sequence, which health-checks OpenCode through the
+    // adapter: resolved later, `opencodeBaseUrl` from config.json would arrive
+    // after the adapter had already built its client against the environment.
+    // The reset drops any instance built during module import.
+    configureOpenCodeRuntime(settings)
+    resetOpenCodeAdapter()
+
     ensureStorageDirs()
 
     if (!config.skipStartupSequence) {
@@ -96,7 +107,6 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       ? getAllowedBackendHost()
       : assertAllowedBackendHost(config.hostname)
 
-    const settings = config.settings ?? resolveSettings()
     const requestedPort = config.port ?? settings.port
     // A port the user named must fail loudly rather than move somewhere they
     // are not pointing at. Only the untouched default may relocate.

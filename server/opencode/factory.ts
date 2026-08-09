@@ -1,11 +1,11 @@
 import { OpenCodeSDKAdapter, type OpenCodeAdapter } from './adapter'
 import { MockOpenCodeAdapter } from './mockAdapter'
-import { getOpenCodeBaseUrl } from './runtimeConfig'
+import { getOpenCodeBaseUrl, isOpenCodeMockMode } from './runtimeConfig'
 
 let singleton: OpenCodeAdapter | null = null
 
 export function isMockOpenCodeMode(): boolean {
-  return process.env.LOOPTROOP_OPENCODE_MODE === 'mock'
+  return isOpenCodeMockMode()
 }
 
 export function getOpenCodeAdapter(): OpenCodeAdapter {
@@ -18,5 +18,3 @@ export function getOpenCodeAdapter(): OpenCodeAdapter {
 export function resetOpenCodeAdapter(): void {
   singleton = null
 }
-
-

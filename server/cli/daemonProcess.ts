@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isEntryPoint } from './entryPoint'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { resolveSettings } from '../lib/appSettings'
 
@@ -63,7 +64,7 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
 }
 
 // Executed directly when spawned as the detached child.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   runDaemonProcess().catch((error: unknown) => {
     console.error(`[daemon] Failed to start: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)

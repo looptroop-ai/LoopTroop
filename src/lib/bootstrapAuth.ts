@@ -24,7 +24,11 @@ export async function consumeBootstrapNonce(): Promise<void> {
       body: JSON.stringify({ nonce }),
     })
     if (!response.ok) {
-      console.error('[auth] Bootstrap exchange failed; reloading without the nonce.')
+      // No reload: a nonce is single-use, so reloading would only spend a second
+      // dead one. Whether the browser already holds a working session is settled
+      // by the requests that follow, and a session that is refused ends up on the
+      // signed-out screen rather than in a shell full of failing queries.
+      console.error('[auth] Bootstrap exchange refused; continuing with whatever session this browser has.')
     }
   } catch (error) {
     console.error('[auth] Bootstrap exchange error:', error)

@@ -12,8 +12,9 @@ import {
   type DaemonState,
 } from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
+import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
-import { OpenCodeSupervisor } from '../opencode/supervisor'
+import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
@@ -99,6 +100,32 @@ function recordStartFailure(error: unknown, version: string, configDir?: string)
 }
 
 /**
+ * What the state file should say about OpenCode, or nothing at all in mock mode
+ * where there is no server to describe.
+ *
+ * A managed server is recorded with a start-identity token as well as its pid,
+ * because this daemon can be killed outright — and when it is, it takes no
+ * cleanup with it and OpenCode is left running in its own process group. The
+ * token is what lets a later `clean` reap that orphan without ever signalling an
+ * unrelated process that happened to inherit the number.
+ */
+function describeOpenCode(
+  status: OpenCodeStatus,
+  baseUrl: string,
+): DaemonState['opencode'] {
+  if (status.kind === 'mock') return undefined
+  if (status.kind !== 'managed') return { baseUrl, owned: false }
+
+  const startToken = readProcessStartToken(status.pid)
+  return {
+    baseUrl,
+    owned: true,
+    pid: status.pid,
+    ...(startToken === null ? {} : { startToken }),
+  }
+}
+
+/**
  * Brings up the daemon in the order a supervisor can trust: the lock is taken
  * before any port is bound, and state is durable before ready is reported. A
  * failure at any step unwinds everything that already succeeded, so a crashed
@@ -154,6 +181,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     })
     const address = await runtime.start()
 
+    const opencodeState = describeOpenCode(opencodeStatus, settings.opencodeBaseUrl)
     const state: DaemonState = {
       instanceId,
       pid: process.pid,
@@ -164,13 +192,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       // Persisted so `stop`, `open` and `doctor` can authenticate against a
       // daemon they did not start. The file is owner-only.
       apiToken: credentials.apiToken,
-      ...(opencodeStatus.kind === 'mock' ? {} : {
-        opencode: {
-          baseUrl: settings.opencodeBaseUrl,
-          owned: opencodeStatus.kind === 'managed',
-          ...(opencodeStatus.kind === 'managed' ? { pid: opencodeStatus.pid } : {}),
-        },
-      }),
+      ...(opencodeState === undefined ? {} : { opencode: opencodeState }),
     }
 
     writeDaemonState(state, options.configDir)

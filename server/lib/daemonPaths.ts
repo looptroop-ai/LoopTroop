@@ -27,6 +27,13 @@ export interface DaemonState {
     /** Only a daemon-started server may be stopped by the daemon. */
     owned: boolean
     pid?: number
+    /**
+     * Identifies the process that held `pid` when this record was written, so a
+     * later `clean` can tell the orphaned server from whatever inherited the
+     * number after it exited. Opaque, and safe to print. Absent when the
+     * platform could not say, which reads as "do not signal this pid".
+     */
+    startToken?: string
   }
 }
 

@@ -20,6 +20,7 @@ import {
   normalizeFolderPath,
 } from '../storage/paths'
 import { getTicketBeadsDir, updateTicketMeta } from './metadata'
+import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { getErrorMessage } from '@shared/typeGuards'
 import * as commandLogger from '../log/commandLogger'
@@ -415,6 +416,12 @@ export function initializeTicket(options: InitializeOptions): InitializeTicketRe
   ensureTicketDirectories(projectFolder, options.externalId, ticketDir, baseBranch)
   mkdirSync(getTicketRuntimeDir(projectFolder, options.externalId), { recursive: true })
   writeRuntimeGitignore(ticketDir)
+  // Written after the ignore rules, so the marker is already excluded by the
+  // time it exists and never shows up as an untracked file on the branch.
+  ensureWorktreeOwnerMarker(worktreePath, {
+    projectRoot: projectFolder,
+    externalId: options.externalId,
+  })
   updateTicketMeta(projectFolder, options.externalId, { baseBranch })
 
   return {

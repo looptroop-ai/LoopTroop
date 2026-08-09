@@ -426,6 +426,21 @@ function getTerminalTicketExternalIds(projectRoot: string): string[] {
   return rows.map(r => r.externalId)
 }
 
+/**
+ * The tickets that have reached a terminal state, for callers deciding whether
+ * a worktree still has work behind it. Returns nothing rather than throwing when
+ * the project database is missing or unreadable: `clean` runs on machines whose
+ * state is already damaged, and an unreadable database means "nothing is known
+ * to be finished", never "delete on the basis of a guess".
+ */
+export function listClosedTicketIds(projectRoot: string): string[] {
+  try {
+    return getTerminalTicketExternalIds(projectRoot)
+  } catch {
+    return []
+  }
+}
+
 export async function getProjectWorktreesSize(projectRoot: string): Promise<number> {
   const worktreesRoot = getProjectWorktreesRoot(projectRoot)
   const externalIds = getTerminalTicketExternalIds(projectRoot)

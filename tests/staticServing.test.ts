@@ -80,6 +80,71 @@ describe('production static serving', () => {
     expect(response.headers.get('Content-Type') ?? '').not.toContain('text/html')
   })
 
+  it('serves the document for a deep link a browser navigates to', async () => {
+    const response = await makeApp(makeClientDir()).request('/tickets/abc', {
+      headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toContain('text/html')
+  })
+
+  /**
+   * Anything that is not a navigation gets the truth instead of the shell. A
+   * `fetch` for JSON that receives 200 HTML fails at `JSON.parse` with no clue
+   * where the response came from, and a missing script tag reports a MIME-type
+   * error rather than the 404 that actually happened.
+   */
+  it('404s a non-navigation request rather than answering it with HTML', async () => {
+    const app = makeApp(makeClientDir())
+
+    for (const accept of ['application/json', 'text/css', 'image/avif,image/webp']) {
+      const response = await app.request('/tickets/abc', { headers: { Accept: accept } })
+
+      expect(response.status).toBe(404)
+      expect(response.headers.get('Content-Type') ?? '').not.toContain('text/html')
+    }
+  })
+
+  it('404s a missing root-level file even for a wildcard client', async () => {
+    const app = makeApp(makeClientDir())
+
+    for (const path of ['/sw.js', '/logo.png', '/manifest.webmanifest']) {
+      expect((await app.request(path, { headers: { Accept: '*/*' } })).status).toBe(404)
+    }
+  })
+
+  it('still answers a wildcard client for a route-shaped path', async () => {
+    // curl and readiness probes send `*/*`; a deep link is still a deep link.
+    const response = await makeApp(makeClientDir()).request('/tickets/abc', {
+      headers: { Accept: '*/*' },
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toContain('text/html')
+  })
+
+  it('answers HEAD for a deep link with headers and no body', async () => {
+    const response = await makeApp(makeClientDir()).request('/tickets/abc', { method: 'HEAD' })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Type')).toContain('text/html')
+    expect(await response.text()).toBe('')
+  })
+
+  it('does not answer a write method with the SPA document', async () => {
+    const app = makeApp(makeClientDir())
+
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      const response = await app.request('/tickets/abc', {
+        method,
+        headers: { Accept: 'text/html' },
+      })
+
+      expect(response.status).toBe(404)
+    }
+  })
+
   it('keeps API authentication ahead of the static handler', async () => {
     const response = await makeApp(makeClientDir()).request('/api/health')
 

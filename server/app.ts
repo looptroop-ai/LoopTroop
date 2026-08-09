@@ -117,6 +117,47 @@ export function isLocalhostRequest(c: Context): boolean {
   return isLoopbackAuthority(requestAuthority(c))
 }
 
+/** Media types the caller listed, lowercased, with any q-value stripped. */
+function acceptedTypes(accept: string | undefined): string[] {
+  if (accept === undefined || accept.trim() === '') return []
+  return accept.split(',').map((entry) => entry.split(';')[0]?.trim().toLowerCase() ?? '')
+}
+
+/**
+ * Whether a path names a file rather than a client-side route.
+ *
+ * Vite emits hashed assets under `/assets`, but a stray `/sw.js`, `/logo.png` or
+ * `/manifest.webmanifest` reference sits at the root, and the SPA document is
+ * never the right answer for one that is missing.
+ */
+function looksLikeFileRequest(path: string): boolean {
+  const last = path.slice(path.lastIndexOf('/') + 1)
+  // Long enough for `webmanifest`, the longest extension the client emits.
+  return /\.[a-z0-9]{1,16}$/i.test(last)
+}
+
+/**
+ * Whether this request should receive the SPA document.
+ *
+ * A navigating browser asks for HTML explicitly, and gets it. A caller that
+ * accepts anything — curl, a probe, a hand-written client — gets it too, but
+ * only for a path that looks like a route rather than a file: a `script` or
+ * `img` element sends a wildcard as well, and answering a missing `/sw.js` with
+ * HTML turns a plain 404 into a MIME-type or parse error further down the stack.
+ * Anything asking for a specific non-HTML type is asking for something that is
+ * not here.
+ */
+export function wantsSpaDocument(path: string, accept: string | undefined): boolean {
+  const types = acceptedTypes(accept)
+
+  if (types.some((type) => type === 'text/html' || type === 'application/xhtml+xml' || type === 'text/*')) {
+    return true
+  }
+
+  const wildcard = types.length === 0 || types.includes('*/*')
+  return wildcard && !looksLikeFileRequest(path)
+}
+
 /**
  * Builds the API surface. Pure: no listeners, timers, files, or signal handlers.
  */
@@ -253,7 +294,7 @@ export function createApp(options: CreateAppOptions = {}): Hono {
 
       // Deep links are client-side routes with no file behind them; the browser
       // must revalidate this document or it would pin an old asset manifest.
-      app.get('/*', async (c, next) => {
+      app.on(['GET', 'HEAD'], '/*', async (c, next) => {
         // An unmatched endpoint is a 404, not a frontend route.
         if (c.req.path === '/api' || c.req.path.startsWith('/api/')) return next()
 
@@ -261,10 +302,14 @@ export function createApp(options: CreateAppOptions = {}): Hono {
         // browser reports a module MIME-type error instead of the real problem.
         if (c.req.path.startsWith('/assets/')) return next()
 
+        if (!wantsSpaDocument(c.req.path, c.req.header('accept'))) return next()
+
         const html = await readFile(indexHtml, 'utf8')
         c.header('Content-Type', 'text/html; charset=utf-8')
         c.header('Cache-Control', 'no-cache')
-        return c.body(html)
+        // HEAD must carry the same headers as GET but no body, which Hono
+        // handles: returning the body here would be stripped on the way out.
+        return c.body(c.req.method === 'HEAD' ? null : html)
       })
     }
   }

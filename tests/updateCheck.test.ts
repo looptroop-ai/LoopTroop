@@ -272,6 +272,110 @@ describe('update check', () => {
     expect(notice?.latestVersion).toBe('0.5.0')
   })
 
+  /**
+   * What a machine that cannot reach the registry paid.
+   *
+   * Only answers were cached, so a failed lookup left no timestamp to compare
+   * against and every command tried again — a fresh request, and its full
+   * timeout, on every single `looptroop status` for as long as the machine
+   * stayed offline.
+   */
+  describe('when the registry cannot be reached', () => {
+    it('does not try again within the interval', async () => {
+      const configDir = makeConfigDir()
+      let calls = 0
+      const fetchLatest = async (): Promise<null> => {
+        calls += 1
+        return null
+      }
+
+      const start = Date.now()
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest, now: () => start })
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest, now: () => start + 1_000 })
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest, now: () => start + 2_000 })
+
+      expect(calls).toBe(1)
+    })
+
+    it('tries again once the interval has elapsed', async () => {
+      const configDir = makeConfigDir()
+      let calls = 0
+      const fetchLatest = async (): Promise<null> => {
+        calls += 1
+        return null
+      }
+
+      const start = Date.now()
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest, now: () => start })
+      await checkForUpdate({
+        currentVersion: '0.4.1',
+        configDir,
+        fetchLatest,
+        now: () => start + CHECK_INTERVAL_MS + 1,
+      })
+
+      // Rationing the attempts must not become never making them again.
+      expect(calls).toBe(2)
+    })
+
+    it('keeps reporting the last version it did learn', async () => {
+      const configDir = makeConfigDir()
+      const start = Date.now()
+
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest: async () => '0.5.0', now: () => start })
+      const notice = await checkForUpdate({
+        currentVersion: '0.4.1',
+        configDir,
+        fetchLatest: async () => null,
+        now: () => start + CHECK_INTERVAL_MS + 1,
+      })
+
+      // A failed lookup is not evidence the update went away, and the whole
+      // point of the cache is to still have an answer when offline.
+      expect(notice?.latestVersion).toBe('0.5.0')
+    })
+
+    it('does not let a failure pass for a successful check', async () => {
+      const configDir = makeConfigDir()
+      const start = Date.now()
+
+      await checkForUpdate({ currentVersion: '0.4.1', configDir, fetchLatest: async () => null, now: () => start })
+      const cached = JSON.parse(readFileSync(join(configDir, 'update-check.json'), 'utf8')) as {
+        lastAttemptAt?: string
+        lastCheckedAt?: string
+        latestVersion?: string
+      }
+
+      // The attempt is recorded; the answer is not, because there was none.
+      expect(cached.lastAttemptAt).toBe(new Date(start).toISOString())
+      expect(cached.lastCheckedAt).toBeUndefined()
+      expect(cached.latestVersion).toBeUndefined()
+    })
+
+    it('still honours a cache written before failures were recorded', async () => {
+      const configDir = makeConfigDir()
+      const start = Date.now()
+      // The shape shipped in 0.4.x: a success timestamp and nothing else.
+      writeFileSync(join(configDir, 'update-check.json'), JSON.stringify({
+        lastCheckedAt: new Date(start).toISOString(),
+        latestVersion: '0.5.0',
+      }))
+
+      let calls = 0
+      const notice = await checkForUpdate({
+        currentVersion: '0.4.1',
+        configDir,
+        fetchLatest: async () => { calls += 1; return '0.6.0' },
+        now: () => start + 1_000,
+      })
+
+      // Upgrading LoopTroop must not invalidate the cache and send every
+      // installed copy back to the registry on its next command.
+      expect(calls).toBe(0)
+      expect(notice?.latestVersion).toBe('0.5.0')
+    })
+  })
+
   it('names the version and the upgrade command in the notice', () => {
     const text = formatUpdateNotice({
       currentVersion: '0.4.1',

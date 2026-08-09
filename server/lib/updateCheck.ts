@@ -12,8 +12,18 @@ export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 const REQUEST_TIMEOUT_MS = 3_000
 
 interface UpdateCache {
-  lastCheckedAt: string
-  latestVersion: string
+  /**
+   * When a lookup was last attempted, whether or not it answered.
+   *
+   * Separate from `lastCheckedAt`, which is when a version was last learned: an
+   * offline machine has attempts and no answers, and it is the attempts that
+   * have to be rationed.
+   */
+  lastAttemptAt: string
+  /** When `latestVersion` was learned. Absent until a lookup has answered. */
+  lastCheckedAt?: string
+  /** The newest version the registry has reported so far. */
+  latestVersion?: string
 }
 
 export interface UpdateNotice {
@@ -26,13 +36,25 @@ function getCachePath(configDir = resolveAppConfigDir()): string {
   return resolve(configDir, 'update-check.json')
 }
 
+/**
+ * Tolerates a cache written before failures were recorded, where the only
+ * timestamp was the one on a successful answer.
+ */
 function readCache(configDir?: string): UpdateCache | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(getCachePath(configDir), 'utf8'))
     if (typeof parsed !== 'object' || parsed === null) return null
+
     const candidate = parsed as Partial<UpdateCache>
-    if (typeof candidate.lastCheckedAt !== 'string' || typeof candidate.latestVersion !== 'string') return null
-    return candidate as UpdateCache
+    const lastCheckedAt = typeof candidate.lastCheckedAt === 'string' ? candidate.lastCheckedAt : undefined
+    const lastAttemptAt = typeof candidate.lastAttemptAt === 'string' ? candidate.lastAttemptAt : lastCheckedAt
+    if (lastAttemptAt === undefined) return null
+
+    return {
+      lastAttemptAt,
+      ...(lastCheckedAt === undefined ? {} : { lastCheckedAt }),
+      ...(typeof candidate.latestVersion === 'string' ? { latestVersion: candidate.latestVersion } : {}),
+    }
   } catch {
     return null
   }
@@ -80,16 +102,29 @@ export async function checkForUpdate(options: CheckForUpdateOptions): Promise<Up
   const cached = readCache(options.configDir)
 
   let latestVersion = cached?.latestVersion ?? null
-  const lastChecked = cached ? Date.parse(cached.lastCheckedAt) : Number.NaN
-  const isStale = !Number.isFinite(lastChecked) || now - lastChecked > CHECK_INTERVAL_MS
+  const lastAttempt = cached ? Date.parse(cached.lastAttemptAt) : Number.NaN
+  const isStale = !Number.isFinite(lastAttempt) || now - lastAttempt > CHECK_INTERVAL_MS
 
   if (isStale) {
+    const attemptedAt = new Date(now).toISOString()
     const fetched = await (options.fetchLatest ?? fetchLatestFromRegistry)()
-    // A failed lookup keeps the previous answer rather than nagging offline users.
-    if (fetched) {
-      latestVersion = fetched
-      writeCache({ lastCheckedAt: new Date(now).toISOString(), latestVersion: fetched }, options.configDir)
-    }
+
+    if (fetched) latestVersion = fetched
+
+    // The attempt is recorded either way. Recording only answers meant a machine
+    // that cannot reach the registry — offline, or behind a proxy that swallows
+    // the request — never had a fresh timestamp to compare against, so every
+    // single command paid the full request timeout again. A failed lookup still
+    // keeps whatever the last answer was, rather than nagging or forgetting.
+    writeCache({
+      lastAttemptAt: attemptedAt,
+      ...(fetched
+        ? { lastCheckedAt: attemptedAt, latestVersion: fetched }
+        : {
+            ...(cached?.lastCheckedAt === undefined ? {} : { lastCheckedAt: cached.lastCheckedAt }),
+            ...(latestVersion === null ? {} : { latestVersion }),
+          }),
+    }, options.configDir)
   }
 
   if (!latestVersion || !isNewerVersion(latestVersion, options.currentVersion)) return null

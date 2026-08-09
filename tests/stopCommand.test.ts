@@ -196,8 +196,9 @@ describe('stopping a running daemon', () => {
     const configDir = makeConfigDir()
     const previous = process.env.LOOPTROOP_CONFIG_DIR
     process.env.LOOPTROOP_CONFIG_DIR = configDir
-    // Debris from a daemon that died without cleaning up after itself.
-    writeLock(configDir, process.pid)
+    // Debris from a daemon that died without cleaning up after itself. Pid 0 is
+    // never a real process, so nothing can be holding this.
+    writeLock(configDir, 0)
     const { writeDaemonStartFailure, readDaemonStartFailure } = await import('../server/lib/daemonPaths')
     writeDaemonStartFailure({
       reason: 'schema-incompatible',
@@ -230,6 +231,54 @@ describe('stopping a running daemon', () => {
     // The lock still blocks the next start; the diagnosis does not.
     expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
     expect(readDaemonStartFailure(configDir)?.schema.found).toBe(99)
+  })
+
+  /**
+   * The escalation spans tens of seconds, and the daemon stops answering
+   * partway through by design. A pid released in that window can be reissued
+   * before the next rung runs, so identity is rechecked rather than assumed.
+   */
+  it('does not signal a pid that is no longer the daemon', async () => {
+    const pid = spawnStandIn(true)
+    // Nothing answers on port 1, so the graceful rung fails and the escalation
+    // reaches the identity check with a live pid and a token that cannot match.
+    const outcome = await stopRunningDaemon(
+      makeState({ pid, port: 1, startToken: 'f'.repeat(32) }),
+      { budgets: FAST_BUDGETS },
+    )
+
+    expect(outcome.kind).toBe('not-ours')
+    expect(isAlive(pid)).toBe(true)
+  })
+
+  /**
+   * "Not answering" is not "not running". A daemon still opening its database,
+   * or wedged, or listening somewhere its state file no longer describes, holds
+   * the lock and is alive — and removing it would let the next start run a
+   * second daemon on the same databases.
+   */
+  it('leaves the lock of a live process that is not answering', async () => {
+    const configDir = makeConfigDir()
+    const previous = process.env.LOOPTROOP_CONFIG_DIR
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
+    const pid = spawnStandIn(false)
+    writeLock(configDir, pid)
+
+    const { stopCommand } = await import('../server/cli/commands')
+    const written: string[] = []
+    const restore = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+
+    try {
+      expect(await stopCommand()).toBe(1)
+    } finally {
+      process.stderr.write = restore
+      if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
+      else process.env.LOOPTROOP_CONFIG_DIR = previous
+    }
+
+    expect(written.join('')).toContain(String(pid))
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
   })
 
   function writeLock(configDir: string, pid: number): void {

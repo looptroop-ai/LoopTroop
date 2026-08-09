@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { openSync, rmSync } from 'node:fs'
+import { openSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -7,8 +7,8 @@ import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, c
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
-import { getDaemonLockPath } from '../lib/daemonPaths'
-import { clearLockOwnedBy } from '../lib/daemonLock'
+import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
+import { matchProcess } from '../lib/processIdentity'
 import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -228,6 +228,30 @@ export type StopOutcome =
   | { kind: 'not-running' }
   | { kind: 'stopped'; forced: boolean }
   | { kind: 'failed'; pid: number }
+  /** The pid is alive but is no longer the daemon, so nothing was signalled. */
+  | { kind: 'not-ours'; pid: number; reason: string }
+
+/**
+ * Whether the pid recorded for this daemon still belongs to it.
+ *
+ * `readRunningDaemon` proved the identity over HTTP before the escalation
+ * started, but that proof expires the moment the daemon stops answering — which
+ * is exactly what the graceful rung is waiting for. Between rungs the pid can be
+ * released and handed to something else, and the next rung would signal that
+ * instead. A pid we cannot vouch for is left alone: a daemon that outlives
+ * `stop` is a nuisance, and killing an unrelated process is not.
+ */
+function stillTheDaemon(state: DaemonState): 'gone' | 'ours' | { reason: string } {
+  if (!isProcessAlive(state.pid)) return 'gone'
+
+  const match = matchProcess(state.pid, state.startToken)
+  if (match.kind === 'same') return 'ours'
+  if (match.kind === 'different') return { reason: 'the pid now belongs to a different process' }
+  // Older daemons recorded no token. Their pid was confirmed over HTTP at the
+  // start of this call, and refusing every one of them would leave no way to
+  // stop them at all.
+  return state.startToken === undefined ? 'ours' : { reason: match.reason }
+}
 
 /**
  * Asks the daemon to shut itself down, and escalates only as far as it must.
@@ -235,7 +259,9 @@ export type StopOutcome =
  * The HTTP request is first because it is the only rung that works everywhere:
  * it reaches the daemon's own graceful path, which closes the server, stops an
  * OpenCode it owns and releases the lock, and Windows has no SIGTERM to fall
- * back on. Each later rung is bounded, so an unresponsive daemon still ends.
+ * back on. Each later rung is bounded, so an unresponsive daemon still ends, and
+ * each is preceded by a fresh identity check because a pid freed by the previous
+ * rung can be reissued before the next one runs.
  */
 export async function stopRunningDaemon(
   state: DaemonState,
@@ -248,8 +274,20 @@ export async function stopRunningDaemon(
     return { kind: 'stopped', forced: false }
   }
 
+  const beforeSignal = stillTheDaemon(state)
+  if (beforeSignal === 'gone') return finishStop(state, options.configDir, false)
+  if (beforeSignal !== 'ours') {
+    return { kind: 'not-ours', pid: state.pid, reason: beforeSignal.reason }
+  }
+
   if (signalTermination(state.pid) && await waitForExit(state.pid, budgets.signalMs)) {
     return { kind: 'stopped', forced: false }
+  }
+
+  const beforeKill = stillTheDaemon(state)
+  if (beforeKill === 'gone') return finishStop(state, options.configDir, false)
+  if (beforeKill !== 'ours') {
+    return { kind: 'not-ours', pid: state.pid, reason: beforeKill.reason }
   }
 
   await killProcessTree(state.pid)
@@ -257,11 +295,20 @@ export async function stopRunningDaemon(
     return { kind: 'failed', pid: state.pid }
   }
 
-  // A killed daemon never ran its own cleanup, so the lock it still owns would
-  // make the next start wait out the full stale window for nothing.
-  clearLockOwnedBy(state.pid, options.configDir)
-  clearDaemonState(state.instanceId, options.configDir)
-  return { kind: 'stopped', forced: true }
+  return finishStop(state, options.configDir, true)
+}
+
+/**
+ * Clears what a daemon that did not shut itself down left behind.
+ *
+ * Both writes are scoped to this daemon's own identity, so a daemon that started
+ * in the meantime keeps its lock and its state file. A daemon that exited
+ * cleanly has already removed both and these are no-ops.
+ */
+function finishStop(state: DaemonState, configDir: string | undefined, forced: boolean): StopOutcome {
+  clearLockOwnedBy(state.pid, configDir)
+  clearDaemonState(state.instanceId, configDir)
+  return { kind: 'stopped', forced }
 }
 
 /** True when the daemon accepted the request; false for any failure to reach it. */
@@ -287,7 +334,19 @@ export async function stopCommand(): Promise<number> {
     // A recorded start failure survives: `stop` is what someone runs after a
     // start that did not take, and it is the only account of why.
     clearStaleDaemonState(configDir)
-    rmSync(getDaemonLockPath(configDir), { force: true })
+    const lock = releaseStaleLock(configDir)
+
+    if (lock.kind === 'held') {
+      // A daemon that is not answering is still a daemon. Removing its lock here
+      // would let the next start run a second one on the same databases.
+      process.stderr.write(
+        `LoopTroop is not answering, but pid ${lock.owner.pid} still holds its single-instance lock ` +
+        `(started ${lock.owner.startedAt}). Nothing was stopped, and the lock was left in place so a ` +
+        'second daemon cannot start alongside it. Run `looptroop doctor` to see what that process is.\n',
+      )
+      return 1
+    }
+
     process.stdout.write('LoopTroop is not running.\n')
     return 0
   }
@@ -298,6 +357,16 @@ export async function stopCommand(): Promise<number> {
     process.stderr.write(
       `LoopTroop (pid ${outcome.pid}) did not stop and could not be killed. ` +
       'Check whether it belongs to another user.\n',
+    )
+    return 1
+  }
+
+  if (outcome.kind === 'not-ours') {
+    // The daemon released the pid partway through the escalation and something
+    // else took it. Whatever that is, it is not ours to signal.
+    process.stderr.write(
+      `LoopTroop stopped answering, and pid ${outcome.pid} was left alone because ${outcome.reason}. ` +
+      'Run `looptroop status` to confirm nothing is still running.\n',
     )
     return 1
   }

@@ -1,4 +1,4 @@
-import { closeSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { getDaemonLockPath } from './daemonPaths'
@@ -230,6 +230,40 @@ export function clearLockOwnedBy(pid: number, configDir?: string): void {
   // Still alive and not provably a different process: not debris.
   if (isProcessAlive(pid) && matchProcess(pid, owner.startToken).kind !== 'different') return
   rmSync(lockPath, { force: true })
+}
+
+/**
+ * Removes a lock only if nobody holds it, and reports which it was.
+ *
+ * `stop` runs this when the daemon it expected is not answering, and "not
+ * answering" is not "not running": a daemon still opening its database, or
+ * wedged, or listening on a port the state file no longer describes, holds the
+ * lock and is very much alive. Deleting it there would let a second daemon start
+ * on the same databases and worktrees, which is the failure the lock exists to
+ * prevent. So the same judgement that governs acquisition governs this.
+ */
+export type StaleLockRelease =
+  | { kind: 'absent' }
+  | { kind: 'removed' }
+  | { kind: 'held', owner: LockOwner }
+
+export function releaseStaleLock(configDir?: string): StaleLockRelease {
+  const lockPath = getDaemonLockPath(configDir)
+  const existing = readOwner(lockPath)
+
+  if (existing === null) {
+    // Nothing there, or a file that names no owner and so cannot be anyone's.
+    if (!existsSync(lockPath)) return { kind: 'absent' }
+    rmSync(lockPath, { force: true })
+    return { kind: 'removed' }
+  }
+
+  if (!isStale(existing, Date.now())) return { kind: 'held', owner: existing }
+  if (reclaimStaleLock(lockPath, existing.nonce)) return { kind: 'removed' }
+
+  // Lost the reclaim, so somebody holds it now. Report whoever that is.
+  const current = readOwner(lockPath)
+  return current === null ? { kind: 'absent' } : { kind: 'held', owner: current }
 }
 
 function buildHandle(lockPath: string, owner: LockOwner): AcquiredLock {

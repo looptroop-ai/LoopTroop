@@ -182,6 +182,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     const address = await runtime.start()
 
     const opencodeState = describeOpenCode(opencodeStatus, settings.opencodeBaseUrl)
+    // Recorded so `stop` can tell this process from whatever inherits its pid
+    // once it stops answering /api/health partway through its own shutdown.
+    const startToken = readProcessStartToken(process.pid)
     const state: DaemonState = {
       instanceId,
       pid: process.pid,
@@ -189,6 +192,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       host: address.hostname,
       startedAt: new Date().toISOString(),
       version: options.version,
+      ...(startToken === null ? {} : { startToken }),
       // Persisted so `stop`, `open` and `doctor` can authenticate against a
       // daemon they did not start. The file is owner-only.
       apiToken: credentials.apiToken,

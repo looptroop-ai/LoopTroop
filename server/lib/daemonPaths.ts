@@ -16,6 +16,17 @@ export interface DaemonState {
   startedAt: string
   version: string
   /**
+   * Identifies the process that held `pid` when this record was written.
+   *
+   * `instanceId` is the stronger check, but it only answers while the daemon is
+   * still serving: it comes back over HTTP. `stop` escalates over tens of
+   * seconds, and the daemon stops answering partway through by design — this is
+   * what says whether the pid it is about to signal is still that daemon.
+   * Opaque, and safe to print. Absent when the platform could not say, which
+   * reads as "do not signal this pid".
+   */
+  startToken?: string
+  /**
    * Bearer token for talking to this daemon. It lives here because the CLI has
    * no other way to reach a daemon it did not spawn, and the file is written
    * owner-only for exactly that reason. Never print it: `status --json` and the

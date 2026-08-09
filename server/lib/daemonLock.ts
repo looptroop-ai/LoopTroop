@@ -1,9 +1,10 @@
-import { closeSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { getDaemonLockPath } from './daemonPaths'
 import { ensureSecureDir, CONFIG_FILE_MODE } from './appConfigDir'
 import { dirname } from 'node:path'
+import { matchProcess, readProcessStartToken } from './processIdentity'
 
 /**
  * Identifies one daemon run. `nonce` distinguishes this acquisition from any
@@ -15,6 +16,12 @@ export interface LockOwner {
   host: string
   startedAt: string
   heartbeatAt: string
+  /**
+   * Identifies the process that held `pid` when the lock was taken, so a
+   * recycled pid cannot pass for the original owner. Absent when the platform
+   * could not say, which is treated as "cannot verify" rather than "matches".
+   */
+  startToken?: string
 }
 
 export interface AcquiredLock {
@@ -67,14 +74,41 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Whether a lock was abandoned rather than merely quiet.
+ *
+ * A stale heartbeat alone is not evidence on this host. A laptop that slept for
+ * an hour resumes with every timer behind, so the running daemon's last
+ * heartbeat is old while the daemon itself is perfectly alive — and reclaiming
+ * on that basis hands a second daemon the same databases and worktrees. The
+ * process either still exists or it does not, and the start token answers that
+ * without trusting a recycled pid.
+ *
+ * The heartbeat still decides for a lock from another machine, where our pid
+ * table means nothing, and for one whose identity cannot be established.
+ */
 function isStale(owner: LockOwner, now: number): boolean {
+  const heartbeatExpired = now - Date.parse(owner.heartbeatAt) > STALE_LOCK_MS
+
   // A lock from another machine cannot be judged by our pid table, so only its
   // heartbeat can tell us whether the owner is gone.
-  if (owner.host !== hostname()) {
-    return now - Date.parse(owner.heartbeatAt) > STALE_LOCK_MS
-  }
+  if (owner.host !== hostname()) return heartbeatExpired
   if (!isProcessAlive(owner.pid)) return true
-  return now - Date.parse(owner.heartbeatAt) > STALE_LOCK_MS
+
+  switch (matchProcess(owner.pid, owner.startToken).kind) {
+    // The exact process that took this lock is still running. However long ago
+    // it last wrote a heartbeat, it is not abandoned.
+    case 'same':
+      return false
+    // The pid was recycled: the original owner is gone, whatever holds the
+    // number now. Stale immediately rather than after the heartbeat window.
+    case 'different':
+      return true
+    // Neither confirmed nor refuted — an older lock with no token, or a
+    // platform that cannot report start times. Fall back to the heartbeat.
+    default:
+      return heartbeatExpired
+  }
 }
 
 function writeOwner(lockPath: string, owner: LockOwner): void {
@@ -89,6 +123,46 @@ function writeOwner(lockPath: string, owner: LockOwner): void {
 }
 
 /**
+ * Removes one specific abandoned lock, and only that one.
+ *
+ * Deleting the path outright is not safe: two processes that both judged the
+ * same lock stale would both delete, and the second delete lands on the *new*
+ * lock the first one just created. Both then believe they hold it, and two
+ * daemons share the databases and worktrees.
+ *
+ * So the file is moved aside first. Rename is atomic, so whatever a reclaimer
+ * ends up holding is exactly one file, and its contents say whether it was the
+ * intended victim. A reclaimer that finds it quarantined somebody's live lock
+ * puts it straight back and loses the race, which is the correct outcome.
+ */
+function reclaimStaleLock(lockPath: string, staleNonce: string): boolean {
+  const quarantine = `${lockPath}.reclaim-${randomUUID()}`
+
+  try {
+    renameSync(lockPath, quarantine)
+  } catch {
+    // Already gone, or claimed by another reclaimer. Either way, not ours.
+    return false
+  }
+
+  const moved = readOwner(quarantine)
+  if (moved?.nonce === staleNonce) {
+    rmSync(quarantine, { force: true })
+    return true
+  }
+
+  // This is not the lock we judged stale — someone acquired between our read
+  // and our rename. Put it back and let the retry see the truth.
+  try {
+    renameSync(quarantine, lockPath)
+  } catch {
+    // The path is occupied again, so the owner is present under its own lock.
+    rmSync(quarantine, { force: true })
+  }
+  return false
+}
+
+/**
  * Takes the single-instance daemon lock, or throws DaemonLockedError when
  * another live daemon holds it. A lock left behind by a crashed run is
  * reclaimed, then re-acquired exclusively so a concurrent reclaim cannot
@@ -98,12 +172,14 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
   const lockPath = getDaemonLockPath(configDir)
   ensureSecureDir(dirname(lockPath))
 
+  const startToken = readProcessStartToken(process.pid)
   const owner: LockOwner = {
     nonce: randomUUID(),
     pid: process.pid,
     host: hostname(),
     startedAt: new Date().toISOString(),
     heartbeatAt: new Date().toISOString(),
+    ...(startToken === null ? {} : { startToken }),
   }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -114,10 +190,16 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
 
       const existing = readOwner(lockPath)
-      // An unparseable lock cannot identify a live owner, so treat it as debris.
       if (existing && !isStale(existing, Date.now())) throw new DaemonLockedError(existing)
 
-      rmSync(lockPath, { force: true })
+      if (existing) {
+        // Lost the reclaim: whoever won it owns the lock now, so stop here
+        // rather than deleting theirs on the next pass.
+        if (!reclaimStaleLock(lockPath, existing.nonce)) continue
+      } else {
+        // Unparseable: it names no owner at all, so it cannot be anyone's.
+        rmSync(lockPath, { force: true })
+      }
     }
   }
 
@@ -132,11 +214,22 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
  * Scoped to one pid on this host so a caller that force-killed a daemon cannot
  * delete the lock of a different one that started in the meantime; without it
  * the next start would wait out the full stale window for nothing.
+ *
+ * The pid must also no longer be that daemon: a killed process the caller just
+ * waited on is gone, and a pid that now matches a live process is either a
+ * recycled number or a daemon that survived the kill. Removing the lock in
+ * either case would let a second daemon start alongside a running one, so a live
+ * pid is only cleared once its identity says it is somebody else's process.
+ * Where identity cannot be established the lock stays and the next start waits
+ * out the stale window — slow, but never two daemons.
  */
 export function clearLockOwnedBy(pid: number, configDir?: string): void {
   const lockPath = getDaemonLockPath(configDir)
   const owner = readOwner(lockPath)
-  if (owner?.pid === pid && owner.host === hostname()) rmSync(lockPath, { force: true })
+  if (owner?.pid !== pid || owner.host !== hostname()) return
+  // Still alive and not provably a different process: not debris.
+  if (isProcessAlive(pid) && matchProcess(pid, owner.startToken).kind !== 'different') return
+  rmSync(lockPath, { force: true })
 }
 
 function buildHandle(lockPath: string, owner: LockOwner): AcquiredLock {
@@ -147,13 +240,22 @@ function buildHandle(lockPath: string, owner: LockOwner): AcquiredLock {
     path: lockPath,
     heartbeat() {
       if (released) return
+      // Only refresh a lock still carrying our nonce. A daemon whose lock was
+      // reclaimed while it was suspended would otherwise write itself back over
+      // the new owner's file, leaving two daemons each believing they hold it.
+      if (readOwner(lockPath)?.nonce !== owner.nonce) return
+
       const next: LockOwner = { ...owner, heartbeatAt: new Date().toISOString() }
       try {
         // Rewritten in place: an atomic replace would swap the inode and could
         // clobber a lock another process legitimately took after a reclaim.
         const fd = openSync(lockPath, 'r+')
         try {
-          writeSync(fd, `${JSON.stringify(next, null, 2)}\n`, 0)
+          const encoded = `${JSON.stringify(next, null, 2)}\n`
+          writeSync(fd, encoded, 0)
+          // The record is fixed-shape, but a shorter one would otherwise leave
+          // the tail of the previous write behind and produce invalid JSON.
+          ftruncateSync(fd, Buffer.byteLength(encoded))
         } finally {
           closeSync(fd)
         }

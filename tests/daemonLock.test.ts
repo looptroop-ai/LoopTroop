@@ -1,14 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   acquireDaemonLock,
+  clearLockOwnedBy,
   DaemonLockedError,
   STALE_LOCK_MS,
   type LockOwner,
 } from '../server/lib/daemonLock'
 import { getDaemonLockPath } from '../server/lib/daemonPaths'
+import { readProcessStartToken } from '../server/lib/processIdentity'
 
 /**
  * 2.6 contract: exclusive single-instance ownership. Two concurrent starts must
@@ -182,5 +184,183 @@ describe('daemon lock', () => {
     } finally {
       held.release()
     }
+  })
+
+  /**
+   * A pid is not an identity, and a quiet heartbeat is not a death. These cover
+   * the two ways the heartbeat alone gets the answer wrong: a live daemon whose
+   * timers fell behind, and a dead one whose pid was handed to someone else.
+   */
+  describe('owner identity', () => {
+    // How this process would be recorded. Null on a platform that cannot report
+    // process start times, where the heartbeat fallback is the documented
+    // behaviour rather than a failure — so each test states both outcomes.
+    const localToken = readProcessStartToken(process.pid)
+    const tokenFields = localToken === null ? {} : { startToken: localToken }
+
+    it('records the identity of the process that took the lock', () => {
+      const configDir = makeConfigDir()
+      const lock = acquireDaemonLock(configDir)
+
+      try {
+        expect(lock.owner.startToken).toBe(localToken ?? undefined)
+        const onDisk = JSON.parse(readFileSync(lock.path, 'utf8')) as LockOwner
+        expect(onDisk.startToken).toBe(localToken ?? undefined)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('keeps the lock of a live owner whose heartbeat fell behind', () => {
+      const configDir = makeConfigDir()
+      // A laptop that slept for an hour resumes with every timer behind, so a
+      // perfectly alive daemon looks quiet. Reclaiming on that basis hands a
+      // second daemon the same databases and worktrees.
+      writeLock(configDir, {
+        nonce: 'sleeping-owner',
+        pid: process.pid,
+        ...tokenFields,
+        heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 3_600_000).toISOString(),
+      })
+
+      if (localToken === null) {
+        // Nothing can confirm the owner here, so the heartbeat still decides.
+        acquireDaemonLock(configDir).release()
+        return
+      }
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+    })
+
+    it('reclaims a recycled pid without waiting out the heartbeat window', () => {
+      const configDir = makeConfigDir()
+      // Fresh heartbeat, live pid, wrong process. The original owner is gone,
+      // so waiting the full stale window would strand the lock for no reason.
+      writeLock(configDir, {
+        nonce: 'recycled-pid',
+        pid: process.pid,
+        startToken: 'f'.repeat(32),
+        heartbeatAt: new Date().toISOString(),
+      })
+
+      if (localToken === null) {
+        // The token cannot be compared, so this is indistinguishable from a
+        // live owner and the fresh heartbeat protects it.
+        expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+        return
+      }
+      const lock = acquireDaemonLock(configDir)
+      expect(lock.owner.nonce).not.toBe('recycled-pid')
+      lock.release()
+    })
+
+    it('falls back to the heartbeat for a lock that records no identity', () => {
+      const configDir = makeConfigDir()
+      // Written by a build from before start tokens existed: neither confirmed
+      // nor refuted, so it is judged the way it was when it was written.
+      writeLock(configDir, { nonce: 'legacy-owner', pid: process.pid })
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+
+      writeLock(configDir, {
+        nonce: 'legacy-owner',
+        pid: process.pid,
+        heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 5_000).toISOString(),
+      })
+      const lock = acquireDaemonLock(configDir)
+      expect(lock.owner.nonce).not.toBe('legacy-owner')
+      lock.release()
+    })
+  })
+
+  /**
+   * Everything a suspended daemon does after its lock was reclaimed. It has no
+   * way to know, so each write it attempts has to be inert.
+   */
+  describe('after a reclaim', () => {
+    it('ignores a heartbeat from an owner whose lock was taken over', () => {
+      const configDir = makeConfigDir()
+      const lock = acquireDaemonLock(configDir)
+      writeLock(configDir, { nonce: 'new-owner', pid: 4242 })
+
+      lock.heartbeat()
+
+      const current = JSON.parse(readFileSync(lock.path, 'utf8')) as LockOwner
+      expect(current.nonce).toBe('new-owner')
+      expect(current.pid).toBe(4242)
+    })
+
+    it('leaves the record parseable when a heartbeat shortens the file', () => {
+      const configDir = makeConfigDir()
+      const lock = acquireDaemonLock(configDir)
+
+      try {
+        // Trailing bytes from a longer previous write. Without truncation the
+        // rewrite keeps the tail and every later read fails to parse.
+        writeFileSync(lock.path, `${readFileSync(lock.path, 'utf8')}${' '.repeat(512)}`)
+        lock.heartbeat()
+
+        const encoded = readFileSync(lock.path, 'utf8')
+        expect(encoded).toBe(encoded.trimEnd() + '\n')
+        expect((JSON.parse(encoded) as LockOwner).nonce).toBe(lock.owner.nonce)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('leaves no quarantine files behind when it reclaims', () => {
+      const configDir = makeConfigDir()
+      writeLock(configDir, { pid: 0, nonce: 'dead-owner' })
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        const strays = readdirSync(dirname(lock.path)).filter((entry) => entry.includes('.reclaim-'))
+        expect(strays).toEqual([])
+      } finally {
+        lock.release()
+      }
+    })
+  })
+
+  /**
+   * `stop` clears the lock of a daemon it had to kill. Scoped to that one daemon
+   * so it cannot remove the lock of a different one that started meanwhile.
+   */
+  describe('clearLockOwnedBy', () => {
+    it('removes a lock whose owner is gone', () => {
+      const configDir = makeConfigDir()
+      writeLock(configDir, { nonce: 'killed-owner', pid: 0 })
+
+      clearLockOwnedBy(0, configDir)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    })
+
+    it('keeps the lock of a daemon that is still running', () => {
+      const configDir = makeConfigDir()
+      const lock = acquireDaemonLock(configDir)
+
+      try {
+        clearLockOwnedBy(process.pid, configDir)
+        // Either the identity matched or it could not be checked; a live pid
+        // under its own lock is never debris.
+        expect(existsSync(lock.path)).toBe(true)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('keeps a lock belonging to a different pid', () => {
+      const configDir = makeConfigDir()
+      writeLock(configDir, { nonce: 'other-daemon', pid: 4242 })
+
+      clearLockOwnedBy(process.pid, configDir)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    })
+
+    it('keeps a lock belonging to another host', () => {
+      const configDir = makeConfigDir()
+      writeLock(configDir, { nonce: 'remote-owner', pid: 0, host: 'some-other-machine' })
+
+      clearLockOwnedBy(0, configDir)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    })
   })
 })

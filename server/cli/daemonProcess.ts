@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isEntryPoint } from './entryPoint'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
+import { startDaemonLogRotation } from '../lib/daemonLog'
 import { resolveSettings } from '../lib/appSettings'
 
 function readVersion(): string {
@@ -60,7 +61,13 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
   installShutdownHandlers(handle)
   if (options.foreground) {
     console.log(signInLine(() => handle.bootstrapUrl(), process.stdout.isTTY === true))
+    return
   }
+
+  // Only the detached run: its stdout is the daemon log, and it is the run that
+  // lasts long enough to fill one. A foreground daemon writes to whatever the
+  // user pointed it at, which is not LoopTroop's to truncate.
+  startDaemonLogRotation()
 }
 
 // Executed directly when spawned as the detached child.

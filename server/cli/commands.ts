@@ -3,7 +3,7 @@ import { openSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { readDaemonState, getDaemonLogPath, getDaemonLogDir, getDaemonStatePath, clearDaemonState, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
+import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
@@ -140,10 +140,14 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
 
   const state = await waitForReady(configDir, child.pid ?? 0)
   if (!state) {
-    process.stderr.write(
-      'LoopTroop failed to start. Recent log output:\n\n' +
-      `${await tailLog(logPath, 20)}\n` +
-      `Full log: ${logPath}\n`,
+    // The child records a refusal it knows will recur before it exits. That
+    // message says what happened; a log tail only shows where it was said.
+    const failure = readDaemonStartFailure(configDir)
+    process.stderr.write(failure
+      ? `LoopTroop failed to start.\n\n${failure.message}\n\nFull log: ${logPath}\n`
+      : 'LoopTroop failed to start. Recent log output:\n\n' +
+        `${await tailLog(logPath, 20)}\n` +
+        `Full log: ${logPath}\n`,
     )
     return 1
   }
@@ -280,7 +284,9 @@ export async function stopCommand(): Promise<number> {
 
   if (!state) {
     // Clear debris so the next start is not blocked by a lock whose owner died.
-    rmSync(getDaemonStatePath(configDir), { force: true })
+    // A recorded start failure survives: `stop` is what someone runs after a
+    // start that did not take, and it is the only account of why.
+    clearStaleDaemonState(configDir)
     rmSync(getDaemonLockPath(configDir), { force: true })
     process.stdout.write('LoopTroop is not running.\n')
     return 0
@@ -305,6 +311,9 @@ export async function stopCommand(): Promise<number> {
 export async function statusCommand(json: boolean): Promise<number> {
   const configDir = resolveAppConfigDir()
   const state = await readRunningDaemon(configDir)
+  // Only meaningful when nothing is running: a live daemon overwrote the record
+  // when it started, so anything still there describes an earlier attempt.
+  const failure = state ? null : readDaemonStartFailure(configDir)
 
   if (json) {
     // Redacted: the token is a credential for this daemon, and status output is
@@ -312,12 +321,17 @@ export async function statusCommand(json: boolean): Promise<number> {
     process.stdout.write(`${JSON.stringify({
       running: state !== null,
       daemon: state ? redactDaemonState(state) : null,
+      lastStartFailure: failure,
     }, null, 2)}\n`)
     return state ? 0 : 1
   }
 
   if (!state) {
-    process.stdout.write('LoopTroop is not running.\n')
+    process.stdout.write(failure
+      ? 'LoopTroop is not running.\n\n' +
+        `The last start was refused at ${failure.at}:\n${failure.message}\n\n` +
+        'Run `looptroop doctor` to check whether that is still the case.\n'
+      : 'LoopTroop is not running.\n')
     return 1
   }
 

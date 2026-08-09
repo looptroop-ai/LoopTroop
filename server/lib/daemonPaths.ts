@@ -1,6 +1,7 @@
-import { resolve } from 'node:path'
-import { readFileSync, rmSync } from 'node:fs'
-import { resolveAppConfigDir } from './appConfigDir'
+import { dirname, resolve } from 'node:path'
+import { closeSync, existsSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { CONFIG_FILE_MODE, ensureSecureDir, resolveAppConfigDir, secureFile } from './appConfigDir'
+import { safeAtomicWrite } from '../io/atomicWrite'
 
 /**
  * Informational record of the running daemon. Never the locking primitive:
@@ -37,6 +38,38 @@ export function redactDaemonState(state: DaemonState): RedactedDaemonState {
   return rest
 }
 
+/**
+ * Why the last start was refused, kept after the process that hit it is gone.
+ *
+ * A daemon that cannot open its database exits, and everything it knew exits
+ * with it: the user is left with a command that returned non-zero and a log
+ * file they were not told to read. Recording the refusal lets `status` and
+ * `doctor` answer the question afterwards, with the numbers rather than prose.
+ *
+ * Only a schema incompatibility is recorded. It is a fixed, machine-checkable
+ * shape with nothing sensitive in it — unlike an arbitrary start error, whose
+ * message could carry anything the code below it chose to put there.
+ */
+export interface DaemonStartFailure {
+  reason: 'schema-incompatible'
+  /** ISO timestamp of the refused start. */
+  at: string
+  /** The build that refused it, which is half of the version mismatch. */
+  version: string
+  /** The operator message the guard produced, already written for a person. */
+  message: string
+  schema: {
+    databaseLabel: string
+    databasePath: string
+    found: number
+    expected: number
+    migratableFrom: number
+  }
+}
+
+/** What daemon.json holds: a live daemon, or the reason there is not one. */
+type DaemonRecord = DaemonState | { startFailure: DaemonStartFailure }
+
 export function getDaemonStatePath(configDir = resolveAppConfigDir()): string {
   return resolve(configDir, 'daemon.json')
 }
@@ -62,14 +95,76 @@ function isDaemonState(value: unknown): value is DaemonState {
     && typeof candidate.apiToken === 'string'
 }
 
-/** Returns null for every failure mode: absent, unreadable, or malformed. */
-export function readDaemonState(configDir?: string): DaemonState | null {
+function isDaemonStartFailure(value: unknown): value is DaemonStartFailure {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Record<string, unknown>
+  if (candidate.reason !== 'schema-incompatible') return false
+  if (typeof candidate.message !== 'string') return false
+  const schema = candidate.schema
+  if (typeof schema !== 'object' || schema === null) return false
+  const details = schema as Record<string, unknown>
+  return typeof details.databasePath === 'string'
+    && typeof details.found === 'number'
+    && typeof details.expected === 'number'
+}
+
+function readDaemonRecord(configDir?: string): DaemonRecord | null {
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))
-    return isDaemonState(parsed) ? parsed : null
+    parsed = JSON.parse(readFileSync(getDaemonStatePath(configDir), 'utf8'))
   } catch {
     return null
   }
+
+  if (isDaemonState(parsed)) return parsed
+  const failure = (parsed as { startFailure?: unknown } | null)?.startFailure
+  return isDaemonStartFailure(failure) ? { startFailure: failure } : null
+}
+
+/**
+ * Writes daemon.json owner-only, whatever it is carrying.
+ *
+ * The atomic write inherits the mode of an existing target, so the file is
+ * created owner-only first. Without this the API token would sit in a
+ * world-readable file for the moment between rename and chmod.
+ */
+function writeDaemonRecord(record: DaemonRecord, configDir?: string): void {
+  const statePath = getDaemonStatePath(configDir)
+  ensureSecureDir(dirname(statePath))
+  if (!existsSync(statePath)) {
+    closeSync(openSync(statePath, 'a', CONFIG_FILE_MODE))
+    secureFile(statePath)
+  }
+  safeAtomicWrite(statePath, `${JSON.stringify(record, null, 2)}\n`)
+  secureFile(statePath)
+}
+
+/** Records the live daemon: its API token, port and instance id. */
+export function writeDaemonState(state: DaemonState, configDir?: string): void {
+  writeDaemonRecord(state, configDir)
+}
+
+/**
+ * Replaces whatever daemon.json held with the reason this start was refused.
+ *
+ * Written where the state file would have gone, because it answers the same
+ * question — "what is LoopTroop doing?" — for the case where the answer is
+ * nothing, and because a reader that finds it has by definition found no
+ * running daemon.
+ */
+export function writeDaemonStartFailure(failure: DaemonStartFailure, configDir?: string): void {
+  writeDaemonRecord({ startFailure: failure }, configDir)
+}
+
+/** Returns null for every failure mode: absent, unreadable, or malformed. */
+export function readDaemonState(configDir?: string): DaemonState | null {
+  const record = readDaemonRecord(configDir)
+  return record !== null && isDaemonState(record) ? record : null
+}
+
+export function readDaemonStartFailure(configDir?: string): DaemonStartFailure | null {
+  const record = readDaemonRecord(configDir)
+  return record !== null && !isDaemonState(record) ? record.startFailure : null
 }
 
 /**
@@ -79,5 +174,19 @@ export function readDaemonState(configDir?: string): DaemonState | null {
  */
 export function clearDaemonState(instanceId: string, configDir?: string): void {
   if (readDaemonState(configDir)?.instanceId !== instanceId) return
+  rmSync(getDaemonStatePath(configDir), { force: true })
+}
+
+/**
+ * Clears a state file describing a daemon that is not running, so the next
+ * start is not misled by it.
+ *
+ * A recorded start failure is kept: it is the only account of why there is no
+ * daemon, and `stop` is exactly the command someone reaches for after a start
+ * that did not take — deleting the diagnosis at that moment would leave them
+ * with nothing to read.
+ */
+export function clearStaleDaemonState(configDir?: string): void {
+  if (readDaemonStartFailure(configDir) !== null) return
   rmSync(getDaemonStatePath(configDir), { force: true })
 }

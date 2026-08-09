@@ -187,6 +187,51 @@ describe('stopping a running daemon', () => {
     expect(await readRunningDaemon(configDir)).toMatchObject({ pid, instanceId: 'instance-under-test' })
   })
 
+  /**
+   * 2.16 contract: `stop` clears debris so the next start is not blocked, but
+   * `stop` is also what someone runs right after a start that did not take.
+   * Clearing the recorded reason at that moment would leave them nothing to read.
+   */
+  it('keeps a recorded start failure while clearing the rest', async () => {
+    const configDir = makeConfigDir()
+    const previous = process.env.LOOPTROOP_CONFIG_DIR
+    process.env.LOOPTROOP_CONFIG_DIR = configDir
+    // Debris from a daemon that died without cleaning up after itself.
+    writeLock(configDir, process.pid)
+    const { writeDaemonStartFailure, readDaemonStartFailure } = await import('../server/lib/daemonPaths')
+    writeDaemonStartFailure({
+      reason: 'schema-incompatible',
+      at: '2026-01-02T03:04:05.000Z',
+      version: '0.0.0-test',
+      message: 'The app database was created by a newer version of LoopTroop.',
+      schema: {
+        databaseLabel: 'app database',
+        databasePath: join(configDir, 'app.sqlite'),
+        found: 99,
+        expected: 1,
+        migratableFrom: 1,
+      },
+    }, configDir)
+
+    const { stopCommand } = await import('../server/cli/commands')
+    const written: string[] = []
+    const restore = process.stdout.write.bind(process.stdout)
+    process.stdout.write = ((chunk: string) => { written.push(String(chunk)); return true }) as typeof process.stdout.write
+
+    try {
+      expect(await stopCommand()).toBe(0)
+    } finally {
+      process.stdout.write = restore
+      if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
+      else process.env.LOOPTROOP_CONFIG_DIR = previous
+    }
+
+    expect(written.join('')).toContain('not running')
+    // The lock still blocks the next start; the diagnosis does not.
+    expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    expect(readDaemonStartFailure(configDir)?.schema.found).toBe(99)
+  })
+
   function writeLock(configDir: string, pid: number): void {
     writeFileSync(getDaemonLockPath(configDir), JSON.stringify({
       nonce: 'lock-nonce',

@@ -162,17 +162,39 @@ export function inspectSchemaVersion(store: SchemaVersionStore): SchemaVersionIn
   }
 }
 
+export interface IncompatibleSchemaDetails {
+  /** Which of the two databases, in the words the operator messages use. */
+  databaseLabel: string
+  databasePath: string
+  found: number
+  expected: number
+  migratableFrom: number
+}
+
+/**
+ * Carries the facts, not only the prose.
+ *
+ * The message is written for a person, but the same refusal has to outlive the
+ * process that hit it: the daemon dies, and a later `status` or `doctor` has to
+ * be able to say which database was refused, what it reports, and what this
+ * build accepts — and to re-check whether that is still true. Re-deriving any
+ * of that by parsing the message would break the first time the wording did.
+ */
 export class IncompatibleSchemaVersionError extends Error {
+  readonly databaseLabel: string
+  readonly databasePath: string
   readonly found: number
   readonly expected: number
-  readonly databasePath: string
+  readonly migratableFrom: number
 
-  constructor(message: string, details: { found: number, expected: number, databasePath: string }) {
+  constructor(message: string, details: IncompatibleSchemaDetails) {
     super(message)
     this.name = 'IncompatibleSchemaVersionError'
+    this.databaseLabel = details.databaseLabel
+    this.databasePath = details.databasePath
     this.found = details.found
     this.expected = details.expected
-    this.databasePath = details.databasePath
+    this.migratableFrom = details.migratableFrom
   }
 }
 
@@ -197,14 +219,14 @@ export function assertSchemaCompatible(args: AssertSchemaCompatibleArgs): Schema
   if (compatibility.kind === 'newer') {
     throw new IncompatibleSchemaVersionError(
       buildNewerSchemaMessage(databaseLabel, databasePath, compatibility.found, expected),
-      { found: compatibility.found, expected, databasePath },
+      { databaseLabel, databasePath, found: compatibility.found, expected, migratableFrom },
     )
   }
 
   if (compatibility.kind === 'unsupported') {
     throw new IncompatibleSchemaVersionError(
       buildUnsupportedSchemaMessage(databaseLabel, databasePath, compatibility.found, migratableFrom),
-      { found: compatibility.found, expected, databasePath },
+      { databaseLabel, databasePath, found: compatibility.found, expected, migratableFrom },
     )
   }
 

@@ -258,4 +258,80 @@ describe('daemon startup and shutdown', () => {
 
     expect(status).toBe(403)
   })
+
+  /**
+   * 2.16 contract: a database this build cannot open refuses the same start
+   * every time, and the process that discovered it exits. The reason has to
+   * outlive it, or the user is left with a non-zero exit and a log file nobody
+   * told them to read.
+   */
+  describe('a start the schema guard refuses', () => {
+    async function startAgainstNewerDatabase(configDir: string) {
+      const dbPath = join(configDir, 'newer.sqlite')
+      const { Database } = await import('../server/db/sqliteShim')
+      const seed = new Database(dbPath)
+      // A table as well as the marker: version 0 with no tables reads as a
+      // brand-new file, which is the one case the guard lets through.
+      seed.exec('CREATE TABLE marker (id INTEGER PRIMARY KEY)')
+      seed.pragma('user_version = 99')
+      seed.close()
+
+      // The app database path is read once at import time, so the module graph
+      // has to be rebuilt after pointing it at the file above.
+      process.env.LOOPTROOP_APP_DB_PATH = dbPath
+      vi.resetModules()
+      const { startDaemon: freshStartDaemon } = await import('../server/daemon/startDaemon')
+
+      return {
+        dbPath,
+        run: () => freshStartDaemon({
+          configDir,
+          settings: ephemeralSettings(),
+          version: '0.0.0-test',
+        }),
+      }
+    }
+
+    afterEach(() => {
+      delete process.env.LOOPTROOP_APP_DB_PATH
+      vi.resetModules()
+    })
+
+    it('records why the start was refused, with the numbers rather than prose', async () => {
+      const configDir = makeConfigDir()
+      const { dbPath, run } = await startAgainstNewerDatabase(configDir)
+
+      await expect(run()).rejects.toThrow(/newer version of LoopTroop/)
+
+      const { readDaemonStartFailure } = await import('../server/lib/daemonPaths')
+      const failure = readDaemonStartFailure(configDir)
+      expect(failure?.reason).toBe('schema-incompatible')
+      expect(failure?.version).toBe('0.0.0-test')
+      // Which database, what it reports, and what this build accepts — enough
+      // for a later command to re-check without parsing the message.
+      expect(failure?.schema).toMatchObject({ databasePath: dbPath, found: 99, expected: 1 })
+      expect(failure?.message).toContain(dbPath)
+    })
+
+    it('leaves no lock behind, so the fix can be tried immediately', async () => {
+      const configDir = makeConfigDir()
+      const { run } = await startAgainstNewerDatabase(configDir)
+
+      await expect(run()).rejects.toThrow()
+
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    })
+
+    it('records no daemon anything could try to talk to', async () => {
+      const configDir = makeConfigDir()
+      const { run } = await startAgainstNewerDatabase(configDir)
+
+      await expect(run()).rejects.toThrow()
+
+      // `stop`, `status` and `open` all read this file; a refusal must never
+      // read back as a running daemon.
+      const { readDaemonState } = await import('../server/lib/daemonPaths')
+      expect(readDaemonState(configDir)).toBeNull()
+    })
+  })
 })

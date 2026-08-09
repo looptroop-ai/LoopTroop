@@ -175,4 +175,89 @@ describe('doctor command', () => {
     await new Promise<void>((done) => server.close(() => done()))
     return port
   }
+
+  /**
+   * 2.16 contract: a start refused by the schema guard is reported by the
+   * command a user is told to run, in a form a script can act on. The daemon
+   * that hit it is gone, and the database it named need not be the app database
+   * checked above, so nothing else here can see it.
+   */
+  describe('a refused start', () => {
+    async function recordRefusal(configDir: string, options: { found: number }): Promise<string> {
+      const dbPath = join(configDir, 'refused.sqlite')
+      const { Database } = await import('../server/db/sqliteShim')
+      const seed = new Database(dbPath)
+      // Version 0 with no tables reads as a brand-new file, which is the one
+      // case the guard lets through.
+      seed.exec('CREATE TABLE marker (id INTEGER PRIMARY KEY)')
+      seed.pragma(`user_version = ${options.found}`)
+      seed.close()
+
+      const { writeDaemonStartFailure } = await import('../server/lib/daemonPaths')
+      writeDaemonStartFailure({
+        reason: 'schema-incompatible',
+        at: '2026-01-02T03:04:05.000Z',
+        version: '0.0.0-test',
+        message: `The project database at ${dbPath} was created by a newer version of LoopTroop.`,
+        schema: {
+          databaseLabel: 'project database',
+          databasePath: dbPath,
+          found: options.found,
+          expected: 1,
+          migratableFrom: 1,
+        },
+      }, configDir)
+
+      return dbPath
+    }
+
+    it('reports a refusal that is still true, with a remedy', async () => {
+      const configDir = useConfigDir()
+      const dbPath = await recordRefusal(configDir, { found: 99 })
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check?.status).toBe('fail')
+      expect(check?.detail).toContain('project database')
+      expect(check?.remedy).toContain(dbPath)
+    })
+
+    it('carries the version numbers so a caller need not parse the prose', async () => {
+      const configDir = useConfigDir()
+      const dbPath = await recordRefusal(configDir, { found: 99 })
+      const stdout = captureStdout()
+
+      await doctorCommand(true)
+
+      const parsed = JSON.parse(stdout.text()) as {
+        ok: boolean
+        checks: { name: string; schema?: { databasePath: string; found: number; expected: number } }[]
+      }
+      const check = parsed.checks.find((entry) => entry.name === 'last start')
+      expect(check?.schema).toEqual({ databasePath: dbPath, found: 99, expected: 1 })
+      expect(parsed.ok).toBe(false)
+    })
+
+    it('stops reporting a refusal the user has already fixed', async () => {
+      const configDir = useConfigDir()
+      // Version 1 is what this build expects: whoever hit the refusal has since
+      // upgraded LoopTroop or replaced the file.
+      await recordRefusal(configDir, { found: 1 })
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      // A week-old refusal reported as a live failure sends someone hunting for
+      // a problem that is no longer there.
+      expect(check?.status).toBe('ok')
+    })
+
+    it('says nothing when no start has been refused', async () => {
+      useConfigDir()
+
+      const check = (await runChecks()).find((entry) => entry.name === 'last start')
+
+      expect(check?.status).toBe('ok')
+      expect(check?.remedy).toBeUndefined()
+    })
+  })
 })

@@ -4,10 +4,24 @@ import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
 import { resolveInstallInfo } from '../lib/installChannel'
 import { probePort } from '../lib/portProbe'
-import type { DaemonState } from '../lib/daemonPaths'
+import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
+import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 
 type Status = 'ok' | 'warn' | 'fail'
+
+/**
+ * The version facts behind a schema check, for `--json` consumers.
+ *
+ * `detail` is prose aimed at a person and its wording is not a contract. A
+ * script deciding whether to upgrade, or naming the file to move aside, gets
+ * the numbers here instead of parsing a sentence.
+ */
+interface SchemaFacts {
+  databasePath: string
+  found: number
+  expected: number
+}
 
 interface Check {
   name: string
@@ -15,6 +29,8 @@ interface Check {
   detail: string
   /** Shown only when the check is not ok. */
   remedy?: string
+  /** Present on the schema checks only. */
+  schema?: SchemaFacts
 }
 
 const REQUIRED_NODE_MAJOR = 24
@@ -195,17 +211,24 @@ function checkDaemon(daemon: DaemonState | null): Check {
     : { name: 'daemon', status: 'ok', detail: 'not running' }
 }
 
-/**
- * Reports an unopenable database here rather than leaving it to surface as a
- * failed start, so the found and expected versions are visible before anything
- * tries to mutate the file.
- */
-async function checkSchema(): Promise<Check> {
-  const { APP_DB_PATH } = await import('../db/index')
+type DatabaseInspection =
+  | { kind: 'missing' }
+  | { kind: 'unreadable'; message: string }
+  | { kind: 'classified'; compatibility: SchemaCompatibility }
 
-  if (!existsSync(APP_DB_PATH)) {
-    return { name: 'schema', status: 'ok', detail: 'no database yet' }
-  }
+/**
+ * Classifies a database without opening it for writing.
+ *
+ * `doctor` is the command someone runs when they suspect their data is already
+ * in trouble, so it must never be the thing that stamps a version or runs boot
+ * DDL. Read-only is the whole point of not reusing the startup path here.
+ */
+async function inspectDatabase(
+  databasePath: string,
+  expected: number,
+  migratableFrom: number,
+): Promise<DatabaseInspection> {
+  if (!existsSync(databasePath)) return { kind: 'missing' }
 
   const [{ Database }, schema] = await Promise.all([
     import('../db/sqliteShim'),
@@ -214,59 +237,160 @@ async function checkSchema(): Promise<Check> {
 
   let store: InstanceType<typeof Database> | null = null
   try {
-    store = new Database(APP_DB_PATH, { readonly: true })
-    const inspection = schema.inspectSchemaVersion(store)
-    const compatibility = schema.classifySchemaVersion(
-      inspection,
-      schema.APP_SCHEMA_VERSION,
-      schema.APP_MIGRATABLE_FROM,
-    )
-
-    switch (compatibility.kind) {
-      case 'newer':
-        return {
-          name: 'schema',
-          status: 'fail',
-          detail: `database is version ${compatibility.found}, this build supports ${schema.APP_SCHEMA_VERSION}`,
-          remedy: `Upgrade LoopTroop, or point LOOPTROOP_CONFIG_DIR elsewhere. Database: ${APP_DB_PATH}`,
-        }
-      case 'unsupported':
-        return {
-          name: 'schema',
-          status: 'fail',
-          detail: `database is version ${compatibility.found}, too old to upgrade`,
-          remedy: `Delete ${APP_DB_PATH} to start clean, or run an older LoopTroop first.`,
-        }
-      case 'older':
-        return {
-          name: 'schema',
-          status: 'warn',
-          detail: `database is version ${compatibility.found}; it will be upgraded to ${schema.APP_SCHEMA_VERSION} on next start`,
-          remedy: 'No action needed. The upgrade runs automatically.',
-        }
-      case 'unversioned':
-        return {
-          name: 'schema',
-          status: 'warn',
-          detail: 'database predates 0.5.0 and carries no version marker',
-          remedy: `Delete ${APP_DB_PATH} to start clean if LoopTroop misbehaves.`,
-        }
-      default:
-        return { name: 'schema', status: 'ok', detail: `version ${schema.APP_SCHEMA_VERSION}` }
+    store = new Database(databasePath, { readonly: true })
+    return {
+      kind: 'classified',
+      compatibility: schema.classifySchemaVersion(
+        schema.inspectSchemaVersion(store),
+        expected,
+        migratableFrom,
+      ),
     }
   } catch (error) {
-    return {
-      name: 'schema',
-      status: 'fail',
-      detail: `cannot read ${APP_DB_PATH}: ${error instanceof Error ? error.message : String(error)}`,
-      remedy: 'Check the file permissions, or delete the database to start clean.',
-    }
+    return { kind: 'unreadable', message: error instanceof Error ? error.message : String(error) }
   } finally {
     try {
       store?.close()
     } catch {
       // Nothing useful to do if the handle is already gone.
     }
+  }
+}
+
+/**
+ * Reports an unopenable database here rather than leaving it to surface as a
+ * failed start, so the found and expected versions are visible before anything
+ * tries to mutate the file.
+ */
+async function checkSchema(): Promise<Check> {
+  const [{ APP_DB_PATH }, schema] = await Promise.all([
+    import('../db/index'),
+    import('../db/schemaVersion'),
+  ])
+  const inspection = await inspectDatabase(
+    APP_DB_PATH,
+    schema.APP_SCHEMA_VERSION,
+    schema.APP_MIGRATABLE_FROM,
+  )
+
+  if (inspection.kind === 'missing') {
+    return { name: 'schema', status: 'ok', detail: 'no database yet' }
+  }
+
+  if (inspection.kind === 'unreadable') {
+    return {
+      name: 'schema',
+      status: 'fail',
+      detail: `cannot read ${APP_DB_PATH}: ${inspection.message}`,
+      remedy: 'Check the file permissions, or delete the database to start clean.',
+    }
+  }
+
+  const { compatibility } = inspection
+  const found = 'found' in compatibility
+    ? compatibility.found
+    : compatibility.kind === 'current'
+      ? schema.APP_SCHEMA_VERSION
+      : schema.UNVERSIONED_SCHEMA_VERSION
+  const facts: SchemaFacts = { databasePath: APP_DB_PATH, found, expected: schema.APP_SCHEMA_VERSION }
+
+  switch (compatibility.kind) {
+    case 'newer':
+      return {
+        name: 'schema',
+        status: 'fail',
+        detail: `database is version ${compatibility.found}, this build supports ${schema.APP_SCHEMA_VERSION}`,
+        remedy: `Upgrade LoopTroop, or point LOOPTROOP_CONFIG_DIR elsewhere. Database: ${APP_DB_PATH}`,
+        schema: facts,
+      }
+    case 'unsupported':
+      return {
+        name: 'schema',
+        status: 'fail',
+        detail: `database is version ${compatibility.found}, too old to upgrade`,
+        remedy: `Delete ${APP_DB_PATH} to start clean, or run an older LoopTroop first.`,
+        schema: facts,
+      }
+    case 'older':
+      return {
+        name: 'schema',
+        status: 'warn',
+        detail: `database is version ${compatibility.found}; it will be upgraded to ${schema.APP_SCHEMA_VERSION} on next start`,
+        remedy: 'No action needed. The upgrade runs automatically.',
+        schema: facts,
+      }
+    case 'unversioned':
+      return {
+        name: 'schema',
+        status: 'warn',
+        detail: 'database predates 0.5.0 and carries no version marker',
+        remedy: `Delete ${APP_DB_PATH} to start clean if LoopTroop misbehaves.`,
+        schema: facts,
+      }
+    case 'fresh':
+      return {
+        name: 'schema',
+        status: 'ok',
+        detail: 'no database yet',
+        schema: facts,
+      }
+    default:
+      return { name: 'schema', status: 'ok', detail: `version ${schema.APP_SCHEMA_VERSION}`, schema: facts }
+  }
+}
+
+/**
+ * Reports a start the schema guard refused, which nothing else here can see.
+ *
+ * The daemon that hit it is gone, and the database it named need not be the app
+ * database checked above: a project database is only opened when that project
+ * is used, so `doctor` would otherwise pass while every start keeps failing.
+ *
+ * The record is re-checked rather than trusted. Someone who upgraded LoopTroop
+ * or moved the file aside has already fixed it, and a refusal from last week
+ * reported as a live failure would send them hunting for a problem that is no
+ * longer there.
+ */
+async function checkLastStart(): Promise<Check> {
+  const failure = readDaemonStartFailure()
+  if (!failure) {
+    return { name: 'last start', status: 'ok', detail: 'no refused start recorded' }
+  }
+
+  // The versions the refusal was about, not what the file says now: this check
+  // reports the recorded event, and `schema` above reports the current state.
+  const facts: SchemaFacts = {
+    databasePath: failure.schema.databasePath,
+    found: failure.schema.found,
+    expected: failure.schema.expected,
+  }
+  const inspection = await inspectDatabase(
+    failure.schema.databasePath,
+    failure.schema.expected,
+    failure.schema.migratableFrom,
+  )
+  const stillRefused = inspection.kind === 'classified'
+    && (inspection.compatibility.kind === 'newer' || inspection.compatibility.kind === 'unsupported')
+
+  if (!stillRefused) {
+    return {
+      name: 'last start',
+      status: 'ok',
+      detail: inspection.kind === 'missing'
+        ? `refused at ${failure.at}; ${failure.schema.databasePath} is gone, so the next start will proceed`
+        : `refused at ${failure.at}; the ${failure.schema.databaseLabel} is readable again`,
+      schema: facts,
+    }
+  }
+
+  return {
+    name: 'last start',
+    status: 'fail',
+    detail: `refused at ${failure.at}: the ${failure.schema.databaseLabel} reports version ${failure.schema.found}, LoopTroop ${failure.version} supports ${failure.schema.expected}`,
+    remedy: failure.schema.found > failure.schema.expected
+      ? `Upgrade LoopTroop to the version that wrote ${failure.schema.databasePath}.`
+      : `Delete ${failure.schema.databasePath} to start clean, or run an older LoopTroop first.`,
+    schema: facts,
   }
 }
 
@@ -339,6 +463,7 @@ export async function runChecks(): Promise<Check[]> {
     checkConfigDir(),
     checkInstallChannel(),
     await checkSchema(),
+    await checkLastStart(),
     await checkProjectIgnores(),
     checkOpenCodeVersion(),
     await checkOpenCode(),

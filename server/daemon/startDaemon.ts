@@ -1,15 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, openSync, rmSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
+import { IncompatibleSchemaVersionError } from '../db/schemaVersion'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
-import { getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
+import {
+  getDaemonStatePath,
+  writeDaemonStartFailure,
+  writeDaemonState,
+  type DaemonStartFailure,
+  type DaemonState,
+} from '../lib/daemonPaths'
 import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor } from '../opencode/supervisor'
-import { safeAtomicWrite } from '../io/atomicWrite'
-import { CONFIG_FILE_MODE, ensureSecureDir, secureFile } from '../lib/appConfigDir'
-import { dirname } from 'node:path'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
@@ -45,19 +49,53 @@ export interface StartDaemonOptions {
   onReady?: (state: DaemonState) => void
 }
 
-function writeState(state: DaemonState, configDir?: string): void {
-  const statePath = getDaemonStatePath(configDir)
-  ensureSecureDir(dirname(statePath))
-  // The atomic write inherits the mode of an existing target, so the file is
-  // created owner-only first. Without this the API token would sit in a
-  // world-readable file for the moment between rename and chmod.
-  if (!existsSync(statePath)) {
-    closeSync(openSync(statePath, 'a', CONFIG_FILE_MODE))
-    secureFile(statePath)
+/**
+ * Turns a refused start into a record worth keeping, or into nothing.
+ *
+ * Most things that stop a start are transient and already reported while the
+ * user is watching: a bound port frees up, a missing OpenCode gets installed,
+ * and a note about either would be a lie by the time anyone read it back. A
+ * database this build cannot open is different — it refuses the same file every
+ * time, and the process that discovered it is gone before the question is
+ * asked. Only that one is written down.
+ */
+export function describeStartFailure(
+  error: unknown,
+  context: { version: string, at: string },
+): DaemonStartFailure | null {
+  if (!(error instanceof IncompatibleSchemaVersionError)) return null
+
+  return {
+    reason: 'schema-incompatible',
+    at: context.at,
+    version: context.version,
+    message: error.message,
+    schema: {
+      databaseLabel: error.databaseLabel,
+      databasePath: error.databasePath,
+      found: error.found,
+      expected: error.expected,
+      migratableFrom: error.migratableFrom,
+    },
   }
-  safeAtomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`)
-  // The state file carries the API token, the port and the instance id.
-  secureFile(statePath)
+}
+
+/**
+ * Leaves daemon.json describing the truth: either why this start was refused,
+ * or nothing at all. Recording is best effort, because the start failure is the
+ * error worth reporting and must not be replaced by a failure to write it down.
+ */
+function recordStartFailure(error: unknown, version: string, configDir?: string): void {
+  const failure = describeStartFailure(error, { version, at: new Date().toISOString() })
+  if (failure) {
+    try {
+      writeDaemonStartFailure(failure, configDir)
+      return
+    } catch {
+      // Fall through and clear the file rather than leave a partial record.
+    }
+  }
+  rmSync(getDaemonStatePath(configDir), { force: true })
 }
 
 /**
@@ -135,7 +173,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
       }),
     }
 
-    writeState(state, options.configDir)
+    writeDaemonState(state, options.configDir)
 
     // The nonce travels in the fragment so it is never sent to the server as
     // part of the request line, and so it stays out of access logs. A fresh one
@@ -183,7 +221,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     } catch {
       // The start failure is the useful error; a close failure would mask it.
     }
-    rmSync(getDaemonStatePath(options.configDir), { force: true })
+    // The daemon is about to exit, taking the reason with it. A refusal that
+    // will recur on every start is left behind for `status` and `doctor`.
+    recordStartFailure(error, options.version, options.configDir)
     lock.release()
     throw error
   }

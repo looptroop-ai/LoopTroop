@@ -11,6 +11,12 @@ import { readRunningDaemon } from './commands'
 export interface CleanOptions {
   apply: boolean
   configDir?: string
+  /**
+   * Injected by tests. A process that survives SIGTERM and SIGKILL cannot be
+   * conjured on demand, so the one outcome that matters here — LoopTroop tried
+   * to stop a server and could not — is otherwise unreachable from a test.
+   */
+  stopProcess?: (pid: number, startToken: string | undefined) => Promise<boolean>
 }
 
 export interface WorktreeCandidate {
@@ -386,15 +392,31 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
   const removed = await removeCandidates(removable)
   process.stdout.write(`\nRemoved ${removed} worktree(s).\n`)
 
+  let orphanSurvived = false
   if (orphan.kind === 'stoppable') {
-    const stopped = await stopOpenCode(orphan.pid, recorded?.opencode?.startToken)
-    process.stdout.write(stopped
-      ? `Stopped the orphaned OpenCode server (pid ${orphan.pid}).\n`
-      : `Could not stop the orphaned OpenCode server (pid ${orphan.pid}).\n`)
-    // The record described a daemon that is gone and a server that is now gone
-    // with it, so leaving it would point the next run at a recycled pid.
-    if (stopped) clearStaleDaemonState(options.configDir)
+    const stop = options.stopProcess ?? stopOpenCode
+    const stopped = await stop(orphan.pid, recorded?.opencode?.startToken)
+    if (stopped) {
+      process.stdout.write(`Stopped the orphaned OpenCode server (pid ${orphan.pid}).\n`)
+      // The record described a daemon that is gone and a server that is now gone
+      // with it, so leaving it would point the next run at a recycled pid.
+      clearStaleDaemonState(options.configDir)
+    } else {
+      orphanSurvived = true
+      process.stderr.write(
+        `Could not stop the orphaned OpenCode server (pid ${orphan.pid}). ` +
+        'It still holds its port, so the next `looptroop start` may not get one.\n',
+      )
+    }
   }
 
-  return removed === removable.length ? 0 : 1
+  // A server LoopTroop set out to stop and could not is a failed cleanup, and
+  // this used to be decided by the worktree count alone: `clean --apply` in a
+  // provisioning script reported success while the process it named to stop was
+  // still running and still holding the port the next start wants.
+  //
+  // A `kept` orphan is not counted here. Nothing was attempted for it, exactly
+  // as for a worktree held back by uncommitted work: refusing to signal a pid
+  // whose identity cannot be proved is this command working as designed.
+  return removed === removable.length && !orphanSurvived ? 0 : 1
 }

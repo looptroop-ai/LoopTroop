@@ -499,11 +499,36 @@ describe('clean command', () => {
         opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid, startToken: tokenFor(pid) },
       })
 
-      const output = await runClean({ apply: true, configDir })
+      const { code, output } = await captureClean({ apply: true, configDir })
 
+      expect(code).toBe(0)
       expect(output).toContain(`Stopped the orphaned OpenCode server (pid ${pid})`)
       expect(isAlive(pid)).toBe(false)
       expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+    })
+
+    it('exits nonzero when the orphan it tried to stop is still running', async () => {
+      const configDir = makeTempDir('config')
+      const pid = spawnStandIn()
+      writeState(configDir, {
+        pid: departedPid,
+        opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid, startToken: tokenFor(pid) },
+      })
+
+      const { code, output } = await captureClean({
+        apply: true,
+        configDir,
+        // A process that ignores SIGKILL cannot be produced on demand; what is
+        // being tested is what `clean` reports when the stop does not take.
+        stopProcess: async () => false,
+      })
+
+      // Reported as success, this sends a provisioning script on to a `start`
+      // that cannot have the port, with nothing in the exit code to say why.
+      expect(code).toBe(1)
+      expect(output).toContain(`Could not stop the orphaned OpenCode server (pid ${pid})`)
+      // The server it names is still the truth about this machine.
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
     })
 
     it('leaves an unverifiable process running under --apply', async () => {
@@ -514,10 +539,14 @@ describe('clean command', () => {
         opencode: { baseUrl: 'http://127.0.0.1:4096', owned: true, pid },
       })
 
-      const output = await runClean({ apply: true, configDir })
+      const { code, output } = await captureClean({ apply: true, configDir })
 
       expect(output).toContain('keeping')
       expect(isAlive(pid)).toBe(true)
+      // Nothing was attempted, so nothing failed: refusing to signal a pid whose
+      // identity cannot be proved is this command working exactly as designed,
+      // and must not read as a failed cleanup.
+      expect(code).toBe(0)
       // The record is the only account of what happened, so it stays.
       expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
     })
@@ -587,6 +616,7 @@ describe('clean command', () => {
   async function captureClean(options: {
     apply: boolean
     configDir: string
+    stopProcess?: (pid: number, startToken: string | undefined) => Promise<boolean>
   }): Promise<{ code: number, output: string }> {
     let output = ''
     const restoreOut = process.stdout.write.bind(process.stdout)
@@ -596,7 +626,7 @@ describe('clean command', () => {
     process.stderr.write = capture
 
     try {
-      const code = await cleanCommand({ apply: options.apply, configDir: options.configDir })
+      const code = await cleanCommand(options)
       return { code, output }
     } finally {
       process.stdout.write = restoreOut

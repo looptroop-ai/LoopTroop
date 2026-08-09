@@ -24,15 +24,17 @@ describe('host guard', () => {
     }
   })
 
-  function makeApp(): Hono {
+  function makeApp(additionalOrigins?: string[]): Hono {
     const app = new Hono()
-    app.use('/api/*', createHostGuardMiddleware())
+    app.use('/api/*', createHostGuardMiddleware(
+      additionalOrigins === undefined ? {} : { additionalOrigins },
+    ))
     app.get('/api/thing', (c) => c.json({ ok: true }))
     return app
   }
 
-  async function request(headers: Record<string, string>): Promise<Response> {
-    return await makeApp().request('http://127.0.0.1:3000/api/thing', { headers })
+  async function request(headers: Record<string, string>, additionalOrigins?: string[]): Promise<Response> {
+    return await makeApp(additionalOrigins).request('http://127.0.0.1:3000/api/thing', { headers })
   }
 
   it('accepts a request from a loopback host', async () => {
@@ -60,10 +62,53 @@ describe('host guard', () => {
     expect((await request({ Host: '127.0.0.1:3000', Origin: 'null' })).status).toBe(403)
   })
 
-  it('accepts the dev frontend, which is a different loopback port', async () => {
-    const response = await request({ Host: 'localhost:3000', Origin: 'http://localhost:5173' })
+  /**
+   * Cookies are not scoped by port, so a page on any other localhost port gets
+   * this daemon's session cookie attached to whatever it asks for. Accepting
+   * "some loopback origin" would leave every other local port — another dev
+   * server, a local tool with an XSS, anything the user was talked into running
+   * — able to drive this API. The port is what has to be pinned.
+   */
+  it('rejects another loopback port, which shares this daemon cookies', async () => {
+    const response = await request({ Host: '127.0.0.1:3000', Origin: 'http://127.0.0.1:9999' })
 
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('cross-origin') })
+  })
+
+  it('rejects a different loopback name on the same port', async () => {
+    // A browser treats these as separate origins, so this daemon does too.
+    expect((await request({ Host: '127.0.0.1:3000', Origin: 'http://localhost:3000' })).status).toBe(403)
+  })
+
+  it('accepts an origin that matches the authority the request arrived on', async () => {
+    for (const [host, origin] of [
+      ['127.0.0.1:3000', 'http://127.0.0.1:3000'],
+      ['localhost:3000', 'http://localhost:3000'],
+      ['[::1]:3000', 'http://[::1]:3000'],
+      // No port on either side is port 80 on both.
+      ['127.0.0.1', 'http://127.0.0.1'],
+    ] as const) {
+      expect((await request({ Host: host, Origin: origin })).status).toBe(200)
+    }
+  })
+
+  it('accepts the dev server only when it is configured as an extra origin', async () => {
+    const headers = { Host: 'localhost:3000', Origin: 'http://localhost:5173' }
+
+    expect((await request(headers)).status).toBe(403)
+    expect((await request(headers, ['http://localhost:5173'])).status).toBe(200)
+  })
+
+  it('never accepts a non-loopback extra origin', async () => {
+    // Misconfiguration must not become a way in: the origin still has to be a
+    // loopback name, whatever the allowlist says.
+    const response = await request(
+      { Host: '127.0.0.1:3000', Origin: 'https://attacker.example' },
+      ['https://attacker.example'],
+    )
+
+    expect(response.status).toBe(403)
   })
 
   it('accepts a same-origin request, which carries no Origin at all', async () => {

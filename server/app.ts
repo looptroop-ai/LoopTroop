@@ -147,8 +147,11 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   })
 
   // Before CORS and before any authentication: a request that did not come
-  // from this machine is refused whatever credential it carries.
-  app.use('/api/*', createHostGuardMiddleware())
+  // from this machine is refused whatever credential it carries. In development
+  // the Vite server is a genuinely different origin, and the only one.
+  app.use('/api/*', createHostGuardMiddleware(
+    mode === 'development' ? { additionalOrigins: [getFrontendOrigin()] } : {},
+  ))
 
   if (mode === 'development') {
     app.use('/api/*', cors({

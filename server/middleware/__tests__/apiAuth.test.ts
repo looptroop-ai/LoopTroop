@@ -51,7 +51,7 @@ describe('API auth middleware', () => {
     }
   })
 
-  it('accepts configured tokens from headers, bearer auth, and SSE stream query params', async () => {
+  it('accepts configured tokens from headers and bearer auth', async () => {
     const app = createAuthApp('secret-token')
 
     expect((await app.request('/api/health', {
@@ -60,12 +60,18 @@ describe('API auth middleware', () => {
     expect((await app.request('/api/health', {
       headers: { Authorization: 'Bearer secret-token' },
     })).status).toBe(200)
-    expect((await app.request('/api/stream?apiToken=secret-token')).status).toBe(200)
   })
 
-  it('does not accept query-param tokens outside the SSE stream route', async () => {
+  /**
+   * A query string is not a private channel: it reaches access logs, proxy
+   * logs, `Referer` on any outbound link, and the browser's own history. The
+   * SSE route used to accept one because EventSource cannot set headers; it is
+   * same-origin, so the session cookie covers it instead.
+   */
+  it('never accepts a query-param token, including on the SSE stream', async () => {
     const app = createAuthApp('secret-token')
 
+    expect((await app.request('/api/stream?apiToken=secret-token')).status).toBe(401)
     expect((await app.request('/api/health?apiToken=secret-token')).status).toBe(401)
   })
 

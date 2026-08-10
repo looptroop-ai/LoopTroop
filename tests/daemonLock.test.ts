@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -327,6 +328,314 @@ describe('daemon lock', () => {
         lock.release()
       }
     })
+  })
+
+  /**
+   * The right to convert one stale lock generation, which is what stops two
+   * contenders from both recovering the same abandoned lock.
+   *
+   * These reach inside the mechanism — they write claim files the implementation
+   * would otherwise write itself — because the failure they cover has no
+   * single-process surface: it needs a claim that exists while its owner cannot
+   * make progress, and one process cannot be in two states at once. The path
+   * derivation is duplicated here for that reason, and it fails safe: were the
+   * real derivation to change, these planted claims would land where nothing
+   * looks for them, the acquisitions below would succeed, and these tests would
+   * fail rather than quietly stop covering anything.
+   */
+  describe('conversion claims', () => {
+    /** Mirrors `claimPath` in the implementation. */
+    function claimPathFor(configDir: string, generation: string): string {
+      const digest = createHash('sha256').update(generation).digest('hex').slice(0, 16)
+      return `${getDaemonLockPath(configDir)}.claim-${digest}`
+    }
+
+    const STALE_GENERATION = 'crashed-run'
+
+    /** A lock every contender agrees is abandoned, so recovery is what runs. */
+    function writeStaleLock(configDir: string): void {
+      writeLock(configDir, {
+        nonce: STALE_GENERATION,
+        pid: 0,
+        heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 600_000).toISOString(),
+      })
+    }
+
+    function writeClaim(configDir: string, holder: Record<string, unknown>): string {
+      const path = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(path, `${JSON.stringify({
+        nonce: 'planted-claim',
+        pid: process.pid,
+        host: hostname(),
+        at: new Date().toISOString(),
+        ...holder,
+      })}\n`)
+      return path
+    }
+
+    /** Long enough ago that any age-based rule would call it expired. */
+    function longAgo(): string {
+      return new Date(Date.now() - 600_000).toISOString()
+    }
+
+    it('does not expire a claim whose owner is still running, however old', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // Held by this very process, so liveness is not in question, and stamped
+      // far outside any TTL. Age alone used to be enough to take it over.
+      const claim = writeClaim(configDir, {
+        at: longAgo(),
+        startToken: readProcessStartToken(process.pid),
+      })
+
+      // Refusing to start is the correct outcome: the claimant may be mid-
+      // conversion, and the only alternative is converting alongside it.
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+      expect(existsSync(claim)).toBe(true)
+    })
+
+    it('takes over a claim whose owner is gone', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      const claim = writeClaim(configDir, { pid: 0, at: longAgo() })
+
+      // The other half of the contract. A claim that outlives its process must
+      // be reclaimable, or one crash during recovery wedges every later start.
+      const lock = acquireDaemonLock(configDir)
+      try {
+        expect(lock.owner.nonce).not.toBe(STALE_GENERATION)
+        expect(existsSync(claim)).toBe(false)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('takes over a claim whose pid now belongs to a different process', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // Alive, but not the process that took the claim: the number was recycled
+      // after the real claimant exited.
+      writeClaim(configDir, { at: longAgo(), startToken: 'a0'.repeat(16) })
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        expect(lock.owner.pid).toBe(process.pid)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('does not discard a claim that is still being written', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // What another process sees between the exclusive create and the write:
+      // a claim file naming nobody. Treating that as debris let a second
+      // contender delete a claim whose owner was about to use it.
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(claim, '')
+
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+      expect(existsSync(claim)).toBe(true)
+    })
+
+    it('does not discard a claim caught mid-write', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // A partial record rather than an empty one — the same window, one write
+      // further in. Unparseable is not the same as unowned.
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(claim, '{"nonce":"half-writ')
+
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+      expect(existsSync(claim)).toBe(true)
+    })
+
+    it('discards an empty claim left behind by a process that died writing it', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(claim, '')
+      // Nothing inside names a process whose liveness could be checked, so age
+      // is the only evidence there is — and this one is far past the window.
+      const backdated = new Date(Date.now() - 600_000)
+      utimesSync(claim, backdated, backdated)
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        expect(existsSync(claim)).toBe(false)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('still reads a claim from an older version rather than calling it debris', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // No nonce and no start token: the shape a previous version wrote, which
+      // can still be on disk across an upgrade. Its owner is unverifiable, so
+      // age decides — but it must be *read* to get there. Rejecting the record
+      // for its missing nonce would make it illegible instead, and an illegible
+      // claim created moments ago is treated as somebody's work in progress,
+      // which would wedge this recovery for the whole window.
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(claim, `${JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        at: longAgo(),
+      })}\n`)
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        expect(existsSync(claim)).toBe(false)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('holds a fresh claim from an older version for its window', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // The same record, newly written: unverifiable but not yet expired, so it
+      // is somebody's conversion in progress and must be left alone.
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+      writeFileSync(claim, `${JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        at: new Date().toISOString(),
+      })}\n`)
+
+      expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+      expect(existsSync(claim)).toBe(true)
+    })
+
+    it('judges a claim with an unusable timestamp by its owner', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      // A corrupt `at` parses to NaN, which compares false against every
+      // threshold. Reading that as "not expired" would wedge the claim forever,
+      // so the owner has to be what decides.
+      writeClaim(configDir, { pid: 0, at: 'not a date' })
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        expect(lock.owner.pid).toBe(process.pid)
+      } finally {
+        lock.release()
+      }
+    })
+
+    it('removes only its own claim when it finishes converting', () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+
+      const lock = acquireDaemonLock(configDir)
+      try {
+        // The claim this acquisition took is gone, so the next reclaim does not
+        // have to wait it out; nothing else was swept up with it.
+        expect(existsSync(claimPathFor(configDir, STALE_GENERATION))).toBe(false)
+        const strays = readdirSync(configDir).filter((entry) => entry.startsWith('daemon.lock.'))
+        expect(strays).toEqual([])
+      } finally {
+        lock.release()
+      }
+    })
+
+    // SIGSTOP has no Windows equivalent — `process.kill` there terminates the
+    // target whatever signal you name, which would make this a test about a
+    // dead process rather than a stopped one. The predicate under test is the
+    // same code on every platform, so the property is covered, not skipped.
+    it.skipIf(process.platform === 'win32')(
+      'does not expire a claim held by a suspended process',
+      async () => {
+        const configDir = makeConfigDir()
+        writeStaleLock(configDir)
+
+        // A real process that cannot run: the scenario the age rule got wrong.
+        // Suspended rather than merely idle, because "still the rightful owner"
+        // has to hold for a process making no progress at all — a laptop asleep
+        // mid-recovery, a starved container, a debugger stop.
+        const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 600000)'])
+        const exited = new Promise<void>((done) => { sleeper.on('close', () => { done() }) })
+        const pid = sleeper.pid
+        if (pid === undefined) throw new Error('could not spawn the suspended claimant')
+
+        try {
+          const startToken = readProcessStartToken(pid)
+          process.kill(pid, 'SIGSTOP')
+          const claim = writeClaim(configDir, {
+            pid,
+            at: longAgo(),
+            ...(startToken === null ? {} : { startToken }),
+          })
+
+          expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
+          expect(existsSync(claim)).toBe(true)
+
+          // And it unwedges once the owner is genuinely gone, rather than
+          // needing a human to delete the file.
+          process.kill(pid, 'SIGCONT')
+          sleeper.kill('SIGKILL')
+          await exited
+
+          const lock = acquireDaemonLock(configDir)
+          try {
+            expect(existsSync(claim)).toBe(false)
+          } finally {
+            lock.release()
+          }
+        } finally {
+          if (sleeper.exitCode === null && sleeper.signalCode === null) {
+            try { process.kill(pid, 'SIGCONT') } catch { /* already gone */ }
+            sleeper.kill('SIGKILL')
+          }
+          await exited
+        }
+      },
+      30_000,
+    )
+
+    /**
+     * Release is scoped to the claim this process actually created.
+     *
+     * Reached through the module's own internals because the unscoped delete is
+     * only observable in the window between a claim changing hands and the
+     * original holder finishing — a state no public call can be left in on
+     * purpose. What it guards is real: with `rmSync` alone, a process whose claim
+     * was taken over deletes its successor's on the way out, and the next
+     * contender is then free to convert alongside that successor.
+     */
+    it('does not delete a claim that another process took over', async () => {
+      const configDir = makeConfigDir()
+      writeStaleLock(configDir)
+      const claim = claimPathFor(configDir, STALE_GENERATION)
+
+      // A child so the claim is created by a process that can then be left
+      // holding a stale handle to it, exactly as a suspended contender would.
+      const source = [
+        `import { existsSync, writeFileSync, readFileSync } from 'node:fs'`,
+        `import { acquireDaemonLock } from ${JSON.stringify(lockModule)}`,
+        // Take the claim by starting an acquisition, then put a different
+        // owner's record at the same path — a takeover, from this process's
+        // point of view — and let the acquisition run to completion.
+        `const lock = acquireDaemonLock(${JSON.stringify(configDir)})`,
+        `writeFileSync(${JSON.stringify(claim)}, JSON.stringify({`,
+        `  nonce: 'someone-else', pid: process.pid, host: ${JSON.stringify(hostname())},`,
+        `  at: new Date().toISOString(),`,
+        `}))`,
+        `lock.release()`,
+        `console.log(existsSync(${JSON.stringify(claim)}) ? 'kept' : 'deleted')`,
+      ].join('\n')
+
+      const child = spawn(process.execPath, ['--import', 'tsx', '--eval', source], {
+        cwd: resolve(import.meta.dirname, '..'),
+      })
+      let output = ''
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
+      child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString() })
+      await new Promise<void>((done) => { child.on('close', () => { done() }) })
+
+      expect(output.trim(), output).toBe('kept')
+    }, 30_000)
   })
 
   /**

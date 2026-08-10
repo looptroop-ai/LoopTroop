@@ -1,4 +1,4 @@
-import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { getDaemonLockPath } from './daemonPaths'
@@ -123,11 +123,16 @@ function writeOwner(lockPath: string, owner: LockOwner): void {
 }
 
 /**
- * How long a conversion claim may sit before another process may take it over.
+ * How long a claim of *unknown* ownership may sit before another process may
+ * take it over.
  *
- * Generous by design: a claim covers two file operations, so anything still
- * holding one after this long is a process that died mid-reclaim rather than one
- * that is merely slow.
+ * Deliberately not a deadline on the holder. A claim whose owner is a live
+ * process on this host is never taken away on age, however long it has been
+ * held: a suspended, swapped-out, or descheduled process is still the owner, and
+ * expiring it hands a second contender the same conversion. This window applies
+ * only where ownership cannot be established at all — a claim from another
+ * machine, one whose record is not yet readable, or one on a platform that
+ * cannot report process start times.
  */
 const CLAIM_TTL_MS = 30_000
 
@@ -140,13 +145,30 @@ const CLAIM_TTL_MS = 30_000
  */
 const UNPARSEABLE_GENERATION = 'unparseable lock'
 
+/**
+ * Identifies one attempt to convert one lock generation.
+ *
+ * `nonce` is what makes release ownership-scoped: a claim is only ever removed
+ * by the attempt that created it, so a process whose claim was taken over cannot
+ * come back and delete its successor's. `startToken` is what makes "still the
+ * owner" answerable without trusting a recycled pid, exactly as it does for the
+ * lock itself.
+ */
 interface ClaimHolder {
+  nonce: string
   pid: number
   host: string
   at: string
+  startToken?: string
 }
 
 interface ConversionClaim {
+  /**
+   * Whether this claim is still ours. False once another contender judged it
+   * abandoned and took it over, which is only possible where ownership could
+   * not be established — see {@link CLAIM_TTL_MS}.
+   */
+  holds(): boolean
   release(): void
 }
 
@@ -173,21 +195,113 @@ function claimPath(lockPath: string, nonce: string): string {
  * it and both go on to create it, which is the doubling this whole mechanism
  * exists to prevent.
  */
-function discardAbandonedClaim(path: string): void {
-  let holder: ClaimHolder | null = null
+/**
+ * A claim record as found on disk.
+ *
+ * Only the fields needed to judge ownership are required. A claim written by an
+ * older version carries no nonce, and refusing to read it would make it
+ * illegible — which is the one verdict that falls back to age, exactly the rule
+ * that must not apply to a live claimant. Its owner is still checkable, so it is
+ * still checked; the missing nonce only means `holds()` can never mistake it for
+ * ours, which is the safe direction.
+ */
+type ParsedClaim = Partial<ClaimHolder> & { pid: number, host: string }
+
+function readClaimHolder(path: string): ParsedClaim | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    if (typeof parsed === 'object' && parsed !== null) holder = parsed as ClaimHolder
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const candidate = parsed as Partial<ClaimHolder>
+    if (typeof candidate.pid !== 'number' || typeof candidate.host !== 'string') return null
+    return candidate as ParsedClaim
   } catch {
-    // Unreadable or half-written: it vouches for nobody.
+    // Absent, empty, still being written, or corrupt.
+    return null
   }
+}
 
-  const abandoned = holder === null
-    || (holder.host === hostname() && !isProcessAlive(holder.pid))
-    || Date.now() - Date.parse(holder.at) > CLAIM_TTL_MS
+/**
+ * How long the claim has existed, for the cases where that is the only evidence
+ * available.
+ *
+ * Falls back to the file's own mtime when the record cannot say: a claim created
+ * but not yet written has no timestamp inside it, and a corrupt `at` would
+ * otherwise produce NaN — which compares false against every threshold and would
+ * wedge the claim permanently.
+ */
+function claimAgeMs(path: string, holder: ParsedClaim | null, now: number): number | null {
+  const stated = holder === undefined || holder === null ? Number.NaN : Date.parse(holder.at ?? '')
+  if (Number.isFinite(stated)) return now - stated
 
-  if (!abandoned) return
+  try {
+    return now - statSync(path).mtimeMs
+  } catch {
+    // Gone from under us; the next acquisition attempt will see that.
+    return null
+  }
+}
 
+/**
+ * Whether a claim was abandoned rather than merely held by a process that is not
+ * running at this instant.
+ *
+ * The distinction is the whole point. An earlier version expired any claim older
+ * than the TTL, so suspending a contender for the window — a laptop asleep, a
+ * starved container, a debugger stop — let a second process take its claim; when
+ * the first resumed it finished its own conversion, and both believed they held
+ * the daemon lock. Age is therefore consulted only where identity cannot answer.
+ */
+function isClaimAbandoned(path: string, now: number): boolean {
+  const holder = readClaimHolder(path)
+  const age = claimAgeMs(path, holder, now)
+  if (age === null) return false
+  const expired = age > CLAIM_TTL_MS
+
+  // No legible record: either a claim being created right now, or one whose
+  // creator died between creating and writing it. Nothing names a process whose
+  // liveness could be checked, so only age separates the two.
+  if (holder === null) return expired
+
+  // Another machine's claim: our pid table describes a different host's
+  // processes, so it cannot speak to this one.
+  if (holder.host !== hostname()) return expired
+
+  if (!isProcessAlive(holder.pid)) return true
+
+  switch (matchProcess(holder.pid, holder.startToken).kind) {
+    // The exact process that took this claim is still running. It is going to
+    // finish the conversion it is in the middle of, however long that takes.
+    case 'same':
+      return false
+    // The pid was recycled, so the claimant is gone whatever holds the number.
+    case 'different':
+      return true
+    // Neither confirmed nor refuted — a claim written before this record carried
+    // a token, or a start-time lookup that failed this once.
+    //
+    // Age decides here, and that is a real if narrow residual: a claimant this
+    // process cannot identify, suspended past the window, can still have its
+    // claim taken. The alternative is worse. Honouring an unverifiable claim
+    // forever means one crash under an older version wedges every later start
+    // with no command able to clear it, since recovery runs through this same
+    // claim. All three supported platforms do report start times, so reaching
+    // this branch takes a stale on-disk record or a transient lookup failure —
+    // whereas the branch above, which is the one the common case takes, is now
+    // governed by identity alone.
+    default:
+      return expired
+  }
+}
+
+/**
+ * Removes a claim file, letting exactly one process be the one that did it.
+ *
+ * The removal is itself claimed by renaming: after the first process renames the
+ * file away, every other rename fails with ENOENT. Deleting the path directly
+ * would let two processes both remove it and both go on to create their own,
+ * which is the doubling this whole mechanism exists to prevent.
+ */
+function discardClaim(path: string): void {
   const discarded = `${path}.gone-${randomUUID()}`
   try {
     renameSync(path, discarded)
@@ -196,6 +310,12 @@ function discardAbandonedClaim(path: string): void {
     return
   }
   rmSync(discarded, { force: true })
+}
+
+/** Removes a claim whose holder can be shown to have gone, and only that one. */
+function discardAbandonedClaim(path: string): void {
+  if (!isClaimAbandoned(path, Date.now())) return
+  discardClaim(path)
 }
 
 /**
@@ -207,9 +327,21 @@ function discardAbandonedClaim(path: string): void {
  */
 function takeConversionClaim(lockPath: string, generation: string): ConversionClaim | null {
   const path = claimPath(lockPath, generation)
+  const startToken = readProcessStartToken(process.pid)
+  const holder: ClaimHolder = {
+    nonce: randomUUID(),
+    pid: process.pid,
+    host: hostname(),
+    at: new Date().toISOString(),
+    ...(startToken === null ? {} : { startToken }),
+  }
 
   try {
-    const holder: ClaimHolder = { pid: process.pid, host: hostname(), at: new Date().toISOString() }
+    // 'wx' is what makes the claim exclusive: two contenders racing here cannot
+    // both create it. The file is briefly empty between create and write, and a
+    // contender that reads it then sees no owner — which is why age, not
+    // legibility, decides such a file's fate. A claim created moments ago is
+    // somebody's work in progress, not debris.
     const fd = openSync(path, 'wx', CONFIG_FILE_MODE)
     try {
       writeSync(fd, `${JSON.stringify(holder)}\n`)
@@ -222,9 +354,16 @@ function takeConversionClaim(lockPath: string, generation: string): ConversionCl
     return null
   }
 
+  const holds = (): boolean => readClaimHolder(path)?.nonce === holder.nonce
+
   return {
+    holds,
     release() {
-      rmSync(path, { force: true })
+      // Ownership-scoped. A claim taken over while this process was suspended now
+      // belongs to whoever took it, and an unscoped delete here would remove
+      // *their* claim — leaving a third contender free to convert alongside them.
+      if (!holds()) return
+      discardClaim(path)
     },
   }
 }
@@ -255,6 +394,10 @@ function convertStaleLock(lockPath: string, staleNonce: string, owner: LockOwner
     if (readOwner(lockPath)?.nonce !== staleNonce) return false
 
     writeOwner(staging, owner)
+    // Staging is ours alone, so the only step that can collide is the rename.
+    // Checking here rather than earlier keeps the gap between "the claim is ours"
+    // and "the lock is ours" to that one atomic operation.
+    if (!claim.holds()) return false
     renameSync(staging, lockPath)
     return true
   } catch {
@@ -284,6 +427,7 @@ function removeStaleLock(lockPath: string, generation: string | null): boolean {
     const unchanged = generation === null ? current === null : current?.nonce === generation
     if (!unchanged) return false
 
+    if (!claim.holds()) return false
     rmSync(lockPath, { force: true })
     return true
   } catch {
@@ -309,6 +453,7 @@ function convertUnparseableLock(lockPath: string, owner: LockOwner): boolean {
     if (readOwner(lockPath) !== null) return false
 
     writeOwner(staging, owner)
+    if (!claim.holds()) return false
     renameSync(staging, lockPath)
     return true
   } catch {

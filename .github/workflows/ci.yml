@@ -189,6 +189,12 @@ jobs:
   # mount is enforced against root. macOS would need a disk image and Windows an
   # ACL an administrator can take ownership around — machinery enough to become
   # its own source of flakes, for a property that is not platform-specific.
+  #
+  # Sufficient rather than merely cheaper: the defect this catches is code
+  # choosing to write inside its own installation directory, and the code making
+  # that choice is the same on all three platforms. What differs per platform is
+  # how the refusal is spelled, not whether the write is attempted. A reviewed
+  # decision, so the missing lanes are a scope choice and not a gap to close.
   verify-readonly:
     name: Read-only install (ubuntu)
     runs-on: ubuntu-latest

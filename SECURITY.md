@@ -62,6 +62,13 @@ browser's store and replaying it by hand — such a program can forge every head
 a server could check, and it could equally read the API token from the state
 file. Anything running as your user is inside the boundary.
 
+Binding to a secret `*.localhost` hostname would close the remaining gap, by
+scoping the cookie to a name no other local service knows. It is deliberately
+not done: the residual risk is code already running as your user, which no
+same-host mechanism can exclude, and the hostname costs a URL people have to
+trust and a DNS path that corporate resolvers interfere with. This is a
+reviewed position rather than an oversight.
+
 ## Data Handling
 
 LoopTroop collects no telemetry and sends no usage data anywhere.

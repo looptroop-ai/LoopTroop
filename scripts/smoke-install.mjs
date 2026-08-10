@@ -196,6 +196,39 @@ function cleanup(prefix, configDir, scratch) {
     }
   }
 }
+/**
+ * The release builds the tarball once and ships those exact bytes to every
+ * channel, so it hands the path here rather than letting this pack a second
+ * one — a tarball built twice is two artefacts, and testing the one you do not
+ * publish proves nothing. CI's own matrix passes no argument and still packs
+ * from the checkout.
+ *
+ * An unrecognised argument is fatal rather than ignored: a typo would silently
+ * fall through to packing, and the release would report a pass for bytes it
+ * never looked at.
+ */
+function parseArgs(argv) {
+  let tarball = null
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--tarball') {
+      tarball = argv[i + 1] ?? ''
+      i += 1
+    } else if (arg.startsWith('--tarball=')) {
+      tarball = arg.slice('--tarball='.length)
+    } else {
+      throw new Error(`unknown argument ${JSON.stringify(arg)} (expected --tarball <path>)`)
+    }
+  }
+  // Given but empty means the caller meant to point at an artefact and lost the
+  // path. Packing our own instead would hide that behind a green run.
+  if (tarball !== null && tarball.trim() === '') {
+    throw new Error('--tarball needs a path')
+  }
+  return { tarball: tarball ?? '' }
+}
+
+const options = parseArgs(process.argv.slice(2))
 const repoRoot = process.cwd()
 const scratch = mkdtempSync(join(tmpdir(), 'looptroop-smoke-'))
 const prefix = join(scratch, 'prefix')
@@ -211,22 +244,35 @@ mkdirSync(configDir, { recursive: true })
 let bin = ''
 
 try {
-  heading('Pack the tarball')
-  const packed = npm(['pack', '--json'], { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 })
-  if (packed.code !== 0) {
-    fail('npm pack', `exited ${packed.code}: ${packed.stderr.trim().split('\n').slice(-3).join(' ')}`)
-    throw new Error('cannot continue without a tarball')
+  let tarball = ''
+  // Only a tarball we packed is ours to delete. One we were handed is the
+  // artefact being released, and the caller has more steps to run against it.
+  let packedHere = false
+  if (options.tarball) {
+    heading('Take the tarball we were handed')
+    tarball = resolve(repoRoot, options.tarball)
+    if (!check('tarball exists', existsSync(tarball), tarball)) {
+      throw new Error('cannot continue without a tarball')
+    }
+  } else {
+    heading('Pack the tarball')
+    const packed = npm(['pack', '--json'], { cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 })
+    if (packed.code !== 0) {
+      fail('npm pack', `exited ${packed.code}: ${packed.stderr.trim().split('\n').slice(-3).join(' ')}`)
+      throw new Error('cannot continue without a tarball')
+    }
+    const [packResult] = readJson(packed.stdout, 'npm pack --json') ?? []
+    tarball = resolve(repoRoot, packResult?.filename ?? '')
+    packedHere = true
+    check('tarball exists', existsSync(tarball), packResult?.filename ?? 'no filename reported')
   }
-  const [packResult] = readJson(packed.stdout, 'npm pack --json') ?? []
-  const tarball = resolve(repoRoot, packResult?.filename ?? '')
-  check('tarball exists', existsSync(tarball), packResult?.filename ?? 'no filename reported')
 
   heading('Install it globally into a throwaway prefix')
   // --omit=dev because that is what a user gets. A runtime import that is
   // really a devDependency fails here and nowhere else.
   const installed = npm(['install', '-g', '--prefix', prefix, '--omit=dev', tarball], { cwd: scratch })
   // The tarball is a build artefact in the working tree; remove it either way.
-  rmSync(tarball, { force: true })
+  if (packedHere) rmSync(tarball, { force: true })
   if (installed.code !== 0) {
     fail('npm install -g', `exited ${installed.code}: ${installed.stderr.trim().split('\n').slice(-5).join(' ')}`)
     throw new Error('cannot continue without an install')
@@ -374,14 +420,21 @@ try {
   check('status --json reports running: true', runningJson?.running === true, `running=${runningJson?.running}`)
   check('status --json agrees with health', runningJson?.daemon?.instanceId === health?.instanceId,
     'instance id matches')
-  check('status --json redacts the API token', !JSON.stringify(runningJson ?? {}).includes(record?.apiToken ?? ' '),
+  // Compare against the real token, never a fallback: a nullish token would
+  // make the needle unfindable and both leak checks would report ok without
+  // having looked for anything. If it is missing, that is the failure.
+  const apiToken = typeof record?.apiToken === 'string' ? record.apiToken : ''
+  check('daemon.json carries an API token to search for', apiToken.length > 0,
+    apiToken.length > 0 ? `${apiToken.length} chars` : 'absent, so the leak checks below cannot run')
+  check('status --json redacts the API token',
+    apiToken.length > 0 && !JSON.stringify(runningJson ?? {}).includes(apiToken),
     'no token in status output')
 
   const logs = cli('logs', '--lines', '20')
   check('logs prints the daemon log', logs.code === 0 && logs.stdout.trim().length > 0, `exit ${logs.code}`)
   const logText = readFileSync(join(configDir, 'logs', 'daemon.log'), 'utf8')
   // The standing rule: no secret may reach the log, which gets pasted into issues.
-  check('the log holds no API token', !logText.includes(record?.apiToken ?? ' '), 'token absent from log')
+  check('the log holds no API token', apiToken.length > 0 && !logText.includes(apiToken), 'token absent from log')
   check('the log holds no bootstrap nonce', !/#bootstrap=/.test(logText), 'no sign-in URL in log')
 
   heading('restart keeps the daemon usable')

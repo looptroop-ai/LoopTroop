@@ -5,6 +5,10 @@ node_modules/
 dist/
 dist-ssr/
 site/
+# `npm pack` output. The Docker build expects the tarball here, and the install
+# smoke test packs one on every run, so without this a 3.6 MB artefact is one
+# stray `git add` away from the history.
+looptroop-*.tgz
 
 # Runtime/state for this app
 .looptroop/

@@ -32,6 +32,10 @@ jobs:
           node-version: 24.15.0
           cache: npm
 
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
       - name: Install dependencies
         run: npm ci
 
@@ -91,24 +95,40 @@ jobs:
     name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    # The floating lanes are compatibility news, not a defect in this commit.
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
         include:
           # Exact floor, not "24": `node-version: 24` resolves to the newest
           # patch, so the version `engines` actually promises stays untested.
+          # Every platform runs it, because the floor is a promise on all three
+          # and a macOS-only regression at 24.15.0 would otherwise reach users.
           - os: ubuntu-latest
             node: 24.15.0
           - os: macos-latest
+            node: 24.15.0
+          - os: windows-latest
+            node: 24.15.0
+          # Newest 24, so a patch release that breaks us is seen early. Advisory:
+          # a required check must fail only for something this repository can fix.
+          - os: ubuntu-latest
             node: 24
+            optional: true
           - os: windows-latest
             node: 24
+            optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
 
       - name: Install dependencies
         run: npm ci
@@ -136,6 +156,10 @@ jobs:
         with:
           node-version: 24.15.0
           cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
 
       - name: Install dependencies
         run: npm ci
@@ -170,6 +194,10 @@ jobs:
           node-version: 24.15.0
           cache: npm
 
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
       - name: Install dependencies
         run: npm ci
 
@@ -202,6 +230,9 @@ jobs:
           node-version: 26
           cache: npm
 
+      # Deliberately not pinned: the npm bundled with Node 26 is part of what
+      # this lane is here to warn about, and pinning it back to ours would hide
+      # exactly the incompatibility we want early news of.
       - name: Install dependencies
         run: npm ci
 

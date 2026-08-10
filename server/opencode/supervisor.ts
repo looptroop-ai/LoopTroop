@@ -1,11 +1,26 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
+import { isProcessAlive, killProcessTree } from '../cli/processControl'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
 export const MAX_RESTART_ATTEMPTS = 3
 
 const HEALTH_TIMEOUT_MS = 2_000
 const READY_TIMEOUT_MS = 30_000
+
+/** Backoff between restart attempts, multiplied by the attempt number. */
+const RESTART_BACKOFF_MS = 1_000
+
+/**
+ * How long a terminated OpenCode gets to exit on its own before it is killed,
+ * and how long the kill itself gets to take effect.
+ *
+ * Both are bounded because the daemon awaits them during shutdown: the whole
+ * point of waiting is that the lock outlives the process it protects, and a wait
+ * with no ceiling would trade one hang for another.
+ */
+const GRACEFUL_EXIT_MS = 5_000
+const FORCE_EXIT_MS = 5_000
 
 export type OpenCodeStatus =
   | { kind: 'adopted'; baseUrl: string }
@@ -23,6 +38,50 @@ export class OpenCodeMissingError extends Error {
   }
 }
 
+/**
+ * Everything the supervisor needs in order to end a process tree, named by what
+ * it accomplishes rather than by how any one platform accomplishes it.
+ *
+ * The signals themselves are not portable. POSIX ends a tree by signalling a
+ * negative pid; Windows has no process groups to signal and needs `taskkill /T`
+ * to walk the real child tree. Code written against `process.kill(-pid)` is code
+ * that only terminates OpenCode on two of the three platforms this ships to —
+ * and tests written against it assert a POSIX implementation detail, so they fail
+ * on Windows for describing the wrong machine rather than for finding a bug.
+ */
+export interface ProcessTermination {
+  /**
+   * Asks the tree to exit. False when this platform cannot ask — Windows has no
+   * SIGTERM — which sends the caller straight to `force`.
+   */
+  request(pid: number): boolean
+  /** Ends the tree outright. */
+  force(pid: number): Promise<void>
+  /** Whether the process is gone. */
+  hasExited(pid: number): boolean
+}
+
+export const defaultTermination: ProcessTermination = {
+  request(pid) {
+    if (process.platform === 'win32') return false
+    try {
+      // Negative pid signals the group, so OpenCode's own children go too.
+      process.kill(-pid, 'SIGTERM')
+      return true
+    } catch {
+      try {
+        process.kill(pid, 'SIGTERM')
+        return true
+      } catch {
+        // Already gone, which is the outcome the caller wanted.
+        return true
+      }
+    }
+  },
+  force: killProcessTree,
+  hasExited: (pid) => !isProcessAlive(pid),
+}
+
 export interface OpenCodeSupervisorOptions {
   baseUrl: string
   mock?: boolean
@@ -30,13 +89,17 @@ export interface OpenCodeSupervisorOptions {
   spawnProcess?: typeof spawn
   probe?: (baseUrl: string) => Promise<boolean>
   /**
-   * Injected by tests, which hold fake children carrying invented pids. The
-   * group kill below would otherwise aim a real signal at whatever process
-   * group happens to hold that number on the machine running the suite.
+   * Injected by tests, which hold fake children carrying invented pids. Real
+   * termination would otherwise aim at whatever process happens to hold that
+   * number on the machine running the suite.
    */
-  killProcess?: (pid: number, signal: NodeJS.Signals) => void
+  termination?: ProcessTermination
   /** Injected by tests, so a launch that never comes up fails in milliseconds. */
   readyTimeoutMs?: number
+  /** Injected by tests, so the restart budget is spent in milliseconds. */
+  restartBackoffMs?: number
+  /** Injected by tests, so termination escalates without real waiting. */
+  exitBudgets?: { gracefulMs: number; forceMs: number }
   /**
    * Reports every status change after start() has returned: a crash, a restart
    * onto a new pid, or the point where the supervisor gives up.
@@ -156,7 +219,7 @@ export class OpenCodeSupervisor {
       // have stopped it. `opencode serve` also holds the port, so the next
       // start would adopt this broken process rather than replace it.
       this.child = null
-      this.terminate(child)
+      await this.terminate(child)
       throw error
     }
 
@@ -181,41 +244,58 @@ export class OpenCodeSupervisor {
     throw new Error(`OpenCode did not become reachable at ${this.options.baseUrl} within ${timeout / 1000}s.`)
   }
 
+  /**
+   * Restarts a crashed server, up to the documented budget, then gives up.
+   *
+   * The budget counts attempts, not deaths. An earlier version incremented on
+   * each unexpected exit and degraded the moment one relaunch threw, so a server
+   * whose binary was broken got exactly one attempt while a server that started
+   * cleanly and crashed again got three — the opposite of what the policy says,
+   * and the case where retrying actually helps is the first one. A failed launch
+   * and a launch that succeeds and dies again now cost the same: one attempt.
+   */
   private async handleUnexpectedExit(): Promise<void> {
     if (this.stopping) return
 
-    this.restartAttempts += 1
-    if (this.restartAttempts > MAX_RESTART_ATTEMPTS) {
-      // Retrying forever would hide a broken install behind a restart loop.
-      this.setStatus({
-        kind: 'degraded',
-        baseUrl: this.options.baseUrl,
-        reason: `OpenCode exited ${MAX_RESTART_ATTEMPTS} times; giving up. Coding operations are unavailable.`,
-      })
-      console.error(`[opencode] ${this.describeStatusReason()}`)
-      return
+    const backoff = this.options.restartBackoffMs ?? RESTART_BACKOFF_MS
+
+    while (this.restartAttempts < MAX_RESTART_ATTEMPTS) {
+      this.restartAttempts += 1
+      const attempt = this.restartAttempts
+
+      console.error(`[opencode] Exited unexpectedly; restarting (attempt ${attempt}/${MAX_RESTART_ATTEMPTS}).`)
+      await delay(backoff * attempt)
+
+      // The wait above is long enough for a shutdown to have started meanwhile,
+      // and a restart then would spawn a server nothing is left to stop.
+      if (this.stopping) return
+
+      try {
+        // Through setStatus, because a restart lands on a new pid: the daemon's
+        // record still names the process that just died, which is the one thing
+        // `clean` must not go looking for later.
+        this.setStatus(await this.spawnAndWait())
+        return
+      } catch (error) {
+        // Reported after every attempt, not only the last: a daemon that spends
+        // the next several seconds retrying should not still be describing the
+        // server that already died.
+        this.setStatus({
+          kind: 'degraded',
+          baseUrl: this.options.baseUrl,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+        console.error(`[opencode] Restart attempt ${attempt} failed: ${this.describeStatusReason()}`)
+      }
     }
 
-    console.error(`[opencode] Exited unexpectedly; restarting (attempt ${this.restartAttempts}/${MAX_RESTART_ATTEMPTS}).`)
-    await delay(1_000 * this.restartAttempts)
-
-    // The wait above is long enough for a shutdown to have started meanwhile,
-    // and a restart then would spawn a server nothing is left to stop.
-    if (this.stopping) return
-
-    try {
-      // Through setStatus, because a restart lands on a new pid: the daemon's
-      // record still names the process that just died, which is the one thing
-      // `clean` must not go looking for later.
-      this.setStatus(await this.spawnAndWait())
-    } catch (error) {
-      this.setStatus({
-        kind: 'degraded',
-        baseUrl: this.options.baseUrl,
-        reason: error instanceof Error ? error.message : String(error),
-      })
-      console.error(`[opencode] Restart failed: ${this.describeStatusReason()}`)
-    }
+    // Retrying forever would hide a broken install behind a restart loop.
+    this.setStatus({
+      kind: 'degraded',
+      baseUrl: this.options.baseUrl,
+      reason: `OpenCode exited ${MAX_RESTART_ATTEMPTS} times; giving up. Coding operations are unavailable.`,
+    })
+    console.error(`[opencode] ${this.describeStatusReason()}`)
   }
 
   private describeStatusReason(): string {
@@ -223,31 +303,44 @@ export class OpenCodeSupervisor {
   }
 
   /**
-   * Signals a child this supervisor spawned, along with its process group.
+   * Ends a child this supervisor spawned, and does not return until it is gone
+   * or the budget for making it go is spent.
+   *
+   * Awaiting matters because of what the caller does next. `stop()` runs during
+   * daemon shutdown, immediately before the daemon releases its single-instance
+   * lock and clears its state file — so a fire-and-forget signal means the next
+   * `looptroop start` can acquire the lock while the previous OpenCode is still
+   * alive and still holding its port. The new daemon then adopts that server as
+   * though it were somebody else's, and it never gets stopped by anyone.
    *
    * Separate from stop() because a launch that never became healthy needs the
-   * same treatment: it is a real `opencode serve`, holding the port, and by
-   * then the status says `degraded` rather than `managed`.
+   * same treatment: it is a real `opencode serve`, holding the port, and by then
+   * the status says `degraded` rather than `managed`.
    */
-  private terminate(child: ChildProcess): void {
-    if (child.pid === undefined || child.exitCode !== null) return
-    const kill = this.options.killProcess ?? ((pid: number, signal: NodeJS.Signals) => { process.kill(pid, signal) })
+  private async terminate(child: ChildProcess): Promise<void> {
+    const pid = child.pid
+    if (pid === undefined || child.exitCode !== null) return
 
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-      return
-    }
+    const termination = this.options.termination ?? defaultTermination
+    const budgets = this.options.exitBudgets ?? { gracefulMs: GRACEFUL_EXIT_MS, forceMs: FORCE_EXIT_MS }
 
-    try {
-      // Negative pid signals the group, so OpenCode's own children go too.
-      kill(-child.pid, 'SIGTERM')
-    } catch {
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // Already gone.
-      }
+    if (termination.request(pid) && await this.waitForExit(termination, pid, budgets.gracefulMs)) return
+
+    await termination.force(pid)
+    if (await this.waitForExit(termination, pid, budgets.forceMs)) return
+
+    // Reported rather than thrown: shutdown continues either way, and the one
+    // thing worse than a surviving OpenCode is a daemon that will not exit.
+    console.error(`[opencode] pid ${pid} did not exit; it may still be holding ${this.options.baseUrl}.`)
+  }
+
+  private async waitForExit(termination: ProcessTermination, pid: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (termination.hasExited(pid)) return true
+      await delay(50)
     }
+    return termination.hasExited(pid)
   }
 
   /** Only ever stops a server this supervisor started. */
@@ -260,6 +353,6 @@ export class OpenCodeSupervisor {
     // or a restart that failed leaves the status `degraded` while the process
     // is still running — gating on `managed` orphaned exactly those. An adopted
     // server never sets a child in the first place, so it stays out of reach.
-    if (child) this.terminate(child)
+    if (child) await this.terminate(child)
   }
 }

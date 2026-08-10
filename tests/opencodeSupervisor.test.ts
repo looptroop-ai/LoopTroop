@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { OpenCodeSupervisor, OpenCodeMissingError } from '../server/opencode/supervisor'
+import {
+  MAX_RESTART_ATTEMPTS,
+  OpenCodeSupervisor,
+  OpenCodeMissingError,
+  type ProcessTermination,
+} from '../server/opencode/supervisor'
 
 /**
  * 2.10 contract: an already-running server is adopted untouched; a missing
@@ -8,6 +13,23 @@ import { OpenCodeSupervisor, OpenCodeMissingError } from '../server/opencode/sup
  * stop() touches only a server the supervisor started.
  */
 describe('OpenCode supervision', () => {
+  /**
+   * Waits for a condition instead of for a duration.
+   *
+   * These tests drive the restart budget with a millisecond backoff, so the
+   * outcome arrives in well under a second — but a sleep sized to that is a
+   * sleep that fails on a loaded CI runner, and one sized for the runner wastes
+   * the difference on every local run. The deadline is only a bound on failure.
+   */
+  async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (condition()) return
+      await new Promise((done) => setTimeout(done, 10))
+    }
+    throw new Error(`condition not met within ${timeoutMs}ms`)
+  }
+
   function makeBaseUrl(): string {
     return `http://127.0.0.1:${40000 + Math.floor(Math.random() * 10000)}`
   }
@@ -21,13 +43,36 @@ describe('OpenCode supervision', () => {
   }
 
   /**
-   * Records what would have been signalled instead of signalling it. These
-   * children carry an invented pid, so a real `process.kill` would aim at
-   * whatever process group holds that number on the machine running the suite.
+   * Records which processes were asked to end, instead of ending them. These
+   * children carry an invented pid, so real termination would aim at whatever
+   * process holds that number on the machine running the suite.
+   *
+   * Records pids rather than signals because the signals are not portable and
+   * the contract is not about them: POSIX ends a tree by signalling a negative
+   * pid and Windows has `taskkill /T`, so a test asserting `-pid` asserts that
+   * the suite is running on POSIX. What every platform owes is that the right
+   * process is ended and that stop() waits for it.
    */
-  function makeKillRecorder(): { calls: number[]; kill: (pid: number, signal: NodeJS.Signals) => void } {
-    const calls: number[] = []
-    return { calls, kill: (pid) => { calls.push(pid) } }
+  function makeTerminationRecorder(options: { exits?: boolean } = {}) {
+    const exits = options.exits ?? true
+    const requested: number[] = []
+    const forced: number[] = []
+    const gone = new Set<number>()
+
+    const termination: ProcessTermination = {
+      request(pid) {
+        requested.push(pid)
+        if (exits) gone.add(pid)
+        return true
+      },
+      async force(pid) {
+        forced.push(pid)
+        if (exits) gone.add(pid)
+      },
+      hasExited: (pid) => gone.has(pid),
+    }
+
+    return { requested, forced, termination }
   }
 
   it('adopts an already-running server without starting one', async () => {
@@ -106,18 +151,54 @@ describe('OpenCode supervision', () => {
       // Unreachable until something is spawned, so the first call starts a
       // server rather than adopting one.
       probe: async () => spawned > 0,
+      termination: makeTerminationRecorder().termination,
+      restartBackoffMs: 5,
     })
 
     const initial = await supervisor.start()
     expect(initial.kind).toBe('managed')
 
-    // Backoff is one second per attempt, so three attempts need at least six
-    // seconds before the supervisor gives up.
-    await new Promise((done) => setTimeout(done, 9_000))
+    await waitFor(() => supervisor.current.kind === 'degraded')
 
-    expect(spawned).toBeGreaterThan(1)
-    expect(supervisor.current.kind).toBe('degraded')
-  }, 20_000)
+    // One launch plus exactly the documented budget, and no more: a supervisor
+    // that kept trying would hide a broken install behind a restart loop.
+    expect(spawned).toBe(1 + MAX_RESTART_ATTEMPTS)
+    expect(supervisor.current).toMatchObject({ kind: 'degraded', reason: expect.stringContaining('giving up') })
+  })
+
+  /**
+   * The restart budget counts attempts, not deaths.
+   *
+   * A server whose binary is broken never comes back up, so every attempt ends
+   * in a throw rather than in another crash. An earlier version degraded on the
+   * first such throw — one attempt for the case that most needs three, while a
+   * server that restarted cleanly and died again got the full budget.
+   */
+  it('spends the whole restart budget when every relaunch fails', async () => {
+    const baseUrl = makeBaseUrl()
+    let launches = 0
+
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      spawnProcess: (() => {
+        const child = makeChild()
+        launches += 1
+        // The first launch comes up; every relaunch dies on arrival, the way a
+        // missing or broken binary does.
+        if (launches > 1) queueMicrotask(() => child.emit('error', new Error('spawn opencode ENOENT')))
+        else setTimeout(() => child.emit('exit', 1), 5)
+        return child as never
+      }) as never,
+      probe: async () => launches > 0,
+      termination: makeTerminationRecorder().termination,
+      restartBackoffMs: 5,
+    })
+
+    await supervisor.start()
+    await waitFor(() => supervisor.current.kind === 'degraded' && launches > MAX_RESTART_ATTEMPTS)
+
+    expect(launches).toBe(1 + MAX_RESTART_ATTEMPTS)
+  })
 
   it('stops only a server it started, never an adopted one', async () => {
     const baseUrl = makeBaseUrl()
@@ -129,22 +210,23 @@ describe('OpenCode supervision', () => {
       adoptedKilled = true
       return true
     }
-    const adoptedKills = makeKillRecorder()
+    const adoptedTermination = makeTerminationRecorder()
 
     const adopted = new OpenCodeSupervisor({
       baseUrl,
       spawnProcess: (() => adoptedChild) as never,
       probe: async () => true,
-      killProcess: adoptedKills.kill,
+      termination: adoptedTermination.termination,
     })
     await adopted.start()
     await adopted.stop()
     expect(adoptedKilled).toBe(false)
-    expect(adoptedKills.calls).toEqual([])
+    expect(adoptedTermination.requested).toEqual([])
+    expect(adoptedTermination.forced).toEqual([])
 
     // Managed: this supervisor spawned it, so stop takes it down.
     const managedChild = makeChild()
-    const managedKills = makeKillRecorder()
+    const managedTermination = makeTerminationRecorder()
 
     let spawnedManaged = false
     const managed = new OpenCodeSupervisor({
@@ -155,15 +237,82 @@ describe('OpenCode supervision', () => {
       }) as never,
       // Unreachable until spawned, then healthy.
       probe: async () => spawnedManaged,
-      killProcess: managedKills.kill,
+      termination: managedTermination.termination,
     })
 
     const status = await managed.start()
     expect(status.kind).toBe('managed')
 
     await managed.stop()
-    // Negative, so OpenCode's own children go with it rather than reparenting.
-    expect(managedKills.calls).toEqual([-managedChild.pid])
+    expect(managedTermination.requested).toEqual([managedChild.pid])
+  })
+
+  /**
+   * What the daemon does immediately after stop() returns: release the
+   * single-instance lock and clear the state file. A stop that only signals and
+   * returns lets the next `looptroop start` acquire that lock while the previous
+   * OpenCode is still alive and still holding its port — and the new daemon then
+   * adopts it as somebody else's server, so nothing ever stops it.
+   */
+  it('does not return from stop until the server has actually exited', async () => {
+    const baseUrl = makeBaseUrl()
+    const child = makeChild()
+
+    let exited = false
+    const termination: ProcessTermination = {
+      request: () => {
+        // Slow to die, the way a real server flushing state on SIGTERM is.
+        setTimeout(() => { exited = true }, 100)
+        return true
+      },
+      force: async () => { exited = true },
+      hasExited: () => exited,
+    }
+
+    let spawned = false
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      spawnProcess: (() => {
+        spawned = true
+        return child as never
+      }) as never,
+      probe: async () => spawned,
+      termination,
+    })
+
+    await supervisor.start()
+    await supervisor.stop()
+
+    expect(exited).toBe(true)
+  })
+
+  /**
+   * A server that ignores SIGTERM must not be able to hold shutdown open. The
+   * daemon awaits stop(), so an unbounded wait here is a daemon that never
+   * exits — which is worse than the leaked process it was trying to prevent.
+   */
+  it('escalates to a forced kill when the server ignores the request to exit', async () => {
+    const baseUrl = makeBaseUrl()
+    const child = makeChild()
+    const recorder = makeTerminationRecorder({ exits: false })
+
+    let spawned = false
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      spawnProcess: (() => {
+        spawned = true
+        return child as never
+      }) as never,
+      probe: async () => spawned,
+      termination: recorder.termination,
+      exitBudgets: { gracefulMs: 60, forceMs: 60 },
+    })
+
+    await supervisor.start()
+    await supervisor.stop()
+
+    expect(recorder.requested).toEqual([child.pid])
+    expect(recorder.forced).toEqual([child.pid])
   })
 
   /**
@@ -178,14 +327,14 @@ describe('OpenCode supervision', () => {
   it('terminates a child that never became healthy', async () => {
     const baseUrl = makeBaseUrl()
     const child = makeChild()
-    const kills = makeKillRecorder()
+    const recorder = makeTerminationRecorder()
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
       spawnProcess: (() => child as never) as never,
       // Never reachable: it spawns, and then it just sits there.
       probe: async () => false,
-      killProcess: kills.kill,
+      termination: recorder.termination,
       readyTimeoutMs: 500,
     })
 
@@ -193,13 +342,13 @@ describe('OpenCode supervision', () => {
 
     // Killed on the way out, so the failure cleans up after itself even for a
     // caller that catches start() and never calls stop().
-    expect(kills.calls).toEqual([-child.pid])
+    expect(recorder.requested).toEqual([child.pid])
 
     // And a stop() afterwards does not signal the pid a second time — by then
     // it may belong to something else entirely.
-    kills.calls.length = 0
+    recorder.requested.length = 0
     await supervisor.stop()
-    expect(kills.calls).toEqual([])
+    expect(recorder.requested).toEqual([])
   })
 
   /**
@@ -210,13 +359,13 @@ describe('OpenCode supervision', () => {
   it('terminates a child that is still launching when stop arrives', async () => {
     const baseUrl = makeBaseUrl()
     const child = makeChild()
-    const kills = makeKillRecorder()
+    const recorder = makeTerminationRecorder()
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
       spawnProcess: (() => child as never) as never,
       probe: async () => false,
-      killProcess: kills.kill,
+      termination: recorder.termination,
       readyTimeoutMs: 500,
     })
 
@@ -225,7 +374,7 @@ describe('OpenCode supervision', () => {
     await new Promise((done) => setTimeout(done, 50))
 
     await supervisor.stop()
-    expect(kills.calls).toEqual([-child.pid])
+    expect(recorder.requested).toEqual([child.pid])
 
     // The launch still fails; stopping mid-flight is not a way to succeed.
     await expect(starting).rejects.toThrow()
@@ -245,7 +394,8 @@ describe('OpenCode supervision', () => {
         return child as never
       }) as never,
       probe: async () => spawned > 0,
-      killProcess: makeKillRecorder().kill,
+      termination: makeTerminationRecorder().termination,
+      restartBackoffMs: 5,
       onStatusChange: (status) => { changes.push(status.kind) },
     })
 
@@ -253,11 +403,11 @@ describe('OpenCode supervision', () => {
     // start()'s own result goes back to the caller, not through the listener.
     expect(changes).toEqual([])
 
-    await new Promise((done) => setTimeout(done, 9_000))
+    await waitFor(() => supervisor.current.kind === 'degraded')
 
     // The daemon writes its state file from start()'s status; without this it
     // would still be describing a reachable server.
     expect(changes.at(-1)).toBe('degraded')
     expect(supervisor.current.kind).toBe('degraded')
-  }, 20_000)
+  })
 })

@@ -113,6 +113,15 @@ export default defineConfig({
           include: ['src/**/*.test.{ts,tsx}'],
           exclude: [...clientNodeTests],
           css: false,
+          // The other three projects declare a budget; without one this project
+          // silently took vitest's 5000ms default — the tightest budget in the
+          // suite on its heaviest workload (jsdom + forks + isolate). On a
+          // 3-vCPU macOS runner these renders take just over 5s while the other
+          // projects run alongside, so the lane failed on whichever test held
+          // the CPU when the clock ran out rather than on any one defect.
+          // Matching server-pure absorbs the contention; a hung render still fails.
+          testTimeout: 15000,
+          hookTimeout: 20000,
           env: sharedEnv,
         },
       },

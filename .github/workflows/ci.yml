@@ -92,7 +92,13 @@ jobs:
         run: npm audit --omit=dev || true
 
   test-matrix:
-    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    # The advisory marker is part of the name because the name is what branch
+    # protection matches on. A required check pointed at a continue-on-error job
+    # reports success however the job went, so the two must never be able to
+    # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
+    # commit and an advisory one in the next is a required check that quietly
+    # stops meaning anything.
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})${{ matrix.optional && ' [advisory]' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # The floating lanes are compatibility news, not a defect in this commit.

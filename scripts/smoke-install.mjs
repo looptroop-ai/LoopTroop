@@ -343,10 +343,32 @@ try {
   })
   check('a nonce cannot be replayed', replayed.status === 401, `status ${replayed.status}`)
 
+  // Shaped like the browser this cookie was issued to, because that is the only
+  // shape it is good for. The daemon accepts an ambient cookie only on requests
+  // the browser itself vouches for as same-origin — a cookie arriving without
+  // that proof is indistinguishable from one a page on another loopback port
+  // made your browser send, and cookies carry no port scope of their own.
   const withSession = await fetch(`${baseUrl}/api/projects`, {
-    headers: { cookie: cookie.split(';')[0] ?? '' },
+    headers: {
+      cookie: cookie.split(';')[0] ?? '',
+      origin: baseUrl,
+      'sec-fetch-site': 'same-origin',
+    },
   })
   check('the session cookie opens the API', withSession.status === 200, `status ${withSession.status}`)
+
+  // The other half of that rule, checked against the installed package rather
+  // than only in unit tests: the same cookie, shaped like a request from a page
+  // on some other loopback port, buys nothing.
+  const stolen = await fetch(`${baseUrl}/api/projects`, {
+    headers: {
+      cookie: cookie.split(';')[0] ?? '',
+      origin: 'http://127.0.0.1:59999',
+      'sec-fetch-site': 'same-site',
+    },
+  })
+  check('another loopback port cannot spend the cookie', stolen.status === 403,
+    `status ${stolen.status}`)
   heading('status and logs against a running daemon')
   const runningJson = readJson(cli('status', '--json').stdout, 'status --json (running)')
   check('status --json reports running: true', runningJson?.running === true, `running=${runningJson?.running}`)

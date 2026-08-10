@@ -349,24 +349,45 @@ describe('daemon lock', () => {
      * Timing the collision by sleeping instead would race the process starts:
      * on a loaded runner the first child can finish before the last one has
      * loaded its modules, and the test then passes without ever colliding.
+     *
+     * A winner holds until every loser has reported, rather than for a fixed
+     * moment. Five processes spinning on two cores can be descheduled for
+     * longer than any interval worth hard-coding, and a contender that wakes
+     * after the winner released finds the lock genuinely free and takes it —
+     * two `held` lines from a lock that never failed to exclude anyone. Waiting
+     * on the losers removes the clock from the assertion entirely.
      */
     async function race(configDir: string): Promise<string[]> {
       const barrier = join(configDir, 'go')
       const ready = join(configDir, 'ready')
+      const done = join(configDir, 'done')
 
       const source = (index: number) => [
-        `import { existsSync, writeFileSync } from 'node:fs'`,
+        `import { existsSync, readdirSync, writeFileSync } from 'node:fs'`,
         `import { acquireDaemonLock } from ${JSON.stringify(lockModule)}`,
+        `const settled = () => readdirSync(${JSON.stringify(configDir)}).filter((e) => e.startsWith('done.')).length`,
         `writeFileSync(${JSON.stringify(ready)} + '.' + ${index}, '')`,
         `while (!existsSync(${JSON.stringify(barrier)})) {}`,
         `try {`,
         `  const lock = acquireDaemonLock(${JSON.stringify(configDir)})`,
-        `  console.log('held ' + lock.owner.nonce)`,
-        // Held briefly so a loser cannot win simply by arriving after the
-        // winner already finished and released.
-        `  await new Promise((resolve) => setTimeout(resolve, 250))`,
+        `  const from = Date.now()`,
+        // Hold until every other contender has had its answer, so releasing can
+        // never be what lets a second one through. Bounded, because a genuine
+        // exclusion failure means the losers this waits for do not exist, and
+        // that must surface as a failed assertion rather than a hung suite.
+        `  const deadline = Date.now() + 20000`,
+        `  while (settled() < ${CONTENDERS - 1} && Date.now() < deadline) {`,
+        `    await new Promise((resolve) => setTimeout(resolve, 10))`,
+        `  }`,
+        // Whether every loser reported, or the clock ran out first. On the
+        // deadline path the hold no longer proves anything: a contender still
+        // descheduled when the lock came free finds it genuinely free, and its
+        // `held` line is the harness starving rather than the lock failing.
+        `  const waited = settled() < ${CONTENDERS - 1} ? 'deadline' : 'all-settled'`,
         `  lock.release()`,
+        `  console.log('held ' + lock.owner.nonce + ' ' + from + ' ' + Date.now() + ' ' + waited)`,
         `} catch (error) {`,
+        `  writeFileSync(${JSON.stringify(done)} + '.' + ${index}, '')`,
         `  console.log(error instanceof Error ? error.name : 'unknown')`,
         `}`,
       ].join('\n')
@@ -392,10 +413,46 @@ describe('daemon lock', () => {
       return Promise.all(children)
     }
 
+    /**
+     * The contract itself: never two holders at one moment.
+     *
+     * Counting `held` lines is a proxy for that, and only a sound one while
+     * every loser is guaranteed to have tried before the winner let go — which
+     * is what the hold above buys. Overlap is checked directly as well, so a
+     * future change to the timing cannot quietly turn this into a test that
+     * passes because the contenders never met.
+     */
+    function assertExclusive(results: string[]): void {
+      // Every assertion here carries the children's own output. A count that
+      // comes out wrong once in dozens of constrained runs is not something the
+      // next reader can reproduce on demand, and `expected length 1` on its own
+      // says nothing about which contender misbehaved or how — whether two
+      // processes really overlapped, or one died before it could report and the
+      // winner simply waited out its deadline.
+      const transcript = `\ncontenders:\n${results.map((line) => `  ${line || '(no output)'}`).join('\n')}`
+
+      const holds = results
+        .filter((line) => line.startsWith('held'))
+        .map((line) => {
+          const [, , from, until] = line.split(' ')
+          return { from: Number(from), until: Number(until) }
+        })
+
+      for (const a of holds) {
+        for (const b of holds) {
+          if (a === b) continue
+          expect(a.from > b.until || a.until < b.from,
+            `two processes held the lock at the same time${transcript}`).toBe(true)
+        }
+      }
+
+      expect(holds, `expected exactly one holder${transcript}`).toHaveLength(1)
+    }
+
     it('hands a free lock to exactly one of several simultaneous starts', async () => {
       const results = await race(makeConfigDir())
 
-      expect(results.filter((line) => line.startsWith('held'))).toHaveLength(1)
+      assertExclusive(results)
       expect(results.filter((line) => line === 'DaemonLockedError')).toHaveLength(CONTENDERS - 1)
     }, 60_000)
 
@@ -414,7 +471,7 @@ describe('daemon lock', () => {
 
       const results = await race(configDir)
 
-      expect(results.filter((line) => line.startsWith('held'))).toHaveLength(1)
+      assertExclusive(results)
     }, 60_000)
 
     it('leaves no recovery debris behind after a contested reclaim', async () => {

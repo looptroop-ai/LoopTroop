@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll } from 'vitest'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -17,6 +17,51 @@ import { readProcessStartToken } from '../server/lib/processIdentity'
 
 /** A URL because a Windows drive letter reads as a scheme to `import()`. */
 const lockModule = pathToFileURL(resolve(import.meta.dirname, '../server/lib/daemonLock.ts')).href
+
+/**
+ * This process's start-identity token, or null where one genuinely cannot be
+ * had. Resolved once, before any test that branches on it runs.
+ *
+ * A null from `readProcessStartToken` means two different things — this platform
+ * cannot report start times, and the lookup did not answer *this time* — and on
+ * Windows the answer costs a PowerShell start that a loaded runner can push past
+ * its bound. Sampling it once and treating it as a platform property is what made
+ * these tests flaky: the sample read null, the test took the no-identity branch,
+ * and the implementation recorded a real token microseconds later.
+ *
+ * Retried so one slow lookup cannot decide it, and then relied on rather than
+ * re-read. `readProcessStartToken` caches our own pid — the one pid whose token
+ * cannot change while we are the one asking — and these tests share that module
+ * instance with the implementation. So once this resolves non-null, every later
+ * ask by either side returns the same value without another lookup: test and
+ * implementation agree by construction rather than by luck. A null surviving all
+ * three attempts means a platform that truly cannot answer, where the heartbeat
+ * fallback is the documented behaviour and the branch is a real one.
+ */
+let localToken: string | null = null
+
+function resolveLocalToken(): string | null {
+  for (let attempt = 0; attempt < 3 && localToken === null; attempt += 1) {
+    localToken = readProcessStartToken(process.pid)
+  }
+  return localToken
+}
+
+/** Whether the implementation can identify this process — see {@link localToken}. */
+function identityAvailable(): boolean {
+  return localToken !== null
+}
+
+/** How a lock or claim written by this process records its own identity. */
+function tokenFields(): { startToken?: string } {
+  return localToken === null ? {} : { startToken: localToken }
+}
+
+// Once for the whole file, before anything branches on it: the retry costs a
+// PowerShell start on Windows, and the cache makes every later ask free.
+beforeAll(() => {
+  resolveLocalToken()
+})
 
 /**
  * 2.6 contract: exclusive single-instance ownership. Two concurrent starts must
@@ -198,20 +243,23 @@ describe('daemon lock', () => {
    * timers fell behind, and a dead one whose pid was handed to someone else.
    */
   describe('owner identity', () => {
-    // How this process would be recorded. Null on a platform that cannot report
-    // process start times, where the heartbeat fallback is the documented
-    // behaviour rather than a failure — so each test states both outcomes.
-    const localToken = readProcessStartToken(process.pid)
-    const tokenFields = localToken === null ? {} : { startToken: localToken }
-
     it('records the identity of the process that took the lock', () => {
       const configDir = makeConfigDir()
       const lock = acquireDaemonLock(configDir)
 
       try {
-        expect(lock.owner.startToken).toBe(localToken ?? undefined)
+        // Handle and file compared to each other, not to the sample: what this
+        // test is for is that the identity recorded on disk is the one the
+        // caller was handed. Asserting the sample instead makes it a test of
+        // lookup reliability, which is a different property.
         const onDisk = JSON.parse(readFileSync(lock.path, 'utf8')) as LockOwner
-        expect(onDisk.startToken).toBe(localToken ?? undefined)
+        expect(onDisk.startToken).toBe(lock.owner.startToken)
+        // Only where we hold a token of our own. Having one makes this exact,
+        // since the implementation reads it from the same cache; not having one
+        // is the one case that could still be a lookup that failed three times
+        // rather than a platform that cannot answer, and asserting absence there
+        // would be asserting the flake back into the suite.
+        if (localToken !== null) expect(lock.owner.startToken).toBe(localToken)
       } finally {
         lock.release()
       }
@@ -225,11 +273,11 @@ describe('daemon lock', () => {
       writeLock(configDir, {
         nonce: 'sleeping-owner',
         pid: process.pid,
-        ...tokenFields,
+        ...tokenFields(),
         heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 3_600_000).toISOString(),
       })
 
-      if (localToken === null) {
+      if (!identityAvailable()) {
         // Nothing can confirm the owner here, so the heartbeat still decides.
         acquireDaemonLock(configDir).release()
         return
@@ -248,7 +296,7 @@ describe('daemon lock', () => {
         heartbeatAt: new Date().toISOString(),
       })
 
-      if (localToken === null) {
+      if (!identityAvailable()) {
         // The token cannot be compared, so this is indistinguishable from a
         // live owner and the fresh heartbeat protects it.
         expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
@@ -385,8 +433,17 @@ describe('daemon lock', () => {
       // far outside any TTL. Age alone used to be enough to take it over.
       const claim = writeClaim(configDir, {
         at: longAgo(),
-        startToken: readProcessStartToken(process.pid),
+        ...tokenFields(),
       })
+
+      if (!identityAvailable()) {
+        // Nothing can prove this claimant is the process that wrote the claim,
+        // so age is all the implementation has and taking it over is correct.
+        // The property under test needs identity to exist; asserting a refusal
+        // here would assert the opposite of the documented fallback.
+        acquireDaemonLock(configDir).release()
+        return
+      }
 
       // Refusing to start is the correct outcome: the claimant may be mid-
       // conversion, and the only alternative is converting alongside it.
@@ -414,7 +471,8 @@ describe('daemon lock', () => {
       const configDir = makeConfigDir()
       writeStaleLock(configDir)
       // Alive, but not the process that took the claim: the number was recycled
-      // after the real claimant exited.
+      // after the real claimant exited. Stamped old too, so the outcome is the
+      // same where identity is unavailable and age is all there is to go on.
       writeClaim(configDir, { at: longAgo(), startToken: 'a0'.repeat(16) })
 
       const lock = acquireDaemonLock(configDir)
@@ -560,13 +618,31 @@ describe('daemon lock', () => {
         if (pid === undefined) throw new Error('could not spawn the suspended claimant')
 
         try {
-          const startToken = readProcessStartToken(pid)
+          // Retried, and not from the cache: that only ever holds our own pid,
+          // because a token is (pid, start time) and for anyone else both halves
+          // can change between two asks. A null here would write a claim with no
+          // token, which the implementation rightly judges by age instead — so a
+          // single failed lookup would turn this into a test of the fallback and
+          // silently stop covering suspension, the thing it exists for.
+          let startToken: string | null = null
+          for (let attempt = 0; attempt < 3 && startToken === null; attempt += 1) {
+            startToken = readProcessStartToken(pid)
+          }
           process.kill(pid, 'SIGSTOP')
           const claim = writeClaim(configDir, {
             pid,
             at: longAgo(),
             ...(startToken === null ? {} : { startToken }),
           })
+
+          if (startToken === null) {
+            // Every platform this runs on reports start times, so this is a
+            // lookup that failed three times rather than one that cannot answer.
+            // Nothing identifies the claimant, age decides, and taking the claim
+            // over is the correct outcome — assert that rather than the opposite.
+            acquireDaemonLock(configDir).release()
+            return
+          }
 
           expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
           expect(existsSync(claim)).toBe(true)

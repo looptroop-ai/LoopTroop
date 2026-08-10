@@ -111,8 +111,81 @@ describe('host guard', () => {
     expect(response.status).toBe(403)
   })
 
-  it('accepts a same-origin request, which carries no Origin at all', async () => {
+  it('accepts a request with no Origin and no cookie, the shape every script sends', async () => {
     expect((await request({ Host: '127.0.0.1:3000' })).status).toBe(200)
+  })
+
+  it('accepts a token-bearing request with no Origin, however it names the token', async () => {
+    // The CLI, the install smoke tests and the read-only verifier all look like
+    // this. A caller holding the API token is not the browser and never needed
+    // the browser's word for where it came from.
+    const cookie = 'looptroop_session=whatever'
+
+    expect((await request({
+      Host: '127.0.0.1:3000',
+      Cookie: cookie,
+      Authorization: 'Bearer some-token',
+    })).status).toBe(200)
+
+    expect((await request({
+      Host: '127.0.0.1:3000',
+      Cookie: cookie,
+      'X-LoopTroop-Token': 'some-token',
+    })).status).toBe(200)
+  })
+
+  /**
+   * The hole this rule exists for.
+   *
+   * Cookies carry no port scope, so a page on any other 127.0.0.1 port can make
+   * the browser send this daemon's session cookie: `<img src>`, a no-cors fetch,
+   * a `window.open`. None of those send an Origin header, so before this check
+   * the request was indistinguishable from a same-origin GET and was served.
+   */
+  it('refuses the cookie on a no-Origin request that cannot prove same-origin', async () => {
+    const response = await request({ Host: '127.0.0.1:3000', Cookie: 'looptroop_session=stolen' })
+
+    expect(response.status).toBe(403)
+    expect((await response.json() as { error: string }).error).toContain('same-origin')
+  })
+
+  it('refuses the cookie when the browser says the request came from another port', async () => {
+    // What a cross-port loopback page actually produces: Sec-Fetch-Site counts
+    // the port, so a sibling on 127.0.0.1:9999 gets `same-site`, not
+    // `same-origin`. `cross-site` is the rebound-hostname case.
+    for (const site of ['same-site', 'cross-site', 'none']) {
+      const response = await request({
+        Host: '127.0.0.1:3000',
+        Cookie: 'looptroop_session=stolen',
+        'Sec-Fetch-Site': site,
+      })
+
+      expect(response.status, `Sec-Fetch-Site: ${site}`).toBe(403)
+    }
+  })
+
+  it('accepts the cookie when the browser vouches for the origin', async () => {
+    // The real same-origin cases that send no Origin header: an <img> preview of
+    // manual-QA evidence, an <a download>, a top-level navigation, EventSource.
+    const response = await request({
+      Host: '127.0.0.1:3000',
+      Cookie: 'looptroop_session=ours',
+      'Sec-Fetch-Site': 'same-origin',
+    })
+
+    expect(response.status).toBe(200)
+  })
+
+  it('still accepts the cookie from the dev server, which does send an Origin', async () => {
+    // Vite runs on another port, so its requests are cross-origin and carry
+    // Origin — the allowlist decides them, and the Sec-Fetch-Site rule never
+    // sees them.
+    const response = await request(
+      { Host: '127.0.0.1:3000', Origin: 'http://localhost:5173', Cookie: 'looptroop_session=ours' },
+      ['http://localhost:5173'],
+    )
+
+    expect(response.status).toBe(200)
   })
 
   it('steps aside for a deployment that opted into remote access', async () => {

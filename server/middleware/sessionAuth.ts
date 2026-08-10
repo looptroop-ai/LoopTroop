@@ -3,6 +3,9 @@ import type { Context, Next } from 'hono'
 
 export const SESSION_COOKIE_NAME = 'looptroop_session'
 
+/** Header a script may present the API token in, for clients that cannot set Authorization. */
+export const API_TOKEN_HEADER = 'x-looptroop-token'
+
 /** Bootstrap nonces are single-use and short-lived by design. */
 export const BOOTSTRAP_NONCE_TTL_MS = 5 * 60_000
 
@@ -45,10 +48,15 @@ export function readCookie(header: string | undefined, name: string): string | n
 
 export function serializeSessionCookie(value: string, maxAgeSeconds: number): string {
   // HttpOnly keeps the value out of reach of any script on the page.
-  // SameSite=Strict stops another site from driving the control API through
-  // the browser, which is the one real risk of cookie auth on loopback.
   // Path=/api keeps the cookie off requests for the static bundle, which need
   // no credential: a secret is not attached to traffic that cannot use it.
+  //
+  // SameSite=Strict stops another *site* from driving the control API through
+  // the browser. It does not stop another loopback port: a site is a scheme and
+  // a registrable domain, so 127.0.0.1:9999 and 127.0.0.1:3000 are the same
+  // site, and cookies carry no port scope of their own. Every other local
+  // service therefore shares this cookie jar, which is why the host guard makes
+  // the browser prove same-origin before this cookie authenticates anything.
   return [
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(value)}`,
     'Path=/api',
@@ -140,7 +148,7 @@ export interface SessionAuthOptions {
  */
 export function createSessionAuthMiddleware(options: SessionAuthOptions) {
   const { credentials } = options
-  const tokenHeader = options.tokenHeader ?? 'x-looptroop-token'
+  const tokenHeader = options.tokenHeader ?? API_TOKEN_HEADER
 
   return async (c: Context, next: Next) => {
     if (c.req.method === 'OPTIONS') {

@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono'
 import { isLoopbackHost } from '../../shared/appConfig'
+import { API_TOKEN_HEADER, SESSION_COOKIE_NAME, readCookie } from './sessionAuth'
 
 /**
  * Strips the port and any IPv6 brackets from a Host or Origin authority, so
@@ -93,6 +94,20 @@ export function requestAuthority(c: Context): string | undefined {
   }
 }
 
+/**
+ * Whether this request is leaning on the ambient session cookie rather than a
+ * token. A caller that presents its own credential (the CLI, any script) is
+ * never driven by the browser and needs no origin proof; the cookie is the only
+ * credential the browser carries for us, and it is the one any other loopback
+ * page can be made to forward, so it is the one that must prove where it came
+ * from.
+ */
+function usesAmbientCookie(c: Context): boolean {
+  if (readCookie(c.req.header('cookie'), SESSION_COOKIE_NAME) === null) return false
+  return c.req.header('authorization') === undefined
+    && c.req.header(API_TOKEN_HEADER) === undefined
+}
+
 export interface HostGuardOptions {
   /**
    * Origins accepted in addition to the daemon's own. The dev server on another
@@ -117,6 +132,19 @@ export interface HostGuardOptions {
  * local tool with an XSS, anything a user was talked into running — is a
  * different origin that the browser will nonetheless send this daemon's session
  * cookie to. Pinning the port is what makes that page's requests fail.
+ *
+ * A request with no Origin used to pass unconditionally, which left the same
+ * cross-port page a way in: `<img src="http://127.0.0.1:3000/api/...">`, a
+ * no-cors fetch, a `window.open` — none of them send Origin, and all of them
+ * send this daemon's cookie, because cookies have no port scope. Such a request
+ * is now required to carry `Sec-Fetch-Site: same-origin` whenever the cookie is
+ * the only credential it has. Scripts are unaffected: they present a token, and
+ * a caller holding the token never needed the browser's word for anything.
+ *
+ * That closes the browser-driven half. A local process that already reads the
+ * cookie out of the browser's store can still forge every header, so the cookie
+ * being shared across loopback ports remains a real exposure — one that only a
+ * distinct hostname or a non-ambient credential can remove.
  *
  * Binding to a non-loopback address already demands LOOPTROOP_ALLOW_REMOTE_API
  * and a token, so that same variable is what turns this off: a deployment that
@@ -154,6 +182,23 @@ export function createHostGuardMiddleware(options: HostGuardOptions = {}) {
       if (!permitted) {
         return c.json({ error: 'Forbidden: cross-origin requests are not accepted.' }, 403)
       }
+
+      await next()
+      return
+    }
+
+    // No Origin at all. Fine for a script holding the API token, and the only
+    // shape a same-origin GET has ever had — but on its own it is also exactly
+    // what a page on another loopback port produces, cookie included, via an
+    // `<img>` tag or a no-cors fetch. Sec-Fetch-Site is what separates the two:
+    // the browser sets it, page script cannot (it is a forbidden header name),
+    // and unlike a site it counts the port, so another localhost port gets
+    // `same-site` rather than `same-origin`.
+    if (usesAmbientCookie(c) && c.req.header('sec-fetch-site') !== 'same-origin') {
+      return c.json(
+        { error: 'Forbidden: the session cookie is accepted only on same-origin requests.' },
+        403,
+      )
     }
 
     await next()

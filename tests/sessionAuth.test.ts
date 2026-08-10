@@ -111,8 +111,50 @@ describe('daemon session auth', () => {
     })
     const sessionCookie = `looptroop_session=${encodeURIComponent(credentials.sessionToken)}`
 
-    const response = await app.request('/api/projects', { headers: { Cookie: sessionCookie } })
+    // Sec-Fetch-Site is what the browser sends on a request from this daemon's
+    // own page, and the host guard now requires it before the cookie counts:
+    // otherwise a page on another loopback port, which shares this cookie jar,
+    // could make the very same request.
+    const response = await app.request('/api/projects', {
+      headers: { Cookie: sessionCookie, 'Sec-Fetch-Site': 'same-origin' },
+    })
+
+    // Asserted against what the bearer token gets rather than with
+    // `not.toBe(401)`. That form was also satisfied by the 403 a refused cookie
+    // produces, so it passed whether or not the cookie worked — it went green
+    // against a build where cookie auth was entirely broken. Comparing the two
+    // credentials says the real thing: the cookie gets as far as the token does.
+    const withToken = await app.request('/api/projects', {
+      headers: { Authorization: `Bearer ${credentials.apiToken}` },
+    })
+
+    expect(response.status).toBe(withToken.status)
     expect(response.status).not.toBe(401)
+    expect(response.status).not.toBe(403)
+  })
+
+  it('does not let the cookie authenticate a request the browser did not vouch for', async () => {
+    const credentials = createSessionCredentials()
+    const app = createApp({
+      mode: 'production',
+      credentials,
+      clientDir: makeClientDir(),
+    })
+
+    await app.request('/api/auth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nonce: await issueNonce(app, credentials) }),
+    })
+
+    // The genuine session token, on a request shaped the way a cross-port page's
+    // <img> or no-cors fetch is shaped: no Origin, no Sec-Fetch-Site the browser
+    // would have set for us. Holding the cookie is not enough.
+    const response = await app.request('/api/projects', {
+      headers: { Cookie: `looptroop_session=${encodeURIComponent(credentials.sessionToken)}` },
+    })
+
+    expect(response.status).toBe(403)
   })
 
   it('rejects a replayed bootstrap nonce', async () => {

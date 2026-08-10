@@ -71,12 +71,15 @@ const serverIntegrationTests = [
   // defeat the vi.mock in a sibling sharing the non-isolated worker.
   'tests/staticServing.test.ts',
   'tests/sessionAuth.test.ts',
+  // Binds two real loopback ports to replay a captured cookie between them.
+  'tests/loopbackCookieTheft.test.ts',
   // Start a real daemon: sockets, locks and the database must not be shared.
   'tests/startDaemon.test.ts',
   'tests/daemonLock.test.ts',
   'tests/opencodeSupervisor.test.ts',
   // Spawns real child processes and signals them, so it needs its own worker.
   'tests/stopCommand.test.ts',
+  'tests/startCommandAbandon.test.ts',
   'tests/cleanCommand.test.ts',
   // Reads the real database module, which siblings replace with a mock.
   'tests/doctorCommand.test.ts',

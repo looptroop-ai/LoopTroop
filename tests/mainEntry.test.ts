@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 /**
  * `server/index.ts` is the package's `main`, so importing it must not start
@@ -29,7 +30,9 @@ describe('published main entry', () => {
       probe,
       [
         `const before = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
-        `const mod = await import(${JSON.stringify(resolve(repoRoot, 'server/index.ts'))})`,
+        // A URL, not a path: `import('C:\\...')` is ERR_UNSUPPORTED_ESM_URL_SCHEME
+        // on Windows, where the drive letter reads as a scheme.
+        `const mod = await import(${JSON.stringify(pathToFileURL(resolve(repoRoot, 'server/index.ts')).href)})`,
         `const after = process.listenerCount('SIGTERM') + process.listenerCount('SIGINT')`,
         `console.log(JSON.stringify({ signalListeners: after - before, exports: Object.keys(mod).sort() }))`,
       ].join('\n'),

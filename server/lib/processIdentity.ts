@@ -27,6 +27,23 @@ export interface ProcessIdentityDeps {
 /** Bounded so a wedged process lister cannot hang the command that asked. */
 const COMMAND_TIMEOUT_MS = 5_000
 
+/**
+ * Windows gets its own, far larger bound.
+ *
+ * `/proc` is a file read and `ps` is a tiny static binary; both answer in
+ * single-digit milliseconds. Windows has no equivalent, so the answer costs a
+ * whole PowerShell start — around a second on a hosted CI runner, and several
+ * under load. At the shared 5s bound that turned into an intermittent `null`,
+ * which every caller is required to read as "cannot verify": a suspended daemon
+ * looked unverifiable, and an expired heartbeat was then enough to let a second
+ * daemon reclaim a lock its owner was still holding.
+ *
+ * Bounding it at 20s does not make the lookup fast. It makes a slow answer a
+ * slow answer instead of a wrong one, which is the only distinction the callers
+ * of this module can act on.
+ */
+const WINDOWS_COMMAND_TIMEOUT_MS = 20_000
+
 function createDefaultDeps(): ProcessIdentityDeps {
   return {
     platform: process.platform,
@@ -42,7 +59,7 @@ function createDefaultDeps(): ProcessIdentityDeps {
         return execFileSync(file, args, {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: COMMAND_TIMEOUT_MS,
+          timeout: process.platform === 'win32' ? WINDOWS_COMMAND_TIMEOUT_MS : COMMAND_TIMEOUT_MS,
           windowsHide: true,
         }).trim()
       } catch {
@@ -51,6 +68,8 @@ function createDefaultDeps(): ProcessIdentityDeps {
     },
   }
 }
+
+const defaultDeps = createDefaultDeps()
 
 /**
  * Start time in clock ticks since boot, from field 22 of /proc/<pid>/stat.
@@ -91,16 +110,78 @@ function readDarwinIdentity(pid: number, deps: ProcessIdentityDeps): string | nu
   return `darwin:${pid}:${started.replace(/\s+/g, ' ')}`
 }
 
+/**
+ * The one thing PowerShell is asked, written without a single double quote.
+ *
+ * `execFileSync` escapes an argument containing `"` as `\"`, and PowerShell's
+ * own command-line parser does not agree with that convention — the script
+ * arrives mangled and the answer comes back empty. Single quotes throughout
+ * sidestep the disagreement rather than trying to win it.
+ *
+ * CIM is asked first because it answers for processes this user does not own,
+ * where `Get-Process(...).StartTime` throws Access Denied — and a lock owner is
+ * exactly the process most likely to belong to somebody else. `Get-Process` is
+ * the fallback for a host where the CIM service is not answering. Both are
+ * normalised to UTC ticks, so the two sources cannot disagree about a machine
+ * that changed timezone or crossed a DST boundary since the token was written.
+ */
+function windowsStartTimeScript(pid: number): string {
+  return [
+    '$ErrorActionPreference=\'SilentlyContinue\'',
+    `$c=Get-CimInstance Win32_Process -Filter ('ProcessId=' + ${pid})`,
+    'if ($c -and $c.CreationDate) { $c.CreationDate.ToUniversalTime().Ticks; exit 0 }',
+    `$p=Get-Process -Id ${pid}`,
+    'if ($p) { try { $p.StartTime.ToUniversalTime().Ticks } catch { } }',
+  ].join('; ')
+}
+
+/**
+ * The first line of output that is a bare integer.
+ *
+ * PowerShell may prepend a byte-order mark, ends its lines with CRLF, and — on
+ * a host where the first query failed — can emit a warning before the number.
+ * A stricter parser read all of those as "this platform cannot say", which is
+ * the answer that makes callers refuse to act. `trim` covers the BOM as well as
+ * the CR, since U+FEFF counts as whitespace to it.
+ */
+function parseWindowsTicks(output: string | null): string | null {
+  if (output === null) return null
+
+  for (const line of output.split(/\r?\n/)) {
+    const candidate = line.trim()
+    if (/^\d+$/.test(candidate)) return candidate
+  }
+  return null
+}
+
 function readWindowsIdentity(pid: number, deps: ProcessIdentityDeps): string | null {
-  const started = deps.runCommand('powershell.exe', [
+  const ticks = parseWindowsTicks(deps.runCommand('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
     '-Command',
-    `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
-  ])
-  if (started === null || !/^\d+$/.test(started)) return null
-  return `win32:${pid}:${started}`
+    windowsStartTimeScript(pid),
+  ]))
+  if (ticks === null) return null
+  return `win32:${pid}:${ticks}`
 }
+
+/**
+ * This process's own token, computed once.
+ *
+ * Only ever our own pid: a token is (pid, start time), and for any *other* pid
+ * both halves can change between two calls, so a cache there would answer
+ * `same` about a process that had exited and had its number reissued — the one
+ * mistake this module exists to prevent. Our own pid cannot be reissued while
+ * we are the one asking, so the answer is immutable for as long as the cache
+ * lives.
+ *
+ * Worth caching because the Windows lookup costs a PowerShell start, and the
+ * hot callers ask about themselves repeatedly: every contention check on the
+ * single-instance lock reads the asker's identity. A failure is not cached —
+ * null means "could not tell this time", and a transient one must not become
+ * this process's permanent answer.
+ */
+let selfToken: string | null = null
 
 /**
  * An opaque token identifying the process currently holding this pid, or null
@@ -112,10 +193,15 @@ function readWindowsIdentity(pid: number, deps: ProcessIdentityDeps): string | n
  */
 export function readProcessStartToken(
   pid: number,
-  deps: ProcessIdentityDeps = createDefaultDeps(),
+  deps: ProcessIdentityDeps = defaultDeps,
 ): string | null {
   // 0 and negatives address a process group, which has no single start time.
   if (!Number.isInteger(pid) || pid <= 0) return null
+
+  // Injected deps describe an invented machine, so the real answer about this
+  // process is neither what they mean nor safe to seed the cache from.
+  const cacheable = deps === defaultDeps && pid === process.pid
+  if (cacheable && selfToken !== null) return selfToken
 
   const raw = deps.platform === 'linux'
     ? readLinuxIdentity(pid, deps)
@@ -124,7 +210,9 @@ export function readProcessStartToken(
       : readDarwinIdentity(pid, deps)
 
   if (raw === null) return null
-  return createHash('sha256').update(raw).digest('hex').slice(0, 32)
+  const token = createHash('sha256').update(raw).digest('hex').slice(0, 32)
+  if (cacheable) selfToken = token
+  return token
 }
 
 /**
@@ -149,7 +237,7 @@ export function matchProcess(
     return { kind: 'unknown', reason: 'no start-identity token was recorded for it' }
   }
 
-  const current = readProcessStartToken(pid, deps ?? createDefaultDeps())
+  const current = readProcessStartToken(pid, deps ?? defaultDeps)
   if (current === null) {
     return { kind: 'unknown', reason: 'this platform cannot report when a process started' }
   }

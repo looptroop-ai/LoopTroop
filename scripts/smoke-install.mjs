@@ -98,6 +98,35 @@ function looptroopPath(prefix) {
     : join(prefix, 'bin', 'looptroop')
 }
 
+/**
+ * Quotes one argument for `cmd.exe`. Everything is quoted rather than only the
+ * values that look like they need it: inside double quotes cmd stops treating
+ * `&`, `|`, `^` and friends as syntax, which is the whole point of doing this
+ * instead of interpolating into a shell string.
+ */
+function quoteForCmd(value) {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
+/**
+ * Runs the installed launcher.
+ *
+ * On Windows npm's `bin` entry is `looptroop.cmd`, and a batch file is not an
+ * executable image: `CreateProcess` cannot run it, so `spawnSync` with the
+ * default `shell: false` came back with a null exit code and empty output for
+ * every command — which read as thirteen assertion failures about JSON and
+ * health, none of them the actual problem. It has to go through the command
+ * interpreter, and `/d /s /c` with one pre-quoted line keeps the argument
+ * boundaries we chose rather than letting a shell re-split them.
+ */
+function runShim(shimPath, args, options = {}) {
+  if (!IS_WINDOWS) return run(shimPath, args, options)
+
+  const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe'
+  const line = `"${[shimPath, ...args].map(quoteForCmd).join(' ')}"`
+  return run(comspec, ['/d', '/s', '/c', line], { ...options, windowsVerbatimArguments: true })
+}
+
 function readJson(text, name) {
   try {
     return JSON.parse(text)
@@ -154,7 +183,7 @@ function survivingChildren(prefix) {
 function cleanup(prefix, configDir, scratch) {
   try {
     if (prefix && existsSync(looptroopPath(prefix))) {
-      run(looptroopPath(prefix), ['stop'], { env: { LOOPTROOP_CONFIG_DIR: configDir } })
+      runShim(looptroopPath(prefix), ['stop'], { env: { LOOPTROOP_CONFIG_DIR: configDir } })
     }
   } catch {
     // Already gone, or never started.
@@ -207,7 +236,7 @@ try {
   // Every command below runs from `elsewhere` with the throwaway config dir, so
   // nothing can quietly reach the checkout or the developer's real config.
   const at = { cwd: elsewhere, env: { LOOPTROOP_CONFIG_DIR: configDir } }
-  const cli = (...args) => run(bin, args, at)
+  const cli = (...args) => runShim(bin, args, at)
 
   heading('Metadata commands work without a daemon')
   const version = cli('--version')

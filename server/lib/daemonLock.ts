@@ -1,6 +1,6 @@
 import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { getDaemonLockPath } from './daemonPaths'
 import { ensureSecureDir, CONFIG_FILE_MODE } from './appConfigDir'
 import { dirname } from 'node:path'
@@ -123,50 +123,210 @@ function writeOwner(lockPath: string, owner: LockOwner): void {
 }
 
 /**
- * Removes one specific abandoned lock, and only that one.
+ * How long a conversion claim may sit before another process may take it over.
  *
- * Deleting the path outright is not safe: two processes that both judged the
- * same lock stale would both delete, and the second delete lands on the *new*
- * lock the first one just created. Both then believe they hold it, and two
- * daemons share the databases and worktrees.
- *
- * So the file is moved aside first. Rename is atomic, so whatever a reclaimer
- * ends up holding is exactly one file, and its contents say whether it was the
- * intended victim. A reclaimer that finds it quarantined somebody's live lock
- * puts it straight back and loses the race, which is the correct outcome.
+ * Generous by design: a claim covers two file operations, so anything still
+ * holding one after this long is a process that died mid-reclaim rather than one
+ * that is merely slow.
  */
-function reclaimStaleLock(lockPath: string, staleNonce: string): boolean {
-  const quarantine = `${lockPath}.reclaim-${randomUUID()}`
+const CLAIM_TTL_MS = 30_000
 
-  try {
-    renameSync(lockPath, quarantine)
-  } catch {
-    // Already gone, or claimed by another reclaimer. Either way, not ours.
-    return false
-  }
+/**
+ * The generation name for a lock file that names no owner at all.
+ *
+ * Cannot collide with a real nonce, which is a `randomUUID` and so contains
+ * only hex digits and dashes. The space is what guarantees that, rather than
+ * the word being unlikely.
+ */
+const UNPARSEABLE_GENERATION = 'unparseable lock'
 
-  const moved = readOwner(quarantine)
-  if (moved?.nonce === staleNonce) {
-    rmSync(quarantine, { force: true })
-    return true
-  }
-
-  // This is not the lock we judged stale — someone acquired between our read
-  // and our rename. Put it back and let the retry see the truth.
-  try {
-    renameSync(quarantine, lockPath)
-  } catch {
-    // The path is occupied again, so the owner is present under its own lock.
-    rmSync(quarantine, { force: true })
-  }
-  return false
+interface ClaimHolder {
+  pid: number
+  host: string
+  at: string
 }
+
+interface ConversionClaim {
+  release(): void
+}
+
+/**
+ * Where the right to convert one particular lock generation is registered.
+ *
+ * Named after the nonce being converted rather than after the lock, so two
+ * contenders that judged the *same* stale lock collide here and exactly one
+ * proceeds — while a contender still holding a claim on an older generation
+ * cannot block one working on the current file. Hashed because the name goes on
+ * disk beside a record that is routinely inspected, and a nonce is the token
+ * that governs who may release the lock.
+ */
+function claimPath(lockPath: string, nonce: string): string {
+  return `${lockPath}.claim-${createHash('sha256').update(nonce).digest('hex').slice(0, 16)}`
+}
+
+/**
+ * Removes a claim whose holder can be shown to have gone, and only that one.
+ *
+ * The removal is itself claimed by renaming: after the first process renames the
+ * file away, every other rename fails with ENOENT, so exactly one contender gets
+ * to act on it. Deleting the path directly would let two processes both remove
+ * it and both go on to create it, which is the doubling this whole mechanism
+ * exists to prevent.
+ */
+function discardAbandonedClaim(path: string): void {
+  let holder: ClaimHolder | null = null
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (typeof parsed === 'object' && parsed !== null) holder = parsed as ClaimHolder
+  } catch {
+    // Unreadable or half-written: it vouches for nobody.
+  }
+
+  const abandoned = holder === null
+    || (holder.host === hostname() && !isProcessAlive(holder.pid))
+    || Date.now() - Date.parse(holder.at) > CLAIM_TTL_MS
+
+  if (!abandoned) return
+
+  const discarded = `${path}.gone-${randomUUID()}`
+  try {
+    renameSync(path, discarded)
+  } catch {
+    // Another contender got there first; theirs to finish.
+    return
+  }
+  rmSync(discarded, { force: true })
+}
+
+/**
+ * The exclusive right to convert one lock generation, or null when another
+ * process holds it.
+ *
+ * Every path that changes who owns a lock goes through this, so stale recovery
+ * is serialized even though the recovery itself is several file operations.
+ */
+function takeConversionClaim(lockPath: string, generation: string): ConversionClaim | null {
+  const path = claimPath(lockPath, generation)
+
+  try {
+    const holder: ClaimHolder = { pid: process.pid, host: hostname(), at: new Date().toISOString() }
+    const fd = openSync(path, 'wx', CONFIG_FILE_MODE)
+    try {
+      writeSync(fd, `${JSON.stringify(holder)}\n`)
+    } finally {
+      closeSync(fd)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    discardAbandonedClaim(path)
+    return null
+  }
+
+  return {
+    release() {
+      rmSync(path, { force: true })
+    },
+  }
+}
+
+/**
+ * Replaces an abandoned lock with a new owner in one step.
+ *
+ * The canonical path is never free at any point. An earlier version moved the
+ * stale file aside, inspected it, and put it back if it turned out to be
+ * somebody's live lock — but between the move and the restore the lock path did
+ * not exist, so a third process could take it exclusively and start a daemon,
+ * and the restore then wrote straight over that lock. Three contenders were
+ * enough for two of them to believe they held the same databases and worktrees.
+ *
+ * So the new record is staged under a unique name and renamed over the old one.
+ * Rename is atomic and never exposes an empty path, and the conversion claim
+ * makes sure only one process is doing it to this generation of the lock.
+ */
+function convertStaleLock(lockPath: string, staleNonce: string, owner: LockOwner): boolean {
+  const claim = takeConversionClaim(lockPath, staleNonce)
+  if (!claim) return false
+
+  const staging = `${lockPath}.staging-${randomUUID()}`
+  try {
+    // Re-read under the claim: the generation may have been converted between
+    // the read that judged it stale and the claim being granted, and taking a
+    // lock that somebody else already replaced is exactly the doubling above.
+    if (readOwner(lockPath)?.nonce !== staleNonce) return false
+
+    writeOwner(staging, owner)
+    renameSync(staging, lockPath)
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(staging, { force: true })
+    claim.release()
+  }
+}
+
+/**
+ * Removes an abandoned lock, leaving the path free for the next start.
+ *
+ * Same claim, same re-read: `stop` runs this after deciding a lock has no live
+ * owner, and without the claim two callers could both delete — the second one
+ * landing on whatever fresh lock the first one's caller had already created.
+ *
+ * A null generation means the file named no owner at all, which is its own
+ * generation: the check is then that it is still unparseable.
+ */
+function removeStaleLock(lockPath: string, generation: string | null): boolean {
+  const claim = takeConversionClaim(lockPath, generation ?? UNPARSEABLE_GENERATION)
+  if (!claim) return false
+
+  try {
+    const current = readOwner(lockPath)
+    const unchanged = generation === null ? current === null : current?.nonce === generation
+    if (!unchanged) return false
+
+    rmSync(lockPath, { force: true })
+    return true
+  } catch {
+    return false
+  } finally {
+    claim.release()
+  }
+}
+
+/**
+ * Replaces a lock file that names no owner at all.
+ *
+ * Under the same serialization as a real conversion: an unparseable file is
+ * debris, but two processes both deleting it and both creating their own would
+ * leave the second delete landing on the first one's new lock.
+ */
+function convertUnparseableLock(lockPath: string, owner: LockOwner): boolean {
+  const claim = takeConversionClaim(lockPath, UNPARSEABLE_GENERATION)
+  if (!claim) return false
+
+  const staging = `${lockPath}.staging-${randomUUID()}`
+  try {
+    if (readOwner(lockPath) !== null) return false
+
+    writeOwner(staging, owner)
+    renameSync(staging, lockPath)
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(staging, { force: true })
+    claim.release()
+  }
+}
+
+/** Enough passes for every contender in a realistic race to settle. */
+const ACQUIRE_ATTEMPTS = 8
 
 /**
  * Takes the single-instance daemon lock, or throws DaemonLockedError when
  * another live daemon holds it. A lock left behind by a crashed run is
- * reclaimed, then re-acquired exclusively so a concurrent reclaim cannot
- * hand the same lock to two processes.
+ * converted to this run's ownership in one atomic step, so a concurrent
+ * reclaimer can never find the path unoccupied and hand it to a third process.
  */
 export function acquireDaemonLock(configDir?: string): AcquiredLock {
   const lockPath = getDaemonLockPath(configDir)
@@ -182,7 +342,7 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
     ...(startToken === null ? {} : { startToken }),
   }
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < ACQUIRE_ATTEMPTS; attempt += 1) {
     try {
       writeOwner(lockPath, owner)
       return buildHandle(lockPath, owner)
@@ -192,14 +352,13 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
       const existing = readOwner(lockPath)
       if (existing && !isStale(existing, Date.now())) throw new DaemonLockedError(existing)
 
-      if (existing) {
-        // Lost the reclaim: whoever won it owns the lock now, so stop here
-        // rather than deleting theirs on the next pass.
-        if (!reclaimStaleLock(lockPath, existing.nonce)) continue
-      } else {
-        // Unparseable: it names no owner at all, so it cannot be anyone's.
-        rmSync(lockPath, { force: true })
-      }
+      const converted = existing
+        ? convertStaleLock(lockPath, existing.nonce, owner)
+        : convertUnparseableLock(lockPath, owner)
+
+      // The lock now carries our nonce, written in the same step that removed
+      // the old one — there is no second acquisition to lose.
+      if (converted) return buildHandle(lockPath, owner)
     }
   }
 
@@ -229,7 +388,10 @@ export function clearLockOwnedBy(pid: number, configDir?: string): void {
   if (owner?.pid !== pid || owner.host !== hostname()) return
   // Still alive and not provably a different process: not debris.
   if (isProcessAlive(pid) && matchProcess(pid, owner.startToken).kind !== 'different') return
-  rmSync(lockPath, { force: true })
+  // Through the same serialization as every other removal, and scoped to the
+  // generation just judged: an unscoped delete here would land on whatever lock
+  // a start that raced this `stop` had already written to the same path.
+  removeStaleLock(lockPath, owner.nonce)
 }
 
 /**
@@ -254,14 +416,16 @@ export function releaseStaleLock(configDir?: string): StaleLockRelease {
   if (existing === null) {
     // Nothing there, or a file that names no owner and so cannot be anyone's.
     if (!existsSync(lockPath)) return { kind: 'absent' }
-    rmSync(lockPath, { force: true })
-    return { kind: 'removed' }
+    if (removeStaleLock(lockPath, UNPARSEABLE_GENERATION)) return { kind: 'removed' }
+    // Somebody converted it while we looked; report whoever owns it now.
+    const current = readOwner(lockPath)
+    return current === null ? { kind: 'absent' } : { kind: 'held', owner: current }
   }
 
   if (!isStale(existing, Date.now())) return { kind: 'held', owner: existing }
-  if (reclaimStaleLock(lockPath, existing.nonce)) return { kind: 'removed' }
+  if (removeStaleLock(lockPath, existing.nonce)) return { kind: 'removed' }
 
-  // Lost the reclaim, so somebody holds it now. Report whoever that is.
+  // Lost the race, so somebody holds it now. Report whoever that is.
   const current = readOwner(lockPath)
   return current === null ? { kind: 'absent' } : { kind: 'held', owner: current }
 }

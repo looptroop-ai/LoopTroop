@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { spawn } from 'node:child_process'
 import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   acquireDaemonLock,
   clearLockOwnedBy,
@@ -11,6 +13,9 @@ import {
 } from '../server/lib/daemonLock'
 import { getDaemonLockPath } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
+
+/** A URL because a Windows drive letter reads as a scheme to `import()`. */
+const lockModule = pathToFileURL(resolve(import.meta.dirname, '../server/lib/daemonLock.ts')).href
 
 /**
  * 2.6 contract: exclusive single-instance ownership. Two concurrent starts must
@@ -312,12 +317,121 @@ describe('daemon lock', () => {
 
       const lock = acquireDaemonLock(configDir)
       try {
-        const strays = readdirSync(dirname(lock.path)).filter((entry) => entry.includes('.reclaim-'))
+        // Anything beside the lock itself: a claim, a staging file, a rename
+        // waiting to be discarded. Each one is a marker for a step that did not
+        // finish, and a stranded claim blocks the next reclaim for its full TTL.
+        const strays = readdirSync(dirname(lock.path))
+          .filter((entry) => entry.startsWith('daemon.lock.'))
         expect(strays).toEqual([])
       } finally {
         lock.release()
       }
     })
+  })
+
+  /**
+   * The exclusion contract, tested the only way it can be: from several real
+   * processes at once.
+   *
+   * Everything above runs in one process, where the interleavings that matter
+   * cannot occur — the dangerous window is between two file operations, and a
+   * single-threaded test never has anyone else running inside it. Three
+   * contenders is the floor rather than an arbitrary number: the race this
+   * covers needs one process to displace a lock, a second to take the path
+   * while it is unoccupied, and a third whose write then lands on top.
+   */
+  describe('under real concurrency', () => {
+    const CONTENDERS = 5
+
+    /**
+     * Starts every contender, waits for all of them to say they are ready, then
+     * releases them at once by creating the barrier file they are spinning on.
+     * Timing the collision by sleeping instead would race the process starts:
+     * on a loaded runner the first child can finish before the last one has
+     * loaded its modules, and the test then passes without ever colliding.
+     */
+    async function race(configDir: string): Promise<string[]> {
+      const barrier = join(configDir, 'go')
+      const ready = join(configDir, 'ready')
+
+      const source = (index: number) => [
+        `import { existsSync, writeFileSync } from 'node:fs'`,
+        `import { acquireDaemonLock } from ${JSON.stringify(lockModule)}`,
+        `writeFileSync(${JSON.stringify(ready)} + '.' + ${index}, '')`,
+        `while (!existsSync(${JSON.stringify(barrier)})) {}`,
+        `try {`,
+        `  const lock = acquireDaemonLock(${JSON.stringify(configDir)})`,
+        `  console.log('held ' + lock.owner.nonce)`,
+        // Held briefly so a loser cannot win simply by arriving after the
+        // winner already finished and released.
+        `  await new Promise((resolve) => setTimeout(resolve, 250))`,
+        `  lock.release()`,
+        `} catch (error) {`,
+        `  console.log(error instanceof Error ? error.name : 'unknown')`,
+        `}`,
+      ].join('\n')
+
+      const children = Array.from({ length: CONTENDERS }, (_, index) => {
+        const child = spawn(process.execPath, ['--import', 'tsx', '--eval', source(index)], {
+          cwd: resolve(import.meta.dirname, '..'),
+        })
+        let output = ''
+        child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
+        child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString() })
+        return new Promise<string>((done) => { child.on('close', () => { done(output.trim()) }) })
+      })
+
+      const deadline = Date.now() + 30_000
+      while (Date.now() < deadline) {
+        const arrived = readdirSync(configDir).filter((entry) => entry.startsWith('ready.')).length
+        if (arrived === CONTENDERS) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+
+      writeFileSync(barrier, '')
+      return Promise.all(children)
+    }
+
+    it('hands a free lock to exactly one of several simultaneous starts', async () => {
+      const results = await race(makeConfigDir())
+
+      expect(results.filter((line) => line.startsWith('held'))).toHaveLength(1)
+      expect(results.filter((line) => line === 'DaemonLockedError')).toHaveLength(CONTENDERS - 1)
+    }, 60_000)
+
+    it('hands a crashed run\'s lock to exactly one of several simultaneous starts', async () => {
+      const configDir = makeConfigDir()
+      // The case the single-process tests cannot reach. Every contender judges
+      // this lock abandoned at the same moment, so every one of them enters
+      // stale recovery together — and recovery that ever leaves the canonical
+      // path unoccupied lets a second contender take it and a third overwrite
+      // what it wrote. Two daemons on one set of databases and worktrees.
+      writeLock(configDir, {
+        nonce: 'crashed-run',
+        pid: 0,
+        heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 600_000).toISOString(),
+      })
+
+      const results = await race(configDir)
+
+      expect(results.filter((line) => line.startsWith('held'))).toHaveLength(1)
+    }, 60_000)
+
+    it('leaves no recovery debris behind after a contested reclaim', async () => {
+      const configDir = makeConfigDir()
+      writeLock(configDir, {
+        nonce: 'crashed-run',
+        pid: 0,
+        heartbeatAt: new Date(Date.now() - STALE_LOCK_MS - 600_000).toISOString(),
+      })
+
+      await race(configDir)
+
+      // A claim outliving the recovery it guarded is not cosmetic: the next
+      // reclaim has to wait out its whole TTL before it may take it over.
+      const strays = readdirSync(configDir).filter((entry) => entry.startsWith('daemon.lock.'))
+      expect(strays).toEqual([])
+    }, 60_000)
   })
 
   /**

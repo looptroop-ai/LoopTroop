@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,7 +8,7 @@ import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
-import { matchProcess } from '../lib/processIdentity'
+import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -137,9 +137,20 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
     },
   })
   child.unref()
+  // Recorded now, while the child is certainly itself. On timeout this is what
+  // separates "our hung daemon" from "a pid the OS has since handed to someone
+  // else", and by then there is nothing else left that can tell them apart.
+  const childToken = readProcessStartToken(child.pid ?? 0)
 
   const state = await waitForReady(configDir, child.pid ?? 0)
   if (!state) {
+    // A start that timed out leaves a real process running: it holds the daemon
+    // lock, and it may still finish booting seconds after the CLI reported
+    // failure — at which point there is a daemon nobody was told about, on a
+    // port nobody printed, that the next `looptroop start` will refuse to
+    // replace. Reporting the failure is not enough; the failure has to be true.
+    const abandoned = await abandonFailedStart(configDir, child, childToken)
+
     // The child records a refusal it knows will recur before it exits. That
     // message says what happened; a log tail only shows where it was said.
     const failure = readDaemonStartFailure(configDir)
@@ -149,6 +160,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
         `${await tailLog(logPath, 20)}\n` +
         `Full log: ${logPath}\n`,
     )
+    if (abandoned !== null) process.stderr.write(`\n${abandoned}\n`)
     return 1
   }
 
@@ -194,6 +206,65 @@ async function hintFirstRun(state: DaemonState): Promise<void> {
     // Only a hint. A daemon that cannot answer has a real problem, and every
     // other command reports it far more usefully than a missing suggestion.
   }
+}
+
+/**
+ * Ends a daemon that never reported ready, and removes only what it left.
+ *
+ * `waitForReady` returning null means one of two very different things. The
+ * child may already be gone, which is the ordinary failed start and needs no
+ * termination. Or it may still be running — booting slowly, wedged on a
+ * database, stuck opening a port — in which case the CLI is about to tell the
+ * user that nothing started while a process holding the daemon lock says
+ * otherwise. That one has to be ended here, because after this function returns
+ * nothing anywhere holds its pid.
+ *
+ * Identity is re-checked against the token taken at spawn before anything is
+ * signalled. The pid may have been released and reissued during the timeout, and
+ * a start that failed is no licence to kill a stranger's process. Where identity
+ * cannot be established the process is left alone and the user is told what to
+ * look at, which is worse than cleaning up and much better than the alternative.
+ *
+ * Returns a line to show the user, or null when there was nothing to clean up.
+ */
+export async function abandonFailedStart(
+  configDir: string,
+  child: ChildProcess,
+  childToken: string | null,
+): Promise<string | null> {
+  const pid = child.pid
+  if (pid === undefined || pid <= 0 || !isProcessAlive(pid)) return null
+
+  const match = matchProcess(pid, childToken ?? undefined)
+  if (match.kind === 'different') return null
+  if (match.kind === 'unknown') {
+    return `A process started by this command (pid ${pid}) may still be running, and ${match.reason}. ` +
+      'Check it before starting again; `looptroop stop` will not touch it.'
+  }
+
+  // Same escalation as `stop`, and bounded for the same reason: a start that
+  // already failed must not also hang. The tree, not the pid — the daemon may
+  // have spawned an OpenCode of its own before it wedged.
+  if (!(signalTermination(pid) && await waitForExit(pid, DEFAULT_STOP_BUDGETS.signalMs))) {
+    await killProcessTree(pid)
+    if (!await waitForExit(pid, DEFAULT_STOP_BUDGETS.forceMs)) {
+      return `A daemon that never finished starting (pid ${pid}) could not be stopped. ` +
+        'It may still hold the single-instance lock.'
+    }
+  }
+
+  // Scoped to this pid and this instance, so a daemon that started in the
+  // meantime keeps both. `clearLockOwnedBy` re-checks identity itself, and by
+  // now the process is gone, which is the case it is written for.
+  clearLockOwnedBy(pid, configDir)
+  // A state file naming somebody else is somebody else's: two `start` calls can
+  // race, and the one that succeeded must not have its record deleted by the one
+  // that timed out. A recorded start failure is kept by clearStaleDaemonState
+  // itself, since it is the only account of why there is no daemon.
+  const recorded = readDaemonState(configDir)
+  if (recorded === null || recorded.pid === pid) clearStaleDaemonState(configDir)
+
+  return `Stopped the daemon that never finished starting (pid ${pid}).`
 }
 
 /**

@@ -22,11 +22,29 @@
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
-const PORT = 39118
-const CHILD_ENV = { LOOPTROOP_OPENCODE_MODE: 'mock' }
+/** The floor `dist/server/cli/launcher.cjs` enforces before it loads anything. */
+const REQUIRED_NODE = { major: 24, minor: 15 }
+
+/**
+ * What every child gets on top of this process's own environment.
+ *
+ * The PATH entry is not a convenience. This runs under `sudo`, which replaces
+ * PATH with sudoers' `secure_path` however it was invoked — the pinned Node is
+ * on PATH *here* only because the workflow resolved it before the sudo. The
+ * installed `looptroop` is a symlink to a `#!/usr/bin/env node` script, so the
+ * shim resolves its own interpreter from PATH and otherwise picks up whatever
+ * the base image happens to ship. When that is below the floor the launcher
+ * enforces, it exits 1 in about thirty milliseconds, before a line of the daemon
+ * runs — a Node-resolution failure wearing the costume of a read-only one.
+ */
+const CHILD_ENV = {
+  LOOPTROOP_OPENCODE_MODE: 'mock',
+  PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ''}`,
+}
 
 const failures = []
 let step = 0
@@ -35,6 +53,31 @@ let skipped = null
 
 const log = (message) => process.stdout.write(`${message}\n`)
 const heading = (title) => { step += 1; log(`\n[${step}] ${title}`) }
+
+/**
+ * A port nobody is listening on, asked of the kernel rather than picked.
+ *
+ * This used to be the constant 39118, which turned two different failures into
+ * the same output. A daemon left behind by an earlier run — or anything else on
+ * that port — answered `/api/health` with `status: "ok"`, so the run reported a
+ * pass it had not earned; and when the port was merely occupied, `start` failed
+ * with "port in use" while the summary said the daemon would not start from a
+ * read-only install. Binding to 0 and reading the port back is still a race in
+ * principle, but against a specific number rather than in favour of one.
+ */
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(() => {
+        if (address === null || typeof address === 'string') reject(new Error('no port from the kernel'))
+        else resolve(address.port)
+      })
+    })
+  })
+}
 
 function check(name, condition, detail) {
   if (condition) log(`  ok    ${name}${detail ? `  (${detail})` : ''}`)
@@ -144,6 +187,65 @@ function confirmEnforced(dir) {
   return probe.stdout.trim()
 }
 
+/**
+ * Removes every credential this script could otherwise print into a public CI
+ * log, and says where it removed one.
+ *
+ * `looptroop start` prints a sign-in URL carrying a single-use bootstrap nonce
+ * in its fragment, and `daemon.json` holds the daemon's API token. Both are live
+ * credentials for a running daemon. This exists because the diagnostics below
+ * are only useful if they can be turned on in CI, and output nobody can safely
+ * publish is output nobody turns on.
+ *
+ * Redaction is by shape rather than by value: `[REDACTED]` where a secret was is
+ * still a diagnostic, while a line silently dropped reads like a step that never
+ * ran. Anything long and opaque goes — a nonce this did not anticipate is worth
+ * more to an attacker than to a reader.
+ */
+function redact(text) {
+  return text
+    // The whole fragment: everything after `#bootstrap=` is the credential.
+    .replace(/#bootstrap=[^\s'"]+/gi, '#bootstrap=[REDACTED]')
+    // Any token-, key-, secret- or nonce-shaped assignment, however spelled.
+    .replace(/\b(token|secret|nonce|apiToken|api_key|authorization)\b(\s*[:=]\s*"?)([^\s",}]+)/gi,
+      (_match, name, separator) => `${name}${separator}[REDACTED]`)
+    // A bare hex or base64url run long enough to be a credential rather than a
+    // hash fragment someone might actually need to read.
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[REDACTED]')
+}
+
+/**
+ * Prints command output that a failing step made worth reading.
+ *
+ * The failure this was added for printed nothing at all: `start succeeds` with
+ * `exit 1` and not one line of why, so the only way to learn anything was to
+ * push a commit that printed more and wait for CI. Bounded because a daemon log
+ * can run to thousands of lines and the useful part is the end.
+ */
+function showOutput(label, text, lines = 40) {
+  const content = redact(text).trimEnd()
+  if (!content) {
+    log(`  --- ${label}: no output ---`)
+    return
+  }
+  const all = content.split('\n')
+  const shown = all.slice(-lines)
+  log(`  --- ${label}${all.length > shown.length ? ` (last ${lines} of ${all.length} lines)` : ''} ---`)
+  for (const line of shown) log(`  | ${line}`)
+  log(`  --- end ${label} ---`)
+}
+
+/** The daemon's own log, or a note saying why there is none to show. */
+function readLogFile(configDir) {
+  const logPath = join(configDir, 'logs', 'daemon.log')
+  if (!existsSync(logPath)) return `(no log at ${logPath})`
+  try {
+    return readFileSync(logPath, 'utf8')
+  } catch (error) {
+    return `(could not read ${logPath}: ${error.code ?? error.message})`
+  }
+}
+
 async function main() {
   const scratch = mkdtempSync(join(tmpdir(), 'looptroop-readonly-'))
   const prefix = join(scratch, 'prefix')
@@ -151,7 +253,8 @@ async function main() {
   const emptyCwd = join(scratch, 'cwd')
   for (const dir of [prefix, configDir, emptyCwd]) mkdirSync(dir, { recursive: true })
 
-  const baseUrl = `http://127.0.0.1:${PORT}`
+  const port = await findFreePort()
+  const baseUrl = `http://127.0.0.1:${port}`
   const cli = join(prefix, 'bin', 'looptroop')
   const childEnv = { LOOPTROOP_CONFIG_DIR: configDir }
   let readOnly = null
@@ -164,8 +267,32 @@ async function main() {
       return
     }
     const installed = run('npm', ['install', '-g', '--prefix', prefix, '--omit=dev', join(scratch, tarball)])
-    check('npm install -g succeeds', installed.code === 0, `exit ${installed.code}`)
+    if (!check('npm install -g succeeds', installed.code === 0, `exit ${installed.code}`)) {
+      showOutput('npm install output', installed.combined)
+      return
+    }
     check('the bin shim exists', statSync(cli).isFile() || statSync(cli).isSymbolicLink(), cli)
+
+    // Asked before anything is mounted, because the answer is not about the
+    // mount. The shim is `#!/usr/bin/env node`, so it runs under whatever Node
+    // PATH resolves for the child — not the one running this script. When that
+    // is below the floor, the launcher exits 1 immediately and every later check
+    // fails for a reason that has nothing to do with the install being
+    // read-only. Failing here says which of those two it was.
+    //
+    // Resolved by spawning `node` rather than by asking a shell, because that is
+    // what `env node` and the Windows `.cmd` shim both do, and because a shell
+    // under `sudo` is not the shell this script was started from.
+    const childNode = run('node', ['-p', 'process.execPath + " " + process.versions.node'])
+    const [nodePath, version] = childNode.stdout.trim().split(' ')
+    const [major, minor] = (version ?? '').split('.').map((part) => Number.parseInt(part, 10))
+    const meetsFloor = major > REQUIRED_NODE.major
+      || (major === REQUIRED_NODE.major && minor >= REQUIRED_NODE.minor)
+    if (!check('the shim will find a supported Node on PATH', meetsFloor,
+      `${nodePath ?? 'no node on PATH'} is ${version ?? 'unreadable'}, ` +
+      `floor is ${REQUIRED_NODE.major}.${REQUIRED_NODE.minor}.0`)) {
+      return
+    }
 
     heading('Make the install directory genuinely read-only')
     const libDir = join(prefix, 'lib', 'node_modules', 'looptroop')
@@ -197,13 +324,33 @@ async function main() {
     heading('Start the daemon from the read-only install')
     // Empty cwd, so anything resolved relative to the working directory fails
     // here rather than accidentally finding a file in the checkout.
-    const started = run(cli, ['start', '--port', String(PORT)], { cwd: emptyCwd, env: childEnv })
-    check('start succeeds', started.code === 0, `exit ${started.code}`)
+    const started = run(cli, ['start', '--port', String(port)], { cwd: emptyCwd, env: childEnv })
+    if (!check('start succeeds', started.code === 0, `exit ${started.code}`)) {
+      // Printed here rather than left for someone to reproduce locally: this
+      // runs as root behind a bind mount that a developer's machine does not
+      // have, so "run it yourself and see" is not available. The daemon's own
+      // log holds the reason the CLI only summarises.
+      showOutput('start output', started.combined)
+      showOutput('daemon log', readLogFile(configDir))
+      // Nothing below can mean anything once the daemon is not running, and
+      // waiting out the health timeout only delays the report by half a minute.
+      return
+    }
 
+    const state = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8'))
     const health = await waitForHealth(baseUrl)
-    if (!check('the daemon answers', health?.status === 'ok', `status=${health?.status}`)) return
+    // The instance id, not just a 200. This asserted only `status === 'ok'`
+    // against a fixed port, and passed on a run where the daemon answering was
+    // one left behind by an earlier run — the single failure a verifier must
+    // never have, since it reports success for code it did not exercise.
+    if (!check('the daemon answers, and it is the one this run started',
+      health?.status === 'ok' && health.instanceId === state.instanceId,
+      `status=${health?.status}, instance ${health?.instanceId === state.instanceId ? 'matches' : 'differs'}`)) {
+      showOutput('daemon log', readLogFile(configDir))
+      return
+    }
 
-    const token = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8')).apiToken
+    const token = state.apiToken
     const api = (path, init = {}) => fetch(`${baseUrl}${path}`, {
       ...init,
       headers: { 'content-type': 'application/json', 'x-looptroop-token': token, ...(init.headers ?? {}) },
@@ -234,8 +381,10 @@ async function main() {
       body: JSON.stringify({ name: 'Readonly Check', shortname: 'ROC', folderPath: repo, ignoreMode: 'skip' }),
     })
     const body = await created.json().catch(() => null)
-    check('a project can be attached', created.status === 200 || created.status === 201,
-      `status ${created.status}: ${JSON.stringify(body)?.slice(0, 200) ?? 'no body'}`)
+    if (!check('a project can be attached', created.status === 200 || created.status === 201,
+      `status ${created.status}: ${redact(JSON.stringify(body) ?? 'no body').slice(0, 200)}`)) {
+      showOutput('daemon log', readLogFile(configDir))
+    }
 
     const listed = await api('/api/projects')
     const projects = await listed.json().catch(() => [])
@@ -262,7 +411,9 @@ async function main() {
 
     heading('Stop, and confirm the install was never written to')
     const stopped = run(cli, ['stop'], { cwd: emptyCwd, env: childEnv })
-    check('stop succeeds', stopped.code === 0, `exit ${stopped.code}`)
+    if (!check('stop succeeds', stopped.code === 0, `exit ${stopped.code}`)) {
+      showOutput('stop output', stopped.combined)
+    }
 
     const changed = diffSnapshots(before, snapshot(libDir))
     check('nothing under the install changed', changed.length === 0,
@@ -276,6 +427,13 @@ async function main() {
     } catch {
       // Already stopped, or never started.
     }
+    // `stop` goes through the same shim that may not have been able to run at
+    // all, and through the same lock logic under test — so it is not evidence
+    // that nothing is left. A daemon that survives this script holds a port and
+    // an open database for as long as the runner lives, and on a developer's
+    // machine that is until they notice. The pid in the state file is the one
+    // thing here written by the daemon itself.
+    await reapSurvivor(configDir, baseUrl)
     // Unmount before removing, or the recursive delete walks into a live mount.
     if (readOnly?.ok) readOnly.undo()
     try {
@@ -283,6 +441,43 @@ async function main() {
     } catch {
       // A held handle is not a test failure.
     }
+  }
+}
+
+/**
+ * Kills a daemon this run started and could not stop, and says so.
+ *
+ * Reported rather than silent: needing this means `stop` did not work, which is
+ * a defect in its own right even when the read-only property holds. Scoped to
+ * the pid in this run's own config directory, so it can only ever reach a daemon
+ * this script started.
+ */
+async function reapSurvivor(configDir, baseUrl) {
+  let answering = false
+  try {
+    const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(1_000) })
+    answering = response.ok
+  } catch {
+    // Nothing listening, which is the outcome we want.
+  }
+  if (!answering) return
+
+  let pid = null
+  try {
+    pid = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8')).pid
+  } catch {
+    // No state file to name an owner.
+  }
+
+  failures.push(`a daemon was still running after stop (pid ${pid ?? 'unknown'})`)
+  log(`  FAIL  nothing was left running  (pid ${pid ?? 'unknown'} still answering)`)
+  if (typeof pid !== 'number') return
+
+  try {
+    process.kill(pid, 'SIGKILL')
+    log(`  killed leftover daemon pid ${pid}`)
+  } catch {
+    log(`  could not kill leftover daemon pid ${pid}`)
   }
 }
 

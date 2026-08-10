@@ -9,6 +9,7 @@ import {
   acquireDaemonLock,
   clearLockOwnedBy,
   DaemonLockedError,
+  releaseStaleLock,
   STALE_LOCK_MS,
   type LockOwner,
 } from '../server/lib/daemonLock'
@@ -186,13 +187,93 @@ describe('daemon lock', () => {
     expect(() => acquireDaemonLock(configDir)).toThrow(DaemonLockedError)
   })
 
-  it('treats an unparseable lock as debris', () => {
+  it('treats an unparseable lock as debris once it is old enough to be one', () => {
     const configDir = makeConfigDir()
-    writeFileSync(getDaemonLockPath(configDir), 'not json at all')
+    const lockPath = getDaemonLockPath(configDir)
+    writeFileSync(lockPath, 'not json at all')
+    // Aged, because a lock that names nobody is a daemon mid-write as often as
+    // it is debris, and only time tells them apart.
+    const old = (Date.now() - 600_000) / 1000
+    utimesSync(lockPath, old, old)
 
     const lock = acquireDaemonLock(configDir)
     expect(lock.owner.pid).toBe(process.pid)
     lock.release()
+  })
+
+  /**
+   * The window every acquisition passes through.
+   *
+   * A lock file is created before it is written, so between the exclusive
+   * create and the write it exists and parses as no owner — and a lock naming
+   * nobody used to be converted on the spot. A contender arriving in that
+   * window took the lock out from under the process that had just legitimately
+   * won it, and both ran: two daemons on one set of databases and worktrees.
+   * This is what the five-contender race caught intermittently on a loaded
+   * runner, where being descheduled between those two syscalls is routine.
+   */
+  it('does not convert a lock that its winner is still writing', () => {
+    const configDir = makeConfigDir()
+    const lockPath = getDaemonLockPath(configDir)
+    // Exactly what the winner leaves on disk mid-write: present, empty, fresh.
+    writeFileSync(lockPath, '')
+
+    expect(() => acquireDaemonLock(configDir)).toThrow()
+    // And left alone rather than deleted, so the winner's own write still lands.
+    expect(existsSync(lockPath)).toBe(true)
+    expect(readFileSync(lockPath, 'utf8')).toBe('')
+  })
+
+  it('does not report a lock its winner is still writing as nothing running', () => {
+    const configDir = makeConfigDir()
+    const lockPath = getDaemonLockPath(configDir)
+    writeFileSync(lockPath, '')
+
+    // `stop` ran this and got 'absent', so it printed "LoopTroop is not
+    // running" and cleared the lock of a daemon that was starting up.
+    const outcome = releaseStaleLock(configDir)
+    expect(outcome.kind).toBe('unreadable')
+    expect(existsSync(lockPath)).toBe(true)
+  })
+
+  it('still clears an unreadable lock that is genuinely debris', () => {
+    const configDir = makeConfigDir()
+    const lockPath = getDaemonLockPath(configDir)
+    writeFileSync(lockPath, '')
+    const old = (Date.now() - 600_000) / 1000
+    utimesSync(lockPath, old, old)
+
+    // The other half: refusing forever would wedge every later start, with no
+    // command able to clear it.
+    expect(releaseStaleLock(configDir).kind).toBe('removed')
+    expect(existsSync(lockPath)).toBe(false)
+  })
+
+  /**
+   * Not a regression test for the race above, and deliberately not written as
+   * one. Catching the create-then-write window requires observing the lock
+   * between two syscalls in another process, and a test that reads in a loop
+   * hoping to land there fails on the runs where it misses — a flake standing
+   * in for a proof. The interleaving is covered deterministically by the two
+   * conversion tests above, which plant the state that window produces.
+   *
+   * What is left to check is what staging introduced: the rename lands the
+   * whole record under the canonical name, and the staging file it came from
+   * does not survive.
+   */
+  it('stages the lock record under a name it does not leave behind', () => {
+    const configDir = makeConfigDir()
+    const lockPath = getDaemonLockPath(configDir)
+
+    const lock = acquireDaemonLock(configDir)
+    try {
+      const raw = readFileSync(lockPath, 'utf8')
+      expect((JSON.parse(raw) as LockOwner).nonce).toBe(lock.owner.nonce)
+      const strays = readdirSync(dirname(lockPath)).filter((e) => e.includes('.owner-'))
+      expect(strays).toEqual([])
+    } finally {
+      lock.release()
+    }
   })
 
   it('advances the heartbeat without changing the owner', () => {

@@ -418,6 +418,19 @@ export async function stopCommand(): Promise<number> {
       return 1
     }
 
+    if (lock.kind === 'unreadable') {
+      // The lock file is there but names nobody yet — most likely a daemon
+      // partway through writing its record. Saying "not running" would be a
+      // lie, and removing it would let the next start run a second daemon
+      // alongside the one currently starting.
+      process.stderr.write(
+        'LoopTroop is not answering, and its single-instance lock exists but does not yet name an owner — ' +
+        'most likely a daemon still starting up. Nothing was stopped, and the lock was left in place. ' +
+        'Try again in a moment, or run `looptroop doctor` if it persists.\n',
+      )
+      return 1
+    }
+
     process.stdout.write('LoopTroop is not running.\n')
     return 0
   }

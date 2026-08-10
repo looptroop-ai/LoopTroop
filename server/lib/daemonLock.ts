@@ -111,16 +111,57 @@ function isStale(owner: LockOwner, now: number): boolean {
   }
 }
 
+/**
+ * Writes the lock record, exclusively, leaving no moment where the file exists
+ * but says nothing.
+ *
+ * 'wx' fails when the file exists, which is what makes acquisition exclusive:
+ * two processes racing here cannot both succeed. But the winner then holds a
+ * zero-byte file until its write lands, and an empty file parses as no owner —
+ * which every reader here is obliged to treat as a lock naming nobody. A
+ * contender arriving in that window used to read null and convert the file out
+ * from under a process that had legitimately just won it, and both would run.
+ *
+ * So the record is written to a staging file first and renamed into place. The
+ * exclusive create still decides the winner; the rename means the canonical path
+ * goes from absent to complete with nothing observable in between.
+ */
 function writeOwner(lockPath: string, owner: LockOwner): void {
-  // 'wx' fails when the file exists, which is what makes acquisition exclusive:
-  // two processes racing here cannot both succeed.
   const fd = openSync(lockPath, 'wx', CONFIG_FILE_MODE)
+  closeSync(fd)
+
+  const staging = `${lockPath}.owner-${randomUUID()}`
   try {
-    writeSync(fd, `${JSON.stringify(owner, null, 2)}\n`)
-  } finally {
-    closeSync(fd)
+    const staged = openSync(staging, 'wx', CONFIG_FILE_MODE)
+    try {
+      writeSync(staged, `${JSON.stringify(owner, null, 2)}\n`)
+    } finally {
+      closeSync(staged)
+    }
+    renameSync(staging, lockPath)
+  } catch (error) {
+    // The reservation is ours and now cannot be completed. Leaving it behind
+    // would be an empty lock nobody owns, which is the state this exists to
+    // prevent, so take it back out and let the caller see the failure.
+    rmSync(staging, { force: true })
+    rmSync(lockPath, { force: true })
+    throw error
   }
 }
+
+/**
+ * How long a lock that names no owner must sit before it is treated as debris.
+ *
+ * A lock file is created before it is written, so "exists but parses as
+ * nothing" is a state every acquisition passes through, however briefly —
+ * {@link writeOwner} closes that window on this side, but a record written by an
+ * older build, or one whose writer was killed mid-write, still lands here. Age
+ * separates the two: a file that has been unreadable for longer than any write
+ * takes is genuine debris, and one younger than that is assumed to belong to a
+ * process still writing it. Costs a start that meets real debris a short wait;
+ * the alternative cost is two daemons.
+ */
+const UNPARSEABLE_GRACE_MS = 5_000
 
 /**
  * How long a claim of *unknown* ownership may sit before another process may
@@ -464,8 +505,43 @@ function convertUnparseableLock(lockPath: string, owner: LockOwner): boolean {
   }
 }
 
+/**
+ * Whether a lock that parses as no owner has been that way long enough to be
+ * debris rather than a record still being written.
+ *
+ * Judged by the file's own mtime, since there is no record to state a time.
+ * A file that cannot be stat'd at all is gone from under us, which is not
+ * debris to convert — the next attempt finds the path free and takes it.
+ */
+function unparseableLockIsDebris(lockPath: string, now: number): boolean {
+  try {
+    return now - statSync(lockPath).mtimeMs > UNPARSEABLE_GRACE_MS
+  } catch {
+    return false
+  }
+}
+
 /** Enough passes for every contender in a realistic race to settle. */
 const ACQUIRE_ATTEMPTS = 8
+
+/**
+ * How long to wait before looking at an unreadable lock again.
+ *
+ * The retry loop is otherwise synchronous and unpaced: eight passes over a file
+ * that has not changed complete in microseconds, which would exhaust them long
+ * before the writer this is waiting for has finished. Blocking is acceptable
+ * here and nowhere else — acquisition happens once at startup, before anything
+ * is serving, and the alternative is making every caller async to wait out a
+ * window that is normally over in under a millisecond.
+ */
+const UNPARSEABLE_RETRY_MS = 50
+
+function waitSync(ms: number): void {
+  // `Atomics.wait` blocks this thread without a busy loop. Deliberately not a
+  // spin: a contender that spins here steals the core from the very process it
+  // is waiting for, on exactly the loaded machines where this window opens.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
 
 /**
  * Takes the single-instance daemon lock, or throws DaemonLockedError when
@@ -497,6 +573,17 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
       const existing = readOwner(lockPath)
       if (existing && !isStale(existing, Date.now())) throw new DaemonLockedError(existing)
 
+      // A lock that names nobody is only debris once it has been that way for
+      // longer than writing one takes. Younger than that, assume a contender
+      // that won the exclusive create and is still filling it in — see
+      // {@link UNPARSEABLE_GRACE_MS}. Waiting rather than converting; the record
+      // is normally readable within a millisecond and then answers for itself,
+      // and a writer that died leaves the file to age into debris.
+      if (!existing && !unparseableLockIsDebris(lockPath, Date.now())) {
+        waitSync(UNPARSEABLE_RETRY_MS)
+        continue
+      }
+
       const converted = existing
         ? convertStaleLock(lockPath, existing.nonce, owner)
         : convertUnparseableLock(lockPath, owner)
@@ -509,7 +596,15 @@ export function acquireDaemonLock(configDir?: string): AcquiredLock {
 
   const existing = readOwner(lockPath)
   if (existing) throw new DaemonLockedError(existing)
-  throw new Error(`Could not acquire the LoopTroop daemon lock at ${lockPath}.`)
+
+  // A lock that still names nobody after all attempts is either debris that
+  // will not age out or a writer stuck mid-create. Either way it cannot be
+  // taken over without risking two winners, so say what is there rather than
+  // hand the user a generic acquisition failure.
+  const debris = unparseableLockIsDebris(lockPath, Date.now())
+    ? ', and it has been that way long enough to look like debris'
+    : ', and it is too young to have been abandoned'
+  throw new Error(`Could not acquire the LoopTroop daemon lock at ${lockPath}: the lock file exists but cannot be read${debris}.`)
 }
 
 /**
@@ -553,15 +648,44 @@ export type StaleLockRelease =
   | { kind: 'absent' }
   | { kind: 'removed' }
   | { kind: 'held', owner: LockOwner }
+  /**
+   * A lock file that exists but names nobody, and is too young to be debris.
+   * Distinct from `absent` because the file is there, and from `held` because
+   * there is no owner to report: most likely a daemon partway through writing
+   * its record. Callers should treat it as "something is running" rather than
+   * clear it.
+   */
+  | { kind: 'unreadable' }
 
 export function releaseStaleLock(configDir?: string): StaleLockRelease {
   const lockPath = getDaemonLockPath(configDir)
   const existing = readOwner(lockPath)
 
   if (existing === null) {
-    // Nothing there, or a file that names no owner and so cannot be anyone's.
     if (!existsSync(lockPath)) return { kind: 'absent' }
-    if (removeStaleLock(lockPath, UNPARSEABLE_GENERATION)) return { kind: 'removed' }
+    // Exists but names nobody. That is a daemon still writing its record just
+    // as often as it is debris, and removing it in the first case deletes a
+    // live daemon's lock and reports nothing was running — so the same grace
+    // that governs acquisition governs this. Too young to judge is reported as
+    // held-by-someone rather than removed, since the honest answer is that
+    // something is there and it is not ours to clear.
+    if (!unparseableLockIsDebris(lockPath, Date.now())) {
+      waitSync(UNPARSEABLE_RETRY_MS)
+      const settled = readOwner(lockPath)
+      if (settled !== null) {
+        return isStale(settled, Date.now())
+          ? (removeStaleLock(lockPath, settled.nonce) ? { kind: 'removed' } : { kind: 'held', owner: settled })
+          : { kind: 'held', owner: settled }
+      }
+      if (!existsSync(lockPath)) return { kind: 'absent' }
+      if (!unparseableLockIsDebris(lockPath, Date.now())) return { kind: 'unreadable' }
+    }
+    // `null` is what asks for "still names nobody" — the generation string only
+    // names the claim to serialise under, and passing it here made the check
+    // compare a missing nonce against a sentinel, which never matched. So this
+    // reported `absent` while leaving the file exactly where it was, and the
+    // debris it was meant to clear survived every `stop`.
+    if (removeStaleLock(lockPath, null)) return { kind: 'removed' }
     // Somebody converted it while we looked; report whoever owns it now.
     const current = readOwner(lockPath)
     return current === null ? { kind: 'absent' } : { kind: 'held', owner: current }

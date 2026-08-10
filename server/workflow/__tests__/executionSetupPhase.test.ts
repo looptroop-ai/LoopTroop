@@ -845,7 +845,9 @@ describe('handleExecutionSetup', () => {
 
     expect(sendEvent).toHaveBeenCalledWith({
       type: 'EXECUTION_SETUP_FAILED',
-      errors: [expect.stringContaining('not found')],
+      // Shells word this differently: bash says "not found", macOS and BSD
+      // /bin/sh say "No such file or directory". Match the exit code instead.
+      errors: [expect.stringContaining('exit code 127')],
     })
     expect(sendEvent).not.toHaveBeenCalledWith({ type: 'EXECUTION_SETUP_READY' })
   })

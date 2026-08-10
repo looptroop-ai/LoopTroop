@@ -26,6 +26,17 @@ afterAll(() => {
 })
 
 describe('ticket log projection API', () => {
+  /**
+   * Three hundred separate appends, each a synchronous write to a real file,
+   * and the count is what the assertions are about: the twenty newest of three
+   * hundred, with older pages behind them. On Windows every one of those writes
+   * carries the filesystem's per-write cost — the same eight tests take 1.2s
+   * here and 37s on a hosted Windows runner — so this one crosses the shared
+   * 20s budget while measuring platform I/O rather than the pagination it
+   * exists to check. The rows cannot be reduced without changing what is
+   * asserted, so the budget is raised for this test alone rather than for the
+   * whole project, and rather than retrying a test that is not flaky.
+   */
   it('defaults to the newest 20 projected rows without reading the complete history', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     for (let index = 0; index < 300; index += 1) {
@@ -48,7 +59,7 @@ describe('ticket log projection API', () => {
     expect(body.olderCursor).toEqual(expect.any(String))
     expect(body.totalEntries).toBe(300)
     expect(body.totalTextLines).toBe(300)
-  })
+  }, 60_000)
 
   it('filters command chatter before paginating the overview', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)

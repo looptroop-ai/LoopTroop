@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Every branch, not just main: work lands by direct push rather than pull
+  # request, so restricting this to main leaves that work unverified.
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -20,15 +21,20 @@ env:
 
 jobs:
   verify:
-    name: Verify (ubuntu, Node 24)
+    name: Verify (ubuntu, Node 24.15.0)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24
+          # Exact floor from engines.node and .nvmrc, not floating "24".
+          node-version: 24.15.0
           cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
 
       - name: Install dependencies
         run: npm ci
@@ -45,8 +51,30 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Build site
-        run: npm run site:build
+      # Guards the packaging premise: a native addon needs a compiler on the
+      # user's machine and cannot go into a standalone binary.
+      - name: Verify no native addons in the production package
+        run: npm run verify:no-native-addons
+
+      # `files` is an allowlist, so both a missing runtime asset and a stray
+      # working-tree file are silent until someone installs the tarball.
+      - name: Verify published package contents
+        run: npm run verify:package
+
+      # package.json is the single source of truth for the version; a literal
+      # copy elsewhere goes stale silently on the next release.
+      - name: Verify version is single-sourced
+        run: npm run verify:version
+
+      # Pinned, not @latest: an unpinned validator makes this check
+      # nondeterministic and can fail on a release we never chose.
+      - name: Validate Renovate configuration
+        run: npx --yes --package renovate@44.13.2 renovate-config-validator --strict
+
+      # A redistributed package must declare a licence. The check also fails
+      # when the committed file is out of date.
+      - name: Verify third-party notices are current
+        run: npm run licenses:check
 
       # Guards against build steps mutating tracked files. Generated output
       # must land in ignored directories so releases are reproducible.
@@ -64,21 +92,39 @@ jobs:
         run: npm audit --omit=dev || true
 
   test-matrix:
-    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    # The advisory marker is part of the name because the name is what branch
+    # protection matches on. A required check pointed at a continue-on-error job
+    # reports success however the job went, so the two must never be able to
+    # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
+    # commit and an advisory one in the next is a required check that quietly
+    # stops meaning anything.
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})${{ matrix.optional && ' [advisory]' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Non-blocking while Windows and macOS remain unvalidated on real hardware.
-    continue-on-error: true
+    # The floating lanes are compatibility news, not a defect in this commit.
+    continue-on-error: ${{ matrix.optional || false }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Exact floor, not "24": `node-version: 24` resolves to the newest
+          # patch, so the version `engines` actually promises stays untested.
+          # Every platform runs it, because the floor is a promise on all three
+          # and a macOS-only regression at 24.15.0 would otherwise reach users.
           - os: ubuntu-latest
-            node: 26
+            node: 24.15.0
           - os: macos-latest
+            node: 24.15.0
+          - os: windows-latest
+            node: 24.15.0
+          # Newest 24, so a patch release that breaks us is seen early. Advisory:
+          # a required check must fail only for something this repository can fix.
+          - os: ubuntu-latest
             node: 24
+            optional: true
           - os: windows-latest
             node: 24
+            optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -86,6 +132,119 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm run test
+
+  # Everything above runs against the source tree, where the working directory
+  # already holds every file the daemon needs. This installs the tarball the way
+  # a user would and drives the CLI against it, which is the only place a
+  # mispacked asset or a cwd-relative path can fail.
+  smoke-install:
+    name: Install smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exact floor everywhere: a global install is exactly where the oldest
+        # Node the package claims to support has to work.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # The script mocks OpenCode itself, packs into its own scratch tree, and
+      # tears the whole thing down in a `finally`.
+      - name: Pack, install globally, and drive the CLI
+        run: node scripts/smoke-install.mjs
+
+  # A global install belongs to the machine, not the user: /usr/local/lib, a
+  # Homebrew cellar, C:\Program Files, a locked-down image layer. Everything
+  # above installs into a prefix the job owns, so a cache or lock dropped beside
+  # the bundle passes there and fails on the first machine where the install is
+  # not writable.
+  #
+  # Linux only, and the script says so itself rather than pretending: proving
+  # this needs a filesystem the running user cannot write to, and only the bind
+  # mount is enforced against root. macOS would need a disk image and Windows an
+  # ACL an administrator can take ownership around — machinery enough to become
+  # its own source of flakes, for a property that is not platform-specific.
+  #
+  # Sufficient rather than merely cheaper: the defect this catches is code
+  # choosing to write inside its own installation directory, and the code making
+  # that choice is the same on all three platforms. What differs per platform is
+  # how the refusal is spelled, not whether the write is attempted. A reviewed
+  # decision, so the missing lanes are a scope choice and not a gap to close.
+  verify-readonly:
+    name: Read-only install (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # Root for `mount --bind` (CAP_SYS_ADMIN), and the interpreter resolved
+      # before sudo so it is the Node this job pinned rather than whatever
+      # secure_path finds. Without root the script reports itself skipped and
+      # verifies nothing, which is a silent hole in exactly the check that is
+      # hardest to notice missing.
+      - name: Run a full session from a read-only install
+        env:
+          # Turns "cannot enforce read-only here" from a skip into a failure.
+          # This is the only job asserting the property, so a skip is a hole.
+          LOOPTROOP_READONLY_REQUIRED: '1'
+        run: sudo -E "$(which node)" scripts/verify-readonly-install.mjs
+
+  # Node 26 is Current, not LTS. Breakage here is upstream news rather than a
+  # defect, so it warns without blocking.
+  early-warning:
+    name: Early warning (ubuntu, Node 26)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 26
+          cache: npm
+
+      # Deliberately not pinned: the npm bundled with Node 26 is part of what
+      # this lane is here to warn about, and pinning it back to ours would hide
+      # exactly the incompatibility we want early news of.
       - name: Install dependencies
         run: npm ci
 

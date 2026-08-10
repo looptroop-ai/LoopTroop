@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { and, eq } from 'drizzle-orm'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { safeAtomicWrite } from '../../io/atomicWrite'
 import { writeJsonl, readJsonl } from '../../io/jsonl'
 import {
@@ -55,6 +55,7 @@ import {
   readManualQaSummary,
   resolveManualQaEvidence,
   resolveManualQaTicketDir,
+  sanitizeEvidenceName,
   snapshotManualQaDraft,
 } from './storage'
 import {
@@ -533,7 +534,9 @@ function copyImprovementEvidence(input: {
         evidenceId: evidence.id,
       })
       if (lstatSync(source.path).isSymbolicLink()) throw new Error('symlink evidence is not allowed')
-      const destinationName = `${evidence.id}-${basename(evidence.storedName)}`
+      // Sanitized, not just basename'd: storedName may carry characters Windows
+      // rejects in filenames, such as the NTFS stream separator ':'.
+      const destinationName = `${evidence.id}-${sanitizeEvidenceName(evidence.storedName)}`
       const destination = resolve(destinationDir, destinationName)
       cpSync(source.path, destination, { errorOnExist: false, force: true })
       const rawHash = createHash('sha256').update(readFileSync(destination)).digest('hex')

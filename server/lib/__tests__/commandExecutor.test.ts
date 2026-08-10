@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
 import { buildCommandInvocation, executeCommand, resolveCommandCwd } from '../commandExecutor'
+import { makeTempDir } from '../../test/tempDir'
 
 const tempDirectories: string[] = []
 
@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 function makeRepo(): string {
-  const repository = mkdtempSync(join(tmpdir(), 'looptroop-command-executor-'))
+  const repository = makeTempDir('looptroop-command-executor-')
   tempDirectories.push(repository)
   return repository
 }
@@ -46,7 +46,13 @@ describe('buildCommandInvocation', () => {
       { mode: 'shell', shell: 'powershell', script: 'Write-Output ok', cwd: '.', env: {} } satisfies CommandSpec,
       {
         bin: 'custom-pwsh',
-        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Write-Output ok'],
+        args: [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Write-Output ok\nif (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }',
+        ],
       },
     ],
   ])('builds an explicit shell invocation', (command, expected) => {
@@ -57,6 +63,18 @@ describe('buildCommandInvocation', () => {
         powershell: 'custom-pwsh',
       },
     })).toEqual(expected)
+  })
+
+  it.runIf(process.platform === 'win32')('propagates a native program exit code through PowerShell', async () => {
+    const repository = makeRepo()
+    const result = await executeCommand({
+      mode: 'shell',
+      shell: 'powershell',
+      script: 'node -e "process.exit(4)"',
+      cwd: '.',
+      env: {},
+    }, { repoRoot: repository })
+    expect(result.exitCode).toBe(4)
   })
 })
 

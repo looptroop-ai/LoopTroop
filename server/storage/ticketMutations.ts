@@ -3,11 +3,9 @@ import { existsSync, mkdirSync, rmSync } from 'fs'
 import { resolve } from 'path'
 import { spawnSync } from 'child_process'
 import { z } from 'zod'
+import * as commandLogger from '../log/commandLogger'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
-
-// Lazy-load commandLogger to avoid vitest mock-resolution deadlock.
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -15,12 +13,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch {
-    // Silently ignore if commandLogger can't be loaded.
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'

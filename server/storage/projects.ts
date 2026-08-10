@@ -1,12 +1,12 @@
 import { eq, or } from 'drizzle-orm'
-import { rmSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { access, lstat, readdir } from 'fs/promises'
 import { resolve as resolvePath } from 'path'
 import { spawnSync } from 'child_process'
-import { db as appDb } from '../db/index'
+import { APP_DB_PATH, db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
 import { attachedProjects, projects, tickets } from '../db/schema'
-import { ensureLocalGitExclude } from '../git/repository'
+import { applyIgnoreMode, DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '../git/repository'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
   ensureProjectStorageDirs,
@@ -62,6 +62,7 @@ interface ProjectAttachmentInput {
   councilResponseTimeout?: number
   minCouncilQuorum?: number
   interviewQuestions?: number
+  ignoreMode?: IgnoreMode
 }
 
 function hydrateProject(attached: AttachedProjectRow, project: LocalProjectRow): PublicProject {
@@ -140,6 +141,7 @@ function ensureLocalProject(projectRoot: string, input?: ProjectAttachmentInput)
       councilResponseTimeout: input.councilResponseTimeout ?? null,
       minCouncilQuorum: input.minCouncilQuorum ?? null,
       interviewQuestions: input.interviewQuestions ?? null,
+      ignoreMode: input.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })
     .returning()
     .get()
@@ -151,13 +153,25 @@ export function hasLoopTroopState(projectRoot: string): boolean {
   return !!readLocalProject(repoRoot)
 }
 
+/**
+ * The ignore choice made when the project was attached.
+ *
+ * Falls back to the default for projects attached before the choice existed, so
+ * their rules keep being maintained the way they always were.
+ */
+export function getProjectIgnoreMode(projectRoot: string): IgnoreMode {
+  const repoRoot = resolveGitRepoRoot(projectRoot) ?? projectRoot
+  const stored = readLocalProject(repoRoot)?.ignoreMode
+  return isIgnoreMode(stored) ? stored : DEFAULT_IGNORE_MODE
+}
+
 export function attachProject(input: ProjectAttachmentInput): PublicProject {
   const projectRoot = resolveGitRepoRoot(input.folderPath)
   if (!projectRoot) {
     throw new Error(`Folder is not a git repository: ${input.folderPath}`)
   }
 
-  ensureLocalGitExclude(projectRoot)
+  applyIgnoreMode(projectRoot, input.ignoreMode ?? DEFAULT_IGNORE_MODE)
   const localProject = ensureLocalProject(projectRoot, input)
   const attached = ensureAttachedProject(projectRoot)
 
@@ -171,8 +185,12 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
     throw new Error(`Folder is not a git repository: ${projectRootOrFolder}`)
   }
 
-  ensureLocalGitExclude(projectRoot)
   const localProject = ensureLocalProject(projectRoot)
+  const requestedIgnoreMode = typeof input === 'string' ? undefined : input.ignoreMode
+  const effectiveIgnoreMode = requestedIgnoreMode
+    ?? (isIgnoreMode(localProject.ignoreMode) ? localProject.ignoreMode : DEFAULT_IGNORE_MODE)
+  applyIgnoreMode(projectRoot, effectiveIgnoreMode)
+
   const patch = typeof input === 'string'
     ? null
     : {
@@ -194,6 +212,7 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
         councilResponseTimeout: input.councilResponseTimeout ?? localProject.councilResponseTimeout,
         minCouncilQuorum: input.minCouncilQuorum ?? localProject.minCouncilQuorum,
         interviewQuestions: input.interviewQuestions ?? localProject.interviewQuestions,
+        ignoreMode: effectiveIgnoreMode,
         updatedAt: new Date().toISOString(),
       }
 
@@ -405,6 +424,50 @@ function getTerminalTicketExternalIds(projectRoot: string): string[] {
     .where(or(eq(tickets.status, 'COMPLETED'), eq(tickets.status, 'CANCELED')))
     .all()
   return rows.map(r => r.externalId)
+}
+
+/**
+ * The tickets that have reached a terminal state, for callers deciding whether
+ * a worktree still has work behind it. Returns nothing rather than throwing when
+ * the project database is missing or unreadable: `clean` runs on machines whose
+ * state is already damaged, and an unreadable database means "nothing is known
+ * to be finished", never "delete on the basis of a guess".
+ */
+export function listClosedTicketIds(projectRoot: string): string[] {
+  try {
+    return getTerminalTicketExternalIds(projectRoot)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The folder of every attached project, for a caller that needs the list before
+ * the application has ever booted.
+ *
+ * `listProjects` is the wrong tool for that: it reaches the database through the
+ * shared handle, which creates the file on first touch and then queries tables
+ * that only exist once the boot sequence has run. `clean` has to work on a
+ * machine where LoopTroop has never started successfully — and must not leave a
+ * database behind on one where it never started at all — so a missing file, a
+ * database with no tables yet, and one that cannot be read all report the same
+ * thing: nothing is known to be attached, which is never grounds to delete.
+ *
+ * Unlike `listProjects` this keeps projects whose local data has gone missing.
+ * Their worktrees are exactly the debris `clean` exists to find.
+ */
+export function listAttachedProjectRoots(): string[] {
+  if (!existsSync(APP_DB_PATH)) return []
+
+  try {
+    return appDb
+      .select({ folderPath: attachedProjects.folderPath })
+      .from(attachedProjects)
+      .all()
+      .map((row) => row.folderPath)
+  } catch {
+    return []
+  }
 }
 
 export async function getProjectWorktreesSize(projectRoot: string): Promise<number> {

@@ -1,14 +1,22 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
+import { Database } from './sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
 import { existsSync } from 'fs'
 import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
+import { secureFile } from '../lib/appConfigDir'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
+import {
+  PROJECT_MIGRATABLE_FROM,
+  PROJECT_SCHEMA_VERSION,
+  assertSchemaCompatible,
+  shouldStampAfterInit,
+  writeUserVersion,
+  type SchemaCompatibility,
+} from './schemaVersion'
 
 interface ProjectDatabase {
-  sqlite: Database.Database
-  db: BetterSQLite3Database<typeof schema>
+  sqlite: Database
+  db: ReturnType<typeof drizzle>
 }
 
 const MAX_PROJECT_CACHE_SIZE = 50
@@ -24,7 +32,7 @@ function closeCachedProjectDatabase(projectRoot: string): boolean {
 }
 
 function ensureColumn(
-  sqlite: Database.Database,
+  sqlite: Database,
   table: string,
   column: string,
   definition: string,
@@ -34,7 +42,7 @@ function ensureColumn(
   sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
-function initializeProjectSqlite(sqlite: Database.Database) {
+function initializeProjectSqlite(sqlite: Database) {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +61,7 @@ function initializeProjectSqlite(sqlite: Database.Database) {
       council_response_timeout INTEGER,
       min_council_quorum INTEGER,
       interview_questions INTEGER,
+      ignore_mode TEXT,
       ticket_counter INTEGER DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -264,6 +273,7 @@ function initializeProjectSqlite(sqlite: Database.Database) {
   ensureColumn(sqlite, 'projects', 'execution_setup_timeout', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'manual_qa_override', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'git_hook_policy', 'TEXT')
+  ensureColumn(sqlite, 'projects', 'ignore_mode', 'TEXT')
   ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
 
@@ -302,7 +312,7 @@ function initializeProjectSqlite(sqlite: Database.Database) {
   `)
 }
 
-function cleanupProjectForeignKeyOrphans(sqlite: Database.Database) {
+function cleanupProjectForeignKeyOrphans(sqlite: Database) {
   sqlite.exec(`
     DELETE FROM phase_artifacts
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
@@ -363,17 +373,44 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   ensureProjectStorageDirs(projectRoot)
   const sqlite = new Database(dbPath)
+  // Carries OpenCode session ownership and ticket state, so restrict it even
+  // though it lives inside the user's own repository.
+  secureFile(dbPath)
   sqlite.pragma('journal_mode=WAL')
   sqlite.pragma('locking_mode=NORMAL')
   sqlite.pragma('synchronous=NORMAL')
   sqlite.pragma(`busy_timeout=${SQLITE_BUSY_TIMEOUT_MS}`)
+
+  // Classify before any DDL: cleanupProjectForeignKeyOrphans below deletes
+  // rows, so an incompatible database must be refused before we reach it.
+  let compatibility: SchemaCompatibility
+  try {
+    compatibility = assertSchemaCompatible({
+      store: sqlite,
+      databaseLabel: 'project database',
+      databasePath: dbPath,
+      expected: PROJECT_SCHEMA_VERSION,
+      migratableFrom: PROJECT_MIGRATABLE_FROM,
+      onNotice: (message) => console.warn(message),
+    })
+  } catch (error) {
+    sqlite.close()
+    throw error
+  }
+
   initializeProjectSqlite(sqlite)
   cleanupProjectForeignKeyOrphans(sqlite)
   sqlite.pragma('foreign_keys=ON')
 
+  // Stamp after DDL: project DBs use PRAGMA user_version (no new table needed).
+  if (shouldStampAfterInit(compatibility)) {
+    writeUserVersion(sqlite, PROJECT_SCHEMA_VERSION)
+  }
+
   const projectDb: ProjectDatabase = {
     sqlite,
-    db: drizzle(sqlite, { schema }),
+    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
+    db: drizzle({ client: sqlite.client, schema }),
   }
   projectDbCache.set(projectRoot, projectDb)
   return projectDb

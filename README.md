@@ -15,7 +15,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 
 **Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Execution](https://www.looptroop.ovh/docs/beads)
 
-![LoopTroop workflow demo](docs/media/20260619104032-26sec-captions.gif)
+![LoopTroop workflow demo](https://www.looptroop.ovh/media/20260619104032-26sec-captions.gif)
 *An animated walkthrough of a ticket lifecycle and the configuration menu.*
 
 ### 📸 Screenshots
@@ -23,28 +23,28 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 <details>
 <summary><strong>Click to expand the screenshot gallery</strong></summary>
 
-![Projects dialog](docs/media/projects.webp)
+![Projects dialog](https://www.looptroop.ovh/media/projects.webp)
 *Manage attached repositories, review ticket counts, and add new projects from the dashboard.*
 
-![Configuration dialog](docs/media/configuration.webp)
+![Configuration dialog](https://www.looptroop.ovh/media/configuration.webp)
 *Choose the main implementer model, council members, and effort levels for local orchestration.*
 
-![Interview workspace](docs/media/interview.webp)
+![Interview workspace](https://www.looptroop.ovh/media/interview.webp)
 *Answer focused planning questions before specs and implementation plans are approved.*
 
-![Ticket workflow detail](docs/media/ticket.webp)
+![Ticket workflow detail](https://www.looptroop.ovh/media/ticket.webp)
 *Track council progress, generated artifacts, and live execution logs inside a ticket.*
 
-![Implementation review](docs/media/implementing.webp)
+![Implementation review](https://www.looptroop.ovh/media/implementing.webp)
 *Review bead completion, commits, changes, and final implementation details before closing the workflow.*
 
-![Bead execution detail](docs/media/bead.webp)
+![Bead execution detail](https://www.looptroop.ovh/media/bead.webp)
 *Inspect bead-level progress, task status, and live execution logs while an implementation bead runs.*
 
-![Bead error view](docs/media/bead2.webp)
+![Bead error view](https://www.looptroop.ovh/media/bead2.webp)
 *Review the focused workspace view shown when an implementation bead is blocked by an error.*
 
-![Alternate bead error view](docs/media/bead3.webp)
+![Alternate bead error view](https://www.looptroop.ovh/media/bead3.webp)
 *Compare a different bead's error state, diagnostics, and recovery context before deciding whether to continue or retry.*
 
 </details>
@@ -229,7 +229,7 @@ LoopTroop is not a magic autopilot. It does not remove the need to review code, 
 
 ## Documentation
 
-The README gives a first-glance overview. The full docs live in `docs/` and at:
+The README gives a first-glance overview. The full docs are maintained in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website) and published at:
 
 https://www.looptroop.ovh/docs/
 

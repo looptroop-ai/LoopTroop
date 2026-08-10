@@ -34,16 +34,15 @@ Useful commands:
 npm run lint
 npm run typecheck
 npm run test
-npm run docs:build
 ```
 
-For small documentation-only changes, `npm run docs:build` is usually enough. For code changes, run the relevant linting, typechecking, and tests for the area you touched.
+For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
 ## Documentation and changelog
 
-Keep documentation updated with behavior changes. The main documentation lives in `docs/`, and the canonical changelog lives in `docs/changelog.md`.
+Keep documentation updated with behavior changes. Published documentation lives in the public [LoopTroop-Website repository](https://github.com/looptroop-ai/LoopTroop-Website), while the canonical application changelog lives in `CHANGELOG.md`.
 
-For user-visible changes, add a concise entry under `## Unreleased` in `docs/changelog.md`. Use the existing Summary and Detailed Changes structure.
+For user-visible changes, add a concise entry under `## Unreleased` in `CHANGELOG.md`. Use the existing Summary and Detailed Changes structure. Documentation changes should be submitted to the website repository as a companion update when relevant.
 
 ## Issues
 

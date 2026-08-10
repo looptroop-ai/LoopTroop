@@ -7,6 +7,7 @@ import {
 } from '../fixBeads'
 import type { ManualQaChecklist, ManualQaDraft, ManualQaModelCapabilitySnapshot } from '../types'
 import type { Message } from '../../../opencode/types'
+import { detectHostContext } from '../../../lib/hostContext'
 
 const checklist: ManualQaChecklist = {
   schemaVersion: 1,
@@ -126,7 +127,9 @@ describe('Manual QA fix-bead generation contracts', () => {
       externalRef: 'TEST-1',
       testCommands: [{
         mode: 'shell',
-        shell: 'posix',
+        // Legacy string commands are repaired onto the current host's shell,
+        // which is powershell on Windows.
+        shell: detectHostContext().preferredShell,
         script: 'npm run test:client',
         cwd: '.',
         env: {},

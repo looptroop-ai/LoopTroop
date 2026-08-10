@@ -74,14 +74,6 @@ function withApiTokenHeader(init?: RequestInit): RequestInit | undefined {
   return { ...init, headers }
 }
 
-function appendApiTokenQuery(url: URL): URL {
-  const token = getApiToken()
-  if (token && (url.pathname === '/api' || url.pathname.startsWith('/api/'))) {
-    url.searchParams.set('apiToken', token)
-  }
-  return url
-}
-
 export async function pingDevBackend() {
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), BACKEND_HEALTH_TIMEOUT_MS)
@@ -160,15 +152,14 @@ export function getApiUrl(path: string, options?: { directInDevelopment?: boolea
   if (typeof window === 'undefined') return path
 
   if (isDevelopmentRuntime() && options?.directInDevelopment) {
-    return appendApiTokenQuery(new URL(getDevReadyProbeUrl(path))).toString()
+    return new URL(getDevReadyProbeUrl(path)).toString()
   }
 
-  return appendApiTokenQuery(new URL(path, window.location.origin)).toString()
+  return new URL(path, window.location.origin).toString()
 }
 
 export const __devApiForTests = {
   getDevReadyProbeUrl,
-  appendApiTokenQuery,
 }
 
 export function installDevApiGuard() {

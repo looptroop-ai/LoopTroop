@@ -1,9 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { getErrorMessage } from '@shared/typeGuards'
+import * as commandLogger from '../log/commandLogger'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
-
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -11,12 +10,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch {
-    // Silently ignore if commandLogger can't be loaded.
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 
 const GIT_PUSH_TIMEOUT_MS = 120_000

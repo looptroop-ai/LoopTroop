@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { tmpdir } from 'node:os'
+import { rmSync } from 'node:fs'
 import { Hono } from 'hono'
+import { makeTempDir } from '../../test/tempDir'
 
 let configDir: string
 const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
@@ -17,7 +16,7 @@ async function buildApp() {
 }
 
 beforeEach(() => {
-  configDir = mkdtempSync(resolve(tmpdir(), 'looptroop-prompts-route-'))
+  configDir = makeTempDir('looptroop-prompts-route-')
   process.env.LOOPTROOP_CONFIG_DIR = configDir
 })
 

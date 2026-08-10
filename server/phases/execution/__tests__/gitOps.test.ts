@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
 import {
   captureBeadDiff,
   commitBeadChanges,
@@ -90,8 +90,9 @@ describe('gitOps worktree change classification', () => {
 // ---------------------------------------------------------------------------
 
 function createGitRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'gitops-test-'))
+  const dir = makeTempDir('gitops-test-')
   execFileSync('git', ['-C', dir, 'init'], { stdio: 'pipe' })
+  pinGitLineEndings(dir)
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' })
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'], { stdio: 'pipe' })
   writeFileSync(join(dir, 'hello.ts'), 'const x = 1\n')
@@ -105,8 +106,9 @@ function headSha(dir: string): string {
 }
 
 function createBareRemote(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'gitops-remote-'))
+  const dir = makeTempDir('gitops-remote-')
   execFileSync('git', ['init', '--bare', dir], { stdio: 'pipe' })
+  pinGitLineEndings(dir)
   return dir
 }
 

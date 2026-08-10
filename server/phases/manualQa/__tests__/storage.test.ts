@@ -1,7 +1,7 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { makeTempDir } from '../../../test/tempDir'
 import {
   MAX_MANUAL_QA_EVIDENCE_BYTES,
   ManualQaEvidenceLinkSchema,
@@ -38,7 +38,7 @@ afterEach(() => {
 })
 
 function root() {
-  const value = mkdtempSync(join(tmpdir(), 'looptroop-manual-qa-'))
+  const value = makeTempDir('looptroop-manual-qa-')
   roots.push(value)
   return value
 }
@@ -194,7 +194,8 @@ describe('Manual QA canonical storage', () => {
     expect(evidence.originalName).toBe('screen.png')
     expect(evidence.storedName).toMatch(/^item-qa-v1-001\//)
     expect(evidence.inlinePreview).toBe(true)
-    expect(resolveManualQaEvidence({ ticketDir, version: 1, itemId: 'qa-v1-001', evidenceId: evidence.id }).path)
+    expect(resolveManualQaEvidence({ ticketDir, version: 1, itemId: 'qa-v1-001', evidenceId: evidence.id }).path
+      .replace(/\\/g, '/'))
       .toContain('/manual-qa/v1/evidence/item-qa-v1-001/')
     expect(getManualQaEvidenceRelativePath(1, evidence)).toBe(`manual-qa/v1/evidence/${evidence.storedName}`)
 
@@ -502,6 +503,9 @@ describe('Manual QA canonical storage', () => {
   it('enforces the evidence safety contract and link protocols', () => {
     expect(MAX_MANUAL_QA_EVIDENCE_BYTES).toBe(250 * 1024 * 1024)
     expect(sanitizeEvidenceName('..\\..\\evil\u0000.exe')).toBe('evil.exe')
+    // Windows rejects these outright; ':' is the NTFS stream separator.
+    expect(sanitizeEvidenceName('evidence:one.png')).toBe('evidence_one.png')
+    expect(sanitizeEvidenceName('a<b>c:d"e|f?g*h.png')).toBe('a_b_c_d_e_f_g_h.png')
     expect(isSafeRasterMediaType('image/webp')).toBe(true)
     expect(isSafeRasterMediaType('image/svg+xml')).toBe(false)
     expect(ManualQaEvidenceLinkSchema.safeParse({ id: 'link:1', url: 'https://example.com/evidence' }).success).toBe(true)

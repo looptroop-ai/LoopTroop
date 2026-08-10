@@ -210,5 +210,4 @@ class SSEBroadcaster {
 }
 
 export const broadcaster = new SSEBroadcaster()
-broadcaster.startAutoCleanup()
 export { SSEBroadcaster }

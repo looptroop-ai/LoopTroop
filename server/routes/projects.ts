@@ -51,6 +51,7 @@ const createProjectSchema = z.object({
   folderPath: z.string().min(1),
   profileId: z.number().int().positive().optional(),
   existingStateAction: z.enum(['restore', 'clear_tickets', 'start_fresh']).optional(),
+  ignoreMode: z.enum(['repo', 'local', 'skip']).optional(),
   ...perProjectOverrides,
 })
 

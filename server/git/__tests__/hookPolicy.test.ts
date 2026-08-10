@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { migrateGitHookPolicy, readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
 
@@ -17,7 +17,7 @@ describe('Git hook policy', () => {
     ['validate_required', true],
     ['use_native_hooks', false],
   ] as const)('resolves %s and chooses internal bypass=%s', (policy, bypass) => {
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-policy-'))
+    const root = makeTempDir('looptroop-hook-policy-')
     roots.push(root)
     mkdirSync(join(root, '.ticket/runtime'), { recursive: true })
     writeFileSync(join(root, '.ticket/runtime/execution-setup-profile.json'), JSON.stringify({
@@ -30,7 +30,7 @@ describe('Git hook policy', () => {
   })
 
   it('uses advisory validation as the non-blocking default when no profile exists', () => {
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-hook-policy-'))
+    const root = makeTempDir('looptroop-hook-policy-')
     roots.push(root)
     expect(readWorktreeGitHookPolicy(root)).toBe('validate_advisory')
   })

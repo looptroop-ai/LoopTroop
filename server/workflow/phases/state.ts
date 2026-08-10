@@ -1,8 +1,33 @@
 import { getOpenCodeAdapter } from '../../opencode/factory'
+import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PhaseIntermediateData } from './types'
 
 export const runningPhases = new Set<string>()
-export const adapter = getOpenCodeAdapter()
+
+/**
+ * The OpenCode adapter, resolved on first use rather than at import.
+ *
+ * This module is reachable from the route graph, so a plain
+ * `const adapter = getOpenCodeAdapter()` ran while `server/app.ts` was still
+ * being imported — before the daemon had resolved `config.json` and handed the
+ * base URL to the OpenCode layer. Every phase then talked to whatever the
+ * environment alone said, and `resetOpenCodeAdapter()` could not help: the old
+ * instance was already captured in this binding.
+ *
+ * A proxy rather than a `getAdapter()` function so the 50-odd call sites that
+ * treat this as a value — including the ones that pass it to a SessionManager —
+ * keep working unchanged. Methods are bound to the real instance so `this`
+ * inside the adapter is the adapter and not this proxy.
+ */
+export const adapter: OpenCodeAdapter = new Proxy({} as OpenCodeAdapter, {
+  get: (_target, property) => {
+    const instance = getOpenCodeAdapter()
+    const value = Reflect.get(instance, property) as unknown
+    return typeof value === 'function' ? value.bind(instance) : value
+  },
+  has: (_target, property) => Reflect.has(getOpenCodeAdapter(), property),
+})
+
 export const ticketAbortControllers = new Map<string, AbortController>()
 export const interviewQASessions = new Map<string, { sessionId: string; winnerId: string }>()
 export const SKIP_ALL_INTERVIEW_COVERAGE_RESPONSE = 'Coverage skipped by user shortcut after marking remaining questions skipped.'

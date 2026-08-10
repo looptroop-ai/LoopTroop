@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { makeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
 import { registerOpenRouterRoutingModels } from '../openRouterRoutingConfig'
 
@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe('registerOpenRouterRoutingModels', () => {
   it('adds selected routing suffixes to the managed OpenCode config without changing base models', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'looptroop-routing-config-'))
+    const directory = makeTempDir('looptroop-routing-config-')
     temporaryDirectories.push(directory)
     const configPath = join(directory, 'opencode.json')
     vi.stubEnv(LOOPTROOP_OPENCODE_ROUTING_CONFIG, configPath)

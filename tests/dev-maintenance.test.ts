@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { makeTempDir } from '../server/test/tempDir'
 import {
   classifyAuditMaintenanceFailure,
   chooseAgedDependencyTarget,
@@ -38,7 +38,7 @@ function createState(): DailyMaintenanceState {
 }
 
 function makeTempFile(contents = 'x') {
-  const dir = mkdtempSync(join(tmpdir(), 'looptroop-dev-maintenance-'))
+  const dir = makeTempDir('looptroop-dev-maintenance-')
   tempDirs.push(dir)
   const filePath = join(dir, 'marker.txt')
   writeFileSync(filePath, contents, 'utf8')

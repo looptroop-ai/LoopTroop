@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseExecutionSetupPlanResult } from '../parser'
 import { serializeExecutionSetupPlan } from '../types'
 import { normalizeExecutionSetupPlanOutput } from '../../../structuredOutput'
+import { detectHostContext } from '../../../lib/hostContext'
 
 function wrapPlan(body: string): string {
   return `<EXECUTION_SETUP_PLAN>\n${body}\n</EXECUTION_SETUP_PLAN>`
@@ -52,7 +53,7 @@ describe('parseExecutionSetupPlanResult', () => {
       id: 'workspace-1',
       command: {
         mode: 'shell',
-        shell: 'posix',
+        shell: detectHostContext().preferredShell,
         script: 'project inspect',
         cwd: '.',
         env: {},
@@ -67,7 +68,7 @@ describe('parseExecutionSetupPlanResult', () => {
       rationale: 'Install locked dependencies before running project-native tests.',
       commands: [{
         mode: 'shell',
-        shell: 'posix',
+        shell: detectHostContext().preferredShell,
         script: 'project bootstrap',
         cwd: '.',
         env: {},
@@ -268,7 +269,7 @@ describe('parseExecutionSetupPlanResult', () => {
           id: 'hook-check',
           command: expect.objectContaining({
             mode: 'shell',
-            shell: 'posix',
+            shell: detectHostContext().preferredShell,
             script: 'project lint',
           }),
         }],

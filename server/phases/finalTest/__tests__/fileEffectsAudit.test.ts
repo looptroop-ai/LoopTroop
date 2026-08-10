@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
 import {
   buildFinalTestFileEffectsAudit,
   captureFinalTestDirtyFiles,
@@ -24,9 +24,10 @@ function dirtyFile(path: string, overrides: Partial<FinalTestDirtyFile> = {}): F
 
 describe('buildFinalTestFileEffectsAudit', () => {
   it('captures an explicitly declared ignored file without exposing other ignored files', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'final-test-explicit-ignore-'))
+    const repo = makeTempDir('final-test-explicit-ignore-')
     try {
       spawnSync('git', ['init', '-q', repo])
+      pinGitLineEndings(repo)
       writeFileSync(join(repo, '.gitignore'), 'coverage/\n')
       mkdirSync(join(repo, 'coverage'), { recursive: true })
       writeFileSync(join(repo, 'coverage', 'candidate.json'), '{"keep":true}\n')
@@ -42,9 +43,10 @@ describe('buildFinalTestFileEffectsAudit', () => {
   })
 
   it('restores tracked local-only mutations without removing untracked local outputs', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'final-test-tracked-local-'))
+    const repo = makeTempDir('final-test-tracked-local-')
     try {
       spawnSync('git', ['init', '-q', repo])
+      pinGitLineEndings(repo)
       spawnSync('git', ['-C', repo, 'config', 'user.name', 'Test'])
       spawnSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'])
       writeFileSync(join(repo, 'tracked.txt'), 'committed\n')

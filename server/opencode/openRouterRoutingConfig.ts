@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG, isOpenRouterRoutingModel } from '../../shared/openRouterRouting'
+import { safeAtomicWrite } from '../io/atomicWrite'
 
 type JsonObject = Record<string, unknown>
 
@@ -54,9 +54,6 @@ export function registerOpenRouterRoutingModels(modelIds: readonly string[]): bo
       models,
     },
   }
-  mkdirSync(dirname(configPath), { recursive: true })
-  const temporaryPath = `${configPath}.tmp`
-  writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
-  renameSync(temporaryPath, configPath)
+  safeAtomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`)
   return true
 }

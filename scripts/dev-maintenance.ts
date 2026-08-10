@@ -14,7 +14,7 @@ const packageLockPath = resolve(repoRoot, 'package-lock.json')
 const binExtension = isWindows ? '.cmd' : ''
 const installStamp = resolve(repoRoot, 'node_modules', '.package-lock.json')
 const npmInstallFlags = ['--no-fund', '--no-audit']
-const requiredDevBins = ['tsx', 'vite', 'vitepress', 'concurrently']
+const requiredDevBins = ['tsx', 'vite', 'concurrently']
 export const devPreflightReportPath = resolve(repoRoot, 'tmp', 'dev-preflight-report.json')
 export const devMaintenanceStatePath = resolve(repoRoot, 'tmp', 'dev-maintenance-state.json')
 const DAILY_MAINTENANCE_STATE_VERSION = 1
@@ -26,14 +26,6 @@ const KNOWN_AUDIT_LEFTOVERS: Record<string, { note: string; url: string }> = {
   'drizzle-kit': {
     note: 'Stable drizzle-kit still depends on deprecated @esbuild-kit/*; the upstream fix is only available in the beta line.',
     url: 'https://github.com/drizzle-team/drizzle-orm/issues/3067',
-  },
-  vitepress: {
-    note: 'Stable VitePress still ships its own older Vite line, so this remains until an upstream stable release lands.',
-    url: 'https://github.com/advisories/GHSA-p9ff-h696-f583',
-  },
-  mermaid: {
-    note: 'Stable Mermaid still pulls uuid <14; the published advisory targets v3/v5/v6 buffer writes and is treated here as a stable-upstream leftover.',
-    url: 'https://github.com/advisories/GHSA-w5hq-g745-h8pq',
   },
 }
 
@@ -809,18 +801,6 @@ function severityRank(severity: string) {
 function chooseAuditDisplayName(name: string, effects: string[] | undefined) {
   if (name === '@esbuild-kit/core-utils' || name === '@esbuild-kit/esm-loader') {
     return 'drizzle-kit'
-  }
-
-  if (name === 'uuid') {
-    return 'mermaid'
-  }
-
-  if (name === 'vite') {
-    return 'vitepress'
-  }
-
-  if (name === 'esbuild' && (effects?.includes('vite') || effects?.includes('vitepress'))) {
-    return 'vitepress'
   }
 
   for (const effect of effects ?? []) {

@@ -9,6 +9,7 @@ import { WORKFLOW_GROUPS, WORKFLOW_PHASE_MAP } from '@/lib/workflowMeta'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useBackendHealth } from '@/hooks/useBackendHealth'
+import packageJson from '../../../package.json'
 import { DashboardSearch } from './DashboardSearch'
 import { cn } from '@/lib/utils'
 
@@ -99,7 +100,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
               LoopTroop
             </span>
             <span className="hidden sm:inline-block text-[10px] font-mono font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/60">
-              v0.4.1
+              v{packageJson.version}
             </span>
           </div>
         </button>

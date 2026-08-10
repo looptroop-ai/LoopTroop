@@ -1,11 +1,11 @@
-import Database from 'better-sqlite3'
+import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { getProjectDbPath } from '../../storage/paths'
+import { getProjectDbPath, normalizeFolderPath } from '../../storage/paths'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-health-route-',
@@ -16,7 +16,7 @@ const repoManager = createFixtureRepoManager({
 
 interface LoadedHealthApp {
   app: Hono
-  sqlite: Database.Database
+  sqlite: Database
   initializeDatabase: () => void
   initializeStartupState: () => unknown
   resetStartupStateForTests: () => void
@@ -200,7 +200,7 @@ describe('health startup routes', () => {
       {
         name: 'Restored Project',
         shortname: 'RST',
-        folderPath: repoDir,
+        folderPath: normalizeFolderPath(repoDir),
       },
     ])
     expect(initialPayload.ui.restoreNotice.shouldShow).toBe(true)
@@ -320,7 +320,7 @@ describe('health startup routes', () => {
     legacyProjectDb.prepare(`
       INSERT INTO projects (name, shortname, folder_path)
       VALUES (?, ?, ?)
-    `).run('Legacy Project', 'LEG', repoDir)
+    `).run('Legacy Project', 'LEG', normalizeFolderPath(repoDir))
     legacyProjectDb.close()
 
     const seedApp = await loadHealthApp(configDir)
@@ -352,7 +352,7 @@ describe('health startup routes', () => {
       {
         name: 'Legacy Project',
         shortname: 'LEG',
-        folderPath: repoDir,
+        folderPath: normalizeFolderPath(repoDir),
       },
     ])
 

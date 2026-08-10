@@ -1,6 +1,6 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
+import { makeTempDir, pinGitLineEndings } from '../../test/tempDir'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { discoverGitHooks } from '../hookDiscovery'
@@ -8,9 +8,10 @@ import { discoverGitHooks } from '../hookDiscovery'
 const roots: string[] = []
 
 function createRepository(): string {
-  const root = mkdtempSync(join(tmpdir(), 'looptroop-hooks-'))
+  const root = makeTempDir('looptroop-hooks-')
   roots.push(root)
   execFileSync('git', ['init', root], { stdio: 'ignore' })
+  pinGitLineEndings(root)
   return root
 }
 

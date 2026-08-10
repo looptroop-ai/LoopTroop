@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+'use strict'
+
+// Deliberately ES5, CommonJS, and dependency-free. This file is parsed by
+// whatever Node the user happens to have, so any modern syntax here would
+// produce a SyntaxError instead of the friendly message below.
+
+var REQUIRED_MAJOR = 24
+var REQUIRED_MINOR = 15
+var REQUIRED_LABEL = REQUIRED_MAJOR + '.' + REQUIRED_MINOR + '.0'
+
+function parseVersion(raw) {
+  var parts = String(raw).split('.')
+  return {
+    major: parseInt(parts[0], 10) || 0,
+    minor: parseInt(parts[1], 10) || 0
+  }
+}
+
+function isSupported(raw) {
+  var version = parseVersion(raw)
+  if (version.major > REQUIRED_MAJOR) return true
+  if (version.major < REQUIRED_MAJOR) return false
+  return version.minor >= REQUIRED_MINOR
+}
+
+if (!isSupported(process.versions.node)) {
+  process.stderr.write(
+    'LoopTroop requires Node.js ' + REQUIRED_LABEL + ' or newer.\n' +
+    'You are running Node.js ' + process.versions.node + '.\n\n' +
+    'Install a supported version:\n' +
+    '  nvm:      nvm install ' + REQUIRED_MAJOR + ' && nvm use ' + REQUIRED_MAJOR + '\n' +
+    '  Homebrew: brew install node@' + REQUIRED_MAJOR + '\n' +
+    '  Download: https://nodejs.org/\n'
+  )
+  process.exit(1)
+}
+
+// Only reached on a supported runtime, so the real CLI is free to use modern
+// syntax and ES modules.
+import('./cli.js').catch(function (error) {
+  process.stderr.write('LoopTroop failed to start: ' + (error && error.message ? error.message : error) + '\n')
+  process.exit(1)
+})

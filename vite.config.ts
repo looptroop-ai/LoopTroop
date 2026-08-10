@@ -38,6 +38,50 @@ const watchPolling = resolveWatchPollingDecision({
 })
 console.log(`[dev-frontend] ${watchPolling.reason}`)
 
+// Also read by scripts/generate-third-party-notices.mjs, which cannot import
+// from this TypeScript config.
+const BUNDLED_PACKAGES_MANIFEST = 'bundled-packages.json'
+
+/** Extracts `@scope/name` or `name` from a resolved node_modules module id. */
+function packageNameFromModuleId(id: string): string | null {  const normalized = id.replace(/\\/g, '/')
+  const marker = normalized.lastIndexOf('node_modules/')
+  if (marker === -1) return null
+
+  const segments = normalized.slice(marker + 'node_modules/'.length).split('/')
+  const first = segments[0]
+  if (!first) return null
+  const name = first.startsWith('@') ? segments.slice(0, 2).join('/') : first
+  return name.length > 0 && !name.startsWith('.') ? name : null
+}
+
+/**
+ * Records which npm packages rollup actually inlined into the client bundle.
+ * These are devDependencies, so the production-tree licence scan cannot see
+ * them even though their code is redistributed in the published assets.
+ */
+function bundledPackagesManifest(): import('vite').Plugin {
+  return {
+    name: 'looptroop-bundled-packages-manifest',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const names = new Set<string>()
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk') continue
+        for (const id of chunk.moduleIds) {
+          const name = packageNameFromModuleId(id)
+          if (name) names.add(name)
+        }
+      }
+
+      this.emitFile({
+        type: 'asset',
+        fileName: BUNDLED_PACKAGES_MANIFEST,
+        source: `${JSON.stringify([...names].sort(), null, 2)}\n`,
+      })
+    },
+  }
+}
+
 function isBackendHealthProbe(req: IncomingMessage) {
   if ((req.method ?? 'GET').toUpperCase() !== 'GET') return false
   if (!req.url) return false
@@ -91,6 +135,7 @@ export default defineConfig({
         })
       },
     },
+    bundledPackagesManifest(),
   ],
   resolve: {
     alias: {
@@ -102,6 +147,8 @@ export default defineConfig({
   },
   optimizeDeps: frontendOptimizeDeps,
   build: {
+    // Kept out of dist/ root so emptyOutDir cannot wipe the server bundle.
+    outDir: 'dist/client',
     sourcemap: false,
     chunkSizeWarningLimit: 2100,
     rollupOptions: {

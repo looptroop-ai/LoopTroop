@@ -42,6 +42,13 @@ interface ExistingProjectPreview {
 
 type ExistingStateAction = 'restore' | 'clear_tickets' | 'start_fresh'
 
+/**
+ * Where LoopTroop's own `.looptroop/` and `.ticket/` directories are ignored:
+ * the repository's tracked `.gitignore`, this clone's `.git/info/exclude`, or
+ * nowhere, for a repository that already handles it.
+ */
+type IgnoreMode = 'repo' | 'local' | 'skip'
+
 interface CreateProjectInput {
   name: string
   shortname: string
@@ -53,6 +60,7 @@ interface CreateProjectInput {
   gitHookPolicy?: GitHookPolicy | null
   manualQaOverride?: boolean | null
   existingStateAction?: ExistingStateAction
+  ignoreMode?: IgnoreMode
 }
 
 interface CachedProjectTicket {
@@ -220,4 +228,4 @@ export function useDeleteProjectWorktrees() {
   })
 }
 
-export type { Project, CreateProjectInput, ExistingProjectPreview, ExistingStateAction }
+export type { Project, CreateProjectInput, ExistingProjectPreview, ExistingStateAction, IgnoreMode }

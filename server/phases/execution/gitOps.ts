@@ -11,10 +11,9 @@ import {
   summarizeWorktreeChanges,
 } from '../../git/worktreeChanges'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
+import * as commandLogger from '../../log/commandLogger'
 
-// Lazy-load commandLogger to avoid vitest mock-resolution deadlock.
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -22,12 +21,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../../log/commandLogger') as typeof import('../../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch {
-    // Silently ignore if commandLogger can't be loaded.
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 
 const GIT_OP_MAX_BUFFER_BYTES = 16 * 1024 * 1024

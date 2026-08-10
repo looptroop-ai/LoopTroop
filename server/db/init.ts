@@ -1,6 +1,13 @@
-import { sqlite } from './index'
+import { sqlite, APP_STORAGE_BOOT_FACTS } from './index'
 import { PROFILE_DEFAULTS } from './defaults'
 import { logIfVerbose } from '../runtime'
+import {
+  APP_MIGRATABLE_FROM,
+  APP_SCHEMA_VERSION,
+  assertSchemaCompatible,
+  shouldStampAfterInit,
+  writeUserVersion,
+} from './schemaVersion'
 
 function ensureColumn(table: string, column: string, definition: string) {
   const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
@@ -117,6 +124,17 @@ function migrateLegacyProfilesTable() {
 }
 
 export function initializeDatabase() {
+  // Classify before any DDL runs: migrateLegacyProfilesTable() below drops and
+  // recreates `profiles`, so an incompatible database must be refused first.
+  const compatibility = assertSchemaCompatible({
+    store: sqlite,
+    databaseLabel: 'app database',
+    databasePath: APP_STORAGE_BOOT_FACTS.dbPath,
+    expected: APP_SCHEMA_VERSION,
+    migratableFrom: APP_MIGRATABLE_FROM,
+    onNotice: (message) => console.warn(message),
+  })
+
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS profiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,6 +206,11 @@ export function initializeDatabase() {
       'use_on_internal_commits'
     );
   `)
+
+  // Stamp after all DDL: the database is now at the current schema version.
+  if (shouldStampAfterInit(compatibility)) {
+    writeUserVersion(sqlite, APP_SCHEMA_VERSION)
+  }
 
   logIfVerbose('[db] App database initialized')
 }

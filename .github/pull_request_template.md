@@ -15,13 +15,13 @@
 - [ ] `npm run lint`
 - [ ] `npm run typecheck`
 - [ ] `npm run test`
-- [ ] `npm run docs:build`
 - [ ] Not run, because:
 
 ## Documentation
 
 - [ ] Updated relevant docs.
-- [ ] Updated `docs/changelog.md` under `## Unreleased`.
+- [ ] Updated `CHANGELOG.md` under `## Unreleased`.
+- [ ] Updated the external documentation repository when behavior changed.
 - [ ] Not needed, because:
 
 ## Checklist

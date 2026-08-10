@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { writeExecutionSetupRuntimeLauncher } from '../runtimeLauncher'
 import type { ExecutionSetupProfile } from '../types'
+import { makeTempDir } from '../../../test/tempDir'
 
 function profile(preferredShell: 'posix' | 'cmd' | 'powershell'): ExecutionSetupProfile {
   return {
@@ -42,7 +42,7 @@ describe('execution setup runtime launcher', () => {
     ['powershell', 'launcher.ps1', '& $program @programArgs'],
     ['cmd', 'launcher.cmd', '%*'],
   ] as const)('writes a host-specific %s launcher', (shell, filename, invocation) => {
-    const worktreePath = mkdtempSync(join(tmpdir(), 'looptroop-launcher-'))
+    const worktreePath = makeTempDir('looptroop-launcher-')
     const artifact = writeExecutionSetupRuntimeLauncher({ worktreePath, profile: profile(shell) })
 
     expect(artifact.path).toBe(`.ticket/runtime/execution-setup/${filename}`)

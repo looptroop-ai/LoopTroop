@@ -62,6 +62,29 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/runner.test.ts',
   'server/workflow/__tests__/skipAllInterviewQuestionsToApproval.test.ts',
   'server/workflow/__tests__/verificationFinalTestPhase.test.ts',
+  // Mocks the OpenCode session layer, which the daemon tests load for real.
+  'server/phases/prd/__tests__/draft.test.ts',
+  // Asserts on real module state (timers, signal handlers, sockets), so it
+  // cannot share a worker with files that vi.mock the same modules.
+  'tests/createRuntime.test.ts',
+  // Builds the whole app, which loads the real providerCatalog and would
+  // defeat the vi.mock in a sibling sharing the non-isolated worker.
+  'tests/staticServing.test.ts',
+  'tests/sessionAuth.test.ts',
+  // Binds two real loopback ports to replay a captured cookie between them.
+  'tests/loopbackCookieTheft.test.ts',
+  // Start a real daemon: sockets, locks and the database must not be shared.
+  'tests/startDaemon.test.ts',
+  'tests/daemonLock.test.ts',
+  'tests/opencodeSupervisor.test.ts',
+  // Spawns real child processes and signals them, so it needs its own worker.
+  'tests/stopCommand.test.ts',
+  'tests/startCommandAbandon.test.ts',
+  'tests/cleanCommand.test.ts',
+  // Reads the real database module, which siblings replace with a mock.
+  'tests/doctorCommand.test.ts',
+  // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
+  'tests/opencodeRuntimeConfig.test.ts',
 ] as const
 
 export default defineConfig({
@@ -90,6 +113,15 @@ export default defineConfig({
           include: ['src/**/*.test.{ts,tsx}'],
           exclude: [...clientNodeTests],
           css: false,
+          // The other three projects declare a budget; without one this project
+          // silently took vitest's 5000ms default — the tightest budget in the
+          // suite on its heaviest workload (jsdom + forks + isolate). On a
+          // 3-vCPU macOS runner these renders take just over 5s while the other
+          // projects run alongside, so the lane failed on whichever test held
+          // the CPU when the clock ran out rather than on any one defect.
+          // Matching server-pure absorbs the contention; a hung render still fails.
+          testTimeout: 15000,
+          hookTimeout: 20000,
           env: sharedEnv,
         },
       },

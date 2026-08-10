@@ -3,8 +3,6 @@ import type { Context, Next } from 'hono'
 
 export const API_TOKEN_HEADER = 'x-looptroop-token'
 
-/** @deprecated Query-parameter token transport is insecure (logged in URLs, proxies, browser history). Use header-based auth instead. */
-
 export interface ApiAuthOptions {
   token?: string
 }
@@ -27,15 +25,20 @@ function constantTimeEquals(a: string, b: string): boolean {
   return timingSafeEqual(left, right)
 }
 
-const SSE_STREAM_PATH_PATTERN = /^\/api\/stream\b/
-
+/**
+ * The token this request carries, from a header only.
+ *
+ * A query string is not a private channel: it lands in access logs, in proxy
+ * logs, in `Referer` on any outbound link, and in the browser's own history —
+ * all places that outlive the session and are far more readable than the
+ * daemon's owner-only files. There was a query fallback here for EventSource,
+ * which cannot set headers, but it is not needed: the stream is same-origin, so
+ * the browser attaches the session cookie on its own, and the dev server
+ * injects the header on the way through.
+ */
 function getRequestToken(c: Context): string | null {
   return c.req.header(API_TOKEN_HEADER)?.trim()
     || getBearerToken(c.req.header('authorization'))
-    // Browser EventSource API cannot set custom headers; query-param token is
-    // the only viable auth mechanism for SSE streams. Restricted to /api/stream
-    // to limit the surface area where tokens appear in server logs.
-    || (SSE_STREAM_PATH_PATTERN.test(c.req.path) ? c.req.query('apiToken')?.trim() || null : null)
 }
 
 export function createApiAuthMiddleware(options: ApiAuthOptions = {}) {

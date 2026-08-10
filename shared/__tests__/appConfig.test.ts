@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getDocsPort, getFrontendOrigin, getFrontendPort } from '../appConfig'
+import { getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getFrontendOrigin, getFrontendPort } from '../appConfig'
 
 const ORIGINAL_ENV = {
   LOOPTROOP_BACKEND_PORT: process.env.LOOPTROOP_BACKEND_PORT,
   LOOPTROOP_BACKEND_HOST: process.env.LOOPTROOP_BACKEND_HOST,
   LOOPTROOP_ALLOW_REMOTE_API: process.env.LOOPTROOP_ALLOW_REMOTE_API,
   LOOPTROOP_API_TOKEN: process.env.LOOPTROOP_API_TOKEN,
-  LOOPTROOP_DOCS_PORT: process.env.LOOPTROOP_DOCS_PORT,
   LOOPTROOP_DOCS_ORIGIN: process.env.LOOPTROOP_DOCS_ORIGIN,
   LOOPTROOP_FRONTEND_ORIGIN: process.env.LOOPTROOP_FRONTEND_ORIGIN,
   LOOPTROOP_FRONTEND_PORT: process.env.LOOPTROOP_FRONTEND_PORT,
@@ -38,12 +37,6 @@ describe('appConfig frontend origin', () => {
       process.env.LOOPTROOP_API_TOKEN = ORIGINAL_ENV.LOOPTROOP_API_TOKEN
     }
 
-    if (ORIGINAL_ENV.LOOPTROOP_DOCS_PORT === undefined) {
-      delete process.env.LOOPTROOP_DOCS_PORT
-    } else {
-      process.env.LOOPTROOP_DOCS_PORT = ORIGINAL_ENV.LOOPTROOP_DOCS_PORT
-    }
-
     if (ORIGINAL_ENV.LOOPTROOP_DOCS_ORIGIN === undefined) {
       delete process.env.LOOPTROOP_DOCS_ORIGIN
     } else {
@@ -73,8 +66,8 @@ describe('appConfig frontend origin', () => {
 
   it('includes the VitePress base path in browser-facing documentation URLs', () => {
     delete process.env.LOOPTROOP_DOCS_ORIGIN
-    process.env.LOOPTROOP_DOCS_PORT = '6198'
-    expect(getDocsBaseUrl()).toBe('http://localhost:6198/docs')
+    // Installed users have no local docs server, so the hosted site is the default.
+    expect(getDocsBaseUrl()).toBe('https://www.looptroop.ovh/docs')
 
     process.env.LOOPTROOP_DOCS_ORIGIN = 'http://devbox.local:7000/'
     expect(getDocsBaseUrl()).toBe('http://devbox.local:7000/docs')
@@ -98,21 +91,17 @@ describe('appConfig frontend origin', () => {
 
   it('rejects configured ports outside the valid TCP range', () => {
     process.env.LOOPTROOP_FRONTEND_PORT = '0'
-    process.env.LOOPTROOP_DOCS_PORT = '65536'
     process.env.LOOPTROOP_BACKEND_PORT = '-1'
 
     expect(getFrontendPort()).toBe(5173)
-    expect(getDocsPort()).toBe(5174)
     expect(getBackendPort()).toBe(3000)
   })
 
   it('rejects malformed port values instead of partially parsing them', () => {
     process.env.LOOPTROOP_FRONTEND_PORT = '5173abc'
-    process.env.LOOPTROOP_DOCS_PORT = '123.4'
     process.env.LOOPTROOP_BACKEND_PORT = '300e0'
 
     expect(getFrontendPort()).toBe(5173)
-    expect(getDocsPort()).toBe(5174)
     expect(getBackendPort()).toBe(3000)
   })
 

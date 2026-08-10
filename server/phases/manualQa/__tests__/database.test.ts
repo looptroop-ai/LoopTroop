@@ -1,9 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rmSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeProjectDatabase, getProjectDatabase } from '../../../db/project'
 import { manualQaOperations, projects, tickets } from '../../../db/schema'
+import { makeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
@@ -15,7 +14,7 @@ afterEach(() => {
 
 describe('Manual QA database idempotency', () => {
   it('enforces one operation per ticket/action while retaining restart payload', () => {
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-manual-qa-db-'))
+    const root = makeTempDir('looptroop-manual-qa-db-')
     roots.push(root)
     const { db } = getProjectDatabase(root)
     const project = db.insert(projects).values({

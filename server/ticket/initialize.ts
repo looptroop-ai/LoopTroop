@@ -10,22 +10,22 @@ import {
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
-import { ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin } from '../git/repository'
+import { applyIgnoreMode, areLoopTroopPathsIgnored, ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin, type IgnoreMode } from '../git/repository'
+import { getProjectIgnoreMode } from '../storage/projects'
 import {
   detectGitBaseBranch,
   getTicketDir as resolveTicketDir,
   getTicketRuntimeDir,
   getTicketWorktreePath as resolveTicketWorktreePath,
+  normalizeFolderPath,
 } from '../storage/paths'
 import { getTicketBeadsDir, updateTicketMeta } from './metadata'
+import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { getErrorMessage } from '@shared/typeGuards'
+import * as commandLogger from '../log/commandLogger'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
-
-// Lazy-load commandLogger to avoid vitest mock-resolution deadlock when
-// tickets.start.test.ts uses `importOriginal` on this module.
+// Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
   bin: string,
   args: string[],
@@ -33,15 +33,7 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch (error) {
-    // Ignore if commandLogger can't be loaded in test isolation.
-    if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
-      console.error(`[ticket/initialize] Failed to load commandLogger: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
+  commandLogger.logCommand?.(bin, args, result)
 }
 
 interface InitializeOptions {
@@ -149,13 +141,49 @@ function ensureBaseBranch(projectFolder: string, baseBranch: string): string {
   }
 }
 
-function ensureLoopTroopGitExclude(projectFolder: string) {
+/**
+ * Re-applies the ignore choice the project was attached with.
+ *
+ * The choice is honoured rather than assumed: a project attached with "skip"
+ * manages its own rules and nothing is written for it, and one attached with
+ * "repo" must not quietly acquire a `.git/info/exclude` it never asked for.
+ */
+function ensureLoopTroopGitExclude(projectFolder: string, mode: IgnoreMode) {
   try {
-    ensureLocalGitExclude(projectFolder)
+    applyIgnoreMode(projectFolder, mode)
   } catch (err) {
     throw new TicketInitializationError(
       'INIT_LOOPTROOP_EXCLUDE_FAILED',
-      `Failed to install the repo-local LoopTroop Git exclude: ${getErrorMessage(err)}`,
+      `Failed to install the LoopTroop Git ignore rules: ${getErrorMessage(err)}`,
+    )
+  }
+}
+
+/**
+ * Guarantees the ticket worktree ignores LoopTroop's runtime directories.
+ *
+ * A worktree is a separate checkout that `git add -A` runs in, and a repository
+ * .gitignore only reaches it once committed — so between attaching a project
+ * and pushing that change, the worktree would stage `.looptroop/` and
+ * `.ticket/` into the ticket's own branch.
+ *
+ * The gap is closed through `.git/info/exclude`, which git resolves to the
+ * common directory and therefore shares with every worktree. Writing the
+ * worktree's own .gitignore would work too, but it would leave an unexplained
+ * file in a checkout whose whole purpose is to contain exactly one ticket's
+ * changes. Applied only when git says the paths are not already covered, so a
+ * repository that has committed its rules is never written to at all.
+ */
+function ensureWorktreePathsIgnored(worktreePath: string, mode: IgnoreMode) {
+  if (mode === 'skip') return
+  if (areLoopTroopPathsIgnored(worktreePath)) return
+
+  try {
+    ensureLocalGitExclude(worktreePath)
+  } catch (err) {
+    throw new TicketInitializationError(
+      'INIT_LOOPTROOP_EXCLUDE_FAILED',
+      `Failed to ignore LoopTroop runtime paths in the ticket worktree: ${getErrorMessage(err)}`,
     )
   }
 }
@@ -356,32 +384,45 @@ function materializeWorktree(
 
 export function initializeTicket(options: InitializeOptions): InitializeTicketResult {
   const branchName = options.externalId
-  ensureGitRepo(options.projectFolder)
-  tryFetchOrigin(options.projectFolder)
-  const baseBranch = detectGitBaseBranch(options.projectFolder)
-  const baseBranchRef = ensureBaseBranch(options.projectFolder, baseBranch)
-  const worktreePath = getTicketWorktreePath(options.projectFolder, options.externalId)
-  const ticketDir = getTicketDir(options.projectFolder, options.externalId)
+  // Callers may pass an uncanonicalised folder; normalising here keeps every
+  // derived path byte-identical to the project root stored at attach time.
+  const projectFolder = normalizeFolderPath(options.projectFolder)
+  ensureGitRepo(projectFolder)
+  tryFetchOrigin(projectFolder)
+  const baseBranch = detectGitBaseBranch(projectFolder)
+  const baseBranchRef = ensureBaseBranch(projectFolder, baseBranch)
+  const worktreePath = getTicketWorktreePath(projectFolder, options.externalId)
+  const ticketDir = getTicketDir(projectFolder, options.externalId)
 
-  ensureLoopTroopGitExclude(options.projectFolder)
-  ensureLoopTroopRuntimeUntracked(options.projectFolder)
-
-  const reused = isValidTicketWorktree(options.projectFolder, worktreePath, branchName)
+  const ignoreMode = getProjectIgnoreMode(projectFolder)
+  ensureLoopTroopGitExclude(projectFolder, ignoreMode)
+  ensureLoopTroopRuntimeUntracked(projectFolder)
+  const reused = isValidTicketWorktree(projectFolder, worktreePath, branchName)
   if (!reused) {
-    materializeWorktree(options.projectFolder, worktreePath, branchName, baseBranchRef)
+    materializeWorktree(projectFolder, worktreePath, branchName, baseBranchRef)
   }
 
-  if (!isValidTicketWorktree(options.projectFolder, worktreePath, branchName)) {
+  if (!isValidTicketWorktree(projectFolder, worktreePath, branchName)) {
     throw new TicketInitializationError(
       'INIT_WORKTREE_INVALID',
       `Ticket worktree is invalid after initialization: ${worktreePath}`,
     )
   }
 
-  ensureTicketDirectories(options.projectFolder, options.externalId, ticketDir, baseBranch)
-  mkdirSync(getTicketRuntimeDir(options.projectFolder, options.externalId), { recursive: true })
+  // The worktree gets the same guarantee as the project it came from, by
+  // whichever mechanism reaches it without leaving a file behind.
+  ensureWorktreePathsIgnored(worktreePath, ignoreMode)
+
+  ensureTicketDirectories(projectFolder, options.externalId, ticketDir, baseBranch)
+  mkdirSync(getTicketRuntimeDir(projectFolder, options.externalId), { recursive: true })
   writeRuntimeGitignore(ticketDir)
-  updateTicketMeta(options.projectFolder, options.externalId, { baseBranch })
+  // Written after the ignore rules, so the marker is already excluded by the
+  // time it exists and never shows up as an untracked file on the branch.
+  ensureWorktreeOwnerMarker(worktreePath, {
+    projectRoot: projectFolder,
+    externalId: options.externalId,
+  })
+  updateTicketMeta(projectFolder, options.externalId, { baseBranch })
 
   return {
     worktreePath,

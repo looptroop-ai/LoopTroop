@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useCreateProject, useUpdateProject, useDeleteProject } from '@/hooks/useProjects'
-import type { ExistingProjectPreview, ExistingStateAction, Project } from '@/hooks/useProjects'
+import type { ExistingProjectPreview, ExistingStateAction, IgnoreMode, Project } from '@/hooks/useProjects'
 import { useToast } from '@/components/shared/useToast'
 import { ArrowLeft, HardDrive, Trash2, CheckCircle2, XCircle, CircleDot, AlertTriangle, ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -76,6 +76,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false)
   const [isWorktreesDialogOpen, setIsWorktreesDialogOpen] = useState(false)
   const [existingStateAction, setExistingStateAction] = useState<ExistingStateAction>('restore')
+  const [ignoreMode, setIgnoreMode] = useState<IgnoreMode>('repo')
   const [isExistingStateConfirmOpen, setIsExistingStateConfirmOpen] = useState(false)
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const restorePrefillKeyRef = useRef<string | null>(null)
@@ -159,6 +160,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         icon,
         color,
         gitHookPolicy,
+        ignoreMode,
         manualQaOverride: restoreMode
           ? manualQaOverride
           : manualQaOverride ?? profile?.manualQaEnabled ?? false,
@@ -500,6 +502,67 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     </div>
                   </div>
                 </div>
+              )}
+            </div>
+          )}
+          {!isEditing && gitStatus === 'valid' && (
+            <div className="space-y-2">
+              <div>
+                <label className="text-sm font-medium">Ignore LoopTroop&apos;s folders</label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  LoopTroop keeps <span className="font-mono">.looptroop/</span> and{' '}
+                  <span className="font-mono">.ticket/</span> inside this repository. Choose where to
+                  ignore them. Rules are appended; nothing already in the file is changed.
+                </p>
+              </div>
+              <fieldset className="grid gap-2" disabled={isBusy}>
+                <legend className="sr-only">Ignore location</legend>
+                {([
+                  {
+                    value: 'repo',
+                    title: 'Repository .gitignore',
+                    description: 'Committed with the repository, so every clone and worktree inherits it.',
+                  },
+                  {
+                    value: 'local',
+                    title: 'This clone only (.git/info/exclude)',
+                    description: 'Untracked and private to this machine. Nothing to commit.',
+                  },
+                  {
+                    value: 'skip',
+                    title: 'Do not change any file',
+                    description: 'For a repository that already ignores them, or ignores them elsewhere.',
+                  },
+                ] as const).map((option) => (
+                  <label
+                    key={option.value}
+                    className={cn(
+                      'flex cursor-pointer gap-3 rounded-md border bg-background/70 p-3 transition-colors',
+                      ignoreMode === option.value
+                        ? 'border-primary ring-1 ring-primary'
+                        : 'border-border hover:border-muted-foreground/50',
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      name="ignore-mode"
+                      value={option.value}
+                      checked={ignoreMode === option.value}
+                      onChange={() => setIgnoreMode(option.value)}
+                      className="mt-0.5 h-4 w-4 accent-primary"
+                    />
+                    <span>
+                      <span className="block font-medium text-foreground">{option.title}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{option.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              {ignoreMode === 'skip' && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  If these folders are not already ignored, Git will see LoopTroop&apos;s runtime files
+                  as changes to commit.
+                </p>
               )}
             </div>
           )}

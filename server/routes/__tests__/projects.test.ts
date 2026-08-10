@@ -19,7 +19,7 @@ import {
   ticketStatusHistory,
   tickets,
 } from '../../db/schema'
-import { getProjectLoopTroopDir } from '../../storage/paths'
+import { getProjectLoopTroopDir, normalizeFolderPath } from '../../storage/paths'
 import {
   attachExistingProject,
   attachProject,
@@ -60,6 +60,14 @@ function getLocalExcludePath(repoDir: string): string {
 
 function readLocalExcludeRules(repoDir: string): string[] {
   return readFileSync(getLocalExcludePath(repoDir), 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0)
+}
+
+function readGitignoreRules(repoDir: string): string[] {
+  const path = resolve(repoDir, '.gitignore')
+  if (!existsSync(path)) return []
+  return readFileSync(path, 'utf8')
     .split(/\r?\n/)
     .filter((line) => line.length > 0)
 }
@@ -121,7 +129,7 @@ describe('projectRouter project cleanup', () => {
     delete process.env.WSL_DISTRO_NAME
   })
 
-  it('installs repo-local LoopTroop excludes and keeps git status clean', () => {
+  it('ignores LoopTroop state in the repository .gitignore by default', () => {
     const repoDir = repoManager.createRepo()
 
     attachProject({
@@ -134,9 +142,45 @@ describe('projectRouter project cleanup', () => {
     mkdirSync(resolve(repoDir, '.ticket'), { recursive: true })
     writeFileSync(resolve(repoDir, '.ticket', 'runtime-marker.txt'), 'ticket runtime\n')
 
+    expect(readGitignoreRules(repoDir)).toContain('/.looptroop/')
+    expect(readGitignoreRules(repoDir)).toContain('/.ticket/')
+    // The runtime folders are ignored; only the new .gitignore is left to commit.
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('?? .gitignore')
+  })
+
+  it('installs repo-local LoopTroop excludes and keeps git status clean', () => {
+    const repoDir = repoManager.createRepo()
+
+    attachProject({
+      folderPath: repoDir,
+      name: 'Original Project',
+      shortname: 'OLD',
+      ignoreMode: 'local',
+    })
+
+    writeFileSync(resolve(getProjectLoopTroopDir(repoDir), 'runtime-marker.txt'), 'runtime\n')
+    mkdirSync(resolve(repoDir, '.ticket'), { recursive: true })
+    writeFileSync(resolve(repoDir, '.ticket', 'runtime-marker.txt'), 'ticket runtime\n')
+
     expect(readLocalExcludeRules(repoDir)).toContain('/.looptroop/')
     expect(readLocalExcludeRules(repoDir)).toContain('/.ticket/')
+    // Nothing tracked was touched, so the working tree is exactly as it was.
     expect(git(repoDir, ['status', '--porcelain'])).toBe('')
+  })
+
+  it('leaves both ignore files alone when the project asks to skip', () => {
+    const repoDir = repoManager.createRepo()
+    const excludeBefore = readFileSync(getLocalExcludePath(repoDir), 'utf8')
+
+    attachProject({
+      folderPath: repoDir,
+      name: 'Own Rules',
+      shortname: 'OWN',
+      ignoreMode: 'skip',
+    })
+
+    expect(existsSync(resolve(repoDir, '.gitignore'))).toBe(false)
+    expect(readFileSync(getLocalExcludePath(repoDir), 'utf8')).toBe(excludeBefore)
   })
 
   it('does not duplicate repo-local LoopTroop exclude rules on reattach', () => {
@@ -146,6 +190,7 @@ describe('projectRouter project cleanup', () => {
       folderPath: repoDir,
       name: 'Original Project',
       shortname: 'OLD',
+      ignoreMode: 'local',
     })
     attachExistingProject(repoDir)
 
@@ -156,6 +201,40 @@ describe('projectRouter project cleanup', () => {
 
     expect(loopTroopRules).toHaveLength(1)
     expect(ticketRules).toHaveLength(1)
+  })
+
+  it('reattaches with the ignore choice the project was attached with', () => {
+    const repoDir = repoManager.createRepo()
+
+    attachProject({
+      folderPath: repoDir,
+      name: 'Original Project',
+      shortname: 'OLD',
+      ignoreMode: 'local',
+    })
+    // A plain reattach passes no choice, so the stored one has to be honoured:
+    // falling back to the default would write a .gitignore the user declined.
+    attachExistingProject(repoDir)
+
+    expect(existsSync(resolve(repoDir, '.gitignore'))).toBe(false)
+    expect(readLocalExcludeRules(repoDir)).toContain('/.looptroop/')
+  })
+
+  it('appends to an existing .gitignore without disturbing what is there', () => {
+    const repoDir = repoManager.createRepo()
+    const gitignorePath = resolve(repoDir, '.gitignore')
+    writeFileSync(gitignorePath, '# project rules\nnode_modules/\n/.ticket/\n')
+
+    attachProject({
+      folderPath: repoDir,
+      name: 'Existing Rules',
+      shortname: 'EXR',
+    })
+
+    // The pre-existing rules survive in order, the one already present is not
+    // repeated, and only the genuinely missing rule is added.
+    expect(readFileSync(gitignorePath, 'utf8'))
+      .toBe('# project rules\nnode_modules/\n/.ticket/\n/.looptroop/\n')
   })
 
   it('deletes project-local LoopTroop state and allows a clean re-attach', async () => {
@@ -330,7 +409,7 @@ describe('projectRouter project cleanup', () => {
       shortname: 'SVD',
       icon: '✨',
       color: '#123456',
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
     })
     expect(getProjectContextById(project.id)?.projectDb.select().from(tickets).all())
       .toContainEqual(expect.objectContaining({ externalId: ticket.externalId }))
@@ -349,7 +428,7 @@ describe('projectRouter project cleanup', () => {
     expect(await explicitRestoreResponse.json()).toMatchObject({
       name: 'Explicit Restore',
       shortname: 'SVD',
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
     })
   })
 
@@ -459,7 +538,7 @@ describe('projectRouter project cleanup', () => {
       gitHookPolicy: 'observe_only',
       manualQaOverride: false,
       ticketCounter: 0,
-      folderPath: repoDir,
+      folderPath: normalizeFolderPath(repoDir),
       createdAt: originalCreatedAt,
     })
     expect(cleared.project.updatedAt).not.toBe('2000-01-01T00:00:00.000Z')
@@ -535,6 +614,9 @@ describe('projectRouter project cleanup', () => {
 
     expect(resolveProjectState(repoDir).exists).toBe(true)
 
+    // Windows refuses to unlink an open file, and attaching leaves a cached
+    // handle on <repo>/.looptroop/db.sqlite.
+    clearProjectDatabaseCache()
     rmSync(getProjectLoopTroopDir(repoDir), { recursive: true, force: true })
 
     const stateAfterDelete = resolveProjectState(repoDir)
@@ -553,7 +635,9 @@ describe('projectRouter project cleanup', () => {
     expect(reattached.shortname).toBe('NEW')
   })
 
-  it('returns a WSL mounted-drive performance warning for Windows-backed paths', async () => {
+  // WSL detection requires platform === 'linux', so this behaviour is
+  // unreachable on macOS and Windows regardless of the env var.
+  it.runIf(process.platform === 'linux')('returns a WSL mounted-drive performance warning for Windows-backed paths', async () => {
     process.env.WSL_DISTRO_NAME = 'Ubuntu'
     const app = new Hono()
     app.route('/api', projectRouter)

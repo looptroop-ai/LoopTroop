@@ -1,10 +1,11 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { dirname, isAbsolute, resolve } from 'path'
+import { Database } from './sqliteShim'
+import { drizzle } from 'drizzle-orm/node-sqlite'
+import { dirname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import * as schema from './schema'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
-import { resolveAppConfigDir } from '../lib/appConfigDir'
+import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
+import { resolveAppDbPath } from './appDbPath'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 
@@ -17,11 +18,8 @@ interface AppStorageBootFacts {
 
 function resolveAppStorageBootFacts(): AppStorageBootFacts {
   const configDir = resolveAppConfigDir()
-  const configuredDbPath = process.env.LOOPTROOP_APP_DB_PATH?.trim()
-  const dbPath = configuredDbPath
-    ? (isAbsolute(configuredDbPath) ? configuredDbPath : resolve(process.cwd(), configuredDbPath))
-    : resolve(configDir, 'app.sqlite')
-  const source: AppStorageConfigSource = configuredDbPath
+  const dbPath = resolveAppDbPath(configDir)
+  const source: AppStorageConfigSource = process.env.LOOPTROOP_APP_DB_PATH?.trim()
     ? 'LOOPTROOP_APP_DB_PATH'
     : process.env.LOOPTROOP_CONFIG_DIR?.trim()
       ? 'LOOPTROOP_CONFIG_DIR'
@@ -39,15 +37,30 @@ const APP_STORAGE_BOOT_FACTS = resolveAppStorageBootFacts()
 const APP_CONFIG_DIR = APP_STORAGE_BOOT_FACTS.configDir
 const DB_PATH = APP_STORAGE_BOOT_FACTS.dbPath
 
-mkdirSync(APP_CONFIG_DIR, { recursive: true })
-mkdirSync(dirname(DB_PATH), { recursive: true })
+let storageDirsReady = false
 
-let sqliteInstance: Database.Database | null = null
+/**
+ * Deferred so that importing this module writes nothing: an embedded host (and
+ * `looptroop --version`) must be able to load the runtime without touching disk.
+ */
+function ensureStorageDirs(): void {
+  if (storageDirsReady) return
+  mkdirSync(APP_CONFIG_DIR, { recursive: true })
+  mkdirSync(dirname(DB_PATH), { recursive: true })
+  ensureSecureDir(APP_CONFIG_DIR)
+  storageDirsReady = true
+}
+
+let sqliteInstance: Database | null = null
 let dbInstance: ReturnType<typeof drizzle> | null = null
 
-function getOrCreateSqlite(): Database.Database {
+function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
+    ensureStorageDirs()
     sqliteInstance = new Database(DB_PATH)
+    // The database carries project paths and session state, so restrict it as
+    // soon as SQLite has created the file.
+    secureFile(DB_PATH)
     sqliteInstance.pragma('journal_mode=WAL')
     sqliteInstance.pragma('locking_mode=NORMAL')
     sqliteInstance.pragma('synchronous=NORMAL')
@@ -60,7 +73,8 @@ function getOrCreateSqlite(): Database.Database {
 
 function getOrCreateDb(): ReturnType<typeof drizzle> {
   if (!dbInstance) {
-    dbInstance = drizzle(getOrCreateSqlite(), { schema })
+    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
+    dbInstance = drizzle({ client: getOrCreateSqlite().client, schema })
   }
   return dbInstance
 }
@@ -68,7 +82,7 @@ function getOrCreateDb(): ReturnType<typeof drizzle> {
 // Lazy-initializing proxies — the actual SQLite connection is only opened on
 // first access, not at module-import time. This prevents test environments
 // that transitively import this module from creating spurious database files.
-export const sqlite = new Proxy({} as Database.Database, {
+export const sqlite = new Proxy({} as Database, {
   get(_target, prop: string | symbol) {
     const real = getOrCreateSqlite()
     const value = (real as unknown as Record<string | symbol, unknown>)[prop]
@@ -88,6 +102,7 @@ export {
   DB_PATH as APP_DB_PATH,
   APP_CONFIG_DIR,
   APP_STORAGE_BOOT_FACTS,
+  ensureStorageDirs,
   type AppStorageBootFacts,
   type AppStorageConfigSource,
 }

@@ -1,6 +1,5 @@
 const DEFAULT_FRONTEND_PORT = 5173
-const DEFAULT_DOCS_PORT = 5174
-const DEFAULT_BACKEND_PORT = 3000
+export const DEFAULT_BACKEND_PORT = 3000
 const DEFAULT_BACKEND_HOST = '127.0.0.1'
 export const DEFAULT_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
 
@@ -29,10 +28,6 @@ export function getFrontendPort(): number {
   return parsePort(process.env.LOOPTROOP_FRONTEND_PORT, DEFAULT_FRONTEND_PORT)
 }
 
-export function getDocsPort(): number {
-  return parsePort(process.env.LOOPTROOP_DOCS_PORT, DEFAULT_DOCS_PORT)
-}
-
 export function getBackendPort(): number {
   return parsePort(process.env.LOOPTROOP_BACKEND_PORT, DEFAULT_BACKEND_PORT)
 }
@@ -50,8 +45,11 @@ export function isLoopbackHost(hostname: string): boolean {
     || normalized.startsWith('127.')
 }
 
-export function getAllowedBackendHost(): string {
-  const host = getBackendHost()
+/**
+ * Enforces the loopback-only boundary for any candidate bind host, whether it
+ * came from the environment or from an embedding host.
+ */
+export function assertAllowedBackendHost(host: string): string {
   if (!isLoopbackHost(host) && process.env.LOOPTROOP_ALLOW_REMOTE_API !== '1') {
     throw new Error(
       `Refusing to bind LoopTroop API to non-loopback host "${host}". ` +
@@ -67,14 +65,23 @@ export function getAllowedBackendHost(): string {
   return host
 }
 
+export function getAllowedBackendHost(): string {
+  return assertAllowedBackendHost(getBackendHost())
+}
+
 export function getFrontendOrigin(): string {
   const defaultFrontendOrigin = `http://localhost:${getFrontendPort()}`
   return parseOrigin(process.env.LOOPTROOP_FRONTEND_ORIGIN, defaultFrontendOrigin, 'LOOPTROOP_FRONTEND_ORIGIN')
 }
 
+/**
+ * Public documentation site. Used as the default so in-app links work for
+ * installed users, who have no local docs server running.
+ */
+const DEFAULT_DOCS_ORIGIN = 'https://www.looptroop.ovh'
+
 export function getDocsOrigin(): string {
-  const defaultDocsOrigin = `http://localhost:${getDocsPort()}`
-  return parseOrigin(process.env.LOOPTROOP_DOCS_ORIGIN, defaultDocsOrigin, 'LOOPTROOP_DOCS_ORIGIN')
+  return parseOrigin(process.env.LOOPTROOP_DOCS_ORIGIN, DEFAULT_DOCS_ORIGIN, 'LOOPTROOP_DOCS_ORIGIN')
 }
 
 export function getDocsBaseUrl(): string {

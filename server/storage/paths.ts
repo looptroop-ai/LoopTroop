@@ -1,12 +1,9 @@
 import { spawnSync } from 'child_process'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, realpathSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import { resolveBaseBranch } from '../git/repository'
+import { logCommand } from '../log/commandLogger'
 
-import { createRequire } from 'node:module'
-const _require = createRequire(import.meta.url)
-
-// Lazy-load commandLogger to avoid vitest mock-resolution deadlock.
 function logCmd(
   bin: string,
   args: string[],
@@ -14,25 +11,35 @@ function logCmd(
     | { ok: true; stdin?: string; stdout?: string; stderr?: string }
     | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
 ) {
-  try {
-    const { logCommand } = _require('../log/commandLogger') as typeof import('../log/commandLogger')
-    logCommand(bin, args, result)
-  } catch {
-    // Silently ignore if commandLogger can't be loaded.
-  }
+  logCommand(bin, args, result)
 }
 
 export function normalizeFolderPath(input: string): string {
   let output = input.trim().replace(/[\\/]+$/, '')
   output = output.replace(/\\/g, '/')
-  const driveMatch = output.match(/^([A-Za-z]):\/(.*)$/)
-  if (driveMatch && driveMatch[1] && driveMatch[2] !== undefined) {
-    output = `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`
+  // Drive letters only map to /mnt/<drive> under WSL. On native Windows the
+  // drive-letter path is already correct and rewriting it breaks every lookup.
+  if (process.platform !== 'win32') {
+    const driveMatch = output.match(/^([A-Za-z]):\/(.*)$/)
+    if (driveMatch && driveMatch[1] && driveMatch[2] !== undefined) {
+      output = `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}`
+    }
   }
   if (!isAbsolute(output)) {
     output = resolve(process.cwd(), output)
   }
-  return output
+  // Canonicalise symlinks so one directory always compares equal to itself:
+  // macOS maps /var to /private/var and Windows keeps 8.3 short names such as
+  // RUNNER~1, so a stored path and the output of `git rev-parse --show-toplevel`
+  // otherwise disagree. `.native` is required for the 8.3 expansion.
+  try {
+    output = realpathSync.native(output)
+  } catch {
+    // Not created yet, so the lexical form is the best available answer.
+  }
+  // Last: resolve() and realpathSync() both emit backslashes on Windows, and
+  // this function's contract is forward slashes throughout.
+  return output.replace(/\\/g, '/')
 }
 
 export function resolveGitRepoRoot(folderPath: string): string | null {

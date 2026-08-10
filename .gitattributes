@@ -1,18 +1,7 @@
-* text=auto
-
-*.ts text eol=lf
-*.tsx text eol=lf
-*.js text eol=lf
-*.jsx text eol=lf
-*.mjs text eol=lf
-*.cjs text eol=lf
-*.json text eol=lf
-*.jsonl text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-*.css text eol=lf
-*.html text eol=lf
-*.md text eol=lf
+# eol=lf, not text=auto: text=auto normalises in the repository but still
+# converts on checkout per platform, so every file below would arrive as CRLF on
+# Windows and fail the repository's own line-ending policy test.
+* text=auto eol=lf
 
 docs/roadmap.md -text
 public/fonts/*.txt -text

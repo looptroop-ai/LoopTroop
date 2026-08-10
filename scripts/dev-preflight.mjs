@@ -79,7 +79,7 @@ if (!pathExists(resolve(repoRoot, 'node_modules'))) {
   }
 }
 
-const requiredBins = ['tsx', 'vite', 'vitepress', 'concurrently']
+const requiredBins = ['tsx', 'vite', 'concurrently']
 const missingBins = requiredBins.filter(name => {
   const binPath = resolve(repoRoot, 'node_modules', '.bin', `${name}${binExtension}`)
   return !isExecutable(binPath)

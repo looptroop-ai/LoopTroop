@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir } from '../../test/tempDir'
 import { getCommandShell, runShellCommand } from '../shellCommand'
 
 const tempDirectories: string[] = []
@@ -13,7 +13,7 @@ afterEach(() => {
 })
 
 function makeWorktree(): string {
-  const worktree = mkdtempSync(join(tmpdir(), 'looptroop-shell-command-'))
+  const worktree = makeTempDir('looptroop-shell-command-')
   tempDirectories.push(worktree)
   return worktree
 }

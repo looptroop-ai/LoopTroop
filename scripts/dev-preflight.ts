@@ -2,7 +2,9 @@ import { execFileSync } from 'node:child_process'
 import net from 'node:net'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getBackendPort, getDocsPort, getFrontendPort } from '../shared/appConfig'
+import { getBackendPort, getFrontendPort } from '../shared/appConfig'
+import { readDaemonState } from '../server/lib/daemonPaths'
+import { matchProcess } from '../server/lib/processIdentity'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -20,6 +22,7 @@ import {
 import {
   buildProcessGraph,
   collectProcessTree,
+  decideDaemonProtection,
   formatProcessSummary,
   isLoopTroopDevProcess,
   findOwningRootProcess,
@@ -37,9 +40,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
 const packageJsonPath = resolve(repoRoot, 'package.json')
 const packageLockPath = resolve(repoRoot, 'package-lock.json')
-const shouldSkipDependencyMaintenance = process.env.LOOPTROOP_DEV_SKIP_DEPS === '1'
-const shouldSkipOpenCodeUpgrade = process.env.LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE === '1'
-const shouldForceDailyMaintenance = process.env.LOOPTROOP_DEV_FORCE_MAINTENANCE === '1'
+// Preflight repairs the dev environment: it runs `npm ci` when the install is
+// stale, and clears stale LoopTroop dev process trees off the configured ports.
+// Every action is announced with its reason before it runs. A daemon started by
+// `looptroop start` is protected and never treated as a stale tree.
+// Dependency sync, audit remediation and the OpenCode upgrade rewrite
+// package.json, the lockfile, or a globally installed CLI, so they stay opt-in
+// via `npm run deps:sync`, `npm run audit:remediate` and
+// `npm run opencode:upgrade`.
+const maintenanceOptIn = process.env.LOOPTROOP_DEV_MAINTENANCE === '1'
+const shouldSkipDependencyMaintenance = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_DEPS === '1'
+const shouldSkipOpenCodeUpgrade = !maintenanceOptIn || process.env.LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE === '1'
+const shouldForceDailyMaintenance = maintenanceOptIn && process.env.LOOPTROOP_DEV_FORCE_MAINTENANCE === '1'
 const devHostMode = (() => {
   try {
     return resolveDevHostMode()
@@ -54,7 +66,6 @@ const portAvailabilityHost = devHostMode.enabled ? devHostMode.bindHost : '127.0
 const configuredPorts = [
   { label: 'frontend', port: getFrontendPort() },
   { label: 'backend', port: getBackendPort() },
-  { label: 'docs', port: getDocsPort() },
 ]
 
 const preflightStartedAt = Date.now()
@@ -90,6 +101,25 @@ function collectProtectedPids(currentPid: number, graph: ReturnType<typeof build
   while (current) {
     protectedPids.add(current.pid)
     current = graph.byPid.get(current.ppid)
+  }
+
+  // A `looptroop start` daemon is a real user session, not a stale dev tree.
+  // Its process tree looks identical to one, so protect it explicitly — but only
+  // once the pid in the record has been shown to still be that daemon.
+  const protection = decideDaemonProtection(readDaemonState(), {
+    isProcessAlive,
+    matchProcess: (pid, token) => matchProcess(pid, token),
+  })
+
+  for (const warning of protection.warnings) {
+    console.warn(`[dev-preflight] ${warning}`)
+  }
+
+  for (const pid of protection.pids) {
+    for (const entry of collectProcessTree(pid, graph)) {
+      protectedPids.add(entry.pid)
+    }
+    protectedPids.add(pid)
   }
 
   return protectedPids
@@ -223,7 +253,7 @@ function ensureDistinctConfiguredPorts() {
     hasConflict = true
     console.error(
       `[dev-preflight] Port configuration conflict: ${labels.join(', ')} all use ${port}. ` +
-      'Set LOOPTROOP_FRONTEND_PORT, LOOPTROOP_BACKEND_PORT, and LOOPTROOP_DOCS_PORT to distinct values.',
+      'Set LOOPTROOP_FRONTEND_PORT and LOOPTROOP_BACKEND_PORT to distinct values.',
     )
   }
 
@@ -254,7 +284,9 @@ const dependencySyncDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipDependencyMaintenance) {
-  logProgress('Skipping direct dependency sync because LOOPTROOP_DEV_SKIP_DEPS=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping direct dependency sync because LOOPTROOP_DEV_SKIP_DEPS=1.'
+    : 'Dependency sync is opt-in; run `npm run deps:sync` to update dependencies.')
 } else if (dependencySyncDecision.shouldRun) {
   logProgress('Checking direct npm dependencies for eligible updates; this daily network check may take a moment.')
 } else {
@@ -305,7 +337,9 @@ const auditDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipDependencyMaintenance) {
-  logProgress('Skipping npm audit remediation because LOOPTROOP_DEV_SKIP_DEPS=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping npm audit remediation because LOOPTROOP_DEV_SKIP_DEPS=1.'
+    : 'Audit remediation is opt-in; run `npm run audit:remediate` to apply fixes.')
 } else if (auditDecision.shouldRun) {
   logProgress('Previewing npm audit remediation; this daily lockfile check may take a moment.')
 } else {
@@ -366,7 +400,9 @@ const opencodeDecision = decideDailyMaintenanceTask({
 })
 
 if (shouldSkipOpenCodeUpgrade) {
-  logProgress('Skipping OpenCode CLI upgrade because LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1.')
+  logProgress(maintenanceOptIn
+    ? 'Skipping OpenCode CLI upgrade because LOOPTROOP_DEV_SKIP_OPENCODE_UPGRADE=1.'
+    : 'OpenCode CLI upgrade is opt-in; run `npm run opencode:upgrade` to update it.')
 } else if (opencodeDecision.shouldRun) {
   logProgress('Checking OpenCode CLI for updates; this daily check may take a moment.')
 } else {

@@ -112,19 +112,32 @@ class TestOpenCodeAdapter implements OpenCodeAdapter {
   async checkHealth(): Promise<HealthStatus> { return { available: true } }
 }
 
-class SlowTestOpenCodeAdapter extends TestOpenCodeAdapter {
-  constructor(responses: string[], private readonly delayMs: number) { super(responses) }
-
-  override async promptSession(
-    sessionId: string, parts: PromptPart[], signal?: AbortSignal, options?: PromptSessionOptions,
+/**
+ * Never answers on its own, so a timeout test cannot race a sleeping model
+ * against the deadline: only the deadline can settle the prompt.
+ */
+class StalledTestOpenCodeAdapter extends TestOpenCodeAdapter {
+  override promptSession(
+    _sessionId: string, _parts: PromptPart[], signal?: AbortSignal, _options?: PromptSessionOptions,
   ): Promise<string> {
-    await new Promise((resolve) => setTimeout(resolve, this.delayMs))
-    return super.promptSession(sessionId, parts, signal, options)
+    return new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => {
+        const abortError = new Error('Aborted')
+        abortError.name = 'AbortError'
+        reject(abortError)
+      }, { once: true })
+    })
   }
 }
 
 const COUNCIL = [{ modelId: 'model-a', name: 'Model A' }]
-const DRAFT_OPTS = { draftTimeoutMs: 1_000, minQuorum: 1, ticketExternalId: TEST.externalId }
+/**
+ * Long enough that no test here can reach it by accident. Only the timeout test
+ * sets a budget it means to exhaust; every other assertion is about content, and
+ * a short wall-clock budget turns a loaded CI worker into a spurious failure.
+ */
+const DRAFT_OPTS = { draftTimeoutMs: 300_000, minQuorum: 1, ticketExternalId: TEST.externalId }
+const DEADLINE_MS = 250
 const GENERATED_BY = { winner_model: 'model-a', generated_at: TEST.timestamp }
 const ANSWERED = {
   skipped: false, selected_option_ids: [] as string[], free_text: 'Preserve council retry behavior and strict validation.',
@@ -1158,15 +1171,15 @@ describe.concurrent('draftPRD', () => {
   })
 
   it('continues to time out when the model misses the full-answers deadline', async () => {
-    const adapter = new SlowTestOpenCodeAdapter([resolvedYaml()], 50)
+    const adapter = new StalledTestOpenCodeAdapter([resolvedYaml()])
 
     const result = await draftPRD(adapter, COUNCIL,
       ticket('Keep full-answers timeouts unchanged', 'Timeout policy is out of scope for this hardening pass.'),
-      '/tmp/test', { draftTimeoutMs: 10, minQuorum: 1, ticketExternalId: TEST.externalId },
+      '/tmp/test', { draftTimeoutMs: DEADLINE_MS, minQuorum: 1, ticketExternalId: TEST.externalId },
     )
 
     expect(result.fullAnswers[0]).toMatchObject({
-      memberId: 'model-a', outcome: 'timed_out', error: 'AI response timeout reached after 10ms',
+      memberId: 'model-a', outcome: 'timed_out', error: `AI response timeout reached after ${DEADLINE_MS}ms`,
     })
     expect(result.drafts[0]?.outcome).toBe('timed_out')
     expect(adapter.sessions.map((session) => session.id)).toEqual(['mock-session-1'])

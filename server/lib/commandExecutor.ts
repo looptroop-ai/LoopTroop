@@ -7,6 +7,12 @@ import { FORCE_KILL_DELAY_MS } from './constants'
 
 const MAX_COMMAND_OUTPUT_BYTES = 1_000_000
 
+// Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
+// run into a strict-mode failure. Matches the launcher script in
+// phases/executionSetup/runtimeLauncher.ts.
+const POWERSHELL_EXIT_CODE_SUFFIX =
+  '\nif (Test-Path -LiteralPath variable:\\LASTEXITCODE) { exit $LASTEXITCODE }'
+
 export interface CommandInvocation {
   bin: string
   args: string[]
@@ -71,7 +77,18 @@ export function buildCommandInvocation(
   if (command.shell === 'powershell') {
     return {
       bin: resolvePowerShell(pathExists, options.shellBinaries?.powershell),
-      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command.script],
+      // Windows PowerShell 5.1 reports its own status from -Command, not the
+      // status of the last native program, so `node -e "process.exit(4)"`
+      // arrives as 1. Re-exporting $LASTEXITCODE restores the real code. It is
+      // $null when no native program ran, and `exit $null` is exit 0, so
+      // pure-cmdlet scripts keep their previous behaviour.
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `${command.script}${POWERSHELL_EXIT_CODE_SUFFIX}`,
+      ],
     }
   }
   return {

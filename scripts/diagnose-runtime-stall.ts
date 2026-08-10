@@ -3,7 +3,7 @@ import { promises as dnsPromises } from 'node:dns'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
-import Database from 'better-sqlite3'
+import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
 
 interface CliOptions {
@@ -389,7 +389,9 @@ const cli = parseCliArgs(process.argv.slice(2))
 const reportLines: string[] = []
 const startedAt = new Date()
 const runTimestamp = formatFileTimestamp(startedAt)
-const reportDir = resolve(process.cwd(), 'tmp', 'diagnostics')
+// User-space, not cwd: as a global command this would otherwise scatter reports
+// into whatever directory the user happened to run from.
+const reportDir = resolve(resolveAppConfigDir(process.env as Record<string, string>), 'diagnostics')
 const reportPath = resolve(reportDir, `runtime-stall-${runTimestamp}.log`)
 const commandAvailability = new Map<string, boolean>()
 
@@ -2214,6 +2216,14 @@ function resolveAppConfigDir(env: Record<string, string>): string {
     return resolvePortablePath(configured)
   }
 
+  if (process.platform === 'win32') {
+    const appData = env.APPDATA?.trim()
+    const baseDir = appData
+      ? resolvePortablePath(appData)
+      : resolve(env.USERPROFILE?.trim() || homedir(), 'AppData', 'Roaming')
+    return resolve(baseDir, 'looptroop')
+  }
+
   const xdgConfigHome = env.XDG_CONFIG_HOME?.trim()
   const baseDir = xdgConfigHome
     ? resolvePortablePath(xdgConfigHome)
@@ -2331,14 +2341,14 @@ function collectTicketRuntimeLargestFiles(runtimePath: string): CommandResult {
   return runShell(command, 20000)
 }
 
-function openReadonlyDatabase(path: string): Database.Database {
+function openReadonlyDatabase(path: string): Database {
   return new Database(path, {
     readonly: true,
     fileMustExist: true,
   })
 }
 
-function tableExists(db: Database.Database, tableName: string): boolean {
+function tableExists(db: Database, tableName: string): boolean {
   const row = db.prepare(
     `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`,
   ).get(tableName) as { name?: string } | undefined
@@ -2357,7 +2367,7 @@ function inspectAppDatabase(appDbPath: string): {
     return { exists: false, attachedProjects: [], openMs: 0, queryMs: 0 }
   }
 
-  let db: Database.Database | null = null
+  let db: Database | null = null
   const openStartedAt = Date.now()
 
   try {
@@ -2369,7 +2379,7 @@ function inspectAppDatabase(appDbPath: string): {
         `SELECT id, folder_path AS folderPath, created_at AS createdAt, updated_at AS updatedAt
          FROM attached_projects
          ORDER BY id`,
-      ).all() as AttachedProjectRow[]
+      ).all() as unknown as AttachedProjectRow[]
       : []
     const queryMs = Date.now() - queryStartedAt
     return { exists: true, attachedProjects, openMs, queryMs }
@@ -2546,7 +2556,7 @@ function inspectProjectDatabase(project: AttachedProjectRow): ProjectSnapshot {
     }
   }
 
-  let db: Database.Database | null = null
+  let db: Database | null = null
   const dbOpenStartedAt = Date.now()
 
   try {
@@ -2570,7 +2580,7 @@ function inspectProjectDatabase(project: AttachedProjectRow): ProjectSnapshot {
          FROM tickets
          ORDER BY updated_at DESC
          LIMIT 8`,
-      ).all() as TicketRow[]
+      ).all() as unknown as TicketRow[]
       : []
 
     const latestNonTerminalTicket = tableExists(db, 'tickets')
@@ -2599,7 +2609,7 @@ function inspectProjectDatabase(project: AttachedProjectRow): ProjectSnapshot {
          WHERE state = 'active'
          ORDER BY updated_at DESC
          LIMIT 8`,
-      ).all() as ActiveSessionRow[]
+      ).all() as unknown as ActiveSessionRow[]
       : []
 
     const ticketRefs = tableExists(db, 'tickets')

@@ -50,6 +50,18 @@ escape those boundaries — reaching outside attached repositories, escalating
 beyond the local user, or executing commands without user action — are
 vulnerabilities.
 
+### Known limit: the loopback cookie jar
+
+A browser session is held in a cookie, and cookies are scoped by host, never by
+port. Every service on `127.0.0.1` therefore shares one cookie jar, which is a
+property of the platform rather than of this daemon. LoopTroop refuses that
+cookie on any request the browser does not vouch for as same-origin, which is
+what stops another local page from driving the API through your browser. It
+cannot stop a program already running as you from reading the cookie out of the
+browser's store and replaying it by hand — such a program can forge every header
+a server could check, and it could equally read the API token from the state
+file. Anything running as your user is inside the boundary.
+
 ## Data Handling
 
 LoopTroop collects no telemetry and sends no usage data anywhere.

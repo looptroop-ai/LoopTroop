@@ -18,7 +18,7 @@
  */
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
@@ -30,16 +30,23 @@ function fail(message: string): never {
 }
 
 const args = process.argv.slice(2)
-const positional = args.filter((value) => !value.startsWith('--'))
+
+// `--out` takes a value, and that value is a path, so it does not start with
+// `--`. A plain "not a flag" filter therefore counted it as a second positional
+// and the usage check rejected every invocation that used the flag this script
+// documents. The flag's value is excluded by position instead.
+const outIndex = args.indexOf('--out')
+const outPath = outIndex === -1
+  ? resolve(repoRoot, 'release-manifest.json')
+  : resolve(args[outIndex + 1] ?? fail('--out needs a path'))
+const consumed = new Set(outIndex === -1 ? [] : [outIndex, outIndex + 1])
+
+const positional = args.filter((value, index) => !consumed.has(index) && !value.startsWith('--'))
 if (positional.length !== 1) {
   fail('Usage: npm run release:manifest -- <tarball.tgz> [--out release-manifest.json]')
 }
 
 const tarballPath = resolve(positional[0]!)
-const outIndex = args.indexOf('--out')
-const outPath = outIndex === -1
-  ? resolve(repoRoot, 'release-manifest.json')
-  : resolve(args[outIndex + 1] ?? fail('--out needs a path'))
 
 let bytes: Buffer
 try {
@@ -79,6 +86,16 @@ const manifest = {
 
 writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
+// Shortened for the log only while the path is genuinely inside the repository.
+// Slicing the root's length off any absolute path mangles one that is not:
+// `--out /tmp/staging/release-manifest.json` printed as `release-manifest.json`,
+// naming a file in the checkout that this run never wrote. Harmless while `--out`
+// was unusable; reachable now that it works.
+const relativeOut = relative(repoRoot, outPath)
+const displayOut = relativeOut === '' || relativeOut.startsWith('..') || isAbsolute(relativeOut)
+  ? outPath
+  : relativeOut
+
 process.stdout.write([
   `name        ${manifest.name}`,
   `version     ${manifest.version}`,
@@ -88,6 +105,6 @@ process.stdout.write([
   `sha256      ${sha256}`,
   `integrity   ${integrity}`,
   '',
-  `Wrote ${outPath.slice(repoRoot.length + 1)}`,
+  `Wrote ${displayOut}`,
   '',
 ].join('\n'))

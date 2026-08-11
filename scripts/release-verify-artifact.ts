@@ -22,13 +22,19 @@ function fail(message: string): never {
 }
 
 const args = process.argv.slice(2)
-const positional = args.filter((value) => !value.startsWith('--'))
-if (positional.length !== 2) {
-  fail('Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json>')
-}
 
+// Read before the positional filter, and its value excluded by position: an
+// integrity string does not start with `--`, so filtering on that alone counted
+// it as a third positional and the usage check rejected every invocation using
+// the flag. Same trap as `--out` in release-manifest.ts.
 const registryIndex = args.indexOf('--registry-integrity')
 const registryIntegrity = registryIndex === -1 ? null : args[registryIndex + 1] ?? null
+const consumed = new Set(registryIndex === -1 ? [] : [registryIndex, registryIndex + 1])
+
+const positional = args.filter((value, index) => !consumed.has(index) && !value.startsWith('--'))
+if (positional.length !== 2) {
+  fail('Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json> [--registry-integrity sha512-…]')
+}
 
 const [tarballArg, manifestArg] = positional as [string, string]
 const tarballPath = resolve(tarballArg)

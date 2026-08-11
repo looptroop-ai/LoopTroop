@@ -111,8 +111,16 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
           echo "v${VERSION} is unused on all three channels."
 
+      # Read through the environment, not interpolated into the script body.
+      # `${{ }}` is substituted into the shell source before bash sees it, so a
+      # version string carrying shell metacharacters would run as this step's
+      # own commands — and a later step in this same job holds RELEASE_PR_TOKEN.
+      # Every other step here already takes the version this way; these two were
+      # the exceptions.
       - name: Apply the version bump
-        run: npm run release:bump -- "${{ inputs.version }}"
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm run release:bump -- "$VERSION"
 
       # The gate the release PR must pass. It checks that package.json,
       # both package-lock.json version fields, and every tracked file agree.
@@ -126,7 +134,9 @@ jobs:
         run: npm ci
 
       - name: Preview the release notes
-        run: npm run release:notes -- "${{ inputs.version }}" > /tmp/release-notes.md
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm run release:notes -- "$VERSION" > /tmp/release-notes.md
 
       # Normalises the dry-run flag to a string output, because no workflow
       # expression can gate on the input directly with confidence.
@@ -155,6 +165,15 @@ jobs:
       # Files by name. Never `git add .`: this tree also contains build output
       # and anything a failed step left behind.
       #
+      # Staged first, because three of these four are tracked and the fourth is
+      # not: `.github/releases/<version>.md` is created by the bump and has never
+      # existed before. A pathspec commit resolves its paths against what Git
+      # already knows, so naming a brand-new file there is `error: pathspec ...
+      # did not match any file(s) known to git` — the first release PR would have
+      # stopped at this step, every time. `git add` makes exactly these four
+      # known; `--only` then still commits exactly these four and nothing a
+      # previous step may have left in the index.
+      #
       # `--force-with-lease` with no value treats the branch as expected to be
       # absent: a first run creates it, and a re-run for the same version
       # overwrites only the branch this workflow itself left behind — never a
@@ -166,6 +185,8 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          git add -- \
+            package.json package-lock.json CHANGELOG.md ".github/releases/${VERSION}.md"
           git -c user.name='looptroop-release' \
               -c user.email='release@looptroop.ovh' \
               commit --only \
@@ -203,7 +224,9 @@ jobs:
 
       - name: Dry run summary
         if: ${{ steps.mode.outputs.dry_run == 'true' }}
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          echo "### Dry run: v${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Dry run: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Every check passed. No branch was pushed and no PR was opened." >> "$GITHUB_STEP_SUMMARY"

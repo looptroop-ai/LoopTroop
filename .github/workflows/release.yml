@@ -321,14 +321,27 @@ jobs:
           name: release-artefacts
 
       - name: Verify the artefact matches the manifest
-        run: npm run release:verify-artifact -- "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
 
       # The artefact, not a fresh pack. Repacking here would test bytes nobody
       # ships and let a difference between the two pass unnoticed.
+      #
+      # Run as root, like the same check in ci.yml, and for the same reason: the
+      # read-only install is a `mount --bind`, which needs CAP_SYS_ADMIN. As the
+      # ordinary runner user the mount is refused, and because REQUIRED is set
+      # that refusal is a failure rather than a skip — so this step could only
+      # ever fail, on every release, before anything was published. The
+      # interpreter is resolved before sudo so it is the Node this job pinned
+      # rather than whatever sudoers' secure_path finds.
       - name: Install read-only and check the CLI still runs
         env:
           LOOPTROOP_READONLY_REQUIRED: '1'
-        run: npm run verify:readonly -- --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          sudo -E "$(which node)" scripts/verify-readonly-install.mjs \
+            --tarball "looptroop-${VERSION}.tgz"
 
   # ---------------------------------------------------------------------------
   # The anchor. Every channel depends on this job, never on a sibling channel,
@@ -435,19 +448,60 @@ jobs:
             # `|| true` because a draft with no assets yet is an ordinary resume
             # state, not a failure.
             existing_assets=$(gh release view "v${VERSION}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            has_manifest=false
+            has_tarball=false
+            # Tested with `if`, not `grep ... && flag=true`: under `set -e` a
+            # top-level `A && B` whose left side fails is a failing command, so
+            # the absent-asset case — the whole reason this branch exists —
+            # would exit the step. An `if` condition is exempt.
             if printf '%s\n' "${existing_assets}" | grep -qx 'release-manifest.json'; then
-              gh release download "v${VERSION}" --pattern release-manifest.json --dir /tmp/existing --clobber
-              built=$(node -p "require('./release-manifest.json').integrity")
-              drafted=$(node -p "require('/tmp/existing/release-manifest.json').integrity")
-              if [ "${built}" != "${drafted}" ]; then
-                echo "::error::The draft for v${VERSION} holds ${drafted}, this build produced ${built}."
-                echo "::error::A rebuild of the same tree is byte-identical, so the tree changed. Release a new version."
-                exit 1
-              fi
-              echo "The drafted artefact matches this build (${built}); leaving the assets alone."
+              has_manifest=true
+            fi
+            if printf '%s\n' "${existing_assets}" | grep -qx "looptroop-${VERSION}.tgz"; then
+              has_tarball=true
+            fi
+
+            # Both assets, or neither. A resume is exactly the state where an
+            # upload got partway, so "the manifest is there" is no evidence the
+            # tarball is — and the old check took the leave-it-alone branch on
+            # that evidence, which would publish a release whose only tarball is
+            # the one on npm. A half-uploaded draft is re-uploaded rather than
+            # trusted.
+            if [ "${has_manifest}" = true ] && [ "${has_tarball}" = true ]; then
+              rm -rf /tmp/existing
+              gh release download "v${VERSION}" \
+                --pattern release-manifest.json \
+                --pattern "looptroop-${VERSION}.tgz" \
+                --dir /tmp/existing --clobber
+
+              # The drafted manifest against this build's, field by field rather
+              # than integrity alone: a manifest agreeing on the hash but naming
+              # another version or commit is not this release's manifest.
+              node -e '
+                const a = require("./release-manifest.json")
+                const b = require("/tmp/existing/release-manifest.json")
+                const fields = ["version", "tarball", "bytes", "sha256", "integrity", "commit"]
+                const differing = fields.filter((f) => String(a[f]) !== String(b[f]))
+                if (differing.length > 0) {
+                  for (const f of differing) {
+                    console.error(`::error::manifest ${f}: draft has ${b[f]}, this build produced ${a[f]}`)
+                  }
+                  console.error("::error::A rebuild of the same tree is byte-identical, so the tree changed. Release a new version.")
+                  process.exit(1)
+                }
+              '
+
+              # And the drafted tarball's own bytes, hashed. Comparing two
+              # manifests only proves the two manifests agree; the attached
+              # tarball is a separate object that could have been replaced.
+              npm run release:verify-artifact -- \
+                "/tmp/existing/looptroop-${VERSION}.tgz" release-manifest.json
+
+              echo "The drafted manifest and tarball both match this build; leaving the assets alone."
             else
+              echo "Draft assets are incomplete (manifest=${has_manifest} tarball=${has_tarball}); uploading both."
               gh release upload "v${VERSION}" \
-                "looptroop-${VERSION}.tgz" release-manifest.json
+                "looptroop-${VERSION}.tgz" release-manifest.json --clobber
             fi
           else
             gh release create "v${VERSION}" \

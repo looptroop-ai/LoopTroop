@@ -5,10 +5,3 @@ charset = utf-8
 end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
-
-[docs/roadmap.md]
-end_of_line = crlf
-
-[public/fonts/*.txt]
-end_of_line = crlf
-trim_trailing_whitespace = false

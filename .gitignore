@@ -59,14 +59,8 @@ Thumbs.db
 .roomodes
 *.aider*
 *.bak
-# Removed repo metadata/assets
+# Removed repository metadata
 /CITATION.cff
-/public/vite.svg
-/public/logo.jpg
-/public/logo-sm.jpg
-/public/web.css
-/public/fonts/TheGodfather-v2.ttf
-/public/fonts/*.zip
 AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -91,6 +85,4 @@ test-results/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 docs/.vitepress/.temp/
-
-
 

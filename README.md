@@ -15,7 +15,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 
 **Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Execution](https://www.looptroop.ovh/docs/beads)
 
-![LoopTroop workflow demo](https://www.looptroop.ovh/media/20260619104032-26sec-captions.gif)
+![LoopTroop workflow demo](https://raw.githubusercontent.com/looptroop-ai/LoopTroop-Website/main/docs/media/20260619104032-26sec-captions.gif)
 *An animated walkthrough of a ticket lifecycle and the configuration menu.*
 
 ### 📸 Screenshots

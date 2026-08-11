@@ -2,15 +2,6 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const CRLF_ALLOWED = [
-  /^docs\/roadmap\.md$/,
-  /^public\/fonts\/.*\.txt$/,
-]
-
-function isCrLfAllowed(path: string): boolean {
-  return CRLF_ALLOWED.some((pattern) => pattern.test(path))
-}
-
 function listRepositoryFiles(): string[] {
   return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'buffer' })
     .toString('utf8')
@@ -38,8 +29,8 @@ describe('line ending policy', () => {
         violations.push(`${path} mixes CRLF (${crlfCount}) and LF (${lfOnlyCount}) endings`)
       }
 
-      if (!isCrLfAllowed(path) && crlfCount > 0) {
-        violations.push(`${path} uses CRLF endings but is not in the CRLF allowlist`)
+      if (crlfCount > 0) {
+        violations.push(`${path} uses CRLF endings; application text files must use LF`)
       }
     }
 

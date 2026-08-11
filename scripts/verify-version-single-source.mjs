@@ -49,7 +49,6 @@ const EXCLUDED_PATTERNS = [
   /^dist\//,
   /^site\//,
   /\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf|eot|pdf|zip|tgz)$/i,
-  /^public\/web\.css$/,
 ]
 
 function run(command, args) {

@@ -3,9 +3,6 @@
 # Windows and fail the repository's own line-ending policy test.
 * text=auto eol=lf
 
-docs/roadmap.md -text
-public/fonts/*.txt -text
-
 *.ico binary
 *.png binary
 *.jpg binary

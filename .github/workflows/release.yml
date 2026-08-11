@@ -1,0 +1,975 @@
+# Cuts the release once the version-bump PR merges.
+#
+# Ordering is the whole design. Every irreversible step is preceded by a check
+# that can still refuse, and the git tag is created *last*, so a tag means the
+# release finished rather than that it started:
+#
+#   detect -> build -> verify-artifact -> draft-release
+#                                            |
+#                                            v
+#                                           npm -> smoke -> finalize -> report
+#
+# `draft-release` creates a *draft*, which creates no git tag. That was verified
+# against this repository rather than assumed: a draft release for a nonexistent
+# tag yields a `releases/tag/untagged-<hash>` URL, and the ref 404s before and
+# after. So the draft can hold the notes and artefacts while npm — the one step
+# that cannot be undone — still has a clean way to refuse.
+#
+# Every job pins Node and npm. Trusted publishing needs npm >= 11.5.1, and an
+# unpinned client is exactly the kind of drift that surfaces on the one blocking
+# job, mid-release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and verify without publishing anything'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Never cancel a release in flight. Cancelling between the npm publish and the
+# tag would leave exactly the half-finished state the resume logic exists for,
+# for no reason other than a second push landing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # What state is this release in, and may it publish at all?
+  # ---------------------------------------------------------------------------
+  detect:
+    name: Detect release state
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.state.outputs.version }}
+      state: ${{ steps.state.outputs.state }}
+      dry_run: ${{ steps.guard.outputs.dry_run }}
+      proceed: ${{ steps.state.outputs.proceed }}
+      needs_npm: ${{ steps.state.outputs.needs_npm }}
+      dist_tag: ${{ steps.state.outputs.dist_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      # The hard publication guard. A manual dispatch can ask for a real
+      # publish, but only a push to main is allowed to perform one: dispatch can
+      # target any ref, and publishing from an arbitrary ref would ship
+      # unreviewed code under a released version. Anything else is forced to a
+      # dry run regardless of the input.
+      #
+      # Job outputs are strings. Every consumer compares against 'true' rather
+      # than testing truthiness, because the *string* "false" is truthy in a
+      # GitHub expression and would invert this guard into publishing.
+      - name: Resolve the publication guard
+        id: guard
+        env:
+          REQUESTED: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            dry_run=false
+          else
+            dry_run=true
+            if [ "${REQUESTED}" = "false" ]; then
+              echo "::warning::A real publish was requested, but this is ${GITHUB_EVENT_NAME} on ${GITHUB_REF}."
+              echo "::warning::Forcing a dry run. Publishing happens only on a push to refs/heads/main."
+            fi
+          fi
+          # A dispatch that asked for a dry run stays a dry run even on main.
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${REQUESTED}" != "false" ]; then
+            dry_run=true
+          fi
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "Dry run: ${dry_run}"
+
+      # Classifies the release: skip, fresh, resume-npm, resume-github,
+      # complete, unverified, or conflict. `skip` covers the ordinary case of a
+      # push to main that did not touch the version, and is also what
+      # grandfathers the releases predating this workflow — GitHub carries
+      # releases this workflow never cut, while npm carries only the placeholder
+      # first publish, and that difference must never read as damaged.
+      # `conflict` is a hard stop: it means something outside this workflow
+      # published or moved something, and a retry would paper over it.
+      #
+      # `--baseline` is the commit whose package.json answers "did *this* push
+      # change the version". `github.event.before` is the exact pre-push SHA, so
+      # a multi-commit push whose bump is not the final commit still releases,
+      # and a rebase merge — where HEAD^ is not what main previously pointed at —
+      # is read correctly. A dispatch has no push boundary at all, so it passes
+      # `auto` and lets the remaining gates decide.
+      #
+      # No `--expected-integrity`: this runs before the build that produces the
+      # artefact, so there are no bytes to compare yet. The comparison happens in
+      # the npm job, against npm's own dist.integrity after publishing.
+      #
+      # Runs on bare node rather than tsx, so this job needs no `npm ci` — and
+      # therefore runs no third-party install scripts before deciding whether a
+      # release happens at all.
+      - name: Resolve release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_FROM: ${{ github.event.before }}
+        run: |
+          baseline=auto
+          # `github.event.before` is all zeroes for a branch's first push, which
+          # names no commit git can read.
+          if [ "${EVENT_NAME}" = "push" ] \
+            && [ -n "${PUSHED_FROM}" ] \
+            && [ "${PUSHED_FROM}" != "0000000000000000000000000000000000000000" ]; then
+            baseline="${PUSHED_FROM}"
+          fi
+          echo "Baseline: ${baseline}"
+          npm run release:detect -- --baseline "${baseline}"
+
+      # Values go through `env`, never interpolated into the script body. The
+      # reason is free-form multi-line prose, and `${{ }}` splices text into the
+      # shell source before bash parses it — a newline in the value would become
+      # a new command.
+      - name: Report the state
+        env:
+          STATE: ${{ steps.state.outputs.state }}
+          VERSION: ${{ steps.state.outputs.version }}
+          PROCEED: ${{ steps.state.outputs.proceed }}
+          DRY_RUN: ${{ steps.guard.outputs.dry_run }}
+          REASON: ${{ steps.state.outputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            printf '### Release state: %s\n\n' "${STATE}"
+            printf -- '- Version: %s\n' "${VERSION}"
+            printf -- '- Proceed: %s\n' "${PROCEED}"
+            printf -- '- Dry run: %s\n' "${DRY_RUN}"
+            printf -- '- Reason: %s\n' "${REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The states that end the run here. Every later job is gated on
+          # `proceed`, and the report job is too, so without this a halting run
+          # finishes green with an empty summary and no explanation of why
+          # nothing happened.
+          case "${STATE}" in
+            skip|complete|unverified)
+              printf '\nNo jobs run for this state. %s\n' "${REASON}" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::Release state '${STATE}': ${REASON}"
+              ;;
+          esac
+
+  # ---------------------------------------------------------------------------
+  # Pack exactly once. Everything downstream consumes these bytes.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build and pack
+    needs: [detect]
+    if: needs.detect.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      tarball: ${{ steps.manifest.outputs.tarball }}
+      sha256: ${{ steps.manifest.outputs.sha256 }}
+      integrity: ${{ steps.manifest.outputs.integrity }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Check third-party notices are current
+        run: npm run licenses:check
+
+      - name: Verify package contents
+        run: npm run verify:package
+
+      - name: Verify no native addons
+        run: npm run verify:no-native-addons
+
+      # Publishing a tarball skips lifecycle scripts, so `prepublishOnly` will
+      # not re-run at publish time. Its three gates are the three steps above,
+      # run here against the exact tree these bytes come from.
+      - name: Pack
+        run: npm pack
+
+      # Binds the bytes to the commit. Every downstream job recomputes both
+      # digests and refuses to proceed on a mismatch, so a corrupted or
+      # substituted artefact download fails loudly before it reaches npm rather
+      # than being detected afterwards, when the publish is already permanent.
+      - name: Write the release manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
+          npm run release:manifest -- "${tarball}"
+          node -e '
+            const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
+            const out = require("node:fs").createWriteStream(process.env.GITHUB_OUTPUT,{flags:"a"})
+            out.write(`tarball=${m.tarball}\n`)
+            out.write(`sha256=${m.sha256}\n`)
+            out.write(`integrity=${m.integrity}\n`)
+            out.end()
+          '
+
+      - name: Upload the release artefacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-artefacts
+          path: |
+            looptroop-*.tgz
+            release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # The last gate before anything is public.
+  # ---------------------------------------------------------------------------
+  verify-artifact:
+    name: Verify artefact (${{ matrix.os }})
+    needs: [detect, build]
+    if: needs.detect.outputs.proceed == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      # The repo is needed for the smoke script itself; the *package* under test
+      # comes only from the downloaded tarball.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Verify the artefact matches the manifest
+        run: npm run release:verify-artifact -- "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json
+
+      - name: Install the tarball and exercise the CLI
+        run: node scripts/smoke-install.mjs --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
+
+  # A read-only install prefix is how a lot of real installs look (a global
+  # prefix owned by root, a container image with a read-only layer). Linux only:
+  # this asserts behaviour under a root-owned prefix, which the hosted macOS and
+  # Windows runners do not reproduce.
+  verify-readonly:
+    name: Verify read-only install
+    needs: [detect, build]
+    if: needs.detect.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Verify the artefact matches the manifest
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+
+      # The artefact, not a fresh pack. Repacking here would test bytes nobody
+      # ships and let a difference between the two pass unnoticed.
+      #
+      # Run as root, like the same check in ci.yml, and for the same reason: the
+      # read-only install is a `mount --bind`, which needs CAP_SYS_ADMIN. As the
+      # ordinary runner user the mount is refused, and because REQUIRED is set
+      # that refusal is a failure rather than a skip — so this step could only
+      # ever fail, on every release, before anything was published. The
+      # interpreter is resolved before sudo so it is the Node this job pinned
+      # rather than whatever sudoers' secure_path finds.
+      - name: Install read-only and check the CLI still runs
+        env:
+          LOOPTROOP_READONLY_REQUIRED: '1'
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          sudo -E "$(which node)" scripts/verify-readonly-install.mjs \
+            --tarball "looptroop-${VERSION}.tgz"
+
+  # ---------------------------------------------------------------------------
+  # The anchor. Every channel depends on this job, never on a sibling channel,
+  # so one channel failing cannot strand another.
+  # ---------------------------------------------------------------------------
+  draft-release:
+    name: Draft the GitHub release
+    needs: [detect, build, verify-artifact, verify-readonly]
+    if: needs.detect.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      # No `npm ci` in this job. The release scripts run under bare node, and
+      # this is the job that holds `contents: write` — installing the dev tree
+      # here would run third-party install scripts in the job that can create
+      # releases and, at the finalize stage, push tags.
+      - name: Render the release notes
+        run: npm run release:notes -- "${{ needs.detect.outputs.version }}" > /tmp/notes.md
+
+      - name: Dry run — show what would be drafted
+        if: needs.detect.outputs.dry_run == 'true'
+        run: |
+          echo "### Dry run: would draft v${{ needs.detect.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Snapshot for the postcondition below. A tag may legitimately already
+      # exist here: `finalize` pushes the tag before publishing the release, so
+      # a run resuming from a failure between those two steps arrives with the
+      # tag in place. The resolver has already hard-stopped if it names a
+      # different commit, so what is left to prove is that *drafting* does not
+      # create one.
+      - name: Record whether the tag already exists
+        id: tag_before
+        if: needs.detect.outputs.dry_run == 'false'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "existed=true" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is already tagged; this run is resuming a release that got past finalize's tag push."
+          else
+            echo "existed=false" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is not tagged yet."
+          fi
+
+      # Creates a draft, which creates no tag. A resume reuses the existing
+      # draft rather than creating a second one.
+      #
+      # The draft's assets are the record of what this release is. On a resume
+      # they are not overwritten blind: `npm pack` is reproducible for an
+      # identical tree, so a rebuild that produces different bytes means the
+      # tree changed under a version that is already partly released, and
+      # clobbering would quietly replace the artefact a user may already have
+      # downloaded — or, once npm has the version, make the GitHub asset
+      # disagree with the registry. Different bytes stop the release instead.
+      - name: Create or update the draft release
+        if: needs.detect.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          case "${VERSION}" in *-*) prerelease=(--prerelease) ;; esac
+
+          # The artefact is bound to the commit it was built from, and the tag
+          # this release eventually carries must name that same commit. They are
+          # equal by construction — every job checks out GITHUB_SHA — so a
+          # difference means an artefact from somewhere else.
+          MANIFEST_COMMIT=$(node -p "require('./release-manifest.json').commit || ''")
+          if [ "${MANIFEST_COMMIT}" != "${GITHUB_SHA}" ]; then
+            echo "::error::The artefact was built from '${MANIFEST_COMMIT:-(unknown)}', but this release is cut from ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Draft for v${VERSION} already exists; updating it."
+            gh release edit "v${VERSION}" --notes-file /tmp/notes.md "${prerelease[@]}"
+
+            # `|| true` because a draft with no assets yet is an ordinary resume
+            # state, not a failure.
+            existing_assets=$(gh release view "v${VERSION}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            has_manifest=false
+            has_tarball=false
+            # Tested with `if`, not `grep ... && flag=true`: under `set -e` a
+            # top-level `A && B` whose left side fails is a failing command, so
+            # the absent-asset case — the whole reason this branch exists —
+            # would exit the step. An `if` condition is exempt.
+            if printf '%s\n' "${existing_assets}" | grep -qx 'release-manifest.json'; then
+              has_manifest=true
+            fi
+            if printf '%s\n' "${existing_assets}" | grep -qx "looptroop-${VERSION}.tgz"; then
+              has_tarball=true
+            fi
+
+            # Both assets, or neither. A resume is exactly the state where an
+            # upload got partway, so "the manifest is there" is no evidence the
+            # tarball is — and the old check took the leave-it-alone branch on
+            # that evidence, which would publish a release whose only tarball is
+            # the one on npm. A half-uploaded draft is re-uploaded rather than
+            # trusted.
+            if [ "${has_manifest}" = true ] && [ "${has_tarball}" = true ]; then
+              rm -rf /tmp/existing
+              gh release download "v${VERSION}" \
+                --pattern release-manifest.json \
+                --pattern "looptroop-${VERSION}.tgz" \
+                --dir /tmp/existing --clobber
+
+              # The drafted manifest against this build's, field by field rather
+              # than integrity alone: a manifest agreeing on the hash but naming
+              # another version or commit is not this release's manifest.
+              node -e '
+                const a = require("./release-manifest.json")
+                const b = require("/tmp/existing/release-manifest.json")
+                const fields = ["version", "tarball", "bytes", "sha256", "integrity", "commit"]
+                const differing = fields.filter((f) => String(a[f]) !== String(b[f]))
+                if (differing.length > 0) {
+                  for (const f of differing) {
+                    console.error(`::error::manifest ${f}: draft has ${b[f]}, this build produced ${a[f]}`)
+                  }
+                  console.error("::error::A rebuild of the same tree is byte-identical, so the tree changed. Release a new version.")
+                  process.exit(1)
+                }
+              '
+
+              # And the drafted tarball's own bytes, hashed. Comparing two
+              # manifests only proves the two manifests agree; the attached
+              # tarball is a separate object that could have been replaced.
+              npm run release:verify-artifact -- \
+                "/tmp/existing/looptroop-${VERSION}.tgz" release-manifest.json
+
+              echo "The drafted manifest and tarball both match this build; leaving the assets alone."
+            else
+              echo "Draft assets are incomplete (manifest=${has_manifest} tarball=${has_tarball}); uploading both."
+              gh release upload "v${VERSION}" \
+                "looptroop-${VERSION}.tgz" release-manifest.json --clobber
+            fi
+          else
+            gh release create "v${VERSION}" \
+              --draft \
+              --title "v${VERSION}" \
+              --notes-file /tmp/notes.md \
+              --target "${MANIFEST_COMMIT}" \
+              "${prerelease[@]}" \
+              "looptroop-${VERSION}.tgz" release-manifest.json
+          fi
+
+      # The whole ordering rests on a tag meaning "finished". A draft creates no
+      # tag — verified against this repository rather than assumed — and this
+      # asserts it stayed that way for *this* run, because a tag appearing here
+      # would make the half-finished release that follows indistinguishable from
+      # a complete one. Compared against the snapshot rather than against
+      # absence, so resuming past finalize's tag push is not mistaken for damage.
+      - name: Assert the draft created no tag
+        if: needs.detect.outputs.dry_run == 'false'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          EXISTED: ${{ steps.tag_before.outputs.existed }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          exists=false
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            exists=true
+          fi
+          if [ "${EXISTED}" = "false" ] && [ "${exists}" = "true" ]; then
+            echo "::error::Drafting v${VERSION} created refs/tags/v${VERSION}. The tag must be created last, by finalize."
+            exit 1
+          fi
+          echo "Tag presence is unchanged by drafting (was ${EXISTED}, is ${exists})."
+
+  # ---------------------------------------------------------------------------
+  # npm. The only irreversible step, and the only blocking channel.
+  # ---------------------------------------------------------------------------
+  # Inline rather than a reusable workflow. npm's trusted publisher matches on a
+  # workflow filename, and with `workflow_call` it is genuinely unclear whether
+  # that is the caller or the callee — the registry exposes no metadata to settle
+  # it, and a wrong guess burns a release cycle on the one job that blocks. The
+  # trusted publisher names `release.yml`, so the publish lives in release.yml.
+  npm:
+    name: Publish to npm
+    needs: [detect, build, draft-release]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      # Trusted publishing. No NODE_AUTH_TOKEN anywhere in this job: the OIDC
+      # exchange replaces the long-lived token entirely. Provenance is automatic
+      # for a public repo publishing a public package, so no --provenance flag.
+      id-token: write
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin npm
+        run: |
+          npm install --global npm@11.12.1
+          npm --version
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Verify the bytes before publishing
+        run: |
+          set -euo pipefail
+          node -e '
+            const {readFileSync} = require("node:fs")
+            const {createHash} = require("node:crypto")
+            const m = JSON.parse(readFileSync("release-manifest.json", "utf8"))
+            const bytes = readFileSync(m.tarball)
+            const sha256 = createHash("sha256").update(bytes).digest("hex")
+            const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64")
+            if (sha256 !== m.sha256) throw new Error(`sha256 mismatch: ${sha256} != ${m.sha256}`)
+            if (integrity !== m.integrity) throw new Error(`integrity mismatch`)
+            console.log(`${m.tarball} matches the manifest.`)
+          '
+
+      # Idempotent on its own, so this job can be re-run alone after fixing a
+      # trusted-publisher misconfiguration without re-running the release.
+      #
+      # The job is not gated on `needs_npm`: a skipped job skips everything
+      # that needs it, which would strand `smoke` and `finalize` and leave a
+      # published version untagged. Instead the resolver's expectation is
+      # checked against the registry here, where disagreeing with it is
+      # information rather than a dead end.
+      - name: Publish
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+          NEEDS_NPM: ${{ needs.detect.outputs.needs_npm }}
+        run: |
+          set -euo pipefail
+          already=false
+          if npm view "looptroop@${VERSION}" version >/dev/null 2>&1; then
+            already=true
+          fi
+
+          # The resolver read the registry minutes ago; this reads it again with
+          # the artefact in hand. A version that appeared in between was
+          # published by something other than this run, and republishing is
+          # impossible anyway — npm versions are immutable — so the bytes are
+          # reconciled by the verification step below rather than assumed.
+          if [ "${NEEDS_NPM}" = "false" ] && [ "${already}" = "false" ]; then
+            echo "::warning::Detection expected ${VERSION} to be on npm already, but it is not. Publishing it."
+          fi
+          if [ "${already}" = "true" ]; then
+            echo "looptroop@${VERSION} is already published; skipping the publish."
+            echo "The verification step still runs, and fails if those bytes are not this build's."
+            exit 0
+          fi
+          # Captured before publishing so the RC assertions can prove `latest`
+          # did not move. npm tags a publish `latest` unless --tag is given; it
+          # does not infer a prerelease from `-rc.N`.
+          latest_before=$(npm view looptroop dist-tags.latest 2>/dev/null || echo 'none')
+          echo "latest before publish: ${latest_before}"
+          echo "LATEST_BEFORE=${latest_before}" >> "$GITHUB_ENV"
+          npm publish "looptroop-${VERSION}.tgz" --access public --tag "${DIST_TAG}"
+
+      # Proves npm stored the bytes we verified, and that the dist-tags landed
+      # where they belong. Polled because the registry is read-through-cached and
+      # a fresh publish is not visible on the first request.
+      - name: Verify the registry agrees
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          published=''
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            # Both conditions belong to the `if` so that neither a 404 exit nor
+            # an empty value trips `set -e` and fails the step mid-poll.
+            if published=$(npm view "looptroop@${VERSION}" dist.integrity 2>/dev/null) \
+               && [ -n "${published}" ]; then
+              break
+            fi
+            published=''
+            echo "Attempt ${attempt}: not visible on the registry yet."
+            # An `&&` guard here would be the loop body's last command, so a
+            # false test on the final attempt would trip `set -e` and report a
+            # verification failure the registry never caused.
+            if [ "${attempt}" -lt 10 ]; then sleep 15; fi
+          done
+          if [ -z "${published}" ]; then
+            echo "::error::looptroop@${VERSION} did not become visible on the registry."
+            exit 1
+          fi
+
+          # Compares npm's own dist.integrity against the manifest. sha512
+          # base64 SRI on both sides — npm's dist.shasum is SHA-1 and could
+          # never be compared to this.
+          #
+          # Done inline with bare node rather than `npm run release:verify-artifact`
+          # because this job has no checkout: it publishes a downloaded tarball,
+          # so it needs no source tree, and giving it one would mean `npm ci`
+          # running third-party install scripts in the one job that holds
+          # publish credentials. The same comparison, no dependencies.
+          PUBLISHED_INTEGRITY="${published}" node -e '
+            const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json", "utf8"))
+            const published = process.env.PUBLISHED_INTEGRITY.trim()
+            if (published !== m.integrity) {
+              console.error(`::error::The registry reports ${published}, this release built ${m.integrity}.`)
+              console.error("npm is serving different bytes than were verified. Do not advertise this release.")
+              process.exit(1)
+            }
+            console.log(`Registry integrity matches the manifest: ${published}`)
+          '
+
+          resolved=$(npm view "looptroop@${DIST_TAG}" version)
+          echo "dist-tag ${DIST_TAG} -> ${resolved}"
+          [ "${resolved}" = "${VERSION}" ] || {
+            echo "::error::Expected dist-tag ${DIST_TAG} to resolve to ${VERSION}, got ${resolved}."
+            exit 1
+          }
+
+          latest_now=$(npm view looptroop dist-tags.latest 2>/dev/null || echo 'none')
+          if [ "${DIST_TAG}" = "latest" ]; then
+            [ "${latest_now}" = "${VERSION}" ] || {
+              echo "::error::A stable release must hold 'latest'; it resolves to ${latest_now}."
+              exit 1
+            }
+          else
+            # A release candidate must not have moved `latest`, or every plain
+            # `npm i -g looptroop` would install a prerelease.
+            [ "${latest_now}" != "${VERSION}" ] || {
+              echo "::error::Release candidate ${VERSION} took the 'latest' dist-tag."
+              exit 1
+            }
+            # Unset when the publish step short-circuited on an already-published
+            # version, which is a legitimate re-run rather than a moved tag.
+            if [ -n "${LATEST_BEFORE:-}" ] && [ "${latest_now}" != "${LATEST_BEFORE}" ]; then
+              echo "::error::'latest' moved from ${LATEST_BEFORE} to ${latest_now} during a prerelease publish."
+              exit 1
+            fi
+            echo "'latest' is unchanged at ${latest_now}."
+          fi
+          echo "Registry agrees: integrity and dist-tags are correct."
+
+  # ---------------------------------------------------------------------------
+  # Does the package npm actually serves work on a clean machine?
+  # ---------------------------------------------------------------------------
+  # verify-artifact tested the bytes we built. This tests what npm serves, from
+  # an empty directory with no checkout — the way a user gets it.
+  smoke:
+    name: Registry smoke (${{ matrix.os }})
+    needs: [detect, npm]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node -e "require('node:child_process').execSync('npm install --global npm@11.12.1',{stdio:'inherit'})"
+
+      - name: Install from the registry
+        run: npm install --global "looptroop@${{ needs.detect.outputs.version }}"
+
+      - name: The CLI reports the released version
+        shell: bash
+        run: |
+          set -euo pipefail
+          printed=$(looptroop --version)
+          echo "looptroop --version -> ${printed}"
+          [ "${printed}" = "${{ needs.detect.outputs.version }}" ] || {
+            echo "::error::Expected ${{ needs.detect.outputs.version }}, got ${printed}"
+            exit 1
+          }
+
+      # Mock mode because the OpenCode check fails when nothing is running *and*
+      # the CLI is absent — exactly a clean runner — and doctor exits non-zero on
+      # any failing check. Without it this asserts the runner's lack of OpenCode,
+      # not the package. Warnings are tolerated: an unauthenticated `gh` and a
+      # busy port are properties of the runner, not of the release.
+      #
+      # `install` is the check worth asserting. It resolves to `npm` only when
+      # the running module sits under a `node_modules/looptroop/` path, so an
+      # `ok` here proves the published layout is intact and that the upgrade
+      # command shown to users will be the right one.
+      - name: Doctor reports healthy
+        shell: bash
+        env:
+          LOOPTROOP_OPENCODE_MODE: mock
+        run: |
+          set -euo pipefail
+          looptroop doctor --json > doctor.json || {
+            echo "::error::doctor exited non-zero under mock mode"
+            cat doctor.json || true
+            exit 1
+          }
+          node -e '
+            const report = JSON.parse(require("node:fs").readFileSync("doctor.json", "utf8"))
+            if (!Array.isArray(report.checks) || report.checks.length === 0) {
+              throw new Error("doctor reported no checks")
+            }
+            for (const name of ["install", "git"]) {
+              const check = report.checks.find((c) => c.name === name)
+              if (!check) throw new Error(`doctor did not report the ${name} check`)
+              if (check.status !== "ok") {
+                throw new Error(`${name} check is ${check.status}: ${check.detail ?? ""}`)
+              }
+            }
+            const install = report.checks.find((c) => c.name === "install")
+            if (!/^npm\b/.test(install.detail ?? "")) {
+              throw new Error(`install channel is "${install.detail}", expected npm`)
+            }
+            console.log(`doctor reported ${report.checks.length} checks; install=${install.detail}`)
+          '
+
+  # ---------------------------------------------------------------------------
+  # Tag last. A tag means the release finished.
+  # ---------------------------------------------------------------------------
+  finalize:
+    name: Tag and publish
+    needs: [detect, build, smoke]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Deliberately *not* `environment: release`. That environment gates the one
+    # irreversible step, the npm publish, and this job cannot run unless that one
+    # already did. Claiming it here would ask a reviewer to approve the same
+    # release twice — and the second prompt arrives after the publish, where
+    # declining protects nothing and only strands the release untagged.
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      # Annotated, not lightweight, and pushed before the release is published.
+      # If this succeeds and the next step fails, the state resolver reads
+      # `resume-github` rather than `complete`, because completeness requires the
+      # release to be published too.
+      #
+      # The tag names the commit the artefact was built from, taken from the
+      # manifest rather than from GITHUB_SHA. They agree on every ordinary run —
+      # the draft job refuses to proceed otherwise — so this is belt and braces
+      # on the one operation that permanently binds a version to a commit.
+      - name: Push the annotated tag
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          TARGET=$(node -p "require('./release-manifest.json').commit || ''")
+          if [ -z "${TARGET}" ]; then
+            echo "::error::release-manifest.json records no commit; refusing to tag."
+            exit 1
+          fi
+          if [ "${TARGET}" != "${GITHUB_SHA}" ]; then
+            echo "::error::The artefact was built from ${TARGET}, but this run is at ${GITHUB_SHA}."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            existing=$(git rev-list -n 1 "refs/tags/v${VERSION}")
+            if [ "${existing}" != "${TARGET}" ]; then
+              echo "::error::Tag v${VERSION} exists at ${existing}, expected ${TARGET}."
+              exit 1
+            fi
+            echo "Tag v${VERSION} already points at ${TARGET}."
+          else
+            git -c user.name='looptroop-release' \
+                -c user.email='release@looptroop.ovh' \
+                tag -a "v${VERSION}" "${TARGET}" \
+                -m "LoopTroop v${VERSION}"
+            git push origin "refs/tags/v${VERSION}"
+          fi
+
+      # --verify-tag refuses to publish if the tag is missing, rather than
+      # letting GitHub create a lightweight one at publication time — which
+      # would then block `git tag -a` for that version forever.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release edit "v${VERSION}" --draft=false --verify-tag
+          echo "Published https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+
+  # ---------------------------------------------------------------------------
+  # Always runs. Says what happened and where to resume from.
+  # ---------------------------------------------------------------------------
+  report:
+    name: Report
+    needs: [detect, build, verify-artifact, verify-readonly, draft-release, npm, smoke, finalize]
+    if: always() && needs.detect.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Opens the failure issue. Without this the report can describe a broken
+      # release but not tell anyone who is not watching the run.
+      issues: write
+    steps:
+      - name: Compose the report
+        id: compose
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          DRY_RUN: ${{ needs.detect.outputs.dry_run }}
+          STATE: ${{ needs.detect.outputs.state }}
+          R_BUILD: ${{ needs.build.result }}
+          R_VERIFY: ${{ needs.verify-artifact.result }}
+          R_READONLY: ${{ needs.verify-readonly.result }}
+          R_DRAFT: ${{ needs.draft-release.result }}
+          R_NPM: ${{ needs.npm.result }}
+          R_SMOKE: ${{ needs.smoke.result }}
+          R_FINAL: ${{ needs.finalize.result }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          INTEGRITY: ${{ needs.build.outputs.integrity }}
+          DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "## DRY RUN — v${VERSION}"
+            else
+              echo "## Release v${VERSION}"
+            fi
+            echo
+            echo '```'
+            printf 'stage      result\n'
+            printf '%s\n' '──────────────────────────────────────────────'
+            printf 'state      %s\n' "${STATE}"
+            printf 'build      %s  sha256 %s\n' "${R_BUILD}" "${SHA256:0:12}"
+            printf 'verify     %s\n' "${R_VERIFY}"
+            printf 'readonly   %s\n' "${R_READONLY}"
+            printf 'draft      %s\n' "${R_DRAFT}"
+            printf 'npm        %s  (dist-tag %s)\n' "${R_NPM}" "${DIST_TAG}"
+            printf 'smoke      %s\n' "${R_SMOKE}"
+            printf 'finalize   %s\n' "${R_FINAL}"
+            echo '```'
+            echo
+            echo "Integrity: \`${INTEGRITY}\`"
+          } > /tmp/report.md
+          cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
+
+          failed=""
+          for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
+                      "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
+                      "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}"; do
+            name=${pair%%:*}
+            result=${pair#*:}
+            case "${result}" in
+              failure|cancelled) failed="${failed} ${name}" ;;
+            esac
+          done
+          echo "failed=${failed# }" >> "$GITHUB_OUTPUT"
+
+      # A half-finished release must be visible to someone not watching the run.
+      # Comments on the existing issue rather than opening a second one, so a
+      # sequence of failed re-runs stays one thread.
+      - name: Open or update the failure issue
+        if: steps.compose.outputs.failed != '' && needs.detect.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          FAILED: ${{ steps.compose.outputs.failed }}
+        run: |
+          set -euo pipefail
+          title="Release v${VERSION}: partial failure"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            cat /tmp/report.md
+            echo
+            echo "Failed stages: **${FAILED}**"
+            echo
+            echo "Run: ${run_url}"
+            echo
+            echo "Re-running the workflow resumes from the state the resolver reports."
+            echo "The npm publish job is idempotent and can be re-run on its own."
+          } > /tmp/issue.md
+
+          existing=$(gh issue list --state open --search "\"${title}\" in:title" \
+            --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -1)
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file /tmp/issue.md
+          else
+            gh issue create --title "${title}" --body-file /tmp/issue.md
+          fi
+
+      - name: Fail the run if any stage failed
+        if: steps.compose.outputs.failed != ''
+        run: |
+          echo "::error::Release stages failed:${{ steps.compose.outputs.failed }}"
+          exit 1
+
+

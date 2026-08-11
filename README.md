@@ -170,13 +170,34 @@ Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 
 ## Quick start
 
+Install the CLI globally and start it as a background service:
+
+```bash
+npm install -g looptroop
+looptroop start
+looptroop open
+```
+
+`start` detaches from the terminal, so LoopTroop keeps running after the shell
+closes. It serves the interface and the API from one address on port 3000, which
+`open` points a browser at. `looptroop status` says whether it is up,
+`looptroop logs` follows the log, `looptroop doctor` checks the environment, and
+`looptroop stop` shuts it down.
+
+Add a local repository with a GitHub origin, create a ticket, and follow the
+review gates.
+
+### Working on LoopTroop itself
+
+To develop LoopTroop rather than use it, run it from a checkout. This is the
+development stack — Vite on port 5173 with hot reload — not the installed
+service above:
+
 ```bash
 git clone https://github.com/looptroop-ai/LoopTroop.git
 cd LoopTroop
 npm run dev
 ```
-
-Open `http://localhost:5173`, add a local repository with a GitHub origin, create a ticket, and follow the review gates.
 
 Full setup, ports, startup flags, and troubleshooting: [Getting Started](https://www.looptroop.ovh/docs/getting-started) and [Operations Guide](https://www.looptroop.ovh/docs/operations).
 
@@ -184,7 +205,7 @@ Full setup, ports, startup flags, and troubleshooting: [Getting Started](https:/
 
 LoopTroop expects:
 
-- Node.js and npm
+- Node.js 24.15.0 or newer, and npm 11.12.1 or newer
 - Git
 - OpenCode with at least one configured model provider
 - a local repository with a GitHub origin

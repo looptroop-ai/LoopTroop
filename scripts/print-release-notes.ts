@@ -1,12 +1,12 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env node
 /**
  * Prints release notes for a version to stdout, for the release workflow.
  *
- * Usage: tsx scripts/print-release-notes.ts [version]
+ * Usage: node scripts/print-release-notes.ts [version]
  * Defaults to the current package.json version.
  */
 import { readFileSync } from 'node:fs'
-import { extractReleaseNotes } from './changelog-release-notes'
+import { extractReleaseNotes } from './changelog-release-notes.ts'
 
 const requested = process.argv[2]?.trim()
 const version = requested || JSON.parse(readFileSync('package.json', 'utf8')).version

@@ -1,0 +1,232 @@
+# Opens the version-bump PR that a release is cut from.
+#
+# Deliberately does *not* declare `environment: release`. That environment's
+# branch policy admits only `main` and `v*.*.*`, so a job claiming it from a
+# `release/*` branch is rejected before it runs. Nothing here publishes, so it
+# has no business holding publish credentials anyway.
+#
+# The bump lands as a reviewable PR rather than a direct push to main: the
+# required checks run against the exact tree that will be released, and a human
+# approves the version number.
+name: Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.5.0 or 0.5.0-rc.1'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run every check but do not push a branch or open a PR'
+        type: boolean
+        default: false
+
+# The PR is created with RELEASE_PR_TOKEN, not GITHUB_TOKEN: GitHub does not run
+# workflows on PRs opened by GITHUB_TOKEN, and with required checks such a PR can
+# never be merged. So this job needs no write scopes of its own.
+permissions:
+  contents: read
+
+# Two bumps racing would produce two branches disagreeing about the next
+# version. Queue rather than cancel; a half-run bump is not worth resuming from.
+concurrency:
+  group: release-pr
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump to ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials: false keeps the checkout token out of .git/config.
+      # `npm ci` below runs third-party install scripts, and this job holds a
+      # token that can push branches and open PRs.
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      # Diagnostic, not a gate. `X-Accepted-GitHub-Permissions` reports what an
+      # endpoint requires, never what a fine-grained PAT was granted, so no read
+      # here can prove the token may push. The authoritative tests are the push
+      # and the PR creation at the end of this job; this step exists so an
+      # invalid or expired token fails with an identity error up front instead of
+      # a confusing 403 after the bump has already been computed.
+      - name: Check the release token can see this repository
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
+            exit 1
+          fi
+          actor=$(gh api user --jq '.login' 2>/dev/null) || {
+            echo "::error::RELEASE_PR_TOKEN was rejected by the API. It is invalid or expired."
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name' >/dev/null 2>&1 || {
+            echo "::error::RELEASE_PR_TOKEN cannot see ${GITHUB_REPOSITORY}. Check its repository access."
+            exit 1
+          }
+          echo "Token authenticates as ${actor} and can read ${GITHUB_REPOSITORY}."
+          echo "Push and PR permissions are proven only by the steps that use them."
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Refuse a version that already exists anywhere. Cheaper to stop here than
+      # to discover it at `npm publish` with EPUBLISHCONFLICT after a tag exists.
+      - name: Refuse an already-released version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          fail=0
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "::error::Tag v${VERSION} already exists."
+            fail=1
+          fi
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::A GitHub release for v${VERSION} already exists."
+            fail=1
+          fi
+          if npm view "looptroop@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::looptroop@${VERSION} is already published to npm."
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "v${VERSION} is unused on all three channels."
+
+      # Read through the environment, not interpolated into the script body.
+      # `${{ }}` is substituted into the shell source before bash sees it, so a
+      # version string carrying shell metacharacters would run as this step's
+      # own commands — and a later step in this same job holds RELEASE_PR_TOKEN.
+      # Every other step here already takes the version this way; these two were
+      # the exceptions.
+      - name: Apply the version bump
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm run release:bump -- "$VERSION"
+
+      # The gate the release PR must pass. It checks that package.json,
+      # both package-lock.json version fields, and every tracked file agree.
+      - name: Verify the version is single-sourced
+        run: npm run verify:version
+
+      # Proves the rewritten lockfile is internally consistent. A lockfile whose
+      # version fields were edited but whose tree no longer resolves would fail
+      # `npm ci` on every later job instead of here.
+      - name: Re-install from the bumped lockfile
+        run: npm ci
+
+      - name: Preview the release notes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm run release:notes -- "$VERSION" > /tmp/release-notes.md
+
+      # Normalises the dry-run flag to a string output, because no workflow
+      # expression can gate on the input directly with confidence.
+      #
+      # `!inputs.dry_run` is wrong: a boolean input arrives as the *string*
+      # "false" in some contexts, and a non-empty string is truthy, so the
+      # negation is false for both values and the gated step never runs.
+      # `inputs.dry_run == 'false'` fails the other way round wherever Actions
+      # does deliver a real boolean, since comparing a boolean to a string casts
+      # both to numbers and `'false'` is NaN. Interpolating into `env`
+      # stringifies whatever the context holds, and a step output is always a
+      # string, so the comparison below is exact in both worlds.
+      #
+      # Anything that is not exactly "false" is treated as a dry run: an
+      # unexpected value must not push a branch and open a PR.
+      - name: Resolve the dry-run flag
+        id: mode
+        env:
+          REQUESTED: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED}" = "false" ]; then dry_run=false; else dry_run=true; fi
+          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+          echo "Dry run: ${dry_run}"
+
+      # Files by name. Never `git add .`: this tree also contains build output
+      # and anything a failed step left behind.
+      #
+      # Staged first, because three of these four are tracked and the fourth is
+      # not: `.github/releases/<version>.md` is created by the bump and has never
+      # existed before. A pathspec commit resolves its paths against what Git
+      # already knows, so naming a brand-new file there is `error: pathspec ...
+      # did not match any file(s) known to git` — the first release PR would have
+      # stopped at this step, every time. `git add` makes exactly these four
+      # known; `--only` then still commits exactly these four and nothing a
+      # previous step may have left in the index.
+      #
+      # `--force-with-lease` with no value treats the branch as expected to be
+      # absent: a first run creates it, and a re-run for the same version
+      # overwrites only the branch this workflow itself left behind — never a
+      # branch another actor has since moved.
+      - name: Push the release branch
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git add -- \
+            package.json package-lock.json CHANGELOG.md ".github/releases/${VERSION}.md"
+          git -c user.name='looptroop-release' \
+              -c user.email='release@looptroop.ovh' \
+              commit --only \
+              package.json package-lock.json CHANGELOG.md ".github/releases/${VERSION}.md" \
+              -m "release: v${VERSION}" \
+              -m "Bumps package.json, both package-lock.json version fields, the CHANGELOG heading, and archives the notes under .github/releases/." \
+              -m "Generated by the Release PR workflow."
+          git push --force-with-lease \
+            "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/release/v${VERSION}"
+
+      - name: Open the pull request
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Cuts release **v${VERSION}**."
+            echo
+            echo "Merging this PR triggers the release workflow, which builds the"
+            echo "tarball, verifies it on three platforms, publishes to npm, smoke"
+            echo "tests the published package, then tags and publishes the release."
+            echo
+            echo '### Release notes preview'
+            echo
+            cat /tmp/release-notes.md
+          } > /tmp/pr-body.md
+          gh pr create \
+            --base main \
+            --head "release/v${VERSION}" \
+            --title "release: v${VERSION}" \
+            --body-file /tmp/pr-body.md
+
+      - name: Dry run summary
+        if: ${{ steps.mode.outputs.dry_run == 'true' }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "### Dry run: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Every check passed. No branch was pushed and no PR was opened." >> "$GITHUB_STEP_SUMMARY"

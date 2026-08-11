@@ -441,7 +441,7 @@ async function checkSchema(): Promise<Check> {
       return {
         name: 'schema',
         status: 'warn',
-        detail: 'database predates 0.5.0 and carries no version marker',
+        detail: `database predates LoopTroop ${schema.SCHEMA_VERSIONING_SINCE} and carries no version marker`,
         remedy: `Delete ${APP_DB_PATH} to start clean if LoopTroop misbehaves.`,
         schema: facts,
       }

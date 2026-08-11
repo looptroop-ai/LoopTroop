@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 
 /** The floor `dist/server/cli/launcher.cjs` enforces before it loads anything. */
 const REQUIRED_NODE = { major: 24, minor: 15 }
@@ -246,6 +246,41 @@ function readLogFile(configDir) {
   }
 }
 
+/**
+ * The tarball to install, from `--tarball <path>` or `--tarball=<path>`.
+ *
+ * The release passes the artefact every other job verified, so this exercises
+ * the bytes that will actually be published. Without it the script packs its
+ * own, which is right for a local run against a working tree but wrong in a
+ * release: a pass would describe a tarball nobody ships.
+ *
+ * An unrecognised argument is fatal rather than ignored: a typo would silently
+ * fall through to packing, and the release would report a pass for bytes it
+ * never looked at.
+ */
+function parseArgs(argv) {
+  let tarball = null
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--tarball') {
+      tarball = argv[i + 1] ?? ''
+      i += 1
+    } else if (arg.startsWith('--tarball=')) {
+      tarball = arg.slice('--tarball='.length)
+    } else {
+      throw new Error(`unknown argument ${JSON.stringify(arg)} (expected --tarball <path>)`)
+    }
+  }
+  // Given but empty means the caller meant to point at an artefact and lost the
+  // path. Packing our own instead would hide that behind a green run.
+  if (tarball !== null && tarball.trim() === '') {
+    throw new Error('--tarball needs a path')
+  }
+  return { tarball: tarball ?? '' }
+}
+
+const options = parseArgs(process.argv.slice(2))
+
 async function main() {
   const scratch = mkdtempSync(join(tmpdir(), 'looptroop-readonly-'))
   const prefix = join(scratch, 'prefix')
@@ -261,12 +296,23 @@ async function main() {
 
   try {
     heading('Install the packed tarball into a throwaway prefix')
-    const packed = run('npm', ['pack', '--quiet', '--pack-destination', scratch], { cwd: process.cwd() })
-    const tarball = packed.stdout.trim().split('\n').pop()
-    if (!check('npm pack produced a tarball', packed.code === 0 && Boolean(tarball), tarball || 'no output')) {
-      return
+    // A handed-in tarball is the release artefact every other job verified, and
+    // it is installed from where it lies rather than copied into the scratch
+    // directory this run deletes.
+    let tarballPath
+    if (options.tarball) {
+      tarballPath = resolve(options.tarball)
+      if (!check('the given tarball exists', existsSync(tarballPath), tarballPath)) return
+      log(`  installing the given artefact: ${tarballPath}`)
+    } else {
+      const packed = run('npm', ['pack', '--quiet', '--pack-destination', scratch], { cwd: process.cwd() })
+      const packedName = packed.stdout.trim().split('\n').pop()
+      if (!check('npm pack produced a tarball', packed.code === 0 && Boolean(packedName), packedName || 'no output')) {
+        return
+      }
+      tarballPath = join(scratch, packedName)
     }
-    const installed = run('npm', ['install', '-g', '--prefix', prefix, '--omit=dev', join(scratch, tarball)])
+    const installed = run('npm', ['install', '-g', '--prefix', prefix, '--omit=dev', tarballPath])
     if (!check('npm install -g succeeds', installed.code === 0, `exit ${installed.code}`)) {
       showOutput('npm install output', installed.combined)
       return

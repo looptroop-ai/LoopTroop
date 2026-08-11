@@ -1,11 +1,36 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import { availableParallelism } from 'node:os'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig'
 
 // Never add tests that hard-code ticket/project-specific fixture ids, refs, shortnames, or worktree names.
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * How many test workers the machine can actually carry.
+ *
+ * Every project below shares `sequence.groupOrder: 0`, which puts them in one
+ * scheduling group whose worker count is this number in total — not per project.
+ * vitest requires the value to agree across a group and throws otherwise, so it
+ * is computed once here rather than written out four times.
+ *
+ * It was a hardcoded 6, which is fine on a developer machine and oversubscribes
+ * a 4-vCPU CI runner. Two of these projects use `pool: 'forks'` with
+ * `isolate: true`, and the integration bucket drives git worktrees and SQLite,
+ * so an oversubscribed runner does not merely run slower — individual tests
+ * cross their timeout and the lane fails on whichever test held the CPU when the
+ * clock ran out. That reads as a different "broken" test on every run, which is
+ * how this presented: three Windows jobs on one commit, three disjoint sets of
+ * timeouts, none in the files the commit touched.
+ *
+ * Leaving one core for the runner keeps the pool from competing with the
+ * process supervising it. The floor of 2 keeps a single-core runner making
+ * progress, and the ceiling preserves the previous behaviour everywhere that
+ * was already comfortable.
+ */
+const testMaxWorkers = Math.max(2, Math.min(6, availableParallelism() - 1))
 
 const sharedResolve = {
   alias: {
@@ -85,6 +110,35 @@ const serverIntegrationTests = [
   'tests/doctorCommand.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
+
+  // Below: integration-grade work that had been filed into `server-pure`, the
+  // bucket documented as "no DB, no global state". They drive the real database
+  // and real git worktrees, and `createInitializedTestTicket` alone spends nine
+  // synchronous `git` spawns per ticket before a single assertion runs.
+  //
+  // Two things made that placement fail specifically on Windows. `server-pure`
+  // is a `threads` pool, so a synchronous child-process spawn blocks the whole
+  // worker — and with `isolate: false` one worker carries many files, so the
+  // files queued behind it stall too. And `server-pure` carries the tightest
+  // budget in the suite, which these are the least able to afford: process
+  // creation on Windows has no fork() to lean on. Measured on a windows-latest
+  // runner, four of the five slowest files in `server-pure` were these, led by
+  // manualQa/operations at 47.8s against a 15s per-test timeout. Both Windows
+  // stall victims observed on this branch came from this set.
+  //
+  // In `server-integration` each gets its own process, so a blocking spawn
+  // stalls only itself, and the 20s/30s budgets are the ones written for
+  // exactly this workload. Anything new that opens the database or shells out
+  // to git belongs here too, however pure its unit under test looks.
+  'server/db/__tests__/sqliteContract.test.ts',
+  'server/machines/__tests__/persistence.test.ts',
+  'server/phases/executionSetup/__tests__/workspaceInputs.test.ts',
+  'server/phases/executionSetupPlan/__tests__/generator.test.ts',
+  'server/phases/manualQa/__tests__/checkpoint.test.ts',
+  'server/phases/manualQa/__tests__/operations.test.ts',
+  'server/storage/__tests__/ticketQueries.test.ts',
+  'server/workflow/__tests__/executionSetupPhase.test.ts',
+  'server/workflow/__tests__/interviewVotePhase.test.ts',
 ] as const
 
 export default defineConfig({
@@ -106,7 +160,7 @@ export default defineConfig({
           environment: 'jsdom',
           pool: 'forks',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: true,
           sequence: { groupOrder: 0 },
           setupFiles: ['./src/test/setup.ts'],
@@ -133,7 +187,7 @@ export default defineConfig({
           environment: 'node',
           pool: 'threads',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: false,
           sequence: { groupOrder: 0 },
           include: [...clientNodeTests],
@@ -145,11 +199,14 @@ export default defineConfig({
         test: {
           // Pure server logic tests — safe to share module graph (no DB, no global state).
           // isolate: false dramatically reduces per-file import overhead (was 28s aggregate).
+          // That sharing is what makes this bucket fast and also what makes it the
+          // wrong home for anything touching the DB, git, or a child process: see
+          // the note above the tail of `serverIntegrationTests`.
           name: 'server-pure',
           environment: 'node',
           pool: 'threads',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: false,
           sequence: { groupOrder: 0 },
           setupFiles: ['./server/test/setup.ts'],
@@ -168,7 +225,7 @@ export default defineConfig({
           environment: 'node',
           pool: 'forks',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: true,
           sequence: { groupOrder: 0 },
           setupFiles: ['./server/test/setup.ts'],

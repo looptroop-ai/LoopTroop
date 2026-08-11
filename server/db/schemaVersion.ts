@@ -1,16 +1,27 @@
 /**
  * Schema versioning for both SQLite databases.
  *
- * Pre-0.5 databases carry no version marker. They are disposable test data and
- * are stamped with the current version on first open. From 0.5.0 onward the
- * version is authoritative: a database written by a newer LoopTroop is refused
- * rather than opened, because the boot path mutates schema destructively
- * (migrateLegacyProfilesTable drops and recreates `profiles`) and an older
- * binary cannot know what a newer one added.
+ * Databases predating `SCHEMA_VERSIONING_SINCE` carry no version marker. They
+ * are disposable test data and are stamped with the current version on first
+ * open. From that release onward the version is authoritative: a database
+ * written by a newer LoopTroop is refused rather than opened, because the boot
+ * path mutates schema destructively (migrateLegacyProfilesTable drops and
+ * recreates `profiles`) and an older binary cannot know what a newer one added.
  *
  * The two databases version independently: they evolve in separate code paths
  * and a project database can be much older than the app database that opens it.
  */
+
+/**
+ * The release in which schema versioning began.
+ *
+ * A fixed point in history rather than the running version, so it is stated
+ * once here instead of written literally into each message that reports it.
+ * `verify:version` rejects a literal that matches the current version, and this
+ * boundary would otherwise become a release-blocking failure in the very
+ * release that reached it.
+ */
+export const SCHEMA_VERSIONING_SINCE = '0.5.0'
 
 /** Bump when the app database schema changes in a way older builds cannot read. */
 export const APP_SCHEMA_VERSION = 1
@@ -48,8 +59,8 @@ export interface SchemaVersionInspection {
  * Classifies a database before anything mutates it.
  *
  * `hasExistingTables` distinguishes a brand-new file (version 0, no tables)
- * from a pre-0.5 database (version 0, tables present). Both read as 0, but only
- * the latter needs the reset message.
+ * from a database predating `SCHEMA_VERSIONING_SINCE` (version 0, tables
+ * present). Both read as 0, but only the latter needs the reset message.
  */
 export function classifySchemaVersion(
   inspection: SchemaVersionInspection,
@@ -95,7 +106,7 @@ export function buildUnversionedResetMessage(
   databasePath: string,
 ): string {
   return [
-    `The ${databaseLabel} at ${databasePath} predates LoopTroop 0.5.0 and carries no schema version.`,
+    `The ${databaseLabel} at ${databasePath} predates LoopTroop ${SCHEMA_VERSIONING_SINCE} and carries no schema version.`,
     'Its schema will be reconciled by the standard startup DDL, which only adds missing',
     'tables and columns; no data migration is attempted. It is then stamped with the current',
     'schema version. If LoopTroop misbehaves, delete that file and restart to begin clean.',

@@ -751,6 +751,11 @@ describe('Interview approval UI', () => {
         }),
       )
     })
-    expect(screen.getByRole('button', { name: /Approve with gaps/i })).not.toBeDisabled()
+    // The fetch having been *called* is not the fetch having settled, and the
+    // button stays disabled for as long as the request is in flight. Asserting
+    // synchronously here reads whichever render happens to be current.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Approve with gaps/i })).not.toBeDisabled()
+    })
   }, 30_000)
 })

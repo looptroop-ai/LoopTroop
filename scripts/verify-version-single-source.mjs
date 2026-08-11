@@ -26,6 +26,11 @@ const ALLOWED_PATHS = [
   // 0.4.0 sorts below 0.4.1 has to name both, and stays true after a bump.
   // Scoped to this one file so the rule still binds everywhere else.
   'tests/updateCheck.test.ts',
+  // The schema-versioning boundary. It names the release in which schema
+  // versioning began — a fixed point in history, not the running version — and
+  // is exported once and referenced everywhere that message is produced. Any
+  // literal matching the *current* version elsewhere in server/ still fails.
+  'server/db/schemaVersion.ts',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

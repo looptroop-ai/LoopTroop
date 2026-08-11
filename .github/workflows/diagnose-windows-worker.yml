@@ -26,7 +26,12 @@
 # around it.
 name: Diagnose Windows worker crash
 
+# `workflow_dispatch` only works for workflows that exist on the default branch,
+# and this one deliberately never will. So it is armed by a marker in the commit
+# message instead: `[win-loop]` anywhere in the subject or body runs it, and
+# every other push skips the job.
 on:
+  push:
   workflow_dispatch:
     inputs:
       iterations:
@@ -48,6 +53,10 @@ env:
 jobs:
   loop:
     name: Windows worker crash loop (shard ${{ matrix.shard }})
+    # Armed explicitly, never by accident: an ordinary push skips this entirely.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[win-loop]')
     runs-on: windows-latest
     # Sampling a rare crash is the whole point, so this needs to outlast the
     # 30 minutes a single test lane gets.
@@ -92,9 +101,10 @@ jobs:
         shell: pwsh
         env:
           # Read through the environment rather than interpolated into the
-          # script body, so an input cannot become PowerShell.
-          ITERATIONS: ${{ inputs.iterations }}
-          ONLY: ${{ inputs.only }}
+          # script body, so an input cannot become PowerShell. The fallbacks
+          # cover the marker-triggered push, where there are no inputs at all.
+          ITERATIONS: ${{ inputs.iterations || '6' }}
+          ONLY: ${{ inputs.only || '' }}
           # Inherited by every vitest child. If the death goes through V8 —
           # an OOM or an abort — this writes a report naming which.
           NODE_OPTIONS: --report-on-fatalerror --report-directory=C:\node-reports

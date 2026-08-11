@@ -1,11 +1,36 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
+import { availableParallelism } from 'node:os'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig'
 
 // Never add tests that hard-code ticket/project-specific fixture ids, refs, shortnames, or worktree names.
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * How many test workers the machine can actually carry.
+ *
+ * Every project below shares `sequence.groupOrder: 0`, which puts them in one
+ * scheduling group whose worker count is this number in total — not per project.
+ * vitest requires the value to agree across a group and throws otherwise, so it
+ * is computed once here rather than written out four times.
+ *
+ * It was a hardcoded 6, which is fine on a developer machine and oversubscribes
+ * a 4-vCPU CI runner. Two of these projects use `pool: 'forks'` with
+ * `isolate: true`, and the integration bucket drives git worktrees and SQLite,
+ * so an oversubscribed runner does not merely run slower — individual tests
+ * cross their timeout and the lane fails on whichever test held the CPU when the
+ * clock ran out. That reads as a different "broken" test on every run, which is
+ * how this presented: three Windows jobs on one commit, three disjoint sets of
+ * timeouts, none in the files the commit touched.
+ *
+ * Leaving one core for the runner keeps the pool from competing with the
+ * process supervising it. The floor of 2 keeps a single-core runner making
+ * progress, and the ceiling preserves the previous behaviour everywhere that
+ * was already comfortable.
+ */
+const testMaxWorkers = Math.max(2, Math.min(6, availableParallelism() - 1))
 
 const sharedResolve = {
   alias: {
@@ -106,7 +131,7 @@ export default defineConfig({
           environment: 'jsdom',
           pool: 'forks',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: true,
           sequence: { groupOrder: 0 },
           setupFiles: ['./src/test/setup.ts'],
@@ -133,7 +158,7 @@ export default defineConfig({
           environment: 'node',
           pool: 'threads',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: false,
           sequence: { groupOrder: 0 },
           include: [...clientNodeTests],
@@ -149,7 +174,7 @@ export default defineConfig({
           environment: 'node',
           pool: 'threads',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: false,
           sequence: { groupOrder: 0 },
           setupFiles: ['./server/test/setup.ts'],
@@ -168,7 +193,7 @@ export default defineConfig({
           environment: 'node',
           pool: 'forks',
           fileParallelism: true,
-          maxWorkers: 6,
+          maxWorkers: testMaxWorkers,
           isolate: true,
           sequence: { groupOrder: 0 },
           setupFiles: ['./server/test/setup.ts'],

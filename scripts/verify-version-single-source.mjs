@@ -31,6 +31,16 @@ const ALLOWED_PATHS = [
   // is exported once and referenced everywhere that message is produced. Any
   // literal matching the *current* version elsewhere in server/ still fails.
   'server/db/schemaVersion.ts',
+  // Fixtures for the release-state resolver and the version comparator. Their
+  // literals are inputs to the function under test, not references to this
+  // package's version: a case proving that a version already on npm under
+  // different bytes hard-stops has to name some version, and a case proving
+  // that a bump may only move forwards has to name both ends of it. They stay
+  // true after a bump, and a bump must not turn a fixture into a release
+  // blocker. Scoped to these two files so the rule still binds everywhere else,
+  // including every other test.
+  'tests/releaseState.test.ts',
+  'tests/versionBump.test.ts',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

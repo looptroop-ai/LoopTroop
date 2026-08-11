@@ -265,7 +265,26 @@ describe('bumpChangelog', () => {
   // empty one ships a release that describes nothing.
   it('fails when the Unreleased section has no entries', () => {
     const empty = '# Changelog\n\n## Unreleased\n\n### Summary\n\n## 0.4.1 (2026-07-02)\n\n### Summary\n- Old.\n'
-    expect(() => bumpChangelog(empty, '0.5.0', '2026-08-11')).toThrow(/no entries/)
+    expect(() => bumpChangelog(empty, '0.5.0', '2026-08-11')).toThrow(/cannot be published as release notes/)
+  })
+
+  // The gate that matters is not "is the section blank" but "could the workflow
+  // publish it". Entries under a per-category heading alone make the section
+  // look populated while `renderReleaseNotes` still has nothing to render — and
+  // that used to surface only at the draft step, after the bump commit and the
+  // pull request already existed.
+  it('fails when entries exist but none are under Release Highlights or Summary', () => {
+    const categorised = '# Changelog\n\n## Unreleased\n\n### Fixed\n- A bug nobody announced.\n\n'
+      + '## 0.4.1 (2026-07-02)\n\n### Summary\n- Old.\n'
+    expect(() => bumpChangelog(categorised, '0.5.0', '2026-08-11'))
+      .toThrow(/Release Highlights/)
+  })
+
+  it('accepts Release Highlights in place of Summary', () => {
+    const highlights = '# Changelog\n\n## Unreleased\n\n### Release Highlights\n- Something users can see.\n\n'
+      + '## 0.4.1 (2026-07-02)\n\n### Summary\n- Old.\n'
+    const bumped = bumpChangelog(highlights, '0.5.0', '2026-08-11')
+    expect(bumped.releasedSection).toContain('Something users can see.')
   })
 
   it('fails when the version has already been released', () => {

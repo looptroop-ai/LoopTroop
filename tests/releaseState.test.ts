@@ -99,9 +99,11 @@ describe('resolveReleaseState', () => {
     expect(result.reason).toMatch(/published bytes differ/)
   })
 
-  // npm versions are immutable, so this is not a retry state: republishing
-  // would fail with EPUBLISHCONFLICT and the release is already out under bytes
-  // this build did not produce.
+  // Everything is in place except the dist-tag, so `complete` would be a lie —
+  // `npm i -g looptroop` does not get this version. It is not resumable either:
+  // the bytes are already on npm under an immutable version, so the publish job
+  // has nothing to do, and this workflow deliberately never moves a dist-tag it
+  // did not set. Someone has to move it.
   it('is not complete when integrity matches but the dist-tag is wrong', () => {
     const result = resolveReleaseState(facts({
       tagSha: SHA,
@@ -110,8 +112,9 @@ describe('resolveReleaseState', () => {
       npmIntegrity: INTEGRITY,
       npmDistTags: { latest: '0.4.1' },
     }))
-    expect(result.state).toBe('resume-npm')
-    expect(result.reason).toMatch(/wrong dist-tag/)
+    expect(result.state).toBe('conflict')
+    expect(result.safeToContinue).toBe(false)
+    expect(result.reason).toMatch(/dist-tag add/)
   })
 
   it('hard-stops when a release candidate took the latest dist-tag', () => {
@@ -145,14 +148,35 @@ describe('resolveReleaseState', () => {
     expect(result.state).toBe('skip')
   })
 
-  it('recovers from a draft plus a wrong dist-tag', () => {
+  // npm versions are immutable, so the bytes being right and the dist-tag being
+  // wrong is not something a re-run can repair: there is nothing left to
+  // publish, and this workflow never moves a dist-tag it did not set. Resuming
+  // would run the publish job for a version already on the registry and then
+  // report success without the tag having moved.
+  it('hard stops when the bytes are right but the dist-tag is not', () => {
     const result = resolveReleaseState(facts({
       releaseExists: true,
       releaseIsDraft: true,
       npmIntegrity: INTEGRITY,
       npmDistTags: { latest: '0.4.1' },
     }))
-    expect(result.state).toBe('resume-npm')
+    expect(result.state).toBe('conflict')
+    expect(result.safeToContinue).toBe(false)
+    expect(result.reason).toMatch(/dist-tag/)
+  })
+
+  // Same shape, but the bytes on npm are not this build's. That is the older,
+  // more serious hard stop and it must win: reporting the dist-tag would send
+  // someone to move a tag onto bytes nobody verified.
+  it('prefers the integrity conflict over the dist-tag one', () => {
+    const result = resolveReleaseState(facts({
+      releaseExists: true,
+      releaseIsDraft: true,
+      npmIntegrity: 'sha512-bytesThisBuildDidNotProduce',
+      npmDistTags: { latest: '0.4.1' },
+    }))
+    expect(result.state).toBe('conflict')
+    expect(result.reason).toMatch(/published bytes differ/)
   })
 
   // The state every push to main lands in once a release has been cut: the tag
@@ -202,7 +226,11 @@ describe('resolveReleaseState', () => {
 // artefact through). The byte check moves to the npm job; the dist-tag conjunct
 // still binds here.
 describe('resolveReleaseState with the build integrity not yet known', () => {
-  it('classifies a finished release as complete rather than needing a republish', () => {
+  // Every channel is done, but nothing here compared the bytes. `complete` would
+  // claim a verification that did not happen; `resume-npm` would send a finished
+  // release back to the publish job. `unverified` is neither, and it does not
+  // proceed.
+  it('reports a finished release as unverified rather than complete or resumable', () => {
     const result = resolveReleaseState(facts({
       expectedIntegrity: null,
       tagSha: SHA,
@@ -211,7 +239,40 @@ describe('resolveReleaseState with the build integrity not yet known', () => {
       npmIntegrity: INTEGRITY,
       npmDistTags: { latest: '0.5.0' },
     }))
+    expect(result.state).toBe('unverified')
+    expect(result.safeToContinue).toBe(true)
+    expect(result.reason).toMatch(/nothing to publish/)
+  })
+
+  // The same facts plus the bytes. Only a run holding the artefact may say a
+  // release is finished and verified.
+  it('is complete once the same facts include the build integrity', () => {
+    const result = resolveReleaseState(facts({
+      expectedIntegrity: INTEGRITY,
+      tagSha: SHA,
+      releaseExists: true,
+      releaseIsDraft: false,
+      npmIntegrity: INTEGRITY,
+      npmDistTags: { latest: '0.5.0' },
+    }))
     expect(result.state).toBe('complete')
+  })
+
+  // `unverified` requires the tag to name *this* commit, which is what keeps it
+  // from swallowing the ordinary post-release push: main moves on, the tag stays
+  // put, and that push must still read as `skip`.
+  it('still skips an ordinary push once main has moved past the tag', () => {
+    const result = resolveReleaseState(facts({
+      expectedIntegrity: null,
+      versionChangedInPush: false,
+      tagSha: OTHER_SHA,
+      targetSha: SHA,
+      releaseExists: true,
+      releaseIsDraft: false,
+      npmIntegrity: INTEGRITY,
+      npmDistTags: { latest: '0.5.0' },
+    }))
+    expect(result.state).toBe('skip')
   })
 
   it('never hard stops on integrity it cannot compare', () => {

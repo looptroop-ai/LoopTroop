@@ -54,6 +54,7 @@ export type ReleaseStateName =
   | 'resume-npm'
   | 'resume-github'
   | 'complete'
+  | 'unverified'
   | 'conflict'
 
 export interface ReleaseStateResult {
@@ -82,6 +83,21 @@ export function prereleaseTookLatest(facts: ReleaseFacts): boolean {
   return facts.expectedDistTag !== 'latest' && facts.npmDistTags?.latest === facts.version
 }
 
+/**
+ * Names what a partial release has already produced.
+ *
+ * A resume reason that overstates this is worse than one that says nothing: it
+ * is read by whoever is deciding whether to let the run continue, and "a Release
+ * exists" when only a tag does sends them looking for something that is not
+ * there.
+ */
+function describeExisting(facts: ReleaseFacts, tagOnTarget: boolean): string {
+  const present: string[] = []
+  if (tagOnTarget) present.push('the tag is in place')
+  if (facts.releaseExists) present.push(facts.releaseIsDraft ? 'a draft Release exists' : 'a published Release exists')
+  return present.length > 0 ? present.join(', ') : 'nothing else exists for it either'
+}
+
 export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
   const tagExists = facts.tagSha !== null
   const tagOnTarget = tagExists && facts.tagSha!.toLowerCase() === facts.targetSha.toLowerCase()
@@ -92,21 +108,47 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
   const bytesComparable = facts.expectedIntegrity !== null
   const integrityMatches = onNpm && bytesComparable && facts.npmIntegrity === facts.expectedIntegrity
 
-  // `publishedCorrectly` deliberately accepts an unverifiable integrity: with
-  // the build yet to run, requiring a byte match would classify every finished
-  // release as needing an npm publish it does not need. The dist-tag conjunct
-  // still binds, and the byte comparison happens in the npm job.
-  const publishedCorrectly = onNpm && (!bytesComparable || integrityMatches) && hasCorrectDistTag(facts)
-  const releasePublished = facts.releaseExists && !facts.releaseIsDraft
+  const tagAndRelease = tagOnTarget && facts.releaseExists && !facts.releaseIsDraft
+  const tagAndDraft = tagOnTarget && facts.releaseExists && facts.releaseIsDraft
+  const distTagCorrect = hasCorrectDistTag(facts)
+  const publishedCorrectly = onNpm && integrityMatches && distTagCorrect
 
-  // ---- Everything shipped. Checked first so a re-run over a finished release
-  // reports that it is finished rather than that nothing changed.
-
-  if (tagOnTarget && releasePublished && publishedCorrectly) {
+  // ---- Everything shipped, and the bytes on npm are the bytes this build
+  // produced. Checked first so a re-run over a finished release reports that it
+  // is finished rather than that nothing changed.
+  if (tagAndRelease && publishedCorrectly) {
     return {
       state: 'complete',
       safeToContinue: true,
-      reason: `v${facts.version} is tagged at ${facts.targetSha}, published on GitHub, and on npm under "${facts.expectedDistTag}".`,
+      reason:
+        `v${facts.version} is tagged at ${facts.targetSha}, published on GitHub, and on npm `
+        + `under "${facts.expectedDistTag}" with matching integrity.`,
+    }
+  }
+
+  // ---- Everything shipped except the byte comparison, which cannot be made
+  // from here.
+  //
+  // This is what a re-run over an already-finished release looks like: the tag
+  // is on this commit, the Release is published, npm has the version under the
+  // right dist-tag — but `detect` runs before the build, so there is no
+  // `--expected-integrity` to compare against. "No bytes to compare" is not
+  // "the bytes are fine", so this is not `complete`.
+  //
+  // The state is load-bearing rather than cosmetic. Without it a re-run on the
+  // release commit falls through every branch below to `resume-npm`, which
+  // would send a finished release back to the publish job.
+  if (tagAndRelease && onNpm && distTagCorrect && !bytesComparable) {
+    return {
+      state: 'unverified',
+      safeToContinue: true,
+      reason:
+        `v${facts.version} is tagged at ${facts.targetSha}, published on GitHub, and on npm under `
+        + `"${facts.expectedDistTag}" — every channel is done, so there is nothing to publish. `
+        + 'The bytes were not compared: this ran before any build, so there was no integrity to '
+        + 'compare against. The publishing run already made that comparison against the registry. '
+        + 'To repeat it, rebuild the tag and re-run detection with the resulting '
+        + '--expected-integrity.',
     }
   }
 
@@ -120,7 +162,8 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
   // hard-stop the workflow on every subsequent push to main.
   //
   // It is also what grandfathers the pre-automation history: GitHub carries
-  // releases back to v0.4.1 while npm carries only the 0.0.0 placeholder.
+  // releases this workflow never cut, while npm carries only the placeholder
+  // first publish, and neither absence is damage to repair.
   if (!facts.versionChangedInPush) {
     return {
       state: 'skip',
@@ -179,23 +222,40 @@ export function resolveReleaseState(facts: ReleaseFacts): ReleaseStateResult {
     }
   }
 
+  if (onNpm && bytesComparable && !distTagCorrect) {
+    return {
+      state: 'conflict',
+      safeToContinue: false,
+      reason:
+        `Hard stop: npm carries ${facts.version} under "${facts.expectedDistTag}" at ${facts.npmIntegrity}, `
+        + 'which matches this build, but the dist-tag does not resolve to this version. '
+        + 'Move it with `npm dist-tag add looptroop@VERSION TAG` — a workflow cannot repair a '
+        + 'dist-tag it did not break, and retrying would publish nothing new.',
+    }
+  }
+
   if (publishedCorrectly) {
     return {
       state: 'resume-github',
       safeToContinue: true,
       reason:
-        `npm already carries ${facts.version} under "${facts.expectedDistTag}"`
-        + `${integrityMatches ? ' with matching integrity' : ''}. `
-        + `${tagOnTarget ? 'The tag is in place; the Release is still a draft.' : 'The tag has not been pushed yet.'} `
+        `npm already carries ${facts.version} under "${facts.expectedDistTag}" with matching integrity. `
+        + `${tagAndDraft ? 'The tag is in place; the Release is still a draft.' : 'The tag has not been pushed yet.'} `
         + 'Continuing on the GitHub side only.',
     }
   }
 
+  // A tag on the release commit does not shorten the work when npm is behind.
+  // Only `publishedCorrectly` above may skip the publish job; everything that
+  // reaches here still has bytes to ship, whatever else is already in place.
   return {
     state: 'resume-npm',
     safeToContinue: true,
     reason: onNpm
-      ? `npm has ${facts.version} but under the wrong dist-tag. Correcting the tag and finishing.`
-      : `A Release exists for v${facts.version} but npm does not have it yet. Continuing from the publish step.`,
+      ? `npm has ${facts.version}, but not under "${facts.expectedDistTag}" with bytes this run can vouch for. `
+        + 'Continuing to the publish job, which re-reads the registry with the built artefact in hand '
+        + 'and fails there if the bytes or the dist-tag are wrong. It does not move dist-tags.'
+      : `npm does not have v${facts.version} yet (${describeExisting(facts, tagOnTarget)}). `
+        + 'Continuing from the publish step.',
   }
 }

@@ -13,6 +13,10 @@
  * called directly by the tests.
  */
 
+// Extensions are explicit because these scripts run under bare `node`, not tsx.
+// Node executes TypeScript directly but does not resolve a missing extension.
+import { findRelease, parseChangelog, renderReleaseNotes } from './changelog-release-notes.ts'
+
 /** A parsed release version. `prerelease` is the `N` of `-rc.N`, or null. */
 export interface ParsedVersion {
   major: number
@@ -162,6 +166,31 @@ const UNRELEASED_HEADING = /^##\s+Unreleased\s*$/gm
  */
 const UNRELEASED_NOTE = '> Changes merged since the last versioned release that have not yet shipped in a tagged version.'
 
+/**
+ * Refuses a bump whose notes the release workflow could not publish.
+ *
+ * The bump and the publish read the same section through different code, and the
+ * publish is the stricter of the two: it needs `Release Highlights` or `Summary`
+ * to carry entries, because that is the body of the GitHub Release. Discovering
+ * that at publish time costs a release cycle — the bump commit, the pull request
+ * and its required checks all exist by then — so the renderer is run here, over
+ * the exact section about to be written, and its own error is surfaced.
+ *
+ * The renderer's own message is quoted rather than paraphrased, so the reason a
+ * bump was refused is the same sentence the release would have failed with.
+ */
+function assertReleaseNotesWouldRender(releasedSection: string, version: string): void {
+  try {
+    renderReleaseNotes(findRelease(parseChangelog(releasedSection), version))
+  } catch (error) {
+    throw new Error(
+      `The "## Unreleased" section cannot be published as release notes: ${(error as Error).message} `
+      + 'Add the user-facing entries under "### Release Highlights" (or "### Summary"); the '
+      + 'per-category sections below it are for contributors and are not published.',
+    )
+  }
+}
+
 export function bumpChangelog(contents: string, version: string, date: string): ChangelogBump {
   const headings = [...contents.matchAll(UNRELEASED_HEADING)]
 
@@ -196,15 +225,19 @@ export function bumpChangelog(contents: string, version: string, date: string): 
   const body = contents.slice(headingEnd, bodyEnd)
   const releasedBody = body.replace(UNRELEASED_NOTE, '').replace(/^\n+/, '\n\n').trimEnd()
 
-  if (!/^[-*]\s+/m.test(releasedBody)) {
-    throw new Error(
-      'The "## Unreleased" section has no entries, so the release notes would be empty. '
-      + 'GitHub Releases and the npm listing both render this section.',
-    )
-  }
-
+  // Any list item at all means the section is not blank, but it does not mean a
+  // release can be cut from it. The workflow publishes `renderReleaseNotes`,
+  // which reads `Release Highlights` or `Summary` and throws when neither has
+  // entries — so entries under `### Fixed` alone satisfy this check and fail the
+  // release two steps later, after the bump commit and the PR already exist.
+  //
+  // Checked by running the real renderer over the section this bump is about to
+  // write, rather than by restating its rule here: a second copy of the rule is
+  // a second thing to drift.
   const releasedHeading = `## ${version} (${date})`
   const releasedSection = `${releasedHeading}\n${releasedBody}\n`
+  assertReleaseNotesWouldRender(releasedSection, version)
+
   const freshUnreleased = `## Unreleased\n\n${UNRELEASED_NOTE}\n\n`
 
   return {

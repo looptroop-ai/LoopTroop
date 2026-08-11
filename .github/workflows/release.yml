@@ -53,6 +53,7 @@ jobs:
       state: ${{ steps.state.outputs.state }}
       dry_run: ${{ steps.guard.outputs.dry_run }}
       proceed: ${{ steps.state.outputs.proceed }}
+      needs_npm: ${{ steps.state.outputs.needs_npm }}
       dist_tag: ${{ steps.state.outputs.dist_tag }}
     steps:
       - name: Checkout
@@ -101,12 +102,20 @@ jobs:
           echo "Dry run: ${dry_run}"
 
       # Classifies the release: skip, fresh, resume-npm, resume-github,
-      # complete, or conflict. `skip` covers the ordinary case of a push to main
-      # that did not touch the version, and is also what grandfathers the
-      # releases predating this workflow — v0.4.1 exists on GitHub while npm has
-      # only the 0.0.0 placeholder, and that must never read as damaged.
+      # complete, unverified, or conflict. `skip` covers the ordinary case of a
+      # push to main that did not touch the version, and is also what
+      # grandfathers the releases predating this workflow — GitHub carries
+      # releases this workflow never cut, while npm carries only the placeholder
+      # first publish, and that difference must never read as damaged.
       # `conflict` is a hard stop: it means something outside this workflow
       # published or moved something, and a retry would paper over it.
+      #
+      # `--baseline` is the commit whose package.json answers "did *this* push
+      # change the version". `github.event.before` is the exact pre-push SHA, so
+      # a multi-commit push whose bump is not the final commit still releases,
+      # and a rebase merge — where HEAD^ is not what main previously pointed at —
+      # is read correctly. A dispatch has no push boundary at all, so it passes
+      # `auto` and lets the remaining gates decide.
       #
       # No `--expected-integrity`: this runs before the build that produces the
       # artefact, so there are no bytes to compare yet. The comparison happens in
@@ -119,16 +128,51 @@ jobs:
         id: state
         env:
           GH_TOKEN: ${{ github.token }}
-        run: npm run release:detect
-
-      - name: Report the state
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_FROM: ${{ github.event.before }}
         run: |
-          echo "### Release state: ${{ steps.state.outputs.state }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Version: ${{ steps.state.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Proceed: ${{ steps.state.outputs.proceed }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Dry run: ${{ steps.guard.outputs.dry_run }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Reason: ${{ steps.state.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          baseline=auto
+          # `github.event.before` is all zeroes for a branch's first push, which
+          # names no commit git can read.
+          if [ "${EVENT_NAME}" = "push" ] \
+            && [ -n "${PUSHED_FROM}" ] \
+            && [ "${PUSHED_FROM}" != "0000000000000000000000000000000000000000" ]; then
+            baseline="${PUSHED_FROM}"
+          fi
+          echo "Baseline: ${baseline}"
+          npm run release:detect -- --baseline "${baseline}"
+
+      # Values go through `env`, never interpolated into the script body. The
+      # reason is free-form multi-line prose, and `${{ }}` splices text into the
+      # shell source before bash parses it — a newline in the value would become
+      # a new command.
+      - name: Report the state
+        env:
+          STATE: ${{ steps.state.outputs.state }}
+          VERSION: ${{ steps.state.outputs.version }}
+          PROCEED: ${{ steps.state.outputs.proceed }}
+          DRY_RUN: ${{ steps.guard.outputs.dry_run }}
+          REASON: ${{ steps.state.outputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            printf '### Release state: %s\n\n' "${STATE}"
+            printf -- '- Version: %s\n' "${VERSION}"
+            printf -- '- Proceed: %s\n' "${PROCEED}"
+            printf -- '- Dry run: %s\n' "${DRY_RUN}"
+            printf -- '- Reason: %s\n' "${REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The states that end the run here. Every later job is gated on
+          # `proceed`, and the report job is too, so without this a halting run
+          # finishes green with an empty summary and no explanation of why
+          # nothing happened.
+          case "${STATE}" in
+            skip|complete|unverified)
+              printf '\nNo jobs run for this state. %s\n' "${REASON}" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::Release state '${STATE}': ${REASON}"
+              ;;
+          esac
 
   # ---------------------------------------------------------------------------
   # Pack exactly once. Everything downstream consumes these bytes.
@@ -279,10 +323,12 @@ jobs:
       - name: Verify the artefact matches the manifest
         run: npm run release:verify-artifact -- "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json
 
+      # The artefact, not a fresh pack. Repacking here would test bytes nobody
+      # ships and let a difference between the two pass unnoticed.
       - name: Install read-only and check the CLI still runs
         env:
           LOOPTROOP_READONLY_REQUIRED: '1'
-        run: npm run verify:readonly
+        run: npm run verify:readonly -- --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
 
   # ---------------------------------------------------------------------------
   # The anchor. Every channel depends on this job, never on a sibling channel,
@@ -330,8 +376,38 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/notes.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Creates a draft, which creates no tag. `resume-npm` reuses the existing
+      # Snapshot for the postcondition below. A tag may legitimately already
+      # exist here: `finalize` pushes the tag before publishing the release, so
+      # a run resuming from a failure between those two steps arrives with the
+      # tag in place. The resolver has already hard-stopped if it names a
+      # different commit, so what is left to prove is that *drafting* does not
+      # create one.
+      - name: Record whether the tag already exists
+        id: tag_before
+        if: needs.detect.outputs.dry_run == 'false'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "existed=true" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is already tagged; this run is resuming a release that got past finalize's tag push."
+          else
+            echo "existed=false" >> "$GITHUB_OUTPUT"
+            echo "v${VERSION} is not tagged yet."
+          fi
+
+      # Creates a draft, which creates no tag. A resume reuses the existing
       # draft rather than creating a second one.
+      #
+      # The draft's assets are the record of what this release is. On a resume
+      # they are not overwritten blind: `npm pack` is reproducible for an
+      # identical tree, so a rebuild that produces different bytes means the
+      # tree changed under a version that is already partly released, and
+      # clobbering would quietly replace the artefact a user may already have
+      # downloaded — or, once npm has the version, make the GitHub asset
+      # disagree with the registry. Different bytes stop the release instead.
       - name: Create or update the draft release
         if: needs.detect.outputs.dry_run == 'false'
         env:
@@ -342,20 +418,70 @@ jobs:
           prerelease=()
           case "${VERSION}" in *-*) prerelease=(--prerelease) ;; esac
 
+          # The artefact is bound to the commit it was built from, and the tag
+          # this release eventually carries must name that same commit. They are
+          # equal by construction — every job checks out GITHUB_SHA — so a
+          # difference means an artefact from somewhere else.
+          MANIFEST_COMMIT=$(node -p "require('./release-manifest.json').commit || ''")
+          if [ "${MANIFEST_COMMIT}" != "${GITHUB_SHA}" ]; then
+            echo "::error::The artefact was built from '${MANIFEST_COMMIT:-(unknown)}', but this release is cut from ${GITHUB_SHA}."
+            exit 1
+          fi
+
           if gh release view "v${VERSION}" >/dev/null 2>&1; then
             echo "Draft for v${VERSION} already exists; updating it."
             gh release edit "v${VERSION}" --notes-file /tmp/notes.md "${prerelease[@]}"
-            gh release upload "v${VERSION}" \
-              "looptroop-${VERSION}.tgz" release-manifest.json --clobber
+
+            # `|| true` because a draft with no assets yet is an ordinary resume
+            # state, not a failure.
+            existing_assets=$(gh release view "v${VERSION}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            if printf '%s\n' "${existing_assets}" | grep -qx 'release-manifest.json'; then
+              gh release download "v${VERSION}" --pattern release-manifest.json --dir /tmp/existing --clobber
+              built=$(node -p "require('./release-manifest.json').integrity")
+              drafted=$(node -p "require('/tmp/existing/release-manifest.json').integrity")
+              if [ "${built}" != "${drafted}" ]; then
+                echo "::error::The draft for v${VERSION} holds ${drafted}, this build produced ${built}."
+                echo "::error::A rebuild of the same tree is byte-identical, so the tree changed. Release a new version."
+                exit 1
+              fi
+              echo "The drafted artefact matches this build (${built}); leaving the assets alone."
+            else
+              gh release upload "v${VERSION}" \
+                "looptroop-${VERSION}.tgz" release-manifest.json
+            fi
           else
             gh release create "v${VERSION}" \
               --draft \
               --title "v${VERSION}" \
               --notes-file /tmp/notes.md \
-              --target "${GITHUB_SHA}" \
+              --target "${MANIFEST_COMMIT}" \
               "${prerelease[@]}" \
               "looptroop-${VERSION}.tgz" release-manifest.json
           fi
+
+      # The whole ordering rests on a tag meaning "finished". A draft creates no
+      # tag — verified against this repository rather than assumed — and this
+      # asserts it stayed that way for *this* run, because a tag appearing here
+      # would make the half-finished release that follows indistinguishable from
+      # a complete one. Compared against the snapshot rather than against
+      # absence, so resuming past finalize's tag push is not mistaken for damage.
+      - name: Assert the draft created no tag
+        if: needs.detect.outputs.dry_run == 'false'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          EXISTED: ${{ steps.tag_before.outputs.existed }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          exists=false
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            exists=true
+          fi
+          if [ "${EXISTED}" = "false" ] && [ "${exists}" = "true" ]; then
+            echo "::error::Drafting v${VERSION} created refs/tags/v${VERSION}. The tag must be created last, by finalize."
+            exit 1
+          fi
+          echo "Tag presence is unchanged by drafting (was ${EXISTED}, is ${exists})."
 
   # ---------------------------------------------------------------------------
   # npm. The only irreversible step, and the only blocking channel.
@@ -412,14 +538,35 @@ jobs:
 
       # Idempotent on its own, so this job can be re-run alone after fixing a
       # trusted-publisher misconfiguration without re-running the release.
+      #
+      # The job is not gated on `needs_npm`: a skipped job skips everything
+      # that needs it, which would strand `smoke` and `finalize` and leave a
+      # published version untagged. Instead the resolver's expectation is
+      # checked against the registry here, where disagreeing with it is
+      # information rather than a dead end.
       - name: Publish
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+          NEEDS_NPM: ${{ needs.detect.outputs.needs_npm }}
         run: |
           set -euo pipefail
+          already=false
           if npm view "looptroop@${VERSION}" version >/dev/null 2>&1; then
+            already=true
+          fi
+
+          # The resolver read the registry minutes ago; this reads it again with
+          # the artefact in hand. A version that appeared in between was
+          # published by something other than this run, and republishing is
+          # impossible anyway — npm versions are immutable — so the bytes are
+          # reconciled by the verification step below rather than assumed.
+          if [ "${NEEDS_NPM}" = "false" ] && [ "${already}" = "false" ]; then
+            echo "::warning::Detection expected ${VERSION} to be on npm already, but it is not. Publishing it."
+          fi
+          if [ "${already}" = "true" ]; then
             echo "looptroop@${VERSION} is already published; skipping the publish."
+            echo "The verification step still runs, and fails if those bytes are not this build's."
             exit 0
           fi
           # Captured before publishing so the RC assertions can prove `latest`
@@ -592,11 +739,15 @@ jobs:
   # ---------------------------------------------------------------------------
   finalize:
     name: Tag and publish
-    needs: [detect, smoke]
+    needs: [detect, build, smoke]
     if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: release
+    # Deliberately *not* `environment: release`. That environment gates the one
+    # irreversible step, the npm publish, and this job cannot run unless that one
+    # already did. Claiming it here would ask a reviewer to approve the same
+    # release twice — and the second prompt arrives after the publish, where
+    # declining protects nothing and only strands the release untagged.
     permissions:
       contents: write
     steps:
@@ -605,26 +756,45 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
       # Annotated, not lightweight, and pushed before the release is published.
       # If this succeeds and the next step fails, the state resolver reads
       # `resume-github` rather than `complete`, because completeness requires the
       # release to be published too.
+      #
+      # The tag names the commit the artefact was built from, taken from the
+      # manifest rather than from GITHUB_SHA. They agree on every ordinary run —
+      # the draft job refuses to proceed otherwise — so this is belt and braces
+      # on the one operation that permanently binds a version to a commit.
       - name: Push the annotated tag
         env:
           VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
+          TARGET=$(node -p "require('./release-manifest.json').commit || ''")
+          if [ -z "${TARGET}" ]; then
+            echo "::error::release-manifest.json records no commit; refusing to tag."
+            exit 1
+          fi
+          if [ "${TARGET}" != "${GITHUB_SHA}" ]; then
+            echo "::error::The artefact was built from ${TARGET}, but this run is at ${GITHUB_SHA}."
+            exit 1
+          fi
           if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
             existing=$(git rev-list -n 1 "refs/tags/v${VERSION}")
-            if [ "${existing}" != "${GITHUB_SHA}" ]; then
-              echo "::error::Tag v${VERSION} exists at ${existing}, expected ${GITHUB_SHA}."
+            if [ "${existing}" != "${TARGET}" ]; then
+              echo "::error::Tag v${VERSION} exists at ${existing}, expected ${TARGET}."
               exit 1
             fi
-            echo "Tag v${VERSION} already points at ${GITHUB_SHA}."
+            echo "Tag v${VERSION} already points at ${TARGET}."
           else
             git -c user.name='looptroop-release' \
                 -c user.email='release@looptroop.ovh' \
-                tag -a "v${VERSION}" "${GITHUB_SHA}" \
+                tag -a "v${VERSION}" "${TARGET}" \
                 -m "LoopTroop v${VERSION}"
             git push origin "refs/tags/v${VERSION}"
           fi

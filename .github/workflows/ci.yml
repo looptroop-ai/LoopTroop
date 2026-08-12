@@ -382,6 +382,81 @@ jobs:
         shell: bash
         run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
 
+  # Homebrew's own checks, run before anything is published rather than after:
+  # the tap has no CI of its own, so an objection discovered afterwards is
+  # already on somebody's machine. Offline, against a release-shaped formula —
+  # `--online` fetches the URL and verifies the checksum, which only means
+  # anything once the release assets exist, and the publish job does that.
+  formula-audit:
+    name: Formula audit (macos)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Audit the formula this release would publish
+        run: >
+          node scripts/audit-formula.ts
+          --version 9.9.9
+          --url https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz
+          --sha256 0000000000000000000000000000000000000000000000000000000000000000
+
+  # Installs through the package managers themselves, from a throwaway tap and a
+  # local manifest pointing at a bundle served on loopback. Rendering a formula
+  # and checking its text proves the text; what it cannot prove is that `brew
+  # install` produces a command that runs — and every mistake available here is
+  # of that kind. The public tap and bucket are never touched.
+  channel-install:
+    name: Channel install (${{ matrix.channel }} on ${{ matrix.os }})
+    needs: [bundle]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The formula also serves Linuxbrew, and the docs will say so.
+          - { channel: homebrew, os: ubuntu-latest }
+          - { channel: homebrew, os: macos-latest }
+          - { channel: scoop, os: windows-latest }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # Not preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
+      # because the runner user is an administrator and Scoop refuses to install
+      # for one otherwise.
+      - name: Install Scoop
+        if: matrix.channel == 'scoop'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          scoop --version
+
+      # `--strip-node` on macOS only, and it is the point of the job there:
+      # node@24 is keg-only, so the formula has to put the keg's node on PATH
+      # itself. On a runner that already has Node, a formula that forgot to
+      # would pass anyway and fail for the user who does not.
+      - name: Install it the way a user would, and run it
+        shell: bash
+        run: >
+          node scripts/smoke-channel.ts
+          --channel ${{ matrix.channel }}
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+          ${{ matrix.os == 'macos-latest' && '--strip-node' || '' }}
+
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
   # that choice is the same on all three platforms. What differs per platform is

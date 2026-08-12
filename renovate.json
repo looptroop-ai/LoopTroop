@@ -84,6 +84,20 @@
       "groupName": "github actions",
       "pinDigests": true,
       "automerge": false
+    },
+    {
+      "description": "The Dockerfile pins its base image by digest as well as by tag, so without this the pin would never be refreshed and the image would ship whatever CVEs the base had on the day it was written. The rule above is scoped to github-actions only.",
+      "matchManagers": ["dockerfile"],
+      "groupName": "container base image",
+      "pinDigests": true,
+      "automerge": false
+    },
+    {
+      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image is pinned to the floor in engines.node, and moving it alone would ship users a runtime nothing in CI ran. Approve one only together with engines.node and .nvmrc.",
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "container"]
     }
   ]
 }

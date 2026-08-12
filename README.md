@@ -15,7 +15,7 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 
 **Start here:** [Docs](https://www.looptroop.ovh/docs/) | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | [LLM Council](https://www.looptroop.ovh/docs/llm-council) | [Context Engineering](https://www.looptroop.ovh/docs/context-engineering) | [Execution](https://www.looptroop.ovh/docs/beads)
 
-![LoopTroop workflow demo](https://www.looptroop.ovh/media/20260619104032-26sec-captions.gif)
+![LoopTroop workflow demo](https://raw.githubusercontent.com/looptroop-ai/LoopTroop-Website/main/docs/media/20260619104032-26sec-captions.gif)
 *An animated walkthrough of a ticket lifecycle and the configuration menu.*
 
 ### 📸 Screenshots
@@ -186,6 +186,111 @@ closes. It serves the interface and the API from one address on port 3000, which
 
 Add a local repository with a GitHub origin, create a ticket, and follow the
 review gates.
+
+### Run it in a container
+
+Published for `linux/amd64` and `linux/arm64`. Docker is the only thing the host
+needs — Node, git and `gh` are in the image:
+
+```bash
+docker pull looptroopai/looptroop:latest
+```
+
+Two things it still needs from you, both deliberately not baked in.
+
+**An OpenCode server.** It is not in the image: it needs a configured model
+provider and your credentials, and bundling it would tie LoopTroop's releases to
+OpenCode's. A container with no OpenCode to reach exits at startup instead of
+serving an interface that cannot run a single coding operation, so pass
+`-e LOOPTROOP_OPENCODE_BASE_URL=…` pointing at a server you run — or
+`-e LOOPTROOP_OPENCODE_MODE=mock` to look around without one.
+
+That server has to be able to open the files LoopTroop gives it. LoopTroop works
+in git worktrees under `<project>/.looptroop/worktrees/` and asks OpenCode to
+open one **by absolute path**, so the path has to mean the same thing on both
+sides. Mounting the project somewhere tidy like `/workspace/project` breaks that
+the moment OpenCode is not in the same container: it is handed a directory that
+does not exist on its own filesystem. So mount the project at its own path:
+
+```bash
+PROJECT=/absolute/path/to/project
+```
+
+and use `-v "$PROJECT":"$PROJECT"`, as below. If you would rather keep a tidy
+path inside the container, run OpenCode as a sidecar with the identical mount, so
+both processes see the same string.
+
+**A way to reach it.** The daemon binds `127.0.0.1`, which inside a container is
+the container's own loopback, so publishing a port alone connects to nothing.
+That default is the point: this is a control plane that executes code on the
+machine it runs on, and it does not become network-reachable by accident.
+
+On Linux, share the host's network namespace and the loopback boundary stays
+real:
+
+```bash
+docker run --network host \
+  -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
+  -v looptroop-config:/home/node/.looptroop \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
+  looptroopai/looptroop:latest
+```
+
+On Docker Desktop for Mac and Windows the containers run in a VM, so
+`--network host` is that VM's loopback rather than yours. There the daemon has to
+bind wider, which it will not do by omission — it refuses a non-loopback bind
+unless both variables are set, and refuses it without a token:
+
+```bash
+docker run -p 127.0.0.1:3000:3000 \
+  -e LOOPTROOP_ALLOW_REMOTE_API=1 \
+  -e LOOPTROOP_BACKEND_HOST=0.0.0.0 \
+  -e LOOPTROOP_API_TOKEN="$(openssl rand -hex 32)" \
+  -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 \
+  -v looptroop-config:/home/node/.looptroop \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
+  looptroopai/looptroop:latest
+```
+
+`-p 127.0.0.1:3000:3000`, not `-p 3000:3000`: the short form publishes on every
+host interface, which on a shared network offers that control plane to everyone
+on it.
+
+`LOOPTROOP_API_TOKEN` is what authorises the wider bind. It is **not** the token
+the API accepts — the daemon mints its own at startup and records it owner-only.
+Read the one that works with:
+
+```bash
+docker exec <container> sh -c 'cat "$LOOPTROOP_CONFIG_DIR/daemon.json"'
+```
+
+Keep the `looptroop-config` volume. It holds the database and the daemon record;
+without it every restart is a fresh install.
+
+The container runs as uid 1000. If your host user is a different uid, git refuses
+the mounted checkout with "detected dubious ownership" — match the uid rather
+than relaxing `safe.directory` inside the image for everyone. The named config
+volume is then no longer writable either, so put the config somewhere that uid
+owns:
+
+```bash
+docker run --network host --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e LOOPTROOP_CONFIG_DIR=/workspace/.looptroop \
+  -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
+  -v "$HOME/.looptroop:/workspace/.looptroop" \
+  looptroopai/looptroop:latest
+```
+
+`HOME=/tmp` because `/home/node` belongs to uid 1000 and nothing should have to
+write into a home directory it does not own.
+
+Commits carry their identity per invocation, so no global git config is needed.
+`gh` does need credentials for the pull-request step: pass `-e GH_TOKEN=…`. The
+push uses the same token, through `gh`'s credential helper — git does not read
+`GH_TOKEN` itself, and nothing else in the image supplies a credential, so
+without that the pull request would be prepared and never pushed.
 
 ### Working on LoopTroop itself
 

@@ -67,6 +67,7 @@
     "verify:version": "node scripts/verify-version-single-source.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:install": "node scripts/smoke-install.mjs",
+    "verify:container": "node scripts/smoke-container.mjs",
     "verify:readonly": "node scripts/verify-readonly-install.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",

@@ -93,15 +93,31 @@ export interface ResolveInstallOptions {
  * to repeat on every command and fragile — a package manager that relocates its
  * files changes the answer. Recording it means the guess is made when the
  * evidence is freshest, stays stable afterwards, and can be corrected by hand.
+ *
+ * One exception to "stays stable": inside the container image the build-time
+ * marker overrides a record that says anything else. See below for why.
  */
 export function resolveInstallInfo(options: ResolveInstallOptions = {}): InstallInfo {
   const moduleDir = options.moduleDir ?? dirname(fileURLToPath(import.meta.url))
+  // Set at build time by the image and by nothing else, which makes it the one
+  // piece of evidence here that cannot be stale. The record can be: a config
+  // volume first filled by a global npm install and then mounted into a
+  // container carries `channel: npm`, and the pin below would keep answering
+  // `npm install -g looptroop@latest` inside a container — a command that
+  // upgrades a tree the next `docker run` throws away. It outranks a
+  // hand-written pin for the same reason: whatever the user meant to correct,
+  // they were not correcting the fact that this is a container.
+  const marked = process.env.LOOPTROOP_CONTAINER === '1'
   const recorded = readRecordedInstall(options.configDir)
 
   // A recorded path that no longer matches means this copy moved, so the old
   // answer describes an installation that is no longer the one running.
   if (recorded && (recorded.path === undefined || recorded.path === moduleDir)) {
-    return { channel: recorded.channel, upgradeCommand: UPGRADE_COMMANDS[recorded.channel] }
+    // Returned without re-recording when it already agrees with the marker, so
+    // a container does not write to its config volume on every command.
+    if (!marked || recorded.channel === 'container') {
+      return { channel: recorded.channel, upgradeCommand: UPGRADE_COMMANDS[recorded.channel] }
+    }
   }
 
   const channel = detectInstallChannel(moduleDir)

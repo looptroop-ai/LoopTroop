@@ -89,4 +89,4 @@ lockfile without a human deciding to.
 
 Routine dependency updates are batched weekly with a maturity delay; security
 advisories bypass that schedule. The full policy is documented in
-[docs/operations.md](docs/operations.md#scheduled-dependency-updates).
+[Operations Guide](https://www.looptroop.ovh/docs/operations#scheduled-dependency-updates).

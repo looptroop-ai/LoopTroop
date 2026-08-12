@@ -7,29 +7,76 @@
 #
 # Build locally with:
 #   npm pack
-#   docker build --build-arg TARBALL=looptroop-0.4.1.tgz -t looptroop .
+#   version="$(node -p 'require("./package.json").version')"
+#   docker build \
+#     --build-arg TARBALL="looptroop-${version}.tgz" \
+#     --build-arg VERSION="${version}" \
+#     --build-arg REVISION="$(git rev-parse HEAD)" \
+#     -t looptroop .
+#
+# The version is read rather than typed for the same reason CI reads it: a
+# literal here goes stale on the next release and nothing would notice. VERSION
+# and REVISION only fill in the OCI labels, but they are not optional in
+# practice: scripts/smoke-container.mjs asserts both are populated, because an
+# image that cannot say which commit it came from is one nobody can debug in
+# production.
+#
+# ---------------------------------------------------------------------------
+# It does not start without an OpenCode server
+# ---------------------------------------------------------------------------
+# A bare `docker run` of this image exits instead of starting. That is not a
+# defect in the build: OpenCode is deliberately absent (see below), `live` is the
+# default mode, and the daemon treats a missing OpenCode as fatal before it binds
+# a port — a half-started daemon that cannot run a single coding operation is
+# worse than one that refuses. So every run needs one of:
+#
+#   -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096
+#       Point it at a server you run. This is the real configuration.
+#
+#   -e LOOPTROOP_OPENCODE_MODE=mock
+#       No OpenCode at all. Enough to look around the interface and to run
+#       `doctor`; no coding work will execute.
+#
+# Neither is baked in: an image that defaulted to mock would look healthy while
+# being unable to do the one thing it is for.
 #
 # ---------------------------------------------------------------------------
 # Reaching the interface from the host
 # ---------------------------------------------------------------------------
 # The daemon binds 127.0.0.1 by default, and inside a container that means the
-# container's own loopback — `-p 3000:3000` will connect to nothing. That is the
-# intended default: this is a control plane that executes code on the machine it
-# runs on, so it does not become network-reachable by accident.
+# container's own loopback — a published port will connect to nothing. That is
+# the intended default: this is a control plane that executes code on the machine
+# it runs on, so it does not become network-reachable by accident.
 #
 # Two ways to actually use it, in order of preference:
 #
 #   1. Share the host's network namespace, keeping the loopback boundary real:
-#        docker run --network host -v looptroop-config:/home/node/.looptroop looptroop
+#        docker run --network host \
+#          -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
+#          -v looptroop-config:/home/node/.looptroop looptroop
+#
+#      Linux only. On Docker Desktop for Mac and Windows the containers run in a
+#      VM, so `--network host` is that VM's loopback and not yours; use option 2.
 #
 #   2. Bind wider, on purpose. The runtime refuses a non-loopback bind unless
 #      both variables are set, and refuses it without a token, so there is no
 #      way to end up with an open unauthenticated control API by omission:
-#        docker run -p 3000:3000 \
+#        docker run -p 127.0.0.1:3000:3000 \
 #          -e LOOPTROOP_ALLOW_REMOTE_API=1 \
 #          -e LOOPTROOP_BACKEND_HOST=0.0.0.0 \
 #          -e LOOPTROOP_API_TOKEN="$(openssl rand -hex 32)" \
+#          -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 \
 #          -v looptroop-config:/home/node/.looptroop looptroop
+#
+#      `-p 127.0.0.1:3000:3000`, not `-p 3000:3000`: the short form publishes on
+#      every host interface, which on a laptop on a shared network hands the port
+#      to everyone on it. The container binds 0.0.0.0 because it has to reach
+#      across the container boundary; the host side stays on loopback.
+#
+#      LOOPTROOP_API_TOKEN is what authorises that wider bind. It is not the
+#      token the API accepts — the daemon mints its own credentials at startup
+#      and records them owner-only. Read the one that works with:
+#        docker exec <container> sh -c 'cat "$LOOPTROOP_CONFIG_DIR/daemon.json"'
 #
 # Neither is baked in. An image that shipped with the escape hatch pre-set would
 # hand every user the exposed configuration as the default.
@@ -37,9 +84,13 @@
 # ---------------------------------------------------------------------------
 # Mounting a project
 # ---------------------------------------------------------------------------
+# At its own absolute path, not a tidy one. LoopTroop hands OpenCode the
+# worktree path under <project>/.looptroop/worktrees/, and an OpenCode running
+# outside this container has to be able to open that exact string.
 #   docker run --network host \
+#     -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
 #     -v looptroop-config:/home/node/.looptroop \
-#     -v /path/to/project:/workspace/project \
+#     -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
 #     looptroop
 #
 # The container runs as uid 1000. If your host user is a different uid, git
@@ -48,25 +99,34 @@
 # named config volume is no longer writable either, so redirect it to somewhere
 # that uid owns:
 #   docker run --network host --user "$(id -u):$(id -g)" \
+#     -e HOME=/tmp \
 #     -e LOOPTROOP_CONFIG_DIR=/workspace/.looptroop \
-#     -v /path/to/project:/workspace/project \
+#     -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
+#     -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
 #     -v "$HOME/.looptroop:/workspace/.looptroop" \
 #     looptroop
 #
+# HOME=/tmp because /home/node belongs to uid 1000, and anything that looks for a
+# home directory should not find one it cannot write to.
+#
 # Commits carry their identity per invocation via `git -c`, so no global git
-# config is needed. `gh` does need credentials: pass `-e GH_TOKEN=…`.
+# config is needed. `gh` does need credentials: pass `-e GH_TOKEN=…`, which the
+# push also uses through `gh auth git-credential` — git does not read GH_TOKEN
+# on its own, and nothing else here supplies a credential.
 #
 # ---------------------------------------------------------------------------
 # What is not in the image
 # ---------------------------------------------------------------------------
 # OpenCode. It needs a configured model provider and credentials, which are the
 # user's, and installing it here would bake a second release train into this
-# one. Point the daemon at one you run:
-#   -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096
+# one. Point the daemon at one you run, as above.
 
 # Pinned to the floor in `engines` rather than to `24` so the image cannot drift
-# onto a runtime the package has not been tested against.
-FROM node:24.15.0-bookworm-slim AS build
+# onto a runtime the package has not been tested against, and by digest as well
+# as by tag: a tag is a mutable pointer, so two builds of the same commit can
+# otherwise disagree about what they were built on. The digest is the multi-arch
+# index, so one value serves both amd64 and arm64. Renovate updates it.
+FROM node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
 
 ARG TARBALL
 WORKDIR /build
@@ -82,7 +142,25 @@ RUN npm install --global --omit=dev --prefix /opt/looptroop ./package.tgz \
   && rm -f package.tgz
 
 
-FROM node:24.15.0-bookworm-slim AS runtime
+FROM node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS runtime
+
+# Passed by the build so the image can say what it is without a second source of
+# truth for the version. Declared here rather than at the top because build args
+# are per-stage.
+ARG VERSION
+ARG REVISION
+
+# `source` is what makes GHCR attach this package to the repository and inherit
+# its README, so it is load-bearing rather than decorative. The rest is what a
+# registry UI and `docker inspect` show, and what an operator reads off a running
+# container to find out exactly which build it is.
+LABEL org.opencontainers.image.title="LoopTroop" \
+  org.opencontainers.image.description="Local AI coding orchestration for repo-scale work: LLM-council planning, Ralph-loop recovery, isolated OpenCode worktrees, and human-gated PR delivery." \
+  org.opencontainers.image.source="https://github.com/looptroop-ai/LoopTroop" \
+  org.opencontainers.image.url="https://www.looptroop.ovh/" \
+  org.opencontainers.image.licenses="MIT" \
+  org.opencontainers.image.version="${VERSION}" \
+  org.opencontainers.image.revision="${REVISION}"
 
 # git is a hard requirement — LoopTroop works in worktrees, and `doctor` fails
 # without it. gh is what the pull-request phase drives, so an image without it
@@ -109,6 +187,14 @@ RUN apt-get update \
 
 COPY --from=build /opt/looptroop /opt/looptroop
 RUN ln -s /opt/looptroop/bin/looptroop /usr/local/bin/looptroop
+
+# What tells the CLI it is in a container, so `doctor` reports the container
+# channel and offers `docker pull` rather than `npm install -g` — a command that
+# would upgrade a tree the next `docker run` throws away. Nothing outside an
+# image sets this. It also outranks the channel recorded in the config volume,
+# which can have been written by an npm install before the volume was mounted
+# here; see resolveInstallInfo in server/lib/installChannel.ts.
+ENV LOOPTROOP_CONTAINER=1
 
 # The `node` user ships with the base image at uid 1000. Running as root would
 # mean every file the agent writes into a mounted project lands root-owned on

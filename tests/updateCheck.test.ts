@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -154,6 +154,80 @@ describe('recorded install channel', () => {
 
     expect(info.channel).toBe('npm')
     expect(info.upgradeCommand).toBe('npm install -g looptroop@latest')
+  })
+
+  /**
+   * The image sets LOOPTROOP_CONTAINER=1, and the config directory is a named
+   * volume that outlives any one container. Those two facts together are why the
+   * marker has to beat the record: the volume can have been written by a global
+   * npm install before it was ever mounted here, and `npm install -g` inside a
+   * container upgrades a tree the next `docker run` discards.
+   */
+  describe('inside the container image', () => {
+    const CONTAINER_DIR = '/opt/looptroop/lib/node_modules/looptroop/dist/server/cli'
+    const previousContainer = process.env.LOOPTROOP_CONTAINER
+
+    beforeEach(() => {
+      process.env.LOOPTROOP_CONTAINER = '1'
+    })
+
+    afterEach(() => {
+      if (previousContainer === undefined) delete process.env.LOOPTROOP_CONTAINER
+      else process.env.LOOPTROOP_CONTAINER = previousContainer
+    })
+
+    it('records the container channel on a fresh volume', () => {
+      const configDir = makeConfigDir()
+
+      const info = resolveInstallInfo({ configDir, moduleDir: CONTAINER_DIR })
+
+      expect(info.channel).toBe('container')
+      expect(info.upgradeCommand).toBe('docker pull looptroopai/looptroop:latest')
+      expect(readRecordedInstall(configDir)).toEqual({ channel: 'container', path: CONTAINER_DIR })
+    })
+
+    it('corrects a volume that recorded npm before it was mounted here', () => {
+      const configDir = makeConfigDir()
+      // The path matches, so without the marker override this record would be
+      // reused verbatim and the user told to run `npm install -g`.
+      writeFileSync(
+        join(configDir, 'config.json'),
+        JSON.stringify({ install: { channel: 'npm', path: CONTAINER_DIR } }),
+      )
+
+      expect(resolveInstallInfo({ configDir, moduleDir: CONTAINER_DIR }).channel).toBe('container')
+      expect(readRecordedInstall(configDir)).toEqual({ channel: 'container', path: CONTAINER_DIR })
+    })
+
+    it('overrides a hand-written pin, which was never a claim about the runtime', () => {
+      const configDir = makeConfigDir()
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'homebrew' } }))
+
+      expect(resolveInstallInfo({ configDir, moduleDir: CONTAINER_DIR }).channel).toBe('container')
+    })
+
+    it('does not rewrite a record that already agrees', () => {
+      const configDir = makeConfigDir()
+      // Deliberately without `path`: a re-record would add one, so the absence
+      // afterwards is what proves the volume was not written to.
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'container' } }))
+
+      expect(resolveInstallInfo({ configDir, moduleDir: CONTAINER_DIR }).channel).toBe('container')
+      expect(readRecordedInstall(configDir)).toEqual({ channel: 'container' })
+    })
+
+    it('still answers container when the volume is read-only', () => {
+      const configDir = makeConfigDir()
+      writeFileSync(join(configDir, 'blocker'), '')
+
+      const info = resolveInstallInfo({
+        configDir: join(configDir, 'blocker', 'nested'),
+        moduleDir: CONTAINER_DIR,
+      })
+
+      expect(info.channel).toBe('container')
+      expect(info.upgradeCommand).toBe('docker pull looptroopai/looptroop:latest')
+    })
   })
 })
 

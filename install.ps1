@@ -372,6 +372,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   # syntax error.
   [System.IO.File]::WriteAllText($corePath, $core, (New-Object System.Text.UTF8Encoding $false))
 
+  # `node` on an empty file exits 0 without doing anything, so a truncated
+  # download would report success and install nothing.
+  if ((Get-Item $corePath).Length -eq 0) {
+    Write-Host 'LoopTroop installer: the installer was truncated in transit; nothing was installed.' -ForegroundColor Red
+    exit 1
+  }
+
   $forwarded = @()
   if ($Version) { $forwarded += @('--version', $Version) }
   if ($Tarball) { $forwarded += @('--tarball', $Tarball) }

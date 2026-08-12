@@ -371,4 +371,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
 LOOPTROOP_INSTALLER_CORE
 # --- END installer-core ---
 
+# A heredoc that got truncated leaves an empty file, and `node` on an empty file
+# exits 0 without doing anything — an installer that reports success and
+# installs nothing. Cheap to check, and the failure it catches is silent.
+if [ ! -s "$core" ]; then
+  echo "LoopTroop installer: the installer was truncated in transit; nothing was installed." >&2
+  echo "Download it and run it from a file: https://www.looptroop.ovh/install" >&2
+  exit 1
+fi
+
 exec node "$core" "$@"

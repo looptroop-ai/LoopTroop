@@ -62,9 +62,16 @@ try {
     // runner's real global prefix on macOS.
     env: { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix },
   })
+  // Both streams, always. A wrapper that exits 0 having printed nothing is a
+  // failure mode in its own right, and hiding stderr on the success path makes
+  // it indistinguishable from a wrapper that worked.
   process.stdout.write(install.stdout ?? '')
+  process.stderr.write(install.stderr ?? '')
   if (install.status !== 0) {
-    fail(`${command} ${args[args.length - 2]} exited ${install.status}.`, install.stderr || String(install.error))
+    fail(`${command} exited ${install.status}.`, String(install.error ?? ''))
+  }
+  if ((install.stdout ?? '').trim() === '') {
+    fail(`${command} exited 0 without printing anything, which means it did not run the installer.`)
   }
 
   // npm puts the shim in `<prefix>/bin` on Unix and directly in `<prefix>` on

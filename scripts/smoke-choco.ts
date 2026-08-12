@@ -32,10 +32,10 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
-function flag(name: string): string {
+function flag(name: string, fallback: string | null = null): string {
   const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = index === -1 ? fallback : process.argv[index + 1]
+  if (value === undefined || value === null || value.startsWith('--')) fail(`--${name} is required.`)
   return value
 }
 
@@ -59,7 +59,9 @@ if (process.platform !== 'win32') fail('Chocolatey exists only on Windows.')
 const nupkg = resolve(flag('nupkg'))
 if (!existsSync(nupkg)) fail(`No package at ${nupkg}.`)
 
-const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version as string
+// Explicit for the same reason `build-choco.ts` takes it: a repair runs from a
+// checkout whose package.json has moved past the release being repaired.
+const version = flag('version', JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version as string)
 const work = mkdtempSync(join(tmpdir(), 'looptroop-choco-'))
 const configDir = join(work, 'config')
 const childEnv = { LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mock' }

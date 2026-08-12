@@ -49,13 +49,17 @@ const bundlePath = resolve(flag('bundle'))
 if (!existsSync(bundlePath)) fail(`No bundle at ${bundlePath}.`)
 
 const outDir = resolve(flag('out', join(repoRoot, 'dist-choco')))
-const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version as string
+// Explicit, with the checkout only as a fallback. A repair of an older release
+// runs from the default branch, whose package.json has moved on — reading the
+// version from there would build a package claiming to be a version this bundle
+// is not.
+const version = flag('version', JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version as string)
 const url = flag('url')
 const sha256 = createHash('sha256').update(readFileSync(bundlePath)).digest('hex')
 
 if (basename(bundlePath) !== bundleFileName(version)) {
   fail(
-    `The bundle is named ${basename(bundlePath)}, but this checkout is ${version}.`,
+    `The bundle is named ${basename(bundlePath)}, but the package would be ${version}.`,
     `The install script looks for ${bundleFileName(version)} by name, so the two must agree.`,
   )
 }

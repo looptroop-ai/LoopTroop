@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.0 (2026-08-12)
+
+
 ### Summary
 - Restructured the server into an embeddable runtime that performs no work when imported, so tooling can load it without starting a server, opening the database, or installing signal handlers.
 - Added a production build that bundles the server and ships only compiled output, cutting a global installation from roughly three hundred packages to sixteen.

@@ -1,0 +1,294 @@
+# Republish a package channel for a version that is already released.
+#
+# The other half of the bargain `release.yml` makes by running the managed
+# channels in parallel, behind nothing and gating nothing: a Homebrew, Scoop or
+# Chocolatey publish that fails must not strand a release, so there has to be a
+# way to finish it afterwards without re-running one.
+#
+# `scripts/release-detect.ts` cannot help here for the same reason it cannot
+# help the container image. Its states are `fresh`, `resume-npm` and
+# `resume-github`; it knows nothing about a tap, a bucket or a community feed,
+# so once npm and the tag are done a re-run of `release.yml` resolves to
+# `complete` and skips these jobs entirely.
+#
+# Nothing is rebuilt from a checkout. Everything a descriptor contains — the
+# version, the bundle URL and its sha256 — is read from `release-manifest.json`
+# attached to the published GitHub Release. Release assets outlive workflow
+# artefacts, which is what lets this run months after the release it repairs,
+# and reading them rather than rebuilding means a repair cannot publish a
+# descriptor pointing at bytes the release never had.
+#
+# What it will not do by default is overwrite. A channel already carrying this
+# version with these exact bytes is left alone; one carrying a newer version is
+# refused outright, because publishing over it downgrades everyone who installs
+# from that channel. `force` exists for the narrow case this whole workflow is
+# for — a descriptor published wrong rather than not at all — and even then it
+# cannot move a channel backwards.
+name: Republish a package channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'A released version, without the leading v, as MAJOR.MINOR.PATCH'
+        required: true
+        type: string
+      channel:
+        description: 'Which channel to republish'
+        required: true
+        type: choice
+        options: [homebrew, scoop, chocolatey]
+      force:
+        description: 'Replace this version in place. Only for a descriptor that was published wrong.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# The same group `release.yml` and `container-republish.yml` use, so a repair
+# cannot race a release. Never cancelled: this writes to other people's
+# repositories and to a moderated feed, and being interrupted partway is the
+# state it exists to fix.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # What does that release actually say it is?
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: Read the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      bundle: ${{ steps.inputs.outputs.bundle }}
+      url: ${{ steps.inputs.outputs.url }}
+      sha256: ${{ steps.inputs.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      # A draft is not a release: its assets are not anonymously downloadable,
+      # so a descriptor pointing at one would install for nobody.
+      - name: Refuse anything that is not a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          state=$(gh release view "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --json isDraft,isPrerelease \
+            --jq '"\(.isDraft) \(.isPrerelease)"')
+          case "${state}" in
+            'true '*)
+              echo "::error::v${VERSION} is still a draft. Its assets are not downloadable."
+              exit 1 ;;
+            *' true')
+              # `brew upgrade` and `scoop update` have no concept of a prerelease
+              # channel, so publishing one makes it what everybody gets.
+              echo "::error::v${VERSION} is a prerelease. The managed channels only ever carry stable releases."
+              exit 1 ;;
+          esac
+          echo "v${VERSION} is a published stable release."
+
+      - name: Download the release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern release-manifest.json --clobber
+
+      - name: Read what that release publishes
+        id: inputs
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      - name: Check the manifest describes the version that was asked for
+        env:
+          ASKED: ${{ inputs.version }}
+          FOUND: ${{ steps.inputs.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${ASKED}" != "${FOUND}" ]; then
+            echo "::error::v${ASKED}'s manifest says it is ${FOUND}."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Homebrew and Scoop: a file in a git repository, written through the contents
+  # API so a concurrent push loses rather than this one.
+  # ---------------------------------------------------------------------------
+  push-formula:
+    name: Republish the Homebrew formula
+    needs: [prepare]
+    if: inputs.channel == 'homebrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      # `--online` fetches the URL and verifies the checksum. For a repair that
+      # is the whole question: the release exists, so if the formula points at
+      # something that is not there, this is where it is caught.
+      - name: Audit the formula
+        run: >
+          node scripts/audit-formula.ts --online
+          --version "${{ needs.prepare.outputs.version }}"
+          --url "${{ needs.prepare.outputs.url }}"
+          --sha256 "${{ needs.prepare.outputs.sha256 }}"
+
+      - name: Push the formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+        run: >
+          node scripts/channel-push.ts --channel homebrew
+          --repo looptroop-ai/homebrew-tap
+          --version "${{ needs.prepare.outputs.version }}"
+          --url "${{ needs.prepare.outputs.url }}"
+          --sha256 "${{ needs.prepare.outputs.sha256 }}"
+          ${{ inputs.force && '--force' || '' }}
+
+  push-manifest:
+    name: Republish the Scoop manifest
+    needs: [prepare]
+    if: inputs.channel == 'scoop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Push the manifest
+        env:
+          GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+        run: >
+          node scripts/channel-push.ts --channel scoop
+          --repo looptroop-ai/scoop-bucket
+          --version "${{ needs.prepare.outputs.version }}"
+          --url "${{ needs.prepare.outputs.url }}"
+          --sha256 "${{ needs.prepare.outputs.sha256 }}"
+          ${{ inputs.force && '--force' || '' }}
+
+  # ---------------------------------------------------------------------------
+  # Chocolatey, whose recovery states are its own.
+  # ---------------------------------------------------------------------------
+  # A version on the community feed is immutable once accepted, and a submission
+  # sits in moderation for as long as it sits there. So this job does one of two
+  # different things depending on what is already true, and neither is "push
+  # over the last one":
+  #
+  #   - the version is not on the feed: pack, install locally, submit
+  #   - the version is on the feed: install it *from the feed* and report
+  #
+  # The second is what to run once moderation clears. It is the only check that
+  # what a user gets from Chocolatey is what this release meant to publish, and
+  # nothing in `release.yml` can perform it, because at release time the package
+  # has not been reviewed yet.
+  chocolatey:
+    name: Republish or verify the Chocolatey package
+    needs: [prepare]
+    if: inputs.channel == 'chocolatey'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Is this version on the feed already?
+        id: feed
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # `choco list --exact` reports only approved packages, which is exactly
+          # the distinction that matters: a submission still in moderation is not
+          # something a user can install.
+          if choco list looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/ | grep -q .; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "looptroop ${VERSION} is approved and on the feed."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "looptroop ${VERSION} is not on the feed (either never submitted, or still in moderation)."
+          fi
+
+      - name: Download the bundle this release published
+        if: steps.feed.outputs.published == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern '*-bundle.tar.gz' --clobber
+
+      - name: Pack and prove it locally
+        if: steps.feed.outputs.published == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/build-choco.ts \
+            --bundle "${{ needs.prepare.outputs.bundle }}" \
+            --url "${{ needs.prepare.outputs.url }}" \
+            --out dist-choco
+          node scripts/smoke-choco.ts --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg"
+
+      - name: Submit it
+        if: steps.feed.outputs.published == 'false'
+        shell: bash
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: >
+          node scripts/choco-push.ts
+          --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg"
+          --version "${{ needs.prepare.outputs.version }}"
+
+      # The only check that what Chocolatey serves is what this release meant to
+      # publish. Everything before moderation proves the package we built; this
+      # proves the package they approved.
+      - name: Install it from the feed and run it
+        if: steps.feed.outputs.published == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          choco install looptroop --version "${VERSION}" --yes --no-progress
+          shim="${ChocolateyInstall:-C:\\ProgramData\\chocolatey}/bin/looptroop.exe"
+          reported=$("${shim}" --version)
+          if [ "${reported}" != "${VERSION}" ]; then
+            echo "::error::The feed serves ${reported}, expected ${VERSION}."
+            exit 1
+          fi
+          echo "Chocolatey serves looptroop ${VERSION} and it runs."

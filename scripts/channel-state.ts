@@ -134,3 +134,40 @@ export function decideChannelWrite(
 export function writes(decision: ChannelDecision): boolean {
   return decision.action === 'publish' || decision.action === 'update'
 }
+
+export type ChocoPushOutcome =
+  /** Accepted. On the community feed that means queued for moderation, not live. */
+  | { state: 'submitted' }
+  /** This version is already on the feed. A re-run of a partial release lands here. */
+  | { state: 'already-published' }
+  /** Anything else. */
+  | { state: 'failed', reason: string }
+
+/**
+ * What `choco push` actually did.
+ *
+ * Two outcomes have to be told apart from failure. A package accepted onto the
+ * community feed is *queued*, not published — moderation is unbounded, and
+ * treating "pending review" as a failed release would hold every future release
+ * open behind a human at Chocolatey. And a version already on the feed is the
+ * ordinary result of re-running a release that failed after this step: a
+ * Chocolatey version is immutable once accepted, so there is nothing to retry
+ * and nothing wrong.
+ */
+export function classifyChocoPush(status: number | null, output: string): ChocoPushOutcome {
+  const text = output.toLowerCase()
+
+  // Checked before the exit code: this is reported as a failure, and it is the
+  // one failure that means the work is already done.
+  if (/already exists|version .* already/.test(text) && /package/.test(text)) {
+    return { state: 'already-published' }
+  }
+
+  if (status === 0) return { state: 'submitted' }
+
+  if (/unauthor|forbidden|api key|apikey/.test(text)) {
+    return { state: 'failed', reason: 'the Chocolatey API key was rejected' }
+  }
+
+  return { state: 'failed', reason: `choco push exited ${status ?? '?'}` }
+}

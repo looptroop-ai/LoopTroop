@@ -86,3 +86,7 @@ docs/.vitepress/cache/
 docs/.vitepress/dist/
 docs/.vitepress/.temp/
 
+
+# Written by the Homebrew/Scoop/Chocolatey installers at the package root;
+# a local copy would make a checkout report the wrong install channel.
+.install-channel

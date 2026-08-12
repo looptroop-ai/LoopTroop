@@ -4,13 +4,17 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   BUNDLE_ROOT,
+  bundleFileName,
   CHANNEL_MARKER,
   DESCRIPTOR_PATH,
   parseDescriptor,
+  renderChocolateyInstall,
+  renderChocolateyUninstall,
   renderDescriptor,
   renderHomebrewFormula,
   renderNuspec,
   renderScoopManifest,
+  renderVerification,
   SHORT_DESCRIPTION,
   type Channel,
 } from '../scripts/package-manifests.ts'
@@ -169,6 +173,58 @@ describe('the Chocolatey nuspec', () => {
   it('declares the dependencies doctor treats as required', () => {
     expect(nuspec).toContain('id="nodejs-lts"')
     expect(nuspec).toContain('id="git"')
+  })
+})
+
+describe('the Chocolatey install scripts', () => {
+  const install = renderChocolateyInstall(INPUTS.version)
+  const uninstall = renderChocolateyUninstall()
+
+  it('extracts the archive that actually travels in the package', () => {
+    expect(install).toContain(bundleFileName(INPUTS.version))
+  })
+
+  /** `Get-ChocolateyUnzip` unwraps the gzip first and the tar second. */
+  it('unpacks a tar.gz in the two passes Chocolatey needs', () => {
+    expect(install.match(/Get-ChocolateyUnzip/g)).toHaveLength(2)
+  })
+
+  it('fails loudly if the archive did not unpack where the script expects', () => {
+    expect(install).toContain('throw')
+    expect(install).toContain('package.json')
+  })
+
+  it('writes the channel marker at the package root', () => {
+    expect(install).toContain(CHANNEL_MARKER)
+    expect(install).toContain(BUNDLE_ROOT)
+  })
+
+  /** A `#!` script cannot be shimmed on Windows. */
+  it('shims the cmd wrapper', () => {
+    expect(install).toContain("Install-BinFile -Name 'looptroop'")
+    expect(install).toContain('looptroop.cmd')
+  })
+
+  /**
+   * The shim lives in Chocolatey's own bin directory and survives the package
+   * directory being deleted, so removing it has to be asked for by name.
+   */
+  it('removes the shim on uninstall', () => {
+    expect(uninstall).toContain("Uninstall-BinFile -Name 'looptroop'")
+  })
+})
+
+describe('the Chocolatey verification file', () => {
+  const verification = renderVerification(INPUTS)
+
+  it('names the release the embedded archive came from and its checksum', () => {
+    expect(verification).toContain(INPUTS.url)
+    expect(verification).toContain(INPUTS.sha256)
+    expect(verification).toContain(bundleFileName(INPUTS.version))
+  })
+
+  it('tells a moderator the command that checks it', () => {
+    expect(verification).toContain('Get-FileHash')
   })
 })
 

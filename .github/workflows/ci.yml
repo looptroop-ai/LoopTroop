@@ -491,6 +491,41 @@ jobs:
           --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
           ${{ matrix.os == 'macos-latest' && '--strip-node' || '' }}
 
+  # Chocolatey, which unlike Scoop is preinstalled on the Windows runners.
+  # Packed and installed from the local file rather than the community feed:
+  # moderation is unbounded, so a package that installs and then does not run
+  # would otherwise be discovered by whoever installed it.
+  choco-install:
+    name: Chocolatey install (windows)
+    needs: [bundle]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # A release-shaped URL, recorded in VERIFICATION.txt and never fetched
+      # from: the release this would name does not exist while CI is running.
+      - name: Pack the Chocolatey package
+        shell: bash
+        run: >
+          node scripts/build-choco.ts
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+          --url "https://github.com/looptroop-ai/LoopTroop/releases/download/v$(node -p "require('./package.json').version")/$(basename "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)")"
+          --out "${RUNNER_TEMP}/choco"
+
+      - name: Install it, run it, and uninstall it again
+        shell: bash
+        run: node scripts/smoke-choco.ts --nupkg "$(ls "${RUNNER_TEMP}"/choco/*.nupkg)"
+
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
   # that choice is the same on all three platforms. What differs per platform is

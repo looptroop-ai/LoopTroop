@@ -57,6 +57,11 @@ function assertInputs({ version, url, sha256 }: ChannelInputs): void {
  * git, and `brew audit` rejects depending on what the OS already has — but
  * Linuxbrew does not, and `doctor` treats git as required, so it cannot simply
  * be dropped either.
+ *
+ * The field order is not a matter of taste. `brew style` enforces it, and it
+ * rejected `version` after `sha256` and `Formula["node@24"].opt_bin` in place of
+ * `formula_opt_bin`. `version` is stated at all because the URL ends in
+ * `-bundle.tar.gz`, which brew cannot read a version out of.
  */
 export function renderHomebrewFormula(inputs: ChannelInputs): string {
   assertInputs(inputs)
@@ -66,9 +71,9 @@ class Looptroop < Formula
   desc "${SHORT_DESCRIPTION}"
   homepage "${HOMEPAGE}"
   url "${inputs.url}"
+  version "${inputs.version}"
   sha256 "${inputs.sha256}"
   license "${LICENSE}"
-  version "${inputs.version}"
 
   depends_on "gh"
   depends_on "node@24"
@@ -78,7 +83,7 @@ class Looptroop < Formula
     libexec.install Dir["*"]
     (libexec/"${CHANNEL_MARKER}").write "homebrew"
     (bin/"looptroop").write_env_script libexec/"bin/looptroop",
-                                       PATH: "#{Formula["node@24"].opt_bin}:$PATH"
+                                       PATH: "#{formula_opt_bin("node@24")}:$PATH"
   end
 
   def caveats

@@ -79,7 +79,9 @@ describe('the Homebrew formula', () => {
    */
   it('wraps the launcher with node@24 on PATH rather than symlinking it', () => {
     expect(formula).toContain('write_env_script')
-    expect(formula).toContain('Formula["node@24"].opt_bin')
+    // `formula_opt_bin` rather than `Formula[...].opt_bin`: `brew style`
+    // rejects the latter, and the tap has no CI to catch that after a push.
+    expect(formula).toContain('formula_opt_bin("node@24")')
     expect(formula).not.toMatch(/bin\.install_symlink/)
   })
 

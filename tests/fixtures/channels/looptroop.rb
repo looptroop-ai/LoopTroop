@@ -3,9 +3,9 @@ class Looptroop < Formula
   desc "Local AI coding orchestration with council planning and human-gated PRs"
   homepage "https://www.looptroop.ovh/"
   url "https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz"
+  version "9.9.9"
   sha256 "3c5fe4640000000000000000000000000000000000000000000000000000abcd"
   license "MIT"
-  version "9.9.9"
 
   depends_on "gh"
   depends_on "node@24"
@@ -15,7 +15,7 @@ class Looptroop < Formula
     libexec.install Dir["*"]
     (libexec/".install-channel").write "homebrew"
     (bin/"looptroop").write_env_script libexec/"bin/looptroop",
-                                       PATH: "#{Formula["node@24"].opt_bin}:$PATH"
+                                       PATH: "#{formula_opt_bin("node@24")}:$PATH"
   end
 
   def caveats

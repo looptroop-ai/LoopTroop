@@ -5,9 +5,25 @@
 # release finished rather than that it started:
 #
 #   detect -> build -> verify-artifact -> draft-release
-#                                            |
-#                                            v
-#                                           npm -> smoke -> finalize -> report
+#                                             |
+#                 +---------------------------+---------------------------+
+#                 v                                                       v
+#                npm -> smoke -> finalize                    container-build (amd64/arm64)
+#                                   |                                     |
+#                                   |                          container-manifest
+#                                   |                                     |
+#                                   |                        container-verify (amd64/arm64)
+#                                   |                                     |
+#                                   +--------> container-notes <----------+
+#
+# `report` runs after all of them, whatever each did.
+#
+# The two channels never depend on each other. npm does not wait on a container
+# build, and `finalize` has no container dependency at all — so a broken image
+# cannot strand a published package without a tag. The container channel is the
+# repairable one: it can be rebuilt from the release assets afterwards by
+# .github/workflows/container-republish.yml, which is why it is allowed to fail
+# behind npm rather than in front of it.
 #
 # `draft-release` creates a *draft*, which creates no git tag. That was verified
 # against this repository rather than assumed: a draft release for a nonexistent
@@ -32,6 +48,14 @@ on:
 
 permissions:
   contents: read
+
+# The two registries, in one place. Fully qualified on purpose: `docker.io/` is
+# implicit for an unqualified name, but the container jobs feed these strings to
+# `docker login` and to `buildx imagetools` as well as to `docker pull`, and the
+# ones that talk to a registry directly need the host spelled out.
+env:
+  DH_IMAGE: docker.io/looptroopai/looptroop
+  GHCR_IMAGE: ghcr.io/looptroop-ai/looptroop
 
 # Never cancel a release in flight. Cancelling between the npm publish and the
 # tag would leave exactly the half-finished state the resume logic exists for,
@@ -866,11 +890,496 @@ jobs:
           echo "Published https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
 
   # ---------------------------------------------------------------------------
+  # The container channel. Built per architecture, pushed by digest, tagged once.
+  # ---------------------------------------------------------------------------
+  # No tag is created in this job. A tag naming one architecture's manifest would
+  # be a working `docker pull` for half the world and a confusing failure for the
+  # other half, so both digests are pushed anonymously first and the tags are
+  # created from the pair together, by container-manifest.
+  #
+  # Built from the release tarball, not from `looptroop@x.y.z` on npm: the image
+  # must carry the bytes this release verified, and resolving from the registry
+  # would make this channel wait on the npm channel it is deliberately parallel
+  # to. The tarball's digests are re-checked here first, like every other job
+  # that consumes it.
+  container-build:
+    name: Build container image (${{ matrix.arch }})
+    needs: [detect, build, draft-release]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      # Pushes to GHCR. Docker Hub is authenticated by the environment's token
+      # instead; there is no GITHUB_TOKEN scope that reaches it.
+      packages: write
+    strategy:
+      # Both legs report. A failing leg stops container-manifest either way —
+      # it needs both digests — so the run leaves orphan blobs and no tag, and
+      # seeing which architecture broke matters more than saving a runner minute.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # For the Dockerfile and the verify script. The *package* comes only from
+      # the downloaded tarball, as everywhere else.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Verify the artefact matches the manifest
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+
+      # Both tokens read from stdin through a shell builtin, so neither ever
+      # appears in an argument vector. A missing environment *variable* is an
+      # empty string rather than an error, and `docker login --username ''` fails
+      # with something that reads like a credentials problem, so the absence is
+      # named here instead.
+      - name: Log in to Docker Hub and GHCR
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "::error::The 'release' environment must carry DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret)."
+            exit 1
+          fi
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      # The default `docker` driver supports exactly one exporter, and this build
+      # needs two — one per registry. The action's default driver is
+      # docker-container, which supports both and also push-by-digest.
+      #
+      # `version` is pinned like every other tool in this workflow: multiple
+      # exporters need buildx >= 0.13, and an unpinned client is the kind of
+      # drift that surfaces mid-release. `cache-binary: false` because a release
+      # should install the version named here rather than whatever a cache entry
+      # holds, and this job holds registry push credentials.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.1
+          cache-binary: false
+
+      # `--provenance=false` is load-bearing, not a preference. With provenance
+      # on, buildx wraps even a single-platform build in an index to carry the
+      # attestation, and `imagetools create` cannot join two indexes into one —
+      # so the manifest job would fail on bytes that looked correct here.
+      #
+      # `push-by-digest=true` pushes the manifest under no tag at all, which is
+      # what makes a half-finished run harmless: an untagged manifest is
+      # unreachable by `docker pull` and gets collected, whereas a tag would have
+      # published a single-architecture image.
+      #
+      # `name-canonical=true` makes buildx report the digest for the named
+      # repository rather than for a local reference, which is what the metadata
+      # file is read for below.
+      - name: Build the image and push it by digest
+        env:
+          TARBALL: ${{ needs.build.outputs.tarball }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test -f "${TARBALL}"
+
+          # The commit the artefact came from, not GITHUB_SHA. They are equal by
+          # construction and draft-release has already refused otherwise, so
+          # this is belt and braces on the value that gets baked into the image
+          # as the only record of what it was built from.
+          REVISION=$(node -p "require('./release-manifest.json').commit || ''")
+          if [ "${REVISION}" != "${GITHUB_SHA}" ]; then
+            echo "::error::The artefact was built from '${REVISION:-(unknown)}', but this run is at ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --build-arg TARBALL="${TARBALL}" \
+            --build-arg VERSION="${VERSION}" \
+            --build-arg REVISION="${REVISION}" \
+            --provenance=false \
+            --output "type=image,name=${DH_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --output "type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file /tmp/meta.json \
+            .
+
+      # Both exporters push identical manifest bytes, so both registries report
+      # the same digest and buildx collapses them into one metadata key. That is
+      # an assumption about a tool, so it is asserted rather than trusted: the
+      # whole metadata file is searched, every digest found must agree, and
+      # anything else stops with the file printed.
+      - name: Record the digest
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          digest=$(node -e '
+            const meta = JSON.parse(require("node:fs").readFileSync("/tmp/meta.json", "utf8"))
+            const found = new Set()
+            const walk = (node) => {
+              if (!node || typeof node !== "object") return
+              const value = node["containerimage.digest"]
+              if (typeof value === "string") found.add(value)
+              for (const child of Object.values(node)) walk(child)
+            }
+            walk(meta)
+            const digests = [...found]
+            const usable = digests.length === 1 && /^sha256:[0-9a-f]{64}$/.test(digests[0])
+            if (!usable) {
+              console.error(`::error::buildx reported ${digests.length} image digests, expected exactly one.`)
+              console.error(JSON.stringify(meta, null, 2))
+              process.exit(1)
+            }
+            process.stdout.write(digests[0])
+          ')
+          printf '%s\n' "${digest}" > "digest-${ARCH}.txt"
+          echo "${ARCH}: ${digest}"
+          printf -- '- `linux/%s` → `%s`\n' "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Proves both pushes landed, in the job that did them. Without this a
+      # registry that silently accepted nothing surfaces later as an
+      # unresolvable source in container-manifest, where it is no longer obvious
+      # which leg or which registry was at fault.
+      - name: Both registries hold the manifest
+        run: |
+          set -euo pipefail
+          digest=$(cat "digest-${{ matrix.arch }}.txt")
+          for image in "${DH_IMAGE}" "${GHCR_IMAGE}"; do
+            if ! docker buildx imagetools inspect --raw "${image}@${digest}" > /dev/null; then
+              echo "::error::${image} does not serve ${digest} after a successful push."
+              exit 1
+            fi
+            echo "${image} serves ${digest}"
+          done
+
+      # Per architecture, because the legs of a matrix share one `outputs` map
+      # and the last leg to finish would be the only one whose digest survived.
+      - name: Upload the digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # One index, both architectures, all the tags. The second approval prompt.
+  # ---------------------------------------------------------------------------
+  # Cannot be co-approved with the first: it only becomes pending once both
+  # builds have finished, so the reviewer sees it after they have approved the
+  # publish. That is the cost of not tagging until both architectures exist.
+  #
+  # The tagging itself is scripts/container-manifest.ts, not this job. The repair
+  # dispatch performs the identical sequence, and the highest-consequence decision
+  # in the phase — whether a failed registry read means "absent" or "do not touch
+  # that tag" — must not exist twice.
+  container-manifest:
+    name: Tag the container image
+    needs: [detect, container-build]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      index_digest: ${{ steps.create.outputs.index_digest }}
+      tags: ${{ steps.create.outputs.tags }}
+    steps:
+      # Sparse: the script and what it imports, nothing else. This job holds
+      # `packages: write`, so it gets the smallest tree that can run the script
+      # and no `npm ci` — the script has no dependencies.
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      # `merge-multiple` because the two legs uploaded one file each under
+      # different artefact names; this flattens both into the working directory.
+      - name: Download the digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: container-digest-*
+          merge-multiple: true
+
+      # Logins do not survive a job boundary, so both are done again here.
+      - name: Log in to Docker Hub and GHCR
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "::error::The 'release' environment must carry DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret)."
+            exit 1
+          fi
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      # One script for the whole sequence: immutability pre-flight, snapshot the
+      # floating tags, create every tag in every registry, then prove every tag
+      # resolves to the new index and that a prerelease moved nothing.
+      #
+      # It runs as one process because the snapshot and the assertion that
+      # nothing moved have to be the same code's, not two steps passing digests
+      # through the environment. The rules it applies live in
+      # scripts/container-tags.ts and are tested in tests/containerTags.test.ts —
+      # notably the one that matters most, which is that a registry read failing
+      # for any reason other than a genuine absence stops the release rather than
+      # being taken as permission to overwrite a published tag.
+      #
+      # The tags follow the dist-tag the resolver computed for npm rather than
+      # being derived from the version a second time, so the two channels cannot
+      # disagree about which release is `latest`.
+      - name: Create the tags
+        id: create
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          # amd64 first, always: the index bytes depend on the order, so a fixed
+          # order is what makes the index digest identical in both registries and
+          # identical again on a re-run.
+          node scripts/container-manifest.ts \
+            --version "${VERSION}" \
+            --dist-tag "${DIST_TAG}" \
+            --image "${DH_IMAGE}" \
+            --image "${GHCR_IMAGE}" \
+            --digest "$(cat digest-amd64.txt)" \
+            --digest "$(cat digest-arm64.txt)"
+
+  # ---------------------------------------------------------------------------
+  # Does the image the registries actually serve work?
+  # ---------------------------------------------------------------------------
+  # container-build tested nothing; it only pushed. This pulls the published tag
+  # back down, per architecture, and runs the same smoke test CI runs — against
+  # registry bytes rather than a locally built layer cache.
+  #
+  # Deliberately no `environment:`. The push credentials are spent; everything
+  # here is a read, Docker Hub is read anonymously on purpose, and GHCR is read
+  # with this run's own GITHUB_TOKEN. Claiming the environment would ask for a
+  # third approval to perform checks that change nothing.
+  container-verify:
+    name: Verify container image (${{ matrix.arch }})
+    needs: [detect, container-manifest]
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # For the smoke script. The image comes only from the registry.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download this architecture's digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: container-digest-${{ matrix.arch }}
+
+      # Read with no credentials at all, which is the point: a private Docker Hub
+      # repository is inspectable by the account that pushed to it and by nobody
+      # else, so an authenticated check here would pass on a repository from which
+      # every `docker pull` in the README fails. The script logs out of the
+      # registry first, retries a rate limit and nothing else, and compares what
+      # an anonymous client is served against the index this release published.
+      #
+      # GHCR is absent from this list on purpose. GHCR packages are private by
+      # default and do not inherit the repository's visibility, so this check
+      # cannot pass there until someone makes the package public — a one-way
+      # change, done by hand, once, after the first release creates the package.
+      # Adding a second `--image "${GHCR_IMAGE}"` invocation below is all that
+      # enabling it takes.
+      - name: Docker Hub serves the release anonymously
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
+        run: |
+          node scripts/container-check-anonymous.ts \
+            --image "${DH_IMAGE}" \
+            --version "${VERSION}" \
+            --index-digest "${INDEX_DIGEST}"
+
+      # Authenticated, because that is the functional path today and it needs no
+      # environment secret: `packages: read` on this run's own token is enough to
+      # read a private package belonging to this repository.
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      # Two assertions in one script, in this order: the published index's
+      # linux/<arch> entry is the manifest this architecture's leg built, and then
+      # the tag pulls and the daemon reports the architecture that was asked for.
+      #
+      # The index is read from the registry rather than from `docker image
+      # inspect`'s RepoDigests, which records the index digest in some Docker
+      # versions and the platform manifest digest in others — an ambiguity that
+      # has no place in a release assertion. And the pull is by tag, the way a
+      # user pulls it, rather than by the digest just asserted: the tag is the
+      # thing that could be wrong, and the index check is what makes pulling it a
+      # test of the released bytes instead of a leap of faith.
+      - name: Pull the published tag and check it is this architecture
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          node scripts/container-verify-pull.ts \
+            --image "${GHCR_IMAGE}" \
+            --version "${VERSION}" \
+            --arch "${ARCH}" \
+            --expect-digest "$(cat "digest-${ARCH}.txt")"
+
+      # The same script CI runs against a locally built image, pointed at the
+      # bytes the registry served. `--version` makes it assert the OCI version
+      # label and `looptroop --version` both say the version being released,
+      # rather than whatever package.json in this checkout happens to say.
+      - name: Smoke the published image
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          node scripts/smoke-container.mjs \
+            --image "${GHCR_IMAGE}:${VERSION}" \
+            --version "${VERSION}"
+
+  # ---------------------------------------------------------------------------
+  # Put the pull commands in the release notes, once the image is proven.
+  # ---------------------------------------------------------------------------
+  # `draft-release` writes no container text at all. The draft exists before any
+  # image does, so a draft that advertised a pull command would be advertising
+  # one that fails for as long as the container jobs are still running — or
+  # forever, if they fail.
+  #
+  # `finalize` is in `needs` for ordering, not as a requirement: it flips the
+  # draft to published, and editing the notes underneath that would race it. A
+  # release whose npm side failed still gets the block written into its draft.
+  container-notes:
+    name: Add the pull commands to the release notes
+    needs: [detect, container-manifest, finalize, container-verify]
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.container-verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Sparse, like the other container jobs: the splice script and nothing
+      # else. This job holds `contents: write`.
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      # Read, spliced, written back. Between the two markers is the script's
+      # territory and everything outside them is left exactly as the changelog
+      # rendered it, so a re-run replaces the block rather than appending a
+      # second copy — and a hand-edited note above it survives. The splice is
+      # scripts/container-notes.ts, tested, and shared with the repair dispatch.
+      - name: Splice the container block into the notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
+        run: |
+          set -euo pipefail
+          gh release view "v${VERSION}" --json body --jq '.body' > body.md
+          node scripts/release-container-notes.ts \
+            --version "${VERSION}" \
+            --index-digest "${INDEX_DIGEST}" \
+            --dh-image "${DH_IMAGE}" \
+            --ghcr-image "${GHCR_IMAGE}" \
+            --in body.md \
+            --out body-next.md
+          gh release edit "v${VERSION}" --notes-file body-next.md
+          echo "Release notes for v${VERSION} now carry the pull commands."
+
+  # ---------------------------------------------------------------------------
   # Always runs. Says what happened and where to resume from.
   # ---------------------------------------------------------------------------
   report:
     name: Report
-    needs: [detect, build, verify-artifact, verify-readonly, draft-release, npm, smoke, finalize]
+    needs:
+      - detect
+      - build
+      - verify-artifact
+      - verify-readonly
+      - draft-release
+      - npm
+      - smoke
+      - finalize
+      - container-build
+      - container-manifest
+      - container-verify
+      - container-notes
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -893,11 +1402,22 @@ jobs:
           R_NPM: ${{ needs.npm.result }}
           R_SMOKE: ${{ needs.smoke.result }}
           R_FINAL: ${{ needs.finalize.result }}
+          R_CBUILD: ${{ needs.container-build.result }}
+          R_CMANIFEST: ${{ needs.container-manifest.result }}
+          R_CVERIFY: ${{ needs.container-verify.result }}
+          R_CNOTES: ${{ needs.container-notes.result }}
+          INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
+          CONTAINER_TAGS: ${{ needs.container-manifest.outputs.tags }}
           SHA256: ${{ needs.build.outputs.sha256 }}
           INTEGRITY: ${{ needs.build.outputs.integrity }}
           DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
         run: |
           set -euo pipefail
+          # Empty whenever the container branch did not get as far as tagging,
+          # which is an ordinary outcome (a dry run skips it entirely) rather than
+          # something to print a truncated blank for.
+          index_short="${INDEX_DIGEST:7:12}"
+          [ -n "${index_short}" ] || index_short='—'
           {
             if [ "${DRY_RUN}" = "true" ]; then
               echo "## DRY RUN — v${VERSION}"
@@ -916,16 +1436,26 @@ jobs:
             printf 'npm        %s  (dist-tag %s)\n' "${R_NPM}" "${DIST_TAG}"
             printf 'smoke      %s\n' "${R_SMOKE}"
             printf 'finalize   %s\n' "${R_FINAL}"
+            printf 'image      %s  (amd64 + arm64)\n' "${R_CBUILD}"
+            printf 'image tag  %s  index %s\n' "${R_CMANIFEST}" "${index_short}"
+            printf 'image pull %s\n' "${R_CVERIFY}"
+            printf 'notes      %s\n' "${R_CNOTES}"
             echo '```'
             echo
             echo "Integrity: \`${INTEGRITY}\`"
+            if [ -n "${CONTAINER_TAGS}" ]; then
+              echo
+              echo "Container tags: \`${CONTAINER_TAGS}\`"
+            fi
           } > /tmp/report.md
           cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
 
           failed=""
           for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
-                      "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}"; do
+                      "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}" \
+                      "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
+                      "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}"; do
             name=${pair%%:*}
             result=${pair#*:}
             case "${result}" in
@@ -954,8 +1484,20 @@ jobs:
             echo
             echo "Run: ${run_url}"
             echo
-            echo "Re-running the workflow resumes from the state the resolver reports."
-            echo "The npm publish job is idempotent and can be re-run on its own."
+            echo "Re-running this workflow resumes from the state the resolver reports, and"
+            echo "that state covers npm and GitHub only — release-detect knows \`fresh\`,"
+            echo "\`resume-npm\` and \`resume-github\`, and nothing about either registry. Once"
+            echo "npm has the version and the tag exists, a re-run resolves to \`complete\` and"
+            echo "skips every job, the container ones included."
+            echo
+            echo "So, by branch:"
+            echo
+            echo "- **npm, draft, tag** — re-run the workflow. The publish job is idempotent"
+            echo "  and can also be re-run on its own."
+            echo "- **container-\*** — dispatch \`container-republish.yml\` with version"
+            echo "  \`${VERSION}\`. It rebuilds the image from the release assets and re-runs"
+            echo "  the same tag and verify steps, so it works long after the workflow"
+            echo "  artefacts for this run have expired."
           } > /tmp/issue.md
 
           existing=$(gh issue list --state open --search "\"${title}\" in:title" \

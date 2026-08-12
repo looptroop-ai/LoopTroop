@@ -1,0 +1,529 @@
+# Rebuild and republish the container image for a version that is already
+# released.
+#
+# The container channel is the repairable one. `release.yml` runs it in parallel
+# with npm and behind nothing, precisely so a broken image cannot strand a
+# published package — and this is the other half of that bargain: the way the
+# image gets published afterwards, without re-running a release.
+#
+# It exists because `scripts/release-detect.ts` cannot help here. The resolver
+# knows `fresh`, `resume-npm` and `resume-github`, and nothing about either
+# registry, so once npm and the tag are done a re-run of `release.yml` resolves
+# to `complete` and skips the container jobs entirely. There is no state for it
+# to resume into.
+#
+# Nothing here is rebuilt from source. The image is built from the tarball
+# attached to the GitHub Release — the same bytes npm published, verified
+# against the same manifest — because a rebuild from a checkout could differ
+# from what was released and nobody would find out.
+#
+# Release assets are used rather than workflow artefacts on purpose: artefacts
+# expire, assets do not, which is what lets this run months after the release it
+# repairs.
+name: Republish container image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'A released version, without the leading v (e.g. 0.5.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DH_IMAGE: docker.io/looptroopai/looptroop
+  GHCR_IMAGE: ghcr.io/looptroop-ai/looptroop
+
+# The same group `release.yml` uses, so a repair cannot race a release. Never
+# cancelled: this publishes to registries, and being interrupted between the two
+# is the state it exists to fix.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Which bytes are we republishing, and are they really that release's?
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: Fetch and verify the released artefact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      dist_tag: ${{ steps.resolve.outputs.dist_tag }}
+      tarball: ${{ steps.resolve.outputs.tarball }}
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      # A dispatch input is free text, and it is about to be interpolated into
+      # image references and a git ref. Checked before it is used for anything.
+      - name: Validate the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'${VERSION}' is not a version. Write 0.5.0 or 0.5.0-rc.1 — no leading v."
+            exit 1
+          fi
+          echo "Repairing the container image for v${VERSION}."
+
+      # At the tag, not at the dispatch ref and not at current main. The scripts
+      # and Dockerfile that built the released image are the ones at that tag,
+      # and main has moved on by definition — if it had not, there would be no
+      # repair to make.
+      - name: Checkout the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the released artefact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "v${VERSION}" \
+            --pattern "looptroop-${VERSION}.tgz" \
+            --pattern release-manifest.json
+          ls -l "looptroop-${VERSION}.tgz" release-manifest.json
+
+      # Three separate questions, none of which the integrity check answers.
+      #
+      # `release:verify-artifact` compares size and both hashes, so it proves the
+      # tarball matches *its* manifest — not that the manifest belongs to this
+      # version, and not that either belongs to the tag being built from. A
+      # manifest that agrees with its tarball perfectly while naming another
+      # version would otherwise publish those bytes under this version's tags.
+      - name: The artefact is the one this tag released
+        id: resolve
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tag_commit=$(git rev-parse "refs/tags/v${VERSION}^{commit}")
+
+          # Through the environment rather than argv, so nothing has to be
+          # quoted into a program.
+          TAG_COMMIT="${tag_commit}" node -e '
+            const manifest = JSON.parse(require("node:fs").readFileSync("release-manifest.json", "utf8"))
+            const version = process.env.VERSION
+            const problems = []
+            if (manifest.version !== version) {
+              problems.push(`the manifest is for ${manifest.version}, not ${version}`)
+            }
+            if (manifest.tarball !== `looptroop-${version}.tgz`) {
+              problems.push(`the manifest names ${manifest.tarball}`)
+            }
+            if (manifest.commit !== process.env.TAG_COMMIT) {
+              problems.push(`the manifest was built at ${manifest.commit || "(unknown)"}, the tag is at ${process.env.TAG_COMMIT}`)
+            }
+            if (problems.length > 0) {
+              console.error(`::error::The release assets do not belong to v${version}: ${problems.join("; ")}.`)
+              process.exit(1)
+            }
+          '
+          npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+
+          # From the same function the release resolver uses, rather than a
+          # second reading of the suffix here — the dist-tag is what decides
+          # whether this publish may take `latest`. It is also the narrower
+          # check: it accepts `-rc.N` and nothing else, so a prerelease spelling
+          # no channel knows how to route is refused here rather than published
+          # under a tag chosen by accident.
+          dist_tag=$(node -e '
+            import("./scripts/version-bump.ts")
+              .then((m) => process.stdout.write(m.distTagFor(process.env.VERSION)))
+              .catch((error) => {
+                console.error(`::error::${error.message}`)
+                process.exit(1)
+              })
+          ')
+
+          {
+            echo "version=${VERSION}"
+            echo "dist_tag=${dist_tag}"
+            echo "tarball=looptroop-${VERSION}.tgz"
+            echo "commit=${tag_commit}"
+          } >> "$GITHUB_OUTPUT"
+          echo "v${VERSION} at ${tag_commit}, dist-tag ${dist_tag}."
+
+      # Handed to the build legs the same way release.yml hands them over, so
+      # both workflows feed the container build from an identically named
+      # artefact.
+      - name: Upload the artefact for the build legs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-artefacts
+          path: |
+            looptroop-${{ inputs.version }}.tgz
+            release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # From here down this is release.yml's container channel, driven by the same
+  # scripts. The steps differ only in where the version comes from.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build container image (${{ matrix.arch }})
+    needs: [prepare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ needs.prepare.outputs.version }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm
+        run: node scripts/pin-npm.mjs
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      # Again, on this machine. The artefact travelled between jobs to get here.
+      - name: Verify the artefact matches the manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm run release:verify-artifact -- "looptroop-${VERSION}.tgz" release-manifest.json
+
+      - name: Log in to Docker Hub and GHCR
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "::error::The 'release' environment must carry DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret)."
+            exit 1
+          fi
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.1
+          cache-binary: false
+
+      # `--provenance=false` and `push-by-digest=true` for the same reasons as in
+      # release.yml: provenance would wrap a single-platform build in an index
+      # that `imagetools create` cannot join, and an untagged manifest keeps a
+      # half-finished repair from publishing a single-architecture image.
+      #
+      # REVISION is the released commit, which is the tag this ran from — not
+      # GITHUB_SHA, which for a dispatch is whatever branch the button was
+      # pressed on.
+      - name: Build the image and push it by digest
+        env:
+          TARBALL: ${{ needs.prepare.outputs.tarball }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REVISION: ${{ needs.prepare.outputs.commit }}
+          PLATFORM: linux/${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test -f "${TARBALL}"
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --build-arg TARBALL="${TARBALL}" \
+            --build-arg VERSION="${VERSION}" \
+            --build-arg REVISION="${REVISION}" \
+            --provenance=false \
+            --output "type=image,name=${DH_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --output "type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file /tmp/meta.json \
+            .
+
+      - name: Record the digest
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          digest=$(node -e '
+            const meta = JSON.parse(require("node:fs").readFileSync("/tmp/meta.json", "utf8"))
+            const found = new Set()
+            const walk = (node) => {
+              if (!node || typeof node !== "object") return
+              const value = node["containerimage.digest"]
+              if (typeof value === "string") found.add(value)
+              for (const child of Object.values(node)) walk(child)
+            }
+            walk(meta)
+            const digests = [...found]
+            const usable = digests.length === 1 && /^sha256:[0-9a-f]{64}$/.test(digests[0])
+            if (!usable) {
+              console.error(`::error::buildx reported ${digests.length} image digests, expected exactly one.`)
+              console.error(JSON.stringify(meta, null, 2))
+              process.exit(1)
+            }
+            process.stdout.write(digests[0])
+          ')
+          printf '%s\n' "${digest}" > "digest-${ARCH}.txt"
+          echo "${ARCH}: ${digest}"
+          printf -- '- `linux/%s` → `%s`\n' "${ARCH}" "${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Both registries hold the manifest
+        run: |
+          set -euo pipefail
+          digest=$(cat "digest-${{ matrix.arch }}.txt")
+          for image in "${DH_IMAGE}" "${GHCR_IMAGE}"; do
+            if ! docker buildx imagetools inspect --raw "${image}@${digest}" > /dev/null; then
+              echo "::error::${image} does not serve ${digest} after a successful push."
+              exit 1
+            fi
+            echo "${image} serves ${digest}"
+          done
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # The same tagging, with the same immutability pre-flight.
+  # ---------------------------------------------------------------------------
+  # This is the reason the logic is a script. A repair republishing a version
+  # whose tags already exist must leave them exactly as they are unless it is
+  # writing the identical bytes, and that rule cannot be allowed to differ by a
+  # word from the one the release run applies.
+  manifest:
+    name: Tag the container image
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      index_digest: ${{ steps.create.outputs.index_digest }}
+      tags: ${{ steps.create.outputs.tags }}
+    steps:
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ needs.prepare.outputs.version }}
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: container-digest-*
+          merge-multiple: true
+
+      - name: Log in to Docker Hub and GHCR
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "::error::The 'release' environment must carry DOCKERHUB_USERNAME (variable) and DOCKERHUB_TOKEN (secret)."
+            exit 1
+          fi
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Create the tags
+        id: create
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DIST_TAG: ${{ needs.prepare.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          node scripts/container-manifest.ts \
+            --version "${VERSION}" \
+            --dist-tag "${DIST_TAG}" \
+            --image "${DH_IMAGE}" \
+            --image "${GHCR_IMAGE}" \
+            --digest "$(cat digest-amd64.txt)" \
+            --digest "$(cat digest-arm64.txt)"
+
+  # ---------------------------------------------------------------------------
+  # Prove the repair worked before saying it did.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify container image (${{ matrix.arch }})
+    needs: [prepare, manifest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ needs.prepare.outputs.version }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download this architecture's digest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: container-digest-${{ matrix.arch }}
+
+      # Add a second invocation with `--image "${GHCR_IMAGE}"` once the GHCR
+      # package has been made public by hand; see release.yml for why it is not
+      # here yet.
+      - name: Docker Hub serves the release anonymously
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
+        run: |
+          node scripts/container-check-anonymous.ts \
+            --image "${DH_IMAGE}" \
+            --version "${VERSION}" \
+            --index-digest "${INDEX_DIGEST}"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Pull the published tag and check it is this architecture
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          node scripts/container-verify-pull.ts \
+            --image "${GHCR_IMAGE}" \
+            --version "${VERSION}" \
+            --arch "${ARCH}" \
+            --expect-digest "$(cat "digest-${ARCH}.txt")"
+
+      # The smoke script as it was at the released tag, against the bytes the
+      # registry now serves.
+      - name: Smoke the published image
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node scripts/smoke-container.mjs \
+            --image "${GHCR_IMAGE}:${VERSION}" \
+            --version "${VERSION}"
+
+  # ---------------------------------------------------------------------------
+  # The notes the failed release never got to write.
+  # ---------------------------------------------------------------------------
+  # The splice replaces an existing block rather than appending a second one, so
+  # this is safe whether or not the original run reached it.
+  notes:
+    name: Add the pull commands to the release notes
+    needs: [prepare, manifest, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/v${{ needs.prepare.outputs.version }}
+          persist-credentials: false
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Splice the container block into the notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
+        run: |
+          set -euo pipefail
+          gh release view "v${VERSION}" --json body --jq '.body' > body.md
+          node scripts/release-container-notes.ts \
+            --version "${VERSION}" \
+            --index-digest "${INDEX_DIGEST}" \
+            --dh-image "${DH_IMAGE}" \
+            --ghcr-image "${GHCR_IMAGE}" \
+            --in body.md \
+            --out body-next.md
+          gh release edit "v${VERSION}" --notes-file body-next.md
+          echo "Release notes for v${VERSION} now carry the pull commands."
+
+      - name: Summary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
+          TAGS: ${{ needs.manifest.outputs.tags }}
+        run: |
+          {
+            echo "### Container image republished"
+            echo
+            echo "- version \`${VERSION}\`"
+            echo "- index \`${INDEX_DIGEST}\`"
+            echo "- tags \`${TAGS}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -56,7 +56,11 @@ try {
 
   const install = spawnSync(command, args, {
     encoding: 'utf8',
-    env: { ...process.env, npm_config_prefix: prefix },
+    // Both spellings. npm reads either, and the macOS runners already export
+    // the uppercase one — with both present it is unspecified which wins, which
+    // is exactly how this passed on Linux and Windows and installed into the
+    // runner's real global prefix on macOS.
+    env: { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix },
   })
   process.stdout.write(install.stdout ?? '')
   if (install.status !== 0) {

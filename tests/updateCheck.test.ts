@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   detectInstallChannel,
   getInstallInfo,
+  INSTALL_CHANNEL_MARKER,
   isNewerVersion,
   readRecordedInstall,
   resolveInstallInfo,
@@ -18,19 +19,45 @@ import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice } from '../server
  */
 describe('install channel detection', () => {
   const previousContainer = process.env.LOOPTROOP_CONTAINER
+  const tempDirs: string[] = []
 
   afterEach(() => {
     if (previousContainer === undefined) delete process.env.LOOPTROOP_CONTAINER
     else process.env.LOOPTROOP_CONTAINER = previousContainer
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
+
+  /** A package root with a real `package.json`, which is what detection anchors on. */
+  function makeInstallTree(marker?: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-tree-'))
+    tempDirs.push(root)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'looptroop' }))
+    if (marker !== undefined) writeFileSync(join(root, INSTALL_CHANNEL_MARKER), marker)
+    mkdirSync(join(root, 'dist', 'server', 'lib'), { recursive: true })
+    return root
+  }
 
   it.each([
     ['/usr/local/lib/node_modules/looptroop/dist/server/cli', 'npm'],
-    ['/opt/homebrew/Cellar/looptroop/0.5.0/libexec/dist/server/cli', 'homebrew'],
+    ['/opt/homebrew/Cellar/looptroop/9.9.9/libexec/dist/server/cli', 'homebrew'],
+    ['/home/linuxbrew/.linuxbrew/Cellar/looptroop/9.9.9/libexec/dist/server/cli', 'homebrew'],
     ['/home/u/scoop/apps/looptroop/current/dist/server/cli', 'scoop'],
     ['/c/ProgramData/chocolatey/lib/looptroop/dist/server/cli', 'chocolatey'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
+  })
+
+  /**
+   * The bug this narrowing fixes: Homebrew's own Node puts global npm packages
+   * under the brew prefix, so `/homebrew/` matched an install brew knows nothing
+   * about, and the user was told to run `brew upgrade looptroop`.
+   */
+  it.each([
+    '/opt/homebrew/lib/node_modules/looptroop/dist/server/lib',
+    '/usr/local/lib/node_modules/looptroop/dist/server/lib',
+    '/home/linuxbrew/.linuxbrew/lib/node_modules/looptroop/dist/server/lib',
+  ])('calls a global npm install under a brew prefix npm: %s', (moduleDir) => {
+    expect(detectInstallChannel(moduleDir)).toBe('npm')
   })
 
   it('detects a container from the build-time marker', () => {
@@ -42,10 +69,47 @@ describe('install channel detection', () => {
     expect(detectInstallChannel('/some/unexpected/place')).toBe('unknown')
   })
 
+  it('reads the marker an installer left at the package root', () => {
+    // A Scoop root the path pattern cannot recognise, which is the whole reason
+    // the marker exists: only the installer knows who unpacked these files.
+    const root = makeInstallTree('scoop\n')
+    expect(detectInstallChannel(join(root, 'dist', 'server', 'lib'))).toBe('scoop')
+  })
+
+  it.each(['homebrew', 'scoop', 'chocolatey'])('honours a %s marker', (channel) => {
+    const root = makeInstallTree(channel)
+    expect(detectInstallChannel(join(root, 'dist', 'server', 'lib'))).toBe(channel)
+  })
+
+  it('lets the container marker outrank a marker file', () => {
+    process.env.LOOPTROOP_CONTAINER = '1'
+    const root = makeInstallTree('homebrew')
+    expect(detectInstallChannel(join(root, 'dist', 'server', 'lib'))).toBe('container')
+  })
+
+  it('lets a marker file outrank the path shape', () => {
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-shape-'))
+    tempDirs.push(root)
+    // Deliberately a path the shape rules read as chocolatey.
+    const packageRoot = join(root, 'ProgramData', 'chocolatey', 'lib', 'looptroop')
+    mkdirSync(join(packageRoot, 'dist', 'server', 'lib'), { recursive: true })
+    writeFileSync(join(packageRoot, 'package.json'), '{}')
+    writeFileSync(join(packageRoot, INSTALL_CHANNEL_MARKER), 'scoop')
+
+    expect(detectInstallChannel(join(packageRoot, 'dist', 'server', 'lib'))).toBe('scoop')
+  })
+
+  it.each(['', 'apt-get', 'unknown', 'x'.repeat(400)])('ignores the unusable marker %j', (contents) => {
+    const root = makeInstallTree(contents)
+    // Falls through to the shape rules, which have nothing to say about a temp
+    // directory — better than honouring a truncated or garbage file.
+    expect(detectInstallChannel(join(root, 'dist', 'server', 'lib'))).toBe('unknown')
+  })
+
   it('pairs every channel with a usable upgrade command', () => {
     expect(getInstallInfo('/usr/local/lib/node_modules/looptroop/dist/server/cli').upgradeCommand)
       .toBe('npm install -g looptroop@latest')
-    expect(getInstallInfo('/opt/homebrew/Cellar/looptroop/0.5.0/dist/server/cli').upgradeCommand)
+    expect(getInstallInfo('/opt/homebrew/Cellar/looptroop/9.9.9/libexec/dist/server/cli').upgradeCommand)
       .toBe('brew upgrade looptroop')
   })
 })
@@ -85,16 +149,70 @@ describe('recorded install channel', () => {
     expect(readRecordedInstall(configDir)).toEqual({ channel: 'npm', path: NPM_DIR })
   })
 
-  it('reuses the recorded answer instead of detecting again', () => {
+  it('reuses the recorded answer where detection has nothing to say', () => {
     const configDir = makeConfigDir()
+    const CUSTOM_DIR = '/opt/tools/looptroop-app/dist/server/lib'
     writeFileSync(
       join(configDir, 'config.json'),
-      JSON.stringify({ install: { channel: 'homebrew', path: NPM_DIR } }),
+      JSON.stringify({ install: { channel: 'scoop', path: CUSTOM_DIR } }),
     )
 
-    // The path says npm; the recorded channel is what must win, which is only
-    // observable because the two disagree.
-    expect(resolveInstallInfo({ configDir, moduleDir: NPM_DIR }).channel).toBe('homebrew')
+    // Detection reads this path as `unknown`, which is silence rather than
+    // disagreement: the record is the only thing that knows, so it stands.
+    expect(resolveInstallInfo({ configDir, moduleDir: CUSTOM_DIR }).channel).toBe('scoop')
+  })
+
+  /**
+   * 0.5.0 wrote `homebrew` for paths under `node_modules` on any Mac whose Node
+   * came from Homebrew. Reinstalling puts the files back at the same path, so
+   * without this the record pins that wrong answer forever and no later fix to
+   * detection can ever reach those users.
+   */
+  it('heals a record that contradicts the path it was written for', () => {
+    const configDir = makeConfigDir()
+    const BREW_NODE_NPM_DIR = '/opt/homebrew/lib/node_modules/looptroop/dist/server/lib'
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({ install: { channel: 'homebrew', path: BREW_NODE_NPM_DIR } }),
+    )
+
+    const info = resolveInstallInfo({ configDir, moduleDir: BREW_NODE_NPM_DIR })
+
+    expect(info.channel).toBe('npm')
+    expect(info.upgradeCommand).toBe('npm install -g looptroop@latest')
+    expect(readRecordedInstall(configDir)).toEqual({ channel: 'npm', path: BREW_NODE_NPM_DIR })
+  })
+
+  it('lets a marker file outrank a record written before it existed', () => {
+    const configDir = makeConfigDir()
+    const root = mkdtempSync(join(tmpdir(), 'looptroop-marked-'))
+    tempDirs.push(root)
+    writeFileSync(join(root, 'package.json'), '{}')
+    writeFileSync(join(root, INSTALL_CHANNEL_MARKER), 'chocolatey')
+    const moduleDir = join(root, 'dist', 'server', 'lib')
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'npm', path: moduleDir } }))
+
+    expect(resolveInstallInfo({ configDir, moduleDir }).channel).toBe('chocolatey')
+    expect(readRecordedInstall(configDir)).toEqual({ channel: 'chocolatey', path: moduleDir })
+  })
+
+  it('does not rewrite a record the path agrees with', () => {
+    const configDir = makeConfigDir()
+    // Compact JSON: a rewrite pretty-prints, so the bytes are what proves the
+    // common case touches no disk.
+    const original = JSON.stringify({ install: { channel: 'npm', path: NPM_DIR } })
+    writeFileSync(join(configDir, 'config.json'), original)
+
+    expect(resolveInstallInfo({ configDir, moduleDir: NPM_DIR }).channel).toBe('npm')
+    expect(readFileSync(join(configDir, 'config.json'), 'utf8')).toBe(original)
+  })
+
+  it('ignores a channel inherited from Object.prototype', () => {
+    const configDir = makeConfigDir()
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'constructor' } }))
+
+    expect(readRecordedInstall(configDir)).toBeNull()
+    expect(typeof resolveInstallInfo({ configDir, moduleDir: NPM_DIR }).upgradeCommand).toBe('string')
   })
 
   it('detects again once this copy has moved', () => {

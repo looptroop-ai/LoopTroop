@@ -9,6 +9,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Fixed
+- Fixed the upgrade command shown to anyone who installed LoopTroop with `npm install -g` on a machine whose Node came from Homebrew. Homebrew's Node puts global packages under the Homebrew prefix, which LoopTroop read as a Homebrew installation, so it advised `brew upgrade looptroop` — a command that fails, because no such formula was ever installed. Detection now looks for the Cellar entry Homebrew actually creates.
+- Made that fix reach the people it is for. The install channel is detected once and then remembered, and reinstalling puts the files back where they already were, so the remembered wrong answer would have outlived any correction to detection. A remembered answer that contradicts the location it was recorded for is now treated as stale and worked out again.
+- Stopped a configuration file naming a channel like `constructor` from being accepted as a real one.
+
+### Added
+- An installer may now state the channel outright by leaving a `.install-channel` file at the package root, instead of LoopTroop having to infer it from the install path. The three managed package channels all unpack the same files, so the path is often the only difference between them and sometimes not even that.
+
 ## 0.5.0 (2026-08-12)
 
 

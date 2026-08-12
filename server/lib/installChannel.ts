@@ -186,9 +186,9 @@ function record(channel: InstallChannel, moduleDir: string, configDir?: string):
  *
  * The record is nonetheless checked against the path it was written for, and
  * dropped when the two contradict each other. Without that, one wrong answer is
- * permanent: a 0.5.0 user on a Homebrew-installed Node had `homebrew` written
- * for a path under `node_modules`, and because reinstalling puts the files back
- * at that same path, no later version's detection would ever run again. The
+ * permanent: an earlier release wrote `homebrew` for paths under `node_modules`
+ * on any Mac whose Node came from Homebrew, and because reinstalling puts the
+ * files back at that same path, no later detection would ever run again. The
  * check is the same one the container marker already justified, applied to
  * ordinary channels: evidence that disagrees with itself is stale, not binding.
  */

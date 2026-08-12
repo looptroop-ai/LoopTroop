@@ -178,6 +178,83 @@ jobs:
       - name: Pack, install globally, and drive the CLI
         run: node scripts/smoke-install.mjs
 
+  # The image is a release channel like the tarball, and nothing above ever
+  # builds it. Without this job a Dockerfile that stopped building, or an image
+  # that builds and then cannot start, is discovered on release day — by which
+  # time the tag exists and the npm package is published.
+  #
+  # Both architectures natively rather than one with QEMU: arm64 is where a base
+  # image lacking an arm64 manifest, or an apt repository serving amd64 only,
+  # actually shows up, and emulating it makes the same job take several times as
+  # long. If `ubuntu-24.04-arm` ever stops resolving — it is free for public
+  # repositories, which is a policy and not a promise — replace that leg with an
+  # amd64 runner plus `docker/setup-qemu-action` rather than dropping arm64.
+  container:
+    name: Container image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # The image installs the packed tarball, not the checkout, so what runs in
+      # the container is what a user would get. Nothing verifies these bytes
+      # against a hash: they are packed here from this checkout, and the manifest
+      # that binds bytes to a commit only exists in a release run.
+      - name: Pack the tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          npm pack
+          test -f "looptroop-${version}.tgz"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tarball=looptroop-${version}.tgz" >> "$GITHUB_OUTPUT"
+
+      # VERSION and REVISION fill in the OCI labels, which the smoke test then
+      # asserts are populated: an image that cannot say which commit it came from
+      # is one nobody can debug once it is running somewhere.
+      - name: Build the image
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          VERSION: ${{ steps.pack.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg TARBALL="${TARBALL}" \
+            --build-arg VERSION="${VERSION}" \
+            --build-arg REVISION="${GITHUB_SHA}" \
+            --tag looptroop:smoke \
+            .
+
+      # Everything the script asserts happens inside the container, over
+      # `docker exec`. The daemon binds the container's own loopback by design,
+      # so a test that published a port and talked to it from here would be
+      # exercising the escape hatch instead of the default anyone gets.
+      - name: Run the container smoke test
+        run: node scripts/smoke-container.mjs --image looptroop:smoke
+
   # A global install belongs to the machine, not the user: /usr/local/lib, a
   # Homebrew cellar, C:\Program Files, a locked-down image layer. Everything
   # above installs into a prefix the job owns, so a cache or lock dropped beside

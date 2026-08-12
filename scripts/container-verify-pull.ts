@@ -82,7 +82,7 @@ if (entry === null) {
   fatal(`The published index has no linux/${options.arch} manifest.`, raw.stdout)
 }
 if (entry !== options.expectDigest) {
-  fatal(`linux/${options.arch} is ${entry}, this leg built ${options.expectDigest}.`)
+  fatal(`linux/${options.arch} is ${entry}, the tagging step published ${options.expectDigest}.`)
 }
 log(`linux/${options.arch} -> ${entry}`)
 

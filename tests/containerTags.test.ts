@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  authoritativeFloating,
   classifyRegistryFailure,
   isOurRelease,
   isRateLimited,
   parseIndex,
   planTags,
   platformDigest,
+  platformProblem,
   readImageProvenance,
+  restrictFloating,
   servesExactly,
   tagsThatMustNotMove,
 } from '../scripts/container-tags'
@@ -31,6 +34,7 @@ describe('planTags', () => {
       stable: true,
       series: '0.5',
       tags: ['0.5.0', '0.5', 'latest'],
+      mustNotMove: ['next'],
     })
   })
 
@@ -39,6 +43,7 @@ describe('planTags', () => {
       stable: false,
       series: '0.5',
       tags: ['0.5.0-rc.1', 'next'],
+      mustNotMove: ['latest', '0.5'],
     })
   })
 
@@ -66,12 +71,76 @@ describe('planTags', () => {
 })
 
 describe('tagsThatMustNotMove', () => {
-  it('is empty for a stable release, which moves both floating tags', () => {
-    expect(tagsThatMustNotMove(planTags('0.5.0', 'latest'))).toEqual([])
+  it('protects next during a stable release, which does not write it', () => {
+    // The release writes the version, the series and latest. `next` still points
+    // at whatever candidate came before, and must keep doing so.
+    expect(tagsThatMustNotMove(planTags('0.5.0', 'latest'))).toEqual(['next'])
   })
 
   it('protects latest and the series during a prerelease', () => {
     expect(tagsThatMustNotMove(planTags('0.5.0-rc.1', 'next'))).toEqual(['latest', '0.5'])
+  })
+
+  it('is every floating tag when a run writes none of them', () => {
+    const plan = restrictFloating(planTags('0.5.0', 'latest'), [])
+    expect(plan.tags).toEqual(['0.5.0'])
+    expect(tagsThatMustNotMove(plan)).toEqual(['latest', 'next', '0.5'])
+  })
+})
+
+describe('restrictFloating', () => {
+  it('keeps only the floating tags a repair has evidence for', () => {
+    // Repairing 0.5.0 long after 0.8.0 shipped must not drag `latest` back.
+    const plan = restrictFloating(planTags('0.5.0', 'latest'), ['0.5'])
+    expect(plan.tags).toEqual(['0.5.0', '0.5'])
+    expect(plan.mustNotMove).toEqual(['latest', 'next'])
+  })
+
+  it('refuses a tag the release rules would never have written', () => {
+    expect(() => restrictFloating(planTags('0.5.0-rc.1', 'next'), ['latest'])).toThrow(/may carry/)
+    expect(() => restrictFloating(planTags('0.5.0', 'latest'), ['0.4'])).toThrow(/not a floating tag/)
+  })
+})
+
+describe('authoritativeFloating', () => {
+  const versions = ['0.4.9', '0.4.10', '0.5.0', '0.5.1', '0.6.0-rc.1', '0.6.0']
+
+  it('claims latest only when npm already says this version is latest', () => {
+    expect(authoritativeFloating('0.6.0', '0.6', { latest: '0.6.0' }, versions)).toContain('latest')
+    expect(authoritativeFloating('0.5.0', '0.5', { latest: '0.6.0' }, versions)).not.toContain('latest')
+  })
+
+  it('claims next the same way', () => {
+    expect(authoritativeFloating('0.6.0-rc.1', '0.6', { next: '0.6.0-rc.1' }, versions)).toEqual(['next'])
+  })
+
+  it('claims the series only for the newest stable release in it', () => {
+    expect(authoritativeFloating('0.5.1', '0.5', {}, versions)).toEqual(['0.5'])
+    expect(authoritativeFloating('0.5.0', '0.5', {}, versions)).toEqual([])
+    // Numeric ordering, so 0.4.10 outranks 0.4.9 rather than sorting under it.
+    expect(authoritativeFloating('0.4.10', '0.4', {}, versions)).toEqual(['0.4'])
+    expect(authoritativeFloating('0.4.9', '0.4', {}, versions)).toEqual([])
+  })
+
+  it('claims nothing when npm knows nothing', () => {
+    expect(authoritativeFloating('0.5.0', '0.5', {}, [])).toEqual([])
+  })
+})
+
+describe('platformProblem', () => {
+  const entry = (architecture: string, digest: string) => ({ os: 'linux', architecture, digest })
+
+  it('accepts exactly one manifest per supported architecture', () => {
+    expect(platformProblem([entry('amd64', AMD64), entry('arm64', ARM64)])).toBeNull()
+  })
+
+  it('refuses an index that is missing an architecture or carries a spare', () => {
+    expect(platformProblem([entry('amd64', AMD64)])).toMatch(/expected exactly/)
+    expect(platformProblem([entry('amd64', AMD64), entry('arm64', ARM64), entry('ppc64le', OTHER)])).toMatch(/expected exactly/)
+  })
+
+  it('refuses an index that points both architectures at one manifest', () => {
+    expect(platformProblem([entry('amd64', AMD64), entry('arm64', AMD64)])).toMatch(/same manifest/)
   })
 })
 

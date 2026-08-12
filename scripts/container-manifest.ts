@@ -25,7 +25,19 @@
 import { appendFileSync } from 'node:fs'
 
 import { ABSENT, docker, fatal, inspectRaw, log, requireDigest, resolveDigest } from './container-docker.ts'
-import { DIGEST_PATTERN, isOurRelease, parseIndex, planTags, readImageProvenance, tagsThatMustNotMove } from './container-tags.ts'
+import type { PlatformEntry, Provenance } from './container-tags.ts'
+import {
+  DIGEST_PATTERN,
+  isOurRelease,
+  parseIndex,
+  planTags,
+  REQUIRED_PLATFORMS,
+  platformDigest,
+  platformProblem,
+  readImageProvenance,
+  restrictFloating,
+  tagsThatMustNotMove,
+} from './container-tags.ts'
 
 interface Options {
   version: string
@@ -34,6 +46,11 @@ interface Options {
   revision: string
   images: string[]
   digests: string[]
+  /**
+   * The floating tags this run has authority to move, or null to use the
+   * release rules. An empty array means the version tag and nothing else.
+   */
+  floating: string[] | null
 }
 
 function parseArgs(argv: string[]): Options {
@@ -42,6 +59,7 @@ function parseArgs(argv: string[]): Options {
   let revision = ''
   const images: string[] = []
   const digests: string[] = []
+  let floating: string[] | null = null
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const take = (name: string): string => {
@@ -55,6 +73,9 @@ function parseArgs(argv: string[]): Options {
     else if (arg === '--revision') revision = take('--revision')
     else if (arg === '--image') images.push(take('--image'))
     else if (arg === '--digest') digests.push(take('--digest'))
+    // One argument rather than a repeatable one, because "none" is a real and
+    // important answer that a repeatable flag cannot express.
+    else if (arg === '--floating-tags') floating = (argv[++i] ?? '').split(/\s+/).filter(Boolean)
     else throw new Error(`unknown argument ${JSON.stringify(arg)}`)
   }
   if (version === '') throw new Error('--version is required')
@@ -73,23 +94,31 @@ function parseArgs(argv: string[]): Options {
   if (new Set(digests).size !== digests.length) {
     throw new Error('the two --digest values are identical; the two architectures cannot be the same manifest')
   }
-  return { version, distTag, revision, images, digests }
+  return { version, distTag, revision, images, digests, floating }
 }
 
 interface RegistryState {
   image: string
   /** The platform manifests already on the version tag, or null when absent. */
-  published: string[] | null
+  platforms: PlatformEntry[] | null
   /** The index digest already on the version tag, or null when absent. */
   indexDigest: string | null
 }
 
+/**
+ * What one registry already serves on the version tag.
+ *
+ * An index that is there but the wrong shape stops the run rather than being
+ * treated as absent or inherited: this is the point where a repair decides what
+ * to copy, and copying an index carrying one architecture would republish a
+ * broken release over a good one.
+ */
 function survey(image: string, version: string): RegistryState {
   const reference = `${image}:${version}`
   const raw = inspectRaw(reference)
   if (raw === null) {
     log(`  ${reference} is absent.`)
-    return { image, published: null, indexDigest: null }
+    return { image, platforms: null, indexDigest: null }
   }
 
   let parsed
@@ -104,10 +133,27 @@ function survey(image: string, version: string): RegistryState {
       'Nothing in this repository publishes one. Release a new version.',
     )
   }
+  const problem = platformProblem(parsed.platforms)
+  if (problem !== null) {
+    fatal(`${reference} exists but ${problem}.`, raw)
+  }
   const indexDigest = requireDigest(reference)
-  const published = parsed.platforms.map((platform) => platform.digest)
-  log(`  ${reference} exists: index ${indexDigest}, ${published.length} manifests.`)
-  return { image, published, indexDigest }
+  log(`  ${reference} exists: index ${indexDigest}, ${parsed.platforms.map((p) => `${p.os}/${p.architecture}`).join(' ')}.`)
+  return { image, platforms: parsed.platforms, indexDigest }
+}
+
+/** The version and commit an already-published manifest says it was built from. */
+function provenanceOf(image: string, digest: string): Provenance {
+  const reference = `${image}@${digest}`
+  const config = docker(['buildx', 'imagetools', 'inspect', '--format', '{{json .Image}}', reference])
+  if (config.code !== 0) {
+    fatal(`${reference} exists, but its image config could not be read.`, config.stderr)
+  }
+  try {
+    return readImageProvenance(config.stdout)
+  } catch {
+    fatal(`${reference} returned an image config that is not valid JSON.`, config.stdout)
+  }
 }
 
 const sorted = (digests: string[]): string => [...digests].sort().join(' ')
@@ -126,6 +172,7 @@ try {
 let plan
 try {
   plan = planTags(options.version, options.distTag)
+  if (options.floating !== null) plan = restrictFloating(plan, options.floating)
 } catch (error) {
   fatal(error instanceof Error ? error.message : String(error))
 }
@@ -133,6 +180,7 @@ try {
 log(`Version:   ${options.version} (${plan.stable ? 'stable' : 'prerelease'})`)
 log(`Revision:  ${options.revision}`)
 log(`Tags:      ${plan.tags.join(' ')}`)
+log(`Must not move: ${plan.mustNotMove.join(' ') || '(nothing floating)'}`)
 log(`Built:     ${options.digests.join(' ')}`)
 log(`Registries:\n  ${options.images.join('\n  ')}`)
 
@@ -157,12 +205,16 @@ log(`Registries:\n  ${options.images.join('\n  ')}`)
 // carries, not by trusting whatever is there.
 log('\n[1] What the registries already serve')
 const states = options.images.map((image) => survey(image, options.version))
-const present = states.filter((state) => state.published !== null)
+const present = states.filter((state) => state.platforms !== null)
 
-if (present.length > 1 && new Set(present.map((state) => sorted(state.published!))).size !== 1) {
+// Every registry that already has the version must agree on the index digest,
+// not merely on the set of manifests: the same manifests in a different order
+// are a different index, and a repair that copied one over the other would
+// change the digest a user recorded from the registry it did not copy.
+if (present.length > 1 && new Set(present.map((state) => state.indexDigest)).size !== 1) {
   fatal(
     'The registries already serve this version, and they disagree about what it is.',
-    present.map((state) => `  ${state.image}:${options.version} -> ${sorted(state.published!)}`).join('\n'),
+    present.map((state) => `  ${state.image}:${options.version} -> ${state.indexDigest}`).join('\n'),
   )
 }
 
@@ -174,31 +226,28 @@ let expectedIndex: string | null = null
 if (present.length === 0) {
   log('\n[2] First publish of this version; tagging what this run built.')
   sourceFor = (image) => options.digests.map((digest) => `${image}@${digest}`)
-} else if (sorted(present[0]!.published!) === sorted(options.digests)) {
+} else if (sorted(present[0]!.platforms!.map((p) => p.digest)) === sorted(options.digests)) {
   log('\n[2] Already serving exactly these manifests; re-tagging is safe.')
   sourceFor = (image) => options.digests.map((digest) => `${image}@${digest}`)
 } else {
   const source = present[0]!
-  const reference = `${source.image}@${source.published![0]}`
-  const config = docker(['buildx', 'imagetools', 'inspect', '--format', '{{json .Image}}', reference])
-  if (config.code !== 0) {
-    fatal(`${source.image}:${options.version} exists, but its image config could not be read.`, config.stderr)
-  }
+  const published = source.platforms!
 
-  let provenance
-  try {
-    provenance = readImageProvenance(config.stdout)
-  } catch {
-    fatal(`${reference} returned an image config that is not valid JSON.`, config.stdout)
-  }
-  if (!isOurRelease(provenance, options.version, options.revision)) {
-    fatal(`${source.image}:${options.version} already exists and was not published by this release.`, [
-      `  it says version ${provenance.version ?? '(unlabelled)'} revision ${provenance.revision ?? '(unlabelled)'}`,
-      `  this run is    version ${options.version} revision ${options.revision}`,
-      `  registry: ${sorted(source.published!)}`,
-      `  this run: ${sorted(options.digests)}`,
-      'A released version tag is immutable. Release a new version rather than retagging.',
-    ].join('\n'))
+  // Every architecture, not just the first one listed. An index whose amd64 is
+  // this release and whose arm64 is something else would otherwise be adopted
+  // whole on the strength of one label read.
+  for (const platform of published) {
+    const provenance = provenanceOf(source.image, platform.digest)
+    if (!isOurRelease(provenance, options.version, options.revision)) {
+      fatal(`${source.image}:${options.version} already exists and was not published by this release.`, [
+        `  its ${platform.os}/${platform.architecture} says version ${provenance.version ?? '(unlabelled)'} revision ${provenance.revision ?? '(unlabelled)'}`,
+        `  this run is                 version ${options.version} revision ${options.revision}`,
+        `  registry: ${sorted(published.map((p) => p.digest))}`,
+        `  this run: ${sorted(options.digests)}`,
+        'A released version tag is immutable. Release a new version rather than retagging.',
+      ].join('\n'))
+    }
+    log(`    ${platform.os}/${platform.architecture} ${platform.digest} is this release's`)
   }
 
   // The released bytes are the published ones, not this run's. A rebuild of the
@@ -218,7 +267,7 @@ if (present.length === 0) {
 const mustNotMove = tagsThatMustNotMove(plan)
 const before = new Map<string, string>()
 if (mustNotMove.length > 0) {
-  log('\n[3] Snapshot the tags a prerelease must not move')
+  log('\n[3] Snapshot the floating tags this run is not writing')
   for (const image of options.images) {
     for (const tag of mustNotMove) {
       const reference = `${image}:${tag}`
@@ -284,24 +333,48 @@ for (const image of options.images) {
 }
 
 if (mustNotMove.length > 0) {
-  // A prerelease publishes its own version tag and `next`, and nothing else. If
-  // `latest` or the `X.Y` series moved anyway then a plain `docker pull` now
-  // serves a release candidate to everyone — the same failure the npm job
-  // refuses, on the channel that has no npm job in front of it.
-  log('\n[6] The prerelease moved no floating tag')
+  // Whatever this run had no authority to write is still where it was. A
+  // prerelease that moved `latest` would serve a release candidate to everyone
+  // on a plain `docker pull` — the failure npm's publish job refuses, on the
+  // channel that has no such job in front of it. A repair that moved `latest`
+  // would do the same thing with a version that is deliberately behind.
+  log('\n[6] The tags this run does not own are untouched')
   for (const [reference, snapshot] of before) {
     const now = resolveDigest(reference)
     if (now !== snapshot) {
       const was = snapshot === ABSENT ? 'absent' : snapshot
-      fatal(`${reference} moved from ${was} to ${now} during a prerelease publish.`)
+      fatal(`${reference} moved from ${was} to ${now}, and this run had no authority to move it.`)
     }
     log(`  ${reference} is unchanged at ${snapshot}`)
   }
 }
 
+// The manifests the published index actually lists, which is not the same thing
+// as the ones this run built: an adopted index carries the earlier publish's,
+// and a verification leg comparing against the rebuild would fail on precisely
+// the repair this exists to perform.
+log('\n[7] The manifests the published index carries')
+const first = options.images[0]!
+const publishedRaw = inspectRaw(`${first}:${options.version}`)
+if (publishedRaw === null) {
+  fatal(`${first}:${options.version} disappeared between tagging and reading it back.`)
+}
+const perPlatform = new Map<string, string>()
+for (const platform of REQUIRED_PLATFORMS) {
+  const [os, architecture] = platform.split('/') as [string, string]
+  const digest = platformDigest(publishedRaw, os, architecture)
+  if (digest === null) {
+    fatal(`The published index has no ${platform} manifest.`, publishedRaw)
+  }
+  perPlatform.set(architecture, digest)
+  log(`  ${platform} -> ${digest}`)
+}
+
 const outputPath = process.env.GITHUB_OUTPUT
 if (outputPath) {
-  appendFileSync(outputPath, `index_digest=${indexDigest}\ntags=${plan.tags.join(' ')}\n`)
+  const lines = [`index_digest=${indexDigest}`, `tags=${plan.tags.join(' ')}`]
+  for (const [architecture, digest] of perPlatform) lines.push(`digest_${architecture}=${digest}`)
+  appendFileSync(outputPath, `${lines.join('\n')}\n`)
 }
 log(`\nIndex: ${indexDigest}`)
 log(`Tags:  ${plan.tags.join(' ')}`)

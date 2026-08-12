@@ -1113,6 +1113,11 @@ jobs:
     outputs:
       index_digest: ${{ steps.create.outputs.index_digest }}
       tags: ${{ steps.create.outputs.tags }}
+      # What the published index actually lists, which is not what this run
+      # built when an earlier publish was adopted. Verification compares
+      # against these, so a repair is checked against the bytes it published.
+      digest_amd64: ${{ steps.create.outputs.digest_amd64 }}
+      digest_arm64: ${{ steps.create.outputs.digest_arm64 }}
     steps:
       # Sparse: the script and what it imports, nothing else. This job holds
       # `packages: write`, so it gets the smallest tree that can run the script
@@ -1231,11 +1236,6 @@ jobs:
         with:
           node-version: 24.15.0
 
-      - name: Download this architecture's digest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: container-digest-${{ matrix.arch }}
-
       # Read with no credentials at all, which is the point: a private Docker Hub
       # repository is inspectable by the account that pushed to it and by nobody
       # else, so an authenticated check here would pass on a repository from which
@@ -1285,13 +1285,14 @@ jobs:
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           ARCH: ${{ matrix.arch }}
+          EXPECT_DIGEST: ${{ needs.container-manifest.outputs[format('digest_{0}', matrix.arch)] }}
         run: |
           set -euo pipefail
           node scripts/container-verify-pull.ts \
             --image "${GHCR_IMAGE}" \
             --version "${VERSION}" \
             --arch "${ARCH}" \
-            --expect-digest "$(cat "digest-${ARCH}.txt")"
+            --expect-digest "${EXPECT_DIGEST}"
 
       # The same script CI runs against a locally built image, pointed at the
       # bytes the registry served. `--version` makes it assert the OCI version

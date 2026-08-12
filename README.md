@@ -196,6 +196,11 @@ needs — Node, git and `gh` are in the image:
 docker pull looptroopai/looptroop:latest
 ```
 
+> **From the next release onward.** The image is built and tested on every
+> change, but it is published by the release workflow, so no tag exists in a
+> registry until the first release runs. Until then, build it yourself with
+> `docker build -t looptroopai/looptroop .` from a checkout.
+
 Two things it still needs from you, both deliberately not baked in.
 
 **An OpenCode server.** It is not in the image: it needs a configured model
@@ -251,6 +256,30 @@ docker run -p 127.0.0.1:3000:3000 \
   -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
   looptroopai/looptroop:latest
 ```
+
+In PowerShell, the same run with the same meaning:
+
+```powershell
+$Project = "C:\path\to\project"
+$Token = -join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Max 256) })
+docker run -p 127.0.0.1:3000:3000 `
+  -e LOOPTROOP_ALLOW_REMOTE_API=1 `
+  -e LOOPTROOP_BACKEND_HOST=0.0.0.0 `
+  -e LOOPTROOP_API_TOKEN=$Token `
+  -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 `
+  -v looptroop-config:/home/node/.looptroop `
+  -v "${Project}:${Project}" -w $Project `
+  looptroopai/looptroop:latest
+```
+
+Windows needs one more decision than the others, because of the path rule above.
+`C:\path\to\project` is not a path a Linux container can be given, and an
+OpenCode server running natively on Windows cannot open a Linux one — so the two
+sides cannot meet by mounting the same string. Either run OpenCode as a container
+sidecar with the identical mount, or keep the project inside WSL and run both
+from there, where `/home/you/project` means the same thing on both sides. A
+native Windows OpenCode with a container LoopTroop is the one combination that
+cannot be made to work.
 
 `-p 127.0.0.1:3000:3000`, not `-p 3000:3000`: the short form publishes on every
 host interface, which on a shared network offers that control plane to everyone

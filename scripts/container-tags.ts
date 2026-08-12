@@ -21,8 +21,28 @@ export interface TagPlan {
   stable: boolean
   /** The `X.Y` series tag, whether or not this release publishes it. */
   series: string
-  /** Every tag this release should point at its index, version tag first. */
+  /** Every tag this run should point at its index, version tag first. */
   tags: string[]
+  /**
+   * Every floating tag this run is *not* writing, which it must therefore leave
+   * exactly where it found it.
+   *
+   * Derived rather than listed: it is the whole floating universe minus what is
+   * being written, so a run can never quietly move a tag it did not plan to. A
+   * stable release must not disturb `next`; a prerelease must not disturb
+   * `latest` or the series; a repair that has no authority to move any of them
+   * must not disturb all three.
+   */
+  mustNotMove: string[]
+}
+
+/** Every tag whose meaning is "whichever release is currently X". */
+function floatingUniverse(series: string): string[] {
+  return ['latest', 'next', series]
+}
+
+function withMustNotMove(stable: boolean, series: string, tags: string[]): TagPlan {
+  return { stable, series, tags, mustNotMove: floatingUniverse(series).filter((tag) => !tags.includes(tag)) }
 }
 
 /**
@@ -61,15 +81,81 @@ export function planTags(version: string, distTag: string): TagPlan {
   if (distTag === 'latest') tags.push('latest')
   else if (distTag === 'next') tags.push('next')
 
-  return { stable, series, tags }
+  return withMustNotMove(stable, series, tags)
 }
 
 /**
- * The floating tags a prerelease must leave exactly where it found them. Empty
- * for a stable release, which is expected to move both.
+ * The same plan with the floating tags cut down to the ones named.
+ *
+ * A release is publishing the newest thing there is, so every floating tag it
+ * plans is one it should move. A repair is not: it is republishing a version
+ * that may be years behind, and the plan above would have it take `latest` and
+ * the series back with it — a repair of 0.5.0 after 0.8.0 shipped would make
+ * `docker pull looptroopai/looptroop` serve 0.5.0 again. So a repair names
+ * exactly which floating tags it has evidence for, and every one it does not
+ * name moves from "write it" to "prove it did not move".
+ *
+ * Naming a tag the release rules would not have allowed is refused rather than
+ * trimmed: the caller believing a prerelease may take `latest` is a fault in the
+ * caller, not something to silently correct.
  */
+export function restrictFloating(plan: TagPlan, floating: string[]): TagPlan {
+  const allowed = plan.tags.slice(1)
+  for (const tag of floating) {
+    if (!floatingUniverse(plan.series).includes(tag)) {
+      throw new Error(`'${tag}' is not a floating tag (expected latest, next or ${plan.series})`)
+    }
+    if (!allowed.includes(tag)) {
+      throw new Error(`'${tag}' is not a tag this version may carry; the release rules allow ${allowed.join(' ') || 'none'}`)
+    }
+  }
+  const tags = [plan.tags[0]!, ...allowed.filter((tag) => floating.includes(tag))]
+  return withMustNotMove(plan.stable, plan.series, tags)
+}
+
+/**
+ * The floating tags whose current value proves they belong to this version.
+ *
+ * npm is the authority, because it is the channel that has a publish job with an
+ * opinion: `latest` and `next` are exactly what npm's dist-tags say they are, so
+ * a repair moves a container floating tag only where the package registry
+ * already agrees it points at this version. The series has no npm equivalent, so
+ * it is decided by ordering — the tag belongs to this version only if no later
+ * stable release shares the series.
+ *
+ * Everything unproven is simply absent from the result, which makes it a tag the
+ * repair must leave alone.
+ */
+export function authoritativeFloating(
+  version: string,
+  series: string,
+  distTags: { latest?: string, next?: string },
+  publishedVersions: string[],
+): string[] {
+  const floating: string[] = []
+  if (distTags.latest === version) floating.push('latest')
+  if (distTags.next === version) floating.push('next')
+
+  // Stable only, matching the release rules: a prerelease never holds the series.
+  const isStable = !version.includes('-')
+  if (isStable) {
+    const newest = publishedVersions
+      .filter((candidate) => !candidate.includes('-') && candidate.startsWith(`${series}.`))
+      .reduce((best: string | null, candidate) => (best === null || comparePatch(candidate, best) > 0 ? candidate : best), null)
+    if (newest === version) floating.push(series)
+  }
+  return floating
+}
+
+/** Patch-level ordering within one series, numeric so 0.4.10 follows 0.4.9. */
+function comparePatch(a: string, b: string): number {
+  const patch = (value: string): number => Number(value.split('.')[2] ?? '0')
+  return patch(a) - patch(b)
+}
+
+/** The floating tags a run must leave exactly where it found them. */
 export function tagsThatMustNotMove(plan: TagPlan): string[] {
-  return plan.stable ? [] : ['latest', plan.series]
+  return plan.mustNotMove
 }
 
 /**
@@ -206,6 +292,29 @@ export function readImageProvenance(rawConfig: string): Provenance {
 export function isOurRelease(provenance: Provenance, version: string, revision: string): boolean {
   if (provenance.version === null || provenance.revision === null) return false
   return provenance.version === version && provenance.revision === revision
+}
+
+/** The architectures every image this project publishes must carry, and only these. */
+export const REQUIRED_PLATFORMS = ['linux/amd64', 'linux/arm64'] as const
+
+/**
+ * Why an index is not one of ours, or null when its shape is right.
+ *
+ * Checked before an existing index is ever copied anywhere. "It parses and has
+ * some manifests" is not enough to inherit a release from: an index carrying one
+ * architecture pulls confusingly for half the world, and one carrying a third
+ * would have this project publishing something it never built.
+ */
+export function platformProblem(platforms: PlatformEntry[]): string | null {
+  const present = platforms.map((entry) => `${entry.os}/${entry.architecture}`).sort()
+  const expected = [...REQUIRED_PLATFORMS].sort()
+  if (present.length !== expected.length || present.some((value, i) => value !== expected[i])) {
+    return `carries ${present.join(' ') || '(nothing)'}, expected exactly ${expected.join(' ')}`
+  }
+  if (new Set(platforms.map((entry) => entry.digest)).size !== platforms.length) {
+    return 'lists the same manifest for more than one architecture'
+  }
+  return null
 }
 
 /** The manifest an index lists for one platform, or null when it lists none. */

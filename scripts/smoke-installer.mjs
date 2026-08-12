@@ -34,7 +34,10 @@ const expectedVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 
 const work = mkdtempSync(join(tmpdir(), 'looptroop-installer-smoke-'))
 
 try {
-  const pack = spawnSync('npm', ['pack', '--pack-destination', `"${work}"`, '--silent'], {
+  // Quoted only when a shell will parse it. On Unix there is no shell, so the
+  // quotes would become part of the path and npm would write nowhere useful.
+  const packDestination = IS_WINDOWS ? `"${work}"` : work
+  const pack = spawnSync('npm', ['pack', '--pack-destination', packDestination, '--silent'], {
     cwd: repoRoot,
     encoding: 'utf8',
     shell: IS_WINDOWS,

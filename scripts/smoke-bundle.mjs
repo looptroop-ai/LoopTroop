@@ -17,7 +17,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -44,7 +44,15 @@ try {
 
   // `tar` on all three: Windows has shipped bsdtar as tar.exe since 1803, and
   // extracting with the same tool everywhere is the point of a single archive.
-  const extract = spawnSync('tar', ['-xzf', bundlePath, '-C', unpacked], { encoding: 'utf8' })
+  //
+  // The archive is named by basename from its own directory, never by absolute
+  // path. GNU tar — which is what a `shell: bash` step on Windows finds first,
+  // from Git for Windows — reads `D:\a\...` as a remote host called `D` and
+  // fails with "Cannot connect to D: resolve failed".
+  const extract = spawnSync('tar', ['-xzf', basename(bundlePath), '-C', unpacked], {
+    cwd: dirname(bundlePath),
+    encoding: 'utf8',
+  })
   if (extract.status !== 0) fail('Extracting the bundle failed.', extract.stderr || String(extract.error))
 
   const root = join(unpacked, 'looptroop')

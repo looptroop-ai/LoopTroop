@@ -1248,21 +1248,24 @@ jobs:
       # registry first, retries a rate limit and nothing else, and compares what
       # an anonymous client is served against the index this release published.
       #
-      # GHCR is absent from this list on purpose. GHCR packages are private by
-      # default and do not inherit the repository's visibility, so this check
-      # cannot pass there until someone makes the package public — a one-way
-      # change, done by hand, once, after the first release creates the package.
-      # Adding a second `--image "${GHCR_IMAGE}"` invocation below is all that
-      # enabling it takes.
-      - name: Docker Hub serves the release anonymously
+      # Both registries, because both are documented in the README and a private
+      # one fails every `docker pull` a user copies from it. GHCR packages are
+      # private by default and do not inherit the repository's visibility; this
+      # one was made public by hand once the first release had created it, and
+      # this step keeps it that way — flipping it back private now fails a release
+      # instead of quietly breaking half the install instructions.
+      - name: Both registries serve the release anonymously
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
         run: |
-          node scripts/container-check-anonymous.ts \
-            --image "${DH_IMAGE}" \
-            --version "${VERSION}" \
-            --index-digest "${INDEX_DIGEST}"
+          set -euo pipefail
+          for image in "${DH_IMAGE}" "${GHCR_IMAGE}"; do
+            node scripts/container-check-anonymous.ts \
+              --image "${image}" \
+              --version "${VERSION}" \
+              --index-digest "${INDEX_DIGEST}"
+          done
 
       # Authenticated, because that is the functional path today and it needs no
       # environment secret: `packages: read` on this run's own token is enough to

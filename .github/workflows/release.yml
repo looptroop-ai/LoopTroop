@@ -1495,6 +1495,7 @@ jobs:
           node scripts/build-choco.ts
           --bundle "${{ steps.inputs.outputs.bundle }}"
           --url "${{ steps.inputs.outputs.url }}"
+          --version "${{ steps.inputs.outputs.version }}"
           --out dist-choco
 
       # The exact nupkg that is about to be pushed, installed and run first.
@@ -1502,7 +1503,10 @@ jobs:
       # not run is discovered by whoever installs it.
       - name: Install it locally before submitting it
         shell: bash
-        run: node scripts/smoke-choco.ts --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
+        run: >
+          node scripts/smoke-choco.ts
+          --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
+          --version "${{ steps.inputs.outputs.version }}"
 
       - name: Push to the community feed
         id: push

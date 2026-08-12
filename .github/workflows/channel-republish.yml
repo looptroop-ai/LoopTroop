@@ -234,10 +234,10 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          # `choco list --exact` reports only approved packages, which is exactly
-          # the distinction that matters: a submission still in moderation is not
-          # something a user can install.
-          if choco list looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/ | grep -q .; then
+          # `choco search`, not `choco list`: Chocolatey v2 made `list` local-only.
+          # It reports only approved packages, which is exactly the distinction
+          # that matters — a submission still in moderation is not installable.
+          if choco search looptroop --exact --version "${VERSION}" --limit-output --source https://community.chocolatey.org/api/v2/ | grep -q .; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             echo "looptroop ${VERSION} is approved and on the feed."
           else
@@ -261,8 +261,11 @@ jobs:
           node scripts/build-choco.ts \
             --bundle "${{ needs.prepare.outputs.bundle }}" \
             --url "${{ needs.prepare.outputs.url }}" \
+            --version "${{ needs.prepare.outputs.version }}" \
             --out dist-choco
-          node scripts/smoke-choco.ts --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg"
+          node scripts/smoke-choco.ts \
+            --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg" \
+            --version "${{ needs.prepare.outputs.version }}"
 
       - name: Submit it
         if: steps.feed.outputs.published == 'false'

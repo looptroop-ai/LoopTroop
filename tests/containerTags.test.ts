@@ -202,7 +202,7 @@ describe('isOurRelease', () => {
 
   it('refuses an image built from another commit, or for another version', () => {
     expect(isOurRelease({ version: '0.5.0', revision: 'd'.repeat(40) }, '0.5.0', SHA)).toBe(false)
-    expect(isOurRelease({ version: '0.4.1', revision: SHA }, '0.5.0', SHA)).toBe(false)
+    expect(isOurRelease({ version: '9.9.9', revision: SHA }, '0.5.0', SHA)).toBe(false)
   })
 
   it('refuses an unlabelled image rather than assuming it is ours', () => {

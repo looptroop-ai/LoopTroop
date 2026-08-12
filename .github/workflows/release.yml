@@ -1251,8 +1251,8 @@ jobs:
       # Both registries, because both are documented in the README and a private
       # one fails every `docker pull` a user copies from it. GHCR packages are
       # private by default and do not inherit the repository's visibility; this
-      # one was made public by hand after 0.5.0 created it, and this step is what
-      # keeps it that way — flipping it back private now fails the release
+      # one was made public by hand once the first release had created it, and
+      # this step keeps it that way — flipping it back private now fails a release
       # instead of quietly breaking half the install instructions.
       - name: Both registries serve the release anonymously
         env:

@@ -2,7 +2,7 @@
 /**
  * Refuses a tarball whose bytes are not the ones the build produced.
  *
- *   npm run release:verify-artifact -- looptroop-0.5.0.tgz release-manifest.json
+ *   npm run release:verify-artifact -- looptroop-9.9.9.tgz release-manifest.json
  *
  * Run at the top of every job that receives the tarball as an artifact, before
  * installing or publishing it. Comparing only after publishing would prove what

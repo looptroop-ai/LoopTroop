@@ -3,7 +3,7 @@
  * Puts the container pull commands into a release's notes.
  *
  *   node scripts/release-container-notes.ts \
- *     --version 0.5.0 --index-digest sha256:<index> \
+ *     --version 9.9.9 --index-digest sha256:<index> \
  *     --dh-image docker.io/looptroopai/looptroop \
  *     --ghcr-image ghcr.io/looptroop-ai/looptroop \
  *     --in body.md --out body-next.md

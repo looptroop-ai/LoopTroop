@@ -38,7 +38,7 @@ const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/
 /**
  * Numeric identifiers must not carry a leading zero.
  *
- * npm accepts `0.5.0-rc.01` as a string but semver does not define it, so it
+ * npm accepts `9.9.9-rc.01` as a string but semver does not define it, so it
  * sorts unpredictably against `rc.1` and `rc.2`. Two publishes later the
  * ordering the `next` dist-tag implies stops matching the ordering users see.
  */
@@ -55,7 +55,7 @@ export function parseVersion(value: string): ParsedVersion {
   if (!match) {
     throw new Error(
       `Version "${value}" is not MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.N. `
-      + 'Write 0.5.0 or 0.5.0-rc.1 — no leading "v", no other prerelease names.',
+      + 'No leading "v", and no prerelease name other than -rc.N.',
     )
   }
 

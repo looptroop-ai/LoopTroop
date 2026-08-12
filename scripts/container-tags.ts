@@ -90,8 +90,8 @@ export function planTags(version: string, distTag: string): TagPlan {
  * A release is publishing the newest thing there is, so every floating tag it
  * plans is one it should move. A repair is not: it is republishing a version
  * that may be years behind, and the plan above would have it take `latest` and
- * the series back with it — a repair of 0.5.0 after 0.8.0 shipped would make
- * `docker pull looptroopai/looptroop` serve 0.5.0 again. So a repair names
+ * the series back with it — repairing an old version after a newer one shipped
+ * would make `docker pull looptroopai/looptroop` serve the old one again. So a repair names
  * exactly which floating tags it has evidence for, and every one it does not
  * name moves from "write it" to "prove it did not move".
  *

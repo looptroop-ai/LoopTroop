@@ -5,7 +5,7 @@
  *
  *   node scripts/container-verify-pull.ts \
  *     --image ghcr.io/looptroop-ai/looptroop \
- *     --version 0.5.0 --arch amd64 --expect-digest sha256:<amd64 manifest>
+ *     --version 9.9.9 --arch amd64 --expect-digest sha256:<amd64 manifest>
  *
  * By tag rather than by the digest being asserted, because the tag is the thing
  * that could be wrong. Checking the index first is what makes pulling the tag a

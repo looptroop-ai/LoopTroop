@@ -41,6 +41,15 @@ const ALLOWED_PATHS = [
   // including every other test.
   'tests/releaseState.test.ts',
   'tests/versionBump.test.ts',
+  // Fixtures for the container tag rules and the release-notes splice, for the
+  // same reason. A case proving that a prerelease must not take `latest`, or
+  // that a repair must not drag the series backwards, has to name the versions
+  // on both sides of the comparison; a case proving the notes carry the right
+  // pull command has to name the version being published. None of them is a
+  // reference to the version this package is on, and a bump must not turn a
+  // fixture into a release blocker.
+  'tests/containerTags.test.ts',
+  'tests/containerNotes.test.ts',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

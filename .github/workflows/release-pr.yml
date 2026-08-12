@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 0.5.0 or 0.5.0-rc.1'
+        description: 'Version to release, as MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-rc.N'
         required: true
         type: string
       dry_run:

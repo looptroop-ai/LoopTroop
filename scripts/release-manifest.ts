@@ -2,7 +2,7 @@
 /**
  * Records exactly which bytes a release is made of.
  *
- *   npm run release:manifest -- looptroop-0.5.0.tgz
+ *   npm run release:manifest -- looptroop-9.9.9.tgz
  *
  * The tarball is packed once and then travels between jobs, machines and
  * platforms as an artifact. Every job that consumes it recomputes these hashes

@@ -4,7 +4,7 @@
  * manifests a build already pushed by digest.
  *
  *   node scripts/container-manifest.ts \
- *     --version 0.5.0 --dist-tag latest --revision <commit> \
+ *     --version 9.9.9 --dist-tag latest --revision <commit> \
  *     --image docker.io/looptroopai/looptroop \
  *     --image ghcr.io/looptroop-ai/looptroop \
  *     --digest sha256:<amd64> --digest sha256:<arm64>

@@ -12,7 +12,7 @@
  * gets a graceful exit rather than a SIGKILL.
  *
  *   node scripts/smoke-container.mjs --image looptroop:smoke
- *   node scripts/smoke-container.mjs --image ghcr.io/…/looptroop@sha256:… --version 0.5.0
+ *   node scripts/smoke-container.mjs --image ghcr.io/…/looptroop@sha256:… --version 9.9.9
  *
  * Everything runs inside the container, over `docker exec`. Nothing is requested
  * from the host: the daemon binds the container's own loopback on purpose, so a

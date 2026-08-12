@@ -4,7 +4,7 @@
  *
  *   node scripts/container-check-anonymous.ts \
  *     --image docker.io/looptroopai/looptroop \
- *     --version 0.5.0 --index-digest sha256:<index>
+ *     --version 9.9.9 --index-digest sha256:<index>
  *
  * That is the point of it. A private repository is inspectable by the account
  * that pushed to it and by nobody else, so an authenticated check would pass

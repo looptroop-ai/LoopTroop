@@ -2,8 +2,8 @@
 /**
  * Writes one release version into every file that must agree on it.
  *
- *   npm run release:bump -- 0.5.0
- *   npm run release:bump -- 0.5.0-rc.1 --dry-run
+ *   npm run release:bump -- 9.9.9
+ *   npm run release:bump -- 9.9.9-rc.1 --dry-run
  *
  * Four files, because `scripts/verify-version-single-source.mjs` is a required
  * check on the release pull request and reads all of them:

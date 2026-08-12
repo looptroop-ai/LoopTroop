@@ -16,7 +16,7 @@
 
 /** What the release workflow can observe about one version. */
 export interface ReleaseFacts {
-  /** Version under release, e.g. `0.5.0` or `0.5.0-rc.1`. */
+  /** Version under release, e.g. `9.9.9` or `9.9.9-rc.1`. */
   version: string
   /** The version in package.json at the commit being released. */
   manifestVersion: string

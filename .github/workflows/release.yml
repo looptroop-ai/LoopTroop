@@ -978,14 +978,19 @@ jobs:
       #
       # `version` is pinned like every other tool in this workflow: multiple
       # exporters need buildx >= 0.13, and an unpinned client is the kind of
-      # drift that surfaces mid-release. `cache-binary: false` because a release
-      # should install the version named here rather than whatever a cache entry
-      # holds, and this job holds registry push credentials.
+      # drift that surfaces mid-release.
+      #
+      # The binary is cached. It was not, on the reasoning that a release should
+      # install the version named here rather than whatever a cache entry holds —
+      # but the action's cache key is the version spec, so an entry can only ever
+      # be this version, and turning the cache off made every release depend on a
+      # fresh download from GitHub's release CDN. That download is what failed on
+      # the first real release: two retries, `socket hang up`, and the arm64 leg
+      # was lost before it built anything.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           version: v0.36.1
-          cache-binary: false
 
       # `--provenance=false` is load-bearing, not a preference. With provenance
       # on, buildx wraps even a single-platform build in an index to carry the
@@ -1505,12 +1510,16 @@ jobs:
             echo "  artefacts for this run have expired."
           } > /tmp/issue.md
 
-          existing=$(gh issue list --state open --search "\"${title}\" in:title" \
+          # --repo on every call: this job deliberately has no checkout, and
+          # without a git remote to read `gh` cannot tell which repository it is
+          # talking about. It failed here on the first real release — the one
+          # job whose entire purpose is to make a partial failure visible.
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
             --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -1)
           if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --body-file /tmp/issue.md
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file /tmp/issue.md
           else
-            gh issue create --title "${title}" --body-file /tmp/issue.md
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file /tmp/issue.md
           fi
 
       - name: Fail the run if any stage failed

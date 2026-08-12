@@ -300,11 +300,13 @@ jobs:
           printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io \
             --username "${GITHUB_ACTOR}" --password-stdin
 
+      # Cached, for the reason spelled out in release.yml: an uncached setup
+      # makes every run depend on a fresh CDN download, which is exactly how the
+      # arm64 leg of the first release was lost.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           version: v0.36.1
-          cache-binary: false
 
       # `--provenance=false` and `push-by-digest=true` for the same reasons as in
       # release.yml: provenance would wrap a single-platform build in an index

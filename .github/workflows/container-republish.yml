@@ -495,18 +495,19 @@ jobs:
         with:
           node-version: 24.15.0
 
-      # Add a second invocation with `--image "${GHCR_IMAGE}"` once the GHCR
-      # package has been made public by hand; see release.yml for why it is not
-      # here yet.
-      - name: Docker Hub serves the release anonymously
+      # Both registries; see release.yml for why this is anonymous.
+      - name: Both registries serve the release anonymously
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
         run: |
-          node scripts/container-check-anonymous.ts \
-            --image "${DH_IMAGE}" \
-            --version "${VERSION}" \
-            --index-digest "${INDEX_DIGEST}"
+          set -euo pipefail
+          for image in "${DH_IMAGE}" "${GHCR_IMAGE}"; do
+            node scripts/container-check-anonymous.ts \
+              --image "${image}" \
+              --version "${VERSION}" \
+              --index-digest "${INDEX_DIGEST}"
+          done
 
       - name: Log in to GHCR
         env:

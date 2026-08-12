@@ -267,6 +267,121 @@ jobs:
   # ACL an administrator can take ownership around — machinery enough to become
   # its own source of flakes, for a property that is not platform-specific.
   #
+  # The two installer wrappers are what looptroop.ovh/install serves, and the
+  # core they embed is unit-tested. What is not covered by that is the wrappers
+  # themselves: a broken heredoc, a missing `param` block, or a PowerShell
+  # here-string that swallowed its terminator all pass the unit tests and fail on
+  # a user's first command. `--tarball`, not the network path, because hitting
+  # the GitHub API from every runner on every push is slow and rate-limited; the
+  # network path is proved once, against a real release.
+  smoke-installer:
+    name: Installer script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Install through the real installer wrapper
+        run: node scripts/smoke-installer.mjs
+
+  # The bundle the managed package channels will install. It is resolved and
+  # archived once, on Linux, and then unpacked by Homebrew on macOS and by Scoop
+  # and Chocolatey on Windows — so it is built here exactly once too, and the
+  # same bytes are carried to the other two runners.
+  bundle:
+    name: Bundle (build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # Twice, from clean staging directories, requiring identical bytes. A
+      # formula, a Scoop manifest and a nuspec each carry the bundle's hash, so
+      # an archive whose digest moves for reasons unrelated to its contents
+      # turns "this hash is the release" into something that cannot be checked.
+      - name: Build the bundle twice and require identical bytes
+        run: |
+          set -euo pipefail
+          node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-a"
+          node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-b"
+          a=$(sha256sum "${RUNNER_TEMP}"/bundle-a/*.tar.gz | cut -d' ' -f1)
+          b=$(sha256sum "${RUNNER_TEMP}"/bundle-b/*.tar.gz | cut -d' ' -f1)
+          if [ "${a}" != "${b}" ]; then
+            echo "::error::Two builds of this commit produced different bundles (${a} vs ${b})."
+            exit 1
+          fi
+          echo "Reproducible: ${a}"
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle-a/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Downloads the Linux-built bundle and runs it. The portability gate in
+  # build-bundle.mjs proves no package *declares* itself platform-specific;
+  # only this proves the tree actually executes. Without it the first machine to
+  # run those node_modules on macOS is a user's.
+  bundle-runs:
+    name: Bundle runs (${{ matrix.os }})
+    needs: [bundle]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # No `npm ci`: the whole claim is that this archive needs nothing but Node.
+      - name: Unpack it and drive the CLI
+        shell: bash
+        run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
   # that choice is the same on all three platforms. What differs per platform is

@@ -108,6 +108,8 @@ const serverIntegrationTests = [
   'tests/cleanCommand.test.ts',
   // Reads the real database module, which siblings replace with a mock.
   'tests/doctorCommand.test.ts',
+  // Starts an HTTP server and spawns the installer as a child process.
+  'tests/installer.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
 

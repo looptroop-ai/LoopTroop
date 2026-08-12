@@ -10,11 +10,16 @@
  * immutable.
  *
  * Optionally `--registry-integrity <sha512-…>` to compare what npm reports for
- * an already-published version against the same manifest.
+ * an already-published version against the same manifest, and `--assets-dir
+ * <dir>` to check every other asset the release carries — the bundle the
+ * managed package channels install and the two installer scripts — against the
+ * digests the same manifest records for them.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+import type { ReleaseManifest } from './release-assets.ts'
+import { digestedAssets } from './release-assets.ts'
 
 function fail(message: string): never {
   process.stderr.write(`::error::${message}\n`)
@@ -31,18 +36,26 @@ const registryIndex = args.indexOf('--registry-integrity')
 const registryIntegrity = registryIndex === -1 ? null : args[registryIndex + 1] ?? null
 const consumed = new Set(registryIndex === -1 ? [] : [registryIndex, registryIndex + 1])
 
+const assetsIndex = args.indexOf('--assets-dir')
+const assetsDir = assetsIndex === -1 ? null : args[assetsIndex + 1] ?? null
+if (assetsIndex !== -1) {
+  if (assetsDir === null || assetsDir.startsWith('--')) fail('--assets-dir needs a path.')
+  consumed.add(assetsIndex)
+  consumed.add(assetsIndex + 1)
+}
+
 const positional = args.filter((value, index) => !consumed.has(index) && !value.startsWith('--'))
 if (positional.length !== 2) {
-  fail('Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json> [--registry-integrity sha512-…]')
+  fail('Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json> [--registry-integrity sha512-…] [--assets-dir <dir>]')
 }
 
 const [tarballArg, manifestArg] = positional as [string, string]
 const tarballPath = resolve(tarballArg)
 const manifestPath = resolve(manifestArg)
 
-let manifest: { version: string, tarball: string, bytes: number, sha256: string, integrity: string }
+let manifest: ReleaseManifest
 try {
-  manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ReleaseManifest
 } catch {
   fail(`Cannot read the release manifest at ${manifestPath}.`)
 }
@@ -76,6 +89,34 @@ if (registryIntegrity !== null && registryIntegrity !== manifest.integrity) {
   failures.push(`the registry reports ${registryIntegrity}, the manifest records ${manifest.integrity}`)
 }
 
+// Every other asset the release carries, from the same manifest. The tarball is
+// the one npm consumes and so gets the checks above; these are the ones a
+// package channel installs, and a bundle that travelled with the wrong manifest
+// would otherwise be caught only by whoever installed it.
+const otherAssets: string[] = []
+if (assetsDir !== null) {
+  for (const [name, expected] of Object.entries(digestedAssets(manifest))) {
+    if (name === manifest.tarball) continue
+
+    let contents: Buffer
+    try {
+      contents = readFileSync(join(resolve(assetsDir), name))
+    } catch {
+      failures.push(`${name} is recorded in the manifest but missing from ${assetsDir}`)
+      continue
+    }
+
+    const assetSha = createHash('sha256').update(contents).digest('hex')
+    if (contents.length !== expected.bytes) {
+      failures.push(`${name} is ${contents.length} bytes, the manifest records ${expected.bytes}`)
+    }
+    if (assetSha !== expected.sha256) {
+      failures.push(`${name} has sha256 ${assetSha}, the manifest records ${expected.sha256}`)
+    }
+    otherAssets.push(`  ${name.padEnd(34)} ${assetSha}`)
+  }
+}
+
 if (failures.length > 0) {
   process.stderr.write(`\nFAIL: ${manifest.tarball} is not the artifact this release built.\n\n`)
   for (const failure of failures) process.stderr.write(`  ${failure}\n`)
@@ -90,5 +131,6 @@ process.stdout.write([
   `  sha256      ${sha256}`,
   `  integrity   ${integrity}`,
   registryIntegrity === null ? '' : `  registry    ${registryIntegrity} (matches)`,
+  ...(otherAssets.length === 0 ? [] : ['  and every other asset this release carries:', ...otherAssets]),
   '',
 ].filter(Boolean).join('\n'))

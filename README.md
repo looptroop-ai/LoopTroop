@@ -187,6 +187,26 @@ closes. It serves the interface and the API from one address on port 3000, which
 Add a local repository with a GitHub origin, create a ticket, and follow the
 review gates.
 
+### Or install with a script
+
+If you would rather not think about which npm tarball to fetch, an installer
+resolves the newest release, checks the download against the checksum that
+release published, and hands it to npm:
+
+```bash
+curl -fsSL https://www.looptroop.ovh/install | sh
+```
+
+```powershell
+irm https://www.looptroop.ovh/install.ps1 | iex
+```
+
+It needs Node already installed and never tries to install it for you, never
+asks for sudo, and writes nothing outside npm's global prefix. Because it
+installs through npm, `npm install -g looptroop@latest` and `npm uninstall -g
+looptroop` keep working exactly as they would have. Pin a version with
+`--version X.Y.Z` (`-Version` on Windows).
+
 ### Run it in a container
 
 Published for `linux/amd64` and `linux/arm64`. Docker is the only thing the host

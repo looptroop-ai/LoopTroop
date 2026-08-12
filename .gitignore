@@ -9,6 +9,10 @@ site/
 # smoke test packs one on every run, so without this a 3.6 MB artefact is one
 # stray `git add` away from the history.
 looptroop-*.tgz
+# The bundle the managed package channels install, built into the checkout by
+# scripts/build-bundle.mjs the same way `npm pack` writes its tarball here.
+looptroop-*-bundle.tar.gz
+dist-bundle/
 
 # Runtime/state for this app
 .looptroop/

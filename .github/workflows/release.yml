@@ -1174,6 +1174,9 @@ jobs:
         env:
           VERSION: ${{ needs.detect.outputs.version }}
           DIST_TAG: ${{ needs.detect.outputs.dist_tag }}
+          # The commit the image was built from and labelled with. container-build
+          # has already refused to build unless the artefact came from this sha.
+          REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
           # amd64 first, always: the index bytes depend on the order, so a fixed
@@ -1182,6 +1185,7 @@ jobs:
           node scripts/container-manifest.ts \
             --version "${VERSION}" \
             --dist-tag "${DIST_TAG}" \
+            --revision "${REVISION}" \
             --image "${DH_IMAGE}" \
             --image "${GHCR_IMAGE}" \
             --digest "$(cat digest-amd64.txt)" \

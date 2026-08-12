@@ -170,6 +170,44 @@ export function servesExactly(raw: string, built: string[]): { matches: boolean;
   }
 }
 
+/** What an image says about itself, from the labels the Dockerfile sets. */
+export interface Provenance {
+  version: string | null
+  revision: string | null
+}
+
+/** The OCI labels out of an image config, as `imagetools inspect --format
+ * '{{json .Image}}'` prints it for a single-platform manifest. */
+export function readImageProvenance(rawConfig: string): Provenance {
+  const config: unknown = JSON.parse(rawConfig)
+  const labels = (config as { config?: { Labels?: Record<string, unknown> } }).config?.Labels ?? {}
+  const read = (key: string): string | null => (typeof labels[key] === 'string' ? labels[key] : null)
+  return {
+    version: read('org.opencontainers.image.version'),
+    revision: read('org.opencontainers.image.revision'),
+  }
+}
+
+/**
+ * Whether an already-published image is this release's own.
+ *
+ * The question a repair has to answer that bytes alone cannot: a rebuild of the
+ * same release does not reproduce the same digests, because the base image and
+ * the Debian and GitHub CLI repositories it installs from all move. So an index
+ * already sitting on the version tag with digests this run did not produce is
+ * either the earlier publish of this very release — the thing a repair exists to
+ * finish — or something else entirely, and the two have to be told apart before
+ * anything is written.
+ *
+ * The labels answer it, because the image carries the version and the commit it
+ * was built from and nothing else in this repository writes that tag. Both must
+ * match: a version alone would accept an image built from another commit.
+ */
+export function isOurRelease(provenance: Provenance, version: string, revision: string): boolean {
+  if (provenance.version === null || provenance.revision === null) return false
+  return provenance.version === version && provenance.revision === revision
+}
+
 /** The manifest an index lists for one platform, or null when it lists none. */
 export function platformDigest(raw: string, os: string, architecture: string): string | null {
   const { platforms } = parseIndex(raw)

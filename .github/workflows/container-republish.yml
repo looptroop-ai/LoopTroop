@@ -20,6 +20,16 @@
 # Release assets are used rather than workflow artefacts on purpose: artefacts
 # expire, assets do not, which is what lets this run months after the release it
 # repairs.
+#
+# A rebuild does not reproduce the released digests, and is not expected to. The
+# base image moves, and so do the Debian and GitHub CLI package repositories the
+# image installs from, so the same commit built a week later is a different
+# image. That is why the tagging step decides what to publish by reading the
+# labels on whatever is already on the version tag rather than by comparing
+# digests: where an earlier publish of this release exists, its bytes are the
+# released ones and this run's build is discarded, with the registries that are
+# missing the tag filled from the one that has it. Only when no registry has the
+# version at all does the freshly built image become the release.
 name: Republish container image
 
 on:
@@ -381,11 +391,14 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           DIST_TAG: ${{ needs.prepare.outputs.dist_tag }}
+          # The released commit, not the dispatch ref.
+          REVISION: ${{ needs.prepare.outputs.commit }}
         run: |
           set -euo pipefail
           node scripts/container-manifest.ts \
             --version "${VERSION}" \
             --dist-tag "${DIST_TAG}" \
+            --revision "${REVISION}" \
             --image "${DH_IMAGE}" \
             --image "${GHCR_IMAGE}" \
             --digest "$(cat digest-amd64.txt)" \

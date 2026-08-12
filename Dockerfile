@@ -84,10 +84,13 @@
 # ---------------------------------------------------------------------------
 # Mounting a project
 # ---------------------------------------------------------------------------
+# At its own absolute path, not a tidy one. LoopTroop hands OpenCode the
+# worktree path under <project>/.looptroop/worktrees/, and an OpenCode running
+# outside this container has to be able to open that exact string.
 #   docker run --network host \
 #     -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
 #     -v looptroop-config:/home/node/.looptroop \
-#     -v /path/to/project:/workspace/project \
+#     -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
 #     looptroop
 #
 # The container runs as uid 1000. If your host user is a different uid, git
@@ -99,7 +102,7 @@
 #     -e HOME=/tmp \
 #     -e LOOPTROOP_CONFIG_DIR=/workspace/.looptroop \
 #     -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
-#     -v /path/to/project:/workspace/project \
+#     -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
 #     -v "$HOME/.looptroop:/workspace/.looptroop" \
 #     looptroop
 #
@@ -107,7 +110,9 @@
 # home directory should not find one it cannot write to.
 #
 # Commits carry their identity per invocation via `git -c`, so no global git
-# config is needed. `gh` does need credentials: pass `-e GH_TOKEN=…`.
+# config is needed. `gh` does need credentials: pass `-e GH_TOKEN=…`, which the
+# push also uses through `gh auth git-credential` — git does not read GH_TOKEN
+# on its own, and nothing else here supplies a credential.
 #
 # ---------------------------------------------------------------------------
 # What is not in the image

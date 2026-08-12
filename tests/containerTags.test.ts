@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   classifyRegistryFailure,
+  isOurRelease,
   isRateLimited,
   parseIndex,
   planTags,
   platformDigest,
+  readImageProvenance,
   servesExactly,
   tagsThatMustNotMove,
 } from '../scripts/container-tags'
@@ -166,5 +168,45 @@ describe('platformDigest', () => {
   it('is null when the index carries no such platform', () => {
     expect(platformDigest(raw, 'linux', 'ppc64le')).toBeNull()
     expect(platformDigest(raw, 'windows', 'amd64')).toBeNull()
+  })
+})
+
+describe('readImageProvenance', () => {
+  const config = (labels: Record<string, string> | undefined) =>
+    JSON.stringify({ architecture: 'amd64', os: 'linux', config: labels ? { Labels: labels } : {} })
+
+  it('reads the version and revision the image was labelled with', () => {
+    const raw = config({
+      'org.opencontainers.image.version': '0.5.0',
+      'org.opencontainers.image.revision': 'c'.repeat(40),
+      'org.opencontainers.image.title': 'LoopTroop',
+    })
+    expect(readImageProvenance(raw)).toEqual({ version: '0.5.0', revision: 'c'.repeat(40) })
+  })
+
+  it('is null for each label an image does not carry', () => {
+    expect(readImageProvenance(config(undefined))).toEqual({ version: null, revision: null })
+    expect(readImageProvenance(config({ 'org.opencontainers.image.version': '0.5.0' })).revision).toBeNull()
+  })
+})
+
+describe('isOurRelease', () => {
+  const SHA = 'c'.repeat(40)
+
+  it('accepts an earlier publish of the same version from the same commit', () => {
+    // A rebuild of a released version has different digests by design — the base
+    // image and the package repositories move — so the labels are what say
+    // whether the image already on the tag is this release's own.
+    expect(isOurRelease({ version: '0.5.0', revision: SHA }, '0.5.0', SHA)).toBe(true)
+  })
+
+  it('refuses an image built from another commit, or for another version', () => {
+    expect(isOurRelease({ version: '0.5.0', revision: 'd'.repeat(40) }, '0.5.0', SHA)).toBe(false)
+    expect(isOurRelease({ version: '0.4.1', revision: SHA }, '0.5.0', SHA)).toBe(false)
+  })
+
+  it('refuses an unlabelled image rather than assuming it is ours', () => {
+    expect(isOurRelease({ version: null, revision: null }, '0.5.0', SHA)).toBe(false)
+    expect(isOurRelease({ version: '0.5.0', revision: null }, '0.5.0', SHA)).toBe(false)
   })
 })

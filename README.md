@@ -205,6 +205,21 @@ serving an interface that cannot run a single coding operation, so pass
 `-e LOOPTROOP_OPENCODE_BASE_URL=…` pointing at a server you run — or
 `-e LOOPTROOP_OPENCODE_MODE=mock` to look around without one.
 
+That server has to be able to open the files LoopTroop gives it. LoopTroop works
+in git worktrees under `<project>/.looptroop/worktrees/` and asks OpenCode to
+open one **by absolute path**, so the path has to mean the same thing on both
+sides. Mounting the project somewhere tidy like `/workspace/project` breaks that
+the moment OpenCode is not in the same container: it is handed a directory that
+does not exist on its own filesystem. So mount the project at its own path:
+
+```bash
+PROJECT=/absolute/path/to/project
+```
+
+and use `-v "$PROJECT":"$PROJECT"`, as below. If you would rather keep a tidy
+path inside the container, run OpenCode as a sidecar with the identical mount, so
+both processes see the same string.
+
 **A way to reach it.** The daemon binds `127.0.0.1`, which inside a container is
 the container's own loopback, so publishing a port alone connects to nothing.
 That default is the point: this is a control plane that executes code on the
@@ -217,7 +232,7 @@ real:
 docker run --network host \
   -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
   -v looptroop-config:/home/node/.looptroop \
-  -v /path/to/project:/workspace/project \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
   looptroopai/looptroop:latest
 ```
 
@@ -233,7 +248,7 @@ docker run -p 127.0.0.1:3000:3000 \
   -e LOOPTROOP_API_TOKEN="$(openssl rand -hex 32)" \
   -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 \
   -v looptroop-config:/home/node/.looptroop \
-  -v /path/to/project:/workspace/project \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
   looptroopai/looptroop:latest
 ```
 
@@ -263,7 +278,7 @@ docker run --network host --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e LOOPTROOP_CONFIG_DIR=/workspace/.looptroop \
   -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
-  -v /path/to/project:/workspace/project \
+  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
   -v "$HOME/.looptroop:/workspace/.looptroop" \
   looptroopai/looptroop:latest
 ```
@@ -272,7 +287,10 @@ docker run --network host --user "$(id -u):$(id -g)" \
 write into a home directory it does not own.
 
 Commits carry their identity per invocation, so no global git config is needed.
-`gh` does need credentials for the pull-request step: pass `-e GH_TOKEN=…`.
+`gh` does need credentials for the pull-request step: pass `-e GH_TOKEN=…`. The
+push uses the same token, through `gh`'s credential helper — git does not read
+`GH_TOKEN` itself, and nothing else in the image supplies a credential, so
+without that the pull request would be prepared and never pushed.
 
 ### Working on LoopTroop itself
 

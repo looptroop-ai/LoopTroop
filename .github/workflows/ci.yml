@@ -613,6 +613,18 @@ jobs:
           fi
           node scripts/smoke-binary.mjs --archive "${archive}"
 
+      # The installer's `--binary` mode against the real executable, including
+      # an upgrade over a running daemon. The unit tests drive a shell script
+      # standing in for the binary, which cannot reproduce the two things that
+      # bite here: a file Windows refuses to overwrite while it runs, and a zip
+      # rather than a tarball.
+      - name: Install it with the installer, and upgrade over a running daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(find "${RUNNER_TEMP}/bin-a" -maxdepth 1 \( -name 'looptroop-*.tar.gz' -o -name 'looptroop-*.zip' \) | head -1)
+          node scripts/smoke-binary-install.mjs --archive "${archive}"
+
       - name: Upload the archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

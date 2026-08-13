@@ -20,10 +20,15 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // `looptroop stop` first, because Windows will not replace a running
   // executable and the daemon holds this one open.
   winget: 'looptroop stop && winget upgrade LoopTroopAI.LoopTroop',
-  // A directly downloaded binary was put wherever its owner chose, and nothing
-  // records where. Re-running the installer is the one instruction that is
-  // true regardless.
-  binary: 'Re-run the installer from https://www.looptroop.ovh/install',
+  // The installer's own `--binary` mode, which replaces the executable in
+  // place: it stops the daemon, swaps the file, checks the new one runs, rolls
+  // back if it does not, and starts the daemon again if it had been running.
+  //
+  // Windows gets the scriptblock form rather than `irm | iex`, because a piped
+  // script cannot be given a parameter and this one needs `-Binary`.
+  binary: process.platform === 'win32'
+    ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+    : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
   container: 'docker pull looptroopai/looptroop:latest',
   source: 'git pull && npm install && npm run build',
   unknown: 'See https://www.looptroop.ovh for upgrade instructions',

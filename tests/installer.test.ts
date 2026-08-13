@@ -1,18 +1,34 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest'
+import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  rmSync, symlinkSync, utimesSync, writeFileSync,
+} from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath } from '../scripts/installer-core.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CORE = join(repoRoot, 'scripts', 'installer-core.mjs')
 
 const TARBALL_BODY = Buffer.from('not really a tarball, but it hashes like one')
 const TARBALL_SHA = createHash('sha256').update(TARBALL_BODY).digest('hex')
+
+/**
+ * The target this machine would install a standalone executable for, and
+ * whether it can be exercised end to end here.
+ *
+ * The archive these tests build carries a shell script standing in for the
+ * executable, which Windows cannot run as `looptroop.exe` — so the transaction
+ * itself is proved on POSIX here and on all four targets by
+ * `scripts/smoke-binary-install.mjs`, which drives the real one.
+ */
+const TARGET = (binaryTarget(process.platform, process.arch, detectLibc()) as { target?: string }).target
+const canInstallBinary = TARGET !== undefined && process.platform !== 'win32'
 
 interface FixtureRelease {
   tag_name: string
@@ -30,7 +46,17 @@ const RELEASES: FixtureRelease[] = [
   { tag_name: 'v9.9.9', draft: true, assets: [{ name: 'release-manifest.json' }, { name: 'looptroop-9.9.9.tgz' }] },
   { tag_name: 'v0.6.1', assets: [] },
   { tag_name: 'v0.6.0-rc.1', prerelease: true, assets: [{ name: 'release-manifest.json' }, { name: 'looptroop-0.6.0-rc.1.tgz' }] },
-  { tag_name: 'v0.5.9', assets: [{ name: 'release-manifest.json' }, { name: 'looptroop-0.5.9.tgz' }] },
+  {
+    tag_name: 'v0.5.9',
+    assets: [
+      { name: 'release-manifest.json' },
+      { name: 'looptroop-0.5.9.tgz' },
+      // Only this release carries a standalone archive, which is the shape of
+      // the real thing: `--binary` has to walk past newer releases that predate
+      // the executables rather than resolve to one it cannot install from.
+      ...(TARGET === undefined ? [] : [{ name: binaryAssetName('0.5.9', TARGET) }]),
+    ],
+  },
   { tag_name: 'v0.5.8', assets: [{ name: 'looptroop-0.5.8.tgz' }] },
 ]
 
@@ -43,6 +69,10 @@ describe('installer core', () => {
   let corruptDownload: false | 'substituted' | 'truncated' = false
   /** `null` reproduces a manifest written before the floor was recorded. */
   let engines: { node?: string, npm?: string } | null = null
+  /** The standalone archive this release carries, if the test wants one. */
+  let archive: { name: string, body: Buffer, sha256: string } | null = null
+  /** Set to drop the archive's digest from the manifest while still serving it. */
+  let omitArchiveDigest = false
 
   function manifestFor(version: string) {
     return {
@@ -52,6 +82,12 @@ describe('installer core', () => {
       bytes: TARBALL_BODY.length,
       sha256: TARBALL_SHA,
       ...(engines === null ? {} : { engines }),
+      assets: {
+        [`looptroop-${version}.tgz`]: { bytes: TARBALL_BODY.length, sha256: TARBALL_SHA },
+        ...(archive === null || omitArchiveDigest
+          ? {}
+          : { [archive.name]: { bytes: archive.body.length, sha256: archive.sha256 } }),
+      },
     }
   }
 
@@ -93,6 +129,11 @@ describe('installer core', () => {
         if (name === 'release-manifest.json') {
           response.writeHead(200, { 'content-type': 'application/json' })
           response.end(JSON.stringify(manifestFor(tag.replace(/^v/, ''))))
+          return
+        }
+        if (archive !== null && name === archive.name) {
+          response.writeHead(200, { 'content-type': 'application/octet-stream' })
+          response.end(corruptDownload === 'substituted' ? Buffer.alloc(archive.body.length, 0x78) : archive.body)
           return
         }
         response.writeHead(200, { 'content-type': 'application/octet-stream' })
@@ -197,7 +238,7 @@ describe('installer core', () => {
   })
 
   it('refuses an unknown option rather than ignoring it', async () => {
-    const result = await runInstaller(['--dry-run', '--prefix', '/opt'])
+    const result = await runInstaller(['--dry-run', '--global'])
 
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('Unknown option')
@@ -323,6 +364,285 @@ describe('installer core', () => {
 
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('No such tarball')
+  })
+
+  /**
+   * The standalone executable, which the installer unpacks itself.
+   *
+   * The npm path hands the dangerous parts to npm. This one owns them, and the
+   * case that matters is not a first install but an *upgrade*: somebody already
+   * running LoopTroop, whose working copy must survive anything that goes wrong
+   * here. Every test below is about that copy.
+   */
+  describe('--binary', () => {
+    /** Stands in for the executable. Answers the four things the installer asks. */
+    function stubProgram(version: string) {
+      return [
+        '#!/bin/sh',
+        'case "$1" in',
+        `  --version) echo "${version}" ;;`,
+        // Statefulness via a file, so `stop` is observable and `status` can
+        // disagree with itself before and after.
+        '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;',
+        '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;',
+        '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;',
+        'esac',
+        '',
+      ].join('\n')
+    }
+
+    /** A release archive with the layout `build-binary.mjs` produces. */
+    function buildArchive(version: string, program: string) {
+      const dir = mkdtempSync(join(tmpdir(), 'looptroop-archive-'))
+      tempDirs.push(dir)
+      const name = `looptroop-${version}-${TARGET}`
+      mkdirSync(join(dir, name))
+      writeFileSync(join(dir, name, 'looptroop'), program)
+      chmodSync(join(dir, name, 'looptroop'), 0o755)
+      writeFileSync(join(dir, name, 'LICENSE.node.txt'), 'Node.js is MIT licensed.')
+
+      const out = join(dir, `${name}.tar.gz`)
+      const packed = spawnSync('tar', ['-czf', out, '-C', dir, name], { encoding: 'utf8' })
+      expect(packed.status, packed.stderr).toBe(0)
+
+      const body = readFileSync(out)
+      return { name: `${name}.tar.gz`, body, sha256: createHash('sha256').update(body).digest('hex') }
+    }
+
+    function freshPrefix() {
+      const dir = mkdtempSync(join(tmpdir(), 'looptroop-prefix-'))
+      tempDirs.push(dir)
+      return dir
+    }
+
+    beforeEach(() => {
+      archive = canInstallBinary ? buildArchive('0.5.9', stubProgram('0.5.9')) : null
+      omitArchiveDigest = false
+    })
+
+    afterEach(() => {
+      archive = null
+    })
+
+    /**
+     * Refusing is an answer, not a failure mode. Every one of these platforms
+     * has a working LoopTroop through another channel, and the only useful
+     * thing to say is which one.
+     */
+    it.each([
+      ['darwin', 'x64', 'glibc', 'Intel Macs', 'brew install'],
+      ['linux', 'x64', 'musl', 'musl systems such as Alpine', 'docker run'],
+      ['win32', 'arm64', 'glibc', 'win32-arm64', 'npm install -g looptroop'],
+      ['freebsd', 'x64', 'glibc', 'freebsd-x64', 'npm install -g looptroop'],
+    ])('refuses %s-%s (%s) by naming what to use instead', (platform, arch, libc, mention, remedy) => {
+      const decision = binaryTarget(platform, arch, libc) as { refusal?: string[] }
+
+      expect(decision.refusal?.join('\n')).toContain(mention)
+      expect(decision.refusal?.join('\n')).toContain(remedy)
+    })
+
+    it('names an archive the way a release names it', () => {
+      expect(binaryAssetName('1.2.3', 'linux-arm64')).toBe('looptroop-1.2.3-linux-arm64.tar.gz')
+      // Windows gets a zip, because that is what WinGet reads and what Windows
+      // unpacks without help.
+      expect(binaryAssetName('1.2.3', 'win-x64')).toBe('looptroop-1.2.3-win-x64.zip')
+    })
+
+    it('installs into its own directory rather than somewhere already on PATH', () => {
+      expect(defaultPrefix({}, '/home/someone')).toBe(join('/home/someone', '.looptroop'))
+      expect(defaultPrefix({ LOOPTROOP_INSTALL_DIR: '/opt/lt' }, '/home/someone')).toBe('/opt/lt')
+    })
+
+    it('knows whether its directory is on PATH', () => {
+      const path = ['/usr/bin', '/opt/lt/bin'].join(process.platform === 'win32' ? ';' : ':')
+
+      expect(onPath('/opt/lt/bin', path)).toBe(true)
+      // A trailing separator is the same directory, and saying otherwise would
+      // print PATH advice to somebody who does not need it.
+      expect(onPath('/opt/lt/bin/', path)).toBe(true)
+      expect(onPath('/opt/other/bin', path)).toBe(false)
+    })
+
+    it('refuses to combine with --tarball rather than picking one', async () => {
+      const result = await runInstaller(['--binary', '--tarball', '/tmp/x.tgz'])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('cannot be combined')
+    })
+
+    it('refuses --prefix without --binary, which would silently do nothing', async () => {
+      const result = await runInstaller(['--prefix', '/opt/lt'])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('applies only to --binary')
+    })
+
+    it.runIf(canInstallBinary)('says what it would do without touching the prefix', async () => {
+      const prefix = freshPrefix()
+      const result = await runInstaller(['--binary', '--dry-run', '--prefix', prefix])
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain(`would verify sha256 ${archive?.sha256}`)
+      expect(existsSync(join(prefix, 'bin'))).toBe(false)
+    })
+
+    it.runIf(canInstallBinary)('refuses a release that carries no executable for this target', async () => {
+      const result = await runInstaller(['--binary', '--version', '0.6.1', '--prefix', freshPrefix()])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(`carries no ${TARGET} executable`)
+    })
+
+    /**
+     * The manifest is what carries the checksum. Installing an archive without
+     * one would be trusting a download because of where it was hosted, which is
+     * the thing the npm path already refuses to do.
+     */
+    it.runIf(canInstallBinary)('refuses an archive the manifest records no checksum for', async () => {
+      omitArchiveDigest = true
+      const result = await runInstaller(['--binary', '--prefix', freshPrefix()])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('records no checksum')
+    })
+
+    it.runIf(canInstallBinary)('refuses bytes that do not match, and installs nothing', async () => {
+      corruptDownload = 'substituted'
+      const prefix = freshPrefix()
+      try {
+        const result = await runInstaller(['--binary', '--prefix', prefix])
+
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain('does not match the checksum')
+        expect(existsSync(join(prefix, 'bin', 'looptroop'))).toBe(false)
+      } finally {
+        corruptDownload = false
+      }
+    })
+
+    it.runIf(canInstallBinary)('installs the executable, and the licences that must travel with it', async () => {
+      const prefix = freshPrefix()
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: join(prefix, 'state'),
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain(`Verified sha256 ${archive?.sha256}`)
+
+      const installed = join(prefix, 'bin', 'looptroop')
+      expect(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+      // Shipping this archive redistributes Node, and Node's licence has to come
+      // with it. It goes beside the program, not inside a directory that is on
+      // somebody's PATH.
+      expect(existsSync(join(prefix, 'LICENSE.node.txt'))).toBe(true)
+      expect(existsSync(join(prefix, 'bin', 'LICENSE.node.txt'))).toBe(false)
+    })
+
+    it.runIf(canInstallBinary)('leaves no staging files behind', async () => {
+      const prefix = freshPrefix()
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: join(prefix, 'state') })
+
+      expect(readdirSync(join(prefix, 'bin'))).toEqual(['looptroop'])
+      expect(existsSync(join(prefix, '.install.lock'))).toBe(false)
+    })
+
+    /**
+     * The whole reason this mode is transactional. An executable that downloads
+     * whole, matches its checksum, and still cannot run here — wrong
+     * architecture, a signature the kernel refuses, a missing glibc symbol —
+     * passes every earlier check and fails at the only moment somebody is
+     * watching. Their working copy has to survive it.
+     */
+    it.runIf(canInstallBinary)('rolls back to the working copy when the new one does not run', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const installed = join(prefix, 'bin', 'looptroop')
+
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      // The same version, from an archive whose program is broken.
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('rolled back')
+      expect(result.stderr).toContain('previous version is back in place')
+      // The point of all of it: what they had still works.
+      expect(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+    })
+
+    it.runIf(canInstallBinary)('reports a first install that does not run, without claiming a rollback', async () => {
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      const result = await runInstaller(['--binary', '--prefix', freshPrefix()])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('does not run here')
+      expect(result.stderr).not.toContain('rolled back')
+    })
+
+    /**
+     * An upgrade must not turn into an outage. Somebody had a daemon running a
+     * second ago; leaving it stopped makes them notice and fix it themselves.
+     */
+    it.runIf(canInstallBinary)('stops a running daemon and starts it again afterwards', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      writeFileSync(stubState, '')
+
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('Stopping the running daemon')
+      expect(result.stdout).toContain('Starting it again')
+      expect(existsSync(stubState)).toBe(true)
+    })
+
+    it.runIf(canInstallBinary)('leaves a stopped daemon stopped', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.stdout).not.toContain('Starting it again')
+      expect(existsSync(stubState)).toBe(false)
+    })
+
+    /**
+     * Two installers in one directory is not hypothetical: it is what happens
+     * when somebody re-runs a curl pipe because the first looked stuck. The
+     * interleaving that costs you leaves no working executable at all.
+     */
+    it.runIf(canInstallBinary)('refuses to run while another install holds the lock', async () => {
+      const prefix = freshPrefix()
+      mkdirSync(prefix, { recursive: true })
+      writeFileSync(join(prefix, '.install.lock'), '999999 now\n')
+
+      const result = await runInstaller(['--binary', '--prefix', prefix])
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('Another install is already running')
+      // Still there: a refusal must not clear the lock it refused over.
+      expect(existsSync(join(prefix, '.install.lock'))).toBe(true)
+    })
+
+    it.runIf(canInstallBinary)('takes a lock old enough to be from a killed run', async () => {
+      const prefix = freshPrefix()
+      mkdirSync(prefix, { recursive: true })
+      const lock = join(prefix, '.install.lock')
+      writeFileSync(lock, '999999 ages ago\n')
+      const hoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+      utimesSync(lock, hoursAgo, hoursAgo)
+
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: join(prefix, 'state'),
+      })
+
+      expect(result.stdout).toContain('stale install lock')
+      expect(result.status).toBe(0)
+    })
   })
 })
 

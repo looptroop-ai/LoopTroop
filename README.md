@@ -229,6 +229,28 @@ checksum, and carries a build provenance attestation. Intel Macs are not among
 them: Node cannot build a single-file executable for that target, so use
 Homebrew or npm there.
 
+The installer will place one for you, into `~/.looptroop` unless you say
+otherwise:
+
+```bash
+curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary
+```
+
+Run the same command again to upgrade. It stops a running daemon before
+replacing the file, checks that the new executable actually runs, puts the old
+one back if it does not, and starts the daemon again if it had been running — so
+an upgrade that goes wrong leaves you with the version you already had rather
+than with nothing.
+
+Note that this still needs Node **to install**, because the installer is itself
+a Node program. What the executable removes is Node as a requirement to *run*
+LoopTroop. On a machine with no Node at all, download the archive from the
+releases page and unpack it yourself.
+
 Node is the one thing the other three will install for you: LoopTroop is declared
 as depending on it, so Homebrew pulls in `node@24` and Scoop and Chocolatey pull
 in `nodejs-lts` if your machine has no suitable Node. That is the normal contract

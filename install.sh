@@ -3,10 +3,12 @@
 #
 #   curl -fsSL https://www.looptroop.ovh/install | sh
 #   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --version 9.9.9
+#   curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
 #
-# Downloads the tarball a LoopTroop release published, checks it against the
-# checksum that release recorded, and installs it with npm. It never installs
-# Node, never asks for sudo, and never writes outside npm's global prefix.
+# Downloads what a LoopTroop release published, checks it against the checksum
+# that release recorded, and installs it: the npm package with npm by default,
+# or with `--binary` the standalone executable into ~/.looptroop. It never
+# installs Node and never asks for sudo.
 #
 # All of the actual work is in `scripts/installer-core.mjs`, copied verbatim
 # into the block at the bottom of this file. Node is required to install
@@ -26,10 +28,22 @@ node_missing() {
   echo "  ...or download an installer from https://nodejs.org/" >&2
   echo "" >&2
   echo "Then run this installer again. It will not install Node for you." >&2
+  # Including for `--binary`, which surprises people: the standalone executable
+  # carries its own Node, but this installer is itself a Node program, so it
+  # still needs one to run. Anybody with none at all wants the archive.
+  for arg in "$@"; do
+    if [ "$arg" = "--binary" ]; then
+      echo "" >&2
+      echo "That applies to --binary too: this installer is itself a Node program." >&2
+      echo "With no Node at all, download and unpack the archive yourself:" >&2
+      echo "  https://github.com/looptroop-ai/LoopTroop/releases/latest" >&2
+      break
+    fi
+  done
   exit 1
 }
 
-command -v node >/dev/null 2>&1 || node_missing
+command -v node >/dev/null 2>&1 || node_missing "$@"
 
 work=$(mktemp -d 2>/dev/null || mktemp -d -t looptroop-install)
 # `sh` has no scoped cleanup, and leaving the core behind in a world-readable
@@ -44,6 +58,7 @@ cat > "$core" <<'LOOPTROOP_INSTALLER_CORE'
  * Installs LoopTroop from a GitHub release, verifying the bytes first.
  *
  *   node installer-core.mjs [--version X.Y.Z] [--tarball PATH] [--dry-run]
+ *   node installer-core.mjs --binary [--prefix DIR]
  *
  * This is the whole installer. `install.sh` and `install.ps1` are wrappers that
  * find Node, write this file to a temporary directory and run it — everything
@@ -55,15 +70,28 @@ cat > "$core" <<'LOOPTROOP_INSTALLER_CORE'
  * and hashing costs nothing and avoids depending on curl, jq, shasum or
  * certutil being present and behaving the same on three platforms.
  *
- * What it installs is an npm tarball, installed with npm (D2a): `npm uninstall
- * -g looptroop` and `npm install -g looptroop@latest` keep working afterwards,
+ * By default it installs an npm tarball, with npm (D2a): `npm uninstall -g
+ * looptroop` and `npm install -g looptroop@latest` keep working afterwards,
  * which would not be true of an installer that unpacked files itself.
+ *
+ * `--binary` installs the standalone executable instead — one file carrying its
+ * own Node — into a directory this installer owns. That mode unpacks files
+ * itself, so it has to do by hand everything npm was doing for us: see
+ * `installBinary` for why each step is there.
+ *
+ * Note that `--binary` still needs Node *to install*, because these wrappers are
+ * Node programs. What it removes is Node as a requirement to **run** LoopTroop
+ * afterwards. Somebody with no Node at all downloads the archive from the
+ * releases page and unpacks it; there is nothing this script can do for them.
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, resolve } from 'node:path'
+import {
+  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  realpathSync, renameSync, rmSync, statSync, writeFileSync,
+} from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
@@ -106,7 +134,7 @@ function say(message) {
 // --- pure decisions -------------------------------------------------------
 
 export function parseArgs(argv) {
-  const options = { version: null, tarball: null, dryRun: false }
+  const options = { version: null, tarball: null, dryRun: false, binary: false, prefix: null }
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -121,12 +149,17 @@ export function parseArgs(argv) {
       case '--version': options.version = takeValue().replace(/^v/, ''); break
       case '--tarball': options.tarball = takeValue(); break
       case '--dry-run': options.dryRun = true; break
+      case '--binary': options.binary = true; break
+      case '--prefix': options.prefix = takeValue(); break
       case '--help':
       case '-h':
         say('Usage: install.sh [--version X.Y.Z] [--tarball PATH]')
+        say('       install.sh --binary [--version X.Y.Z] [--prefix DIR]')
         say('')
         say('  --version X.Y.Z  install exactly this release, prereleases included')
         say('  --tarball PATH   install an already-downloaded tarball, skipping the network')
+        say('  --binary         install the standalone executable instead of the npm package')
+        say(`  --prefix DIR     where --binary installs (default ${defaultPrefix()})`)
         process.exit(0)
         break
       default:
@@ -134,7 +167,131 @@ export function parseArgs(argv) {
     }
   }
 
+  // Two different installers, and `--tarball` names an npm tarball. Silently
+  // preferring one would install something other than what was asked for.
+  if (options.binary && options.tarball !== null) {
+    fail('--binary and --tarball cannot be combined.', '--tarball installs an npm tarball; --binary installs the standalone executable.')
+  }
+  if (options.prefix !== null && !options.binary) {
+    fail('--prefix applies only to --binary.', 'The npm install goes wherever npm\'s global prefix points; change it with `npm config set prefix`.')
+  }
+
   return options
+}
+
+/**
+ * The build of the standalone executable that runs here, or why there is none.
+ *
+ * Refusing is a first-class outcome rather than an error path. Every one of
+ * these platforms has a working LoopTroop through some other channel, so the
+ * answer a user needs is which one — not that this failed.
+ *
+ * `libc` is passed in rather than probed so the refusal can be tested from any
+ * machine; `detectLibc` supplies it in real use.
+ */
+export function binaryTarget(platform, arch, libc = 'glibc') {
+  const elsewhere = [
+    'LoopTroop still installs here through npm:',
+    '  npm install -g looptroop',
+  ]
+
+  if (platform === 'darwin' && arch === 'x64') {
+    return {
+      refusal: [
+        'There is no standalone executable for Intel Macs.',
+        'Node cannot build a single-file executable for darwin-x64 at all — the feature',
+        'supports arm64 only — so this is a gap in the runtime, not a build we skipped.',
+        '',
+        'On an Intel Mac, use Homebrew or npm:',
+        '  brew install looptroop-ai/tap/looptroop',
+        '  npm install -g looptroop',
+      ],
+    }
+  }
+
+  if (platform === 'linux' && libc === 'musl') {
+    return {
+      refusal: [
+        'There is no standalone executable for musl systems such as Alpine.',
+        'Node\'s single-file executables are built against glibc and will not run here.',
+        '',
+        ...elsewhere,
+        '',
+        'Or run the container image, which carries everything it needs:',
+        '  docker run looptroopai/looptroop:latest',
+      ],
+    }
+  }
+
+  const known = {
+    'linux-x64': 'linux-x64',
+    'linux-arm64': 'linux-arm64',
+    'darwin-arm64': 'darwin-arm64',
+    'win32-x64': 'win-x64',
+  }
+  const target = known[`${platform}-${arch}`]
+  if (target !== undefined) return { target }
+
+  return {
+    refusal: [
+      `There is no standalone executable for ${platform}-${arch}.`,
+      'The executables are built for linux-x64, linux-arm64, darwin-arm64 and win-x64.',
+      '',
+      ...elsewhere,
+    ],
+  }
+}
+
+/**
+ * glibc or musl.
+ *
+ * Node's own report carries the runtime glibc version on a glibc system and
+ * omits the field entirely on musl, which is the only detection that does not
+ * involve running `ldd` and parsing its output — and `ldd` is itself absent from
+ * a minimal musl image.
+ */
+export function detectLibc(report = process.report?.getReport?.()) {
+  if (process.platform !== 'linux') return 'glibc'
+  return report?.header?.glibcVersionRuntime ? 'glibc' : 'musl'
+}
+
+/** What a release calls the standalone archive for a target. */
+export function binaryAssetName(version, target) {
+  return `looptroop-${version}-${target}${target.startsWith('win') ? '.zip' : '.tar.gz'}`
+}
+
+/**
+ * The assets a `--binary` install needs, or null.
+ *
+ * The manifest is as necessary here as for the npm path: it is what carries the
+ * checksum, and an archive installed without one is an archive taken on trust
+ * from a URL. Releases published before the executables existed carry neither,
+ * and are simply not candidates.
+ */
+export function binaryAssets(release, target) {
+  const assets = Array.isArray(release.assets) ? release.assets : []
+  const manifest = assets.find((asset) => asset.name === MANIFEST_ASSET)
+  const wanted = binaryAssetName(versionOf(release), target)
+  const archive = assets.find((asset) => asset.name === wanted)
+  return manifest && archive ? { manifest, archive } : null
+}
+
+/**
+ * Where `--binary` installs when nobody says otherwise.
+ *
+ * Its own directory rather than somewhere already on PATH, because this mode
+ * writes a program *and* the licences that must travel with it — redistributing
+ * Node obliges us to ship Node's — and scattering those through `~/.local/bin`
+ * would be litter. The same shape `rustup`, `deno` and `bun` use.
+ */
+export function defaultPrefix(env = process.env, home = homedir()) {
+  return env.LOOPTROOP_INSTALL_DIR || join(home, '.looptroop')
+}
+
+/** True when `dir` is already on this PATH, so the closing advice can be honest. */
+export function onPath(dir, pathValue = process.env.PATH || '') {
+  const normalise = (value) => (process.platform === 'win32' ? value.toLowerCase() : value).replace(/[\\/]+$/, '')
+  return pathValue.split(delimiter).filter(Boolean).map(normalise).includes(normalise(dir))
 }
 
 /**
@@ -198,12 +355,18 @@ export function installableAssets(release) {
  * published with no assets at all, so a walk that stopped at the newest stable
  * tag would resolve to a release with nothing to download — and would do so
  * again for any future release whose asset upload failed halfway.
+ *
+ * `installable` is a parameter because "installable" means something different
+ * per mode: every release since the first carries an npm tarball, but only
+ * releases since the executables existed carry an archive for this target, and
+ * `--binary` must walk past the ones that do not rather than resolve to a
+ * release it cannot install from.
  */
-export function selectRelease(releases, pinned = null) {
+export function selectRelease(releases, pinned = null, installable = installableAssets) {
   const candidates = releases
     .filter((release) => release && release.draft !== true)
     .filter((release) => (pinned === null ? release.prerelease !== true : versionOf(release) === pinned))
-    .filter((release) => installableAssets(release) !== null)
+    .filter((release) => installable(release) !== null)
 
   candidates.sort((a, b) => compareVersions(versionOf(b), versionOf(a)))
   return candidates[0] ?? null
@@ -310,6 +473,272 @@ function installGlobally(tarball) {
   }
 }
 
+// --- the standalone executable ---------------------------------------------
+//
+// Everything below exists because this mode unpacks files itself. The npm path
+// hands the hard parts to npm; this one owns them, and each of these steps is
+// here because skipping it breaks an *upgrade* rather than a first install —
+// which is the case that matters, since it lands on somebody already using the
+// program.
+
+const EXE = process.platform === 'win32' ? '.exe' : ''
+
+/** Removes something if it can, and never throws. A leftover is not a failure. */
+function discard(path) {
+  try {
+    rmSync(path, { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Unpacks the release archive.
+ *
+ * `tar` reads both formats on all three platforms — GNU tar on Linux, bsdtar on
+ * macOS, and bsdtar shipped with Windows since 1803, which reads zip too — and
+ * all of them detect the compression from the file rather than the flags.
+ * PowerShell is the fallback for a Windows old enough to lack it.
+ */
+function extractArchive(archive, into) {
+  mkdirSync(into, { recursive: true })
+
+  const tar = spawnSync('tar', ['-xf', archive, '-C', into], { encoding: 'utf8' })
+  if (tar.status === 0) return
+
+  if (process.platform === 'win32') {
+    const quote = (value) => `'${value.replace(/'/g, "''")}'`
+    const powershell = spawnSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath ${quote(archive)} -DestinationPath ${quote(into)} -Force`,
+    ], { encoding: 'utf8' })
+    if (powershell.status === 0) return
+  }
+
+  fail(
+    `Could not unpack ${basename(archive)}.`,
+    String(tar.stderr || tar.error?.message || '').trim(),
+    'Nothing was installed.',
+  )
+}
+
+/**
+ * Runs `action` with nobody else installing into `dir` at the same time.
+ *
+ * Two installers in one directory is not hypothetical — a user re-running a
+ * curl pipe because the first looked stuck is exactly how it happens — and the
+ * interleaving that costs you is one process renaming the backup into place
+ * while the other is mid-swap, which ends with no working executable at all.
+ *
+ * A lock left by a killed process would otherwise wedge the directory forever,
+ * so one older than the longest plausible install is taken rather than obeyed.
+ */
+function withInstallLock(dir, action) {
+  const lock = join(dir, '.install.lock')
+  const STALE_AFTER = 15 * 60 * 1000
+
+  const take = () => {
+    writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
+  }
+
+  try {
+    take()
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+
+    const age = Date.now() - (statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0)
+    if (age < STALE_AFTER) {
+      fail(
+        'Another install is already running in this directory.',
+        `Its lock is at ${lock}.`,
+        'Wait for it to finish, or delete that file if you are sure nothing is running.',
+      )
+    }
+    say(`Clearing a stale install lock (${Math.round(age / 60000)} minutes old).`)
+    discard(lock)
+    take()
+  }
+
+  try {
+    return action()
+  } finally {
+    discard(lock)
+  }
+}
+
+/** What the installed copy says about the daemon, or null if it cannot say. */
+function daemonRunning(binary) {
+  // The exit code is not the answer — `status` reports a stopped daemon by
+  // saying so, and how it scores that is its business — so this reads the
+  // document and ignores the code.
+  const probe = spawnSync(binary, ['status', '--json'], { encoding: 'utf8', timeout: 30_000 })
+  try {
+    return JSON.parse(probe.stdout).running === true
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Stops the daemon and waits for it to actually be gone.
+ *
+ * "Confirm exit" rather than "ask it to stop": on Windows the file cannot be
+ * replaced while a process holds it open, and on every platform an upgrade that
+ * swaps the executable under a live daemon leaves a running old version that
+ * `--version` will cheerfully misreport as the new one.
+ */
+function stopDaemon(binary) {
+  say('Stopping the running daemon...')
+  spawnSync(binary, ['stop'], { stdio: 'inherit', timeout: 60_000 })
+
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (daemonRunning(binary) !== true) return true
+    // No timers: this is a synchronous stretch, and `Atomics.wait` is the one
+    // sleep that does not need the event loop to turn.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+  }
+
+  return false
+}
+
+/**
+ * Puts `staged` at `installed`, keeping whatever was there until the new one
+ * has proved it runs.
+ *
+ * Two renames rather than a copy over the top. `rename` within a directory is
+ * atomic, so no reader ever sees a half-written file, and it is the one
+ * operation permitted on a *running* executable on Windows — which cannot be
+ * overwritten or deleted, but can be moved out of the way.
+ */
+function swapIntoPlace(staged, installed, backup) {
+  const incoming = `${installed}.incoming-${process.pid}`
+
+  // Copied into the destination directory first so the rename that matters is
+  // same-filesystem. Across devices `rename` is EXDEV, and the fallback for
+  // that is a copy — which is exactly the non-atomic write being avoided.
+  copyFileSync(staged, incoming)
+  chmodSync(incoming, 0o755)
+
+  const had = existsSync(installed)
+  if (had) renameSync(installed, backup)
+
+  try {
+    renameSync(incoming, installed)
+  } catch (error) {
+    discard(incoming)
+    if (had) renameSync(backup, installed)
+    throw error
+  }
+
+  return had
+}
+
+/**
+ * Installs the standalone executable, transactionally.
+ *
+ * Transactional meaning: at every moment during this, `looptroop` on the user's
+ * PATH is either the old working version or the new working version. There is
+ * no window where it is a half-written file, and no outcome where a failure
+ * partway leaves nothing installed.
+ */
+function installBinary(archive, { version, prefix }) {
+  const bin = join(prefix, 'bin')
+  mkdirSync(bin, { recursive: true })
+
+  return withInstallLock(prefix, () => {
+    const installed = join(bin, `looptroop${EXE}`)
+    const backup = join(bin, `.looptroop-previous-${process.pid}${EXE}`)
+
+    // Anything an earlier run left behind: a backup or a staging copy from one
+    // that was killed, and the rejected executable from one that rolled back.
+    // Sweeping at the start rather than the end is what bounds this to a single
+    // leftover — the most recent failure stays inspectable, which is the one
+    // anybody would want, and the ~110 MB before it does not accumulate.
+    //
+    // Not fatal if something will not go. A leftover is inert, and refusing an
+    // install over one would be worse than leaving it.
+    for (const entry of readdirSync(bin)) {
+      if (/^\.looptroop-previous-\d+/.test(entry) || /\.(incoming|rejected)-\d+$/.test(entry)) {
+        discard(join(bin, entry))
+      }
+    }
+
+    const unpacked = join(dirname(archive), 'unpacked')
+    extractArchive(archive, unpacked)
+
+    const root = join(unpacked, basename(archive).replace(/\.(tar\.gz|zip)$/, ''))
+    const staged = join(root, `looptroop${EXE}`)
+    if (!statSync(staged, { throwIfNoEntry: false })?.isFile()) {
+      fail(`${basename(archive)} does not contain looptroop${EXE} where it should.`, 'Nothing was installed.')
+    }
+
+    // Node's licence travels with Node, and this archive carries a copy of Node.
+    // It goes beside the program because that is where it has to be for the
+    // install to be a lawful redistribution, not because anyone will read it.
+    for (const file of readdirSync(root)) {
+      if (file !== `looptroop${EXE}`) copyFileSync(join(root, file), join(prefix, file))
+    }
+
+    let wasRunning = false
+    if (existsSync(installed)) {
+      wasRunning = daemonRunning(installed) === true
+      if (wasRunning && !stopDaemon(installed)) {
+        fail(
+          'The LoopTroop daemon did not stop, so the executable was left alone.',
+          'Stop it yourself and run this again:',
+          `  ${installed} stop`,
+          'Nothing was installed.',
+        )
+      }
+    }
+
+    let replaced
+    try {
+      replaced = swapIntoPlace(staged, installed, backup)
+    } catch (error) {
+      fail(
+        `Could not replace ${installed}.`,
+        String(error.message ?? error),
+        process.platform === 'win32'
+          ? 'On Windows a running program cannot be replaced; check nothing else is using it.'
+          : '',
+        'Nothing was installed; the previous version is untouched.',
+      )
+    }
+
+    // The install is not finished until the thing that was installed runs. A
+    // truncated download is caught by the checksum, but an executable that is
+    // whole and still cannot start here — wrong architecture, a macOS signature
+    // the kernel refuses, a missing glibc symbol — passes every earlier check
+    // and fails at the only moment the user is watching.
+    const probe = spawnSync(installed, ['--version'], { encoding: 'utf8', timeout: 60_000 })
+    const reported = probe.status === 0 ? String(probe.stdout).trim() : null
+
+    if (reported !== version) {
+      const quarantine = `${installed}.rejected-${process.pid}`
+      discard(quarantine)
+      renameSync(installed, quarantine)
+      if (replaced) renameSync(backup, installed)
+
+      fail(
+        replaced
+          ? `The new executable did not run, so ${version} was rolled back.`
+          : 'The downloaded executable does not run here.',
+        reported === null
+          ? `\`looptroop --version\` exited ${String(probe.status ?? probe.signal)}: ${String(probe.stderr || probe.error?.message || '').trim().slice(0, 400)}`
+          : `\`looptroop --version\` reported ${reported}, expected ${version}.`,
+        replaced ? 'Your previous version is back in place and working.' : '',
+        `The rejected file is at ${quarantine} if you want to look at it.`,
+      )
+    }
+
+    discard(backup)
+    return { installed, wasRunning }
+  })
+}
+
 async function main(argv) {
   const options = parseArgs(argv)
   const workDir = mkdtempSync(resolve(tmpdir(), 'looptroop-install-'))
@@ -317,9 +746,96 @@ async function main(argv) {
   // against it. Stays null for `--tarball`, where a local file is taken on
   // trust and there is no release to name a version.
   let intended = null
+  // How to get `looptroop` on PATH, which is a different answer per mode: npm
+  // has a global bin directory it can be asked about, and `--binary` has one we
+  // chose. Filled in by whichever branch runs.
+  let pathAdvice = [
+    'Open a new terminal, or add npm\'s global bin directory to PATH: npm prefix -g',
+  ]
+  // Where this run put the program, when it chose. Null for the npm path, where
+  // npm chose and the honest answer is `npm prefix -g`.
+  let installedPath = null
 
   try {
-    if (options.tarball !== null) {
+    if (options.binary) {
+      const decision = binaryTarget(process.platform, process.arch, detectLibc())
+      if (decision.refusal) fail('There is no standalone executable for this platform.', ...decision.refusal)
+
+      const prefix = resolve(options.prefix ?? defaultPrefix())
+      const url = options.version === null
+        ? `${API}/repos/${REPO}/releases?per_page=100`
+        : `${API}/repos/${REPO}/releases/tags/v${options.version}`
+      const payload = await getJson(url)
+      const releases = Array.isArray(payload) ? payload : [payload]
+
+      const release = selectRelease(releases, options.version, (candidate) => binaryAssets(candidate, decision.target))
+      if (release === null) {
+        fail(
+          options.version === null
+            ? `No published release carries a ${decision.target} executable yet.`
+            : `Release v${options.version} carries no ${decision.target} executable.`,
+          `Looked at ${releases.length} release(s) of ${REPO}.`,
+          'The standalone executables were added in 0.5.2; earlier releases have only the npm package.',
+        )
+      }
+
+      const { manifest: manifestAsset, archive: archiveAsset } = binaryAssets(release, decision.target)
+      intended = versionOf(release)
+      say(`Installing LoopTroop ${intended} (${decision.target}) into ${prefix}`)
+
+      // No `checkRuntime` here, deliberately. The floor a release records is the
+      // Node it needs to *run*, and this executable carries its own — so
+      // enforcing it would refuse to install, on the grounds of a missing Node,
+      // the one build that does not need one.
+      const manifestPath = resolve(workDir, MANIFEST_ASSET)
+      await download(manifestAsset.browser_download_url, manifestPath)
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+
+      const digest = manifest.assets?.[archiveAsset.name]
+      if (!digest) {
+        fail(
+          `The release manifest for ${intended} records no checksum for ${archiveAsset.name}.`,
+          'Installing it would mean trusting a download with nothing to check it against.',
+        )
+      }
+
+      const archivePath = resolve(workDir, archiveAsset.name)
+      if (options.dryRun) {
+        say(`would download ${archiveAsset.browser_download_url}`)
+        say(`would verify sha256 ${digest.sha256}`)
+        say(`would install ${archiveAsset.name} into ${join(prefix, 'bin')}`)
+        return
+      }
+
+      say(`Downloading ${archiveAsset.name}...`)
+      await download(archiveAsset.browser_download_url, archivePath)
+      verifyBytes(archivePath, digest)
+
+      const { installed, wasRunning } = installBinary(archivePath, { version: intended, prefix })
+      installedPath = installed
+      say(`Installed ${installed}`)
+
+      // Put back what the install took away. Somebody upgrading had a daemon
+      // running a moment ago, and leaving it stopped makes an upgrade into an
+      // outage they have to notice and fix themselves.
+      if (wasRunning) {
+        say('Starting it again...')
+        spawnSync(installed, ['start'], { stdio: 'inherit', timeout: 120_000 })
+      }
+
+      const bin = join(prefix, 'bin')
+      pathAdvice = onPath(bin)
+        ? [`It is installed at ${installed}, and ${bin} is already on your PATH.`]
+        : process.platform === 'win32'
+          ? [
+            `Add ${bin} to your PATH, then open a new terminal:`,
+            `  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';${bin}', 'User')`,
+          ]
+          : [
+            `Add ${bin} to your PATH, then open a new terminal:`,
+            `  echo 'export PATH="${bin}:$PATH"' >> ~/.profile`,
+          ]
+    } else if (options.tarball !== null) {
       const local = resolve(options.tarball)
       if (!statSync(local, { throwIfNoEntry: false })?.isFile()) fail(`No such tarball: ${local}`)
       say(`Installing from ${local} (local file: no checksum to compare against).`)
@@ -394,13 +910,14 @@ async function main(argv) {
   say('')
   if (reported === null) {
     say('Installed, but `looptroop` is not on your PATH yet.')
-    say('Open a new terminal, or add npm\'s global bin directory to PATH: npm prefix -g')
+    for (const line of pathAdvice) say(line)
   } else if (intended === null || reported === intended) {
     say(`Installed: looptroop ${reported}`)
   } else {
     say(`Installed: looptroop ${intended}`)
     say('')
     say(`But \`looptroop\` on your PATH is ${reported}, so another copy comes first.`)
+    if (installedPath !== null) say(`This install is at ${installedPath}.`)
     say(`Find it with: ${process.platform === 'win32' ? 'where looptroop' : 'command -v looptroop'}`)
   }
   say('')

@@ -50,6 +50,18 @@ const ALLOWED_PATHS = [
   // fixture into a release blocker.
   'tests/containerTags.test.ts',
   'tests/containerNotes.test.ts',
+  // Fixtures for the installer's release selection, for the same reason. The
+  // literals are a fake GitHub releases feed handed to `selectRelease`: a case
+  // proving the installer skips a newer stable release carrying no assets, and
+  // one proving a prerelease is only chosen when asked for by name, both have
+  // to name versions on either side of the comparison.
+  //
+  // Allowlisted before it bites rather than after. The fixtures use 0.6.0 and
+  // 0.6.1, so the bump to either would have turned a passing test file into a
+  // release blocker — and it would have surfaced as a failing check on the
+  // release pull request, which is the worst moment to be reading a version
+  // scanner.
+  'tests/installer.test.ts',
 ]
 
 /** Files excluded from scanning entirely: binary, generated, or dependency trees. */

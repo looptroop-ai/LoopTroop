@@ -68,11 +68,39 @@ jobs:
       bundle: ${{ steps.inputs.outputs.bundle }}
       url: ${{ steps.inputs.outputs.url }}
       sha256: ${{ steps.inputs.outputs.sha256 }}
+      force: ${{ steps.force.outputs.force }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # Normalises the force flag to a string output, for the same reason
+      # `release-pr.yml` normalises its dry-run flag: no workflow expression can
+      # gate on a boolean input directly with confidence.
+      #
+      # `inputs.force && '--force' || ''` — what the two push jobs used to
+      # interpolate — is wrong. A boolean input arrives as the *string* "false"
+      # in some contexts, and a non-empty string is truthy, so it expanded to
+      # `--force` whether or not the box was ticked. Leaving the box unticked
+      # did nothing, and every repair overwrote in place.
+      #
+      # That is the one power this workflow is careful about. Force cannot move
+      # a channel backwards and same-bytes is still a no-op, so the only thing
+      # it changes is the case the refusal exists for: same version, different
+      # bytes, nobody having asked to replace them.
+      #
+      # Anything that is not exactly "true" is treated as no force: an
+      # unexpected value must not overwrite a published descriptor.
+      - name: Resolve the force flag
+        id: force
+        env:
+          REQUESTED: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ "${REQUESTED}" = "true" ]; then force=true; else force=false; fi
+          echo "force=${force}" >> "$GITHUB_OUTPUT"
+          echo "Force: ${force}"
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -179,7 +207,7 @@ jobs:
           --version "${{ needs.prepare.outputs.version }}"
           --url "${{ needs.prepare.outputs.url }}"
           --sha256 "${{ needs.prepare.outputs.sha256 }}"
-          ${{ inputs.force && '--force' || '' }}
+          ${{ needs.prepare.outputs.force == 'true' && '--force' || '' }}
 
   push-manifest:
     name: Republish the Scoop manifest
@@ -208,7 +236,7 @@ jobs:
           --version "${{ needs.prepare.outputs.version }}"
           --url "${{ needs.prepare.outputs.url }}"
           --sha256 "${{ needs.prepare.outputs.sha256 }}"
-          ${{ inputs.force && '--force' || '' }}
+          ${{ needs.prepare.outputs.force == 'true' && '--force' || '' }}
 
   # ---------------------------------------------------------------------------
   # Chocolatey, whose recovery states are its own.
@@ -296,18 +324,17 @@ jobs:
       # The only check that what Chocolatey serves is what this release meant to
       # publish. Everything before moderation proves the package we built; this
       # proves the package they approved.
-      - name: Install it from the feed and run it
+      #
+      # The same script that proved the package before submission, so the feed
+      # is held to the same standard rather than a weaker one: it installs, runs
+      # it, asserts `doctor` names chocolatey as the channel, uninstalls, and
+      # confirms no shim is left behind. Checking only the version would pass a
+      # package whose channel marker went missing in packaging — one that
+      # installs and runs perfectly while telling every user to upgrade it with
+      # the wrong command.
+      - name: Install it from the feed and prove it
         if: steps.feed.outputs.published == 'true'
         shell: bash
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          choco install looptroop --version "${VERSION}" --yes --no-progress
-          shim="${ChocolateyInstall:-C:\\ProgramData\\chocolatey}/bin/looptroop.exe"
-          reported=$("${shim}" --version)
-          if [ "${reported}" != "${VERSION}" ]; then
-            echo "::error::The feed serves ${reported}, expected ${VERSION}."
-            exit 1
-          fi
-          echo "Chocolatey serves looptroop ${VERSION} and it runs."
+        run: >
+          node scripts/smoke-choco.ts --from-feed
+          --version "${{ needs.prepare.outputs.version }}"

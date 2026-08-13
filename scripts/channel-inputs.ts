@@ -61,6 +61,13 @@ if (bundle === undefined) {
 // repaired for those versions, and only the WinGet job needs to refuse.
 const zip = Object.keys(assets).find((name) => name.endsWith('-bundle.zip')) ?? null
 
+// The standalone Windows binary, which is what WinGet installs — its portable
+// installer accepts an `.exe` and nothing else, so it cannot take the bundle
+// the other three channels use. Absent from releases published before the
+// binaries existed, and reported as empty rather than fatal for the same
+// reason the bundle zip is.
+const winBinary = Object.keys(assets).find((name) => /-win-x64\.zip$/.test(name)) ?? null
+
 const output = {
   version: manifest.version,
   bundle,
@@ -69,6 +76,9 @@ const output = {
   zip: zip ?? '',
   zip_sha256: zip === null ? '' : assets[zip]!.sha256,
   zip_url: zip === null ? '' : `https://github.com/${repo}/releases/download/v${manifest.version}/${zip}`,
+  win_binary: winBinary ?? '',
+  win_binary_sha256: winBinary === null ? '' : assets[winBinary]!.sha256,
+  win_binary_url: winBinary === null ? '' : `https://github.com/${repo}/releases/download/v${manifest.version}/${winBinary}`,
   // The commit this release was built from, so a repair can render descriptors
   // with that release's templates rather than whatever the default branch says
   // today. Empty when the manifest predates the field or the release was built

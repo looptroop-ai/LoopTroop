@@ -52,9 +52,22 @@ function flag(name: string): string {
   return value
 }
 
+const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
+
+/**
+ * `GH_TOKEN` is set from `WINGET_TOKEN` for every child, because `gh` reads
+ * that name and this job deliberately does not have the workflow's own token:
+ * the pull request is opened against a repository we do not own, by a
+ * credential that exists for exactly that purpose.
+ */
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean } = {}): string {
   try {
-    return execFileSync(command, args, { cwd: options.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(command, args, {
+      cwd: options.cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, GH_TOKEN: token },
+    })
   } catch (error) {
     if (options.allowFailure === true) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
@@ -62,7 +75,6 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
   }
 }
 
-const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
 const version = flag('version')
 const url = flag('url')
 const sha256 = flag('sha256')

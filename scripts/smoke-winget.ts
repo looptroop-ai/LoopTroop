@@ -167,7 +167,14 @@ async function main(): Promise<void> {
   log(`  \`doctor\` reports the winget channel: ${install?.detail}`)
 
   log('\nUninstalling...')
-  await invoke('winget', ['uninstall', WINGET_IDENTIFIER, '--disable-interactivity'])
+  // `--accept-source-agreements` here too, not only on install: uninstall
+  // resolves the identifier against every configured source, and `msstore`
+  // refuses to be queried until its agreements are accepted — which reads as
+  // "operation cancelled" rather than as anything to do with our package.
+  await invoke('winget', [
+    'uninstall', WINGET_IDENTIFIER,
+    '--accept-source-agreements', '--disable-interactivity',
+  ])
 
   if (existsSync(linkPath)) {
     fail(

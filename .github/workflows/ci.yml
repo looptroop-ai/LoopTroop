@@ -571,6 +571,13 @@ jobs:
       - name: Build application
         run: npm run build
 
+      # macOS ships bsdtar as `tar`, and the reproducible flags the archive
+      # needs — `--sort`, `--mtime`, the pax options — are GNU extensions it
+      # rejects.
+      - name: Install GNU tar
+        if: runner.os == 'macOS'
+        run: brew install gnu-tar
+
       # Twice, requiring identical bytes. The SEA blob embeds the absolute path
       # of the script it was built from, which made the first version of this
       # non-reproducible for a reason nothing downstream would have explained —

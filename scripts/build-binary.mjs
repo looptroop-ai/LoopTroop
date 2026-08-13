@@ -130,6 +130,31 @@ function clientAssets() {
 
 
 /**
+ * GNU tar, which is not what `tar` means on macOS.
+ *
+ * The reproducible flags below — `--sort`, `--mtime`, the pax options — are GNU
+ * extensions, and macOS ships bsdtar, which rejects them outright. `gtar` is
+ * the conventional name for GNU tar where both exist. Checked rather than
+ * assumed, because the failure is otherwise a wall of tar usage text in the
+ * middle of a build that has already taken minutes.
+ */
+function gnuTar() {
+  for (const candidate of ['gtar', 'tar']) {
+    try {
+      if (/GNU tar/.test(run(candidate, ['--version']))) return candidate
+    } catch {
+      continue
+    }
+  }
+
+  return fail(
+    'GNU tar is required to build a reproducible archive.',
+    'macOS ships bsdtar, which does not accept --sort or --mtime.',
+    'On macOS: brew install gnu-tar',
+  )
+}
+
+/**
  * The licences we are obliged to redistribute alongside the binary.
  *
  * This executable *contains* a Node runtime, so shipping it means
@@ -199,7 +224,7 @@ async function writeArchive(binary) {
       stdio: ['ignore', 'pipe', 'inherit'],
     })
   } else {
-    run('tar', [
+    run(gnuTar(), [
       '--sort=name',
       `--mtime=@${FIXED_MTIME}`,
       '--owner=0', '--group=0', '--numeric-owner',

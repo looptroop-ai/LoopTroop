@@ -42,9 +42,16 @@ const LOCAL_TAP = 'looptroop-ai/smoketest' as const
  * instead of the one that was asked for.
  */
 class SmokeError extends Error {
-  constructor(message: string, readonly detail: string[]) {
+  // Declared and assigned rather than written as a constructor parameter
+  // property: this file is run by bare `node`, whose type stripping rejects
+  // that syntax outright. Vitest compiles with esbuild and accepts it, so the
+  // difference only appears in CI.
+  detail: string[]
+
+  constructor(message: string, detail: string[]) {
     super(message)
     this.name = 'SmokeError'
+    this.detail = detail
   }
 }
 

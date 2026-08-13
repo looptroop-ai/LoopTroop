@@ -66,6 +66,13 @@ jobs:
       - name: Verify version is single-sourced
         run: npm run verify:version
 
+      # Every script in scripts/ is run as `node scripts/<name>.ts` from a
+      # workflow, so Node's own type stripping is the only thing that parses
+      # them — and it refuses syntax that both `tsc --noEmit` and vitest's
+      # esbuild accept. Without this the first place that shows up is a job.
+      - name: Verify the release scripts run under bare node
+        run: npm run verify:strip-types
+
       # Pinned, not @latest: an unpinned validator makes this check
       # nondeterministic and can fail on a release we never chose.
       - name: Validate Renovate configuration

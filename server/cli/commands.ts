@@ -1,7 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { openSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
@@ -9,6 +7,7 @@ import { rotateDaemonLog } from '../lib/daemonLog'
 import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
+import { daemonArgv } from './daemonHandoff'
 import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
@@ -36,10 +35,6 @@ export const DEFAULT_STOP_BUDGETS: StopBudgets = {
 export interface CliOptions {
   port?: number
   foreground?: boolean
-}
-
-function moduleDir(): string {
-  return dirname(fileURLToPath(import.meta.url))
 }
 
 /**
@@ -128,7 +123,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
   // file rather than to a pipe that dies with the parent.
   const logFd = openSync(logPath, 'a')
 
-  const child = spawn(process.execPath, [resolve(moduleDir(), 'daemonProcess.js')], {
+  const child = spawn(process.execPath, daemonArgv(), {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: {

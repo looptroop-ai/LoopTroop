@@ -32,9 +32,13 @@ const result = await build({
   minify: false,
   metafile: true,
   logLevel: 'info',
-  // package.json is read at runtime for the version; keep it resolvable.
   define: {
     'process.env.LOOPTROOP_BUILD': JSON.stringify('production'),
+    // Compiled in rather than read off disk at runtime. Two callers used to
+    // resolve `package.json` relative to their own module, which holds for an
+    // npm install and nowhere else — most importantly in a single-file build,
+    // where there is no `package.json` and the answer was a silent `0.0.0`.
+    __LOOPTROOP_VERSION__: JSON.stringify(pkg.version),
   },
 })
 

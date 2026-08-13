@@ -199,11 +199,110 @@ jobs:
           esac
 
   # ---------------------------------------------------------------------------
+  # The standalone binaries, before anything is packed.
+  # ---------------------------------------------------------------------------
+  # Each target is built on the runner that matches it: a single-file build
+  # embeds the running Node, so a cross-built one would carry the wrong runtime.
+  # macOS x64 is absent because Node supports single-executable applications on
+  # arm64 only there; Intel Macs keep Homebrew and npm.
+  #
+  # These gate `build` rather than running beside it, because the release
+  # manifest has to record their checksums — WinGet's descriptor points at the
+  # win-x64 archive by URL and hash, and that hash has exactly one source of
+  # truth.
+  binary:
+    name: Binary (${{ matrix.target }})
+    needs: [detect]
+    if: needs.detect.outputs.proceed == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-14, target: darwin-arm64 }
+          - { os: windows-latest, target: win-x64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # macOS ships bsdtar as `tar`, which rejects the reproducible flags.
+      - name: Install GNU tar
+        if: runner.os == 'macOS'
+        run: brew install gnu-tar
+
+      - name: Build the binary
+        run: node scripts/build-binary.mjs --out "${{ runner.temp }}/binary"
+        shell: bash
+
+      # With `node` shadowed, which is the only thing that proves the artefact:
+      # every runner has Node, so a binary that quietly used it would pass any
+      # weaker check and fail for the user this exists for.
+      - name: Drive it with no Node available
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(find "${RUNNER_TEMP}/binary" -maxdepth 1 \( -name 'looptroop-*.tar.gz' -o -name 'looptroop-*.zip' \) | head -1)
+          if [ -z "${archive}" ]; then
+            echo "::error::The build produced no archive."
+            exit 1
+          fi
+          node scripts/smoke-binary.mjs --archive "${archive}"
+
+      # Provenance: a signed statement that these bytes came from this workflow,
+      # this repository and this commit. It is what we ship instead of code
+      # signing, which was declined, and it is free.
+      #
+      # `contents: read` is listed alongside the two the action needs because a
+      # job-level block *replaces* the workflow default rather than adding to
+      # it — anything unlisted becomes `none`, and the checkout would fail.
+      - name: Attest the archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/binary/*.tar.gz
+            ${{ runner.temp }}/binary/*.zip
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-binary-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/binary/*.tar.gz
+            ${{ runner.temp }}/binary/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
   # Pack exactly once. Everything downstream consumes these bytes.
   # ---------------------------------------------------------------------------
   build:
     name: Build and pack
-    needs: [detect]
+    needs: [detect, binary]
     if: needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -267,6 +366,15 @@ jobs:
       # digests and refuses to proceed on a mismatch, so a corrupted or
       # substituted artefact download fails loudly before it reaches npm rather
       # than being detected afterwards, when the publish is already permanent.
+      # Every target's archive, into the directory the manifest is written from.
+      # `merge-multiple` because each target uploaded its own artefact and they
+      # are all part of one release.
+      - name: Collect the standalone binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-binary-*
+          merge-multiple: true
+
       - name: Write the release manifest
         id: manifest
         run: |
@@ -277,8 +385,21 @@ jobs:
           # Scoop and Chocolatey fetch; the zip exists because WinGet's archive
           # installer type reads ZIP and nothing else.
           zip="looptroop-${{ needs.detect.outputs.version }}-bundle.zip"
+          # The binaries are named per target and there is one manifest, so they
+          # are collected by glob rather than listed: a target added later must
+          # not need this line edited, and a target that failed to upload must
+          # be a missing asset rather than a silent omission.
+          binaries=()
+          while IFS= read -r file; do binaries+=(--asset "${file}"); done < <(
+            find . -maxdepth 1 \( -name 'looptroop-*-linux-*.tar.gz' -o -name 'looptroop-*-darwin-*.tar.gz' -o -name 'looptroop-*-win-*.zip' \) | sort
+          )
+          if [ "${#binaries[@]}" -eq 0 ]; then
+            echo "::error::No standalone binaries were collected; the manifest would omit them."
+            exit 1
+          fi
           npm run release:manifest -- "${tarball}" \
-            --asset "${bundle}" --asset "${zip}" --asset install.sh --asset install.ps1
+            --asset "${bundle}" --asset "${zip}" --asset install.sh --asset install.ps1 \
+            "${binaries[@]}"
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
             const out = require("node:fs").createWriteStream(process.env.GITHUB_OUTPUT,{flags:"a"})
@@ -301,6 +422,10 @@ jobs:
           path: |
             looptroop-*.tgz
             looptroop-*-bundle.tar.gz
+            looptroop-*-bundle.zip
+            looptroop-*-linux-*.tar.gz
+            looptroop-*-darwin-*.tar.gz
+            looptroop-*-win-*.zip
             install.sh
             install.ps1
             release-manifest.json
@@ -1569,6 +1694,78 @@ jobs:
           --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
           --version "${{ steps.inputs.outputs.version }}"
 
+  # ---------------------------------------------------------------------------
+  # WinGet, which is a pull request into somebody else's repository.
+  # ---------------------------------------------------------------------------
+  # Not a write we control: it is a submission into `microsoft/winget-pkgs`,
+  # reviewed by humans on their schedule. So it is reported as *submitted* and
+  # gates nothing, exactly as Chocolatey is.
+  #
+  # It installs the standalone binary rather than the bundle, and not by
+  # preference: a portable's `RelativeFilePath` must be an `.exe`, and
+  # `winget validate` rejects anything else outright.
+  #
+  # Skipped rather than failed while `WINGET_TOKEN` is unset, so the channel can
+  # land before the credential exists without turning every release red.
+  publish-winget:
+    name: Publish to WinGet
+    needs: [detect, build, finalize]
+    if: >-
+      needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: packaging
+    outputs:
+      state: ${{ steps.submit.outputs.state }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Read what this release publishes
+        id: inputs
+        shell: bash
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      - name: Submit the manifests
+        id: submit
+        shell: bash
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          WIN_BINARY: ${{ steps.inputs.outputs.win_binary }}
+          WIN_BINARY_URL: ${{ steps.inputs.outputs.win_binary_url }}
+          WIN_BINARY_SHA256: ${{ steps.inputs.outputs.win_binary_sha256 }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_TOKEN:-}" ]; then
+            echo "state=skipped" >> "$GITHUB_OUTPUT"
+            echo "::warning::WINGET_TOKEN is not set; the WinGet submission was skipped."
+            exit 0
+          fi
+          if [ -z "${WIN_BINARY}" ]; then
+            echo "::error::This release carries no Windows binary, so WinGet cannot be published."
+            exit 1
+          fi
+          node scripts/winget-submit.ts \
+            --version "${VERSION}" \
+            --url "${WIN_BINARY_URL}" \
+            --sha256 "${WIN_BINARY_SHA256}"
+          echo "state=submitted" >> "$GITHUB_OUTPUT"
+
   report:
     name: Report
     needs:
@@ -1587,6 +1784,7 @@ jobs:
       - publish-homebrew
       - publish-scoop
       - publish-chocolatey
+      - publish-winget
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1617,6 +1815,8 @@ jobs:
           R_SCOOP: ${{ needs.publish-scoop.result }}
           R_CHOCO: ${{ needs.publish-chocolatey.result }}
           CHOCO_STATE: ${{ needs.publish-chocolatey.outputs.state }}
+          R_WINGET: ${{ needs.publish-winget.result }}
+          WINGET_STATE: ${{ needs.publish-winget.outputs.state }}
           INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
           CONTAINER_TAGS: ${{ needs.container-manifest.outputs.tags }}
           SHA256: ${{ needs.build.outputs.sha256 }}
@@ -1654,6 +1854,7 @@ jobs:
             printf 'homebrew   %s\n' "${R_BREW}"
             printf 'scoop      %s\n' "${R_SCOOP}"
             printf 'chocolatey %s  %s\n' "${R_CHOCO}" "${CHOCO_STATE:-—}"
+            printf 'winget     %s  %s\n' "${R_WINGET}" "${WINGET_STATE:-—}"
             echo '```'
             echo
             echo "Integrity: \`${INTEGRITY}\`"
@@ -1671,7 +1872,8 @@ jobs:
                       "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
                       "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \
-                      "publish-chocolatey:${R_CHOCO}"; do
+                      "publish-chocolatey:${R_CHOCO}" \
+                      "publish-winget:${R_WINGET}"; do
             name=${pair%%:*}
             result=${pair#*:}
             case "${result}" in

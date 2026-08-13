@@ -145,6 +145,7 @@
     "globals": "^17.8.0",
     "jsdom": "^30.0.0",
     "lucide-react": "^1.27.0",
+    "postject": "1.0.0-alpha.6",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

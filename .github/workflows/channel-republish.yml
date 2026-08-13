@@ -49,7 +49,7 @@ on:
         description: 'Which channel to republish'
         required: true
         type: choice
-        options: [homebrew, scoop, chocolatey]
+        options: [homebrew, scoop, chocolatey, winget]
       force:
         description: 'Replace this version in place. Only for a descriptor that was published wrong.'
         required: false
@@ -82,6 +82,9 @@ jobs:
       sha256: ${{ steps.inputs.outputs.sha256 }}
       force: ${{ steps.force.outputs.force }}
       templates: ${{ steps.templates.outputs.ref }}
+      win_binary: ${{ steps.inputs.outputs.win_binary }}
+      win_binary_url: ${{ steps.inputs.outputs.win_binary_url }}
+      win_binary_sha256: ${{ steps.inputs.outputs.win_binary_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -400,3 +403,56 @@ jobs:
         run: >
           node scripts/smoke-choco.ts --from-feed
           --version "${{ needs.prepare.outputs.version }}"
+
+  # ---------------------------------------------------------------------------
+  # WinGet, whose recovery is a pull request rather than a write.
+  # ---------------------------------------------------------------------------
+  # The submission is retry-safe by construction — it reconciles with an open
+  # pull request for this version rather than opening a second — so this job is
+  # simply the same submission run again, for a release whose WinGet job failed
+  # or was skipped for want of a credential.
+  #
+  # Nothing here can make Microsoft merge it. Like Chocolatey moderation, that
+  # is a queue this workflow reports into and never waits on.
+  winget:
+    name: Resubmit the WinGet manifests
+    needs: [prepare]
+    if: inputs.channel == 'winget'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The release's own templates, not the default branch's. See `prepare`.
+          ref: ${{ needs.prepare.outputs.templates }}
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Submit the manifests
+        shell: bash
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          WIN_BINARY: ${{ needs.prepare.outputs.win_binary }}
+          WIN_BINARY_URL: ${{ needs.prepare.outputs.win_binary_url }}
+          WIN_BINARY_SHA256: ${{ needs.prepare.outputs.win_binary_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WINGET_TOKEN:-}" ]; then
+            echo "::error::WINGET_TOKEN is not set in the packaging environment."
+            exit 1
+          fi
+          if [ -z "${WIN_BINARY}" ]; then
+            echo "::error::v${VERSION} carries no Windows binary; it predates the WinGet channel."
+            exit 1
+          fi
+          node scripts/winget-submit.ts \
+            --version "${VERSION}" \
+            --url "${WIN_BINARY_URL}" \
+            --sha256 "${WIN_BINARY_SHA256}"

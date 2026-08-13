@@ -234,8 +234,21 @@ export default defineConfig({
           sequence: { groupOrder: 0 },
           setupFiles: ['./server/test/setup.ts'],
           include: [...serverIntegrationTests],
-          testTimeout: 20000,
-          hookTimeout: 30000,
+          // Longer on Windows, and only there. These tests drive real git
+          // worktrees and real SQLite files, and the Windows runners do that
+          // several times slower than the other two — creating a worktree means
+          // thousands of individual file operations against a filesystem with
+          // far higher per-call overhead, made worse by Defender.
+          //
+          // This is not a retry and does not hide a race. Three separate runs
+          // on 2026-08-13 failed with *different* tests each time, every one at
+          // 25–28 s against a 20 s limit: the shape of work that is too slow,
+          // not work that is wrong. A retry would have hidden exactly that.
+          //
+          // Bounded rather than removed, so a genuine hang still fails the run
+          // instead of holding the job open until the 30-minute job timeout.
+          testTimeout: process.platform === 'win32' ? 45000 : 20000,
+          hookTimeout: process.platform === 'win32' ? 60000 : 30000,
           env: sharedEnv,
         },
       },

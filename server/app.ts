@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from '@hono/node-server/serve-static'
+import { embeddedAsset, embeddedIndex, hasEmbeddedClient } from './lib/seaAssets'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -268,7 +269,40 @@ export function createApp(options: CreateAppOptions = {}): Hono {
   app.route('/api', workflowRouter)
 
   // Mounted after the API so a frontend route can never shadow an endpoint.
-  if (mode === 'production') {
+  //
+  // A single-file build has no `dist/client` beside it — no directory at all —
+  // so the interface travels inside the executable and is served from there.
+  // Everything below this branch is the ordinary on-disk path, unchanged.
+  if (mode === 'production' && hasEmbeddedClient()) {
+    app.on(['GET', 'HEAD'], '/*', async (c, next) => {
+      // An unmatched endpoint is a 404, not a frontend route.
+      if (c.req.path === '/api' || c.req.path.startsWith('/api/')) return next()
+
+      const asset = embeddedAsset(c.req.path)
+      if (asset) {
+        // Asset filenames carry a content hash, so a stale response is
+        // impossible; the document must always be revalidated, or a cached copy
+        // would keep pointing at asset hashes that no longer exist.
+        const immutable = c.req.path.startsWith('/assets/')
+        return c.body(asset.body, 200, {
+          'Content-Type': asset.contentType,
+          'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+        })
+      }
+
+      // A missing hashed asset must 404 rather than fall back to HTML, or the
+      // browser reports a module MIME-type error instead of the real problem.
+      if (c.req.path.startsWith('/assets/')) return next()
+      if (!wantsSpaDocument(c.req.path, c.req.header('accept'))) return next()
+
+      const index = embeddedIndex()
+      if (!index) return next()
+      return c.body(index.body, 200, {
+        'Content-Type': index.contentType,
+        'Cache-Control': 'no-cache',
+      })
+    })
+  } else if (mode === 'production') {
     const clientDir = options.clientDir ?? resolveDefaultClientDir()
     const indexHtml = resolve(clientDir, 'index.html')
 

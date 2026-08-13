@@ -212,9 +212,21 @@ async function main(): Promise<void> {
   if (channel === 'homebrew') {
     const tapDir = createLocalTap(LOCAL_TAP)
     writeFileSync(join(tapDir, 'Formula', 'looptroop.rb'), descriptor)
+    log(descriptor)
 
     log(`Installing ${LOCAL_TAP}/looptroop...`)
-    await run('brew', ['install', '--formula', `${LOCAL_TAP}/looptroop`])
+    await run('brew', ['install', '--formula', '--verbose', `${LOCAL_TAP}/looptroop`], {
+      env: {
+        // The concurrent downloader's progress display is what reported
+        // "unknown install step: run" — a message about its own state machine
+        // rather than about the formula. One download at a time keeps the
+        // failure, if there is one, legible.
+        HOMEBREW_DOWNLOAD_CONCURRENCY: '1',
+        HOMEBREW_NO_ENV_HINTS: '1',
+        HOMEBREW_NO_AUTO_UPDATE: '1',
+        HOMEBREW_NO_ANALYTICS: '1',
+      },
+    })
 
     const prefix = (await run('brew', ['--prefix'])).stdout.trim()
     await assertInstalled(join(prefix, 'bin', 'looptroop'))

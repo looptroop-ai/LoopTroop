@@ -295,5 +295,13 @@ try {
   process.exitCode = 1
 } finally {
   server.close()
-  rmSync(work, { recursive: true, force: true })
+  // Retried, and never allowed to fail the run: this has just been running a
+  // Windows executable out of `work`, and Windows does not release the handle
+  // the instant the process exits. `force` swallows ENOENT and nothing else,
+  // so a plain removal turns a passing smoke into a failed release.
+  try {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch (error) {
+    process.stderr.write(`\nCould not remove ${work}: ${error.message}\n`)
+  }
 }

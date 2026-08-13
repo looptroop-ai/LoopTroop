@@ -478,10 +478,17 @@ function installGlobally(tarball) {
 
 const EXE = process.platform === 'win32' ? '.exe' : ''
 
-/** Removes something if it can, and never throws. A leftover is not a failure. */
+/**
+ * Removes something if it can, and never throws. A leftover is not a failure.
+ *
+ * Retried, because most of what this removes is an executable that was running
+ * moments ago and Windows does not release a handle the instant a process
+ * exits. `force` swallows ENOENT and nothing else, so without the retries a
+ * successful install could end by reporting EPERM.
+ */
 function discard(path) {
   try {
-    rmSync(path, { recursive: true, force: true })
+    rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     return true
   } catch {
     return false
@@ -885,7 +892,11 @@ async function main(argv) {
       installGlobally(tarballPath)
     }
   } finally {
-    rmSync(workDir, { recursive: true, force: true })
+    // Through `discard`, which retries and never throws. Failing to remove a
+    // temporary directory must not turn an install that worked into one that
+    // reports an error — and on Windows, after unpacking and running an
+    // executable, that is a real possibility rather than a theoretical one.
+    discard(workDir)
   }
 
   // Advisory only. `doctor` exits non-zero until OpenCode is set up, which is

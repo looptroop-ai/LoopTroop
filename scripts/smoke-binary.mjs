@@ -191,5 +191,17 @@ async function main() {
 try {
   await main()
 } finally {
-  rmSync(work, { recursive: true, force: true })
+  // Retried, and never allowed to fail the run.
+  //
+  // Windows does not release a handle the instant a process exits, and this
+  // has just stopped a daemon that was running out of this directory. A plain
+  // `rmSync` there threw EPERM *after* the test had printed PASS — `force`
+  // swallows ENOENT and nothing else — so a passing smoke exited 1 and failed
+  // a release. `maxRetries` exists for exactly this; the catch is because a
+  // temp directory left behind is litter, not a failure.
+  try {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch (error) {
+    process.stderr.write(`\nCould not remove ${work}: ${error.message}\n`)
+  }
 }

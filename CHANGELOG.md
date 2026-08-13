@@ -9,6 +9,11 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- LoopTroop can now be installed with WinGet on Windows, and every release publishes a standalone executable for macOS on Apple silicon, Linux on x64 and arm64, and Windows on x64. The executable carries its own Node runtime, so it needs nothing installed but git — which is what makes the WinGet package work on a machine that has never had Node.
+- Each binary is built twice and required to be byte-identical before it is published, carries the licence of the Node runtime inside it, and comes with a build provenance attestation: a signed statement of which workflow, repository and commit produced those exact bytes.
+- `looptroop doctor` now recognises a WinGet install and a directly downloaded binary, and names the right upgrade command for each. On WinGet that command starts with `looptroop stop`, because Windows will not replace a running executable and the daemon holds it open.
+
 ### Fixed
 - Stopped the one-line installer reporting the wrong version when another copy of LoopTroop comes first on your PATH. It finished by running `looptroop --version` and printing whatever answered, which is a different copy whenever an older one is earlier in the search order — including when npm's global directory is not on the PATH at all, in which case it cheerfully reported a successful install of a version it had not touched. It now names the version it actually installed, and says so plainly when the command your shell will run is a different one.
 

@@ -123,8 +123,18 @@ mkdirSync(configDir)
 // the channel produced a working command, not that the runner has OpenCode.
 const childEnv = { LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mock' }
 
+/**
+ * Served at the path a release asset actually has, not just by name.
+ *
+ * The formula states no `version` — `brew audit --strict` rejects one the URL
+ * already carries — so Homebrew scans it out of the URL, and the `/v<version>/`
+ * component is part of what it scans. A bare `/looptroop-x.y.z-bundle.tar.gz`
+ * would be testing a URL shape no release ever produces.
+ */
+const assetPath = `/looptroop-ai/LoopTroop/releases/download/v${version}/${bundleName}`
+
 const server = createServer((request, response) => {
-  if (request.url !== `/${bundleName}`) {
+  if (request.url !== assetPath) {
     response.writeHead(404).end()
     return
   }
@@ -173,7 +183,7 @@ function assertInstalled(commandPath: string): void {
 
 async function main(): Promise<void> {
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
-  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/${bundleName}`
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}${assetPath}`
   const descriptor = renderDescriptor(channel, { version, url, sha256 })
   log(`Serving ${bundleName} at ${url}\n`)
 

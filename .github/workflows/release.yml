@@ -1766,6 +1766,66 @@ jobs:
             --sha256 "${WIN_BINARY_SHA256}"
           echo "state=submitted" >> "$GITHUB_OUTPUT"
 
+  # Dormant until the AUR reopens registration. It skips rather than fails when
+  # `AUR_SSH_KEY` is empty, because a channel nobody can publish to must not be
+  # able to fail a release — the same bargain the WinGet job makes.
+  publish-aur:
+    name: Publish to the AUR
+    needs: [detect, build, finalize]
+    if: >-
+      needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: packaging
+    outputs:
+      state: ${{ steps.push.outputs.state }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Read what this release publishes
+        id: inputs
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      - name: Push the package
+        id: push
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          AUR_KNOWN_HOSTS: ${{ secrets.AUR_KNOWN_HOSTS }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+          BUNDLE_URL: ${{ steps.inputs.outputs.url }}
+          BUNDLE_SHA256: ${{ steps.inputs.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "state=skipped" >> "$GITHUB_OUTPUT"
+            echo "::warning::AUR_SSH_KEY is not set; publishing to the AUR was skipped."
+            exit 0
+          fi
+          if [ -z "${AUR_KNOWN_HOSTS:-}" ]; then
+            echo "::error::AUR_SSH_KEY is set but AUR_KNOWN_HOSTS is not; the host key has to be verified, not assumed."
+            exit 1
+          fi
+          node scripts/aur-push.ts \
+            --version "${VERSION}" \
+            --url "${BUNDLE_URL}" \
+            --sha256 "${BUNDLE_SHA256}"
+          echo "state=published" >> "$GITHUB_OUTPUT"
+
   report:
     name: Report
     needs:
@@ -1785,6 +1845,7 @@ jobs:
       - publish-scoop
       - publish-chocolatey
       - publish-winget
+      - publish-aur
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1817,6 +1878,8 @@ jobs:
           CHOCO_STATE: ${{ needs.publish-chocolatey.outputs.state }}
           R_WINGET: ${{ needs.publish-winget.result }}
           WINGET_STATE: ${{ needs.publish-winget.outputs.state }}
+          R_AUR: ${{ needs.publish-aur.result }}
+          AUR_STATE: ${{ needs.publish-aur.outputs.state }}
           INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
           CONTAINER_TAGS: ${{ needs.container-manifest.outputs.tags }}
           SHA256: ${{ needs.build.outputs.sha256 }}
@@ -1855,6 +1918,7 @@ jobs:
             printf 'scoop      %s\n' "${R_SCOOP}"
             printf 'chocolatey %s  %s\n' "${R_CHOCO}" "${CHOCO_STATE:-—}"
             printf 'winget     %s  %s\n' "${R_WINGET}" "${WINGET_STATE:-—}"
+            printf 'aur        %s  %s\n' "${R_AUR}" "${AUR_STATE:-—}"
             echo '```'
             echo
             echo "Integrity: \`${INTEGRITY}\`"
@@ -1873,7 +1937,8 @@ jobs:
                       "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \
                       "publish-chocolatey:${R_CHOCO}" \
-                      "publish-winget:${R_WINGET}"; do
+                      "publish-winget:${R_WINGET}" \
+                      "publish-aur:${R_AUR}"; do
             name=${pair%%:*}
             result=${pair#*:}
             case "${result}" in

@@ -343,19 +343,27 @@ jobs:
           set -euo pipefail
           node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-a"
           node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-b"
-          a=$(sha256sum "${RUNNER_TEMP}"/bundle-a/*.tar.gz | cut -d' ' -f1)
-          b=$(sha256sum "${RUNNER_TEMP}"/bundle-b/*.tar.gz | cut -d' ' -f1)
-          if [ "${a}" != "${b}" ]; then
-            echo "::error::Two builds of this commit produced different bundles (${a} vs ${b})."
-            exit 1
-          fi
-          echo "Reproducible: ${a}"
+          # Both archives, not only the tarball. The zip carries the same tree
+          # for WinGet, a manifest records its hash too, and ZIP is the format
+          # more likely to drift — it stores DOS local time rather than an
+          # epoch, so a timezone difference alone would move the digest.
+          for ext in tar.gz zip; do
+            a=$(sha256sum "${RUNNER_TEMP}"/bundle-a/*."${ext}" | cut -d' ' -f1)
+            b=$(sha256sum "${RUNNER_TEMP}"/bundle-b/*."${ext}" | cut -d' ' -f1)
+            if [ "${a}" != "${b}" ]; then
+              echo "::error::Two builds of this commit produced different .${ext} bundles (${a} vs ${b})."
+              exit 1
+            fi
+            echo "Reproducible .${ext}: ${a}"
+          done
 
       - name: Upload the bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bundle
-          path: ${{ runner.temp }}/bundle-a/*.tar.gz
+          path: |
+            ${{ runner.temp }}/bundle-a/*.tar.gz
+            ${{ runner.temp }}/bundle-a/*.zip
           if-no-files-found: error
           retention-days: 7
 

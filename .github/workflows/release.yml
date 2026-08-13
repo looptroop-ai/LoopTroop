@@ -216,6 +216,10 @@ jobs:
     if: needs.detect.outputs.proceed == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -268,6 +272,20 @@ jobs:
             exit 1
           fi
           node scripts/smoke-binary.mjs --archive "${archive}"
+
+      # Provenance: a signed statement that these bytes came from this workflow,
+      # this repository and this commit. It is what we ship instead of code
+      # signing, which was declined, and it is free.
+      #
+      # `contents: read` is listed alongside the two the action needs because a
+      # job-level block *replaces* the workflow default rather than adding to
+      # it — anything unlisted becomes `none`, and the checkout would fail.
+      - name: Attest the archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/binary/*.tar.gz
+            ${{ runner.temp }}/binary/*.zip
 
       - name: Upload the archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.1 (2026-08-13)
+
+
 ### Summary
 - Added a one-line install for macOS, Linux and Windows — `curl -fsSL https://www.looptroop.ovh/install | sh` and `irm https://www.looptroop.ovh/install.ps1 | iex` — which resolves the newest release that carries the files, checks what it downloaded against the checksum that release published, and refuses to install anything that does not match. It never installs Node and never asks for sudo.
 - Made LoopTroop installable with Homebrew, Scoop and Chocolatey. This is the first release that publishes to all three, and it does so in parallel with npm and the container image, gating none of them, so a package channel that fails cannot hold up a release.

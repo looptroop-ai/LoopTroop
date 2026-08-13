@@ -272,6 +272,10 @@ function installGlobally(tarball) {
 async function main(argv) {
   const options = parseArgs(argv)
   const workDir = mkdtempSync(resolve(tmpdir(), 'looptroop-install-'))
+  // What we resolved and installed, so the closing message can be checked
+  // against it. Stays null for `--tarball`, where a local file is taken on
+  // trust and there is no release to name a version.
+  let intended = null
 
   try {
     if (options.tarball !== null) {
@@ -306,7 +310,8 @@ async function main(argv) {
       }
 
       const { manifest: manifestAsset, tarball: tarballAsset } = installableAssets(release)
-      say(`Installing LoopTroop ${versionOf(release)}`)
+      intended = versionOf(release)
+      say(`Installing LoopTroop ${intended}`)
 
       const manifestPath = resolve(workDir, MANIFEST_ASSET)
       await download(manifestAsset.browser_download_url, manifestPath)
@@ -334,13 +339,28 @@ async function main(argv) {
   // Advisory only. `doctor` exits non-zero until OpenCode is set up, which is
   // the normal state seconds after installing, so a failing check here would
   // report a broken install that is not broken.
+  //
+  // This runs the bare command, deliberately: the question it answers is what
+  // the user's shell will do when they type `looptroop`, not whether files
+  // landed on disk. But that means the answer can come from a different copy
+  // earlier in PATH, so it is checked against what was actually installed
+  // rather than reported as though it must be the same thing. Reporting it
+  // blindly claimed a successful install of whatever version happened to
+  // answer — including, when npm's global bin is not on PATH at all, an older
+  // copy that the install never touched.
   const probe = spawnSync('looptroop', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  const reported = probe.status === 0 ? String(probe.stdout).trim() : null
   say('')
-  if (probe.status === 0) {
-    say(`Installed: looptroop ${String(probe.stdout).trim()}`)
-  } else {
+  if (reported === null) {
     say('Installed, but `looptroop` is not on your PATH yet.')
     say('Open a new terminal, or add npm\'s global bin directory to PATH: npm prefix -g')
+  } else if (intended === null || reported === intended) {
+    say(`Installed: looptroop ${reported}`)
+  } else {
+    say(`Installed: looptroop ${intended}`)
+    say('')
+    say(`But \`looptroop\` on your PATH is ${reported}, so another copy comes first.`)
+    say(`Find it with: ${process.platform === 'win32' ? 'where looptroop' : 'command -v looptroop'}`)
   }
   say('')
   say('Next: run `looptroop doctor` to check your setup, then `looptroop setup`.')

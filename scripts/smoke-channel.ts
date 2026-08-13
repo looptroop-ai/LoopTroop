@@ -18,7 +18,7 @@
  * throwaway tap and bucket, never the public ones, which a prerelease must not
  * touch.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -35,11 +35,21 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /** A tap name nobody publishes to, so a mistake here cannot reach users. */
 const LOCAL_TAP = 'looptroop-ai/smoketest' as const
 
+/**
+ * Thrown rather than exited, so the HTTP server below is always closed and the
+ * message always reaches the log. `process.exit()` with an open handle skips
+ * every `finally` and, on Windows, can end the process with a crash code
+ * instead of the one that was asked for.
+ */
+class SmokeError extends Error {
+  constructor(message: string, readonly detail: string[]) {
+    super(message)
+    this.name = 'SmokeError'
+  }
+}
+
 function fail(message: string, ...detail: string[]): never {
-  process.stderr.write(`\nFAIL: ${message}\n`)
-  for (const line of detail) process.stderr.write(`  ${line}\n`)
-  process.stderr.write('\n')
-  process.exit(1)
+  throw new SmokeError(message, detail.filter(Boolean))
 }
 
 function log(message: string): void {
@@ -56,33 +66,38 @@ function flag(name: string): string {
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
 /**
- * No shell, ever.
+ * Asynchronous, and without a shell.
  *
- * Everything invoked here is a real executable — `brew`, `pwsh`, a Scoop shim —
- * so a shell buys nothing and costs correctness: on Windows `shell: true` hands
- * the whole command line to `cmd.exe`, which re-parses it, and a PowerShell
- * script block full of `&` and `{` does not survive that. It cost a whole CI
- * round trip to find out.
+ * Asynchronous because the package manager downloads the bundle from a server
+ * running *in this process*: `spawnSync` blocks the event loop, so the request
+ * could never be answered and `scoop install` sat there until it reported "the
+ * operation has timed out".
+ *
+ * Without a shell because everything invoked here is a real executable —
+ * `brew`, `pwsh`, a shim — so a shell buys nothing and costs correctness: on
+ * Windows `shell: true` hands the whole line to `cmd.exe`, which re-parses it,
+ * and a PowerShell script block full of `&` and `{` does not survive that.
  */
-function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
-  const result = spawnSync(command, args, {
-    encoding: 'utf8',
-    env: { ...process.env, ...options.env },
+function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): Promise<RunResult> {
+  return new Promise((done, reject) => {
+    const child = spawn(command, args, { env: { ...process.env, ...options.env } })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.on('error', (error) => reject(new SmokeError(`${command} could not be started.`, [String(error)])))
+    child.on('close', (status) => {
+      if (status !== 0 && options.allowFailure !== true) {
+        reject(new SmokeError(`${command} ${args.join(' ')} exited ${status}.`, [stdout, stderr].filter(Boolean)))
+        return
+      }
+      done({ status, stdout, stderr })
+    })
   })
-  const output = { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
-  if (result.status !== 0 && options.allowFailure !== true) {
-    fail(
-      `${command} ${args.join(' ')} exited ${result.status}.`,
-      String(result.error ?? ''),
-      output.stdout,
-      output.stderr,
-    )
-  }
-  return output
 }
 
 /** `scoop` is a PowerShell command, so it can only be reached through pwsh. */
-function pwsh(script: string, options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
+function pwsh(script: string, options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): Promise<RunResult> {
   return run('pwsh', ['-NoProfile', '-Command', script], options)
 }
 
@@ -94,7 +109,7 @@ function pwsh(script: string, options: { env?: NodeJS.ProcessEnv, allowFailure?:
  * PowerShell runs it instead, with the path and every argument quoted here
  * rather than left to a parser.
  */
-function invoke(commandPath: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean }): RunResult {
+function invoke(commandPath: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean }): Promise<RunResult> {
   if (process.platform !== 'win32') return run(commandPath, args, options)
 
   const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
@@ -159,17 +174,17 @@ function pathWithoutNode(): string {
 }
 
 /** Asserts the installed command works and knows how it was installed. */
-function assertInstalled(commandPath: string): void {
+async function assertInstalled(commandPath: string): Promise<void> {
   const env = stripNode ? { ...childEnv, PATH: pathWithoutNode() } : childEnv
   if (stripNode) log('  (with every other node removed from PATH)')
 
-  const reported = invoke(commandPath, ['--version'], { env }).stdout.trim()
+  const reported = (await invoke(commandPath, ['--version'], { env })).stdout.trim()
   if (reported !== version) fail(`The installed command reports ${reported || '(nothing)'}, expected ${version}.`)
   log(`  runs, and reports ${version}`)
 
   // `doctor` exits non-zero on any failing check, and a fresh machine has
   // plenty; what is being asserted is the line it prints about this install.
-  const doctor = invoke(commandPath, ['doctor'], { env, allowFailure: true })
+  const doctor = await invoke(commandPath, ['doctor'], { env, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
   if (!new RegExp(`install\\b.*\\b${channel}\\b`).test(report)) {
     fail(
@@ -192,12 +207,12 @@ async function main(): Promise<void> {
     writeFileSync(join(tapDir, 'Formula', 'looptroop.rb'), descriptor)
 
     log(`Installing ${LOCAL_TAP}/looptroop...`)
-    run('brew', ['install', '--formula', `${LOCAL_TAP}/looptroop`])
+    await run('brew', ['install', '--formula', `${LOCAL_TAP}/looptroop`])
 
-    const prefix = run('brew', ['--prefix']).stdout.trim()
-    assertInstalled(join(prefix, 'bin', 'looptroop'))
+    const prefix = (await run('brew', ['--prefix'])).stdout.trim()
+    await assertInstalled(join(prefix, 'bin', 'looptroop'))
 
-    run('brew', ['uninstall', '--formula', `${LOCAL_TAP}/looptroop`], { allowFailure: true })
+    await run('brew', ['uninstall', '--formula', `${LOCAL_TAP}/looptroop`], { allowFailure: true })
     removeLocalTap(LOCAL_TAP)
   } else {
     // Scoop installs straight from a manifest file, so no bucket has to exist —
@@ -206,13 +221,13 @@ async function main(): Promise<void> {
     writeFileSync(manifestPath, descriptor)
 
     log('Installing from a local Scoop manifest...')
-    pwsh(`scoop install '${manifestPath.replaceAll("'", "''")}'`)
+    await pwsh(`scoop install '${manifestPath.replaceAll("'", "''")}'`)
 
-    const shim = pwsh('(Get-Command looptroop).Source').stdout.trim()
+    const shim = (await pwsh('(Get-Command looptroop).Source')).stdout.trim()
     if (shim === '') fail('Scoop installed without producing a `looptroop` command.')
-    assertInstalled(shim)
+    await assertInstalled(shim)
 
-    pwsh('scoop uninstall looptroop', { allowFailure: true })
+    await pwsh('scoop uninstall looptroop', { allowFailure: true })
   }
 
   log(`\nPASS: ${channel} installs ${version} and it runs.`)
@@ -220,6 +235,12 @@ async function main(): Promise<void> {
 
 try {
   await main()
+} catch (error) {
+  if (!(error instanceof SmokeError)) throw error
+  process.stderr.write(`\nFAIL: ${error.message}\n`)
+  for (const line of error.detail) process.stderr.write(`  ${line}\n`)
+  process.stderr.write('\n')
+  process.exitCode = 1
 } finally {
   server.close()
   rmSync(work, { recursive: true, force: true })

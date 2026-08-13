@@ -1,15 +1,29 @@
 #!/usr/bin/env node
 /**
- * Installs the built Chocolatey package, drives it, and uninstalls it again.
+ * Installs the Chocolatey package, drives it, and uninstalls it again.
  *
  *   node scripts/smoke-choco.ts --nupkg dist-choco/looptroop.9.9.9.nupkg
+ *   node scripts/smoke-choco.ts --from-feed --version 0.5.1
  *
- * From the local file, never the community feed, so this proves the package
- * before it is submitted — moderation is unbounded and a package that installs
- * and then does not run is discovered by whoever installed it.
+ * The two modes answer two different questions and both are needed.
  *
- * The uninstall half is not a formality. `Install-BinFile` writes a shim into
- * Chocolatey's `bin` directory, which survives the package directory being
+ * `--nupkg` installs the local file, never the community feed, and proves the
+ * package before it is submitted — moderation is unbounded, and a package that
+ * installs and then does not run is otherwise discovered by whoever installed
+ * it.
+ *
+ * `--from-feed` installs what Chocolatey actually serves, and is the only check
+ * that what moderation approved is what the release meant to publish. It cannot
+ * run at release time, because at that point the package has not been reviewed
+ * yet; `channel-republish.yml` runs it once moderation clears.
+ *
+ * Both modes make the same assertions, deliberately. A feed check that only
+ * confirmed the version would pass for a package whose channel marker went
+ * missing in packaging — and that package installs, runs, and tells every user
+ * the wrong command to upgrade it with.
+ *
+ * The uninstall half is not a formality either. `Install-BinFile` writes a shim
+ * into Chocolatey's `bin` directory, which survives the package directory being
  * deleted; an orphaned shim keeps answering `looptroop` with a path that no
  * longer exists, and nothing but this notices.
  */
@@ -56,8 +70,9 @@ function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv
 
 if (process.platform !== 'win32') fail('Chocolatey exists only on Windows.')
 
-const nupkg = resolve(flag('nupkg'))
-if (!existsSync(nupkg)) fail(`No package at ${nupkg}.`)
+const fromFeed = process.argv.includes('--from-feed')
+const nupkg = fromFeed ? null : resolve(flag('nupkg'))
+if (nupkg !== null && !existsSync(nupkg)) fail(`No package at ${nupkg}.`)
 
 // Explicit for the same reason `build-choco.ts` takes it: a repair runs from a
 // checkout whose package.json has moved past the release being repaired.
@@ -70,13 +85,15 @@ const childEnv = { LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mo
 const chocoBin = join(process.env.ChocolateyInstall ?? 'C:\\ProgramData\\chocolatey', 'bin', 'looptroop.exe')
 
 try {
-  log(`Installing ${nupkg} from the local directory...`)
+  log(fromFeed
+    ? `Installing looptroop ${version} from the community feed...`
+    : `Installing ${nupkg} from the local directory...`)
   // `--ignore-dependencies`: Node and git are real dependencies of the package
   // and the runner already has both. Installing them here would add minutes and
   // prove nothing about this package.
   run('choco', [
     'install', 'looptroop', '--version', version,
-    '--source', `"${dirname(nupkg)}"`,
+    ...(nupkg === null ? [] : ['--source', `"${dirname(nupkg)}"`]),
     '--yes', '--no-progress', '--ignore-dependencies',
   ])
 
@@ -87,18 +104,33 @@ try {
   if (reported !== version) fail(`The installed command reports ${reported || '(nothing)'}, expected ${version}.`)
   log(`  runs, and reports ${version}`)
 
+  // `--json`, so this reads the install check itself rather than searching the
+  // whole report for two words that could co-occur in an unrelated remedy line.
+  //
   // `doctor` exits non-zero on any failing check and a fresh machine has
-  // plenty; the assertion is the line it prints about this install.
-  const doctor = run(`"${chocoBin}"`, ['doctor'], { env: childEnv, allowFailure: true })
+  // plenty, so its status is not the assertion; the install check's detail is.
+  const doctor = run(`"${chocoBin}"`, ['doctor', '--json'], { env: childEnv, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
-  if (!/install\b.*\bchocolatey\b/.test(report)) {
+
+  let checks: { name?: string, detail?: string }[]
+  try {
+    checks = JSON.parse(doctor.stdout).checks
+  } catch {
+    fail('`doctor --json` did not produce parseable JSON.', report.slice(0, 3000))
+  }
+
+  const install = checks.find((check) => check.name === 'install')
+  if (install === undefined) fail('`doctor --json` reports no install check at all.', report.slice(0, 3000))
+
+  // `${channel} (upgrade: ${command})`, so the channel is the first word.
+  if (!/^chocolatey\b/.test(install.detail ?? '')) {
     fail(
       '`doctor` does not report this as a chocolatey install.',
+      `It reports: ${install.detail ?? '(no detail)'}`,
       'That means the upgrade command shown to the user is the wrong one.',
-      report.slice(0, 3000),
     )
   }
-  log('  `doctor` reports the chocolatey channel')
+  log(`  \`doctor\` reports the chocolatey channel: ${install.detail}`)
 
   log('Uninstalling...')
   run('choco', ['uninstall', 'looptroop', '--yes', '--no-progress'])
@@ -111,7 +143,8 @@ try {
   }
   log('  shim removed')
 
-  log(`\nPASS: chocolatey installs ${version}, it runs, and uninstalling cleans up after itself.`)
+  log(`\nPASS: ${fromFeed ? 'the community feed serves' : 'chocolatey installs'} ${version}, it runs, `
+    + 'it knows which channel it came from, and uninstalling cleans up after itself.')
 } finally {
   rmSync(work, { recursive: true, force: true })
 }

@@ -322,8 +322,16 @@ async function main(argv) {
       if (options.dryRun) return say(`would install ${local}`)
       installGlobally(local)
     } else {
+      // 100 is the API's maximum page size, and this deliberately reads one
+      // page rather than paginating. The endpoint returns newest first and the
+      // answer is normally the first entry, so paging further would only matter
+      // if the hundred most recent releases in a row carried no installable
+      // assets — which would mean something far more wrong than a lookup.
+      //
+      // The failure is loud either way: an unfound release is an error naming
+      // how many were examined, never a quiet fallback to something older.
       const url = options.version === null
-        ? `${API}/repos/${REPO}/releases?per_page=50`
+        ? `${API}/repos/${REPO}/releases?per_page=100`
         : `${API}/repos/${REPO}/releases/tags/v${options.version}`
       const payload = await getJson(url)
       const releases = Array.isArray(payload) ? payload : [payload]

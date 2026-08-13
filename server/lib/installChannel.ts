@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 import { isSea } from './isSea'
 
-export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'binary' | 'container' | 'source' | 'unknown'
+export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
 
 export interface InstallInfo {
   channel: InstallChannel
@@ -20,6 +20,11 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // `looptroop stop` first, because Windows will not replace a running
   // executable and the daemon holds this one open.
   winget: 'looptroop stop && winget upgrade LoopTroopAI.LoopTroop',
+  // No single command exists here: pacman does not touch the AUR, and which
+  // helper does is the user's choice. `yay` is the most widely installed, and
+  // naming one that works beats a sentence that tells them nothing they did
+  // not already know.
+  aur: 'yay -Syu looptroop-bin   (or your AUR helper of choice)',
   // The installer's own `--binary` mode, which replaces the executable in
   // place: it stops the daemon, swaps the file, checks the new one runs, rolls
   // back if it does not, and starts the daemon again if it had been running.

@@ -199,6 +199,7 @@ review gates.
 | **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
 | **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` |
 | **WinGet** (Windows) | `winget install LoopTroopAI.LoopTroop` | `looptroop stop`<br>`winget upgrade LoopTroopAI.LoopTroop` |
+| **AUR** (Arch Linux) | `yay -S looptroop-bin` | `yay -Syu looptroop-bin` |
 | **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
 | **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
 
@@ -206,6 +207,15 @@ WinGet arrives later than the others for the same reason Chocolatey does: every
 submission is a pull request reviewed by people at Microsoft. `looptroop stop`
 before upgrading is not optional there — Windows will not replace a running
 executable, and the daemon holds it open.
+
+> **The AUR package is not published yet.** New registrations at the AUR are
+> closed following a security incident, so there is no account to publish
+> `looptroop-bin` from. The package is written and tested — CI builds it with
+> `makepkg`, lints it with `namcap`, installs it with `pacman` and removes it
+> again on every change — and the release workflow will publish it once an
+> account exists. Until then, Arch users can install with npm, or build the
+> package from this repository. `yay` is one AUR helper of several; `paru` and
+> the rest work the same way.
 
 `looptroop doctor` tells you which of these your copy came from and the exact
 command that upgrades it.

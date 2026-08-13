@@ -10,6 +10,7 @@ import {
   DESCRIPTOR_PATH,
   parseDescriptor,
   parseWingetInstaller,
+  renderAurPackage,
   renderWingetManifests,
   WINGET_IDENTIFIER,
   WINGET_MANIFEST_VERSION,
@@ -23,6 +24,7 @@ import {
   renderScoopManifest,
   renderVerification,
   SHORT_DESCRIPTION,
+  AUR_PACKAGE_NAME,
   type Channel,
 } from '../scripts/package-manifests.ts'
 
@@ -380,5 +382,113 @@ describe('the WinGet manifests', () => {
 
   it('reads nothing out of a file that is not a WinGet manifest', () => {
     expect(parseWingetInstaller('not yaml at all')).toEqual({ version: null, url: null, sha256: null })
+  })
+})
+
+/**
+ * The AUR package, which cannot be published yet.
+ *
+ * Registration at the AUR is closed after a security incident, so these render
+ * a package nobody can push. That is the reason to test them rather than a
+ * reason not to: `scripts/smoke-aur.ts` proves the package builds and installs
+ * in a real Arch container, and these pin the decisions that make it a
+ * *correct* AUR submission rather than merely a working one.
+ */
+describe('the AUR package', () => {
+  const AUR_INPUTS = {
+    version: '9.9.9',
+    url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz',
+    sha256: '3c5fe4640000000000000000000000000000000000000000000000000000abcd',
+  }
+
+  const rendered = () => renderAurPackage(AUR_INPUTS)
+
+  it('renders exactly the two files the AUR requires', () => {
+    expect(Object.keys(rendered()).sort()).toEqual(['.SRCINFO', 'PKGBUILD'])
+  })
+
+  /**
+   * Arch's convention: a bare name builds from source, a `-bin` suffix installs
+   * prebuilt artefacts. This installs a bundle a release already built, so the
+   * bare name would promise a from-source build that the PKGBUILD does not do.
+   */
+  it('is named for what it actually does', () => {
+    expect(AUR_PACKAGE_NAME).toBe('looptroop-bin')
+    expect(rendered().PKGBUILD).toContain('pkgname=looptroop-bin')
+  })
+
+  /**
+   * The bundle contains no compiled code and no platform-specific packages —
+   * `verify-no-native-addons.mjs` is what enforces that — so one package
+   * genuinely serves x86_64 and aarch64. Splitting it would publish two
+   * identical packages.
+   */
+  it('is architecture-independent, because the bundle is', () => {
+    expect(rendered().PKGBUILD).toContain("arch=('any')")
+    expect(rendered()['.SRCINFO']).toContain('\tarch = any')
+  })
+
+  /**
+   * Arch ships a current `nodejs`, so depending on it costs an Arch user one
+   * package and saves them the 160 MB second Node the standalone executable
+   * would bring. A floor rather than a pin: a rolling distribution expects the
+   * current runtime.
+   */
+  it('depends on the distribution\'s Node rather than carrying one', () => {
+    expect(rendered().PKGBUILD).toContain("depends=('nodejs>=24' 'git')")
+  })
+
+  /** `doctor` runs without gh and reports it as optional, so a hard dependency would overstate it. */
+  it('treats gh as optional, the way doctor does', () => {
+    expect(rendered().PKGBUILD).toContain('optdepends=(')
+    expect(rendered().PKGBUILD).toContain('github-cli')
+    expect(rendered().PKGBUILD).not.toContain("'github-cli'")
+  })
+
+  /** Installing both would put two things at /usr/bin/looptroop. */
+  it('declares itself as the thing a `looptroop` package would be', () => {
+    expect(rendered().PKGBUILD).toContain("provides=('looptroop')")
+    expect(rendered().PKGBUILD).toContain("conflicts=('looptroop')")
+  })
+
+  /**
+   * Without the marker, detection falls through every path pattern and answers
+   * `unknown` — which is what it did when this package was first built, and
+   * what `smoke-aur.ts` caught.
+   */
+  it('writes the channel marker, so doctor names the right upgrade command', () => {
+    expect(rendered().PKGBUILD).toContain(`printf 'aur' >`)
+    expect(rendered().PKGBUILD).toContain(CHANNEL_MARKER)
+  })
+
+  /** They cannot run on Arch, and namcap asks for a pwsh dependency to satisfy them. */
+  it('drops the Windows wrappers the shared bundle carries', () => {
+    expect(rendered().PKGBUILD).toContain('looptroop.cmd')
+    expect(rendered().PKGBUILD).toContain('looptroop.ps1')
+    expect(rendered().PKGBUILD).toMatch(/rm -f[\s\S]*looptroop\.ps1/)
+  })
+
+  /**
+   * The AUR rejects a push whose `.SRCINFO` disagrees with its `PKGBUILD`.
+   * Ours is rendered rather than generated, so CI diffs it against `makepkg
+   * --printsrcinfo` in an Arch container; these only check it is derived from
+   * the same inputs.
+   */
+  it('renders a .SRCINFO agreeing with the PKGBUILD it accompanies', () => {
+    const { PKGBUILD, '.SRCINFO': srcinfo } = rendered()
+
+    expect(srcinfo).toContain(`pkgbase = ${AUR_PACKAGE_NAME}`)
+    expect(srcinfo).toContain(`\tpkgver = ${AUR_INPUTS.version}`)
+    expect(srcinfo).toContain(`\tsha256sums = ${AUR_INPUTS.sha256}`)
+    expect(PKGBUILD).toContain(`pkgver=${AUR_INPUTS.version}`)
+    expect(PKGBUILD).toContain(`sha256sums=('${AUR_INPUTS.sha256}')`)
+    // Every dependency the PKGBUILD declares has to appear as its own line.
+    expect(srcinfo).toContain('\tdepends = nodejs>=24')
+    expect(srcinfo).toContain('\tdepends = git')
+  })
+
+  it('refuses inputs that are not a version and a sha256', () => {
+    expect(() => renderAurPackage({ ...AUR_INPUTS, version: 'latest' })).toThrow()
+    expect(() => renderAurPackage({ ...AUR_INPUTS, sha256: 'nope' })).toThrow()
   })
 })

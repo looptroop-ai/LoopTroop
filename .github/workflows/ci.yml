@@ -752,6 +752,56 @@ jobs:
         run: npm run test
 
   # ---------------------------------------------------------------------------
+  # The AUR package, which cannot be published yet and is validated anyway.
+  # ---------------------------------------------------------------------------
+  # New registrations at the AUR are closed after a security incident, so there
+  # is no account to push with. That makes this worth *more*, not less: every
+  # reason a submission would be rejected can be found without an account, and
+  # the alternative is finding them during the first release after registration
+  # reopens, against a registry with no staging environment.
+  #
+  # In an `archlinux` container because none of this exists anywhere else:
+  # `makepkg`, `namcap`, and a `pacman` that can install what was built.
+  aur-package:
+    name: AUR package (arch)
+    needs: [bundle]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 20
+    steps:
+      # `--needed` so a re-run does not reinstall, and `nodejs` from Arch rather
+      # than `setup-node`: this job runs the scripts through Node's own type
+      # stripping, which is what `verify:strip-types` already guarantees works.
+      - name: Install the Arch toolchain
+        run: |
+          set -eu
+          pacman -Syu --noconfirm --needed base-devel namcap nodejs npm git sudo
+          node --version
+
+      # makepkg refuses to run as root, which is the whole reason this exists.
+      - name: Create the unprivileged build user
+        run: |
+          set -eu
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # Renders the PKGBUILD, checks `.SRCINFO` against `makepkg --printsrcinfo`,
+      # lints with namcap, builds, installs with pacman, drives the installed
+      # command, and removes it again.
+      - name: Build, lint, install and remove the package
+        run: |
+          set -eu
+          chmod -R a+rX .
+          node scripts/smoke-aur.ts --bundle "${RUNNER_TEMP}/bundle/looptroop-"*-bundle.tar.gz
+
   # One status for everything that decides whether a release can be packaged.
   # ---------------------------------------------------------------------------
   # The jobs above prove the release artefacts: the bundle is reproducible and
@@ -771,7 +821,7 @@ jobs:
   # unconditional, so skipped means a dependency of theirs failed.
   packaging:
     name: Packaging
-    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install]
+    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install, aur-package]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -720,7 +720,7 @@ async function main(argv) {
             ? `No published release carries a ${decision.target} executable yet.`
             : `Release v${options.version} carries no ${decision.target} executable.`,
           `Looked at ${releases.length} release(s) of ${REPO}.`,
-          'The standalone executables were added in 0.5.2; earlier releases have only the npm package.',
+          'Releases from before the standalone executables existed carry only the npm package.',
         )
       }
 

@@ -109,8 +109,9 @@ const childEnv = { LOOPTROOP_CONFIG_DIR: configDir, LOOPTROOP_OPENCODE_MODE: 'mo
 const TAG = `v${version}`
 /**
  * A release from before the executables existed, which is not a hypothetical:
- * every release up to 0.5.1 is one, and `--binary` has to refuse them by name
- * rather than by whatever the download of a missing file happens to return.
+ * every release published so far is one, and `--binary` has to refuse them by
+ * name rather than by whatever the download of a missing file happens to
+ * return.
  */
 const OLD_TAG = 'v0.0.1'
 const manifest = {

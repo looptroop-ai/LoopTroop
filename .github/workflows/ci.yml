@@ -596,7 +596,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive=$(ls "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}.tar.gz "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}.zip 2>/dev/null | head -1)
+          # `find`, not `ls` with two globs: one of them never matches — the
+          # archive is a tarball or a zip, never both — and `ls` exits 2 for the
+          # miss, which `set -e` turns into a job failure before the script runs.
+          archive=$(find "${RUNNER_TEMP}/bin-a" -maxdepth 1 \( -name 'looptroop-*.tar.gz' -o -name 'looptroop-*.zip' \) | head -1)
+          if [ -z "${archive}" ]; then
+            echo "::error::The build produced no archive in ${RUNNER_TEMP}/bin-a."
+            exit 1
+          fi
           node scripts/smoke-binary.mjs --archive "${archive}"
 
       - name: Upload the archive
@@ -608,6 +615,50 @@ jobs:
             ${{ runner.temp }}/bin-a/*.zip
           if-no-files-found: error
           retention-days: 7
+
+
+  # WinGet, from manifests rendered in the job and the Windows binary archive
+  # served on loopback — never the public winget-pkgs repository. A submission
+  # there is a human-reviewed pull request, so the package is proved before it
+  # is offered rather than after.
+  #
+  # This channel installs the standalone binary rather than the bundle the
+  # other three take, and not by preference: `winget validate` refuses a
+  # portable whose `RelativeFilePath` is anything but an `.exe`, and rejected
+  # the bundle's `.cmd` shim outright. Keeping that rejection caught here is
+  # most of why this job exists.
+  winget-install:
+    name: WinGet install (windows)
+    needs: [binary]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the Windows binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: binary-win-x64
+          path: ${{ runner.temp }}/binary
+
+      # Preinstalled on the Windows Server 2025 image and absent from 2022.
+      # Checked rather than assumed, so a runner image change fails with a clear
+      # message instead of deep inside the smoke script.
+      - name: Check winget is available
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Error 'This runner image does not ship winget.'
+          }
+          winget --version
+
+      - name: Validate the manifests, install, run, and uninstall
+        shell: bash
+        run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/binary/*.zip)"
 
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
@@ -690,7 +741,7 @@ jobs:
   # unconditional, so skipped means a dependency of theirs failed.
   packaging:
     name: Packaging
-    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary]
+    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary, winget-install]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

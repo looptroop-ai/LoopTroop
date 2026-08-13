@@ -114,7 +114,13 @@ function detectFromShape(moduleDir: string): InstallChannel {
   // WinGet unpacks a portable archive and runs nothing afterwards, so unlike
   // the other three it cannot leave a marker file behind. The install path is
   // the only evidence there is, and WinGet owns this directory outright.
-  if (/\/WinGet\/Packages\//i.test(normalized)) return 'winget'
+  //
+  // Both `Packages` and `Links`, because a portable is reached through an alias
+  // WinGet puts in `Links` and the running executable resolves to that rather
+  // than to the unpacked copy. Matching only `Packages` made a WinGet install
+  // report itself as a plain downloaded binary — right about the artifact,
+  // wrong about the upgrade command, which is the whole point of asking.
+  if (/\/Microsoft\/WinGet\//i.test(normalized)) return 'winget'
   if (/\/node_modules\/looptroop\//.test(normalized)) return 'npm'
 
   // A checkout has the sources a published package never ships.

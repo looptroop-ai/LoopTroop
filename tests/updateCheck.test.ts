@@ -47,6 +47,9 @@ describe('install channel detection', () => {
     // the other three it cannot leave a marker file. The path is the only
     // evidence, and WinGet owns this directory outright.
     ['/c/Users/u/AppData/Local/Microsoft/WinGet/Packages/LoopTroopAI.LoopTroop_Microsoft.Winget.Source_8wekyb3d8bbwe/looptroop/dist/server/cli', 'winget'],
+    // A portable is reached through the alias WinGet puts in `Links`, and the
+    // running executable resolves to that rather than to the unpacked copy.
+    ['/c/Users/u/AppData/Local/Microsoft/WinGet/Links', 'winget'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
   })

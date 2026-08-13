@@ -130,7 +130,18 @@ function detectFromShape(moduleDir: string): InstallChannel {
   // than to the unpacked copy. Matching only `Packages` made a WinGet install
   // report itself as a plain downloaded binary — right about the artifact,
   // wrong about the upgrade command, which is the whole point of asking.
-  if (/\/Microsoft\/WinGet\//i.test(normalized)) return 'winget'
+  //
+  // Not `/Microsoft/WinGet/`, because only a *user*-scope install lives under
+  // `%LOCALAPPDATA%\Microsoft\WinGet`. A machine-scope one lives at
+  // `C:\Program Files\WinGet\Links`, with no `Microsoft` in the path at all —
+  // so the narrower pattern reported every machine-wide install as a plain
+  // downloaded binary, and gave those users the wrong upgrade command.
+  //
+  // Still anchored on the two directories WinGet owns rather than on the word
+  // alone: a checkout that merely sits inside a directory called `winget` —
+  // `winget-pkgs`, for one, which is exactly what somebody working on this
+  // package would have — must not be read as an install.
+  if (/\/WinGet\/(Links|Packages)(\/|$)/i.test(normalized)) return 'winget'
   if (/\/node_modules\/looptroop\//.test(normalized)) return 'npm'
 
   // A checkout has the sources a published package never ships.

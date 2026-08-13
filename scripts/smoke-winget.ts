@@ -102,10 +102,29 @@ const server = createServer((request, response) => {
   createReadStream(archivePath).pipe(response)
 })
 
-/** Where WinGet puts the alias for a portable package. */
+/**
+ * Where WinGet puts the alias for a machine-scope portable package.
+ *
+ * Machine scope, not user scope, and the reason is the runner rather than a
+ * preference: CI runs elevated, and `winget uninstall` refuses outright to
+ * remove a user-scope package when it is running with administrator
+ * privileges —
+ *
+ *   Found LoopTroop [ARP\\User\\X64\\LoopTroopAI.LoopTroop__DefaultSource]
+ *   The package installed for user scope cannot be uninstalled when running
+ *   with administrator privileges.
+ *
+ * That left the job installing something it could not remove. Pinning the
+ * scope on both operations makes the two agree regardless of how the runner
+ * image happens to be configured, which is what changed under us.
+ *
+ * A real user installing unelevated still gets user scope; `installChannel`
+ * recognises both, which is a thing this change had to fix — the machine-scope
+ * path has no `Microsoft` in it.
+ */
 const linkPath = join(
-  process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? 'C:\\', 'AppData', 'Local'),
-  'Microsoft', 'WinGet', 'Links', 'looptroop.exe',
+  process.env.ProgramFiles ?? 'C:\\Program Files',
+  'WinGet', 'Links', 'looptroop.exe',
 )
 
 async function main(): Promise<void> {
@@ -134,6 +153,7 @@ async function main(): Promise<void> {
   log('Installing from the local manifest...')
   await invoke('winget', [
     'install', '--manifest', manifestDir,
+    '--scope', 'machine',
     '--accept-package-agreements', '--accept-source-agreements',
     '--disable-interactivity', '--skip-dependencies',
   ])
@@ -177,6 +197,7 @@ async function main(): Promise<void> {
   // which refuses to be queried until its agreements are accepted.
   await invoke('winget', [
     'uninstall', '--manifest', manifestDir,
+    '--scope', 'machine',
     '--accept-source-agreements', '--disable-interactivity',
   ])
 
@@ -202,5 +223,12 @@ try {
   process.exitCode = 1
 } finally {
   server.close()
-  rmSync(work, { recursive: true, force: true })
+  // Retried, and never allowed to fail the run — see `smoke-binary.mjs`:
+  // Windows holds handles briefly after a process exits, and `force` swallows
+  // only ENOENT, so cleanup can fail a smoke that has already passed.
+  try {
+    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch (error) {
+    process.stderr.write(`\nCould not remove ${work}: ${String(error)}\n`)
+  }
 }

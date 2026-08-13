@@ -50,6 +50,12 @@ describe('install channel detection', () => {
     // A portable is reached through the alias WinGet puts in `Links`, and the
     // running executable resolves to that rather than to the unpacked copy.
     ['/c/Users/u/AppData/Local/Microsoft/WinGet/Links', 'winget'],
+    // Machine scope, which is a different path entirely: no `Microsoft` in it
+    // at all. Matching only the user-scope path reported every machine-wide
+    // install as a plain downloaded binary, and handed those users an upgrade
+    // command that would not upgrade anything.
+    ['/c/Program Files/WinGet/Links', 'winget'],
+    ['/c/Program Files/WinGet/Packages/LoopTroopAI.LoopTroop_Microsoft.Winget.Source_8wekyb3d8bbwe/looptroop/dist/server/cli', 'winget'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
   })
@@ -65,6 +71,17 @@ describe('install channel detection', () => {
     '/home/linuxbrew/.linuxbrew/lib/node_modules/looptroop/dist/server/lib',
   ])('calls a global npm install under a brew prefix npm: %s', (moduleDir) => {
     expect(detectInstallChannel(moduleDir)).toBe('npm')
+  })
+
+  /**
+   * The matching risk that came with covering machine scope. Anchoring on the
+   * word `WinGet` alone would read a checkout that merely sits inside a
+   * directory of that name as an install — and `winget-pkgs` is exactly what
+   * somebody working on this package has checked out.
+   */
+  it('does not read a checkout beside the word winget as a WinGet install', () => {
+    expect(detectInstallChannel('/home/u/src/winget-pkgs/looptroop/dist/server/lib')).not.toBe('winget')
+    expect(detectInstallChannel('/home/u/WinGet/notes/looptroop/dist/server/lib')).not.toBe('winget')
   })
 
   it('detects a container from the build-time marker', () => {

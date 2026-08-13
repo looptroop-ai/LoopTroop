@@ -74,11 +74,25 @@ const NODE_HELP = {
   linux: 'Use your distribution\'s package or https://github.com/nvm-sh/nvm',
 }
 
+/**
+ * Refuses to go on, and says why.
+ *
+ * Thrown rather than `process.exit`ed. Calling `process.exit()` while a fetch
+ * connection is still open crashes Node on Windows with 0xC0000409 instead of
+ * exiting 1 — so a user who gave a bad checksum, or an old Node, saw a crash
+ * where a message belonged. Unwinding to the top and letting the process end on
+ * its own gets the message out and the exit code right on every platform.
+ */
+class InstallError extends Error {
+  constructor(message, detail) {
+    super(message)
+    this.name = 'InstallError'
+    this.detail = detail
+  }
+}
+
 function fail(message, ...detail) {
-  process.stderr.write(`\nlooptroop install: ${message}\n`)
-  for (const line of detail) process.stderr.write(`  ${line}\n`)
-  process.stderr.write('\n')
-  process.exit(1)
+  throw new InstallError(message, detail.filter(Boolean))
 }
 
 function say(message) {
@@ -385,7 +399,17 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  await main(process.argv.slice(2))
+  try {
+    await main(process.argv.slice(2))
+  } catch (error) {
+    if (!(error instanceof InstallError)) throw error
+    process.stderr.write(`\nlooptroop install: ${error.message}\n`)
+    for (const line of error.detail) process.stderr.write(`  ${line}\n`)
+    process.stderr.write('\n')
+    // Not `process.exit`: see InstallError. The process ends once the last
+    // handle closes, which for a finished fetch is immediately.
+    process.exitCode = 1
+  }
 }
 '@
 # --- END installer-core ---

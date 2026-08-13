@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -290,6 +290,32 @@ describe('installer core', () => {
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('Installing with npm')
+  })
+
+  /**
+   * macOS reaches its temporary directory through `/var`, a symlink to
+   * `/private/var`, and the wrappers write the core there and run it. Node
+   * resolves symlinks when it records `import.meta.url` and does not when it
+   * records `argv[1]`, so a naive main-module check is false on exactly one
+   * platform — and a false answer is not an error, it is a program that does
+   * nothing and exits 0. The installer "succeeded" and installed nothing.
+   */
+  it('runs when it was reached through a symlinked directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-symlink-'))
+    tempDirs.push(dir)
+    mkdirSync(join(dir, 'real'))
+    copyFileSync(CORE, join(dir, 'real', 'installer-core.mjs'))
+    symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')
+
+    const result = await new Promise<{ status: number | null, stdout: string }>((done) => {
+      const child = spawn(process.execPath, [join(dir, 'link', 'installer-core.mjs'), '--help'])
+      let stdout = ''
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+      child.on('close', (status) => done({ status, stdout }))
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('Usage:')
   })
 
   it('reports a missing local tarball instead of installing something else', async () => {

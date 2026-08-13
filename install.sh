@@ -61,10 +61,10 @@ cat > "$core" <<'LOOPTROOP_INSTALLER_CORE'
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 // Overridable so the tests can serve a fixture release index from localhost.
@@ -365,7 +365,30 @@ async function main(argv) {
   say('Next: run `looptroop doctor` to check your setup, then `looptroop setup`.')
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+/**
+ * Is this file the program being run, rather than something imported?
+ *
+ * Through `realpath` on both sides, which is not pedantry. The wrappers write
+ * this file into the system temporary directory and run it from there, and on
+ * macOS that directory is reached through `/var`, a symlink to `/private/var`.
+ * Node resolves symlinks when it records `import.meta.url` and does not when it
+ * records `argv[1]`, so a naive comparison is false on exactly one platform —
+ * and a false answer here is not an error, it is a program that does nothing at
+ * all and exits 0. The installer "succeeded" and installed nothing.
+ */
+function isMainModule() {
+  const invoked = process.argv[1]
+  if (invoked === undefined) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(invoked)
+  } catch {
+    // Either path may not exist under an unusual loader; fall back to comparing
+    // them unresolved rather than refusing to run.
+    return import.meta.url === pathToFileURL(invoked).href
+  }
+}
+
+if (isMainModule()) {
   await main(process.argv.slice(2))
 }
 LOOPTROOP_INSTALLER_CORE

@@ -211,6 +211,8 @@ jobs:
       tarball: ${{ steps.manifest.outputs.tarball }}
       sha256: ${{ steps.manifest.outputs.sha256 }}
       integrity: ${{ steps.manifest.outputs.integrity }}
+      bundle: ${{ steps.manifest.outputs.bundle }}
+      bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -246,6 +248,19 @@ jobs:
       - name: Pack
         run: npm pack
 
+      # The archive Homebrew, Scoop and Chocolatey install. Built here, from the
+      # same tree the tarball came from, so all four channels for a version are
+      # cut from one build rather than from four resolutions of `^` ranges on
+      # four different days. `--out .` puts it beside the tarball, which is what
+      # lets every downstream job treat "the release's assets" as one directory.
+      - name: Build the release bundle
+        run: node scripts/build-bundle.mjs --out .
+
+      # The wrappers are release assets, so a user who downloaded install.sh
+      # last month is running bytes this release recorded a hash for.
+      - name: Check the installer wrappers are in sync with their core
+        run: npm run installers:check
+
       # Binds the bytes to the commit. Every downstream job recomputes both
       # digests and refuses to proceed on a mismatch, so a corrupted or
       # substituted artefact download fails loudly before it reaches npm rather
@@ -255,13 +270,18 @@ jobs:
         run: |
           set -euo pipefail
           tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
-          npm run release:manifest -- "${tarball}"
+          bundle="looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          npm run release:manifest -- "${tarball}" \
+            --asset "${bundle}" --asset install.sh --asset install.ps1
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
             const out = require("node:fs").createWriteStream(process.env.GITHUB_OUTPUT,{flags:"a"})
             out.write(`tarball=${m.tarball}\n`)
             out.write(`sha256=${m.sha256}\n`)
             out.write(`integrity=${m.integrity}\n`)
+            const bundle = Object.keys(m.assets).find((n) => n.endsWith("-bundle.tar.gz"))
+            out.write(`bundle=${bundle}\n`)
+            out.write(`bundle_sha256=${m.assets[bundle].sha256}\n`)
             out.end()
           '
 
@@ -271,6 +291,9 @@ jobs:
           name: release-artefacts
           path: |
             looptroop-*.tgz
+            looptroop-*-bundle.tar.gz
+            install.sh
+            install.ps1
             release-manifest.json
           if-no-files-found: error
           retention-days: 14
@@ -309,11 +332,24 @@ jobs:
         with:
           name: release-artefacts
 
-      - name: Verify the artefact matches the manifest
-        run: npm run release:verify-artifact -- "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json
+      # Every asset, not only the tarball: three of the four are consumed by
+      # something other than npm, and a bundle that travelled with the wrong
+      # manifest would otherwise be caught by whoever installed it.
+      - name: Verify every artefact matches the manifest
+        run: >
+          npm run release:verify-artifact --
+          "looptroop-${{ needs.detect.outputs.version }}.tgz" release-manifest.json --assets-dir .
 
       - name: Install the tarball and exercise the CLI
         run: node scripts/smoke-install.mjs --tarball "looptroop-${{ needs.detect.outputs.version }}.tgz"
+
+      # The bundle is built once, on Linux, and unpacked on macOS and Windows.
+      # This matrix is the only place before publication where it is executed on
+      # a platform other than the one that made it.
+      - name: Unpack the bundle and drive the CLI
+        run: >
+          node scripts/smoke-bundle.mjs
+          --bundle "looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
 
   # A read-only install prefix is how a lot of real installs look (a global
   # prefix owned by root, a container image with a read-only layer). Linux only:
@@ -438,13 +474,15 @@ jobs:
       # Creates a draft, which creates no tag. A resume reuses the existing
       # draft rather than creating a second one.
       #
-      # The draft's assets are the record of what this release is. On a resume
-      # they are not overwritten blind: `npm pack` is reproducible for an
-      # identical tree, so a rebuild that produces different bytes means the
-      # tree changed under a version that is already partly released, and
-      # clobbering would quietly replace the artefact a user may already have
-      # downloaded — or, once npm has the version, make the GitHub asset
-      # disagree with the registry. Different bytes stop the release instead.
+      # The reconciliation this needs used to be a page of shell naming the two
+      # files a release was made of. A release now carries four — the npm
+      # tarball, the bundle the managed package channels install, and the two
+      # installer scripts — and a set that changes between versions is not
+      # something to reconcile by hand. The decisions live in
+      # `scripts/release-assets.ts`, where they are tested; `release-draft.ts`
+      # drives `gh` around them and keeps the rule that mattered: all assets or
+      # none, and different bytes under a version already partly released are a
+      # hard stop rather than a clobber.
       - name: Create or update the draft release
         if: needs.detect.outputs.dry_run == 'false'
         env:
@@ -454,88 +492,12 @@ jobs:
           set -euo pipefail
           prerelease=()
           case "${VERSION}" in *-*) prerelease=(--prerelease) ;; esac
-
-          # The artefact is bound to the commit it was built from, and the tag
-          # this release eventually carries must name that same commit. They are
-          # equal by construction — every job checks out GITHUB_SHA — so a
-          # difference means an artefact from somewhere else.
-          MANIFEST_COMMIT=$(node -p "require('./release-manifest.json').commit || ''")
-          if [ "${MANIFEST_COMMIT}" != "${GITHUB_SHA}" ]; then
-            echo "::error::The artefact was built from '${MANIFEST_COMMIT:-(unknown)}', but this release is cut from ${GITHUB_SHA}."
-            exit 1
-          fi
-
-          if gh release view "v${VERSION}" >/dev/null 2>&1; then
-            echo "Draft for v${VERSION} already exists; updating it."
-            gh release edit "v${VERSION}" --notes-file /tmp/notes.md "${prerelease[@]}"
-
-            # `|| true` because a draft with no assets yet is an ordinary resume
-            # state, not a failure.
-            existing_assets=$(gh release view "v${VERSION}" --json assets --jq '.assets[].name' 2>/dev/null || true)
-            has_manifest=false
-            has_tarball=false
-            # Tested with `if`, not `grep ... && flag=true`: under `set -e` a
-            # top-level `A && B` whose left side fails is a failing command, so
-            # the absent-asset case — the whole reason this branch exists —
-            # would exit the step. An `if` condition is exempt.
-            if printf '%s\n' "${existing_assets}" | grep -qx 'release-manifest.json'; then
-              has_manifest=true
-            fi
-            if printf '%s\n' "${existing_assets}" | grep -qx "looptroop-${VERSION}.tgz"; then
-              has_tarball=true
-            fi
-
-            # Both assets, or neither. A resume is exactly the state where an
-            # upload got partway, so "the manifest is there" is no evidence the
-            # tarball is — and the old check took the leave-it-alone branch on
-            # that evidence, which would publish a release whose only tarball is
-            # the one on npm. A half-uploaded draft is re-uploaded rather than
-            # trusted.
-            if [ "${has_manifest}" = true ] && [ "${has_tarball}" = true ]; then
-              rm -rf /tmp/existing
-              gh release download "v${VERSION}" \
-                --pattern release-manifest.json \
-                --pattern "looptroop-${VERSION}.tgz" \
-                --dir /tmp/existing --clobber
-
-              # The drafted manifest against this build's, field by field rather
-              # than integrity alone: a manifest agreeing on the hash but naming
-              # another version or commit is not this release's manifest.
-              node -e '
-                const a = require("./release-manifest.json")
-                const b = require("/tmp/existing/release-manifest.json")
-                const fields = ["version", "tarball", "bytes", "sha256", "integrity", "commit"]
-                const differing = fields.filter((f) => String(a[f]) !== String(b[f]))
-                if (differing.length > 0) {
-                  for (const f of differing) {
-                    console.error(`::error::manifest ${f}: draft has ${b[f]}, this build produced ${a[f]}`)
-                  }
-                  console.error("::error::A rebuild of the same tree is byte-identical, so the tree changed. Release a new version.")
-                  process.exit(1)
-                }
-              '
-
-              # And the drafted tarball's own bytes, hashed. Comparing two
-              # manifests only proves the two manifests agree; the attached
-              # tarball is a separate object that could have been replaced.
-              npm run release:verify-artifact -- \
-                "/tmp/existing/looptroop-${VERSION}.tgz" release-manifest.json
-
-              echo "The drafted manifest and tarball both match this build; leaving the assets alone."
-            else
-              echo "Draft assets are incomplete (manifest=${has_manifest} tarball=${has_tarball}); uploading both."
-              gh release upload "v${VERSION}" \
-                "looptroop-${VERSION}.tgz" release-manifest.json --clobber
-            fi
-          else
-            gh release create "v${VERSION}" \
-              --draft \
-              --title "v${VERSION}" \
-              --notes-file /tmp/notes.md \
-              --target "${MANIFEST_COMMIT}" \
-              "${prerelease[@]}" \
-              "looptroop-${VERSION}.tgz" release-manifest.json
-          fi
+          node scripts/release-draft.ts \
+            --version "${VERSION}" \
+            --manifest release-manifest.json \
+            --dir . \
+            --notes /tmp/notes.md \
+            "${prerelease[@]}"
 
       # The whole ordering rests on a tag meaning "finished". A draft creates no
       # tag — verified against this repository rather than assumed — and this

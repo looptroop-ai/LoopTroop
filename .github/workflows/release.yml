@@ -1356,13 +1356,33 @@ jobs:
   # them: Chocolatey moderation is unbounded, and a release is not held open
   # waiting for it.
   #
-  # Nothing rendered here is attached to the release. The formula and the Scoop
-  # manifest are pure renderings of `{version, url, sha256}`, all three of which
-  # `release-manifest.json` already records, so a repair months from now
-  # reproduces them from the same source of truth. The nupkg is not
-  # byte-reproducible, but a Chocolatey version is immutable once accepted —
-  # there is no such thing as re-pushing the same bytes — so attaching it would
-  # buy nothing either.
+  # Nothing rendered here is attached to the release, which is a deliberate
+  # departure from the plan's exact-byte recovery contract and is worth stating
+  # plainly rather than leaving to be rediscovered.
+  #
+  # The formula and the Scoop manifest are pure renderings of
+  # `{version, url, sha256}`, all three of which `release-manifest.json` already
+  # records. So the *bytes a user installs* are pinned no matter when a repair
+  # runs: the sha256 in a repaired descriptor is the one this release published,
+  # and a repair cannot point a channel at an artefact this release never had.
+  # That is the property worth protecting, and it holds.
+  #
+  # What is not pinned is the renderer. A repair runs from the default branch,
+  # so a descriptor rebuilt in six months carries whatever the template says
+  # then — a changed dependency, a changed caveat — rather than what this
+  # release shipped. For a formula that is usually the point (it is how a
+  # packaging bug gets fixed for an old version) and occasionally not.
+  #
+  # Attaching the descriptors would close that, at the cost of three more
+  # release assets and a Windows job before `finalize`. It is not done yet
+  # because the first real release has not run: adding a new gate to an
+  # unproven publish path trades a rare, recoverable drift for a common,
+  # release-blocking failure. Revisit once a stable release has published to
+  # all three channels.
+  #
+  # The nupkg is separate: it is not byte-reproducible, but a Chocolatey version
+  # is immutable once accepted — there is no such thing as re-pushing the same
+  # bytes — so attaching it would buy nothing regardless.
   publish-homebrew:
     name: Publish to Homebrew
     needs: [detect, build, finalize]

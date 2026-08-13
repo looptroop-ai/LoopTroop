@@ -10,6 +10,10 @@
  * reproduces the same descriptor from the same source of truth — which is what
  * makes attaching the rendered files to the release unnecessary.
  *
+ * The commit comes out too, because those three values pin the *inputs* to the
+ * rendering and not the renderer. Checking it out is what stops a template
+ * changed since the release from quietly altering what that release publishes.
+ *
  * The URL is constructed rather than looked up. A published release asset lives
  * at a predictable address, and constructing it means this works before the
  * release exists as well as after — the audit step needs it either way.
@@ -57,6 +61,12 @@ const output = {
   bundle,
   sha256: assets[bundle]!.sha256,
   url: `https://github.com/${repo}/releases/download/v${manifest.version}/${bundle}`,
+  // The commit this release was built from, so a repair can render descriptors
+  // with that release's templates rather than whatever the default branch says
+  // today. Empty when the manifest predates the field or the release was built
+  // outside a checkout; the caller decides what to do about that, because
+  // "reproduce this exactly" and "do something reasonable" are different jobs.
+  commit: manifest.commit ?? '',
 }
 
 const lines = Object.entries(output).map(([key, value]) => `${key}=${value}`)

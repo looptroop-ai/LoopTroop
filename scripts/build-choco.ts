@@ -64,6 +64,29 @@ if (basename(bundlePath) !== bundleFileName(version)) {
   )
 }
 
+// The digest above is computed from whatever file was handed over, so on its own
+// it only proves the package is self-consistent — a corrupt or substituted
+// bundle would be hashed just as happily and shipped with a verification file
+// that agrees with it perfectly.
+//
+// This is the check Homebrew gets for free from `brew audit --online`, which
+// fetches the URL and compares. Chocolatey carries the bundle *inside* the
+// package rather than fetching it, so nothing downstream ever compares these
+// bytes against the release again: whatever goes in here is what users get, and
+// this is the last point at which it can be checked at all.
+//
+// Optional, because the release workflow builds the bundle and packs it in one
+// run with no download in between. A repair downloads it, and passes this.
+const expected = process.argv.includes('--expect-sha256') ? flag('expect-sha256') : null
+if (expected !== null && expected !== sha256) {
+  fail(
+    'The bundle does not match the checksum the release recorded for it.',
+    `expected ${expected}`,
+    `actual   ${sha256}`,
+    'Packing this would embed bytes that release never published.',
+  )
+}
+
 const inputs = { version, url, sha256 }
 const stagingDir = join(outDir, 'package')
 const toolsDir = join(stagingDir, 'tools')

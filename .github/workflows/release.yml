@@ -1525,6 +1525,11 @@ jobs:
         shell: bash
         run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
 
+      # `--expect-sha256` against the manifest, even though the bundle and the
+      # manifest came out of the same build job. They travelled here separately
+      # as artefact bytes, and this package embeds the bundle rather than
+      # fetching it, so this is the last moment either can be compared with the
+      # other before whatever is here becomes what Chocolatey users get.
       - name: Pack the package
         shell: bash
         run: >
@@ -1532,6 +1537,7 @@ jobs:
           --bundle "${{ steps.inputs.outputs.bundle }}"
           --url "${{ steps.inputs.outputs.url }}"
           --version "${{ steps.inputs.outputs.version }}"
+          --expect-sha256 "${{ steps.inputs.outputs.sha256 }}"
           --out dist-choco
 
       # The exact nupkg that is about to be pushed, installed and run first.

@@ -210,8 +210,14 @@ The three package managers install a bundle built once per release, with every
 dependency resolved at build time — so everyone on those channels runs the exact
 versions the release was tested against. Installing through npm resolves the
 version ranges afresh on your machine, which is how npm is supposed to work and
-is worth knowing when comparing two installations. Node itself is never
-installed for you on any channel.
+is worth knowing when comparing two installations.
+
+Node is the one thing those three will install for you: LoopTroop is declared as
+depending on it, so Homebrew pulls in `node@24` and Scoop and Chocolatey pull in
+`nodejs-lts` if your machine has no suitable Node. That is the normal contract
+of a package manager, and it is the difference between them and the one-line
+installer above, which checks for Node, tells you what to do about it, and
+installs nothing itself.
 
 ### Or install with a script
 

@@ -201,6 +201,11 @@ export function bundleZipFileName(version: string): string {
   return `looptroop-${version}-bundle.zip`
 }
 
+/** The standalone Windows binary's archive, which is what WinGet installs. */
+export function windowsBinaryZipName(version: string): string {
+  return `looptroop-${version}-win-x64.zip`
+}
+
 /**
  * Publisher and package, joined, as WinGet identifies a package everywhere.
  *
@@ -233,18 +238,22 @@ export function wingetManifestDir(version: string): string {
  *
  * Two decisions worth naming.
  *
- * `InstallerType: zip` with `NestedInstallerType: portable` is the only shape
- * that fits us: the bundle is an archive containing a launcher, not an
- * installer. `PortableCommandAlias` is what actually puts `looptroop` on the
- * user's PATH, and `RelativeFilePath` points at the `.cmd` wrapper rather than
- * the `#!` script, for the same reason Scoop's `bin` does — a shebang is not
- * executable on Windows.
+ * It installs the **standalone binary**, not the bundle every other channel
+ * takes. That is not a preference: `winget validate` refuses a portable whose
+ * `RelativeFilePath` is anything but an `.exe`, and rejected the bundle's
+ * `.cmd` shim outright —
  *
- * And the dependencies are declared rather than assumed. WinGet installs
- * `PackageDependencies` by default — `skipDependencies` defaults to false —
- * which is what lets this channel ship the ordinary bundle instead of waiting
- * for a standalone binary. A user who has turned that off gets a package that
- * needs a Node they may not have, which is why `doctor` still checks.
+ *   Manifest Error: The file type of the referenced file is not allowed.
+ *   [RelativeFilePath] Value: looptroop\\bin\\looptroop.cmd
+ *
+ * The winget *client* does run `.cmd` portables; the repository's validation
+ * pipeline does not accept them. `PortableCommandAlias` is what puts
+ * `looptroop` on the user's PATH.
+ *
+ * And it declares only git. The binary carries its own Node runtime, so
+ * unlike the Homebrew, Scoop and Chocolatey packages there is nothing to
+ * install for it — but `doctor` still treats git as required and Windows does
+ * not ship one.
  */
 export function renderWingetManifests(inputs: ChannelInputs): Record<string, string> {
   assertInputs(inputs)
@@ -264,11 +273,10 @@ ManifestVersion: ${WINGET_MANIFEST_VERSION}
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
-  - RelativeFilePath: ${BUNDLE_ROOT}\\bin\\looptroop.cmd
+  - RelativeFilePath: looptroop-${inputs.version}-win-x64\\looptroop.exe
     PortableCommandAlias: looptroop
 Dependencies:
   PackageDependencies:
-    - PackageIdentifier: OpenJS.NodeJS
     - PackageIdentifier: Git.Git
 Installers:
   - Architecture: neutral

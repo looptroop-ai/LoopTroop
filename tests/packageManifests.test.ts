@@ -14,6 +14,7 @@ import {
   WINGET_IDENTIFIER,
   WINGET_MANIFEST_VERSION,
   wingetManifestDir,
+  windowsBinaryZipName,
   renderChocolateyInstall,
   renderChocolateyUninstall,
   renderDescriptor,
@@ -283,7 +284,7 @@ describe('where each descriptor lives', () => {
 describe('the WinGet manifests', () => {
   const WINGET_INPUTS = {
     version: '9.9.9',
-    url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.zip',
+    url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-win-x64.zip',
     sha256: '3c5fe4640000000000000000000000000000000000000000000000000000abcd',
   }
 
@@ -324,31 +325,34 @@ describe('the WinGet manifests', () => {
   })
 
   /**
-   * The dependency declaration is what lets this channel ship the ordinary
-   * bundle rather than waiting for a standalone binary: WinGet installs
-   * `PackageDependencies` by default. Without these two lines a clean Windows
-   * machine gets a package that cannot run.
+   * Only git. The binary carries its own Node runtime, so unlike the other
+   * three channels there is nothing to install for it — but `doctor` treats
+   * git as required and Windows does not ship one.
    */
-  it('declares Node and git, so a clean machine gets them', () => {
+  it('declares git, and does not ask for a Node it already contains', () => {
     const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
-    expect(installer).toContain('PackageIdentifier: OpenJS.NodeJS')
     expect(installer).toContain('PackageIdentifier: Git.Git')
+    expect(installer).not.toContain('OpenJS.NodeJS')
   })
 
   /**
-   * The `.cmd`, never `bin/looptroop`: that one is a `#!` script, which Windows
-   * cannot execute. Scoop's `bin` points at the same file for the same reason.
+   * An `.exe`, and nothing else. `winget validate` refuses a portable whose
+   * `RelativeFilePath` is any other file type — it rejected the bundle's
+   * `.cmd` shim outright, which is why this channel installs the standalone
+   * binary rather than the bundle the other three take.
    */
-  it('shims the Windows wrapper rather than the shebang script', () => {
+  it('shims the standalone executable, which is the only type WinGet accepts', () => {
     const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
-    expect(installer).toContain(`RelativeFilePath: ${BUNDLE_ROOT}\\bin\\looptroop.cmd`)
+    expect(installer).toMatch(/RelativeFilePath: .*\.exe$/m)
+    expect(installer).not.toContain('.cmd')
     expect(installer).toContain('PortableCommandAlias: looptroop')
     expect(installer).toContain('NestedInstallerType: portable')
   })
 
-  it('points at the ZIP, because WinGet cannot open a tarball', () => {
+  it('points at the Windows binary archive, not the bundle', () => {
     const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
-    expect(installer).toContain(bundleZipFileName('9.9.9'))
+    expect(installer).toContain(windowsBinaryZipName('9.9.9'))
+    expect(installer).not.toContain(bundleZipFileName('9.9.9'))
     expect(installer).not.toContain(bundleFileName('9.9.9'))
     expect(installer).toContain('InstallerType: zip')
   })

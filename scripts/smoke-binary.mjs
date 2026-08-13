@@ -94,8 +94,8 @@ const archive = resolve(flag('archive'))
 if (!existsSync(archive)) fail(`No archive at ${archive}.`)
 
 // Anchored on the platform tag rather than stopping at the first hyphen: a
-// prerelease version contains hyphens too, and a loose pattern reads
-// `0.5.1-linux` out of `looptroop-0.5.1-linux-x64`.
+// prerelease version contains hyphens too, so a loose pattern reads the
+// platform into the version and reports a mismatch that is not one.
 const version = /^looptroop-(.+)-(?:linux|darwin|win)-(?:x64|arm64)\./.exec(basename(archive))?.[1]
   ?? fail(`Cannot read a version out of ${basename(archive)}.`)
 

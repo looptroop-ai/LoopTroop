@@ -1393,6 +1393,19 @@ jobs:
         id: inputs
         run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
 
+      # Homebrew is installed on the ubuntu images but deliberately kept off PATH,
+      # so `brew` is not a command here until this runs.
+      - name: Put Linuxbrew on PATH
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+
       # `--online` fetches the URL and verifies the checksum, which is only
       # meaningful now that the release is published — and is the last chance to
       # notice that the formula points at something that is not there. Before

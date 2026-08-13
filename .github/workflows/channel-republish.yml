@@ -144,6 +144,19 @@ jobs:
         with:
           node-version: 24.15.0
 
+      # Homebrew is installed on the ubuntu images but deliberately kept off PATH,
+      # so `brew` is not a command here until this runs.
+      - name: Put Linuxbrew on PATH
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+
       # `--online` fetches the URL and verifies the checksum. For a repair that
       # is the whole question: the release exists, so if the formula points at
       # something that is not there, this is where it is caught.

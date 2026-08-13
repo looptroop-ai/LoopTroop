@@ -7,8 +7,9 @@
  *
  * The whole claim of this artefact is that it needs nothing installed, and
  * every GitHub runner has Node — so a binary that quietly shelled out to one
- * would pass a naive test and fail for the user it exists for. Node is removed
- * from PATH here, which is the only way the claim gets tested at all.
+ * would pass a naive test and fail for the user it exists for. `node` is
+ * shadowed here by a decoy that refuses to run, which is the only way the claim
+ * gets tested at all.
  *
  * The interface is checked properly rather than by fetching one page. A single-
  * file build carries the client inside it, and a build that embedded the
@@ -16,7 +17,7 @@
  * a human — so every asset the document references is fetched too.
  */
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
@@ -60,19 +61,33 @@ function invoke(command, args, options = {}) {
 }
 
 /**
- * PATH with every directory holding a `node` removed.
+ * A PATH where `node` resolves to something that refuses to run.
  *
- * This is the entire point of the job. Without it the binary could load Node
- * from the runner and nothing would notice until a user without one tried it.
+ * Proving this binary needs no Node is the entire point of the job, and the
+ * obvious approach — dropping every PATH directory that contains a `node` —
+ * is wrong in a way that only shows up on a real machine: `node` and `git`
+ * usually live in the same directory, so it takes git away too, and LoopTroop
+ * genuinely needs git. The failure then looks like a broken binary rather than
+ * a broken test.
+ *
+ * A decoy placed first is exact instead. Anything that tries to run `node`
+ * gets a loud non-zero exit, and every other tool still resolves normally.
  */
 function pathWithoutNode() {
-  const separator = IS_WINDOWS ? ';' : ':'
-  return (process.env.PATH ?? '')
-    .split(separator)
-    .filter((entry) => entry !== ''
-      && !existsSync(join(entry, 'node'))
-      && !existsSync(join(entry, 'node.exe')))
-    .join(separator)
+  const shadow = join(work, 'no-node')
+  mkdirSync(shadow, { recursive: true })
+
+  if (IS_WINDOWS) {
+    // Within one directory `.exe` beats `.cmd`, but across directories the
+    // first match wins — and this directory holds no `node.exe`.
+    writeFileSync(join(shadow, 'node.cmd'), '@echo off\r\necho This binary must not need Node. 1>&2\r\nexit /b 127\r\n')
+  } else {
+    const decoy = join(shadow, 'node')
+    writeFileSync(decoy, '#!/bin/sh\necho "This binary must not need Node." >&2\nexit 127\n')
+    chmodSync(decoy, 0o755)
+  }
+
+  return `${shadow}${IS_WINDOWS ? ';' : ':'}${process.env.PATH ?? ''}`
 }
 
 const archive = resolve(flag('archive'))
@@ -116,7 +131,7 @@ async function main() {
     LOOPTROOP_CONFIG_DIR: configDir,
     LOOPTROOP_OPENCODE_MODE: 'mock',
   }
-  log('  (with every node removed from PATH)')
+  log('  (with `node` shadowed by a decoy that refuses to run)')
 
   const reported = (await invoke(binary, ['--version'], { env })).stdout.trim()
   if (reported !== version) fail(`The binary reports ${reported || '(nothing)'}, expected ${version}.`)

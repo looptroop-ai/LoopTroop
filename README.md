@@ -189,11 +189,11 @@ review gates.
 
 ### Or use a package manager
 
-> **Homebrew, Scoop and Chocolatey carry LoopTroop from 0.5.1 onwards.** Until
-> that release is published these three commands have nothing to find; npm and
-> Docker work today. The Chocolatey package additionally has to clear community
-> moderation before the feed serves it, which is not something a release can
-> wait on.
+> **Homebrew, Scoop and Chocolatey are not populated yet.** The next stable
+> release is the first to publish to them, so until it is out these three
+> commands have nothing to find; npm and Docker work today. The Chocolatey
+> package additionally has to clear community moderation before the feed serves
+> it, which is not something a release can wait on.
 
 | | Install | Upgrade |
 |---|---|---|

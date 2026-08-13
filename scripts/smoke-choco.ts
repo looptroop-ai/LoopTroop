@@ -3,7 +3,7 @@
  * Installs the Chocolatey package, drives it, and uninstalls it again.
  *
  *   node scripts/smoke-choco.ts --nupkg dist-choco/looptroop.9.9.9.nupkg
- *   node scripts/smoke-choco.ts --from-feed --version 0.5.1
+ *   node scripts/smoke-choco.ts --from-feed --version 9.9.9
  *
  * The two modes answer two different questions and both are needed.
  *

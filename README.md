@@ -187,6 +187,26 @@ closes. It serves the interface and the API from one address on port 3000, which
 Add a local repository with a GitHub origin, create a ticket, and follow the
 review gates.
 
+### Or use a package manager
+
+| | Install | Upgrade |
+|---|---|---|
+| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` |
+| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
+| **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` |
+| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
+| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
+
+`looptroop doctor` tells you which of these your copy came from and the exact
+command that upgrades it.
+
+The three package managers install a bundle built once per release, with every
+dependency resolved at build time — so everyone on those channels runs the exact
+versions the release was tested against. Installing through npm resolves the
+version ranges afresh on your machine, which is how npm is supposed to work and
+is worth knowing when comparing two installations. Node itself is never
+installed for you on any channel.
+
 ### Or install with a script
 
 If you would rather not think about which npm tarball to fetch, an installer

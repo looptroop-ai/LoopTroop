@@ -1340,6 +1340,200 @@ jobs:
   # ---------------------------------------------------------------------------
   # Always runs. Says what happened and where to resume from.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # The managed package channels: Homebrew, Scoop, Chocolatey.
+  # ---------------------------------------------------------------------------
+  # After `finalize`, never before. A draft release's assets are not
+  # anonymously downloadable, and every one of these publishes a descriptor
+  # pointing at exactly that URL — a formula pushed while the release is still a
+  # draft installs green here and 404s for the first user who tries it.
+  #
+  # Stable releases only, and never a dry run. A prerelease published to a tap
+  # or a bucket becomes what `brew upgrade` and `scoop update` give everybody,
+  # because neither has a concept of a prerelease channel.
+  #
+  # All three in parallel, and none of them gates the others or anything after
+  # them: Chocolatey moderation is unbounded, and a release is not held open
+  # waiting for it.
+  #
+  # Nothing rendered here is attached to the release. The formula and the Scoop
+  # manifest are pure renderings of `{version, url, sha256}`, all three of which
+  # `release-manifest.json` already records, so a repair months from now
+  # reproduces them from the same source of truth. The nupkg is not
+  # byte-reproducible, but a Chocolatey version is immutable once accepted —
+  # there is no such thing as re-pushing the same bytes — so attaching it would
+  # buy nothing either.
+  publish-homebrew:
+    name: Publish to Homebrew
+    needs: [detect, build, finalize]
+    if: >-
+      needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Read what this release publishes
+        id: inputs
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      # Homebrew is installed on the ubuntu images but deliberately kept off PATH,
+      # so `brew` is not a command here until this runs.
+      - name: Put Linuxbrew on PATH
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+          # The image ships a snapshot and nothing updates it. A stale one has
+          # aborted mid-install with an error from Homebrew's own internals.
+          brew update --quiet
+
+      # `--online` fetches the URL and verifies the checksum, which is only
+      # meaningful now that the release is published — and is the last chance to
+      # notice that the formula points at something that is not there. Before
+      # the push, because the tap has no CI of its own.
+      - name: Audit the formula Homebrew will serve
+        run: >
+          node scripts/audit-formula.ts --online
+          --version "${{ steps.inputs.outputs.version }}"
+          --url "${{ steps.inputs.outputs.url }}"
+          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+
+      - name: Push the formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+        run: >
+          node scripts/channel-push.ts --channel homebrew
+          --repo looptroop-ai/homebrew-tap
+          --version "${{ steps.inputs.outputs.version }}"
+          --url "${{ steps.inputs.outputs.url }}"
+          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+
+  publish-scoop:
+    name: Publish to Scoop
+    needs: [detect, build, finalize]
+    if: >-
+      needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: packaging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Read what this release publishes
+        id: inputs
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      - name: Push the manifest
+        env:
+          GH_TOKEN: ${{ secrets.TAP_BUCKET_TOKEN }}
+        run: >
+          node scripts/channel-push.ts --channel scoop
+          --repo looptroop-ai/scoop-bucket
+          --version "${{ steps.inputs.outputs.version }}"
+          --url "${{ steps.inputs.outputs.url }}"
+          --sha256 "${{ steps.inputs.outputs.sha256 }}"
+
+  # windows-latest because `choco pack` and `choco push` need the Chocolatey
+  # CLI, which no ubuntu runner has.
+  publish-chocolatey:
+    name: Publish to Chocolatey
+    needs: [detect, build, finalize]
+    if: >-
+      needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: packaging
+    outputs:
+      state: ${{ steps.push.outputs.state }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the release artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artefacts
+
+      - name: Read what this release publishes
+        id: inputs
+        shell: bash
+        run: node scripts/channel-inputs.ts --manifest release-manifest.json --repo "${GITHUB_REPOSITORY}"
+
+      - name: Pack the package
+        shell: bash
+        run: >
+          node scripts/build-choco.ts
+          --bundle "${{ steps.inputs.outputs.bundle }}"
+          --url "${{ steps.inputs.outputs.url }}"
+          --version "${{ steps.inputs.outputs.version }}"
+          --out dist-choco
+
+      # The exact nupkg that is about to be pushed, installed and run first.
+      # Moderation is a queue, not a test: a package that installs and then does
+      # not run is discovered by whoever installs it.
+      - name: Install it locally before submitting it
+        shell: bash
+        run: >
+          node scripts/smoke-choco.ts
+          --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
+          --version "${{ steps.inputs.outputs.version }}"
+
+      - name: Push to the community feed
+        id: push
+        shell: bash
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: >
+          node scripts/choco-push.ts
+          --nupkg "dist-choco/looptroop.${{ steps.inputs.outputs.version }}.nupkg"
+          --version "${{ steps.inputs.outputs.version }}"
+
   report:
     name: Report
     needs:
@@ -1355,6 +1549,9 @@ jobs:
       - container-manifest
       - container-verify
       - container-notes
+      - publish-homebrew
+      - publish-scoop
+      - publish-chocolatey
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1381,6 +1578,10 @@ jobs:
           R_CMANIFEST: ${{ needs.container-manifest.result }}
           R_CVERIFY: ${{ needs.container-verify.result }}
           R_CNOTES: ${{ needs.container-notes.result }}
+          R_BREW: ${{ needs.publish-homebrew.result }}
+          R_SCOOP: ${{ needs.publish-scoop.result }}
+          R_CHOCO: ${{ needs.publish-chocolatey.result }}
+          CHOCO_STATE: ${{ needs.publish-chocolatey.outputs.state }}
           INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
           CONTAINER_TAGS: ${{ needs.container-manifest.outputs.tags }}
           SHA256: ${{ needs.build.outputs.sha256 }}
@@ -1415,6 +1616,9 @@ jobs:
             printf 'image tag  %s  index %s\n' "${R_CMANIFEST}" "${index_short}"
             printf 'image pull %s\n' "${R_CVERIFY}"
             printf 'notes      %s\n' "${R_CNOTES}"
+            printf 'homebrew   %s\n' "${R_BREW}"
+            printf 'scoop      %s\n' "${R_SCOOP}"
+            printf 'chocolatey %s  %s\n' "${R_CHOCO}" "${CHOCO_STATE:-—}"
             echo '```'
             echo
             echo "Integrity: \`${INTEGRITY}\`"
@@ -1430,7 +1634,9 @@ jobs:
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
                       "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}" \
                       "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
-                      "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}"; do
+                      "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
+                      "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \
+                      "publish-chocolatey:${R_CHOCO}"; do
             name=${pair%%:*}
             result=${pair#*:}
             case "${result}" in
@@ -1473,6 +1679,12 @@ jobs:
             echo "  \`${VERSION}\`. It rebuilds the image from the release assets and re-runs"
             echo "  the same tag and verify steps, so it works long after the workflow"
             echo "  artefacts for this run have expired."
+            echo "- **publish-\*** — dispatch \`channel-republish.yml\` with version"
+            echo "  \`${VERSION}\` and the channel that failed. It re-derives the descriptor"
+            echo "  from the published release, so it too outlives this run's artefacts."
+            echo "  A channel already carrying this version is left alone unless the"
+            echo "  dispatch is given \`force\`, which exists for a descriptor that was"
+            echo "  published wrong rather than not at all."
           } > /tmp/issue.md
 
           # --repo on every call: this job deliberately has no checkout, and

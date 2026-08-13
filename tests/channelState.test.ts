@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compareVersions, decideChannelWrite, writes } from '../scripts/channel-state.ts'
+import { classifyChocoPush, compareVersions, decideChannelWrite, writes } from '../scripts/channel-state.ts'
 import type { ParsedDescriptor } from '../scripts/package-manifests.ts'
 
 const SHA = 'a'.repeat(64)
@@ -118,5 +118,35 @@ describe('version ordering', () => {
     ['9.9.9-alpha', '9.9.9-beta', -1],
   ])('sorts %s against %s as %i', (left, right, expected) => {
     expect(compareVersions(left, right)).toBe(expected)
+  })
+})
+
+/**
+ * The community feed moderates every package and the queue has no deadline, so
+ * "accepted for review" has to be a success — otherwise every future release
+ * waits behind a human at Chocolatey.
+ */
+describe('what choco push did', () => {
+  it('treats an accepted package as submitted, not published', () => {
+    expect(classifyChocoPush(0, 'looptroop 9.9.9 was pushed successfully')).toEqual({ state: 'submitted' })
+  })
+
+  /** The ordinary result of re-running a release that failed after this step. */
+  it.each([
+    "Failed to process request. 'A package with ID 'looptroop' and version '9.9.9' already exists",
+    'The package looptroop version 9.9.9 already exists on the feed.',
+  ])('treats an already-published version as done: %s', (output) => {
+    expect(classifyChocoPush(1, output)).toEqual({ state: 'already-published' })
+  })
+
+  it('names a rejected API key rather than reporting an exit code', () => {
+    const outcome = classifyChocoPush(1, 'Failed to process request. The remote server returned an error: (403) Forbidden.')
+
+    expect(outcome).toMatchObject({ state: 'failed' })
+    expect(outcome).toMatchObject({ reason: expect.stringContaining('API key') })
+  })
+
+  it('fails on anything else', () => {
+    expect(classifyChocoPush(1, 'nuspec validation error').state).toBe('failed')
   })
 })

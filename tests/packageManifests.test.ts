@@ -64,6 +64,29 @@ describe.each(Object.entries(GOLDEN) as [Channel, string][])('the %s descriptor'
 describe('the Homebrew formula', () => {
   const formula = renderHomebrewFormula(INPUTS)
 
+  /**
+   * `brew audit --strict` rejects a `version` that the URL already carries, and
+   * the bundle URL carries one. Reading it back therefore has to scan the URL
+   * the way Homebrew does — a parser that only looked for the field would call
+   * every formula this renders unreadable, and every release a conflict.
+   */
+  it('states no version, because the URL carries one', () => {
+    expect(formula).not.toMatch(/^\s*version\s/m)
+    expect(parseDescriptor('homebrew', formula).version).toBe(INPUTS.version)
+  })
+
+  it('still reads a version field back when a formula has one', () => {
+    const handWritten = formula.replace('  sha256 ', `  version "1.2.3"\n  sha256 `)
+
+    expect(parseDescriptor('homebrew', handWritten).version).toBe('1.2.3')
+  })
+
+  it('scans a prerelease out of the URL too', () => {
+    const prerelease = { ...INPUTS, version: '9.9.9-rc.1', url: INPUTS.url.replace(/9\.9\.9-bundle/, '9.9.9-rc.1-bundle') }
+
+    expect(parseDescriptor('homebrew', renderHomebrewFormula(prerelease)).version).toBe('9.9.9-rc.1')
+  })
+
   it('reads back the three fields that decide what a user installs', () => {
     expect(parseDescriptor('homebrew', formula)).toEqual({
       version: INPUTS.version,

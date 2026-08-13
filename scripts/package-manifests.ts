@@ -58,11 +58,13 @@ function assertInputs({ version, url, sha256 }: ChannelInputs): void {
  * Linuxbrew does not, and `doctor` treats git as required, so it cannot simply
  * be dropped either.
  *
- * The field order is not a matter of taste. `brew style` enforces it, and it
- * rejected three things in turn: `version` after `sha256`, `livecheck` after
- * `depends_on`, and `Formula["node@24"].opt_bin` in place of `formula_opt_bin`.
- * `version` is stated at all because the URL ends in `-bundle.tar.gz`, which
- * brew cannot read a version out of.
+ * There is no `version` field. Homebrew scans one out of the URL — the bundle
+ * is named `looptroop-<version>-bundle.tar.gz` — and `brew audit --strict`
+ * rejects stating it again. `parseDescriptor` reads it back the same way.
+ *
+ * The field order is not a matter of taste either: `brew style` enforces it,
+ * and rejected `livecheck` after `depends_on` and `Formula["node@24"].opt_bin`
+ * in place of `formula_opt_bin`.
  */
 export function renderHomebrewFormula(inputs: ChannelInputs): string {
   assertInputs(inputs)
@@ -72,7 +74,6 @@ class Looptroop < Formula
   desc "${SHORT_DESCRIPTION}"
   homepage "${HOMEPAGE}"
   url "${inputs.url}"
-  version "${inputs.version}"
   sha256 "${inputs.sha256}"
   license "${LICENSE}"
 
@@ -200,6 +201,12 @@ export const DESCRIPTOR_PATH: Record<Channel, string> = {
   chocolatey: 'looptroop.nuspec',
 }
 
+/** The version Homebrew would scan out of a bundle URL, if it is one. */
+export function versionFromBundleUrl(url: string | null): string | null {
+  if (url === null) return null
+  return /looptroop-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-bundle\.tar\.gz$/.exec(url)?.[1] ?? null
+}
+
 export interface ParsedDescriptor {
   version: string | null
   url: string | null
@@ -232,9 +239,15 @@ export function parseDescriptor(channel: Channel, text: string): ParsedDescripto
   }
 
   if (channel === 'homebrew') {
+    const url = /^\s*url\s+"([^"]+)"/m.exec(text)?.[1] ?? null
     return {
-      version: /^\s*version\s+"([^"]+)"/m.exec(text)?.[1] ?? null,
-      url: /^\s*url\s+"([^"]+)"/m.exec(text)?.[1] ?? null,
+      // A `version` field if the formula has one, and otherwise the version
+      // Homebrew itself scans out of the URL. Formulae written by this file
+      // have no such field — `brew audit --strict` rejects stating a version
+      // the URL already carries — so reading only the field would report every
+      // published formula as unreadable, and every release as a conflict.
+      version: /^\s*version\s+"([^"]+)"/m.exec(text)?.[1] ?? versionFromBundleUrl(url),
+      url,
       sha256: /^\s*sha256\s+"([^"]+)"/m.exec(text)?.[1] ?? null,
     }
   }

@@ -3,7 +3,6 @@ class Looptroop < Formula
   desc "Local AI coding orchestration with council planning and human-gated PRs"
   homepage "https://www.looptroop.ovh/"
   url "https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz"
-  version "9.9.9"
   sha256 "3c5fe4640000000000000000000000000000000000000000000000000000abcd"
   license "MIT"
 

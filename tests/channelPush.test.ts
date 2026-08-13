@@ -11,8 +11,19 @@ const PUSH = join(repoRoot, 'scripts', 'channel-push.ts')
 
 const SHA = 'a'.repeat(64)
 const OTHER_SHA = 'b'.repeat(64)
-const URL = 'https://example.invalid/looptroop-9.9.9-bundle.tar.gz'
 const REPO = 'looptroop-ai/homebrew-looptroop'
+
+/**
+ * The URL carries the version, which is not incidental: the formula states no
+ * `version` field, because `brew audit --strict` rejects one the URL already
+ * carries, so a fixture whose URL disagrees with its version is not a formula
+ * Homebrew would ever see.
+ */
+function urlFor(version: string): string {
+  return `https://example.invalid/looptroop-${version}-bundle.tar.gz`
+}
+
+const URL = urlFor('9.9.9')
 
 /**
  * `gh` replaced by a script that answers from a JSON fixture and records what it
@@ -130,7 +141,7 @@ if (joined.includes('.permissions.push')) {
   })
 
   it('hands back the blob sha it read, so a concurrent push loses rather than this one', async () => {
-    setState({ remote: renderHomebrewFormula({ version: '9.9.8', url: URL, sha256: SHA }), blobSha: 'the-blob-we-read' })
+    setState({ remote: renderHomebrewFormula({ version: '9.9.8', url: urlFor('9.9.8'), sha256: SHA }), blobSha: 'the-blob-we-read' })
 
     const result = await push()
 
@@ -149,7 +160,7 @@ if (joined.includes('.permissions.push')) {
   })
 
   it('refuses to downgrade the channel, and writes nothing', async () => {
-    setState({ remote: renderHomebrewFormula({ version: '10.0.0', url: URL, sha256: SHA }) })
+    setState({ remote: renderHomebrewFormula({ version: '10.0.0', url: urlFor('10.0.0'), sha256: SHA }) })
 
     const result = await push()
 

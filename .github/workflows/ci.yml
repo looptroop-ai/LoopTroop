@@ -455,6 +455,15 @@ jobs:
           echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
           brew --version
 
+      # The image's Homebrew is a snapshot, and the one on the ubuntu runners
+      # aborted mid-install with "unknown install step: run" from its own
+      # install-steps runner — while pouring a core dependency, and telling us
+      # to run `brew update` before reporting it. Updating first is both the
+      # remedy it asks for and what a user's machine does on its own.
+      - name: Update Homebrew
+        if: matrix.channel == 'homebrew'
+        run: brew update --quiet
+
       # Not preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
       # because the runner user is an administrator and Scoop refuses to install
       # for one otherwise.

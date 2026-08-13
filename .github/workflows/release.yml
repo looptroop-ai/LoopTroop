@@ -213,6 +213,8 @@ jobs:
       integrity: ${{ steps.manifest.outputs.integrity }}
       bundle: ${{ steps.manifest.outputs.bundle }}
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
+      bundle_zip: ${{ steps.manifest.outputs.bundle_zip }}
+      bundle_zip_sha256: ${{ steps.manifest.outputs.bundle_zip_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -271,8 +273,12 @@ jobs:
           set -euo pipefail
           tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
           bundle="looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
+          # The same tree in two archive formats. The tarball is what Homebrew,
+          # Scoop and Chocolatey fetch; the zip exists because WinGet's archive
+          # installer type reads ZIP and nothing else.
+          zip="looptroop-${{ needs.detect.outputs.version }}-bundle.zip"
           npm run release:manifest -- "${tarball}" \
-            --asset "${bundle}" --asset install.sh --asset install.ps1
+            --asset "${bundle}" --asset "${zip}" --asset install.sh --asset install.ps1
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
             const out = require("node:fs").createWriteStream(process.env.GITHUB_OUTPUT,{flags:"a"})
@@ -282,6 +288,9 @@ jobs:
             const bundle = Object.keys(m.assets).find((n) => n.endsWith("-bundle.tar.gz"))
             out.write(`bundle=${bundle}\n`)
             out.write(`bundle_sha256=${m.assets[bundle].sha256}\n`)
+            const zip = Object.keys(m.assets).find((n) => n.endsWith("-bundle.zip"))
+            out.write(`bundle_zip=${zip}\n`)
+            out.write(`bundle_zip_sha256=${m.assets[zip].sha256}\n`)
             out.end()
           '
 

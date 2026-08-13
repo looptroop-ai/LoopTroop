@@ -5,9 +5,15 @@ import { fileURLToPath } from 'node:url'
 import {
   BUNDLE_ROOT,
   bundleFileName,
+  bundleZipFileName,
   CHANNEL_MARKER,
   DESCRIPTOR_PATH,
   parseDescriptor,
+  parseWingetInstaller,
+  renderWingetManifests,
+  WINGET_IDENTIFIER,
+  WINGET_MANIFEST_VERSION,
+  wingetManifestDir,
   renderChocolateyInstall,
   renderChocolateyUninstall,
   renderDescriptor,
@@ -262,5 +268,113 @@ describe('where each descriptor lives', () => {
       scoop: 'bucket/looptroop.json',
       chocolatey: 'looptroop.nuspec',
     })
+  })
+})
+
+/**
+ * WinGet's manifests, which are a different shape from the other three: three
+ * files rather than one, and submitted as a pull request into a repository
+ * Microsoft owns rather than written into one of ours.
+ *
+ * The URL is the ZIP, not the tarball. `InstallerType: zip` means ZIP, and
+ * pointing WinGet at a `.tar.gz` produces a package that validates and then
+ * fails to unpack on a user's machine.
+ */
+describe('the WinGet manifests', () => {
+  const WINGET_INPUTS = {
+    version: '9.9.9',
+    url: 'https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.zip',
+    sha256: '3c5fe4640000000000000000000000000000000000000000000000000000abcd',
+  }
+
+  const rendered = () => renderWingetManifests(WINGET_INPUTS)
+
+  it('renders exactly the three files WinGet requires', () => {
+    expect(Object.keys(rendered()).sort()).toEqual([
+      `${WINGET_IDENTIFIER}.installer.yaml`,
+      `${WINGET_IDENTIFIER}.locale.en-US.yaml`,
+      `${WINGET_IDENTIFIER}.yaml`,
+    ])
+  })
+
+  it.each([
+    `${WINGET_IDENTIFIER}.yaml`,
+    `${WINGET_IDENTIFIER}.installer.yaml`,
+    `${WINGET_IDENTIFIER}.locale.en-US.yaml`,
+  ])('matches the golden file for %s', (file) => {
+    const path = join(fixtures, 'winget', file)
+    const text = rendered()[file]!
+
+    if (process.env.UPDATE_GOLDEN === '1') writeFileSync(path, text)
+
+    expect(text).toBe(readFileSync(path, 'utf8'))
+  })
+
+  it('states the same schema version in every file, which validation requires', () => {
+    for (const text of Object.values(rendered())) {
+      expect(text).toContain(`ManifestVersion: ${WINGET_MANIFEST_VERSION}`)
+    }
+  })
+
+  it('names the same package and version in every file', () => {
+    for (const text of Object.values(rendered())) {
+      expect(text).toContain(`PackageIdentifier: ${WINGET_IDENTIFIER}`)
+      expect(text).toContain('PackageVersion: 9.9.9')
+    }
+  })
+
+  /**
+   * The dependency declaration is what lets this channel ship the ordinary
+   * bundle rather than waiting for a standalone binary: WinGet installs
+   * `PackageDependencies` by default. Without these two lines a clean Windows
+   * machine gets a package that cannot run.
+   */
+  it('declares Node and git, so a clean machine gets them', () => {
+    const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
+    expect(installer).toContain('PackageIdentifier: OpenJS.NodeJS')
+    expect(installer).toContain('PackageIdentifier: Git.Git')
+  })
+
+  /**
+   * The `.cmd`, never `bin/looptroop`: that one is a `#!` script, which Windows
+   * cannot execute. Scoop's `bin` points at the same file for the same reason.
+   */
+  it('shims the Windows wrapper rather than the shebang script', () => {
+    const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
+    expect(installer).toContain(`RelativeFilePath: ${BUNDLE_ROOT}\\bin\\looptroop.cmd`)
+    expect(installer).toContain('PortableCommandAlias: looptroop')
+    expect(installer).toContain('NestedInstallerType: portable')
+  })
+
+  it('points at the ZIP, because WinGet cannot open a tarball', () => {
+    const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
+    expect(installer).toContain(bundleZipFileName('9.9.9'))
+    expect(installer).not.toContain(bundleFileName('9.9.9'))
+    expect(installer).toContain('InstallerType: zip')
+  })
+
+  /** WinGet writes checksums upper-case; every other channel here uses lower. */
+  it('writes the checksum the way WinGet does, and reads it back the way we do', () => {
+    const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
+    expect(installer).toContain(`InstallerSha256: ${WINGET_INPUTS.sha256.toUpperCase()}`)
+    expect(parseWingetInstaller(installer)).toEqual({
+      version: WINGET_INPUTS.version,
+      url: WINGET_INPUTS.url,
+      sha256: WINGET_INPUTS.sha256,
+    })
+  })
+
+  it('refuses inputs that are not a version and a sha256', () => {
+    expect(() => renderWingetManifests({ ...WINGET_INPUTS, version: 'latest' })).toThrow()
+    expect(() => renderWingetManifests({ ...WINGET_INPUTS, sha256: 'nope' })).toThrow()
+  })
+
+  /** The validation pipeline rejects a manifest filed anywhere else. */
+  it('puts the manifests where winget-pkgs expects them', () => {
+    expect(wingetManifestDir('9.9.9')).toBe('manifests/l/LoopTroopAI/LoopTroop/9.9.9')
+  })
+
+  it('reads nothing out of a file that is not a WinGet manifest', () => {
+    expect(parseWingetInstaller('not yaml at all')).toEqual({ version: null, url: null, sha256: null })
   })
 })

@@ -56,11 +56,19 @@ if (bundle === undefined) {
   )
 }
 
+// Absent from every release before WinGet existed, so its absence is reported
+// as empty rather than fatal: Homebrew, Scoop and Chocolatey can still be
+// repaired for those versions, and only the WinGet job needs to refuse.
+const zip = Object.keys(assets).find((name) => name.endsWith('-bundle.zip')) ?? null
+
 const output = {
   version: manifest.version,
   bundle,
   sha256: assets[bundle]!.sha256,
   url: `https://github.com/${repo}/releases/download/v${manifest.version}/${bundle}`,
+  zip: zip ?? '',
+  zip_sha256: zip === null ? '' : assets[zip]!.sha256,
+  zip_url: zip === null ? '' : `https://github.com/${repo}/releases/download/v${manifest.version}/${zip}`,
   // The commit this release was built from, so a repair can render descriptors
   // with that release's templates rather than whatever the default branch says
   // today. Empty when the manifest predates the field or the release was built

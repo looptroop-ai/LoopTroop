@@ -35,7 +35,14 @@ const URL = urlFor('9.9.9')
  * blob SHA read is the one handed back as the compare-and-swap token, and that
  * a refusal writes nothing at all.
  */
-describe('pushing a descriptor to a package channel', () => {
+/**
+ * Not on Windows. The stub below is a script, and `execFileSync` without a
+ * shell — which is what the driver uses, correctly, because a real `gh` is an
+ * executable — cannot start a `.cmd` on Windows at all. Running these there
+ * would be testing the stub rather than the driver, and every job that runs
+ * `channel-push.ts` is `runs-on: ubuntu-latest`.
+ */
+describe.runIf(process.platform !== 'win32')('pushing a descriptor to a package channel', () => {
   const tempDirs: string[] = []
   let stubBin: string
   let statePath: string
@@ -68,11 +75,8 @@ if (joined.includes('.permissions.push')) {
 }
 `
     writeFileSync(join(stubBin, 'gh.mjs'), shim)
-    // One implementation behind two names, so the test behaves the same on
-    // Windows, where `gh` would otherwise not be executable.
     writeFileSync(join(stubBin, 'gh'), `#!/bin/sh\nexec node "${join(stubBin, 'gh.mjs')}" "$@"\n`)
     chmodSync(join(stubBin, 'gh'), 0o755)
-    writeFileSync(join(stubBin, 'gh.cmd'), `@echo off\r\nnode "${join(stubBin, 'gh.mjs')}" %*\r\n`)
   })
 
   afterAll(() => {
@@ -106,7 +110,7 @@ if (joined.includes('.permissions.push')) {
         env: {
           ...process.env,
           GH_STUB_STATE: statePath,
-          PATH: `${stubBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`,
+          PATH: `${stubBin}:${process.env.PATH ?? ''}`,
         },
       })
 

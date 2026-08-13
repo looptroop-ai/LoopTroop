@@ -184,10 +184,16 @@ async function writeArchive(binary) {
   rmSync(out, { force: true })
 
   if (process.platform === 'win32') {
-    // Entries sorted and listed rather than walked, `-X` to drop uid/gid and
-    // the extra timestamp fields, `TZ=UTC` because ZIP stores DOS local time.
+    // Relative paths, resolved against `cwd`. Absolute ones make 7z store bare
+    // file names, which flattens the archive: the smoke test then finds no
+    // directory to enter, and WinGet's `RelativeFilePath` — which names
+    // `<dir>\\looptroop.exe` — points at nothing.
+    //
+    // `-mtc=off -mta=off` so creation and access times stay out; the modified
+    // time is already fixed, and `TZ=UTC` keeps ZIP's DOS local time stable
+    // wherever this runs.
     const entries = readdirSync(staging).sort().map((entry) => `${name}/${entry}`)
-    execFileSync('7z', ['a', '-tzip', '-mx=9', out, ...entries.map((e) => join(stagingRoot, e))], {
+    execFileSync('7z', ['a', '-tzip', '-mx=9', '-mtc=off', '-mta=off', out, ...entries], {
       cwd: stagingRoot,
       env: { ...process.env, TZ: 'UTC' },
       stdio: ['ignore', 'pipe', 'inherit'],

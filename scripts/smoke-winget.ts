@@ -23,7 +23,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { renderWingetManifests, WINGET_IDENTIFIER } from './package-manifests.ts'
+import { renderWingetManifests } from './package-manifests.ts'
 
 class SmokeError extends Error {
   detail: string[]
@@ -167,12 +167,16 @@ async function main(): Promise<void> {
   log(`  \`doctor\` reports the winget channel: ${install?.detail}`)
 
   log('\nUninstalling...')
-  // `--accept-source-agreements` here too, not only on install: uninstall
-  // resolves the identifier against every configured source, and `msstore`
-  // refuses to be queried until its agreements are accepted — which reads as
-  // "operation cancelled" rather than as anything to do with our package.
+  // By manifest, symmetrically with the install, rather than by identifier.
+  // A package installed from a local manifest is not registered against any
+  // source, so `uninstall <id>` searches the configured sources, fails to find
+  // it, and reports "No installed package found matching input criteria" — a
+  // message about our package that is really about how it was installed.
+  //
+  // `--accept-source-agreements` because uninstall still consults `msstore`,
+  // which refuses to be queried until its agreements are accepted.
   await invoke('winget', [
-    'uninstall', WINGET_IDENTIFIER,
+    'uninstall', '--manifest', manifestDir,
     '--accept-source-agreements', '--disable-interactivity',
   ])
 

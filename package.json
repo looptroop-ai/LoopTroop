@@ -65,6 +65,7 @@
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",
     "verify:version": "node scripts/verify-version-single-source.mjs",
+    "verify:strip-types": "node scripts/verify-strip-types.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:install": "node scripts/smoke-install.mjs",
     "verify:installer": "node scripts/smoke-installer.mjs",

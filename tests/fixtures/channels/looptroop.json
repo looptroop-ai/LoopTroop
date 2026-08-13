@@ -1,0 +1,28 @@
+{
+    "version": "9.9.9",
+    "description": "Local AI coding orchestration with council planning and human-gated PRs",
+    "homepage": "https://www.looptroop.ovh/",
+    "license": "MIT",
+    "url": "https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz",
+    "hash": "3c5fe4640000000000000000000000000000000000000000000000000000abcd",
+    "extract_dir": "looptroop",
+    "depends": [
+        "nodejs-lts",
+        "git"
+    ],
+    "bin": [
+        [
+            "bin\\looptroop.cmd",
+            "looptroop"
+        ]
+    ],
+    "post_install": [
+        "Set-Content -LiteralPath \"$dir\\.install-channel\" -Value 'scoop' -NoNewline"
+    ],
+    "notes": [
+        "LoopTroop drives OpenCode, which it does not install. Run: looptroop doctor"
+    ],
+    "checkver": {
+        "github": "https://github.com/looptroop-ai/LoopTroop"
+    }
+}

@@ -66,6 +66,13 @@ jobs:
       - name: Verify version is single-sourced
         run: npm run verify:version
 
+      # Every script in scripts/ is run as `node scripts/<name>.ts` from a
+      # workflow, so Node's own type stripping is the only thing that parses
+      # them — and it refuses syntax that both `tsc --noEmit` and vitest's
+      # esbuild accept. Without this the first place that shows up is a job.
+      - name: Verify the release scripts run under bare node
+        run: npm run verify:strip-types
+
       # Pinned, not @latest: an unpinned validator makes this check
       # nondeterministic and can fail on a release we never chose.
       - name: Validate Renovate configuration
@@ -381,6 +388,108 @@ jobs:
       - name: Unpack it and drive the CLI
         shell: bash
         run: node scripts/smoke-bundle.mjs --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+
+  # Homebrew's own checks, run before anything is published rather than after:
+  # the tap has no CI of its own, so an objection discovered afterwards is
+  # already on somebody's machine. Offline, against a release-shaped formula —
+  # `--online` fetches the URL and verifies the checksum, which only means
+  # anything once the release assets exist, and the publish job does that.
+  formula-audit:
+    name: Formula audit (macos)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Audit the formula this release would publish
+        run: >
+          node scripts/audit-formula.ts
+          --version 9.9.9
+          --url https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-bundle.tar.gz
+          --sha256 0000000000000000000000000000000000000000000000000000000000000000
+
+  # Installs through the package managers themselves, from a throwaway tap and a
+  # local manifest pointing at a bundle served on loopback. Rendering a formula
+  # and checking its text proves the text; what it cannot prove is that `brew
+  # install` produces a command that runs — and every mistake available here is
+  # of that kind. The public tap and bucket are never touched.
+  channel-install:
+    name: Channel install (${{ matrix.channel }} on ${{ matrix.os }})
+    needs: [bundle]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The formula also serves Linuxbrew, and the docs will say so.
+          - { channel: homebrew, os: ubuntu-latest }
+          - { channel: homebrew, os: macos-latest }
+          - { channel: scoop, os: windows-latest }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Download the bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/bundle
+
+      # Homebrew is installed on the ubuntu images but deliberately kept off
+      # PATH, so `brew` is simply not a command there until this runs.
+      - name: Put Linuxbrew on PATH
+        if: matrix.channel == 'homebrew' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+
+      # The image's Homebrew is a snapshot, and the one on the ubuntu runners
+      # aborted mid-install with "unknown install step: run" from its own
+      # install-steps runner — while pouring a core dependency, and telling us
+      # to run `brew update` before reporting it. Updating first is both the
+      # remedy it asks for and what a user's machine does on its own.
+      - name: Update Homebrew
+        if: matrix.channel == 'homebrew'
+        run: brew update --quiet
+
+      # Not preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
+      # because the runner user is an administrator and Scoop refuses to install
+      # for one otherwise.
+      - name: Install Scoop
+        if: matrix.channel == 'scoop'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          # The installer adds the shim directory to the *user* PATH, which this
+          # process has already read; without this the next step's `scoop` is
+          # not a command.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          scoop --version
+
+      # `--strip-node` on macOS only, and it is the point of the job there:
+      # node@24 is keg-only, so the formula has to put the keg's node on PATH
+      # itself. On a runner that already has Node, a formula that forgot to
+      # would pass anyway and fail for the user who does not.
+      - name: Install it the way a user would, and run it
+        shell: bash
+        run: >
+          node scripts/smoke-channel.ts
+          --channel ${{ matrix.channel }}
+          --bundle "$(ls "${RUNNER_TEMP}"/bundle/*.tar.gz)"
+          ${{ matrix.os == 'macos-latest' && '--strip-node' || '' }}
 
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making

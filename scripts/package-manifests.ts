@@ -59,9 +59,10 @@ function assertInputs({ version, url, sha256 }: ChannelInputs): void {
  * be dropped either.
  *
  * The field order is not a matter of taste. `brew style` enforces it, and it
- * rejected `version` after `sha256` and `Formula["node@24"].opt_bin` in place of
- * `formula_opt_bin`. `version` is stated at all because the URL ends in
- * `-bundle.tar.gz`, which brew cannot read a version out of.
+ * rejected three things in turn: `version` after `sha256`, `livecheck` after
+ * `depends_on`, and `Formula["node@24"].opt_bin` in place of `formula_opt_bin`.
+ * `version` is stated at all because the URL ends in `-bundle.tar.gz`, which
+ * brew cannot read a version out of.
  */
 export function renderHomebrewFormula(inputs: ChannelInputs): string {
   assertInputs(inputs)
@@ -74,6 +75,11 @@ class Looptroop < Formula
   version "${inputs.version}"
   sha256 "${inputs.sha256}"
   license "${LICENSE}"
+
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
 
   depends_on "gh"
   depends_on "node@24"
@@ -95,11 +101,6 @@ class Looptroop < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/looptroop --version")
-  end
-
-  livecheck do
-    url :stable
-    strategy :github_latest
   end
 end
 `

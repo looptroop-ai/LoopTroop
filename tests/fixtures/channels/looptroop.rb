@@ -7,6 +7,11 @@ class Looptroop < Formula
   sha256 "3c5fe4640000000000000000000000000000000000000000000000000000abcd"
   license "MIT"
 
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
+
   depends_on "gh"
   depends_on "node@24"
   uses_from_macos "git"
@@ -27,10 +32,5 @@ class Looptroop < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/looptroop --version")
-  end
-
-  livecheck do
-    url :stable
-    strategy :github_latest
   end
 end

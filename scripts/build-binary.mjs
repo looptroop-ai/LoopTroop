@@ -37,11 +37,14 @@
 import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** 1980-01-01, the same fixed timestamp the bundle archives use. */
+const FIXED_MTIME = 315_532_800
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -123,6 +126,87 @@ function clientAssets() {
 
   walk(clientDir)
   return assets
+}
+
+
+/**
+ * The licences we are obliged to redistribute alongside the binary.
+ *
+ * This executable *contains* a Node runtime, so shipping it means
+ * redistributing Node, and Node's licence — which carries the notices of
+ * everything Node itself bundles, OpenSSL and ICU among them — has to travel
+ * with it. Fetched for the exact version embedded rather than vendored, so it
+ * can never describe a different runtime from the one inside.
+ *
+ * Failing loudly if it cannot be fetched is deliberate. An archive that
+ * silently omits it is the one outcome that is not acceptable.
+ */
+async function nodeLicense() {
+  const url = `https://raw.githubusercontent.com/nodejs/node/${process.version}/LICENSE`
+  const response = await fetch(url)
+  if (!response.ok) {
+    fail(
+      `Cannot fetch the licence for the Node runtime being embedded (${process.version}).`,
+      `${response.status} from ${url}`,
+      'The archive must carry it: shipping this binary redistributes Node.',
+    )
+  }
+  return response.text()
+}
+
+/**
+ * The binary, its licences, and nothing else, in the format each platform's
+ * tooling expects: `.zip` on Windows because that is what WinGet reads and what
+ * Windows unpacks natively, `.tar.gz` elsewhere.
+ *
+ * Reproducible by the same rules as the bundle archives, and for the same
+ * reason — a manifest records this hash.
+ */
+async function writeArchive(binary) {
+  const staging = join(work, 'archive', `looptroop-${version}-${OS_TAG}-${ARCH_TAG}`)
+  mkdirSync(staging, { recursive: true })
+
+  copyFileSync(binary, join(staging, `looptroop${exeSuffix}`))
+  chmodSync(join(staging, `looptroop${exeSuffix}`), 0o755)
+  for (const file of ['LICENSE', 'README.md', 'THIRD-PARTY-NOTICES.md']) {
+    copyFileSync(join(repoRoot, file), join(staging, file))
+  }
+  writeFileSync(join(staging, 'LICENSE.node.txt'), await nodeLicense())
+
+  for (const entry of readdirSync(staging)) {
+    utimesSync(join(staging, entry), FIXED_MTIME, FIXED_MTIME)
+  }
+  utimesSync(staging, FIXED_MTIME, FIXED_MTIME)
+
+  const stagingRoot = dirname(staging)
+  const name = basename(staging)
+  const out = join(outDir, `${name}${process.platform === 'win32' ? '.zip' : '.tar.gz'}`)
+  rmSync(out, { force: true })
+
+  if (process.platform === 'win32') {
+    // Entries sorted and listed rather than walked, `-X` to drop uid/gid and
+    // the extra timestamp fields, `TZ=UTC` because ZIP stores DOS local time.
+    const entries = readdirSync(staging).sort().map((entry) => `${name}/${entry}`)
+    execFileSync('7z', ['a', '-tzip', '-mx=9', out, ...entries.map((e) => join(stagingRoot, e))], {
+      cwd: stagingRoot,
+      env: { ...process.env, TZ: 'UTC' },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    })
+  } else {
+    run('tar', [
+      '--sort=name',
+      `--mtime=@${FIXED_MTIME}`,
+      '--owner=0', '--group=0', '--numeric-owner',
+      '--format=pax',
+      '--pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime',
+      '--use-compress-program=gzip -9 -n',
+      '-cf', out,
+      '-C', stagingRoot,
+      name,
+    ], { cwd: repoRoot })
+  }
+
+  return out
 }
 
 try {
@@ -207,6 +291,10 @@ try {
   const bytes = readFileSync(binaryPath)
   const sha256 = createHash('sha256').update(bytes).digest('hex')
 
+  const archivePath = await writeArchive(binaryPath)
+  const archiveBytes = readFileSync(archivePath)
+  const archiveSha = createHash('sha256').update(archiveBytes).digest('hex')
+
   process.stdout.write([
     '',
     `binary      ${binaryName}`,
@@ -214,7 +302,11 @@ try {
     `interface   ${Object.keys(assets).length} files`,
     `bytes       ${bytes.length}`,
     `sha256      ${sha256}`,
-    `wrote       ${binaryPath}`,
+    '',
+    `archive     ${basename(archivePath)}`,
+    `bytes       ${archiveBytes.length}`,
+    `sha256      ${archiveSha}`,
+    `wrote       ${archivePath}`,
     '',
   ].join('\n'))
 } finally {

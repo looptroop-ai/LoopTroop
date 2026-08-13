@@ -2,8 +2,9 @@ import { dirname, resolve, sep } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
+import { isSea } from './isSea'
 
-export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'container' | 'source' | 'unknown'
+export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'binary' | 'container' | 'source' | 'unknown'
 
 export interface InstallInfo {
   channel: InstallChannel
@@ -19,6 +20,10 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // `looptroop stop` first, because Windows will not replace a running
   // executable and the daemon holds this one open.
   winget: 'looptroop stop && winget upgrade LoopTroopAI.LoopTroop',
+  // A directly downloaded binary was put wherever its owner chose, and nothing
+  // records where. Re-running the installer is the one instruction that is
+  // true regardless.
+  binary: 'Re-run the installer from https://www.looptroop.ovh/install',
   container: 'docker pull looptroopai/looptroop:latest',
   source: 'git pull && npm install && npm run build',
   unknown: 'See https://www.looptroop.ovh for upgrade instructions',
@@ -93,6 +98,11 @@ function detectFromMarkers(moduleDir: string): InstallChannel | null {
 function detectFromShape(moduleDir: string): InstallChannel {
   const normalized = moduleDir.split(sep).join('/')
 
+  // Path patterns first, because a package manager that unpacked a binary owns
+  // its directory and that is stronger evidence than the artifact's own shape.
+  // `isSea()` only says *what* this is, never where it came from — a binary
+  // from WinGet, from a tarball and from Nix are all single-file builds.
+
   // Only the Cellar, never a bare `/homebrew/`: on a Mac whose Node came from
   // Homebrew, a plain `npm install -g` lands in
   // `/opt/homebrew/lib/node_modules/looptroop`, which the loose pattern called
@@ -112,6 +122,12 @@ function detectFromShape(moduleDir: string): InstallChannel {
   if (packageRoot !== null && existsSync(resolve(packageRoot, 'server')) && existsSync(resolve(packageRoot, '.git'))) {
     return 'source'
   }
+
+  // Last, and only once every path has been ruled out. A single-file build that
+  // no package manager owns was downloaded and put somewhere by hand, and
+  // `binary` is the honest answer for it. Checked here rather than first
+  // precisely because being a single-file build says nothing about provenance.
+  if (isSea()) return 'binary'
 
   return 'unknown'
 }

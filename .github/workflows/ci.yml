@@ -534,6 +534,81 @@ jobs:
         shell: bash
         run: node scripts/smoke-choco.ts --nupkg "$(ls "${RUNNER_TEMP}"/choco/*.nupkg)"
 
+
+  # The standalone binaries: LoopTroop with a Node runtime inside it, for
+  # machines that have none. Built on the runner that matches the target,
+  # because a SEA embeds the running Node and a cross-built one would carry the
+  # wrong runtime.
+  #
+  # macOS x64 is absent deliberately: Node supports single-executable
+  # applications on arm64 only there, so Intel Macs keep Homebrew and npm.
+  binary:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-14, target: darwin-arm64 }
+          - { os: windows-latest, target: win-x64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      # Twice, requiring identical bytes. The SEA blob embeds the absolute path
+      # of the script it was built from, which made the first version of this
+      # non-reproducible for a reason nothing downstream would have explained —
+      # a manifest records this hash and the descriptors point at it.
+      - name: Build the binary twice and require identical bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/build-binary.mjs --out "${RUNNER_TEMP}/bin-a"
+          node scripts/build-binary.mjs --out "${RUNNER_TEMP}/bin-b"
+          a=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}* | cut -d' ' -f1 | sort | tr -d '\n')
+          b=$(openssl dgst -sha256 -r "${RUNNER_TEMP}"/bin-b/looptroop-*-${{ matrix.target }}* | cut -d' ' -f1 | sort | tr -d '\n')
+          if [ "${a}" != "${b}" ]; then
+            echo "::error::Two builds of this commit produced different binaries."
+            exit 1
+          fi
+          echo "Reproducible."
+
+      # With Node removed from PATH, which is the only thing that proves the
+      # claim: every runner has Node, so a binary that quietly used it would
+      # pass any weaker test and fail for the user this artefact exists for.
+      - name: Unpack it and drive it with no Node installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(ls "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}.tar.gz "${RUNNER_TEMP}"/bin-a/looptroop-*-${{ matrix.target }}.zip 2>/dev/null | head -1)
+          node scripts/smoke-binary.mjs --archive "${archive}"
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/bin-a/*.tar.gz
+            ${{ runner.temp }}/bin-a/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
   # Sufficient rather than merely cheaper: the defect this catches is code
   # choosing to write inside its own installation directory, and the code making
   # that choice is the same on all three platforms. What differs per platform is
@@ -615,7 +690,7 @@ jobs:
   # unconditional, so skipped means a dependency of theirs failed.
   packaging:
     name: Packaging
-    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install]
+    needs: [smoke-installer, bundle, bundle-runs, formula-audit, channel-install, choco-install, binary]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

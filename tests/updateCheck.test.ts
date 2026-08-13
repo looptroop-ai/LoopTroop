@@ -43,6 +43,10 @@ describe('install channel detection', () => {
     ['/home/linuxbrew/.linuxbrew/Cellar/looptroop/9.9.9/libexec/dist/server/cli', 'homebrew'],
     ['/home/u/scoop/apps/looptroop/current/dist/server/cli', 'scoop'],
     ['/c/ProgramData/chocolatey/lib/looptroop/dist/server/cli', 'chocolatey'],
+    // WinGet unpacks a portable archive and runs nothing afterwards, so unlike
+    // the other three it cannot leave a marker file. The path is the only
+    // evidence, and WinGet owns this directory outright.
+    ['/c/Users/u/AppData/Local/Microsoft/WinGet/Packages/LoopTroopAI.LoopTroop_Microsoft.Winget.Source_8wekyb3d8bbwe/looptroop/dist/server/cli', 'winget'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
   })

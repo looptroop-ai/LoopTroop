@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 
-export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'container' | 'source' | 'unknown'
+export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'container' | 'source' | 'unknown'
 
 export interface InstallInfo {
   channel: InstallChannel
@@ -16,6 +16,9 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   homebrew: 'brew upgrade looptroop',
   scoop: 'scoop update looptroop',
   chocolatey: 'choco upgrade looptroop',
+  // `looptroop stop` first, because Windows will not replace a running
+  // executable and the daemon holds this one open.
+  winget: 'looptroop stop && winget upgrade LoopTroopAI.LoopTroop',
   container: 'docker pull looptroopai/looptroop:latest',
   source: 'git pull && npm install && npm run build',
   unknown: 'See https://www.looptroop.ovh for upgrade instructions',
@@ -98,6 +101,10 @@ function detectFromShape(moduleDir: string): InstallChannel {
   if (/\/Cellar\/looptroop\//i.test(normalized)) return 'homebrew'
   if (/\/scoop\/apps\/looptroop\//i.test(normalized)) return 'scoop'
   if (/\/ProgramData\/chocolatey\//i.test(normalized)) return 'chocolatey'
+  // WinGet unpacks a portable archive and runs nothing afterwards, so unlike
+  // the other three it cannot leave a marker file behind. The install path is
+  // the only evidence there is, and WinGet owns this directory outright.
+  if (/\/WinGet\/Packages\//i.test(normalized)) return 'winget'
   if (/\/node_modules\/looptroop\//.test(normalized)) return 'npm'
 
   // A checkout has the sources a published package never ships.

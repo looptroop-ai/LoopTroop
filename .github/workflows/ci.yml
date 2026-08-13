@@ -434,6 +434,20 @@ jobs:
           name: bundle
           path: ${{ runner.temp }}/bundle
 
+      # Homebrew is installed on the ubuntu images but deliberately kept off
+      # PATH, so `brew` is simply not a command there until this runs.
+      - name: Put Linuxbrew on PATH
+        if: matrix.channel == 'homebrew' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew --version
+
       # Not preinstalled on the Windows runners, unlike Chocolatey. `-RunAsAdmin`
       # because the runner user is an administrator and Scoop refuses to install
       # for one otherwise.
@@ -443,6 +457,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          # The installer adds the shim directory to the *user* PATH, which this
+          # process has already read; without this the next step's `scoop` is
+          # not a command.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
           scoop --version
 
       # `--strip-node` on macOS only, and it is the point of the job there:

@@ -55,23 +55,50 @@ function flag(name: string): string {
 
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
+/**
+ * No shell, ever.
+ *
+ * Everything invoked here is a real executable — `brew`, `pwsh`, a Scoop shim —
+ * so a shell buys nothing and costs correctness: on Windows `shell: true` hands
+ * the whole command line to `cmd.exe`, which re-parses it, and a PowerShell
+ * script block full of `&` and `{` does not survive that. It cost a whole CI
+ * round trip to find out.
+ */
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     env: { ...process.env, ...options.env },
-    // `brew` and `scoop` are shell-resolved on their platforms; `scoop` in
-    // particular is a PowerShell function rather than an executable.
-    shell: process.platform === 'win32',
   })
   const output = { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
   if (result.status !== 0 && options.allowFailure !== true) {
-    fail(`${command} ${args.join(' ')} exited ${result.status}.`, output.stdout, output.stderr)
+    fail(
+      `${command} ${args.join(' ')} exited ${result.status}.`,
+      String(result.error ?? ''),
+      output.stdout,
+      output.stderr,
+    )
   }
   return output
 }
 
-function pwsh(script: string, options: { allowFailure?: boolean } = {}): RunResult {
-  return run('pwsh', ['-NoProfile', '-Command', `& { ${script} }`], options)
+/** `scoop` is a PowerShell command, so it can only be reached through pwsh. */
+function pwsh(script: string, options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
+  return run('pwsh', ['-NoProfile', '-Command', script], options)
+}
+
+/**
+ * Runs an installed command, whatever kind of file the channel made it.
+ *
+ * On Windows the shim is a `.cmd`, which Node cannot execute without a shell —
+ * and handing the line to `cmd.exe` is what broke this job the first time. So
+ * PowerShell runs it instead, with the path and every argument quoted here
+ * rather than left to a parser.
+ */
+function invoke(commandPath: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean }): RunResult {
+  if (process.platform !== 'win32') return run(commandPath, args, options)
+
+  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
+  return pwsh(`& ${quote(commandPath)} ${args.map(quote).join(' ')}`, options)
 }
 
 const channel = flag('channel') as Channel
@@ -123,17 +150,16 @@ function pathWithoutNode(): string {
 
 /** Asserts the installed command works and knows how it was installed. */
 function assertInstalled(commandPath: string): void {
-  const invoke = process.platform === 'win32' ? `"${commandPath}"` : commandPath
   const env = stripNode ? { ...childEnv, PATH: pathWithoutNode() } : childEnv
   if (stripNode) log('  (with every other node removed from PATH)')
 
-  const reported = run(invoke, ['--version'], { env }).stdout.trim()
+  const reported = invoke(commandPath, ['--version'], { env }).stdout.trim()
   if (reported !== version) fail(`The installed command reports ${reported || '(nothing)'}, expected ${version}.`)
   log(`  runs, and reports ${version}`)
 
   // `doctor` exits non-zero on any failing check, and a fresh machine has
   // plenty; what is being asserted is the line it prints about this install.
-  const doctor = run(invoke, ['doctor'], { env, allowFailure: true })
+  const doctor = invoke(commandPath, ['doctor'], { env, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
   if (!new RegExp(`install\\b.*\\b${channel}\\b`).test(report)) {
     fail(

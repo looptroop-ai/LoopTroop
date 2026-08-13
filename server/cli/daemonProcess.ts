@@ -1,21 +1,8 @@
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { isEntryPoint } from './entryPoint'
+import { APP_VERSION } from '../lib/appVersion'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { startDaemonLogRotation } from '../lib/daemonLog'
 import { resolveSettings } from '../lib/appSettings'
-
-function readVersion(): string {
-  try {
-    // dist/server/cli/daemonProcess.js -> package root is three levels up.
-    const manifestPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json')
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: string }
-    return manifest.version ?? '0.0.0'
-  } catch {
-    return '0.0.0'
-  }
-}
 
 export interface DaemonProcessOptions {
   port?: number
@@ -52,7 +39,7 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
 
   const handle = await startDaemon({
     settings,
-    version: readVersion(),
+    version: APP_VERSION,
     onReady: (state) => {
       console.log(`[daemon] Serving on http://${state.host}:${state.port} (pid ${state.pid}).`)
     },

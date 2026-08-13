@@ -1,7 +1,6 @@
 import { parseArgs } from 'node:util'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { APP_VERSION } from '../lib/appVersion'
+import { DAEMON_ARGV } from './daemonHandoff'
 
 const USAGE = `LoopTroop — local AI coding orchestration
 
@@ -30,18 +29,18 @@ Options:
   --help         Print this message
 `
 
-function readVersion(): string {
-  try {
-    // dist/server/cli/cli.js -> package root is three levels up.
-    const manifestPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../package.json')
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: string }
-    return manifest.version ?? '0.0.0'
-  } catch {
-    return '0.0.0'
-  }
-}
-
 export async function main(argv: string[]): Promise<number> {
+  // Before `parseArgs`, and before anything else. Under npm this file is the
+  // script Node was given; inside a single-file build it is the executable
+  // itself, and in that case there is no second file to spawn — the binary has
+  // to be able to become the daemon on request. One handler serves both, so
+  // there is no second start implementation to keep in step.
+  if (argv[0] === DAEMON_ARGV) {
+    const { runDaemonProcess } = await import('./daemonProcess')
+    await runDaemonProcess()
+    return 0
+  }
+
   let parsed
   try {
     parsed = parseArgs({
@@ -69,7 +68,7 @@ export async function main(argv: string[]): Promise<number> {
   const command = positionals[0]
 
   if (values.version) {
-    process.stdout.write(`${readVersion()}\n`)
+    process.stdout.write(`${APP_VERSION}\n`)
     return 0
   }
 

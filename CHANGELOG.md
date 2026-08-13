@@ -9,6 +9,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Fixed
+- Stopped the one-line installer reporting the wrong version when another copy of LoopTroop comes first on your PATH. It finished by running `looptroop --version` and printing whatever answered, which is a different copy whenever an older one is earlier in the search order — including when npm's global directory is not on the PATH at all, in which case it cheerfully reported a successful install of a version it had not touched. It now names the version it actually installed, and says so plainly when the command your shell will run is a different one.
+
+### Changed
+- The README no longer says the package managers are unpopulated, and describes the one way Chocolatey genuinely differs: every version waits for community moderation, so it trails the other channels rather than arriving with them.
+
 ## 0.5.1 (2026-08-13)
 
 

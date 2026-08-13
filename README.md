@@ -189,11 +189,9 @@ review gates.
 
 ### Or use a package manager
 
-> **Homebrew, Scoop and Chocolatey are not populated yet.** The next stable
-> release is the first to publish to them, so until it is out these three
-> commands have nothing to find; npm and Docker work today. The Chocolatey
-> package additionally has to clear community moderation before the feed serves
-> it, which is not something a release can wait on.
+> **Chocolatey lags the other channels.** Every version goes through community
+> moderation before the feed serves it, and no release waits on that — so a new
+> version reaches Homebrew, Scoop and npm first, and Chocolatey once it clears.
 
 | | Install | Upgrade |
 |---|---|---|

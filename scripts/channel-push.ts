@@ -67,21 +67,32 @@ function gh(args: string[], allowFailure = false): string {
 }
 
 /**
- * Fails now, loudly, rather than halfway through a release.
+ * Says what the token can do before anything is decided from what it can read.
  *
- * A token that has expired or lost a scope produces a 404 on the read below,
- * which is indistinguishable from "this channel has nothing published yet" —
- * and that mistake publishes a first version over an existing one.
+ * A token that has expired or lost a scope answers 404 to the read below, which
+ * looks exactly like "this channel has nothing published yet". The contents API
+ * refuses to replace an existing file without its blob SHA, so that mistake
+ * cannot actually overwrite anything — but it can produce a baffling failure
+ * halfway through a release, and this names the cause up front.
+ *
+ * A denial is fatal; silence is not. Not every token shape reports
+ * `permissions` on a repository, and refusing to publish because a field was
+ * absent would block a release over a diagnostic.
  */
 function preflight(): void {
   const probe = gh(['api', `repos/${repo}`, '--jq', '.permissions.push'], true).trim()
-  if (probe !== 'true') {
-    fail(
-      `The token cannot push to ${repo}.`,
-      probe === '' ? 'The repository did not answer; the token may be expired or missing a scope.' : `push permission: ${probe}`,
-    )
+
+  if (probe === 'false') {
+    fail(`The token cannot push to ${repo}.`, 'It is valid but read-only for this repository.')
   }
-  log(`Token can push to ${repo}.`)
+  if (probe === 'true') {
+    log(`Token can push to ${repo}.`)
+    return
+  }
+
+  log(`::warning::Could not confirm push access to ${repo} (permissions reported "${probe || 'nothing'}").`)
+  log('Continuing: the contents API refuses to replace a file without its blob SHA, so a read that failed for')
+  log('lack of access cannot overwrite anything. A push that is genuinely unauthorised will fail below.')
 }
 
 interface RemoteFile { text: string, blobSha: string }

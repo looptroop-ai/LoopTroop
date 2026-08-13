@@ -59,8 +59,9 @@ const args = process.argv.slice(2)
 const joined = args.join(' ')
 
 if (joined.includes('.permissions.push')) {
-  if (state.push !== true) process.exit(1)
-  process.stdout.write('true\\n')
+  if (state.push === 'unknown') { process.stdout.write('null\\n') }
+  else if (state.push === false) { process.stdout.write('false\\n') }
+  else { process.stdout.write('true\\n') }
 } else if (args.includes('--method') && args.includes('PUT')) {
   appendFileSync(process.env.GH_STUB_STATE + '.put', JSON.stringify(args) + '\\n')
   process.stdout.write('deadbeef\\n')
@@ -83,7 +84,7 @@ if (joined.includes('.permissions.push')) {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   })
 
-  function setState(state: { push?: boolean, remote?: string | null, blobSha?: string }): void {
+  function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string }): void {
     writeFileSync(statePath, JSON.stringify({ push: true, remote: null, blobSha: 'abc123', ...state }))
     rmSync(`${statePath}.put`, { force: true })
   }
@@ -195,10 +196,11 @@ if (joined.includes('.permissions.push')) {
 
   /**
    * A token that lost its scope answers 404 to the read, which is
-   * indistinguishable from an empty channel — and that mistake publishes a first
-   * version over an existing one.
+   * indistinguishable from an empty channel. The contents API will not replace
+   * a file without its blob SHA, so this cannot overwrite anything — but saying
+   * so up front beats a baffling failure halfway through a release.
    */
-  it('stops on a token that cannot push, before reading anything', async () => {
+  it('stops on a token that is explicitly read-only, before reading anything', async () => {
     setState({ push: false })
 
     const result = await push()
@@ -206,6 +208,21 @@ if (joined.includes('.permissions.push')) {
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('cannot push')
     expect(putCalls()).toHaveLength(0)
+  })
+
+  /**
+   * Not every token shape reports `permissions` on a repository. Refusing to
+   * publish because a diagnostic field was absent would block a release over
+   * nothing.
+   */
+  it('warns but continues when push access cannot be confirmed either way', async () => {
+    setState({ push: 'unknown', remote: null })
+
+    const result = await push()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('Could not confirm push access')
+    expect(putCalls()).toHaveLength(1)
   })
 
   it('writes nothing on a dry run', async () => {

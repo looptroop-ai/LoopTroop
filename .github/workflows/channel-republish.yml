@@ -11,12 +11,24 @@
 # so once npm and the tag are done a re-run of `release.yml` resolves to
 # `complete` and skips these jobs entirely.
 #
-# Nothing is rebuilt from a checkout. Everything a descriptor contains — the
-# version, the bundle URL and its sha256 — is read from `release-manifest.json`
-# attached to the published GitHub Release. Release assets outlive workflow
-# artefacts, which is what lets this run months after the release it repairs,
-# and reading them rather than rebuilding means a repair cannot publish a
-# descriptor pointing at bytes the release never had.
+# Everything a descriptor contains — the version, the bundle URL and its sha256
+# — is read from `release-manifest.json` attached to the published GitHub
+# Release, never from a checkout. Release assets outlive workflow artefacts,
+# which is what lets this run months after the release it repairs, and reading
+# them rather than rebuilding means a repair cannot publish a descriptor
+# pointing at bytes the release never had.
+#
+# The publish jobs then check out the commit that release was built from, so the
+# templates rendering those values are that release's own. Together the two
+# pin both halves: the manifest pins what a descriptor says, the commit pins the
+# code that says it. Without the second, editing a formula template silently
+# rewrites every older release anyone later repairs.
+#
+# The cost is that this file — always the default branch's, because that is
+# where `workflow_dispatch` reads it from — invokes scripts from an older
+# checkout. Adding a flag is safe, since the argument parsers ignore ones they
+# do not know. Removing or renaming a flag that an older script requires is not,
+# and would surface as a repair failing on an old version long after the change.
 #
 # What it will not do by default is overwrite. A channel already carrying this
 # version with these exact bytes is left alone; one carrying a newer version is
@@ -69,6 +81,7 @@ jobs:
       url: ${{ steps.inputs.outputs.url }}
       sha256: ${{ steps.inputs.outputs.sha256 }}
       force: ${{ steps.force.outputs.force }}
+      templates: ${{ steps.templates.outputs.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -150,6 +163,39 @@ jobs:
             exit 1
           fi
 
+      # Which commit's templates render this release's descriptors.
+      #
+      # The version, URL and sha256 above pin what a descriptor *says*; they do
+      # not pin the code that writes it. A repair runs from the default branch,
+      # so without this a formula rebuilt a year later carries whatever
+      # `package-manifests.ts` says then — a changed dependency, a changed
+      # caveat, a changed install block — and publishes it as though that were
+      # what the release shipped. Nobody reviewing the template change would
+      # know they had also just changed four old releases.
+      #
+      # So the release's own commit wins. Re-rendering an old release with new
+      # templates is a change to what that release publishes, and it belongs in
+      # a reviewed code change rather than behind a dispatch checkbox.
+      #
+      # Falling back to the default branch when the manifest records no commit,
+      # which is every manifest written before the field existed. Those releases
+      # carry no bundle either, so `channel-inputs.ts` has already refused them
+      # and this is unreachable — it is here so that a future gap degrades to
+      # today's behaviour rather than to an empty ref.
+      - name: Resolve which templates to render with
+        id: templates
+        env:
+          COMMIT: ${{ steps.inputs.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ -n "${COMMIT}" ]; then
+            echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
+            echo "Rendering with the templates from ${COMMIT}, the commit this release was built from."
+          else
+            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "::warning::This release's manifest records no commit; rendering with the default branch."
+          fi
+
   # ---------------------------------------------------------------------------
   # Homebrew and Scoop: a file in a git repository, written through the contents
   # API so a concurrent push loses rather than this one.
@@ -166,6 +212,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The release's own templates, not the default branch's. See `prepare`.
+          ref: ${{ needs.prepare.outputs.templates }}
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -221,6 +269,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The release's own templates, not the default branch's. See `prepare`.
+          ref: ${{ needs.prepare.outputs.templates }}
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -265,6 +315,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The release's own templates, not the default branch's. See `prepare`.
+          ref: ${{ needs.prepare.outputs.templates }}
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -289,14 +341,23 @@ jobs:
             echo "looptroop ${VERSION} is not on the feed (either never submitted, or still in moderation)."
           fi
 
+      # By exact name, not `*-bundle.tar.gz`. The manifest names the asset this
+      # release published, so asking for anything else means accepting whatever
+      # a glob happens to match on a release that also carries an older or
+      # differently-named archive.
       - name: Download the bundle this release published
         if: steps.feed.outputs.published == 'false'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern '*-bundle.tar.gz' --clobber
+          BUNDLE: ${{ needs.prepare.outputs.bundle }}
+        run: gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern "${BUNDLE}" --clobber
 
+      # `--expect-sha256`, because these bytes were downloaded rather than built
+      # here and go straight inside the package. Homebrew gets this check from
+      # `brew audit --online`; Chocolatey has no equivalent, so it happens here
+      # or not at all.
       - name: Pack and prove it locally
         if: steps.feed.outputs.published == 'false'
         shell: bash
@@ -306,6 +367,7 @@ jobs:
             --bundle "${{ needs.prepare.outputs.bundle }}" \
             --url "${{ needs.prepare.outputs.url }}" \
             --version "${{ needs.prepare.outputs.version }}" \
+            --expect-sha256 "${{ needs.prepare.outputs.sha256 }}" \
             --out dist-choco
           node scripts/smoke-choco.ts \
             --nupkg "dist-choco/looptroop.${{ needs.prepare.outputs.version }}.nupkg" \

@@ -156,6 +156,9 @@ jobs:
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
           brew --version
+          # The image ships a snapshot and nothing updates it. A stale one has
+          # aborted mid-install with an error from Homebrew's own internals.
+          brew update --quiet
 
       # `--online` fetches the URL and verifies the checksum. For a repair that
       # is the whole question: the release exists, so if the formula points at

@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.2 (2026-08-13)
+
+
 ### Summary
 - LoopTroop can now be installed with WinGet on Windows, and every release publishes a standalone executable for macOS on Apple silicon, Linux on x64 and arm64, and Windows on x64. The executable carries its own Node runtime, so it needs nothing installed but git — which is what makes the WinGet package work on a machine that has never had Node.
 - Each binary is built twice and required to be byte-identical before it is published, carries the licence of the Node runtime inside it, and comes with a build provenance attestation: a signed statement of which workflow, repository and commit produced those exact bytes.

@@ -663,6 +663,17 @@ jobs:
           }
           winget --version
 
+      # Installing from a local manifest is off by default and has to be enabled
+      # explicitly; without it winget rejects `--manifest` as an invalid
+      # argument and prints its help, which reads like a malformed command
+      # rather than a missing setting. Needs administrator rights, which the
+      # runner has.
+      - name: Allow installing from a local manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          winget settings --enable LocalManifestFiles
+
       - name: Validate the manifests, install, run, and uninstall
         shell: bash
         run: node scripts/smoke-winget.ts --archive "$(ls "${RUNNER_TEMP}"/binary/*.zip)"

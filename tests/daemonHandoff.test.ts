@@ -15,14 +15,26 @@ import { resolve } from 'node:path'
 const seaMock = vi.hoisted(() => ({ value: false }))
 vi.mock('../server/lib/isSea', () => ({ isSea: () => seaMock.value }))
 
-const { DAEMON_ARGV, daemonArgv } = await import('../server/cli/daemonHandoff')
+/**
+ * Imported inside each test rather than once at the top.
+ *
+ * A single top-level import is evaluated before the first test runs, which
+ * makes the result depend on module-registry state this file does not control —
+ * it passed locally and failed on CI. Resetting and re-importing per test makes
+ * the mock's value at call time the only thing that decides the answer.
+ */
+async function load() {
+  vi.resetModules()
+  return import('../server/cli/daemonHandoff')
+}
 
 afterEach(() => {
   seaMock.value = false
 })
 
 describe('handing off to the daemon', () => {
-  it('names the entry script as well as the argument under npm', () => {
+  it('names the entry script as well as the argument under npm', async () => {
+    const { DAEMON_ARGV, daemonArgv } = await load()
     const argv = process.argv
     process.argv = ['/usr/bin/node', '/usr/local/lib/node_modules/looptroop/dist/server/cli/cli.js']
 
@@ -40,8 +52,9 @@ describe('handing off to the daemon', () => {
    * In a single-file build `argv[1]` is the executable rather than a script, so
    * passing it along would run the binary against itself.
    */
-  it('passes only the argument in a single-file build', () => {
+  it('passes only the argument in a single-file build', async () => {
     seaMock.value = true
+    const { DAEMON_ARGV, daemonArgv } = await load()
     const argv = process.argv
     process.argv = ['/usr/local/bin/looptroop', '/usr/local/bin/looptroop']
 
@@ -53,7 +66,8 @@ describe('handing off to the daemon', () => {
   })
 
   /** Whatever it is called and wherever it was installed. */
-  it('follows the entry script rather than assuming a file name', () => {
+  it('follows the entry script rather than assuming a file name', async () => {
+    const { daemonArgv } = await load()
     const argv = process.argv
     process.argv = ['/usr/bin/node', '/opt/elsewhere/looptroop-cli.mjs']
 
@@ -64,7 +78,8 @@ describe('handing off to the daemon', () => {
     }
   })
 
-  it('refuses rather than spawning something meaningless when there is no entry script', () => {
+  it('refuses rather than spawning something meaningless when there is no entry script', async () => {
+    const { daemonArgv } = await load()
     const argv = process.argv
     process.argv = ['/usr/bin/node']
 
@@ -76,7 +91,8 @@ describe('handing off to the daemon', () => {
   })
 
   /** Never a real command, and never printed in the usage text. */
-  it('uses an argument no user would type', () => {
+  it('uses an argument no user would type', async () => {
+    const { DAEMON_ARGV } = await load()
     expect(DAEMON_ARGV).toBe('__daemon')
   })
 })

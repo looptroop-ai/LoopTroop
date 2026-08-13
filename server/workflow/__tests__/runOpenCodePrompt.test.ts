@@ -865,22 +865,50 @@ describe('runOpenCodePrompt', () => {
     }
   })
 
+  /**
+   * Fake timers, because this asserts on where a 1ms deadline lands.
+   *
+   * With real timers it is a race the test loses roughly once in fifteen runs
+   * on a loaded machine: the retry loop checks `signal.aborted` *before* calling
+   * the adapter, so a deadline that fires during the several awaits it takes to
+   * get there produces zero session-create calls where this expects one. The
+   * failure reads as a product bug and is a wall-clock race in the test.
+   *
+   * Advancing deliberately also states what the test is actually about. The
+   * first attempt has to happen and fail on its own — none of that is
+   * timer-driven — and only then does the deadline land, inside the 1000ms wait
+   * before the second attempt. That is the state the name refers to.
+   */
   it('preserves timeout behavior while waiting to retry session creation', async () => {
-    const adapter = new TestOpenCodeAdapter(['assistant response'], {
-      createFailures: [
-        new Error('OpenCode returned no session payload'),
-      ],
-    })
+    vi.useFakeTimers()
+    try {
+      const adapter = new TestOpenCodeAdapter(['assistant response'], {
+        createFailures: [
+          new Error('OpenCode returned no session payload'),
+        ],
+      })
 
-    await expect(runOpenCodePrompt({
-      adapter,
-      projectPath: '/tmp/project',
-      parts: [{ type: 'text', content: 'Prompt body' }],
-      timeoutMs: 1,
-    })).rejects.toThrow('Timeout')
+      const runPromise = runOpenCodePrompt({
+        adapter,
+        projectPath: '/tmp/project',
+        parts: [{ type: 'text', content: 'Prompt body' }],
+        timeoutMs: 1,
+      })
+      const rejection = expect(runPromise).rejects.toThrow('Timeout')
 
-    expect(adapter.sessionCreateCalls).toHaveLength(1)
-    expect(adapter.promptCalls).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(adapter.sessionCreateCalls).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(1)
+      await rejection
+
+      // Still one: the deadline cut the wait short rather than allowing the
+      // retry the loop was about to make.
+      expect(adapter.sessionCreateCalls).toHaveLength(1)
+      expect(adapter.promptCalls).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('prompts a newly-created owned session without requiring it to appear in the remote session list first', async () => {

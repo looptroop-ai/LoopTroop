@@ -198,8 +198,14 @@ review gates.
 | **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` |
 | **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
 | **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` |
+| **WinGet** (Windows) | `winget install LoopTroopAI.LoopTroop` | `looptroop stop`<br>`winget upgrade LoopTroopAI.LoopTroop` |
 | **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
 | **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
+
+WinGet arrives later than the others for the same reason Chocolatey does: every
+submission is a pull request reviewed by people at Microsoft. `looptroop stop`
+before upgrading is not optional there — Windows will not replace a running
+executable, and the daemon holds it open.
 
 `looptroop doctor` tells you which of these your copy came from and the exact
 command that upgrades it.
@@ -210,9 +216,22 @@ versions the release was tested against. Installing through npm resolves the
 version ranges afresh on your machine, which is how npm is supposed to work and
 is worth knowing when comparing two installations.
 
-Node is the one thing those three will install for you: LoopTroop is declared as
-depending on it, so Homebrew pulls in `node@24` and Scoop and Chocolatey pull in
-`nodejs-lts` if your machine has no suitable Node. That is the normal contract
+### Or download a binary
+
+Every release also publishes a standalone executable for macOS (Apple silicon),
+Linux (x64 and arm64) and Windows (x64), on the
+[releases page](https://github.com/looptroop-ai/LoopTroop/releases/latest). It
+carries its own Node runtime, so it needs nothing installed but git — which is
+what WinGet installs, and why that channel declares no Node dependency.
+
+Each archive is listed in the release's `release-manifest.json` with its
+checksum, and carries a build provenance attestation. Intel Macs are not among
+them: Node cannot build a single-file executable for that target, so use
+Homebrew or npm there.
+
+Node is the one thing the other three will install for you: LoopTroop is declared
+as depending on it, so Homebrew pulls in `node@24` and Scoop and Chocolatey pull
+in `nodejs-lts` if your machine has no suitable Node. That is the normal contract
 of a package manager, and it is the difference between them and the one-line
 installer above, which checks for Node, tells you what to do about it, and
 installs nothing itself.

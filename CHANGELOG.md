@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.3 (2026-08-14)
+
+
 ### Summary
 - Fixed an upgrade of the standalone executable that could leave LoopTroop stopped. If replacing the file failed, or the new version would not run, the old one was put back — but the daemon that had been stopped first was never started again, and the message said it was "back in place and working". Every path that stops the daemon now starts it again and says whether that worked.
 - Corrected the WinGet package to declare `x64` rather than `neutral`. `neutral` means "runs on any architecture", which would have offered an Intel-only executable to Windows on ARM, where it is not built.

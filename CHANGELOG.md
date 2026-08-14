@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Fixed
+- Fixed the operator bypass that skips the standalone binaries, which could not have produced a release. It exists so a runner-class outage cannot strand a security fix, and it had never been run. Running it showed that skipping the binary builds also skipped every job after them — artefact verification on all three platforms, the read-only install check, the draft, and then every publish — so the emergency path would have produced nothing at all. Both halves are fixed, and a release with binaries skipped now builds, verifies and drafts exactly as a normal one does.
 - Corrected the command shown for checking a download against `checksums.sha256`. The file lists every asset a release publishes, so `sha256sum -c checksums.sha256` reports the eight you did not download as `FAILED open or read` and exits non-zero — which reads as a corrupted release and is not one. The documented command now checks the one file you actually have, and works the same way on macOS, where `shasum` has no flag for skipping the rest.
 
 ## 0.5.4 (2026-08-14)

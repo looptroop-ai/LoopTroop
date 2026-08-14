@@ -1,6 +1,6 @@
 {
   "name": "looptroop",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Local AI coding orchestration for repo-scale work: LLM-council planning, Ralph-loop recovery, isolated OpenCode worktrees, and human-gated PR delivery.",
   "type": "module",
   "keywords": [

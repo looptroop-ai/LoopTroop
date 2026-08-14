@@ -189,42 +189,47 @@ review gates.
 
 ### Or use a package manager
 
-> **Chocolatey lags the other channels.** Every version goes through community
-> moderation before the feed serves it, and no release waits on that — so a new
-> version reaches Homebrew, Scoop and npm first, and Chocolatey once it clears.
+| | Install | Upgrade | |
+|---|---|---|---|
+| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` | ✅ |
+| **bun** (everywhere) | `bun add -g looptroop` | `bun add -g looptroop@latest` | ✅ |
+| **pnpm** (everywhere) | `pnpm add -g looptroop` | `pnpm add -g looptroop@latest` | ✅ |
+| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` | ✅ |
+| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` | ✅ |
+| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` | ✅ |
+| **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` | ⏳ |
+| **WinGet** (Windows) | `winget install LoopTroopAI.LoopTroop` | `looptroop stop`<br>`winget upgrade LoopTroopAI.LoopTroop` | ⏳ |
+| **AUR** (Arch Linux) | `yay -S looptroop-bin` | `yay -Syu looptroop-bin` | ⏳ |
 
-| | Install | Upgrade |
-|---|---|---|
-| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` |
-| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
-| **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` |
-| **WinGet** (Windows) | `winget install LoopTroopAI.LoopTroop` | `looptroop stop`<br>`winget upgrade LoopTroopAI.LoopTroop` |
-| **AUR** (Arch Linux) | `yay -S looptroop-bin` | `yay -Syu looptroop-bin` |
-| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
-| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
+⏳ **means the command does not work yet.** Those three packages are built and
+tested on every change, and each is waiting on somebody else: Chocolatey on
+community moderation, WinGet on a pull request being reviewed at Microsoft, and
+the AUR on registration reopening after a security incident. The commands are
+listed because they are what will work, unchanged, the day each clears. Until
+then, every ✅ row is a real alternative on the same platform.
 
-WinGet arrives later than the others for the same reason Chocolatey does: every
-submission is a pull request reviewed by people at Microsoft. `looptroop stop`
-before upgrading is not optional there — Windows will not replace a running
-executable, and the daemon holds it open.
-
-> **The AUR package is not published yet.** New registrations at the AUR are
-> closed following a security incident, so there is no account to publish
-> `looptroop-bin` from. The package is written and tested — CI builds it with
-> `makepkg`, lints it with `namcap`, installs it with `pacman` and removes it
-> again on every change — and the release workflow will publish it once an
-> account exists. Until then, Arch users can install with npm, or build the
-> package from this repository. `yay` is one AUR helper of several; `paru` and
-> the rest work the same way.
+The current state of all three, and everything below in more detail, is on the
+[Installation](https://www.looptroop.ovh/docs/installation) page.
 
 `looptroop doctor` tells you which of these your copy came from and the exact
-command that upgrades it.
+command that upgrades it — and each manager is given *its own* upgrade command,
+because `npm install -g` run against a bun or pnpm installation does not upgrade
+it. It installs a second copy under npm's prefix and leaves the first one alone.
 
-The three package managers install a bundle built once per release, with every
-dependency resolved at build time — so everyone on those channels runs the exact
-versions the release was tested against. Installing through npm resolves the
-version ranges afresh on your machine, which is how npm is supposed to work and
-is worth knowing when comparing two installations.
+Two differences worth knowing before comparing two installations:
+
+- **Homebrew, Scoop and Chocolatey install a locked bundle** built once per
+  release with every dependency resolved at build time, so everyone on those
+  channels runs the exact versions the release was tested against. npm, bun and
+  pnpm resolve the version ranges afresh on your machine, which is how they are
+  supposed to work.
+- **pnpm holds a new version back for about a day.** It will not resolve a tag
+  to a version published in the last 24 hours — a supply-chain protection, on by
+  default — so `pnpm add -g looptroop@latest` installs the newest release older
+  than that window. Asking for an exact version bypasses it.
+
+`looptroop stop` before a WinGet upgrade is not optional: Windows will not
+replace a running executable, and the daemon holds it open.
 
 ### Or download a binary
 
@@ -235,9 +240,20 @@ carries its own Node runtime, so it needs nothing installed but git — which is
 what WinGet installs, and why that channel declares no Node dependency.
 
 Each archive is listed in the release's `release-manifest.json` with its
-checksum, and carries a build provenance attestation. Intel Macs are not among
-them: Node cannot build a single-file executable for that target, so use
-Homebrew or npm there.
+checksum, and carries a build provenance attestation. Every release also
+publishes `checksums.sha256`, so you can check a download with the tool you
+already have:
+
+```bash
+sha256sum -c checksums.sha256        # shasum -a 256 -c on macOS
+```
+
+```powershell
+Get-FileHash looptroop-<version>-win-x64.zip -Algorithm SHA256
+```
+
+Intel Macs are not among the binaries: Node cannot build a single-file
+executable for that target, so use Homebrew or npm there.
 
 The installer will place one for you, into `~/.looptroop` unless you say
 otherwise:
@@ -296,11 +312,6 @@ needs — Node, git and `gh` are in the image:
 ```bash
 docker pull looptroopai/looptroop:latest
 ```
-
-> **From the next release onward.** The image is built and tested on every
-> change, but it is published by the release workflow, so no tag exists in a
-> registry until the first release runs. Until then, build it yourself with
-> `docker build -t looptroopai/looptroop .` from a checkout.
 
 Two things it still needs from you, both deliberately not baked in.
 
@@ -493,6 +504,8 @@ Useful pages:
 
 | Page | What it explains |
 | --- | --- |
+| [Installation](https://www.looptroop.ovh/docs/installation) | Every channel, what each installs, upgrading, uninstalling, and verifying a download |
+| [CLI Reference](https://www.looptroop.ovh/docs/cli) | Every command and option, the `--json` output, and what running as a service means |
 | [Getting Started](https://www.looptroop.ovh/docs/getting-started) | Setup, startup, ports, and first project attach |
 | [Configuration](https://www.looptroop.ovh/docs/configuration) | All profile settings with defaults, ranges, and trade-offs |
 | [Ticket Lifecycle Screenshots](https://www.looptroop.ovh/docs/ticket-lifecycle-screenshots) | Visual walkthrough of every workflow status with screenshots and action summaries |

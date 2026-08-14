@@ -9,6 +9,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Added
+- Installing with **bun** and **pnpm** is now supported properly. Both could always install LoopTroop — it is the same package from the same registry — but neither was ever tried, and both installations reported themselves as npm ones and were told to upgrade with `npm install -g looptroop@latest`. That command does not upgrade a bun or pnpm installation: it installs a second copy under npm's prefix, leaves the original where it is, and which of the two runs afterwards depends on the order of your PATH. Each now has its own upgrade command, and CI installs LoopTroop globally with both, on Linux and Windows, and requires it to name the manager it was actually installed by. One thing pnpm users should know: pnpm will not resolve `@latest` to a version published in the last day or so, as a supply-chain protection, so it arrives on pnpm about a day after everywhere else.
+- Every release now publishes `checksums.sha256` alongside the assets, so a download can be checked with `sha256sum -c` — or `shasum -a 256 -c` on macOS, or `Get-FileHash` on Windows — rather than by reading hashes out of `release-manifest.json` by hand. It is generated from that manifest rather than by hashing the files a second time, so the two cannot disagree, and it is verified on Linux, macOS and Windows before a release publishes: both that the file is intact, and that what it claims about every other asset matches what the release recorded.
+
+### Fixed
+- The README no longer says the container image is published "from the next release onward"; it has been published for several releases. The install table now also marks which channels actually work today, rather than describing Chocolatey and WinGet as merely slower — a command that cannot succeed yet is not a slow command.
+
 ## 0.5.3 (2026-08-14)
 
 

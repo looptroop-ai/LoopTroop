@@ -22,7 +22,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - A failed standalone-binary build was shown in the release report but never opened the release-failure issue.
 
 ### Changed
-- Publishing to Chocolatey, WinGet and the AUR is switched off until each becomes possible again. `npm run channels:check` reports when that is.
+- Publishing to Chocolatey, WinGet and the AUR is switched off until each becomes possible again.
 
 ## 0.5.2 (2026-08-13)
 

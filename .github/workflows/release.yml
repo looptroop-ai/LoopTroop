@@ -1835,7 +1835,6 @@ jobs:
   #                       incident, so there is no account to publish from.
   #
   # Re-enable one with:  gh variable set PUBLISH_WINGET --body true
-  # `scripts/check-channels.sh` reports when each becomes possible again.
   # ---------------------------------------------------------------------------
 
   # Dormant until the AUR reopens registration. It skips rather than fails when

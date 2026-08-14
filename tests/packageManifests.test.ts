@@ -375,6 +375,19 @@ describe('the WinGet manifests', () => {
     expect(() => renderWingetManifests({ ...WINGET_INPUTS, sha256: 'nope' })).toThrow()
   })
 
+  /**
+   * The field describes the installed binary, not the archive carrying it.
+   * `neutral` claims the payload runs anywhere, which would offer this package
+   * on Windows on ARM — a target `build-binary.mjs` does not build and
+   * `binaryTarget` refuses by name.
+   */
+  it('declares the architecture of the executable inside, not of the zip', () => {
+    const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
+
+    expect(installer).toContain('Architecture: x64')
+    expect(installer).not.toContain('Architecture: neutral')
+  })
+
   /** The validation pipeline rejects a manifest filed anywhere else. */
   it('puts the manifests where winget-pkgs expects them', () => {
     expect(wingetManifestDir('9.9.9')).toBe('manifests/l/LoopTroopAI/LoopTroop/9.9.9')

@@ -45,6 +45,18 @@ on:
         description: 'Build and verify without publishing anything'
         type: boolean
         default: true
+      # An escape hatch for a runner-class outage, not a convenience. The
+      # binaries are built on four native runners and they gate `build`, so if
+      # (say) macos-14 or ubuntu-24.04-arm is unavailable, nothing can be
+      # released at all — including a security fix. This releases without them,
+      # deliberately and visibly.
+      #
+      # Manual-only by construction: `workflow_dispatch` inputs are absent on a
+      # push, so the ordinary path cannot reach this even by accident.
+      skip_binaries:
+        description: 'Release without the standalone executables (runner outage only)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -76,6 +88,7 @@ jobs:
       version: ${{ steps.state.outputs.version }}
       state: ${{ steps.state.outputs.state }}
       dry_run: ${{ steps.guard.outputs.dry_run }}
+      skip_binaries: ${{ steps.guard.outputs.skip_binaries }}
       proceed: ${{ steps.state.outputs.proceed }}
       needs_npm: ${{ steps.state.outputs.needs_npm }}
       dist_tag: ${{ steps.state.outputs.dist_tag }}
@@ -107,6 +120,7 @@ jobs:
         id: guard
         env:
           REQUESTED: ${{ inputs.dry_run }}
+          SKIP_BINARIES: ${{ inputs.skip_binaries }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
@@ -124,6 +138,16 @@ jobs:
           fi
           echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
           echo "Dry run: ${dry_run}"
+
+          # Normalised the same way and for the same reason: a boolean input
+          # arrives as the *string* "false", which is truthy in a GitHub
+          # expression.
+          skip_binaries=false
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${SKIP_BINARIES:-}" = "true" ]; then
+            skip_binaries=true
+            echo "::warning::Releasing without the standalone executables, by operator request."
+          fi
+          echo "skip_binaries=${skip_binaries}" >> "$GITHUB_OUTPUT"
 
       # Classifies the release: skip, fresh, resume-npm, resume-github,
       # complete, unverified, or conflict. `skip` covers the ordinary case of a
@@ -213,7 +237,7 @@ jobs:
   binary:
     name: Binary (${{ matrix.target }})
     needs: [detect]
-    if: needs.detect.outputs.proceed == 'true'
+    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.skip_binaries != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     permissions:
@@ -303,7 +327,15 @@ jobs:
   build:
     name: Build and pack
     needs: [detect, binary]
-    if: needs.detect.outputs.proceed == 'true'
+    # `always()` so a *deliberately* skipped matrix does not skip this too — and
+    # then an explicit check, because the default behaviour this replaces is the
+    # one that matters: a binary leg that *failed* must still stop the release
+    # rather than publish a version missing an architecture.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && (needs.binary.result == 'success'
+          || (needs.binary.result == 'skipped' && needs.detect.outputs.skip_binaries == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     outputs:
@@ -370,10 +402,35 @@ jobs:
       # `merge-multiple` because each target uploaded its own artefact and they
       # are all part of one release.
       - name: Collect the standalone binaries
+        if: needs.detect.outputs.skip_binaries != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-binary-*
           merge-multiple: true
+
+      # All four or none, never a subset. The matrix is `fail-fast: false` so one
+      # target failing does not cancel the others, and `build` already refuses to
+      # run unless every leg succeeded — this is the belt to that braces, because
+      # publishing a release that is missing an architecture is invisible until
+      # somebody on that platform tries to install and gets a 404.
+      - name: Require every target's archive
+        if: needs.detect.outputs.skip_binaries != 'true'
+        run: |
+          set -euo pipefail
+          missing=""
+          for target in linux-x64 linux-arm64 darwin-arm64 win-x64; do
+            case "${target}" in
+              win-x64) name="looptroop-${{ needs.detect.outputs.version }}-${target}.zip" ;;
+              *) name="looptroop-${{ needs.detect.outputs.version }}-${target}.tar.gz" ;;
+            esac
+            [ -f "${name}" ] || missing="${missing} ${name}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::The binary matrix did not produce every archive:${missing}"
+            echo "::error::Release without them only by dispatching with skip_binaries=true."
+            exit 1
+          fi
+          echo "All four standalone archives are present."
 
       - name: Write the release manifest
         id: manifest
@@ -1745,6 +1802,7 @@ jobs:
         shell: bash
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          SKIP_BINARIES: ${{ needs.detect.outputs.skip_binaries }}
           WIN_BINARY: ${{ steps.inputs.outputs.win_binary }}
           WIN_BINARY_URL: ${{ steps.inputs.outputs.win_binary_url }}
           WIN_BINARY_SHA256: ${{ steps.inputs.outputs.win_binary_sha256 }}
@@ -1757,6 +1815,15 @@ jobs:
             exit 0
           fi
           if [ -z "${WIN_BINARY}" ]; then
+            # WinGet is the one channel that installs the executable rather than
+            # the bundle, so with no executable there is nothing to publish. A
+            # release deliberately cut without the binaries skips this; anything
+            # else is a real problem and stays fatal.
+            if [ "${SKIP_BINARIES}" = "true" ]; then
+              echo "state=skipped" >> "$GITHUB_OUTPUT"
+              echo "::warning::No Windows binary in this release, so WinGet was skipped."
+              exit 0
+            fi
             echo "::error::This release carries no Windows binary, so WinGet cannot be published."
             exit 1
           fi
@@ -1846,6 +1913,7 @@ jobs:
       - publish-chocolatey
       - publish-winget
       - publish-aur
+      - binary
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1878,6 +1946,8 @@ jobs:
           CHOCO_STATE: ${{ needs.publish-chocolatey.outputs.state }}
           R_WINGET: ${{ needs.publish-winget.result }}
           WINGET_STATE: ${{ needs.publish-winget.outputs.state }}
+          R_BINARY: ${{ needs.binary.result }}
+          SKIP_BINARIES: ${{ needs.detect.outputs.skip_binaries }}
           R_AUR: ${{ needs.publish-aur.result }}
           AUR_STATE: ${{ needs.publish-aur.outputs.state }}
           INDEX_DIGEST: ${{ needs.container-manifest.outputs.index_digest }}
@@ -1919,6 +1989,11 @@ jobs:
             printf 'chocolatey %s  %s\n' "${R_CHOCO}" "${CHOCO_STATE:-—}"
             printf 'winget     %s  %s\n' "${R_WINGET}" "${WINGET_STATE:-—}"
             printf 'aur        %s  %s\n' "${R_AUR}" "${AUR_STATE:-—}"
+            if [ "${SKIP_BINARIES}" = "true" ]; then
+              printf 'binaries   SKIPPED (operator)\n'
+            else
+              printf 'binaries   %s  (4 targets)\n' "${R_BINARY}"
+            fi
             echo '```'
             echo
             echo "Integrity: \`${INTEGRITY}\`"

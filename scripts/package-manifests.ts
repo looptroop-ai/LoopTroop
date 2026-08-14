@@ -254,6 +254,13 @@ export function wingetManifestDir(version: string): string {
  * unlike the Homebrew, Scoop and Chocolatey packages there is nothing to
  * install for it — but `doctor` still treats git as required and Windows does
  * not ship one.
+ *
+ * `Architecture: x64`, not `neutral`. The field describes the *installed
+ * binary*, not the archive that carries it, and this archive carries an x64
+ * executable and nothing else. `neutral` means the payload runs on any
+ * architecture, which would offer this package on Windows on ARM — a target
+ * `build-binary.mjs` deliberately does not build and `binaryTarget` refuses by
+ * name.
  */
 export function renderWingetManifests(inputs: ChannelInputs): Record<string, string> {
   assertInputs(inputs)
@@ -279,7 +286,7 @@ Dependencies:
   PackageDependencies:
     - PackageIdentifier: Git.Git
 Installers:
-  - Architecture: neutral
+  - Architecture: x64
     InstallerUrl: ${inputs.url}
     InstallerSha256: ${inputs.sha256.toUpperCase()}
 ManifestType: installer

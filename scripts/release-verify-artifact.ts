@@ -115,6 +115,46 @@ if (assetsDir !== null) {
     }
     otherAssets.push(`  ${name.padEnd(34)} ${assetSha}`)
   }
+
+  // `checksums.sha256` matching its own manifest entry only proves the file was
+  // not corrupted in transit. It does not prove it says the right thing — a
+  // correctly-hashed wrong file passes that check and fails the first person who
+  // runs `sha256sum -c` against it. So read it and compare what it claims about
+  // every other asset with what the manifest records.
+  const checksumsName = 'checksums.sha256'
+  if (Object.hasOwn(digestedAssets(manifest), checksumsName)) {
+    let listed: Map<string, string>
+    try {
+      listed = new Map(
+        readFileSync(join(resolve(assetsDir), checksumsName), 'utf8')
+          .split('\n')
+          .filter((line) => line.trim() !== '')
+          .map((line) => {
+            const [sha, ...rest] = line.trim().split(/\s+/)
+            return [rest.join(' '), sha ?? ''] as const
+          }),
+      )
+    } catch {
+      listed = new Map()
+      failures.push(`${checksumsName} could not be read`)
+    }
+
+    for (const [name, expected] of Object.entries(digestedAssets(manifest))) {
+      // It cannot list itself, and the manifest is the thing being checked
+      // against rather than a payload file, so neither belongs in it.
+      if (name === checksumsName) continue
+      const claimed = listed.get(name)
+      if (claimed === undefined) failures.push(`${checksumsName} does not list ${name}`)
+      else if (claimed !== expected.sha256) {
+        failures.push(`${checksumsName} claims ${name} is ${claimed}, the manifest records ${expected.sha256}`)
+      }
+    }
+    for (const name of listed.keys()) {
+      if (!Object.hasOwn(digestedAssets(manifest), name)) {
+        failures.push(`${checksumsName} lists ${name}, which this release does not publish`)
+      }
+    }
+  }
 }
 
 if (failures.length > 0) {

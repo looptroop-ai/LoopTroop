@@ -2,7 +2,13 @@ import { parseArgs } from 'node:util'
 import { APP_VERSION } from '../lib/appVersion'
 import { DAEMON_ARGV } from './daemonHandoff'
 
-const USAGE = `LoopTroop — local AI coding orchestration
+/**
+ * Exported so the published CLI reference can be generated from it rather than
+ * transcribed. The documentation lives in another repository, which fetches this
+ * file at a release tag and rewrites its command block from this string — so the
+ * page cannot quietly fall behind a flag added here.
+ */
+export const USAGE = `LoopTroop — local AI coding orchestration
 
 Usage: looptroop <command> [options]
 

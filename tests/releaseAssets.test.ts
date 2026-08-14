@@ -164,3 +164,50 @@ describe('comparing a drafted manifest against this build', () => {
     expect(differences.length).toBeGreaterThan(0)
   })
 })
+
+/**
+ * `checksums.sha256` is what a person runs `sha256sum -c` against, and the
+ * roadmap asked for it from the start. The only decision it needed was whether
+ * it belongs in the manifest, and two review rounds argued that it could not —
+ * that a file hashing the manifest cannot have its own hash recorded in it.
+ *
+ * It never hashes the manifest. It lists the payload, so recording it closes no
+ * loop, and being an ordinary asset is what makes it inherit the upload, the
+ * resume plan, the cross-platform verification and the same-version rewrite
+ * protection with no special case anywhere.
+ */
+describe('the checksums file', () => {
+  const CHECKSUMS = 'checksums.sha256'
+
+  function withChecksums(): ReleaseManifest {
+    const base = manifest()
+    return {
+      ...base,
+      assets: { ...base.assets, [CHECKSUMS]: { bytes: 500, sha256: 'ee' } },
+    }
+  }
+
+  it('is uploaded like every other asset', () => {
+    expect(requiredAssets(withChecksums())).toContain(CHECKSUMS)
+  })
+
+  /**
+   * The failure the workflow's explicit upload globs would have caused: the
+   * manifest travels between jobs, the file does not, and every consumer that
+   * reads the manifest then looks for something that is not there.
+   */
+  it('is restored by a resumed draft that is missing it', () => {
+    const plan = planDraftAssets(withChecksums(), [MANIFEST_ASSET])
+    expect(plan.action).toBe('upload')
+    if (plan.action === 'upload') expect(plan.missing).toContain(CHECKSUMS)
+  })
+
+  it('is compared byte for byte when a release is republished', () => {
+    const differences = manifestDifferences(
+      withChecksums(),
+      { ...withChecksums(), assets: { ...withChecksums().assets, [CHECKSUMS]: { bytes: 500, sha256: 'ff' } } },
+    )
+
+    expect(differences.join(' ')).toContain(CHECKSUMS)
+  })
+})

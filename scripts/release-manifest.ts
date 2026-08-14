@@ -114,6 +114,33 @@ for (const path of extraAssets) {
   assets[name] = digest(path)
 }
 
+/**
+ * `checksums.sha256`, in the format `sha256sum -c` reads.
+ *
+ * Rendered from the assets above rather than by hashing the files a second
+ * time. A release already has one authority on what it is made of, and a second
+ * independent computation is a second thing that can disagree with it.
+ *
+ * It is written before it is recorded, and it lists neither itself nor the
+ * manifest — so there is no file whose own hash has to appear inside it. That
+ * is what lets it be an ordinary asset: recorded in `assets` like everything
+ * else, and therefore uploaded, resumed, verified and protected against a
+ * same-version rewrite by machinery that already exists, with no special case
+ * anywhere.
+ *
+ * Two spaces between hash and name is not cosmetic: `sha256sum` reads one space
+ * as text mode and two as binary, and a single space fails on Windows archives.
+ */
+const CHECKSUMS_ASSET = 'checksums.sha256'
+const checksumsPath = resolve(dirname(outPath), CHECKSUMS_ASSET)
+if (CHECKSUMS_ASSET in assets) fail(`An asset is already named ${CHECKSUMS_ASSET}.`)
+
+const checksumLines = Object.entries(assets)
+  .map(([name, entry]) => `${entry.sha256}  ${name}`)
+  .sort()
+writeFileSync(checksumsPath, `${checksumLines.join('\n')}\n`)
+assets[CHECKSUMS_ASSET] = digest(checksumsPath)
+
 const manifest = {
   name: manifestJson.name,
   version: manifestJson.version,

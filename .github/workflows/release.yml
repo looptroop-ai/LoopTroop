@@ -471,6 +471,7 @@ jobs:
             install.sh
             install.ps1
             release-manifest.json
+            checksums.sha256
           if-no-files-found: error
           retention-days: 14
 

@@ -56,8 +56,36 @@ describe('install channel detection', () => {
     // command that would not upgrade anything.
     ['/c/Program Files/WinGet/Links', 'winget'],
     ['/c/Program Files/WinGet/Packages/LoopTroopAI.LoopTroop_Microsoft.Winget.Source_8wekyb3d8bbwe/looptroop/dist/server/cli', 'winget'],
+    // Both of these paths were taken from real global installs, not invented:
+    // `bun add -g looptroop` and `pnpm add -g looptroop` were run and the
+    // resolved module directory read back. Both used to answer `npm`, and so
+    // told the user to run `npm install -g`, which does not upgrade either of
+    // them — it installs a second copy under npm's prefix.
+    //
+    // bun keeps its global tree at `<BUN_INSTALL>/install/global`.
+    ['/home/u/.bun/install/global/node_modules/looptroop/dist/server/cli', 'bun'],
+    // pnpm links the package out of its content-addressable store, and Node
+    // resolves the symlink when it loads the module — so what detection sees is
+    // the store path, not the `global/v11/…` directory pnpm's shim names.
+    ['/home/u/.local/share/pnpm/store/v11/links/@/looptroop/9.9.9/abc123/node_modules/looptroop/dist/server/cli', 'pnpm'],
+    ['/home/u/.local/share/pnpm/global/v11/node_modules/.pnpm/looptroop@9.9.9/node_modules/looptroop/dist/server/cli', 'pnpm'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
+  })
+
+  /**
+   * The upgrade command is the whole reason detection exists, so assert the
+   * commands themselves rather than only the channel names. Each manager keeps
+   * its global tree somewhere the other two do not look.
+   */
+  it.each([
+    ['/usr/local/lib/node_modules/looptroop/dist/server/cli', 'npm', 'npm install -g looptroop@latest'],
+    ['/home/u/.bun/install/global/node_modules/looptroop/dist/server/cli', 'bun', 'bun add -g looptroop@latest'],
+    ['/home/u/.local/share/pnpm/store/v11/links/@/looptroop/9.9.9/abc123/node_modules/looptroop/dist/server/cli', 'pnpm', 'pnpm add -g looptroop@latest'],
+  ])('upgrades a %s install as %s with its own command', (moduleDir, channel, expected) => {
+    const info = getInstallInfo(moduleDir)
+    expect(info.channel).toBe(channel)
+    expect(info.upgradeCommand).toBe(expected)
   })
 
   /**

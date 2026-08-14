@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 import { isSea } from './isSea'
 
-export type InstallChannel = 'npm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
+export type InstallChannel = 'npm' | 'bun' | 'pnpm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
 
 export interface InstallInfo {
   channel: InstallChannel
@@ -35,6 +35,13 @@ const UPGRADE_PREREQUISITES: Partial<Record<InstallChannel, string>> = {
 
 const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   npm: 'npm install -g looptroop@latest',
+  // Their own commands, not npm's. All three install the same package from the
+  // same registry, but each keeps its global tree somewhere the others do not
+  // look — so `npm install -g` run against a bun or pnpm installation does not
+  // upgrade it. It installs a *second* copy under npm's prefix and leaves the
+  // first where it was, and which one answers then depends on PATH order.
+  bun: 'bun add -g looptroop@latest',
+  pnpm: 'pnpm add -g looptroop@latest',
   homebrew: 'brew upgrade looptroop',
   scoop: 'scoop update looptroop',
   chocolatey: 'choco upgrade looptroop',
@@ -162,6 +169,25 @@ function detectFromShape(moduleDir: string): InstallChannel {
   // `winget-pkgs`, for one, which is exactly what somebody working on this
   // package would have — must not be read as an install.
   if (/\/WinGet\/(Links|Packages)(\/|$)/i.test(normalized)) return 'winget'
+
+  // bun and pnpm before npm, because a global install by either of them also
+  // lands in a directory called `node_modules/looptroop` and the npm rule below
+  // would claim it. Getting that wrong is not cosmetic: it answers with
+  // `npm install -g`, which does not upgrade a bun or pnpm installation — it
+  // creates a second one under npm's prefix. That is the Homebrew-upgrade bug
+  // again, and it was measured, not predicted: both managers reported `npm`.
+  //
+  // pnpm links a global install out of its content-addressable store, so the
+  // *resolved* path of the running module is inside `store/v<n>/links/…` and
+  // never the `global/v<n>/…` directory its shim names. Node resolves symlinks
+  // when it loads a module, so the store path is what detection actually sees.
+  if (/\/store\/v\d+\/links\/.*\/node_modules\/looptroop\//i.test(normalized)) return 'pnpm'
+  // The virtual store, for a layout that keeps the package inside `.pnpm`.
+  if (/\/\.pnpm\/looptroop@/i.test(normalized)) return 'pnpm'
+  // bun's global tree is always `<BUN_INSTALL>/install/global`, whatever
+  // `BUN_INSTALL` points at — the doubled `install/global` is bun's, not npm's.
+  if (/\/install\/global\/node_modules\/looptroop\//i.test(normalized)) return 'bun'
+
   if (/\/node_modules\/looptroop\//.test(normalized)) return 'npm'
 
   // A checkout has the sources a published package never ships.

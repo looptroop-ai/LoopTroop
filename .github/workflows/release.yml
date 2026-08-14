@@ -481,7 +481,17 @@ jobs:
   verify-artifact:
     name: Verify artefact (${{ matrix.os }})
     needs: [detect, build]
-    if: needs.detect.outputs.proceed == 'true'
+    # `always()` for the same reason `build` has it: a *deliberately* skipped
+    # binary matrix must not skip everything downstream of it. GitHub propagates
+    # a skip through the graph even when an intermediate job ran via `always()`,
+    # so without this the `skip_binaries` bypass silently skipped verification,
+    # the draft, and therefore the whole release — the one path that exists to
+    # ship a security fix produced no verified artefact at all. Proved by
+    # dispatching it, not by reading it.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -535,7 +545,11 @@ jobs:
   verify-readonly:
     name: Verify read-only install
     needs: [detect, build]
-    if: needs.detect.outputs.proceed == 'true'
+    # See `verify-artifact`: skipped binaries must not skip verification.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -587,7 +601,14 @@ jobs:
   draft-release:
     name: Draft the GitHub release
     needs: [detect, build, verify-artifact, verify-readonly]
-    if: needs.detect.outputs.proceed == 'true'
+    # Every predecessor named explicitly, because `always()` removes the default
+    # that would have stopped here on a failure.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
+      && needs.verify-artifact.result == 'success'
+      && needs.verify-readonly.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

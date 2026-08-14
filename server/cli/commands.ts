@@ -93,26 +93,26 @@ export async function mintBootstrapUrl(state: DaemonState): Promise<string | nul
   }
 }
 
-export async function startCommand(options: CliOptions = {}): Promise<number> {
-  const configDir = resolveAppConfigDir()
-  const existing = await readRunningDaemon(configDir)
-  if (existing) {
-    process.stdout.write(
-      `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n` +
-      'Run `looptroop open` for a signed-in link.\n',
-    )
-    return 0
-  }
+/** A daemon this process spawned and waited for. */
+interface LaunchedDaemon {
+  state: DaemonState
+  logPath: string
+}
 
-  if (options.foreground) {
-    const { runDaemonProcess } = await import('./daemonProcess')
-    await runDaemonProcess({
-      foreground: true,
-      ...(options.port === undefined ? {} : { port: options.port }),
-    })
-    return 0
-  }
-
+/**
+ * Spawns the daemon and waits for it to report ready, printing nothing on
+ * success.
+ *
+ * Split out of `startCommand` so `open` can start a daemon without also
+ * printing a start report and minting a sign-in nonce it would immediately
+ * throw away. Failures are still written to stderr here, because the diagnosis
+ * — the recorded refusal, the log tail, the abandoned-process note — is the
+ * same whichever command asked for the start.
+ *
+ * Returns null when the daemon did not come up; the caller only has to choose
+ * an exit code.
+ */
+async function launchDaemon(configDir: string, options: CliOptions): Promise<LaunchedDaemon | null> {
   ensureSecureDir(getDaemonLogDir(configDir))
   // Rotated here rather than while the daemon runs: it holds an append handle
   // for its whole lifetime, and renaming underneath that handle would either
@@ -156,8 +156,35 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
         `Full log: ${logPath}\n`,
     )
     if (abandoned !== null) process.stderr.write(`\n${abandoned}\n`)
-    return 1
+    return null
   }
+
+  return { state, logPath }
+}
+
+export async function startCommand(options: CliOptions = {}): Promise<number> {
+  const configDir = resolveAppConfigDir()
+  const existing = await readRunningDaemon(configDir)
+  if (existing) {
+    process.stdout.write(
+      `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n` +
+      'Run `looptroop open` for a signed-in link.\n',
+    )
+    return 0
+  }
+
+  if (options.foreground) {
+    const { runDaemonProcess } = await import('./daemonProcess')
+    await runDaemonProcess({
+      foreground: true,
+      ...(options.port === undefined ? {} : { port: options.port }),
+    })
+    return 0
+  }
+
+  const launched = await launchDaemon(configDir, options)
+  if (!launched) return 1
+  const { state, logPath } = launched
 
   // Without a nonce the browser has no credential and every request 401s, so
   // the signed-in link is the useful thing to print — not the bare origin.
@@ -552,11 +579,32 @@ export function openInBrowser(url: string): void {
   child.unref()
 }
 
-export async function openCommand(): Promise<number> {
-  const state = await readRunningDaemon()
+/**
+ * Opens the interface, starting the daemon first if it is not running.
+ *
+ * `open` is the command people reach for, and refusing it with the name of
+ * another command made starting LoopTroop a two-step ritual for no reason a
+ * user could see. Starting is idempotent and already bounded, so doing it here
+ * costs nothing when the daemon is already up.
+ */
+export interface OpenOptions {
+  /** Injected by tests, which must not launch a real browser. */
+  open?: (url: string) => void
+}
+
+export async function openCommand(options: OpenOptions = {}): Promise<number> {
+  const launchBrowser = options.open ?? openInBrowser
+  const configDir = resolveAppConfigDir()
+  let state = await readRunningDaemon(configDir)
+  let started = false
+
   if (!state) {
-    process.stderr.write('LoopTroop is not running. Start it with `looptroop start`.\n')
-    return 1
+    process.stdout.write('LoopTroop is not running. Starting it...\n')
+    const launched = await launchDaemon(configDir, {})
+    // launchDaemon has already said why, in more detail than this command could.
+    if (!launched) return 1
+    state = launched.state
+    started = true
   }
 
   const url = await mintBootstrapUrl(state)
@@ -565,10 +613,15 @@ export async function openCommand(): Promise<number> {
     return 1
   }
 
-  openInBrowser(url)
+  launchBrowser(url)
   // The origin, not the URL: the nonce belongs in the browser, not in a
   // terminal scrollback or a shell history file.
   process.stdout.write(`Opened http://${state.host}:${state.port}\n`)
+
+  // Only after a start we performed: an already-running daemon has been asked
+  // this question before, and the answer is on the screen the browser just
+  // opened anyway.
+  if (started) await hintFirstRun(state)
   return 0
 }
 

@@ -153,8 +153,8 @@ describe('the Scoop manifest', () => {
     expect(manifest.extract_dir).toBe(BUNDLE_ROOT)
   })
 
-  it('depends on a Node meeting the floor and on git', () => {
-    expect(manifest.depends).toEqual(['nodejs-lts', 'git'])
+  it('depends on a Node meeting the floor, on git, and on gh', () => {
+    expect(manifest.depends).toEqual(['nodejs-lts', 'git', 'gh'])
   })
 
   it('writes the channel marker after extracting', () => {
@@ -448,14 +448,19 @@ describe('the AUR package', () => {
    * current runtime.
    */
   it('depends on the distribution\'s Node rather than carrying one', () => {
-    expect(rendered().PKGBUILD).toContain("depends=('nodejs>=24' 'git')")
+    expect(rendered().PKGBUILD).toContain("depends=('nodejs>=24' 'git' 'github-cli')")
   })
 
-  /** `doctor` runs without gh and reports it as optional, so a hard dependency would overstate it. */
-  it('treats gh as optional, the way doctor does', () => {
-    expect(rendered().PKGBUILD).toContain('optdepends=(')
-    expect(rendered().PKGBUILD).toContain('github-cli')
-    expect(rendered().PKGBUILD).not.toContain("'github-cli'")
+  /**
+   * Delivering a pull request is the last step of every ticket, so a channel
+   * that can install gh does. `doctor` still only warns about a missing gh,
+   * because npm, bun, pnpm and the standalone executable cannot declare it.
+   */
+  it('installs gh rather than suggesting it', () => {
+    expect(rendered().PKGBUILD).toContain("'github-cli'")
+    expect(rendered().PKGBUILD).not.toContain('optdepends=(')
+    expect(rendered()['.SRCINFO']).toContain('depends = github-cli')
+    expect(rendered()['.SRCINFO']).not.toContain('optdepends')
   })
 
   /** Installing both would put two things at /usr/bin/looptroop. */

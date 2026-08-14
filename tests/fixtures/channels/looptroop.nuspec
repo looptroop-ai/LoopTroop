@@ -20,6 +20,7 @@
     <dependencies>
       <dependency id="nodejs-lts" version="24.15.0" />
       <dependency id="git" />
+      <dependency id="gh" />
     </dependencies>
   </metadata>
   <files>

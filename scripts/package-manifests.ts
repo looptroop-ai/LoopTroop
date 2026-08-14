@@ -131,7 +131,14 @@ export function renderScoopManifest(inputs: ChannelInputs): string {
     hash: inputs.sha256,
     extract_dir: BUNDLE_ROOT,
     // `git` because doctor treats it as required, and Windows does not ship it.
-    depends: ['nodejs-lts', 'git'],
+    //
+    // `gh` because delivering a pull request is the last step of every ticket,
+    // and a channel that can install it should. `doctor` still only warns about
+    // a missing gh, and deliberately so: npm, bun, pnpm and the standalone
+    // executable have no way to declare a dependency, so their users may
+    // legitimately not have it. The package installs what it can; the check
+    // tolerates what it cannot.
+    depends: ['nodejs-lts', 'git', 'gh'],
     bin: [['bin\\looptroop.cmd', 'looptroop']],
     post_install: [
       `Set-Content -LiteralPath "$dir\\${CHANNEL_MARKER}" -Value 'scoop' -NoNewline`,
@@ -177,6 +184,7 @@ export function renderNuspec(inputs: ChannelInputs): string {
     <dependencies>
       <dependency id="nodejs-lts" version="24.15.0" />
       <dependency id="git" />
+      <dependency id="gh" />
     </dependencies>
   </metadata>
   <files>
@@ -250,10 +258,10 @@ export function wingetManifestDir(version: string): string {
  * pipeline does not accept them. `PortableCommandAlias` is what puts
  * `looptroop` on the user's PATH.
  *
- * And it declares only git. The binary carries its own Node runtime, so
- * unlike the Homebrew, Scoop and Chocolatey packages there is nothing to
- * install for it — but `doctor` still treats git as required and Windows does
- * not ship one.
+ * And it declares git and gh but no Node. The binary carries its own Node
+ * runtime, so unlike the Homebrew, Scoop and Chocolatey packages there is
+ * nothing to install for that — but `doctor` still treats git as required,
+ * Windows ships neither, and pull-request delivery needs gh.
  *
  * `Architecture: x64`, not `neutral`. The field describes the *installed
  * binary*, not the archive that carries it, and this archive carries an x64
@@ -285,6 +293,7 @@ NestedInstallerFiles:
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Git.Git
+    - PackageIdentifier: GitHub.cli
 Installers:
   - Architecture: x64
     InstallerUrl: ${inputs.url}
@@ -366,10 +375,10 @@ export function renderAurPackage(inputs: ChannelInputs): Record<string, string> 
     // `nodejs>=24`: the floor the application declares. Arch has no `node@24`
     // to pin to, and does not want one — a rolling distribution expects the
     // current runtime, which is why this is a floor rather than an equality.
-    depends: ['nodejs>=24', 'git'],
-    // `doctor` reports gh as optional and runs without it, so a hard dependency
-    // would overstate what LoopTroop needs.
-    optdepends: ['github-cli: create and review pull requests from LoopTroop'],
+    // `github-cli` is a hard dependency here for the reason given on
+    // `renderScoopManifest`: pull-request delivery is the end of the workflow,
+    // not an extra.
+    depends: ['nodejs>=24', 'git', 'github-cli'],
     provides: ['looptroop'],
     conflicts: ['looptroop'],
   }
@@ -386,7 +395,6 @@ arch=('any')
 url="${fields.url}"
 license=('${LICENSE}')
 depends=(${fields.depends.map((value) => `'${value}'`).join(' ')})
-optdepends=(${fields.optdepends.map((value) => `'${value}'`).join(' ')})
 provides=(${fields.provides.map((value) => `'${value}'`).join(' ')})
 conflicts=(${fields.conflicts.map((value) => `'${value}'`).join(' ')})
 source=("${source}")
@@ -427,7 +435,7 @@ package() {
 \turl = ${fields.url}
 \tarch = any
 \tlicense = ${LICENSE}
-${fields.depends.map((value) => `\tdepends = ${value}\n`).join('')}${fields.optdepends.map((value) => `\toptdepends = ${value}\n`).join('')}${fields.provides.map((value) => `\tprovides = ${value}\n`).join('')}${fields.conflicts.map((value) => `\tconflicts = ${value}\n`).join('')}\tsource = ${source}
+${fields.depends.map((value) => `\tdepends = ${value}\n`).join('')}${fields.provides.map((value) => `\tprovides = ${value}\n`).join('')}${fields.conflicts.map((value) => `\tconflicts = ${value}\n`).join('')}\tsource = ${source}
 \tsha256sums = ${inputs.sha256}
 
 pkgname = ${AUR_PACKAGE_NAME}

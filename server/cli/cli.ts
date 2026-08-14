@@ -18,7 +18,7 @@ Commands:
   stop           Stop the running daemon
   restart        Stop and start again
   status         Show whether the daemon is running
-  open           Open the interface in your browser
+  open           Open the interface, starting LoopTroop if it is not running
   logs           Show the daemon log
   doctor         Check that this machine can run LoopTroop
   clean          List, and optionally remove, abandoned worktrees

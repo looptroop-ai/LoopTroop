@@ -88,9 +88,9 @@ try {
   log(fromFeed
     ? `Installing looptroop ${version} from the community feed...`
     : `Installing ${nupkg} from the local directory...`)
-  // `--ignore-dependencies`: Node and git are real dependencies of the package
-  // and the runner already has both. Installing them here would add minutes and
-  // prove nothing about this package.
+  // `--ignore-dependencies`: Node, git and gh are real dependencies of the
+  // package and the runner already has all three. Installing them here would
+  // add minutes and prove nothing about this package.
   run('choco', [
     'install', 'looptroop', '--version', version,
     ...(nupkg === null ? [] : ['--source', `"${dirname(nupkg)}"`]),

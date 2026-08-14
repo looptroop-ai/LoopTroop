@@ -481,7 +481,17 @@ jobs:
   verify-artifact:
     name: Verify artefact (${{ matrix.os }})
     needs: [detect, build]
-    if: needs.detect.outputs.proceed == 'true'
+    # `always()` for the same reason `build` has it: a *deliberately* skipped
+    # binary matrix must not skip everything downstream of it. GitHub propagates
+    # a skip through the graph even when an intermediate job ran via `always()`,
+    # so without this the `skip_binaries` bypass silently skipped verification,
+    # the draft, and therefore the whole release — the one path that exists to
+    # ship a security fix produced no verified artefact at all. Proved by
+    # dispatching it, not by reading it.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -535,7 +545,11 @@ jobs:
   verify-readonly:
     name: Verify read-only install
     needs: [detect, build]
-    if: needs.detect.outputs.proceed == 'true'
+    # See `verify-artifact`: skipped binaries must not skip verification.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -587,7 +601,14 @@ jobs:
   draft-release:
     name: Draft the GitHub release
     needs: [detect, build, verify-artifact, verify-readonly]
-    if: needs.detect.outputs.proceed == 'true'
+    # Every predecessor named explicitly, because `always()` removes the default
+    # that would have stopped here on a failure.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.build.result == 'success'
+      && needs.verify-artifact.result == 'success'
+      && needs.verify-readonly.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -711,7 +732,17 @@ jobs:
   npm:
     name: Publish to npm
     needs: [detect, build, draft-release]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.build.result == 'success'
+      && needs.draft-release.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: release
@@ -881,7 +912,16 @@ jobs:
   smoke:
     name: Registry smoke (${{ matrix.os }})
     needs: [detect, npm]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.npm.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -957,7 +997,17 @@ jobs:
   finalize:
     name: Tag and publish
     needs: [detect, build, smoke]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.build.result == 'success'
+      && needs.smoke.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Deliberately *not* `environment: release`. That environment gates the one
@@ -1044,7 +1094,17 @@ jobs:
   container-build:
     name: Build container image (${{ matrix.arch }})
     needs: [detect, build, draft-release]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.build.result == 'success'
+      && needs.draft-release.result == 'success'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     environment: release
@@ -1247,7 +1307,16 @@ jobs:
   container-manifest:
     name: Tag the container image
     needs: [detect, container-build]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.container-build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: release
@@ -1354,7 +1423,16 @@ jobs:
   container-verify:
     name: Verify container image (${{ matrix.arch }})
     needs: [detect, container-manifest]
-    if: needs.detect.outputs.proceed == 'true' && needs.detect.outputs.dry_run == 'false'
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.container-manifest.result == 'success'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -1563,10 +1641,18 @@ jobs:
   publish-homebrew:
     name: Publish to Homebrew
     needs: [detect, build, finalize]
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
     if: >-
-      needs.detect.outputs.proceed == 'true'
+      always()
+      && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
+      && needs.build.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: packaging
@@ -1630,10 +1716,18 @@ jobs:
   publish-scoop:
     name: Publish to Scoop
     needs: [detect, build, finalize]
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
     if: >-
-      needs.detect.outputs.proceed == 'true'
+      always()
+      && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
+      && needs.build.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: packaging
@@ -1672,11 +1766,19 @@ jobs:
   publish-chocolatey:
     name: Publish to Chocolatey
     needs: [detect, build, finalize]
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
     if: >-
-      needs.detect.outputs.proceed == 'true'
+      always()
+      && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
       && vars.PUBLISH_CHOCOLATEY == 'true'
+      && needs.build.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: windows-latest
     timeout-minutes: 30
     environment: packaging
@@ -1754,11 +1856,19 @@ jobs:
   publish-winget:
     name: Publish to WinGet
     needs: [detect, build, finalize]
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
     if: >-
-      needs.detect.outputs.proceed == 'true'
+      always()
+      && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
       && vars.PUBLISH_WINGET == 'true'
+      && needs.build.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: windows-latest
     timeout-minutes: 30
     environment: packaging
@@ -1844,11 +1954,19 @@ jobs:
   publish-aur:
     name: Publish to the AUR
     needs: [detect, build, finalize]
+    # `always()` with every predecessor named, because the skip from a
+    # deliberately absent binary matrix propagates down the whole graph —
+    # even past jobs that ran via `always()` themselves. Without this the
+    # `skip_binaries` bypass builds and drafts a release and then publishes
+    # nothing, which is worse than failing.
     if: >-
-      needs.detect.outputs.proceed == 'true'
+      always()
+      && needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
       && vars.PUBLISH_AUR == 'true'
+      && needs.build.result == 'success'
+      && needs.finalize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: packaging

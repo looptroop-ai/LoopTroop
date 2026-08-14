@@ -125,6 +125,19 @@ jobs:
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             dry_run=false
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
+            && [ "${GITHUB_REF}" = "refs/heads/main" ] \
+            && [ "${REQUESTED}" = "false" ] \
+            && [ "${SKIP_BINARIES:-}" = "true" ]; then
+            # The one manual route that publishes, and it exists solely for a
+            # runner-class outage: every other dispatch is forced to a dry run,
+            # which is what made `skip_binaries` unusable — the input could be
+            # set but the release it was meant to rescue could never happen.
+            #
+            # Narrow on purpose: the exact `main` ref, an explicit `dry_run=false`,
+            # and `skip_binaries=true` together. Anything less is still a dry run.
+            dry_run=false
+            echo "::warning::Publishing from a manual dispatch, because skip_binaries was requested."
           else
             dry_run=true
             if [ "${REQUESTED}" = "false" ]; then
@@ -434,6 +447,8 @@ jobs:
 
       - name: Write the release manifest
         id: manifest
+        env:
+          SKIP_BINARIES: ${{ needs.detect.outputs.skip_binaries }}
         run: |
           set -euo pipefail
           tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
@@ -450,9 +465,12 @@ jobs:
           while IFS= read -r file; do binaries+=(--asset "${file}"); done < <(
             find . -maxdepth 1 \( -name 'looptroop-*-linux-*.tar.gz' -o -name 'looptroop-*-darwin-*.tar.gz' -o -name 'looptroop-*-win-*.zip' \) | sort
           )
-          if [ "${#binaries[@]}" -eq 0 ]; then
+          if [ "${#binaries[@]}" -eq 0 ] && [ "${SKIP_BINARIES}" != "true" ]; then
             echo "::error::No standalone binaries were collected; the manifest would omit them."
             exit 1
+          fi
+          if [ "${#binaries[@]}" -eq 0 ]; then
+            echo "::warning::Writing a manifest with no standalone binaries, by operator request."
           fi
           npm run release:manifest -- "${tarball}" \
             --asset "${bundle}" --asset "${zip}" --asset install.sh --asset install.ps1 \
@@ -1690,6 +1708,7 @@ jobs:
       needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
+      && vars.PUBLISH_CHOCOLATEY == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     environment: packaging
@@ -1771,6 +1790,7 @@ jobs:
       needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
+      && vars.PUBLISH_WINGET == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     environment: packaging
@@ -1833,6 +1853,23 @@ jobs:
             --sha256 "${WIN_BINARY_SHA256}"
           echo "state=submitted" >> "$GITHUB_OUTPUT"
 
+  # ---------------------------------------------------------------------------
+  # Three channels are paused, each behind a repository variable that is unset.
+  #
+  # None of them can currently complete, and a job that cannot succeed teaches
+  # everyone to ignore a red release:
+  #
+  #   PUBLISH_CHOCOLATEY  0.5.1 is still in moderation, and Chocolatey answers
+  #                       403 to a push for a package with no approved version.
+  #   PUBLISH_WINGET      every submission is a pull request reviewed by people
+  #                       at Microsoft, and the first one also needs a CLA.
+  #   PUBLISH_AUR         registration is closed upstream after a security
+  #                       incident, so there is no account to publish from.
+  #
+  # Re-enable one with:  gh variable set PUBLISH_WINGET --body true
+  # `tmp/check-channels.mjs` reports when each becomes possible again.
+  # ---------------------------------------------------------------------------
+
   # Dormant until the AUR reopens registration. It skips rather than fails when
   # `AUR_SSH_KEY` is empty, because a channel nobody can publish to must not be
   # able to fail a release — the same bargain the WinGet job makes.
@@ -1843,6 +1880,7 @@ jobs:
       needs.detect.outputs.proceed == 'true'
       && needs.detect.outputs.dry_run == 'false'
       && needs.detect.outputs.dist_tag == 'latest'
+      && vars.PUBLISH_AUR == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: packaging
@@ -2004,6 +2042,12 @@ jobs:
           } > /tmp/report.md
           cat /tmp/report.md >> "$GITHUB_STEP_SUMMARY"
 
+          # A deliberate skip is not a failure; anything else about the binary
+          # matrix is, and printing it in the table without listing it here meant
+          # a failed target never opened the issue.
+          BINARY_FOR_ISSUE="${R_BINARY}"
+          if [ "${SKIP_BINARIES}" = "true" ]; then BINARY_FOR_ISSUE=success; fi
+
           failed=""
           for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
@@ -2013,7 +2057,8 @@ jobs:
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \
                       "publish-chocolatey:${R_CHOCO}" \
                       "publish-winget:${R_WINGET}" \
-                      "publish-aur:${R_AUR}"; do
+                      "publish-aur:${R_AUR}" \
+                      "binary:${BINARY_FOR_ISSUE}"; do
             name=${pair%%:*}
             result=${pair#*:}
             case "${result}" in

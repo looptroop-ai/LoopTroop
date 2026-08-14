@@ -725,6 +725,13 @@ function installBinary(archive, { version, prefix }) {
     try {
       replaced = swapIntoPlace(staged, installed, backup)
     } catch (error) {
+      // `swapIntoPlace` already put the old executable back, but the daemon was
+      // stopped before it ran — so leaving here without starting it again is the
+      // same outage the rollback path exists to prevent, reached by a different
+      // route. Windows makes this the *likeliest* route, not a remote one: it is
+      // where a locked file lands.
+      const restored = wasRunning ? startDaemon(installed) : null
+
       fail(
         `Could not replace ${installed}.`,
         String(error.message ?? error),
@@ -732,6 +739,10 @@ function installBinary(archive, { version, prefix }) {
           ? 'On Windows a running program cannot be replaced; check nothing else is using it.'
           : '',
         'Nothing was installed; the previous version is untouched.',
+        restored === true ? 'Its daemon is running again.' : '',
+        restored === false
+          ? `Its daemon did not start again. Start it with: ${installed} start`
+          : '',
       )
     }
 

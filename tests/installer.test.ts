@@ -571,6 +571,71 @@ describe('installer core', () => {
       expect(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
     })
 
+    /**
+     * Restoring the executable is only half a rollback.
+     *
+     * The install stops a daemon that was up. Putting the old file back and
+     * returning leaves the previous version installed and *not running* — an
+     * outage caused by an upgrade that reported failure, which is the worst of
+     * both. It also used to say "back in place and working" while the service
+     * was down.
+     */
+    it.runIf(canInstallBinary)('restarts the daemon it stopped when it rolls back', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const installed = join(prefix, 'bin', 'looptroop')
+
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      writeFileSync(stubState, '')
+
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('rolled back')
+      expect(result.stderr).toContain('It is running again.')
+      // The daemon it stopped is back, from the executable that still works.
+      expect(existsSync(stubState)).toBe(true)
+      expect(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+    })
+
+    /**
+     * `--version` succeeding does not prove the daemon comes up. A build that
+     * starts and immediately exits passes the first check and fails the second,
+     * and those are different failures — so the backup has to survive until the
+     * daemon is answering, not until the file runs once.
+     */
+    it.runIf(canInstallBinary)('rolls back a version that runs but whose daemon will not start', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const installed = join(prefix, 'bin', 'looptroop')
+
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      writeFileSync(stubState, '')
+
+      // Reports the right version, answers `status`, and `start` does nothing.
+      archive = buildArchive('0.5.9', [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  --version) echo "0.5.9" ;;',
+        '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;',
+        '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;',
+        '  start) echo "refusing to start" ;;',
+        'esac',
+        '',
+      ].join('\n'))
+
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('would not start')
+      expect(result.stderr).toContain('It is running again.')
+      // Back on the version that works, and serving again: the state file only
+      // exists because the restored executable's `start` recreated it.
+      expect(existsSync(stubState)).toBe(true)
+      expect(spawnSync(installed, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+    }, 120_000)
+
     it.runIf(canInstallBinary)('reports a first install that does not run, without claiming a rollback', async () => {
       archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
       const result = await runInstaller(['--binary', '--prefix', freshPrefix()])

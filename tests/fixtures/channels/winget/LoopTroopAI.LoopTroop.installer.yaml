@@ -11,7 +11,7 @@ Dependencies:
   PackageDependencies:
     - PackageIdentifier: Git.Git
 Installers:
-  - Architecture: neutral
+  - Architecture: x64
     InstallerUrl: https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-win-x64.zip
     InstallerSha256: 3C5FE4640000000000000000000000000000000000000000000000000000ABCD
 ManifestType: installer

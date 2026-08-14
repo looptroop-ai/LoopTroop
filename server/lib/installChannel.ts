@@ -10,6 +10,27 @@ export interface InstallInfo {
   channel: InstallChannel
   /** Exact command that upgrades this installation. */
   upgradeCommand: string
+  /**
+   * A command that must be run before `upgradeCommand`, where one is required.
+   *
+   * Kept separate rather than joined into one line, because no single joining
+   * operator works in both shells a Windows user might be in: `&&` is a
+   * PowerShell 7 operator and a parse error in the built-in PowerShell 5.1,
+   * while `;` chains in PowerShell and does not in `cmd.exe`. Two commands
+   * printed on two lines are correct everywhere.
+   */
+  upgradeFirst?: string
+}
+
+/**
+ * What has to happen before the upgrade command can work.
+ *
+ * Only WinGet has one: Windows refuses to replace a running executable, and
+ * the daemon holds this one open. The `--binary` installer stops the daemon
+ * itself, and the other channels replace files the daemon does not lock.
+ */
+const UPGRADE_PREREQUISITES: Partial<Record<InstallChannel, string>> = {
+  winget: 'looptroop stop',
 }
 
 const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
@@ -17,9 +38,8 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   homebrew: 'brew upgrade looptroop',
   scoop: 'scoop update looptroop',
   chocolatey: 'choco upgrade looptroop',
-  // `looptroop stop` first, because Windows will not replace a running
-  // executable and the daemon holds this one open.
-  winget: 'looptroop stop && winget upgrade LoopTroopAI.LoopTroop',
+  // Preceded by `looptroop stop`; see UPGRADE_PREREQUISITES.
+  winget: 'winget upgrade LoopTroopAI.LoopTroop',
   // No single command exists here: pacman does not touch the AUR, and which
   // helper does is the user's choice. `yay` is the most widely installed, and
   // naming one that works beats a sentence that tells them nothing they did
@@ -173,7 +193,8 @@ export function detectInstallChannel(moduleDir = dirname(fileURLToPath(import.me
 
 export function getInstallInfo(moduleDir?: string): InstallInfo {
   const channel = detectInstallChannel(moduleDir)
-  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel] }
+  const first = UPGRADE_PREREQUISITES[channel]
+  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel], ...(first === undefined ? {} : { upgradeFirst: first }) }
 }
 
 /** The `install` object in `config.json`. */
@@ -214,7 +235,8 @@ export interface ResolveInstallOptions {
 }
 
 function info(channel: InstallChannel): InstallInfo {
-  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel] }
+  const first = UPGRADE_PREREQUISITES[channel]
+  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel], ...(first === undefined ? {} : { upgradeFirst: first }) }
 }
 
 function record(channel: InstallChannel, moduleDir: string, configDir?: string): void {

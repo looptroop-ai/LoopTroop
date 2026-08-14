@@ -522,7 +522,11 @@ function checkInstallChannel(): Check {
         // A wrong upgrade command is worse than none, so this stays a warning.
         remedy: `${info.upgradeCommand}. To settle it, set "install": { "channel": "npm" } in ${getSettingsPath()}.`,
       }
-    : { name: 'install', status: 'ok', detail: `${info.channel} (upgrade: ${info.upgradeCommand})` }
+    : {
+        name: 'install',
+        status: 'ok',
+        detail: `${info.channel} (upgrade: ${info.upgradeFirst === undefined ? '' : `${info.upgradeFirst}, then `}${info.upgradeCommand})`,
+      }
 }
 
 /**

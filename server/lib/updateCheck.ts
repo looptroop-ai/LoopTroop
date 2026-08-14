@@ -30,6 +30,8 @@ export interface UpdateNotice {
   currentVersion: string
   latestVersion: string
   upgradeCommand: string
+  /** Run before `upgradeCommand`, where the channel needs it. */
+  upgradeFirst?: string
 }
 
 function getCachePath(configDir = resolveAppConfigDir()): string {
@@ -132,7 +134,10 @@ export async function checkForUpdate(options: CheckForUpdateOptions): Promise<Up
   return {
     currentVersion: options.currentVersion,
     latestVersion,
-    upgradeCommand: resolveInstallInfo({ ...(options.configDir ? { configDir: options.configDir } : {}) }).upgradeCommand,
+    ...(() => {
+      const info = resolveInstallInfo({ ...(options.configDir ? { configDir: options.configDir } : {}) })
+      return { upgradeCommand: info.upgradeCommand, ...(info.upgradeFirst === undefined ? {} : { upgradeFirst: info.upgradeFirst }) }
+    })(),
   }
 }
 
@@ -140,6 +145,9 @@ export function formatUpdateNotice(notice: UpdateNotice): string {
   return [
     '',
     `LoopTroop ${notice.latestVersion} is available (you have ${notice.currentVersion}).`,
+    // One command per line, each valid on its own. Joining them would need an
+    // operator, and none works in both `cmd.exe` and Windows PowerShell 5.1.
+    ...(notice.upgradeFirst === undefined ? [] : [`  ${notice.upgradeFirst}`]),
     `  ${notice.upgradeCommand}`,
     '',
   ].join('\n')

@@ -594,15 +594,35 @@ function stopDaemon(binary) {
   say('Stopping the running daemon...')
   spawnSync(binary, ['stop'], { stdio: 'inherit', timeout: 60_000 })
 
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    if (daemonRunning(binary) !== true) return true
+  return waitFor(() => daemonRunning(binary) !== true, 30_000)
+}
+
+/**
+ * Starts the daemon and waits until it is actually answering.
+ *
+ * The exit code of `start` is not the answer. It detaches, so it can report
+ * success and then die a second later — and this is called at the point where
+ * the difference decides whether an upgrade rolls back.
+ */
+function startDaemon(binary) {
+  spawnSync(binary, ['start'], { stdio: 'inherit', timeout: 120_000 })
+
+  // 30s: a daemon that is coming up answers in about two, so this is already
+  // an order of magnitude of headroom. Waiting longer would not rescue a build
+  // that is going to fail — it would only make every rollback slower to reach.
+  return waitFor(() => daemonRunning(binary) === true, 30_000)
+}
+
+/** Polls until `condition` holds, or gives up. */
+function waitFor(condition, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (condition()) return true
+    if (Date.now() >= deadline) return false
     // No timers: this is a synchronous stretch, and `Atomics.wait` is the one
     // sleep that does not need the event loop to turn.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
   }
-
-  return false
 }
 
 /**
@@ -715,25 +735,65 @@ function installBinary(archive, { version, prefix }) {
     // whole and still cannot start here — wrong architecture, a macOS signature
     // the kernel refuses, a missing glibc symbol — passes every earlier check
     // and fails at the only moment the user is watching.
-    const probe = spawnSync(installed, ['--version'], { encoding: 'utf8', timeout: 60_000 })
-    const reported = probe.status === 0 ? String(probe.stdout).trim() : null
-
-    if (reported !== version) {
+    /**
+     * Undoes the swap and puts the user back where they started — *including*
+     * the daemon.
+     *
+     * Restoring the executable is only half of it. This ran `stop` on a service
+     * that was up, so a rollback that restores the file and returns leaves the
+     * old version installed and not running, which is an outage caused by an
+     * upgrade that reported failure — the worst of both. The restart is
+     * therefore part of the rollback, and whether it worked is reported rather
+     * than assumed.
+     */
+    const rollBack = (reason, ...detail) => {
       const quarantine = `${installed}.rejected-${process.pid}`
       discard(quarantine)
       renameSync(installed, quarantine)
       if (replaced) renameSync(backup, installed)
 
+      const restored = replaced && wasRunning ? startDaemon(installed) : null
+
       fail(
+        reason,
+        ...detail,
+        replaced ? 'Your previous version is back in place.' : '',
+        restored === true ? 'It is running again.' : '',
+        restored === false
+          ? `It did not start again. Start it yourself with: ${installed} start`
+          : '',
+        `The rejected file is at ${quarantine} if you want to look at it.`,
+      )
+    }
+
+    const probe = spawnSync(installed, ['--version'], { encoding: 'utf8', timeout: 60_000 })
+    const reported = probe.status === 0 ? String(probe.stdout).trim() : null
+
+    if (reported !== version) {
+      rollBack(
         replaced
           ? `The new executable did not run, so ${version} was rolled back.`
           : 'The downloaded executable does not run here.',
         reported === null
           ? `\`looptroop --version\` exited ${String(probe.status ?? probe.signal)}: ${String(probe.stderr || probe.error?.message || '').trim().slice(0, 400)}`
           : `\`looptroop --version\` reported ${reported}, expected ${version}.`,
-        replaced ? 'Your previous version is back in place and working.' : '',
-        `The rejected file is at ${quarantine} if you want to look at it.`,
       )
+    }
+
+    // Restarted here rather than after this function returns, because here the
+    // backup still exists and the lock is still held. `--version` succeeding
+    // proves the file runs; it does not prove the daemon comes up, and those
+    // are different failures — a build that starts and immediately exits passes
+    // the first and fails the second. Confirming it before discarding the only
+    // copy of the working version is what makes this an upgrade you can undo.
+    if (wasRunning) {
+      say('Starting it again...')
+      if (!startDaemon(installed)) {
+        rollBack(
+          `${version} installed but its daemon would not start, so it was rolled back.`,
+          'The executable runs and reports the right version; it does not stay up.',
+        )
+      }
     }
 
     discard(backup)
@@ -813,17 +873,12 @@ async function main(argv) {
       await download(archiveAsset.browser_download_url, archivePath)
       verifyBytes(archivePath, digest)
 
+      // The daemon, if there was one, is already back up: `installBinary`
+      // restarts it before letting go of the backup, so that a daemon which
+      // will not start is a rollback rather than an outage.
       const { installed, wasRunning } = installBinary(archivePath, { version: intended, prefix })
       installedPath = installed
-      say(`Installed ${installed}`)
-
-      // Put back what the install took away. Somebody upgrading had a daemon
-      // running a moment ago, and leaving it stopped makes an upgrade into an
-      // outage they have to notice and fix themselves.
-      if (wasRunning) {
-        say('Starting it again...')
-        spawnSync(installed, ['start'], { stdio: 'inherit', timeout: 120_000 })
-      }
+      say(`Installed ${installed}${wasRunning ? ', and the daemon is running again' : ''}`)
 
       const bin = join(prefix, 'bin')
       pathAdvice = onPath(bin)

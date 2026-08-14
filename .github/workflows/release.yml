@@ -116,51 +116,18 @@ jobs:
       # Job outputs are strings. Every consumer compares against 'true' rather
       # than testing truthiness, because the *string* "false" is truthy in a
       # GitHub expression and would invert this guard into publishing.
+      # The rule itself lives in `scripts/release-guard.mjs`, with tests. It was
+      # wrong twice as inline shell — a boolean input arrives as the string
+      # "false" and is truthy in a GitHub expression, and every manual dispatch
+      # was forced to a dry run, which made the binary bypass unusable — and it
+      # is the one decision separating "built and verified" from "published to
+      # seven registries".
       - name: Resolve the publication guard
         id: guard
         env:
           REQUESTED: ${{ inputs.dry_run }}
           SKIP_BINARIES: ${{ inputs.skip_binaries }}
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            dry_run=false
-          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] \
-            && [ "${GITHUB_REF}" = "refs/heads/main" ] \
-            && [ "${REQUESTED}" = "false" ] \
-            && [ "${SKIP_BINARIES:-}" = "true" ]; then
-            # The one manual route that publishes, and it exists solely for a
-            # runner-class outage: every other dispatch is forced to a dry run,
-            # which is what made `skip_binaries` unusable — the input could be
-            # set but the release it was meant to rescue could never happen.
-            #
-            # Narrow on purpose: the exact `main` ref, an explicit `dry_run=false`,
-            # and `skip_binaries=true` together. Anything less is still a dry run.
-            dry_run=false
-            echo "::warning::Publishing from a manual dispatch, because skip_binaries was requested."
-          else
-            dry_run=true
-            if [ "${REQUESTED}" = "false" ]; then
-              echo "::warning::A real publish was requested, but this is ${GITHUB_EVENT_NAME} on ${GITHUB_REF}."
-              echo "::warning::Forcing a dry run. Publishing happens only on a push to refs/heads/main."
-            fi
-          fi
-          # A dispatch that asked for a dry run stays a dry run even on main.
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${REQUESTED}" != "false" ]; then
-            dry_run=true
-          fi
-          echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
-          echo "Dry run: ${dry_run}"
-
-          # Normalised the same way and for the same reason: a boolean input
-          # arrives as the *string* "false", which is truthy in a GitHub
-          # expression.
-          skip_binaries=false
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${SKIP_BINARIES:-}" = "true" ]; then
-            skip_binaries=true
-            echo "::warning::Releasing without the standalone executables, by operator request."
-          fi
-          echo "skip_binaries=${skip_binaries}" >> "$GITHUB_OUTPUT"
+        run: node scripts/release-guard.mjs
 
       # Classifies the release: skip, fresh, resume-npm, resume-github,
       # complete, unverified, or conflict. `skip` covers the ordinary case of a
@@ -1868,7 +1835,6 @@ jobs:
   #                       incident, so there is no account to publish from.
   #
   # Re-enable one with:  gh variable set PUBLISH_WINGET --body true
-  # `tmp/check-channels.mjs` reports when each becomes possible again.
   # ---------------------------------------------------------------------------
 
   # Dormant until the AUR reopens registration. It skips rather than fails when

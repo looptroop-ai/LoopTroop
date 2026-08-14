@@ -600,6 +600,41 @@ describe('installer core', () => {
     })
 
     /**
+     * The third way an upgrade can fail after stopping the daemon.
+     *
+     * Replacing the file can throw — a permission problem here, and on Windows a
+     * locked executable, which is the likeliest cause of all. This path restored
+     * nothing to restart for two rounds of review because the executable was
+     * never moved; but the *daemon* was already stopped, so exiting here left
+     * the service down exactly as the other paths did.
+     *
+     * Injected by making the directory unwritable, which is the one way to make
+     * the swap fail without also breaking the copy it has to fall back to.
+     */
+    it.runIf(canInstallBinary && process.getuid?.() !== 0)('restarts the daemon when the swap itself fails', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const bin = join(prefix, 'bin')
+
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      writeFileSync(stubState, '')
+
+      chmodSync(bin, 0o555)
+      try {
+        const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain('Could not replace')
+        expect(result.stderr).toContain('previous version is untouched')
+        // The point: it stopped the daemon, so it has to start it again.
+        expect(result.stderr).toContain('daemon is running again')
+        expect(existsSync(stubState)).toBe(true)
+      } finally {
+        chmodSync(bin, 0o755)
+      }
+    })
+
+    /**
      * `--version` succeeding does not prove the daemon comes up. A build that
      * starts and immediately exits passes the first check and fails the second,
      * and those are different failures — so the backup has to survive until the

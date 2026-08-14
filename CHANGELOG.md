@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Fixed
+- Corrected the command shown for checking a download against `checksums.sha256`. The file lists every asset a release publishes, so `sha256sum -c checksums.sha256` reports the eight you did not download as `FAILED open or read` and exits non-zero — which reads as a corrupted release and is not one. The documented command now checks the one file you actually have, and works the same way on macOS, where `shasum` has no flag for skipping the rest.
+
 ## 0.5.4 (2026-08-14)
 
 

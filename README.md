@@ -189,27 +189,23 @@ review gates.
 
 ### Or use a package manager
 
-| | Install | Upgrade | |
-|---|---|---|---|
-| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` | ✅ |
-| **bun** (everywhere) | `bun add -g looptroop` | `bun add -g looptroop@latest` | ✅ |
-| **pnpm** (everywhere) | `pnpm add -g looptroop` | `pnpm add -g looptroop@latest` | ✅ |
-| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` | ✅ |
-| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` | ✅ |
-| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` | ✅ |
-| **Chocolatey** (Windows) | `choco install looptroop` | `choco upgrade looptroop` | ⏳ |
-| **WinGet** (Windows) | `winget install LoopTroopAI.LoopTroop` | `looptroop stop`<br>`winget upgrade LoopTroopAI.LoopTroop` | ⏳ |
-| **AUR** (Arch Linux) | `yay -S looptroop-bin` | `yay -Syu looptroop-bin` | ⏳ |
+| | Install | Upgrade |
+|---|---|---|
+| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
+| **bun** (everywhere) | `bun add -g looptroop` | `bun add -g looptroop@latest` |
+| **pnpm** (everywhere) | `pnpm add -g looptroop` | `pnpm add -g looptroop@latest` |
+| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` |
+| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
+| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
 
-⏳ **means the command does not work yet.** Those three packages are built and
-tested on every change, and each is waiting on somebody else: Chocolatey on
-community moderation, WinGet on a pull request being reviewed at Microsoft, and
-the AUR on registration reopening after a security incident. The commands are
-listed because they are what will work, unchanged, the day each clears. Until
-then, every ✅ row is a real alternative on the same platform.
+LoopTroop is also packaged for **Chocolatey**, **WinGet** and the **AUR**. Those
+three are built and tested on every change but are not published yet, each
+waiting on somebody else's queue, so their commands do not work today.
 
-The current state of all three, and everything below in more detail, is on the
-[Installation](https://www.looptroop.ovh/docs/installation) page.
+**[The Installation page](https://www.looptroop.ovh/docs/installation) is the
+one place that tracks which channels are live.** It is deliberately not repeated
+here: two copies of a status that can change in a week is how one of them ends
+up lying.
 
 `looptroop doctor` tells you which of these your copy came from and the exact
 command that upgrades it — and each manager is given *its own* upgrade command,
@@ -242,15 +238,26 @@ what WinGet installs, and why that channel declares no Node dependency.
 Each archive is listed in the release's `release-manifest.json` with its
 checksum, and carries a build provenance attestation. Every release also
 publishes `checksums.sha256`, so you can check a download with the tool you
-already have:
+already have. It lists every asset the release publishes, so check the line for
+the one you downloaded rather than the whole file:
 
 ```bash
-sha256sum -c checksums.sha256        # shasum -a 256 -c on macOS
+grep looptroop-<version>-linux-x64.tar.gz checksums.sha256 | sha256sum -c
+```
+
+```bash
+grep looptroop-<version>-darwin-arm64.tar.gz checksums.sha256 | shasum -a 256 -c
 ```
 
 ```powershell
 Get-FileHash looptroop-<version>-win-x64.zip -Algorithm SHA256
 ```
+
+A plain `sha256sum -c checksums.sha256` reports every asset you did *not*
+download as `FAILED open or read` and exits non-zero, which looks like a bad
+release and is not one. GNU coreutils can be told to skip them with
+`sha256sum --ignore-missing -c checksums.sha256`; macOS `shasum` has no such
+flag, which is why the single-line form above is the one that works everywhere.
 
 Intel Macs are not among the binaries: Node cannot build a single-file
 executable for that target, so use Homebrew or npm there.

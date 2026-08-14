@@ -467,6 +467,39 @@ try {
   }
   check('the port is no longer served', refused === null, refused ? `still answering ${refused.status}` : 'refused')
 
+  // The one command that has to work on a machine where nothing is running.
+  // Linux only, because this is the one platform where the browser launch can
+  // be neutered: `xdg-open` honours $BROWSER, while macOS `open` and Windows
+  // `start` would really open one on the runner.
+  if (process.platform === 'linux') {
+    heading('open starts a daemon that is not running')
+    const opened = runShim(bin, ['open'], {
+      ...at,
+      env: { ...at.env, ...CHILD_ENV, LOOPTROOP_BACKEND_PORT: String(PORT), BROWSER: 'true' },
+    })
+    // The output, not just the code: a failing start says why, and a smoke test
+    // that hides the reason costs a whole re-run to learn it. `open` never
+    // prints the nonce, so this cannot leak one.
+    check('open succeeds with no daemon running', opened.code === 0,
+      opened.code === 0 ? 'exit 0' : `exit ${opened.code}: ${opened.combined.trim().split('\n').slice(-6).join(' | ')}`)
+    check('open says it is starting one', /Starting it/.test(opened.combined), 'announced the start')
+    check('open prints no secret', !/#bootstrap=/.test(opened.combined), 'origin only')
+
+    const afterOpen = await waitForHealth(baseUrl)
+    check('the daemon open started answers', afterOpen?.status === 'ok', `status=${afterOpen?.status}`)
+
+    // Second call: the daemon is up, so it must open rather than start again.
+    const reopened = runShim(bin, ['open'], { ...at, env: { ...at.env, ...CHILD_ENV, BROWSER: 'true' } })
+    check('open succeeds against a running daemon', reopened.code === 0, `exit ${reopened.code}`)
+    check('open does not start a second daemon', !/Starting it/.test(reopened.combined), 'no start')
+    const stillSame = await waitForHealth(baseUrl)
+    check('open did not replace the daemon', stillSame?.instanceId === afterOpen?.instanceId,
+      'same instance id')
+
+    const stopAfterOpen = cli('stop')
+    check('the daemon open started stops again', stopAfterOpen.code === 0, `exit ${stopAfterOpen.code}`)
+  }
+
   heading('clean runs once the daemon is down')
   const clean = cli('clean')
   check('clean succeeds with no daemon', clean.code === 0, `exit ${clean.code}`)

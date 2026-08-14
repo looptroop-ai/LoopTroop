@@ -105,6 +105,7 @@ const serverIntegrationTests = [
   // Spawns real child processes and signals them, so it needs its own worker.
   'tests/stopCommand.test.ts',
   'tests/startCommandAbandon.test.ts',
+  'tests/openCommand.test.ts',
   'tests/cleanCommand.test.ts',
   // Reads the real database module, which siblings replace with a mock.
   'tests/doctorCommand.test.ts',

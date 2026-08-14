@@ -8,7 +8,8 @@
     "extract_dir": "looptroop",
     "depends": [
         "nodejs-lts",
-        "git"
+        "git",
+        "gh"
     ],
     "bin": [
         [

@@ -170,132 +170,35 @@ Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 
 ## Quick start
 
-Install the CLI globally and start it as a background service:
-
 ```bash
-npm install -g looptroop
-looptroop start
+curl -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
-`start` detaches from the terminal, so LoopTroop keeps running after the shell
-closes. It serves the interface and the API from one address on port 3000, which
-`open` points a browser at. `looptroop status` says whether it is up,
-`looptroop logs` follows the log, `looptroop doctor` checks the environment, and
-`looptroop stop` shuts it down.
+`open` starts LoopTroop in the background if it is not already running, then
+points a browser at it with a link that signs that browser in once. It serves
+the interface and the API from one address on port 3000. `looptroop status` says
+whether it is up, `looptroop logs` follows the log, `looptroop doctor` checks the
+environment, and `looptroop stop` shuts it down.
 
-Add a local repository with a GitHub origin, create a ticket, and follow the
-review gates.
+Then attach a local repository with a GitHub origin, create a ticket, and follow
+the review gates.
 
-### Or use a package manager
+### What you need besides LoopTroop
 
-| | Install | Upgrade |
-|---|---|---|
-| **npm** (everywhere) | `npm install -g looptroop` | `npm install -g looptroop@latest` |
-| **bun** (everywhere) | `bun add -g looptroop` | `bun add -g looptroop@latest` |
-| **pnpm** (everywhere) | `pnpm add -g looptroop` | `pnpm add -g looptroop@latest` |
-| **Homebrew** (macOS, Linux) | `brew install looptroop-ai/tap/looptroop` | `brew upgrade looptroop` |
-| **Scoop** (Windows) | `scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket`<br>`scoop install looptroop` | `scoop update looptroop` |
-| **Docker** | `docker pull looptroopai/looptroop:latest` | `docker pull looptroopai/looptroop:latest` |
+- **git**, and **`gh`** authenticated, for the pull-request step at the end of a
+  ticket. Homebrew, Scoop, Chocolatey, WinGet and the AUR install both for you.
+  npm, bun, pnpm and the standalone executable have no way to declare a
+  dependency, so `looptroop doctor` checks for them instead.
+- **OpenCode**, with at least one configured model provider. LoopTroop starts one
+  if it is on your PATH and adopts one you are already running, but it will not
+  install it — and refuses to start with no OpenCode to reach.
+  `LOOPTROOP_OPENCODE_MODE=mock` looks around without one.
 
-LoopTroop is also packaged for **Chocolatey**, **WinGet** and the **AUR**. Those
-three are built and tested on every change but are not published yet, each
-waiting on somebody else's queue, so their commands do not work today.
+### Every way to install it
 
-**[The Installation page](https://www.looptroop.ovh/docs/installation) is the
-one place that tracks which channels are live.** It is deliberately not repeated
-here: two copies of a status that can change in a week is how one of them ends
-up lying.
-
-`looptroop doctor` tells you which of these your copy came from and the exact
-command that upgrades it — and each manager is given *its own* upgrade command,
-because `npm install -g` run against a bun or pnpm installation does not upgrade
-it. It installs a second copy under npm's prefix and leaves the first one alone.
-
-Two differences worth knowing before comparing two installations:
-
-- **Homebrew, Scoop and Chocolatey install a locked bundle** built once per
-  release with every dependency resolved at build time, so everyone on those
-  channels runs the exact versions the release was tested against. npm, bun and
-  pnpm resolve the version ranges afresh on your machine, which is how they are
-  supposed to work.
-- **pnpm holds a new version back for about a day.** It will not resolve a tag
-  to a version published in the last 24 hours — a supply-chain protection, on by
-  default — so `pnpm add -g looptroop@latest` installs the newest release older
-  than that window. Asking for an exact version bypasses it.
-
-`looptroop stop` before a WinGet upgrade is not optional: Windows will not
-replace a running executable, and the daemon holds it open.
-
-### Or download a binary
-
-Every release also publishes a standalone executable for macOS (Apple silicon),
-Linux (x64 and arm64) and Windows (x64), on the
-[releases page](https://github.com/looptroop-ai/LoopTroop/releases/latest). It
-carries its own Node runtime, so it needs nothing installed but git — which is
-what WinGet installs, and why that channel declares no Node dependency.
-
-Each archive is listed in the release's `release-manifest.json` with its
-checksum, and carries a build provenance attestation. Every release also
-publishes `checksums.sha256`, so you can check a download with the tool you
-already have. It lists every asset the release publishes, so check the line for
-the one you downloaded rather than the whole file:
-
-```bash
-grep looptroop-<version>-linux-x64.tar.gz checksums.sha256 | sha256sum -c
-```
-
-```bash
-grep looptroop-<version>-darwin-arm64.tar.gz checksums.sha256 | shasum -a 256 -c
-```
-
-```powershell
-Get-FileHash looptroop-<version>-win-x64.zip -Algorithm SHA256
-```
-
-A plain `sha256sum -c checksums.sha256` reports every asset you did *not*
-download as `FAILED open or read` and exits non-zero, which looks like a bad
-release and is not one. GNU coreutils can be told to skip them with
-`sha256sum --ignore-missing -c checksums.sha256`; macOS `shasum` has no such
-flag, which is why the single-line form above is the one that works everywhere.
-
-Intel Macs are not among the binaries: Node cannot build a single-file
-executable for that target, so use Homebrew or npm there.
-
-The installer will place one for you, into `~/.looptroop` unless you say
-otherwise:
-
-```bash
-curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary
-```
-
-```powershell
-& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary
-```
-
-Run the same command again to upgrade. It stops a running daemon before
-replacing the file, checks that the new executable actually runs, puts the old
-one back if it does not, and starts the daemon again if it had been running — so
-an upgrade that goes wrong leaves you with the version you already had rather
-than with nothing.
-
-Note that this still needs Node **to install**, because the installer is itself
-a Node program. What the executable removes is Node as a requirement to *run*
-LoopTroop. On a machine with no Node at all, download the archive from the
-releases page and unpack it yourself.
-
-Node is the one thing the other three will install for you: LoopTroop is declared
-as depending on it, so Homebrew pulls in `node@24` and Scoop and Chocolatey pull
-in `nodejs-lts` if your machine has no suitable Node. That is the normal contract
-of a package manager, and it is the difference between them and the one-line
-installer above, which checks for Node, tells you what to do about it, and
-installs nothing itself.
-
-### Or install with a script
-
-If you would rather not think about which npm tarball to fetch, an installer
-resolves the newest release, checks the download against the checksum that
-release published, and hands it to npm:
+<details>
+<summary><b>curl / irm</b> — the one-line installer (shown above)</summary>
 
 ```bash
 curl -fsSL https://www.looptroop.ovh/install | sh
@@ -305,164 +208,125 @@ curl -fsSL https://www.looptroop.ovh/install | sh
 irm https://www.looptroop.ovh/install.ps1 | iex
 ```
 
-It needs Node already installed and never tries to install it for you, never
-asks for sudo, and writes nothing outside npm's global prefix. Because it
-installs through npm, `npm install -g looptroop@latest` and `npm uninstall -g
-looptroop` keep working exactly as they would have. Pin a version with
-`--version X.Y.Z` (`-Version` on Windows).
+Resolves the newest release, checks the download against the checksum that
+release published, and hands it to npm. Because it installs through npm,
+`npm install -g looptroop@latest` and `npm uninstall -g looptroop` keep working
+exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
+Windows), or choose a directory with `--prefix`.
 
-### Run it in a container
+**Needs Node and npm already installed.** It never installs Node for you, never
+asks for sudo, and writes nothing outside npm's global prefix.
 
-Published for `linux/amd64` and `linux/arm64`. Docker is the only thing the host
-needs — Node, git and `gh` are in the image:
+Add `-s -- --binary` (`-Binary` on Windows) to install the standalone executable
+into `~/.looptroop` instead — one file carrying its own Node runtime. Run the
+same command again to upgrade: it stops a running daemon, replaces the file,
+checks the new one actually runs, and puts the old one back if it does not.
+Note this *still* needs Node to install, because the installer is itself a Node
+program; what it removes is Node as a requirement to **run** LoopTroop.
+</details>
+
+<details>
+<summary><b>npm</b> — everywhere</summary>
+
+```bash
+npm install -g looptroop
+npm install -g looptroop@latest   # upgrade
+```
+
+**Needs Node 24.15.0 or newer and npm 11.12.1 or newer**, plus git and `gh`.
+</details>
+
+<details>
+<summary><b>Homebrew</b> — macOS and Linux</summary>
+
+```bash
+brew install looptroop-ai/tap/looptroop
+brew upgrade looptroop            # upgrade
+```
+
+**Needs nothing else.** The formula pulls in `node@24` and `gh`, and takes git
+from the OS. It installs a locked bundle built once per release with every
+dependency resolved at build time, so everyone on this channel runs the exact
+versions the release was tested against.
+</details>
+
+<details>
+<summary><b>Scoop</b> — Windows</summary>
+
+```powershell
+scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket
+scoop install looptroop
+scoop update looptroop            # upgrade
+```
+
+**Needs nothing else.** The manifest depends on `nodejs-lts`, `git` and `gh`.
+Like Homebrew, it installs the locked bundle.
+</details>
+
+<details>
+<summary><b>bun</b> — everywhere</summary>
+
+```bash
+bun add -g looptroop
+bun add -g looptroop@latest       # upgrade
+```
+
+**Needs Node 24.15.0 or newer as well as bun** — the launcher is a Node program,
+so bun installs it but Node runs it — plus git and `gh`.
+</details>
+
+<details>
+<summary><b>pnpm</b> — everywhere</summary>
+
+```bash
+pnpm add -g looptroop
+pnpm add -g looptroop@latest      # upgrade
+```
+
+**Needs Node 24.15.0 or newer as well as pnpm**, plus git and `gh`.
+
+pnpm holds a new version back for about a day: it will not resolve a tag to a
+version published in the last 24 hours — a supply-chain protection, on by
+default — so `@latest` installs the newest release older than that window.
+Asking for an exact version bypasses it.
+</details>
+
+<details>
+<summary><b>Docker</b> — linux/amd64 and linux/arm64</summary>
 
 ```bash
 docker pull looptroopai/looptroop:latest
 ```
 
-Two things it still needs from you, both deliberately not baked in.
+**Needs only Docker.** Node, git and `gh` are all in the image. Two things it
+still needs from you, both deliberately not baked in: an OpenCode server it can
+reach, and a project mounted at its own absolute path. Both are covered on the
+[Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
+</details>
 
-**An OpenCode server.** It is not in the image: it needs a configured model
-provider and your credentials, and bundling it would tie LoopTroop's releases to
-OpenCode's. A container with no OpenCode to reach exits at startup instead of
-serving an interface that cannot run a single coding operation, so pass
-`-e LOOPTROOP_OPENCODE_BASE_URL=…` pointing at a server you run — or
-`-e LOOPTROOP_OPENCODE_MODE=mock` to look around without one.
+LoopTroop is also packaged for **Chocolatey**, **WinGet** and the **AUR**. Those
+three are built and tested on every change but are not published yet, each
+waiting on somebody else's queue, so their commands do not work today.
 
-That server has to be able to open the files LoopTroop gives it. LoopTroop works
-in git worktrees under `<project>/.looptroop/worktrees/` and asks OpenCode to
-open one **by absolute path**, so the path has to mean the same thing on both
-sides. Mounting the project somewhere tidy like `/workspace/project` breaks that
-the moment OpenCode is not in the same container: it is handed a directory that
-does not exist on its own filesystem. So mount the project at its own path:
+**[The Installation page](https://www.looptroop.ovh/docs/installation) is the one
+place that tracks which channels are live**, and covers upgrading, uninstalling,
+verifying a download against the checksums each release publishes, and running in
+a container. It is deliberately not repeated here: two copies of a status that
+can change in a week is how one of them ends up lying.
 
-```bash
-PROJECT=/absolute/path/to/project
-```
+`looptroop doctor` tells you which of these your copy came from and the exact
+command that upgrades it — and each manager is given *its own* upgrade command,
+because `npm install -g` run against a bun or pnpm installation does not upgrade
+it. It installs a second copy under npm's prefix and leaves the first one alone.
 
-and use `-v "$PROJECT":"$PROJECT"`, as below. If you would rather keep a tidy
-path inside the container, run OpenCode as a sidecar with the identical mount, so
-both processes see the same string.
+`looptroop stop` before a WinGet upgrade is not optional: Windows will not
+replace a running executable, and the daemon holds it open.
 
-**A way to reach it.** The daemon binds `127.0.0.1`, which inside a container is
-the container's own loopback, so publishing a port alone connects to nothing.
-That default is the point: this is a control plane that executes code on the
-machine it runs on, and it does not become network-reachable by accident.
+## Run it in a VM
 
-On Linux, share the host's network namespace and the loopback boundary stays
-real:
-
-```bash
-docker run --network host \
-  -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
-  -v looptroop-config:/home/node/.looptroop \
-  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
-  looptroopai/looptroop:latest
-```
-
-On Docker Desktop for Mac and Windows the containers run in a VM, so
-`--network host` is that VM's loopback rather than yours. There the daemon has to
-bind wider, which it will not do by omission — it refuses a non-loopback bind
-unless both variables are set, and refuses it without a token:
-
-```bash
-docker run -p 127.0.0.1:3000:3000 \
-  -e LOOPTROOP_ALLOW_REMOTE_API=1 \
-  -e LOOPTROOP_BACKEND_HOST=0.0.0.0 \
-  -e LOOPTROOP_API_TOKEN="$(openssl rand -hex 32)" \
-  -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 \
-  -v looptroop-config:/home/node/.looptroop \
-  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
-  looptroopai/looptroop:latest
-```
-
-In PowerShell, the same run with the same meaning:
-
-```powershell
-$Project = "C:\path\to\project"
-$Token = -join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Max 256) })
-docker run -p 127.0.0.1:3000:3000 `
-  -e LOOPTROOP_ALLOW_REMOTE_API=1 `
-  -e LOOPTROOP_BACKEND_HOST=0.0.0.0 `
-  -e LOOPTROOP_API_TOKEN=$Token `
-  -e LOOPTROOP_OPENCODE_BASE_URL=http://host.docker.internal:4096 `
-  -v looptroop-config:/home/node/.looptroop `
-  -v "${Project}:${Project}" -w $Project `
-  looptroopai/looptroop:latest
-```
-
-Windows needs one more decision than the others, because of the path rule above.
-`C:\path\to\project` is not a path a Linux container can be given, and an
-OpenCode server running natively on Windows cannot open a Linux one — so the two
-sides cannot meet by mounting the same string. Either run OpenCode as a container
-sidecar with the identical mount, or keep the project inside WSL and run both
-from there, where `/home/you/project` means the same thing on both sides. A
-native Windows OpenCode with a container LoopTroop is the one combination that
-cannot be made to work.
-
-`-p 127.0.0.1:3000:3000`, not `-p 3000:3000`: the short form publishes on every
-host interface, which on a shared network offers that control plane to everyone
-on it.
-
-`LOOPTROOP_API_TOKEN` is what authorises the wider bind. It is **not** the token
-the API accepts — the daemon mints its own at startup and records it owner-only.
-Read the one that works with:
-
-```bash
-docker exec <container> sh -c 'cat "$LOOPTROOP_CONFIG_DIR/daemon.json"'
-```
-
-Keep the `looptroop-config` volume. It holds the database and the daemon record;
-without it every restart is a fresh install.
-
-The container runs as uid 1000. If your host user is a different uid, git refuses
-the mounted checkout with "detected dubious ownership" — match the uid rather
-than relaxing `safe.directory` inside the image for everyone. The named config
-volume is then no longer writable either, so put the config somewhere that uid
-owns:
-
-```bash
-docker run --network host --user "$(id -u):$(id -g)" \
-  -e HOME=/tmp \
-  -e LOOPTROOP_CONFIG_DIR=/workspace/.looptroop \
-  -e LOOPTROOP_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
-  -v "$PROJECT":"$PROJECT" -w "$PROJECT" \
-  -v "$HOME/.looptroop:/workspace/.looptroop" \
-  looptroopai/looptroop:latest
-```
-
-`HOME=/tmp` because `/home/node` belongs to uid 1000 and nothing should have to
-write into a home directory it does not own.
-
-Commits carry their identity per invocation, so no global git config is needed.
-`gh` does need credentials for the pull-request step: pass `-e GH_TOKEN=…`. The
-push uses the same token, through `gh`'s credential helper — git does not read
-`GH_TOKEN` itself, and nothing else in the image supplies a credential, so
-without that the pull request would be prepared and never pushed.
-
-### Working on LoopTroop itself
-
-To develop LoopTroop rather than use it, run it from a checkout. This is the
-development stack — Vite on port 5173 with hot reload — not the installed
-service above:
-
-```bash
-git clone https://github.com/looptroop-ai/LoopTroop.git
-cd LoopTroop
-npm run dev
-```
-
-Full setup, ports, startup flags, and troubleshooting: [Getting Started](https://www.looptroop.ovh/docs/getting-started) and [Operations Guide](https://www.looptroop.ovh/docs/operations).
-
-## What you need
-
-LoopTroop expects:
-
-- Node.js 24.15.0 or newer, and npm 11.12.1 or newer
-- Git
-- OpenCode with at least one configured model provider
-- a local repository with a GitHub origin
-- **a VM or sandboxed development environment** (strongly recommended)
+Beyond the install itself — covered per channel above — LoopTroop needs a local
+repository with a GitHub origin, and **strongly wants a VM or sandboxed
+development environment**.
 
 ### Why a VM?
 

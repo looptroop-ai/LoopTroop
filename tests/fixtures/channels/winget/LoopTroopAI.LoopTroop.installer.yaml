@@ -10,6 +10,7 @@ NestedInstallerFiles:
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Git.Git
+    - PackageIdentifier: GitHub.cli
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/looptroop-ai/LoopTroop/releases/download/v9.9.9/looptroop-9.9.9-win-x64.zip

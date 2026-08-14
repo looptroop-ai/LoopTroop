@@ -1859,8 +1859,9 @@ jobs:
   # None of them can currently complete, and a job that cannot succeed teaches
   # everyone to ignore a red release:
   #
-  #   PUBLISH_CHOCOLATEY  0.5.1 is still in moderation, and Chocolatey answers
-  #                       403 to a push for a package with no approved version.
+  #   PUBLISH_CHOCOLATEY  the first submission is still in moderation, and
+  #                       Chocolatey answers 403 to a push for a package that
+  #                       has no approved version yet.
   #   PUBLISH_WINGET      every submission is a pull request reviewed by people
   #                       at Microsoft, and the first one also needs a CLA.
   #   PUBLISH_AUR         registration is closed upstream after a security

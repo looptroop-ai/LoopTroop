@@ -228,7 +228,7 @@ jobs:
       # both workflows feed the container build from an identically named
       # artefact.
       - name: Upload the artefact for the build legs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
           path: |
@@ -274,7 +274,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -377,7 +377,7 @@ jobs:
           done
 
       - name: Upload the digest
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-digest-${{ matrix.arch }}
           path: digest-${{ matrix.arch }}.txt
@@ -423,7 +423,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: container-digest-*
           merge-multiple: true

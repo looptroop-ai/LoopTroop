@@ -292,7 +292,7 @@ jobs:
             ${{ runner.temp }}/binary/*.zip
 
       - name: Upload the archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binary-${{ matrix.target }}
           path: |
@@ -383,7 +383,7 @@ jobs:
       # are all part of one release.
       - name: Collect the standalone binaries
         if: needs.detect.outputs.skip_binaries != 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-binary-*
           merge-multiple: true
@@ -458,7 +458,7 @@ jobs:
           '
 
       - name: Upload the release artefacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-artefacts
           path: |
@@ -515,7 +515,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -567,7 +567,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -629,7 +629,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -765,7 +765,7 @@ jobs:
           npm --version
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1024,7 +1024,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1141,7 +1141,7 @@ jobs:
         run: node scripts/pin-npm.mjs
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1286,7 +1286,7 @@ jobs:
       # Per architecture, because the legs of a matrix share one `outputs` map
       # and the last leg to finish would be the only one whose digest survived.
       - name: Upload the digest
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: container-digest-${{ matrix.arch }}
           path: digest-${{ matrix.arch }}.txt
@@ -1350,7 +1350,7 @@ jobs:
       # `merge-multiple` because the two legs uploaded one file each under
       # different artefact names; this flattens both into the working directory.
       - name: Download the digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: container-digest-*
           merge-multiple: true
@@ -1668,7 +1668,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1743,7 +1743,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1796,7 +1796,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1886,7 +1886,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 
@@ -1984,7 +1984,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Download the release artefacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-artefacts
 

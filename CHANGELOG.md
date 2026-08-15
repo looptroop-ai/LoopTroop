@@ -9,6 +9,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- Remote development works from the advertised LAN and trusted Tailscale URLs again, including ticket creation and every other write action.
+
+### Fixed
+- Fixed development API writes failing with `Forbidden: cross-origin requests are not accepted` when the interface was opened through a LAN address or a trusted same-origin reverse proxy such as Tailscale Serve. Vite now translates the browser-visible origin only when the browser vouches that the request is same-origin and that origin exactly matches the incoming frontend host. Requests from unrelated pages keep their original origin and remain blocked by the backend guard; the production daemon and its loopback-only boundary are unchanged.
+
 ## 0.5.5 (2026-08-14)
 
 

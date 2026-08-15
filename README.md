@@ -61,113 +61,6 @@ Instead of trusting a single, endless AI chat session - where the conversation h
 
 ---
 
-## What is LoopTroop?
-
-LoopTroop is a **local GUI orchestrator for long-running, high-correctness AI software delivery** - taking you from a raw idea to merged code. Free and fully open-source.
-
-Unlike high-speed coding tools that optimize for immediate chat responses, LoopTroop is built for **complex, multi-file feature work** where alignment and correctness are paramount. It optimizes for a "slow and perfect" paradigm, intentionally sacrificing raw speed to deliver a final result that matches exactly how you envisioned it.
-
-**Great Context Engineering = Zero AI Slop:** LoopTroop employs precise context curation at every stage, feeding the agent only the absolute **minimum** context it needs. See [Context Engineering](#context-engineering) below for details.
-
----
-
-## How it works
-
-```mermaid
-flowchart LR
-    A["🎫 Ticket Input"] --> B["🔍 Codebase Discovery"]
-    B --> C["🏛️ LLM Council Planning<br/>(Interview, PRD & Beads)"]
-    C --> D["🛑 Human Approval Gate<br/>(optional in future releases)"]
-    D --> E["🧪 Isolated OpenCode Bead Execution<br/>(Git Worktree)"]
-    E --> F["✅ Final Tests"]
-    F --> H["🧭 Optional Manual QA<br/>(user runs the app)"]
-    H --> I["📦 Integration & PR Review"]
-    H -.->|"Failures become QA fix beads"| E
-    E -.->|"On Failure"| G["🔄 Ralph-Style Recovery Loop"]
-    G -.->|"Retry"| E
-```
-
-LoopTroop keeps workflow state outside the model, stores durable artifacts, and asks for approval at important boundaries. Optional Manual QA runs after final tests: you complete the checklist while manually controlling the app, then the ticket continues to integration. Failed checks create QA-fix beads, while improvements creates new tickets.
-
-## Core ideas
-
-### Context Engineering
-
-Context rot is the enemy of autonomous agents. Traditional agent loops suffer from it-excessive conversational history and irrelevant files overwhelm the model, causing code quality to degrade. Performance can drop severely when reaching just 40% of the maximum context window, resulting in missing files, broken imports, and "AI slop." [[note]](https://antekapetanovic.com/blog/context-engineering/ "Context Engineering: When \"You're Absolutely Right\" Means You're Absolutely Not")
-
-LoopTroop solves this through precise context curation. Instead of sending full conversational transcripts, the engine isolates payloads to the active status. During execution, the agent only sees the specific active bead, its immediate file target, and the test file. During planning phases, it receives only the minimum context relevant to the current step.
-
-This eliminates conversation pollution from previous execution attempts, prevents LLM drift and performance degradation, and keeps model focus high. Keeping the working context fresh is what makes multi-hour, multi-step engineering cycles actually work.
-
-Read more: [Context Engineering](https://www.looptroop.ovh/docs/context-engineering)
-
-### LLM Council
-
-The LLM Council is LoopTroop's planning system. Instead of relying on a single model run, LoopTroop orchestrates multiple independent model instances that **draft** plans, **score** each other using a weighted rubric, and **vote** on proposals. The winner then **refines** its draft by synthesizing the strongest ideas from the losing drafts and **verifies** coverage before any execution begins.
-
-This multi-role process (draft → vote → refine → verify) is utilized for:
-- Interview questions
-- PRD/Specs generation
-- Bead/blueprint generation
-
-Read more: [LLM Council](https://www.looptroop.ovh/docs/llm-council)
-
-### Interview
-
-Before writing a spec, the LLM Council compiles a list of targeted questions to resolve any ambiguities. This interactive session gathers requirements and clarifies intent-because matching your vision is the goal, this phase can take over an hour by design.
-
-You answer these questions directly in the Interview workspace to clarify edge cases, design decisions, and requirements, ensuring the model never operates on false assumptions. Although a final interview is created after the council's draft-vote-refine cycle is complete, the user still receives questions in batches that can adapt based on previous answers.
-
-Read more: [Interview](https://www.looptroop.ovh/docs/interview)
-
-### PRD (Product Requirements Document)
-
-Once the interview phase is complete, the LLM Council translates your initial ticket and your interview answers into a structured Product Requirements Document consisting of Epics and User Stories, complete with highly decomposed implementation steps. This spec serves as the single source of truth for the implementation, detailing the technical approach, edge cases, scope, and expected validation steps before any coding starts. The PRD is stored as a durable artifact for later reference during bead execution.
-
-Read more: [PRD](https://www.looptroop.ovh/docs/prd)
-
-### Beads
-
-LoopTroop implements **only the Beads methodology**-not the full external Beads Project-extracting just the lightweight planning structure needed to bring immediate value to your repository.
-
-Using Steve Yegge's *Beads Project* methodology, epics are split into "beads"-the smallest, independently implementable units of work. Each bead contains:
-- Clear purpose and objective
-- Measurable acceptance criteria
-- Necessary dependencies and prerequisite context
-- Specific target files
-- Expected validation and testing steps
-
-A bead acts as a small, isolated implementation unit, allowing the execution agent to complete concrete tasks sequentially rather than attempting a massive, single-pass code rewrite.
-
-Read more: [Beads](https://www.looptroop.ovh/docs/beads)
-
-### Execution & Ralph-style recovery
-
-The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, resets the worktree, discards the contaminated session, and begins a fresh run with clean context-plus a note from previous failures.
-
-```text
-fail ──> log failure trace ──> reset worktree ──> retry fresh
-```
-
-This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
-
-Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
-
-### Worktree isolation
-
-LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Note that worktrees provide workspace isolation, not sandboxed host security.
-
-Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
-
-### Human approval gates
-
-LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
-
-For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
-
-Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
-
-
 ## Quick start
 
 ```bash
@@ -175,25 +68,12 @@ curl -fsSL https://www.looptroop.ovh/install | sh
 looptroop open
 ```
 
-`open` starts LoopTroop in the background if it is not already running, then
-points a browser at it with a link that signs that browser in once. It serves
-the interface and the API from one address on port 3000. `looptroop status` says
-whether it is up, `looptroop logs` follows the log, `looptroop doctor` checks the
-environment, and `looptroop stop` shuts it down.
+`open` starts LoopTroop in the background if it is not already running. Use
+`looptroop start` if you want the service without a browser.
 
-Then attach a local repository with a GitHub origin, create a ticket, and follow
-the review gates.
-
-### What you need besides LoopTroop
-
-- **git**, and **`gh`** authenticated, for the pull-request step at the end of a
-  ticket. Homebrew, Scoop, Chocolatey, WinGet and the AUR install both for you.
-  npm, bun, pnpm and the standalone executable have no way to declare a
-  dependency, so `looptroop doctor` checks for them instead.
-- **OpenCode**, with at least one configured model provider. LoopTroop starts one
-  if it is on your PATH and adopts one you are already running, but it will not
-  install it — and refuses to start with no OpenCode to reach.
-  `LOOPTROOP_OPENCODE_MODE=mock` looks around without one.
+Then configure your settings and models (from providers already added in
+OpenCode), attach a local repository with a GitHub origin, create a ticket, and
+start it.
 
 ### Every way to install it
 
@@ -304,23 +184,127 @@ reach, and a project mounted at its own absolute path. Both are covered on the
 [Installation page](https://www.looptroop.ovh/docs/installation#running-in-a-container).
 </details>
 
-LoopTroop is also packaged for **Chocolatey**, **WinGet** and the **AUR**. Those
-three are built and tested on every change but are not published yet, each
-waiting on somebody else's queue, so their commands do not work today.
-
 **[The Installation page](https://www.looptroop.ovh/docs/installation) is the one
 place that tracks which channels are live**, and covers upgrading, uninstalling,
 verifying a download against the checksums each release publishes, and running in
-a container. It is deliberately not repeated here: two copies of a status that
-can change in a week is how one of them ends up lying.
+a container.
 
-`looptroop doctor` tells you which of these your copy came from and the exact
-command that upgrades it — and each manager is given *its own* upgrade command,
-because `npm install -g` run against a bun or pnpm installation does not upgrade
-it. It installs a second copy under npm's prefix and leaves the first one alone.
+### What you need besides LoopTroop
 
-`looptroop stop` before a WinGet upgrade is not optional: Windows will not
-replace a running executable, and the daemon holds it open.
+- **git**, and **`gh`** authenticated, for the pull-request step at the end of a
+  ticket. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
+  **not** installed if you used npm, bun, pnpm or the standalone executable,
+  which have no way to declare a dependency.
+- **OpenCode**, with at least one configured model provider. LoopTroop will start
+  it if it is already installed, but it will not work without it and it will not
+  install it for you.
+
+## What is LoopTroop?
+
+LoopTroop is a **local GUI orchestrator for long-running, high-correctness AI software delivery** - taking you from a raw idea to merged code. Free and fully open-source.
+
+Unlike high-speed coding tools that optimize for immediate chat responses, LoopTroop is built for **complex, multi-file feature work** where alignment and correctness are paramount. It optimizes for a "slow and perfect" paradigm, intentionally sacrificing raw speed to deliver a final result that matches exactly how you envisioned it.
+
+**Great Context Engineering = Zero AI Slop:** LoopTroop employs precise context curation at every stage, feeding the agent only the absolute **minimum** context it needs. See [Context Engineering](#context-engineering) below for details.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["🎫 Ticket Input"] --> B["🔍 Codebase Discovery"]
+    B --> C["🏛️ LLM Council Planning<br/>(Interview, PRD & Beads)"]
+    C --> D["🛑 Human Approval Gate<br/>(optional in future releases)"]
+    D --> E["🧪 Isolated OpenCode Bead Execution<br/>(Git Worktree)"]
+    E --> F["✅ Final Tests"]
+    F --> H["🧭 Optional Manual QA<br/>(user runs the app)"]
+    H --> I["📦 Integration & PR Review"]
+    H -.->|"Failures become QA fix beads"| E
+    E -.->|"On Failure"| G["🔄 Ralph-Style Recovery Loop"]
+    G -.->|"Retry"| E
+```
+
+LoopTroop keeps workflow state outside the model, stores durable artifacts, and asks for approval at important boundaries. Optional Manual QA runs after final tests: you complete the checklist while manually controlling the app, then the ticket continues to integration. Failed checks create QA-fix beads, while improvements creates new tickets.
+
+## Core ideas
+
+### Context Engineering
+
+Context rot is the enemy of autonomous agents. Traditional agent loops suffer from it-excessive conversational history and irrelevant files overwhelm the model, causing code quality to degrade. Performance can drop severely when reaching just 40% of the maximum context window, resulting in missing files, broken imports, and "AI slop." [[note]](https://antekapetanovic.com/blog/context-engineering/ "Context Engineering: When \"You're Absolutely Right\" Means You're Absolutely Not")
+
+LoopTroop solves this through precise context curation. Instead of sending full conversational transcripts, the engine isolates payloads to the active status. During execution, the agent only sees the specific active bead, its immediate file target, and the test file. During planning phases, it receives only the minimum context relevant to the current step.
+
+This eliminates conversation pollution from previous execution attempts, prevents LLM drift and performance degradation, and keeps model focus high. Keeping the working context fresh is what makes multi-hour, multi-step engineering cycles actually work.
+
+Read more: [Context Engineering](https://www.looptroop.ovh/docs/context-engineering)
+
+### LLM Council
+
+The LLM Council is LoopTroop's planning system. Instead of relying on a single model run, LoopTroop orchestrates multiple independent model instances that **draft** plans, **score** each other using a weighted rubric, and **vote** on proposals. The winner then **refines** its draft by synthesizing the strongest ideas from the losing drafts and **verifies** coverage before any execution begins.
+
+This multi-role process (draft → vote → refine → verify) is utilized for:
+- Interview questions
+- PRD/Specs generation
+- Bead/blueprint generation
+
+Read more: [LLM Council](https://www.looptroop.ovh/docs/llm-council)
+
+### Interview
+
+Before writing a spec, the LLM Council compiles a list of targeted questions to resolve any ambiguities. This interactive session gathers requirements and clarifies intent-because matching your vision is the goal, this phase can take over an hour by design.
+
+You answer these questions directly in the Interview workspace to clarify edge cases, design decisions, and requirements, ensuring the model never operates on false assumptions. Although a final interview is created after the council's draft-vote-refine cycle is complete, the user still receives questions in batches that can adapt based on previous answers.
+
+Read more: [Interview](https://www.looptroop.ovh/docs/interview)
+
+### PRD (Product Requirements Document)
+
+Once the interview phase is complete, the LLM Council translates your initial ticket and your interview answers into a structured Product Requirements Document consisting of Epics and User Stories, complete with highly decomposed implementation steps. This spec serves as the single source of truth for the implementation, detailing the technical approach, edge cases, scope, and expected validation steps before any coding starts. The PRD is stored as a durable artifact for later reference during bead execution.
+
+Read more: [PRD](https://www.looptroop.ovh/docs/prd)
+
+### Beads
+
+LoopTroop implements **only the Beads methodology**-not the full external Beads Project-extracting just the lightweight planning structure needed to bring immediate value to your repository.
+
+Using Steve Yegge's *Beads Project* methodology, epics are split into "beads"-the smallest, independently implementable units of work. Each bead contains:
+- Clear purpose and objective
+- Measurable acceptance criteria
+- Necessary dependencies and prerequisite context
+- Specific target files
+- Expected validation and testing steps
+
+A bead acts as a small, isolated implementation unit, allowing the execution agent to complete concrete tasks sequentially rather than attempting a massive, single-pass code rewrite.
+
+Read more: [Beads](https://www.looptroop.ovh/docs/beads)
+
+### Execution & Ralph-style recovery
+
+The actual implementation is carried out by an AI coding agent (OpenCode) running in an isolated workspace. If the agent struggles, continuing the same conversation can make things worse. LoopTroop's retry mechanism (the "Ralph Loop") preserves a highly compact error trace from the failure, resets the worktree, discards the contaminated session, and begins a fresh run with clean context-plus a note from previous failures.
+
+```text
+fail ──> log failure trace ──> reset worktree ──> retry fresh
+```
+
+This cycle repeats until all tests pass or retry limits are reached. **This can take hours (sometimes 10+ hours) by design.** It is built to run unattended (e.g., overnight).
+
+Read more: [Beads & Execution](https://www.looptroop.ovh/docs/beads)
+
+### Worktree isolation
+
+LoopTroop runs execution steps inside isolated Git worktrees rather than modifying your active branch. This keeps your working copy clean and ensures reliable, inspectable diffs. Note that worktrees provide workspace isolation, not sandboxed host security.
+
+Read more: [System Architecture](https://www.looptroop.ovh/docs/system-architecture)
+
+### Human approval gates
+
+LoopTroop keeps you in control of critical state transitions. You actively review and sign off on planning specs, execution blueprints, and final pull request deliverables. *(Note: Human approval gates will become optional in future releases).*
+
+For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
+
+Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
+
 
 ## Run it in a VM
 

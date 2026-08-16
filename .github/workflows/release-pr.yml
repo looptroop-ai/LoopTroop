@@ -216,11 +216,25 @@ jobs:
             echo
             cat /tmp/release-notes.md
           } > /tmp/pr-body.md
-          gh pr create \
-            --base main \
-            --head "release/v${VERSION}" \
-            --title "release: v${VERSION}" \
-            --body-file /tmp/pr-body.md
+          # The branch above is force-pushed, so a re-run for the same version
+          # is expected — and `gh pr create` fails outright when a PR for that
+          # head already exists. A release workflow is exactly the one that gets
+          # re-run under stress, so an existing PR is updated in place instead:
+          # same number, same URL, refreshed notes.
+          existing=$(gh pr list --head "release/v${VERSION}" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh pr edit "${existing}" \
+              --title "release: v${VERSION}" \
+              --body-file /tmp/pr-body.md
+            echo "Updated existing pull request #${existing}."
+          else
+            gh pr create \
+              --base main \
+              --head "release/v${VERSION}" \
+              --title "release: v${VERSION}" \
+              --body-file /tmp/pr-body.md
+          fi
 
       - name: Dry run summary
         if: ${{ steps.mode.outputs.dry_run == 'true' }}

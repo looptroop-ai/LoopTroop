@@ -199,16 +199,6 @@ export function bundleFileName(version: string): string {
   return `looptroop-${version}-bundle.tar.gz`
 }
 
-/**
- * The same bundle as a ZIP, which is the only archive format WinGet reads.
- *
- * `InstallerType: zip` means ZIP; there is no tar.gz option, so this is a
- * second asset rather than a preference.
- */
-export function bundleZipFileName(version: string): string {
-  return `looptroop-${version}-bundle.zip`
-}
-
 /** The standalone Windows binary's archive, which is what WinGet installs. */
 export function windowsBinaryZipName(version: string): string {
   return `looptroop-${version}-win-x64.zip`

@@ -285,7 +285,7 @@ jobs:
       # job-level block *replaces* the workflow default rather than adding to
       # it — anything unlisted becomes `none`, and the checkout would fail.
       - name: Attest the archive
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             ${{ runner.temp }}/binary/*.tar.gz
@@ -318,14 +318,20 @@ jobs:
           || (needs.binary.result == 'skipped' && needs.detect.outputs.skip_binaries == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Same three as the binary job, and for the same reason: attestation needs
+    # an OIDC token to sign with and the attestations scope to store the result.
+    # A job-level block replaces the workflow default rather than adding to it,
+    # so `contents: read` is listed or the checkout loses its read access.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     outputs:
       tarball: ${{ steps.manifest.outputs.tarball }}
       sha256: ${{ steps.manifest.outputs.sha256 }}
       integrity: ${{ steps.manifest.outputs.integrity }}
       bundle: ${{ steps.manifest.outputs.bundle }}
       bundle_sha256: ${{ steps.manifest.outputs.bundle_sha256 }}
-      bundle_zip: ${{ steps.manifest.outputs.bundle_zip }}
-      bundle_zip_sha256: ${{ steps.manifest.outputs.bundle_zip_sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -419,11 +425,9 @@ jobs:
         run: |
           set -euo pipefail
           tarball="looptroop-${{ needs.detect.outputs.version }}.tgz"
+          # What Homebrew, Scoop and Chocolatey fetch. WinGet does not: its
+          # portable installer takes the standalone Windows binary instead.
           bundle="looptroop-${{ needs.detect.outputs.version }}-bundle.tar.gz"
-          # The same tree in two archive formats. The tarball is what Homebrew,
-          # Scoop and Chocolatey fetch; the zip exists because WinGet's archive
-          # installer type reads ZIP and nothing else.
-          zip="looptroop-${{ needs.detect.outputs.version }}-bundle.zip"
           # The binaries are named per target and there is one manifest, so they
           # are collected by glob rather than listed: a target added later must
           # not need this line edited, and a target that failed to upload must
@@ -440,7 +444,7 @@ jobs:
             echo "::warning::Writing a manifest with no standalone binaries, by operator request."
           fi
           npm run release:manifest -- "${tarball}" \
-            --asset "${bundle}" --asset "${zip}" --asset install.sh --asset install.ps1 \
+            --asset "${bundle}" --asset install.sh --asset install.ps1 \
             "${binaries[@]}"
           node -e '
             const m = JSON.parse(require("node:fs").readFileSync("release-manifest.json","utf8"))
@@ -451,11 +455,30 @@ jobs:
             const bundle = Object.keys(m.assets).find((n) => n.endsWith("-bundle.tar.gz"))
             out.write(`bundle=${bundle}\n`)
             out.write(`bundle_sha256=${m.assets[bundle].sha256}\n`)
-            const zip = Object.keys(m.assets).find((n) => n.endsWith("-bundle.zip"))
-            out.write(`bundle_zip=${zip}\n`)
-            out.write(`bundle_zip_sha256=${m.assets[zip].sha256}\n`)
             out.end()
           '
+
+      # The binaries are attested where they are built, one job per target. The
+      # rest of what a user can install is attested here, because this is the
+      # only job that has all of it in one place.
+      #
+      # `install.sh` and `install.ps1` matter most: they are fetched over the
+      # network and piped straight into a shell, which is the one asset where a
+      # substitution would execute rather than merely install. The manifest and
+      # checksums are attested too — they are what a repair job trusts months
+      # later to decide which bytes a release published.
+      #
+      # Verified with: gh attestation verify <file> --repo looptroop-ai/LoopTroop
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            looptroop-*.tgz
+            looptroop-*-bundle.tar.gz
+            install.sh
+            install.ps1
+            release-manifest.json
+            checksums.sha256
 
       - name: Upload the release artefacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -464,7 +487,6 @@ jobs:
           path: |
             looptroop-*.tgz
             looptroop-*-bundle.tar.gz
-            looptroop-*-bundle.zip
             looptroop-*-linux-*.tar.gz
             looptroop-*-darwin-*.tar.gz
             looptroop-*-win-*.zip
@@ -1629,11 +1651,12 @@ jobs:
   # packaging bug gets fixed for an old version) and occasionally not.
   #
   # Attaching the descriptors would close that, at the cost of three more
-  # release assets and a Windows job before `finalize`. It is not done yet
-  # because the first real release has not run: adding a new gate to an
-  # unproven publish path trades a rare, recoverable drift for a common,
-  # release-blocking failure. Revisit once a stable release has published to
-  # all three channels.
+  # release assets and a Windows job before `finalize`. Still not done, and the
+  # original condition for revisiting — "once a stable release has published to
+  # all three channels" — has not been met: Homebrew and Scoop publish, while
+  # Chocolatey and WinGet are still awaiting first acceptance upstream. Until a
+  # release has actually landed on all of them there is no repair history to
+  # judge the drift against, so revisit when that is true rather than on a date.
   #
   # The nupkg is separate: it is not byte-reproducible, but a Chocolatey version
   # is immutable once accepted — there is no such thing as re-pushing the same
@@ -2187,12 +2210,15 @@ jobs:
             echo "  \`${VERSION}\`. It rebuilds the image from the release assets and re-runs"
             echo "  the same tag and verify steps, so it works long after the workflow"
             echo "  artefacts for this run have expired."
-            echo "- **publish-\*** — dispatch \`channel-republish.yml\` with version"
-            echo "  \`${VERSION}\` and the channel that failed. It re-derives the descriptor"
-            echo "  from the published release, so it too outlives this run's artefacts."
-            echo "  A channel already carrying this version is left alone unless the"
-            echo "  dispatch is given \`force\`, which exists for a descriptor that was"
-            echo "  published wrong rather than not at all."
+            echo "- **publish-homebrew / publish-scoop / publish-chocolatey / publish-winget**"
+            echo "  — dispatch \`channel-republish.yml\` with version \`${VERSION}\` and the"
+            echo "  channel that failed. It re-derives the descriptor from the published"
+            echo "  release, so it too outlives this run's artefacts. A channel already"
+            echo "  carrying this version is left alone unless the dispatch is given"
+            echo "  \`force\`, which exists for a descriptor that was published wrong"
+            echo "  rather than not at all."
+            echo "- **publish-aur** — \`channel-republish.yml\` does *not* cover the AUR."
+            echo "  Re-run this job from the release run, or push the PKGBUILD by hand."
           } > /tmp/issue.md
 
           # --repo on every call: this job deliberately has no checkout, and

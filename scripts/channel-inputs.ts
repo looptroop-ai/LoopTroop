@@ -56,16 +56,12 @@ if (bundle === undefined) {
   )
 }
 
-// Absent from every release before WinGet existed, so its absence is reported
-// as empty rather than fatal: Homebrew, Scoop and Chocolatey can still be
-// repaired for those versions, and only the WinGet job needs to refuse.
-const zip = Object.keys(assets).find((name) => name.endsWith('-bundle.zip')) ?? null
-
 // The standalone Windows binary, which is what WinGet installs — its portable
 // installer accepts an `.exe` and nothing else, so it cannot take the bundle
 // the other three channels use. Absent from releases published before the
-// binaries existed, and reported as empty rather than fatal for the same
-// reason the bundle zip is.
+// binaries existed, so its absence is reported as empty rather than fatal:
+// Homebrew, Scoop and Chocolatey can still be repaired for those versions, and
+// only the WinGet job needs to refuse.
 const winBinary = Object.keys(assets).find((name) => /-win-x64\.zip$/.test(name)) ?? null
 
 const output = {
@@ -73,9 +69,6 @@ const output = {
   bundle,
   sha256: assets[bundle]!.sha256,
   url: `https://github.com/${repo}/releases/download/v${manifest.version}/${bundle}`,
-  zip: zip ?? '',
-  zip_sha256: zip === null ? '' : assets[zip]!.sha256,
-  zip_url: zip === null ? '' : `https://github.com/${repo}/releases/download/v${manifest.version}/${zip}`,
   win_binary: winBinary ?? '',
   win_binary_sha256: winBinary === null ? '' : assets[winBinary]!.sha256,
   win_binary_url: winBinary === null ? '' : `https://github.com/${repo}/releases/download/v${manifest.version}/${winBinary}`,

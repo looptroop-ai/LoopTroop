@@ -56,41 +56,6 @@ function run(command, args, cwd) {
   return execFileSync(command, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
-/**
- * The same staged tree as a ZIP, for WinGet.
- *
- * Not a convenience: WinGet's archive installer type reads ZIP and nothing
- * else, so a `.tar.gz` is not a format it can open at all. Both archives carry
- * identical contents, so a user gets the same bundle whichever channel brought
- * it.
- *
- * Reproducible for the same reason the tarball is — a manifest records this
- * hash and descriptors point at it — which needs three things ZIP does not do
- * by default:
- *
- *   - Entries listed explicitly and sorted, rather than letting `zip -r` walk
- *     the tree. `readdir` order is not guaranteed, and an archive whose entry
- *     order moves between builds hashes differently for no reason.
- *   - `-X`, to leave out uid, gid and the extra timestamp fields.
- *   - `TZ=UTC`. ZIP stores DOS local time, not an epoch, so the same file
- *     yields different bytes in different timezones. `FIXED_MTIME` is midnight
- *     on 1980-01-01 UTC, which is exactly the DOS epoch — west of Greenwich it
- *     would fall *before* it and be clamped.
- */
-function writeZip(stagingRoot, zipPath) {
-  const entries = []
-  walk(join(stagingRoot, 'looptroop'), (full, entry) => {
-    if (entry.isDirectory() || entry.isFile()) entries.push(relative(stagingRoot, full))
-  })
-  entries.sort()
-
-  execFileSync('zip', ['-X', '-9', '-q', '-@', zipPath], {
-    cwd: stagingRoot,
-    input: `${entries.join('\n')}\n`,
-    env: { ...process.env, TZ: 'UTC' },
-    stdio: ['pipe', 'inherit', 'inherit'],
-  })
-}
 
 function walk(dir, onEntry) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -267,8 +232,6 @@ const outDir = resolve(outIndex === -1 ? join(repoRoot, 'dist-bundle') : args[ou
 const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
 const archiveName = `looptroop-${version}-bundle.tar.gz`
 const archivePath = join(outDir, archiveName)
-const zipName = `looptroop-${version}-bundle.zip`
-const zipPath = join(outDir, zipName)
 
 if (!existsSync(join(repoRoot, 'dist', 'server', 'cli', 'launcher.cjs'))) {
   fail('dist/ is missing or incomplete.', 'Run `npm run build` first.')
@@ -279,14 +242,6 @@ if (!existsSync(join(repoRoot, 'dist', 'server', 'cli', 'launcher.cjs'))) {
 // whose hash changes for no reason.
 const tarVersion = run('tar', ['--version']).split('\n')[0] ?? ''
 if (!/GNU tar/.test(tarVersion)) fail(`GNU tar is required to build a reproducible archive; found "${tarVersion}".`)
-
-// Info-ZIP, for the WinGet archive. Checked up front beside tar rather than
-// discovered after several minutes of `npm ci`.
-try {
-  run('zip', ['-v'])
-} catch {
-  fail('`zip` is required to build the WinGet archive.', 'On Debian and Ubuntu: apt-get install zip')
-}
 
 const stagingRoot = mkdtempSync(join(tmpdir(), 'looptroop-bundle-'))
 const stagingDir = join(stagingRoot, 'looptroop')
@@ -339,13 +294,8 @@ try {
     'looptroop',
   ], repoRoot)
 
-  rmSync(zipPath, { force: true })
-  writeZip(stagingRoot, zipPath)
-
   const bytes = readFileSync(archivePath)
   const sha256 = createHash('sha256').update(bytes).digest('hex')
-  const zipBytes = readFileSync(zipPath)
-  const zipSha256 = createHash('sha256').update(zipBytes).digest('hex')
 
   process.stdout.write([
     '',
@@ -354,11 +304,6 @@ try {
     `bytes       ${bytes.length}`,
     `sha256      ${sha256}`,
     `wrote       ${archivePath}`,
-    '',
-    `winget zip  ${zipName}`,
-    `bytes       ${zipBytes.length}`,
-    `sha256      ${zipSha256}`,
-    `wrote       ${zipPath}`,
     '',
   ].join('\n'))
 } finally {

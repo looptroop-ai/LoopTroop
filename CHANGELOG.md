@@ -12,16 +12,24 @@ Unreleased changes appear first and represent commits that have not yet been inc
 ### Summary
 - Remote development works from the advertised LAN and trusted Tailscale URLs again, including ticket creation and every other write action.
 - New releases are now visible wherever users naturally look: the core CLI commands, Doctor, the header version, and an install-aware About window with full GitHub release notes.
+- Every downloadable release asset now carries signed build provenance, not just the standalone binaries — including the two installer scripts, which are the assets a user pipes into a shell.
 
 ### Added
 - Added one shared published-release status for the CLI and interface. `looptroop --version`, `status`, `start`, and `open` now report a notice on **stderr** whenever a newer GitHub release exists, leaving stdout byte-for-byte as it was so scripts that read `looptroop --version` keep working; `doctor` always reports the current and latest known versions, and both `status --json` and `doctor --json` expose the same structured update facts without adding non-JSON output.
 - Added an Updates section to About with the current and latest versions, the detected installation channel, exact ordered upgrade commands, restart or container-recreation guidance, and a Changelog control whose hover/focus card shows the complete latest GitHub release body. The header version now opens About and gains a quiet monochrome update icon only when a newer release is available.
+- Extended artefact attestation from the standalone binaries to the npm tarball, the bundle, `install.sh`, `install.ps1`, `release-manifest.json` and `checksums.sha256`. Any of them can be checked with `gh attestation verify <file> --repo looptroop-ai/LoopTroop`, which now covers the installer scripts a user executes rather than only the executables they unpack.
+- Added workflow linting to CI. `actionlint` checks the schema and every `${{ }}` expression across all five workflows, and hands their inline shell to ShellCheck — 4,400 lines that no existing check read, where a bad expression or an unquoted variable previously reached `main` and surfaced as a half-finished release.
 
 ### Changed
 - Release discovery now follows the latest published GitHub release rather than npm alone, so the version users are shown has public release notes and is not announced while its GitHub release is still a draft. Results and failed attempts are cached for 15 minutes so each requested command can report updates without repeatedly waiting on GitHub when offline.
 - Upgrade guidance now includes what happens after package replacement: ordinary package-manager and source installations restart the daemon to load the new code, the transactional standalone installer explains that it handles the restart itself, WinGet opens LoopTroop after replacing the stopped executable, and containers explicitly require recreation after pulling the image.
 
+### Removed
+- Removed the `-bundle.zip` release asset. It was built, hashed, recorded in the release manifest and uploaded on every release, but nothing consumed it: WinGet installs the standalone Windows binary archive instead, which it has done since WinGet support landed. Dropping it also removes Info-ZIP as a build requirement. The bundle is still published as `-bundle.tar.gz`, and the channels that use it are unaffected.
+
 ### Fixed
+- Fixed the release failure report telling operators to repair a failed `publish-aur` with `channel-republish.yml`, which has no AUR support and never had. The report now names the four channels that workflow does cover and says plainly that the AUR needs the release job re-run or a manual push.
+- Fixed the release PR workflow failing when re-run for a version whose pull request already exists. It now updates the existing pull request in place — same number, same URL, refreshed notes — rather than aborting on `gh pr create`.
 - Fixed development API writes failing with `Forbidden: cross-origin requests are not accepted` when the interface was opened through a LAN address or a trusted same-origin reverse proxy such as Tailscale Serve. Vite now translates the browser-visible origin only when the browser vouches that the request is same-origin and that origin exactly matches the incoming frontend host. Requests from unrelated pages keep their original origin and remain blocked by the backend guard; the production daemon and its loopback-only boundary are unchanged.
 
 ## 0.5.5 (2026-08-14)

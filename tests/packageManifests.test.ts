@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 import {
   BUNDLE_ROOT,
   bundleFileName,
-  bundleZipFileName,
   CHANNEL_MARKER,
   DESCRIPTOR_PATH,
   parseDescriptor,
@@ -354,7 +353,10 @@ describe('the WinGet manifests', () => {
   it('points at the Windows binary archive, not the bundle', () => {
     const installer = rendered()[`${WINGET_IDENTIFIER}.installer.yaml`]!
     expect(installer).toContain(windowsBinaryZipName('9.9.9'))
-    expect(installer).not.toContain(bundleZipFileName('9.9.9'))
+    // The bundle ZIP this once pointed at no longer exists in any form, so the
+    // assertion is against the name rather than a helper: nothing should
+    // reintroduce a second archive for WinGet to read.
+    expect(installer).not.toContain('looptroop-9.9.9-bundle.zip')
     expect(installer).not.toContain(bundleFileName('9.9.9'))
     expect(installer).toContain('InstallerType: zip')
   })

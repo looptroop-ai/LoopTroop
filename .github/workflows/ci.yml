@@ -20,6 +20,47 @@ env:
   NPM_CONFIG_AUDIT: 'false'
 
 jobs:
+  # 4,400+ lines of workflow YAML, most of it inline bash and PowerShell that no
+  # other check reads. `npm run lint` covers the application and never opens
+  # `.github/`, so a typo'd expression, an unreachable `if:`, a shell variable
+  # that is never quoted, or a job referencing an output that does not exist all
+  # reach main and are discovered by a release that half-runs.
+  #
+  # actionlint parses the workflow schema, checks every `${{ }}` expression, and
+  # hands `run:` blocks to shellcheck.
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          # Pinned by version and verified by digest: this downloads a binary and
+          # runs it, which is the shape that had to be removed from the Windows
+          # bun install for the same reason.
+          version=1.7.12
+          sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 -o /tmp/actionlint.tgz "${url}"
+          echo "${sha256}  /tmp/actionlint.tgz" | sha256sum --check --status
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+
+      # shellcheck ships with the runner image, and actionlint silently skips
+      # shell linting when it is missing — losing half the value of this job
+      # without failing it. Checked explicitly so that stays impossible.
+      - name: Check shellcheck is available
+        run: shellcheck --version
+
+      # `-S warning` because every `info` and `style` finding in these workflows
+      # today is correct code: SC2016 fires on the single-quoted `node -e '…'`
+      # blocks, where expansion is exactly what must not happen and double quotes
+      # would break the embedded JavaScript. Errors and warnings still fail.
+      - name: Lint the workflows
+        run: /tmp/actionlint -color -shellcheck="shellcheck -S warning"
+
   verify:
     name: Verify (ubuntu, Node 24.15.0)
     runs-on: ubuntu-latest
@@ -435,27 +476,19 @@ jobs:
           set -euo pipefail
           node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-a"
           node scripts/build-bundle.mjs --out "${RUNNER_TEMP}/bundle-b"
-          # Both archives, not only the tarball. The zip carries the same tree
-          # for WinGet, a manifest records its hash too, and ZIP is the format
-          # more likely to drift — it stores DOS local time rather than an
-          # epoch, so a timezone difference alone would move the digest.
-          for ext in tar.gz zip; do
-            a=$(sha256sum "${RUNNER_TEMP}"/bundle-a/*."${ext}" | cut -d' ' -f1)
-            b=$(sha256sum "${RUNNER_TEMP}"/bundle-b/*."${ext}" | cut -d' ' -f1)
-            if [ "${a}" != "${b}" ]; then
-              echo "::error::Two builds of this commit produced different .${ext} bundles (${a} vs ${b})."
-              exit 1
-            fi
-            echo "Reproducible .${ext}: ${a}"
-          done
+          a=$(sha256sum "${RUNNER_TEMP}"/bundle-a/*.tar.gz | cut -d' ' -f1)
+          b=$(sha256sum "${RUNNER_TEMP}"/bundle-b/*.tar.gz | cut -d' ' -f1)
+          if [ "${a}" != "${b}" ]; then
+            echo "::error::Two builds of this commit produced different bundles (${a} vs ${b})."
+            exit 1
+          fi
+          echo "Reproducible: ${a}"
 
       - name: Upload the bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: bundle
-          path: |
-            ${{ runner.temp }}/bundle-a/*.tar.gz
-            ${{ runner.temp }}/bundle-a/*.zip
+          path: ${{ runner.temp }}/bundle-a/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 

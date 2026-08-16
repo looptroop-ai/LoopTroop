@@ -230,6 +230,7 @@ function App() {
           onOpenPrompts={openPrompts}
           onOpenProject={openProject}
           onOpenTicket={openTicket}
+          onOpenAbout={openAbout}
           isModalOpen={isModalOpen}
         >
           {state.activeView === 'ticket' && state.selectedTicketId ? <TicketDashboard /> : <KanbanBoard />}

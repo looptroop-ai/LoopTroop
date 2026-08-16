@@ -3,6 +3,7 @@ import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
 import { resolveInstallInfo } from '../lib/installChannel'
+import type { UpdateStatus } from '../lib/updateCheck'
 import { probePort } from '../lib/portProbe'
 import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
@@ -514,6 +515,9 @@ async function checkLastStart(): Promise<Check> {
 
 function checkInstallChannel(): Check {
   const info = resolveInstallInfo()
+  const steps = [info.upgradeFirst, info.upgradeCommand, info.postUpgradeCommand]
+    .filter((command): command is string => command !== undefined)
+    .join(', then ')
   return info.channel === 'unknown'
     ? {
         name: 'install',
@@ -525,7 +529,7 @@ function checkInstallChannel(): Check {
     : {
         name: 'install',
         status: 'ok',
-        detail: `${info.channel} (upgrade: ${info.upgradeFirst === undefined ? '' : `${info.upgradeFirst}, then `}${info.upgradeCommand})`,
+        detail: `${info.channel} (upgrade: ${steps})${info.upgradeNote ? `; ${info.upgradeNote}` : ''}`,
       }
 }
 
@@ -597,18 +601,40 @@ export async function runChecks(): Promise<Check[]> {
   ]
 }
 
-export async function doctorCommand(json: boolean): Promise<number> {
+function versionCheck(update: UpdateStatus): Check {
+  const latest = update.latestVersion ?? 'unavailable'
+  const detail = `current ${update.currentVersion}; latest ${latest}${update.updateAvailable ? ' (update available)' : ''}`
+  if (!update.updateAvailable) return { name: 'version', status: 'ok', detail }
+
+  const commands = [update.upgradeFirst, update.upgradeCommand, update.postUpgradeCommand]
+    .filter((command): command is string => command !== undefined)
+    .map((command) => `\`${command}\``)
+    .join(', then ')
+  return {
+    name: 'version',
+    status: 'warn',
+    detail,
+    remedy: `${commands}.${update.upgradeNote ? ` ${update.upgradeNote}` : ''}`,
+  }
+}
+
+export async function doctorCommand(json: boolean, update?: UpdateStatus): Promise<number> {
   const checks = await runChecks()
+  const displayedChecks = update === undefined ? checks : [versionCheck(update), ...checks]
   const failed = checks.some((check) => check.status === 'fail')
 
   if (json) {
     // Only JSON on stdout, so the output can be piped into a parser.
-    process.stdout.write(`${JSON.stringify({ ok: !failed, checks }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({
+      ok: !failed,
+      ...(update === undefined ? {} : { update }),
+      checks: displayedChecks,
+    }, null, 2)}\n`)
     return failed ? 1 : 0
   }
 
   const symbol: Record<Status, string> = { ok: '✓', warn: '!', fail: '✗' }
-  for (const check of checks) {
+  for (const check of displayedChecks) {
     process.stdout.write(`${symbol[check.status]} ${check.name.padEnd(15)} ${check.detail}\n`)
     if (check.status !== 'ok' && check.remedy) {
       process.stdout.write(`  ↳ ${check.remedy}\n`)

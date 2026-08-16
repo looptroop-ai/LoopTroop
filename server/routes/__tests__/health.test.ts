@@ -1,11 +1,12 @@
 import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { getProjectDbPath, normalizeFolderPath } from '../../storage/paths'
+import packageJson from '../../../package.json'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-health-route-',
@@ -91,6 +92,47 @@ describe('health startup routes', () => {
 
   afterAll(() => {
     repoManager.cleanup()
+  })
+
+  it('reports the current and latest release with installation-aware update steps', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'looptroop-health-update-'))
+    tempRoots.add(tempRoot)
+    const configDir = join(tempRoot, 'config')
+    mkdirSync(configDir, { recursive: true })
+    const checkedAt = new Date().toISOString()
+    writeFileSync(join(configDir, 'update-check.json'), `${JSON.stringify({
+      lastAttemptAt: checkedAt,
+      lastCheckedAt: checkedAt,
+      latestVersion: '9.0.0',
+      release: {
+        version: '9.0.0',
+        name: 'LoopTroop 9.0.0',
+        url: 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v9.0.0',
+        publishedAt: checkedAt,
+        notes: 'A future test release.',
+      },
+    }, null, 2)}\n`)
+
+    activeApp = await loadHealthApp(configDir)
+    const response = await activeApp.app.request('/api/health/update')
+    expect(response.status).toBe(200)
+    const payload = await response.json() as {
+      currentVersion: string
+      latestVersion: string
+      updateAvailable: boolean
+      installChannel: string
+      upgradeCommand: string
+      postUpgradeCommand?: string
+      release: { notes: string }
+    }
+
+    expect(payload.currentVersion).toBe(packageJson.version)
+    expect(payload.latestVersion).toBe('9.0.0')
+    expect(payload.updateAvailable).toBe(true)
+    expect(payload.installChannel).toBe('source')
+    expect(payload.upgradeCommand).toBe('git pull && npm install && npm run build')
+    expect(payload.postUpgradeCommand).toBe('looptroop restart')
+    expect(payload.release.notes).toBe('A future test release.')
   })
 
   it('reports fresh startup state when the app db did not exist before boot', async () => {

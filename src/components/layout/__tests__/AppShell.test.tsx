@@ -12,6 +12,7 @@ vi.mock('@/hooks/useBackendHealth', () => ({
 
 const useRecoveryAutoReloadMock = vi.hoisted(() => vi.fn())
 const mockUseProjects = vi.hoisted(() => vi.fn())
+const mockUseUpdateStatus = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hooks/useRecoveryAutoReload', () => ({
   useRecoveryAutoReload: useRecoveryAutoReloadMock,
@@ -19,6 +20,10 @@ vi.mock('@/hooks/useRecoveryAutoReload', () => ({
 
 vi.mock('@/hooks/useProjects', () => ({
   useProjects: () => mockUseProjects(),
+}))
+
+vi.mock('@/hooks/useUpdateStatus', () => ({
+  useUpdateStatus: () => mockUseUpdateStatus(),
 }))
 
 import { useBackendHealth } from '@/hooks/useBackendHealth'
@@ -118,10 +123,10 @@ function makeUIValue(overrides: Partial<UIContextValue['state']> = {}, dispatch 
   }
 }
 
-function renderShell(uiValue = makeUIValue()) {
+function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void) {
   return renderWithProviders(
     <UIContext.Provider value={uiValue}>
-      <AppShell>
+      <AppShell onOpenAbout={onOpenAbout}>
         <div>Dashboard</div>
       </AppShell>
     </UIContext.Provider>,
@@ -136,6 +141,7 @@ describe('AppShell', () => {
   beforeEach(() => {
     useRecoveryAutoReloadMock.mockReset()
     mockUseProjects.mockReturnValue({ data: projects })
+    mockUseUpdateStatus.mockReturnValue({ data: undefined })
   })
 
   it('renders a docs link that opens in a new tab', () => {
@@ -145,6 +151,20 @@ describe('AppShell', () => {
     expect(docsLink).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}/`)
     expect(docsLink).toHaveAttribute('target', '_blank')
     expect(docsLink).toHaveAttribute('rel', expect.stringContaining('noopener'))
+  })
+
+  it('shows a subtle update indicator and opens About from the version', () => {
+    const onOpenAbout = vi.fn()
+    mockUseUpdateStatus.mockReturnValue({
+      data: { updateAvailable: true, latestVersion: '0.6.0' },
+    })
+
+    renderShell(uiValue, onOpenAbout)
+
+    const versionButton = screen.getByRole('button', { name: /update 0\.6\.0 available; open about/i })
+    expect(within(versionButton).getByTestId('update-available-icon')).toBeInTheDocument()
+    fireEvent.click(versionButton)
+    expect(onOpenAbout).toHaveBeenCalledOnce()
   })
 
   it('collapses secondary navigation without overflowing phone and tablet headers', () => {

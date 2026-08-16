@@ -11,6 +11,15 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Remote development works from the advertised LAN and trusted Tailscale URLs again, including ticket creation and every other write action.
+- New releases are now visible wherever users naturally look: the core CLI commands, Doctor, the header version, and an install-aware About window with full GitHub release notes.
+
+### Added
+- Added one shared published-release status for the CLI and interface. `looptroop --version`, `status`, `start`, and `open` now print a notice whenever a newer GitHub release exists; `doctor` always reports the current and latest known versions, and both `status --json` and `doctor --json` expose the same structured update facts without adding non-JSON output.
+- Added an Updates section to About with the current and latest versions, the detected installation channel, exact ordered upgrade commands, restart or container-recreation guidance, and a Changelog control whose hover/focus card shows the complete latest GitHub release body. The header version now opens About and gains a quiet monochrome update icon only when a newer release is available.
+
+### Changed
+- Release discovery now follows the latest published GitHub release rather than npm alone, so the version users are shown has public release notes and is not announced while its GitHub release is still a draft. Results and failed attempts are cached for 15 minutes so each requested command can report updates without repeatedly waiting on GitHub when offline.
+- Upgrade guidance now includes what happens after package replacement: ordinary package-manager and source installations restart the daemon to load the new code, the transactional standalone installer explains that it handles the restart itself, WinGet opens LoopTroop after replacing the stopped executable, and containers explicitly require recreation after pulling the image.
 
 ### Fixed
 - Fixed development API writes failing with `Forbidden: cross-origin requests are not accepted` when the interface was opened through a LAN address or a trusted same-origin reverse proxy such as Tailscale Serve. Vite now translates the browser-visible origin only when the browser vouches that the request is same-origin and that origin exactly matches the incoming frontend host. Requests from unrelated pages keep their original origin and remain blocked by the backend guard; the production daemon and its loopback-only boundary are unchanged.

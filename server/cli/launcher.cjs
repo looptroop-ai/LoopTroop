@@ -38,7 +38,11 @@ if (!isSupported(process.versions.node)) {
 
 // Only reached on a supported runtime, so the real CLI is free to use modern
 // syntax and ES modules.
-import('./cli.js').catch(function (error) {
+import('./cli.js').then(function (cli) {
+  return cli.main(process.argv.slice(2))
+}).then(function (code) {
+  process.exitCode = code
+}).catch(function (error) {
   process.stderr.write('LoopTroop failed to start: ' + (error && error.message ? error.message : error) + '\n')
-  process.exit(1)
+  process.exitCode = 1
 })

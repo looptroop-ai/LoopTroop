@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
-import { checkForUpdate, formatUpdateNotice } from '../lib/updateCheck'
+import type { UpdateStatus } from '../lib/updateCheck'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { daemonArgv } from './daemonHandoff'
@@ -508,7 +508,7 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
   }
 }
 
-export async function statusCommand(json: boolean): Promise<number> {
+export async function statusCommand(json: boolean, update?: UpdateStatus): Promise<number> {
   const configDir = resolveAppConfigDir()
   const state = await readRunningDaemon(configDir)
   // Only meaningful when nothing is running: a live daemon overwrote the record
@@ -522,6 +522,7 @@ export async function statusCommand(json: boolean): Promise<number> {
       running: state !== null,
       daemon: state ? redactDaemonState(state) : null,
       lastStartFailure: failure,
+      ...(update === undefined ? {} : { update }),
     }, null, 2)}\n`)
     return state ? 0 : 1
   }
@@ -544,11 +545,6 @@ export async function statusCommand(json: boolean): Promise<number> {
     `  Uptime:   ${formatDuration(uptimeMs)}\n` +
     `  OpenCode: ${describeOpenCodeForStatus(state.opencode)}\n`,
   )
-
-  // After the status itself, so a notice never obscures the answer that was
-  // asked for, and never blocks it if the registry is slow or unreachable.
-  const notice = await checkForUpdate({ currentVersion: state.version, configDir })
-  if (notice) process.stdout.write(formatUpdateNotice(notice))
 
   return 0
 }

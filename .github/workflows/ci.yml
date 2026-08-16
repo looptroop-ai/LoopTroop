@@ -331,8 +331,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        manager: [bun, pnpm]
+        manager: [bun, pnpm, yarn]
         os: [ubuntu-latest, windows-latest]
+        # Pinned per manager, so a break in one of them is a change here rather
+        # than a surprise on an unrelated pull request. `yarn@1` deliberately:
+        # Yarn 2 removed `yarn global` and never replaced it, so Yarn Classic is
+        # the only version that can install a CLI globally at all.
+        include:
+          - manager: bun
+            package: bun@1.3.14
+          - manager: pnpm
+            package: pnpm@11.21.0
+          - manager: yarn
+            package: yarn@1.22.22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -358,7 +369,7 @@ jobs:
       # scriptblock so the version stays fixed rather than tracking latest.
       - name: Install ${{ matrix.manager }}
         if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g ${{ matrix.manager == 'bun' && 'bun@1.3.14' || 'pnpm@11.21.0' }}
+        run: npm install -g ${{ matrix.package }}
 
       # The release archive, checked against the digest bun published for it,
       # rather than piping bun.sh/install.ps1 into a shell. That script is

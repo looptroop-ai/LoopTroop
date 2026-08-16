@@ -172,6 +172,23 @@ Asking for an exact version bypasses it.
 </details>
 
 <details>
+<summary><b>Yarn Classic</b> — everywhere</summary>
+
+```bash
+yarn global add looptroop
+yarn global upgrade looptroop@latest   # upgrade
+```
+
+**Needs Node 24.15.0 or newer as well as Yarn**, plus git and `gh`.
+
+**Yarn Classic (1.x) only.** Yarn 2 removed `yarn global` and never replaced it,
+so modern Yarn cannot install a CLI globally at all — and it does not say so
+cleanly: `yarn global add looptroop` on Yarn 4 reads `global` as a package name
+and fails with a lockfile error. On modern Yarn, run it without installing with
+`yarn dlx looptroop`, or install it with one of the other channels.
+</details>
+
+<details>
 <summary><b>Docker</b> — linux/amd64 and linux/arm64</summary>
 
 ```bash
@@ -193,8 +210,8 @@ a container.
 
 - **git**, and **`gh`** authenticated, for the pull-request step at the end of a
   ticket. Installed for you via Homebrew, Scoop, Chocolatey, WinGet and the AUR;
-  **not** installed if you used npm, bun, pnpm or the standalone executable,
-  which have no way to declare a dependency.
+  **not** installed if you used npm, bun, pnpm, Yarn or the standalone
+  executable, which have no way to declare a dependency.
 - **OpenCode**, with at least one configured model provider. LoopTroop will start
   it if it is already installed, but it will not work without it and it will not
   install it for you.

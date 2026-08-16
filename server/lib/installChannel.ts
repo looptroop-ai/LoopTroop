@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 import { isSea } from './isSea'
 
-export type InstallChannel = 'npm' | 'bun' | 'pnpm' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
+export type InstallChannel = 'npm' | 'bun' | 'pnpm' | 'yarn' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
 
 export interface InstallInfo {
   channel: InstallChannel
@@ -42,6 +42,11 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   // first where it was, and which one answers then depends on PATH order.
   bun: 'bun add -g looptroop@latest',
   pnpm: 'pnpm add -g looptroop@latest',
+  // Yarn Classic only. Yarn 2 and later removed `yarn global` outright — there
+  // is no global install in modern Yarn, and no replacement for one — so a
+  // LoopTroop installed by Yarn is by definition a 1.x install, and this is the
+  // command that upgrades it.
+  yarn: 'yarn global upgrade looptroop@latest',
   homebrew: 'brew upgrade looptroop',
   scoop: 'scoop update looptroop',
   chocolatey: 'choco upgrade looptroop',
@@ -187,6 +192,12 @@ function detectFromShape(moduleDir: string): InstallChannel {
   // bun's global tree is always `<BUN_INSTALL>/install/global`, whatever
   // `BUN_INSTALL` points at — the doubled `install/global` is bun's, not npm's.
   if (/\/install\/global\/node_modules\/looptroop\//i.test(normalized)) return 'bun'
+  // Yarn Classic keeps its global tree in a plain `node_modules`, so only the
+  // directory above it tells the two apart: `~/.config/yarn/global` on Linux and
+  // macOS, `%LOCALAPPDATA%\Yarn\Data\global` on Windows. Measured, like the
+  // others — `yarn global dir` reports `…/.config/yarn/global`, and the module
+  // resolves to `<that>/node_modules/looptroop`.
+  if (/\/yarn\/(data\/)?global\/node_modules\/looptroop\//i.test(normalized)) return 'yarn'
 
   if (/\/node_modules\/looptroop\//.test(normalized)) return 'npm'
 

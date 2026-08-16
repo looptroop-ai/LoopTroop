@@ -31,8 +31,8 @@ import { join, resolve } from 'node:path'
 const IS_WINDOWS = process.platform === 'win32'
 const MANAGER = process.argv[2]
 
-if (MANAGER !== 'bun' && MANAGER !== 'pnpm') {
-  process.stderr.write('Usage: node scripts/smoke-node-manager.mjs <bun|pnpm>\n')
+if (MANAGER !== 'bun' && MANAGER !== 'pnpm' && MANAGER !== 'yarn') {
+  process.stderr.write('Usage: node scripts/smoke-node-manager.mjs <bun|pnpm|yarn>\n')
   process.exit(1)
 }
 
@@ -80,10 +80,47 @@ const empty = mkdtempSync(join(tmpdir(), 'looptroop-empty-'))
  * on PATH — `pnpm setup` is the documented fix, and setting the variable and
  * the PATH is what that does.
  */
-const binDir = MANAGER === 'bun' ? join(home, 'bin') : join(home, 'bin')
-const managerEnv = MANAGER === 'bun'
-  ? { BUN_INSTALL: home }
-  : { PNPM_HOME: home }
+const binDir = join(home, 'bin')
+
+/**
+ * Yarn Classic keeps its global tree under `<something>/yarn/global`, and that
+ * directory name is the only thing separating it from an npm install — so the
+ * disposable folder has to keep that shape or detection would legitimately
+ * answer `npm` and this smoke would be testing the wrong thing.
+ */
+const yarnGlobalFolder = join(home, '.config', 'yarn', 'global')
+
+/**
+ * How each manager installs globally, removes again, and is pointed somewhere
+ * disposable. None may write to the runner's real home: a smoke that leaves a
+ * global install behind changes the machine every later job runs on.
+ *
+ * Yarn is `yarn global add`, not `yarn add -g`, and it is Yarn **Classic** only
+ * — Yarn 2 removed global installs and never replaced them.
+ */
+const MANAGERS = {
+  bun: {
+    env: { BUN_INSTALL: home },
+    install: (tarball) => ['add', '-g', tarball],
+    remove: () => ['remove', '-g', 'looptroop'],
+    upgradeCommand: 'bun add -g looptroop@latest',
+  },
+  pnpm: {
+    env: { PNPM_HOME: home },
+    install: (tarball) => ['add', '-g', tarball],
+    remove: () => ['remove', '-g', 'looptroop'],
+    upgradeCommand: 'pnpm add -g looptroop@latest',
+  },
+  yarn: {
+    env: {},
+    install: (tarball) => ['global', 'add', tarball, '--global-folder', yarnGlobalFolder, '--prefix', home],
+    remove: () => ['global', 'remove', 'looptroop', '--global-folder', yarnGlobalFolder, '--prefix', home],
+    upgradeCommand: 'yarn global upgrade looptroop@latest',
+  },
+}
+
+const spec = MANAGERS[MANAGER]
+const managerEnv = spec.env
 
 mkdirSync(binDir, { recursive: true })
 
@@ -108,8 +145,8 @@ try {
   process.stdout.write(`      ${tarball}\n`)
 
   heading(`install it globally with ${MANAGER}`)
-  const install = run(MANAGER, ['add', '-g', tarballPath], { cwd: empty, env: childEnv })
-  if (!check(install.status === 0, `${MANAGER} add -g succeeded`)) {
+  const install = run(MANAGER, spec.install(tarballPath), { cwd: empty, env: childEnv })
+  if (!check(install.status === 0, `${MANAGER} global install succeeded`)) {
     process.stderr.write(install.output)
   }
 
@@ -142,14 +179,14 @@ try {
       `doctor reports the ${MANAGER} channel (got ${JSON.stringify(install_.detail)})`,
     )
     check(
-      install_.detail.includes(`${MANAGER} add -g looptroop@latest`),
+      install_.detail.includes(spec.upgradeCommand),
       `doctor offers ${MANAGER}'s upgrade command, not npm's`,
     )
   }
 
   heading(`uninstalling with ${MANAGER} removes the shim`)
-  const remove = run(MANAGER, ['remove', '-g', 'looptroop'], { cwd: empty, env: childEnv })
-  check(remove.status === 0, `${MANAGER} remove -g succeeded`)
+  const remove = run(MANAGER, spec.remove(), { cwd: empty, env: childEnv })
+  check(remove.status === 0, `${MANAGER} global remove succeeded`)
   check(!existsSync(shim), 'the shim is gone')
 
   rmSync(tarballPath, { force: true })

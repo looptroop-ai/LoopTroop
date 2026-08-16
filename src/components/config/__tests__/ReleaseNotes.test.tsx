@@ -6,6 +6,9 @@ import { ReleaseNotes } from '../ReleaseNotes'
  * Shaped after a real release body produced by `scripts/print-release-notes.ts`
  * — bullets carrying bold and inline code, a heading, a fenced block, a link,
  * and the HTML comment markers the container section is wrapped in.
+ *
+ * The tag is deliberately an impossible version: `verify:version` fails on the
+ * real one appearing anywhere outside `package.json`, fixtures included.
  */
 const NOTES = [
   '- **Starting LoopTroop is one command.** `looptroop open` now starts the daemon.',
@@ -15,7 +18,7 @@ const NOTES = [
   '### Container image',
   '',
   '```',
-  'docker pull looptroopai/looptroop:0.5.5',
+  'docker pull looptroopai/looptroop:9.9.9',
   '```',
   '',
   'See [Run it in a container](https://github.com/looptroop-ai/LoopTroop#run-it-in-a-container) for how.',
@@ -30,7 +33,7 @@ describe('ReleaseNotes', () => {
     expect(screen.getByText('Starting LoopTroop is one command.').tagName).toBe('STRONG')
     expect(screen.getByText('looptroop open').tagName).toBe('CODE')
     expect(screen.getByText('Container image')).toBeInTheDocument()
-    expect(screen.getByText('docker pull looptroopai/looptroop:0.5.5').tagName).toBe('CODE')
+    expect(screen.getByText('docker pull looptroopai/looptroop:9.9.9').tagName).toBe('CODE')
 
     const link = screen.getByRole('link', { name: 'Run it in a container' })
     expect(link).toHaveAttribute('href', 'https://github.com/looptroop-ai/LoopTroop#run-it-in-a-container')

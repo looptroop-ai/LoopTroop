@@ -2,46 +2,94 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { resolveAppConfigDir, ensureSecureDir, secureFile } from './appConfigDir'
 import { safeAtomicWrite } from '../io/atomicWrite'
-import { resolveInstallInfo, isNewerVersion } from './installChannel'
+import { resolveInstallInfo, isNewerVersion, type InstallChannel } from './installChannel'
 
-const REGISTRY_URL = 'https://registry.npmjs.org/looptroop/latest'
+const LATEST_RELEASE_URL = 'https://api.github.com/repos/looptroop-ai/LoopTroop/releases/latest'
 
-/** One check a day: an update notice is not worth a request on every command. */
-export const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+/** Refresh often enough for release-day discovery without taxing GitHub on every command. */
+export const CHECK_INTERVAL_MS = 15 * 60 * 1000
 
 const REQUEST_TIMEOUT_MS = 3_000
 
+export interface ReleaseDetails {
+  version: string
+  name: string
+  url: string
+  publishedAt: string | null
+  notes: string
+}
+
 interface UpdateCache {
-  /**
-   * When a lookup was last attempted, whether or not it answered.
-   *
-   * Separate from `lastCheckedAt`, which is when a version was last learned: an
-   * offline machine has attempts and no answers, and it is the attempts that
-   * have to be rationed.
-   */
   lastAttemptAt: string
-  /** When `latestVersion` was learned. Absent until a lookup has answered. */
   lastCheckedAt?: string
-  /** The newest version the registry has reported so far. */
   latestVersion?: string
+  release?: ReleaseDetails
+}
+
+export interface UpdateStatus {
+  currentVersion: string
+  latestVersion: string | null
+  updateAvailable: boolean
+  checkedAt: string | null
+  installChannel: InstallChannel
+  upgradeCommand: string
+  upgradeFirst?: string
+  postUpgradeCommand?: string
+  upgradeNote?: string
+  release: ReleaseDetails | null
+}
+
+/** A release without its body. See `summarizeUpdateStatus`. */
+export type ReleaseSummary = Omit<ReleaseDetails, 'notes'>
+
+export interface UpdateStatusSummary extends Omit<UpdateStatus, 'release'> {
+  release: ReleaseSummary | null
+}
+
+/**
+ * Drops the release body, which is several kilobytes of prose.
+ *
+ * The interface renders those notes, so `/api/health/update` keeps them. A CLI
+ * `--json` document is read by scripts that want the facts, and burying them
+ * under a changelog helps nobody.
+ */
+export function summarizeUpdateStatus(status: UpdateStatus): UpdateStatusSummary {
+  const { release, ...rest } = status
+  return {
+    ...rest,
+    release: release === null ? null : {
+      version: release.version,
+      name: release.name,
+      url: release.url,
+      publishedAt: release.publishedAt,
+    },
+  }
 }
 
 export interface UpdateNotice {
   currentVersion: string
   latestVersion: string
   upgradeCommand: string
-  /** Run before `upgradeCommand`, where the channel needs it. */
   upgradeFirst?: string
+  postUpgradeCommand?: string
+  upgradeNote?: string
 }
 
 function getCachePath(configDir = resolveAppConfigDir()): string {
   return resolve(configDir, 'update-check.json')
 }
 
-/**
- * Tolerates a cache written before failures were recorded, where the only
- * timestamp was the one on a successful answer.
- */
+function isReleaseDetails(value: unknown): value is ReleaseDetails {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<ReleaseDetails>
+  return typeof candidate.version === 'string'
+    && typeof candidate.name === 'string'
+    && typeof candidate.url === 'string'
+    && (candidate.publishedAt === null || typeof candidate.publishedAt === 'string')
+    && typeof candidate.notes === 'string'
+}
+
+/** Tolerates cache files written by the older npm-version-only checker. */
 function readCache(configDir?: string): UpdateCache | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(getCachePath(configDir), 'utf8'))
@@ -56,6 +104,7 @@ function readCache(configDir?: string): UpdateCache | null {
       lastAttemptAt,
       ...(lastCheckedAt === undefined ? {} : { lastCheckedAt }),
       ...(typeof candidate.latestVersion === 'string' ? { latestVersion: candidate.latestVersion } : {}),
+      ...(isReleaseDetails(candidate.release) ? { release: candidate.release } : {}),
     }
   } catch {
     return null
@@ -76,68 +125,102 @@ function writeCache(cache: UpdateCache, configDir?: string): void {
 export interface CheckForUpdateOptions {
   currentVersion: string
   configDir?: string
-  /** Injected by tests so no network request is made. */
+  /** Version-only injection retained for focused tests and offline callers. */
   fetchLatest?: () => Promise<string | null>
+  /** Full release injection used by tests that exercise changelog metadata. */
+  fetchRelease?: () => Promise<ReleaseDetails | null>
   now?: () => number
 }
 
-async function fetchLatestFromRegistry(): Promise<string | null> {
+async function fetchLatestRelease(): Promise<ReleaseDetails | null> {
   try {
-    const response = await fetch(REGISTRY_URL, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+    const response = await fetch(LATEST_RELEASE_URL, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'LoopTroop-update-check',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
     if (!response.ok) return null
-    const body = await response.json() as { version?: unknown }
-    return typeof body.version === 'string' ? body.version : null
+    const body = await response.json() as Record<string, unknown>
+    if (typeof body.tag_name !== 'string' || typeof body.html_url !== 'string') return null
+    const version = body.tag_name.replace(/^v/, '')
+    return {
+      version,
+      name: typeof body.name === 'string' && body.name ? body.name : `LoopTroop ${version}`,
+      url: body.html_url,
+      publishedAt: typeof body.published_at === 'string' ? body.published_at : null,
+      notes: typeof body.body === 'string' ? body.body : '',
+    }
   } catch {
     return null
   }
 }
 
-/**
- * Returns a notice only when a newer version exists.
- *
- * Notify-only by design: LoopTroop never updates itself, because a tool that
- * rewrites its own binary while orchestrating someone's repository is a much
- * worse failure than being one version behind.
- */
-export async function checkForUpdate(options: CheckForUpdateOptions): Promise<UpdateNotice | null> {
+export async function getUpdateStatus(options: CheckForUpdateOptions): Promise<UpdateStatus> {
   const now = options.now?.() ?? Date.now()
   const cached = readCache(options.configDir)
-
   let latestVersion = cached?.latestVersion ?? null
+  let release = cached?.release ?? null
+  let checkedAt = cached?.lastCheckedAt ?? null
   const lastAttempt = cached ? Date.parse(cached.lastAttemptAt) : Number.NaN
   const isStale = !Number.isFinite(lastAttempt) || now - lastAttempt > CHECK_INTERVAL_MS
 
   if (isStale) {
     const attemptedAt = new Date(now).toISOString()
-    const fetched = await (options.fetchLatest ?? fetchLatestFromRegistry)()
+    const fetchedRelease = options.fetchRelease
+      ? await options.fetchRelease()
+      : options.fetchLatest
+        ? await options.fetchLatest().then((version) => version === null ? null : {
+            version,
+            name: `LoopTroop ${version}`,
+            url: `https://github.com/looptroop-ai/LoopTroop/releases/tag/v${version}`,
+            publishedAt: null,
+            notes: '',
+          })
+        : await fetchLatestRelease()
 
-    if (fetched) latestVersion = fetched
+    if (fetchedRelease) {
+      release = fetchedRelease
+      latestVersion = fetchedRelease.version
+      checkedAt = attemptedAt
+    }
 
-    // The attempt is recorded either way. Recording only answers meant a machine
-    // that cannot reach the registry — offline, or behind a proxy that swallows
-    // the request — never had a fresh timestamp to compare against, so every
-    // single command paid the full request timeout again. A failed lookup still
-    // keeps whatever the last answer was, rather than nagging or forgetting.
     writeCache({
       lastAttemptAt: attemptedAt,
-      ...(fetched
-        ? { lastCheckedAt: attemptedAt, latestVersion: fetched }
-        : {
-            ...(cached?.lastCheckedAt === undefined ? {} : { lastCheckedAt: cached.lastCheckedAt }),
-            ...(latestVersion === null ? {} : { latestVersion }),
-          }),
+      ...(checkedAt === null ? {} : { lastCheckedAt: checkedAt }),
+      ...(latestVersion === null ? {} : { latestVersion }),
+      ...(release === null ? {} : { release }),
     }, options.configDir)
   }
 
-  if (!latestVersion || !isNewerVersion(latestVersion, options.currentVersion)) return null
-
+  const install = resolveInstallInfo({ ...(options.configDir ? { configDir: options.configDir } : {}) })
   return {
     currentVersion: options.currentVersion,
     latestVersion,
-    ...(() => {
-      const info = resolveInstallInfo({ ...(options.configDir ? { configDir: options.configDir } : {}) })
-      return { upgradeCommand: info.upgradeCommand, ...(info.upgradeFirst === undefined ? {} : { upgradeFirst: info.upgradeFirst }) }
-    })(),
+    updateAvailable: latestVersion !== null && isNewerVersion(latestVersion, options.currentVersion),
+    checkedAt,
+    installChannel: install.channel,
+    upgradeCommand: install.upgradeCommand,
+    ...(install.upgradeFirst === undefined ? {} : { upgradeFirst: install.upgradeFirst }),
+    ...(install.postUpgradeCommand === undefined ? {} : { postUpgradeCommand: install.postUpgradeCommand }),
+    ...(install.upgradeNote === undefined ? {} : { upgradeNote: install.upgradeNote }),
+    release,
+  }
+}
+
+/** Returns a notice only when a newer published GitHub release exists. */
+export async function checkForUpdate(options: CheckForUpdateOptions): Promise<UpdateNotice | null> {
+  const status = await getUpdateStatus(options)
+  if (!status.updateAvailable || status.latestVersion === null) return null
+  return {
+    currentVersion: status.currentVersion,
+    latestVersion: status.latestVersion,
+    upgradeCommand: status.upgradeCommand,
+    ...(status.upgradeFirst === undefined ? {} : { upgradeFirst: status.upgradeFirst }),
+    ...(status.postUpgradeCommand === undefined ? {} : { postUpgradeCommand: status.postUpgradeCommand }),
+    ...(status.upgradeNote === undefined ? {} : { upgradeNote: status.upgradeNote }),
   }
 }
 
@@ -145,10 +228,15 @@ export function formatUpdateNotice(notice: UpdateNotice): string {
   return [
     '',
     `LoopTroop ${notice.latestVersion} is available (you have ${notice.currentVersion}).`,
-    // One command per line, each valid on its own. Joining them would need an
-    // operator, and none works in both `cmd.exe` and Windows PowerShell 5.1.
     ...(notice.upgradeFirst === undefined ? [] : [`  ${notice.upgradeFirst}`]),
     `  ${notice.upgradeCommand}`,
+    ...(notice.postUpgradeCommand === undefined ? [] : [`  ${notice.postUpgradeCommand}`]),
+    ...(notice.upgradeNote === undefined ? [] : [`  ${notice.upgradeNote}`]),
     '',
   ].join('\n')
+}
+
+export function formatUpdateStatusNotice(status: UpdateStatus): string {
+  if (!status.updateAvailable || status.latestVersion === null) return ''
+  return formatUpdateNotice(status as UpdateNotice & { latestVersion: string })
 }

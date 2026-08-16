@@ -10,7 +10,7 @@ import {
   readRecordedInstall,
   resolveInstallInfo,
 } from '../server/lib/installChannel'
-import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice } from '../server/lib/updateCheck'
+import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice, getUpdateStatus } from '../server/lib/updateCheck'
 
 /**
  * 2.13 contract: the upgrade command shown must match how this copy was
@@ -171,6 +171,16 @@ describe('install channel detection', () => {
       .toBe('npm install -g looptroop@latest')
     expect(getInstallInfo('/opt/homebrew/Cellar/looptroop/9.9.9/libexec/dist/server/cli').upgradeCommand)
       .toBe('brew upgrade looptroop')
+  })
+
+  it('explains what must happen to the running process after each kind of upgrade', () => {
+    expect(getInstallInfo('/usr/local/lib/node_modules/looptroop/dist/server/cli').postUpgradeCommand)
+      .toBe('looptroop restart')
+
+    process.env.LOOPTROOP_CONTAINER = '1'
+    const container = getInstallInfo('/app/dist/server/cli')
+    expect(container.postUpgradeCommand).toBeUndefined()
+    expect(container.upgradeNote).toContain('recreate')
   })
 })
 
@@ -457,6 +467,32 @@ describe('update check', () => {
     expect(notice?.currentVersion).toBe('0.4.1')
   })
 
+  it('returns full GitHub release details and lifecycle guidance for the UI', async () => {
+    const configDir = makeConfigDir()
+    writeFileSync(join(configDir, 'config.json'), JSON.stringify({ install: { channel: 'npm' } }))
+    const status = await getUpdateStatus({
+      currentVersion: '0.4.1',
+      configDir,
+      fetchRelease: async () => ({
+        version: '0.5.0',
+        name: 'LoopTroop 0.5.0',
+        url: 'https://github.com/looptroop-ai/LoopTroop/releases/tag/v0.5.0',
+        publishedAt: '2026-08-16T08:00:00.000Z',
+        notes: 'Everything in the GitHub release body.',
+      }),
+    })
+
+    expect(status).toMatchObject({
+      currentVersion: '0.4.1',
+      latestVersion: '0.5.0',
+      updateAvailable: true,
+      installChannel: 'npm',
+      upgradeCommand: 'npm install -g looptroop@latest',
+      postUpgradeCommand: 'looptroop restart',
+      release: { notes: 'Everything in the GitHub release body.' },
+    })
+  })
+
   it('stays silent when already current', async () => {
     const notice = await checkForUpdate({
       currentVersion: '0.5.0',
@@ -525,14 +561,14 @@ describe('update check', () => {
   })
 
   /**
-   * What a machine that cannot reach the registry paid.
+   * What a machine that cannot reach GitHub paid.
    *
    * Only answers were cached, so a failed lookup left no timestamp to compare
    * against and every command tried again — a fresh request, and its full
    * timeout, on every single `looptroop status` for as long as the machine
    * stayed offline.
    */
-  describe('when the registry cannot be reached', () => {
+  describe('when GitHub cannot be reached', () => {
     it('does not try again within the interval', async () => {
       const configDir = makeConfigDir()
       let calls = 0
@@ -622,7 +658,7 @@ describe('update check', () => {
       })
 
       // Upgrading LoopTroop must not invalidate the cache and send every
-      // installed copy back to the registry on its next command.
+      // installed copy back to GitHub on its next command.
       expect(calls).toBe(0)
       expect(notice?.latestVersion).toBe('0.5.0')
     })
@@ -638,5 +674,19 @@ describe('update check', () => {
     expect(text).toContain('0.5.0')
     expect(text).toContain('0.4.1')
     expect(text).toContain('npm install -g looptroop@latest')
+  })
+
+  it('prints post-upgrade and channel notes as separate cross-shell-safe lines', () => {
+    const text = formatUpdateNotice({
+      currentVersion: '0.4.1',
+      latestVersion: '0.5.0',
+      upgradeFirst: 'looptroop stop',
+      upgradeCommand: 'winget upgrade LoopTroopAI.LoopTroop',
+      postUpgradeCommand: 'looptroop open',
+      upgradeNote: 'Restart guidance.',
+    })
+
+    expect(text).toContain('  looptroop stop\n  winget upgrade LoopTroopAI.LoopTroop\n  looptroop open\n')
+    expect(text).toContain('Restart guidance.')
   })
 })

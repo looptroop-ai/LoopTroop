@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { getOpenCodeAdapter } from '../opencode/factory'
 import { dismissStartupRestoreNotice, getStartupStatus } from '../startupState'
+import { APP_VERSION } from '../lib/appVersion'
+import { getUpdateStatus } from '../lib/updateCheck'
 
 const health = new Hono()
 
@@ -25,6 +27,10 @@ health.get('/health/opencode', async (c) => {
 
 health.get('/health/startup', (c) => {
   return c.json(getStartupStatus())
+})
+
+health.get('/health/update', async (c) => {
+  return c.json(await getUpdateStatus({ currentVersion: APP_VERSION }))
 })
 
 health.post('/health/startup/restore-notice/dismiss', (c) => {

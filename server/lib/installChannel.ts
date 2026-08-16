@@ -20,6 +20,10 @@ export interface InstallInfo {
    * printed on two lines are correct everywhere.
    */
   upgradeFirst?: string
+  /** Run after upgrading so a background daemon loads the new files. */
+  postUpgradeCommand?: string
+  /** Channel-specific context that cannot be expressed as one safe command. */
+  upgradeNote?: string
 }
 
 /**
@@ -31,6 +35,31 @@ export interface InstallInfo {
  */
 const UPGRADE_PREREQUISITES: Partial<Record<InstallChannel, string>> = {
   winget: 'looptroop stop',
+}
+
+const POST_UPGRADE_COMMANDS: Partial<Record<InstallChannel, string>> = {
+  npm: 'looptroop restart',
+  bun: 'looptroop restart',
+  pnpm: 'looptroop restart',
+  yarn: 'looptroop restart',
+  homebrew: 'looptroop restart',
+  scoop: 'looptroop restart',
+  chocolatey: 'looptroop restart',
+  winget: 'looptroop open',
+  aur: 'looptroop restart',
+  source: 'looptroop restart',
+}
+
+const UPGRADE_NOTES: Partial<Record<InstallChannel, string>> = {
+  pnpm: 'pnpm may hold a newly published version for about 24 hours; retry later or install the exact version shown.',
+  homebrew: 'If Homebrew has not indexed this release yet, retry after the channel publish finishes.',
+  scoop: 'If Scoop has not indexed this release yet, retry after the channel publish finishes.',
+  chocolatey: 'Chocolatey releases can remain unavailable while community moderation is pending.',
+  winget: 'WinGet releases can lag GitHub while the manifest is reviewed and indexed.',
+  aur: 'AUR releases can lag GitHub until the package update is published.',
+  binary: 'The standalone installer stops and restarts a running LoopTroop daemon automatically.',
+  container: 'The image tag can briefly lag the GitHub release. After pulling it, recreate the LoopTroop container with the same volumes, ports, and environment settings.',
+  unknown: 'Restart a running LoopTroop daemon after upgrading so it loads the new version.',
 }
 
 const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
@@ -230,8 +259,7 @@ export function detectInstallChannel(moduleDir = dirname(fileURLToPath(import.me
 
 export function getInstallInfo(moduleDir?: string): InstallInfo {
   const channel = detectInstallChannel(moduleDir)
-  const first = UPGRADE_PREREQUISITES[channel]
-  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel], ...(first === undefined ? {} : { upgradeFirst: first }) }
+  return info(channel)
 }
 
 /** The `install` object in `config.json`. */
@@ -273,7 +301,15 @@ export interface ResolveInstallOptions {
 
 function info(channel: InstallChannel): InstallInfo {
   const first = UPGRADE_PREREQUISITES[channel]
-  return { channel, upgradeCommand: UPGRADE_COMMANDS[channel], ...(first === undefined ? {} : { upgradeFirst: first }) }
+  const post = POST_UPGRADE_COMMANDS[channel]
+  const note = UPGRADE_NOTES[channel]
+  return {
+    channel,
+    upgradeCommand: UPGRADE_COMMANDS[channel],
+    ...(first === undefined ? {} : { upgradeFirst: first }),
+    ...(post === undefined ? {} : { postUpgradeCommand: post }),
+    ...(note === undefined ? {} : { upgradeNote: note }),
+  }
 }
 
 function record(channel: InstallChannel, moduleDir: string, configDir?: string): void {

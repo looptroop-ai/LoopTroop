@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { doctorCommand, runChecks, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import type { DaemonState } from '../server/lib/daemonPaths'
+import { APP_VERSION } from '../server/lib/appVersion'
 
 /**
  * 2.12 contract: doctor tells a user whether this machine can run LoopTroop,
@@ -81,6 +82,45 @@ describe('doctor command', () => {
     const parsed = JSON.parse(stdout.text()) as { ok: boolean; checks: unknown[] }
     expect(typeof parsed.ok).toBe('boolean')
     expect(Array.isArray(parsed.checks)).toBe(true)
+  })
+
+  it('always reports current and latest versions when update status is supplied', async () => {
+    useConfigDir()
+    const stdout = captureStdout()
+    const update = {
+      currentVersion: APP_VERSION,
+      latestVersion: '0.6.0',
+      updateAvailable: true,
+      checkedAt: '2026-08-16T08:00:00.000Z',
+      installChannel: 'npm' as const,
+      upgradeCommand: 'npm install -g looptroop@latest',
+      postUpgradeCommand: 'looptroop restart',
+      release: null,
+    }
+
+    await doctorCommand(false, update)
+
+    expect(stdout.text()).toContain('version')
+    expect(stdout.text()).toContain(`current ${APP_VERSION}; latest 0.6.0 (update available)`)
+    expect(stdout.text()).toContain('npm install -g looptroop@latest')
+    expect(stdout.text()).toContain('looptroop restart')
+  })
+
+  it('includes structured update facts in doctor JSON', async () => {
+    useConfigDir()
+    const stdout = captureStdout()
+    await doctorCommand(true, {
+      currentVersion: APP_VERSION,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt: null,
+      installChannel: 'unknown',
+      upgradeCommand: 'See https://www.looptroop.ovh for upgrade instructions',
+      release: null,
+    })
+
+    const payload = JSON.parse(stdout.text()) as { update: { currentVersion: string; latestVersion: null } }
+    expect(payload.update).toEqual(expect.objectContaining({ currentVersion: APP_VERSION, latestVersion: null }))
   })
 
   it('exits zero when nothing is failing', async () => {

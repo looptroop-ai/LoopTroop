@@ -1,4 +1,4 @@
-import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal, MoreHorizontal, MessageSquareText } from 'lucide-react'
+import { SunMoon, Moon, Sun, Settings, FolderOpen, Plus, RefreshCw, BookOpen, SlidersHorizontal, MoreHorizontal, MessageSquareText, CircleArrowUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -9,6 +9,7 @@ import { WORKFLOW_GROUPS, WORKFLOW_PHASE_MAP } from '@/lib/workflowMeta'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useBackendHealth } from '@/hooks/useBackendHealth'
+import { useUpdateStatus } from '@/hooks/useUpdateStatus'
 import packageJson from '../../../package.json'
 import { DashboardSearch } from './DashboardSearch'
 import { cn } from '@/lib/utils'
@@ -19,6 +20,7 @@ interface AppShellProps {
   onOpenPrompts?: () => void
   onOpenProject?: () => void
   onOpenTicket?: () => void
+  onOpenAbout?: () => void
   isModalOpen?: boolean
 }
 
@@ -68,13 +70,20 @@ function getActiveTriageFilterSummaries(filters: UIState['filters']): string[] {
   return summaries
 }
 
-export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, isModalOpen = false }: AppShellProps) {
+export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, onOpenAbout, isModalOpen = false }: AppShellProps) {
   const { state, dispatch } = useUI()
   const theme = state.theme
   const queryClient = useQueryClient()
   const [isRefreshing, setIsRefreshing] = useState(false)
   const docsOrigin = `${__LOOPTROOP_DOCS_ORIGIN__}/`
   const { isOffline } = useBackendHealth()
+  const { data: update } = useUpdateStatus()
+  /**
+   * The daemon's own version wins over the one bundled into this build. They
+   * agree for a normal install, but a browser tab left open across an upgrade
+   * would otherwise keep showing the version it was served with.
+   */
+  const version = update?.currentVersion ?? packageJson.version
   const activeTriageFilterSummaries = getActiveTriageFilterSummaries(state.filters)
   const activeTriageFilterCount = activeTriageFilterSummaries.length
 
@@ -87,23 +96,40 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
   return (
     <div className="min-h-screen bg-background text-foreground antialiased selection:bg-brand-500/20 selection:text-brand-500">
       <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border/80 bg-background/80 px-2 sm:px-4 md:px-6 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 shadow-xs transition-all">
-        <button
-          className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => {
-            dispatch({ type: 'SELECT_TICKET', ticketId: null })
-            window.history.pushState({}, '', '/')
-          }}
-        >
-          <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
-          <div className="hidden items-baseline gap-2 sm:flex">
-            <span className="text-xl font-bold tracking-tight text-foreground group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
-              LoopTroop
-            </span>
-            <span className="hidden sm:inline-block text-[10px] font-mono font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/60">
-              v{packageJson.version}
-            </span>
-          </div>
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => {
+              dispatch({ type: 'SELECT_TICKET', ticketId: null })
+              window.history.pushState({}, '', '/')
+            }}
+          >
+            <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
+            <div className="hidden items-baseline gap-2 sm:flex">
+              <span className="text-xl font-bold tracking-tight text-foreground group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
+                LoopTroop
+              </span>
+            </div>
+          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onOpenAbout}
+                aria-label={update?.updateAvailable
+                  ? `LoopTroop version ${version}; update ${update.latestVersion} available; open About`
+                  : `LoopTroop version ${version}; open About`}
+                className="hidden items-center gap-1 rounded-full border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground outline-none transition-opacity hover:opacity-75 focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
+              >
+                v{version}
+                {update?.updateAvailable && <CircleArrowUp data-testid="update-available-icon" className="h-3 w-3" aria-hidden="true" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {update?.updateAvailable ? `Version ${update.latestVersion} is available. Open About.` : 'Open About'}
+            </TooltipContent>
+          </Tooltip>
+        </div>
         <div className="flex min-w-0 items-center gap-1 sm:gap-2">
           <DashboardSearch isModalOpen={isModalOpen} />
           {state.activeView === 'kanban' && (

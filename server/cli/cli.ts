@@ -1,6 +1,9 @@
 import { parseArgs } from 'node:util'
 import { APP_VERSION } from '../lib/appVersion'
+import { isSea } from '../lib/isSea'
 import { DAEMON_ARGV } from './daemonHandoff'
+import { formatUpdateStatusNotice, getUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
+import { isEntryPoint } from './entryPoint'
 
 /**
  * Exported so the published CLI reference can be generated from it rather than
@@ -34,6 +37,38 @@ Options:
   --version      Print the version
   --help         Print this message
 `
+
+/**
+ * Never rejects. The lookup is a courtesy attached to commands that have their
+ * own job to do, and it is started before that job runs — so a rejection would
+ * otherwise surface as an unhandled rejection, which Node treats as a crash,
+ * turning a clean failure into a stack trace or a working command into a dead
+ * one. `getUpdateStatus` already absorbs network and cache faults; this covers
+ * whatever is left.
+ */
+function checkCliUpdate(): Promise<UpdateStatus | null> {
+  return getUpdateStatus({ currentVersion: APP_VERSION }).catch(() => null)
+}
+
+/**
+ * Notices go to stderr, never stdout.
+ *
+ * `looptroop --version` is parsed with strict equality by the installer's own
+ * post-install check (`scripts/installer-core.mjs`) and by six release smokes.
+ * A notice appended to stdout makes a healthy install report as a broken one —
+ * and it fires exactly when the installed version is behind the latest release,
+ * which is the normal state for a pinned install and for every channel that
+ * publishes after the GitHub tag. npm and gh route their notifiers to stderr
+ * for the same reason.
+ */
+function writeUpdateNotice(update: UpdateStatus | null): void {
+  if (update !== null) process.stderr.write(formatUpdateStatusNotice(update))
+}
+
+async function finishWithUpdate(code: number, update: Promise<UpdateStatus | null>): Promise<number> {
+  writeUpdateNotice(await update)
+  return code
+}
 
 export async function main(argv: string[]): Promise<number> {
   // Before `parseArgs`, and before anything else. Under npm this file is the
@@ -75,7 +110,7 @@ export async function main(argv: string[]): Promise<number> {
 
   if (values.version) {
     process.stdout.write(`${APP_VERSION}\n`)
-    return 0
+    return finishWithUpdate(0, checkCliUpdate())
   }
 
   // Bare invocation prints help rather than doing something unasked.
@@ -99,10 +134,16 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'start': {
       const { startCommand } = await import('./commands')
-      return startCommand({
+      const update = checkCliUpdate()
+      const options = {
         ...(port === undefined ? {} : { port }),
         ...(values.foreground ? { foreground: true } : {}),
-      })
+      }
+      if (values.foreground) {
+        writeUpdateNotice(await update)
+        return startCommand(options)
+      }
+      return finishWithUpdate(await startCommand(options), update)
     }
     case 'stop': {
       const { stopCommand } = await import('./commands')
@@ -114,11 +155,20 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'status': {
       const { statusCommand } = await import('./commands')
-      return statusCommand(values.json === true)
+      // Started here, but for human output not awaited until the status itself
+      // has printed: a notice must never obscure the answer that was asked for,
+      // nor delay it when GitHub is slow or unreachable. JSON has to wait, since
+      // the update is part of the document rather than a line after it.
+      const update = checkCliUpdate()
+      if (values.json === true) return statusCommand(true, await update ?? undefined)
+      const code = await statusCommand(false)
+      writeUpdateNotice(await update)
+      return code
     }
     case 'open': {
       const { openCommand } = await import('./commands')
-      return openCommand()
+      const update = checkCliUpdate()
+      return finishWithUpdate(await openCommand(), update)
     }
     case 'logs': {
       const { logsCommand } = await import('./logsCommand')
@@ -129,7 +179,10 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'doctor': {
       const { doctorCommand } = await import('./doctorCommand')
-      return doctorCommand(values.json === true)
+      // Passed unawaited so the release lookup overlaps the local checks. Doctor
+      // reports the version as one of its checks rather than as a trailing
+      // notice, so unlike `status` it does have to resolve before printing.
+      return doctorCommand(values.json === true, checkCliUpdate())
     }
     case 'clean': {
       const { cleanCommand } = await import('./cleanCommand')
@@ -142,9 +195,14 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
-main(process.argv.slice(2))
-  .then((code) => { process.exitCode = code })
-  .catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    process.exitCode = 1
-  })
+// Package-manager installs call `main` from the old-syntax launcher. A source
+// invocation enters this file directly, while a standalone build has no
+// JavaScript entry path at all. The split also lets tests import `main` safely.
+if (isEntryPoint(import.meta.url, process.argv[1]) || isSea()) {
+  main(process.argv.slice(2))
+    .then((code) => { process.exitCode = code })
+    .catch((error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+      process.exitCode = 1
+    })
+}

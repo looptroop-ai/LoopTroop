@@ -44,6 +44,15 @@ Binding LoopTroop to a non-loopback address requires both
 start otherwise. Doing so exposes a control-plane API that can execute commands
 in your repositories, and it is not a supported configuration.
 
+The opt-in development LAN mode is narrower: Vite may be reachable from a
+trusted network while the API and OpenCode remain on loopback. When another
+trusted proxy terminates the frontend origin before Vite, the development proxy
+translates that origin for the loopback API hop only if the browser marks the
+request as same-origin and its `Origin` authority exactly matches the incoming
+frontend `Host`. An unrelated page fails those checks and reaches the API host
+guard unchanged. This development path does not make exposing the installed
+daemon a supported configuration.
+
 Reports that describe LoopTroop running commands or modifying repositories you
 attached to it are describing intended behaviour. Reports that describe a way to
 escape those boundaries — reaching outside attached repositories, escalating

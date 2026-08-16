@@ -69,6 +69,13 @@ describe('install channel detection', () => {
     // the store path, not the `global/v11/…` directory pnpm's shim names.
     ['/home/u/.local/share/pnpm/store/v11/links/@/looptroop/9.9.9/abc123/node_modules/looptroop/dist/server/cli', 'pnpm'],
     ['/home/u/.local/share/pnpm/global/v11/node_modules/.pnpm/looptroop@9.9.9/node_modules/looptroop/dist/server/cli', 'pnpm'],
+    // Yarn Classic, taken the same way: `yarn global dir` reports
+    // `…/.config/yarn/global`, and the module resolves to `<that>/node_modules`.
+    // Only the directory above `node_modules` separates it from an npm install.
+    ['/usr/local/share/.config/yarn/global/node_modules/looptroop/dist/server/cli', 'yarn'],
+    ['/home/u/.config/yarn/global/node_modules/looptroop/dist/server/cli', 'yarn'],
+    // Windows, where Yarn Classic keeps the same tree under `Yarn/Data/global`.
+    ['/c/Users/u/AppData/Local/Yarn/Data/global/node_modules/looptroop/dist/server/cli', 'yarn'],
   ])('detects %s as %s', (moduleDir, expected) => {
     expect(detectInstallChannel(moduleDir)).toBe(expected)
   })
@@ -82,6 +89,7 @@ describe('install channel detection', () => {
     ['/usr/local/lib/node_modules/looptroop/dist/server/cli', 'npm', 'npm install -g looptroop@latest'],
     ['/home/u/.bun/install/global/node_modules/looptroop/dist/server/cli', 'bun', 'bun add -g looptroop@latest'],
     ['/home/u/.local/share/pnpm/store/v11/links/@/looptroop/9.9.9/abc123/node_modules/looptroop/dist/server/cli', 'pnpm', 'pnpm add -g looptroop@latest'],
+    ['/home/u/.config/yarn/global/node_modules/looptroop/dist/server/cli', 'yarn', 'yarn global upgrade looptroop@latest'],
   ])('upgrades a %s install as %s with its own command', (moduleDir, channel, expected) => {
     const info = getInstallInfo(moduleDir)
     expect(info.channel).toBe(channel)

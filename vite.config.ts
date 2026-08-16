@@ -13,6 +13,7 @@ import {
   FRONTEND_DEDUPED_DEPENDENCIES,
   frontendOptimizeDeps,
 } from './scripts/vite-optimize-deps'
+import { getDevProxyOriginOverride } from './scripts/dev-api-proxy'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const backendOrigin = getBackendOrigin()
@@ -199,9 +200,19 @@ export default defineConfig({
         target: backendOrigin,
         changeOrigin: true,
         configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
             if (apiToken) {
               proxyReq.setHeader(apiTokenHeader, apiToken)
+            }
+
+            const originOverride = getDevProxyOriginOverride({
+              origin: req.headers.origin,
+              host: req.headers.host,
+              secFetchSite: req.headers['sec-fetch-site'],
+              backendOrigin,
+            })
+            if (originOverride) {
+              proxyReq.setHeader('Origin', originOverride)
             }
           })
           proxy.on('error', (err, _req, res) => {

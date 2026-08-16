@@ -38,12 +38,35 @@ Options:
   --help         Print this message
 `
 
-function checkCliUpdate(): Promise<UpdateStatus> {
-  return getUpdateStatus({ currentVersion: APP_VERSION })
+/**
+ * Never rejects. The lookup is a courtesy attached to commands that have their
+ * own job to do, and it is started before that job runs — so a rejection would
+ * otherwise surface as an unhandled rejection, which Node treats as a crash,
+ * turning a clean failure into a stack trace or a working command into a dead
+ * one. `getUpdateStatus` already absorbs network and cache faults; this covers
+ * whatever is left.
+ */
+function checkCliUpdate(): Promise<UpdateStatus | null> {
+  return getUpdateStatus({ currentVersion: APP_VERSION }).catch(() => null)
 }
 
-async function finishWithUpdate(code: number, update: Promise<UpdateStatus>): Promise<number> {
-  process.stdout.write(formatUpdateStatusNotice(await update))
+/**
+ * Notices go to stderr, never stdout.
+ *
+ * `looptroop --version` is parsed with strict equality by the installer's own
+ * post-install check (`scripts/installer-core.mjs`) and by six release smokes.
+ * A notice appended to stdout makes a healthy install report as a broken one —
+ * and it fires exactly when the installed version is behind the latest release,
+ * which is the normal state for a pinned install and for every channel that
+ * publishes after the GitHub tag. npm and gh route their notifiers to stderr
+ * for the same reason.
+ */
+function writeUpdateNotice(update: UpdateStatus | null): void {
+  if (update !== null) process.stderr.write(formatUpdateStatusNotice(update))
+}
+
+async function finishWithUpdate(code: number, update: Promise<UpdateStatus | null>): Promise<number> {
+  writeUpdateNotice(await update)
   return code
 }
 
@@ -117,7 +140,7 @@ export async function main(argv: string[]): Promise<number> {
         ...(values.foreground ? { foreground: true } : {}),
       }
       if (values.foreground) {
-        process.stdout.write(formatUpdateStatusNotice(await update))
+        writeUpdateNotice(await update)
         return startCommand(options)
       }
       return finishWithUpdate(await startCommand(options), update)
@@ -132,9 +155,14 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'status': {
       const { statusCommand } = await import('./commands')
-      const update = await checkCliUpdate()
-      const code = await statusCommand(values.json === true, update)
-      if (!values.json) process.stdout.write(formatUpdateStatusNotice(update))
+      // Started here, but for human output not awaited until the status itself
+      // has printed: a notice must never obscure the answer that was asked for,
+      // nor delay it when GitHub is slow or unreachable. JSON has to wait, since
+      // the update is part of the document rather than a line after it.
+      const update = checkCliUpdate()
+      if (values.json === true) return statusCommand(true, await update ?? undefined)
+      const code = await statusCommand(false)
+      writeUpdateNotice(await update)
       return code
     }
     case 'open': {
@@ -151,8 +179,10 @@ export async function main(argv: string[]): Promise<number> {
     }
     case 'doctor': {
       const { doctorCommand } = await import('./doctorCommand')
-      const update = await checkCliUpdate()
-      return doctorCommand(values.json === true, update)
+      // Passed unawaited so the release lookup overlaps the local checks. Doctor
+      // reports the version as one of its checks rather than as a trailing
+      // notice, so unlike `status` it does have to resolve before printing.
+      return doctorCommand(values.json === true, checkCliUpdate())
     }
     case 'clean': {
       const { cleanCommand } = await import('./cleanCommand')

@@ -39,6 +39,33 @@ export interface UpdateStatus {
   release: ReleaseDetails | null
 }
 
+/** A release without its body. See `summarizeUpdateStatus`. */
+export type ReleaseSummary = Omit<ReleaseDetails, 'notes'>
+
+export interface UpdateStatusSummary extends Omit<UpdateStatus, 'release'> {
+  release: ReleaseSummary | null
+}
+
+/**
+ * Drops the release body, which is several kilobytes of prose.
+ *
+ * The interface renders those notes, so `/api/health/update` keeps them. A CLI
+ * `--json` document is read by scripts that want the facts, and burying them
+ * under a changelog helps nobody.
+ */
+export function summarizeUpdateStatus(status: UpdateStatus): UpdateStatusSummary {
+  const { release, ...rest } = status
+  return {
+    ...rest,
+    release: release === null ? null : {
+      version: release.version,
+      name: release.name,
+      url: release.url,
+      publishedAt: release.publishedAt,
+    },
+  }
+}
+
 export interface UpdateNotice {
   currentVersion: string
   latestVersion: string

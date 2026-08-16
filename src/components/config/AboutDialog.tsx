@@ -5,6 +5,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/h
 import { useProjects } from '@/hooks/useProjects'
 import { useStartupStatus } from '@/hooks/useStartupStatus'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
+import { ReleaseNotes } from './ReleaseNotes'
 
 function formatStorageSource(source: string) {
   if (source === 'LOOPTROOP_APP_DB_PATH') return 'Custom database path override'
@@ -104,8 +105,10 @@ export function AboutDialog() {
                       </p>
                     )}
                   </div>
-                  <div className="max-h-80 overflow-y-auto whitespace-pre-wrap px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                    {update.release?.notes || 'Open GitHub to view all LoopTroop release notes.'}
+                  <div className="max-h-80 overflow-y-auto px-4 py-3">
+                    {update.release?.notes
+                      ? <ReleaseNotes notes={update.release.notes} />
+                      : <p className="text-xs leading-relaxed text-muted-foreground">Open GitHub to view all LoopTroop release notes.</p>}
                   </div>
                 </HoverCardContent>
               </HoverCard>

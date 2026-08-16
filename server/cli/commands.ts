@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, clearStaleDaemonState, readDaemonStartFailure, redactDaemonState, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
-import type { UpdateStatus } from '../lib/updateCheck'
+import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { daemonArgv } from './daemonHandoff'
@@ -522,7 +522,7 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
       running: state !== null,
       daemon: state ? redactDaemonState(state) : null,
       lastStartFailure: failure,
-      ...(update === undefined ? {} : { update }),
+      ...(update === undefined ? {} : { update: summarizeUpdateStatus(update) }),
     }, null, 2)}\n`)
     return state ? 0 : 1
   }

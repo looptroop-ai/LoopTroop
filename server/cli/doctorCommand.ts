@@ -3,7 +3,7 @@ import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
 import { resolveInstallInfo } from '../lib/installChannel'
-import type { UpdateStatus } from '../lib/updateCheck'
+import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { probePort } from '../lib/portProbe'
 import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
@@ -618,16 +618,25 @@ function versionCheck(update: UpdateStatus): Check {
   }
 }
 
-export async function doctorCommand(json: boolean, update?: UpdateStatus): Promise<number> {
+/**
+ * `update` may be a promise so the caller can start the release lookup before
+ * the local checks run and let the two overlap. Awaiting a plain value is
+ * harmless, so direct callers can still pass a resolved status.
+ */
+export async function doctorCommand(
+  json: boolean,
+  update?: UpdateStatus | null | Promise<UpdateStatus | null>,
+): Promise<number> {
   const checks = await runChecks()
-  const displayedChecks = update === undefined ? checks : [versionCheck(update), ...checks]
+  const resolved = (await update) ?? undefined
+  const displayedChecks = resolved === undefined ? checks : [versionCheck(resolved), ...checks]
   const failed = checks.some((check) => check.status === 'fail')
 
   if (json) {
     // Only JSON on stdout, so the output can be piped into a parser.
     process.stdout.write(`${JSON.stringify({
       ok: !failed,
-      ...(update === undefined ? {} : { update }),
+      ...(resolved === undefined ? {} : { update: summarizeUpdateStatus(resolved) }),
       checks: displayedChecks,
     }, null, 2)}\n`)
     return failed ? 1 : 0

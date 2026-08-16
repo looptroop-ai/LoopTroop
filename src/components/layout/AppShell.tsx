@@ -78,6 +78,12 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
   const docsOrigin = `${__LOOPTROOP_DOCS_ORIGIN__}/`
   const { isOffline } = useBackendHealth()
   const { data: update } = useUpdateStatus()
+  /**
+   * The daemon's own version wins over the one bundled into this build. They
+   * agree for a normal install, but a browser tab left open across an upgrade
+   * would otherwise keep showing the version it was served with.
+   */
+  const version = update?.currentVersion ?? packageJson.version
   const activeTriageFilterSummaries = getActiveTriageFilterSummaries(state.filters)
   const activeTriageFilterCount = activeTriageFilterSummaries.length
 
@@ -110,13 +116,12 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
               <button
                 type="button"
                 onClick={onOpenAbout}
-                disabled={isModalOpen}
                 aria-label={update?.updateAvailable
-                  ? `LoopTroop version ${packageJson.version}; update ${update.latestVersion} available; open About`
-                  : `LoopTroop version ${packageJson.version}; open About`}
-                className="hidden items-center gap-1 rounded-full border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground outline-none transition-opacity hover:opacity-75 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 sm:inline-flex"
+                  ? `LoopTroop version ${version}; update ${update.latestVersion} available; open About`
+                  : `LoopTroop version ${version}; open About`}
+                className="hidden items-center gap-1 rounded-full border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground outline-none transition-opacity hover:opacity-75 focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
               >
-                v{packageJson.version}
+                v{version}
                 {update?.updateAvailable && <CircleArrowUp data-testid="update-available-icon" className="h-3 w-3" aria-hidden="true" />}
               </button>
             </TooltipTrigger>

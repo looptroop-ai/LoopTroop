@@ -14,7 +14,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - New releases are now visible wherever users naturally look: the core CLI commands, Doctor, the header version, and an install-aware About window with full GitHub release notes.
 
 ### Added
-- Added one shared published-release status for the CLI and interface. `looptroop --version`, `status`, `start`, and `open` now print a notice whenever a newer GitHub release exists; `doctor` always reports the current and latest known versions, and both `status --json` and `doctor --json` expose the same structured update facts without adding non-JSON output.
+- Added one shared published-release status for the CLI and interface. `looptroop --version`, `status`, `start`, and `open` now report a notice on **stderr** whenever a newer GitHub release exists, leaving stdout byte-for-byte as it was so scripts that read `looptroop --version` keep working; `doctor` always reports the current and latest known versions, and both `status --json` and `doctor --json` expose the same structured update facts without adding non-JSON output.
 - Added an Updates section to About with the current and latest versions, the detected installation channel, exact ordered upgrade commands, restart or container-recreation guidance, and a Changelog control whose hover/focus card shows the complete latest GitHub release body. The header version now opens About and gains a quiet monochrome update icon only when a newer release is available.
 
 ### Changed

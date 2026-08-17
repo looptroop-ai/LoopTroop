@@ -16,14 +16,14 @@ export const USAGE = `LoopTroop — local AI coding orchestration
 Usage: looptroop <command> [options]
 
 Commands:
-  setup          Attach a project and open the interface
+  open           Open the interface, starting LoopTroop if it is not running
   start          Start the daemon in the background
   stop           Stop the running daemon
   restart        Stop and start again
   status         Show whether the daemon is running
-  open           Open the interface, starting LoopTroop if it is not running
   logs           Show the daemon log
   doctor         Check that this machine can run LoopTroop
+  setup          Attach a project from the terminal, then open the interface
   clean          List, and optionally remove, abandoned worktrees
 
 Options:
@@ -36,7 +36,136 @@ Options:
   --yes, -y      Accept every default without asking (setup)
   --version      Print the version
   --help         Print this message
+
+Run \`looptroop <command> --help\` for what a single command does and takes.
 `
+
+/**
+ * Per-command help, for `looptroop <command> --help`.
+ *
+ * Separate from USAGE on purpose: USAGE is fetched at a release tag and rewritten
+ * into the published CLI reference, so it has to stay a single scannable block.
+ * The detail a person wants once they have picked a command lives here instead of
+ * bloating that block to five screens.
+ */
+const COMMAND_HELP: Record<string, string> = {
+  open: `looptroop open — open the interface
+
+Usage: looptroop open
+
+Opens LoopTroop in your browser, starting the daemon first if it is not already
+running, and signs the browser in with a single-use link. This is the normal way
+to use LoopTroop: it is a graphical application, and one command gets you into it.
+
+Nothing to configure. If a daemon is already running, it is reused rather than
+restarted, so open is safe to run repeatedly.
+
+See also: start (no browser), status (is it running).
+`,
+  start: `looptroop start — run the daemon in the background
+
+Usage: looptroop start [--port <n>] [--foreground]
+
+Options:
+  --port <n>     Listen on this port instead of choosing one. When the port is
+                 taken, start fails rather than silently moving.
+  --foreground   Run in this terminal and log to it, instead of detaching.
+                 Ctrl-C stops it. Useful for watching startup, and for running
+                 under a service manager that expects a foreground process.
+
+Without --foreground the daemon detaches, survives the terminal closing, and
+writes to the log that \`looptroop logs\` reads.
+
+See also: open (start and open a browser), stop, restart, logs.
+`,
+  stop: `looptroop stop — stop the running daemon
+
+Usage: looptroop stop
+
+Asks the daemon to exit, waits for it to actually go, and reports if it did not.
+Any OpenCode process LoopTroop started is stopped with it; one that was already
+running when LoopTroop adopted it is left alone.
+
+Exits non-zero when nothing was running, so a script can tell the difference.
+`,
+  restart: `looptroop restart — stop, then start again
+
+Usage: looptroop restart [--port <n>]
+
+Options:
+  --port <n>     Listen on this port after restarting.
+
+The command to run after upgrading through a package manager: the running daemon
+is still executing the previous version's code until it is replaced.
+`,
+  status: `looptroop status — is the daemon running
+
+Usage: looptroop status [--json]
+
+Options:
+  --json         Emit a JSON document and nothing else, for scripts.
+
+Reports whether the *installed daemon* is running, its address, port, process id
+and the OpenCode it is using. Running LoopTroop from a checkout with
+\`npm run dev\` is not the daemon, and is reported as not running even though a
+browser can reach that development server.
+
+Exits 0 when running and 1 when not, so \`looptroop status >/dev/null\` works as a
+test in a script.
+`,
+  logs: `looptroop logs — show the daemon log
+
+Usage: looptroop logs [--follow] [--lines <n>]
+
+Options:
+  --follow, -f   Keep streaming as new lines are written. Ctrl-C to stop.
+  --lines <n>    How many lines from the end to show. Defaults to a recent tail.
+
+Reads the log the background daemon writes. A daemon started with --foreground
+logs to its own terminal instead, and has nothing here.
+`,
+  doctor: `looptroop doctor — check that this machine can run LoopTroop
+
+Usage: looptroop doctor [--json]
+
+Options:
+  --json         Emit a JSON document and nothing else, for scripts.
+
+Checks versions, the tools LoopTroop shells out to, the configuration directory,
+the database schema, how this copy was installed and how to upgrade it, whether a
+daemon is running, and whether OpenCode can be reached.
+
+Each line is marked: a tick for fine, an exclamation for something worth knowing,
+a cross for something that will stop LoopTroop working. Anything not fine carries
+the command that fixes it.
+
+Exits non-zero if any check fails, so it can gate a script.
+`,
+  setup: `looptroop setup — attach a project from the terminal
+
+Usage: looptroop setup [--yes]
+
+Options:
+  --yes, -y      Accept every default without asking.
+
+Walks through attaching a git repository to LoopTroop, then opens the interface.
+Optional: the same thing can be done inside the interface, which is where most
+people do it. Reach for this when scripting a new machine, or when you are
+already in the project directory.
+`,
+  clean: `looptroop clean — remove abandoned worktrees
+
+Usage: looptroop clean [--apply]
+
+Options:
+  --apply        Actually delete. Without it, nothing is removed.
+
+LoopTroop runs each ticket in its own git worktree. One left behind by an
+interrupted run still occupies disk and still shows in \`git worktree list\`.
+
+Lists what it would remove and stops. Re-run with --apply to remove it.
+`,
+}
 
 /**
  * Never rejects. The lookup is a courtesy attached to commands that have their
@@ -113,8 +242,18 @@ export async function main(argv: string[]): Promise<number> {
     return finishWithUpdate(0, checkCliUpdate())
   }
 
-  // Bare invocation prints help rather than doing something unasked.
-  if (values.help || !command) {
+  // `looptroop <command> --help` describes that command; a bare `--help`, or no
+  // command at all, prints the overview rather than doing something unasked.
+  if (values.help) {
+    const help = command === undefined ? undefined : COMMAND_HELP[command]
+    if (command !== undefined && help === undefined) {
+      process.stderr.write(`Unknown command "${command}".\n\n${USAGE}`)
+      return 1
+    }
+    process.stdout.write(help ?? USAGE)
+    return 0
+  }
+  if (!command) {
     process.stdout.write(USAGE)
     return 0
   }

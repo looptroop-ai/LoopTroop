@@ -100,10 +100,35 @@ describe('doctor command', () => {
 
     await doctorCommand(false, update)
 
-    expect(stdout.text()).toContain('version')
-    expect(stdout.text()).toContain(`current ${APP_VERSION}; latest 0.6.0 (update available)`)
+    // Named `looptroop` rather than `version`, so the line says which version it
+    // is among the four the report now lists.
+    expect(stdout.text()).toContain('looptroop')
+    expect(stdout.text()).toContain(`${APP_VERSION} (latest 0.6.0)`)
     expect(stdout.text()).toContain('npm install -g looptroop@latest')
     expect(stdout.text()).toContain('looptroop restart')
+  })
+
+  it('says nothing about a newer version when this is the newest', async () => {
+    useConfigDir()
+    const stdout = captureStdout()
+
+    await doctorCommand(false, {
+      currentVersion: APP_VERSION,
+      latestVersion: APP_VERSION,
+      updateAvailable: false,
+      checkedAt: '2026-08-16T08:00:00.000Z',
+      installChannel: 'npm' as const,
+      upgradeCommand: 'npm install -g looptroop@latest',
+      release: null,
+    })
+
+    // The whole point of the format: a version equal to the newest carries no
+    // "(latest …)", so the only versions drawing the eye are the actionable ones.
+    // Scoped to this line — other tools on the report may legitimately be behind.
+    const looptroopLine = stdout.text().split('\n').find((line) => line.includes('looptroop '))
+    expect(looptroopLine).toBeDefined()
+    expect(looptroopLine).toContain(APP_VERSION)
+    expect(looptroopLine).not.toContain('latest')
   })
 
   it('includes structured update facts in doctor JSON', async () => {

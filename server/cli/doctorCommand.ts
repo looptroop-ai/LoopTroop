@@ -27,7 +27,17 @@ interface SchemaFacts {
 }
 
 interface Check {
+  /**
+   * The stable identifier, and what `--json` reports.
+   *
+   * Scripts key on this — the repository's own install smoke asserts on
+   * `install`, and users' scripts do the same — so it is an interface, not a
+   * caption. Rename it and every consumer breaks silently. Use `label` to change
+   * what a person reads.
+   */
   name: string
+  /** What the human-readable report prints instead of `name`, when they differ. */
+  label?: string
   status: Status
   detail: string
   /**
@@ -625,7 +635,8 @@ function checkInstallChannel(): Check {
         remedy: `${info.upgradeCommand}. To settle it, set "install": { "channel": "npm" } in ${getSettingsPath()}.`,
       }
     : {
-        name: 'install method',
+        name: 'install',
+        label: 'install method',
         status: 'ok',
         detail: info.channel,
         // On its own line rather than parenthesised after the channel: this is
@@ -729,14 +740,15 @@ function versionCheck(update: UpdateStatus): Check {
   const detail = update.latestVersion === null
     ? `${current} (latest unknown)`
     : withLatest(current, update.updateAvailable ? update.latestVersion : null)
-  if (!update.updateAvailable) return { name: 'looptroop', status: 'ok', detail }
+  if (!update.updateAvailable) return { name: 'version', label: 'looptroop', status: 'ok', detail }
 
   const commands = [update.upgradeFirst, update.upgradeCommand, update.postUpgradeCommand]
     .filter((command): command is string => command !== undefined)
     .map((command) => `\`${command}\``)
     .join(', then ')
   return {
-    name: 'looptroop',
+    name: 'version',
+    label: 'looptroop',
     // `warn`, so it prints `!` — a newer release is worth noticing and is not a
     // failure. Nothing on this machine is broken by being one version behind.
     status: 'warn',
@@ -774,7 +786,7 @@ export async function doctorCommand(
     // Absent beats degraded: a missing tool reads as `✗` whatever its severity,
     // so "not installed" and "installed but unhappy" are told apart at a glance.
     const mark = check.missing === true ? '✗' : symbol[check.status]
-    process.stdout.write(`${mark} ${check.name.padEnd(15)} ${check.detail}\n`)
+    process.stdout.write(`${mark} ${(check.label ?? check.name).padEnd(15)} ${check.detail}\n`)
     if (check.note) {
       process.stdout.write(`  ↳ ${check.note}\n`)
     }

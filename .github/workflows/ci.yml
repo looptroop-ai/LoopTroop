@@ -905,7 +905,22 @@ jobs:
       - name: Install the Arch toolchain
         run: |
           set -eu
-          pacman -Syu --noconfirm --needed base-devel namcap nodejs npm git github-cli sudo
+          # `-Syyu`, with the second `y` forcing a full database refresh.
+          #
+          # The `archlinux:latest` image ships a package database from whenever it
+          # was built, and Arch is a rolling release: by the time this runs, some
+          # of the versions that database names have been superseded and *deleted*
+          # from the mirrors. A plain `-Syu` considers a recent database current,
+          # keeps it, and then asks the CDN for a file that no longer exists —
+          # which fails as a 404 on every mirror, a minute into the job:
+          #
+          #   error: failed retrieving file 'elfutils-0.195-8-x86_64.pkg.tar.zst'
+          #     from fastly.mirror.pkgbuild.com : The requested URL returned error: 404
+          #
+          # This is not flakiness and a re-run is not the fix; it only passes when
+          # the image happens to be fresh. Forcing the refresh asks for versions
+          # the mirrors actually hold.
+          pacman -Syyu --noconfirm --needed base-devel namcap nodejs npm git github-cli sudo
           node --version
 
       # makepkg refuses to run as root, which is the whole reason this exists.

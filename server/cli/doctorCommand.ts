@@ -26,6 +26,23 @@ interface SchemaFacts {
   expected: number
 }
 
+/**
+ * The install facts behind the install check, for `--json` consumers.
+ *
+ * Same reasoning as `SchemaFacts`, learned the same way: the packaging smokes
+ * used to read the channel and the upgrade command by parsing `detail`, so
+ * rewording that sentence broke eight of them at once. A script asking "which
+ * channel is this, and what upgrades it" reads these fields; `detail` is free to
+ * be whatever reads best to a person.
+ */
+interface InstallFacts {
+  channel: string
+  upgradeCommand: string
+  upgradeFirst?: string
+  postUpgradeCommand?: string
+  upgradeNote?: string
+}
+
 interface Check {
   /**
    * The stable identifier, and what `--json` reports.
@@ -62,6 +79,8 @@ interface Check {
   remedy?: string
   /** Present on the schema checks only. */
   schema?: SchemaFacts
+  /** Present on the install check only. */
+  install?: InstallFacts
 }
 
 const REQUIRED_NODE_MAJOR = 24
@@ -639,6 +658,13 @@ function checkInstallChannel(): Check {
         label: 'install method',
         status: 'ok',
         detail: info.channel,
+        install: {
+          channel: info.channel,
+          upgradeCommand: info.upgradeCommand,
+          ...(info.upgradeFirst === undefined ? {} : { upgradeFirst: info.upgradeFirst }),
+          ...(info.postUpgradeCommand === undefined ? {} : { postUpgradeCommand: info.postUpgradeCommand }),
+          ...(info.upgradeNote === undefined ? {} : { upgradeNote: info.upgradeNote }),
+        },
         // On its own line rather than parenthesised after the channel: this is
         // the command a person came to `doctor` to copy, and burying it inside
         // a sentence next to the channel name made it hard to find and easy to

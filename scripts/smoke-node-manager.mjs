@@ -174,13 +174,17 @@ try {
   if (install_ !== null && install_ !== undefined) {
     // The whole point. Before bun and pnpm had channels of their own, both of
     // these said `npm` and offered `npm install -g looptroop@latest`.
+    // Read from the check's structured `install` facts, not by parsing its
+    // `detail` sentence. That sentence is prose written for a person and is
+    // allowed to be reworded; doing this by string matching meant a display
+    // change broke every manager's smoke at once.
     check(
-      install_.detail.startsWith(`${MANAGER} `),
-      `doctor reports the ${MANAGER} channel (got ${JSON.stringify(install_.detail)})`,
+      install_.install?.channel === MANAGER,
+      `doctor reports the ${MANAGER} channel (got ${JSON.stringify(install_.install?.channel)})`,
     )
     check(
-      install_.detail.includes(spec.upgradeCommand),
-      `doctor offers ${MANAGER}'s upgrade command, not npm's`,
+      install_.install?.upgradeCommand === spec.upgradeCommand,
+      `doctor offers ${MANAGER}'s upgrade command, not npm's (got ${JSON.stringify(install_.install?.upgradeCommand)})`,
     )
   }
 

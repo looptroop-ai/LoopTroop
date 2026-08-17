@@ -312,8 +312,12 @@ try {
   const install = doctorJson?.checks?.find((entry) => entry.name === 'install')
   check('doctor reports the container channel', install?.detail?.startsWith('container') === true,
     install?.detail ?? 'no install check in the report')
-  check('the upgrade command is the docker one', (install?.detail ?? '').includes('docker pull looptroopai/looptroop'),
-    install?.detail ?? 'no install check in the report')
+  // From the structured facts rather than the prose: `detail` is written for a
+  // person and may be reworded, and matching on it made a display change look
+  // like a broken container.
+  check('the upgrade command is the docker one',
+    (install?.install?.upgradeCommand ?? '').includes('docker pull looptroopai/looptroop'),
+    install?.install?.upgradeCommand ?? 'no install facts in the report')
   const rewritten = runOnce(['-c', 'cat "$LOOPTROOP_CONFIG_DIR/config.json"'], { entrypoint: 'sh' })
   const rewrittenRecord = rewritten.code === 0
     ? readJson(rewritten.stdout, 'config.json in the volume')?.install

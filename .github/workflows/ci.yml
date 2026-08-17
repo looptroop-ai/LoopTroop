@@ -905,21 +905,27 @@ jobs:
       - name: Install the Arch toolchain
         run: |
           set -eu
-          # `-Syyu`, with the second `y` forcing a full database refresh.
+          # One mirror, chosen because the other one lies.
           #
-          # The `archlinux:latest` image ships a package database from whenever it
-          # was built, and Arch is a rolling release: by the time this runs, some
-          # of the versions that database names have been superseded and *deleted*
-          # from the mirrors. A plain `-Syu` considers a recent database current,
-          # keeps it, and then asks the CDN for a file that no longer exists —
-          # which fails as a 404 on every mirror, a minute into the job:
+          # The job kept failing with a 404 for a package on every mirror:
           #
           #   error: failed retrieving file 'elfutils-0.195-8-x86_64.pkg.tar.zst'
           #     from fastly.mirror.pkgbuild.com : The requested URL returned error: 404
+          #     from geo.mirror.pkgbuild.com    : The requested URL returned error: 404
           #
-          # This is not flakiness and a re-run is not the fix; it only passes when
-          # the image happens to be fresh. Forcing the refresh asks for versions
-          # the mirrors actually hold.
+          # It is not a stale database inside the image — `-Syy` forces a refresh
+          # and changed nothing. The databases the two default mirrors serve
+          # disagree: at the time of writing `geo` lists `elfutils-0.196-1`, which
+          # exists, while `fastly` still lists `0.195-8`, which has been deleted
+          # from every pool. Whichever mirror pacman happens to take the database
+          # from decides whether the install can work at all, so the job passed or
+          # failed by luck.
+          #
+          # `geo.mirror.pkgbuild.com` is Arch's own geo-balanced endpoint and was
+          # the one serving a current database. Pinning to it makes the toolchain
+          # depend on one mirror being consistent with itself rather than on two
+          # agreeing with each other.
+          echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
           pacman -Syyu --noconfirm --needed base-devel namcap nodejs npm git github-cli sudo
           node --version
 

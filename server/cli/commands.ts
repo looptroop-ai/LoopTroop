@@ -5,6 +5,7 @@ import { readDaemonState, getDaemonLogPath, getDaemonLogDir, clearDaemonState, c
 import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
+import { isDevStackRunning } from '../lib/devStack'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { daemonArgv } from './daemonHandoff'
@@ -528,10 +529,21 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
   }
 
   if (!state) {
-    process.stdout.write(failure
-      ? 'LoopTroop is not running.\n\n' +
+    if (failure) {
+      process.stdout.write('LoopTroop is not running.\n\n' +
         `The last start was refused at ${failure.at}:\n${failure.message}\n\n` +
-        'Run `looptroop doctor` to check whether that is still the case.\n'
+        'Run `looptroop doctor` to check whether that is still the case.\n')
+      return 1
+    }
+
+    // Someone running from a checkout has the interface open in a browser while
+    // being told nothing is running, and both statements are true of different
+    // things. Say which one this is rather than leaving them to distrust the
+    // answer — this is the report people said looked broken.
+    process.stdout.write(await isDevStackRunning()
+      ? 'LoopTroop is not running.\n\n' +
+        'A development server is serving the interface on this machine. `status`\n' +
+        'reports the installed daemon; `npm run dev` registers none.\n'
       : 'LoopTroop is not running.\n')
     return 1
   }

@@ -4,6 +4,8 @@ import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
 import { resolveInstallInfo } from '../lib/installChannel'
 import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
+import { getLatestToolVersions } from '../lib/toolVersions'
+import { isDevStackRunning } from '../lib/devStack'
 import { probePort } from '../lib/portProbe'
 import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
@@ -28,6 +30,24 @@ interface Check {
   name: string
   status: Status
   detail: string
+  /**
+   * Something is not installed at all, as opposed to installed and unhappy.
+   *
+   * Purely a display distinction: absent things print `✗` and degraded ones `!`,
+   * because "gh is missing" and "gh is not signed in" are different problems and
+   * a single `!` for both makes the list harder to scan. It does **not** change
+   * `status`, so which checks fail — and therefore doctor's exit code, which
+   * scripts gate on — is exactly what it was.
+   */
+  missing?: boolean
+  /**
+   * An extra line printed under the detail, whatever the status.
+   *
+   * `remedy` appears only when something is wrong, which is right for a fix but
+   * wrong for a fact that is useful precisely when everything is fine — the
+   * upgrade command being the case in point.
+   */
+  note?: string
   /** Shown only when the check is not ok. */
   remedy?: string
   /** Present on the schema checks only. */
@@ -36,6 +56,19 @@ interface Check {
 
 const REQUIRED_NODE_MAJOR = 24
 const REQUIRED_NODE_MINOR = 15
+
+/**
+ * "1.2.3 (latest 1.2.4)", or just "1.2.3" when the newest version is unknown or
+ * already in hand.
+ *
+ * Deliberately silent when the two match: a line that repeats itself is noise,
+ * and the useful signal is only ever the difference.
+ */
+function withLatest(current: string, latest: string | null): string {
+  if (latest === null || latest === '') return current
+  const bare = current.replace(/^v/, '')
+  return bare === latest.replace(/^v/, '') ? current : `${current} (latest ${latest})`
+}
 
 /** Enough for a local binary to print its version and exit. */
 const PROBE_TIMEOUT_MS = 5_000
@@ -93,19 +126,43 @@ function timedOutCheck(name: string, command: string, timeoutMs: number): Omit<C
   }
 }
 
-function checkNode(): Check {
+function checkNode(latest: string | null = null): Check {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number)
   const supported = major > REQUIRED_NODE_MAJOR
     || (major === REQUIRED_NODE_MAJOR && minor >= REQUIRED_NODE_MINOR)
 
   return supported
-    ? { name: 'node', status: 'ok', detail: `v${process.versions.node}` }
+    ? { name: 'node', status: 'ok', detail: withLatest(`v${process.versions.node}`, latest) }
     : {
         name: 'node',
         status: 'fail',
-        detail: `v${process.versions.node}`,
+        detail: withLatest(`v${process.versions.node}`, latest),
         remedy: `LoopTroop needs Node ${REQUIRED_NODE_MAJOR}.${REQUIRED_NODE_MINOR}.0 or newer. Install it with nvm: nvm install ${REQUIRED_NODE_MAJOR}`,
       }
+}
+
+/**
+ * npm, which LoopTroop shells out to for the npm-channel upgrade path and which
+ * the engines floor names — so a too-old npm is worth seeing before it fails
+ * mid-upgrade rather than after.
+ */
+function checkNpm(latest: string | null = null): Check {
+  const probe = runProbe('npm', ['--version'], PROBE_TIMEOUT_MS)
+  if (probe.kind === 'timed-out') {
+    return { status: 'warn', ...timedOutCheck('npm', 'npm --version', PROBE_TIMEOUT_MS) }
+  }
+  if (probe.kind !== 'ok') {
+    return {
+      name: 'npm',
+      status: 'warn',
+      missing: true,
+      detail: 'not found on PATH',
+      remedy: 'npm ships with Node. A Node installed without it cannot run the npm upgrade path.',
+    }
+  }
+
+  const current = probe.output.trim().split('\n')[0] ?? 'present'
+  return { name: 'npm', status: 'ok', detail: withLatest(current, latest) }
 }
 
 function checkBinary(name: string, args: string[], required: boolean): Check {
@@ -123,6 +180,7 @@ function checkBinary(name: string, args: string[], required: boolean): Check {
   return {
     name,
     status: required ? 'fail' : 'warn',
+    missing: true,
     detail: 'not found on PATH',
     remedy: installHint(name),
   }
@@ -257,14 +315,15 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
  * server reports no version of its own, and the two can differ: a server that
  * was already up may predate an upgrade of the CLI on PATH.
  */
-function checkOpenCodeVersion(): Check {
+function checkOpenCodeVersion(latest: string | null = null): Check {
   if (resolveSettings().opencodeMode === 'mock') {
     return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
   }
 
   const probe = runProbe('opencode', ['--version'], PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
-    return { name: 'opencode cli', status: 'ok', detail: probe.output.trim().split('\n')[0] || 'present' }
+    const current = probe.output.trim().split('\n')[0] || 'present'
+    return { name: 'opencode cli', status: 'ok', detail: withLatest(current, latest) }
   }
 
   if (probe.kind === 'timed-out') {
@@ -274,6 +333,7 @@ function checkOpenCodeVersion(): Check {
   return {
     name: 'opencode cli',
     status: 'warn',
+    missing: true,
     // A server that is already running can still serve LoopTroop, so a missing
     // binary is only a problem for starting one. Whether that is survivable is
     // decided by `judgeOpenCode`, which can see both facts at once.
@@ -324,10 +384,37 @@ async function checkPort(daemon: DaemonState | null): Promise<Check> {
   }
 }
 
-function checkDaemon(daemon: DaemonState | null): Check {
-  return daemon
-    ? { name: 'daemon', status: 'ok', detail: `running on http://${daemon.host}:${daemon.port} (pid ${daemon.pid})` }
-    : { name: 'daemon', status: 'ok', detail: 'not running' }
+/**
+ * Whether the Vite dev server is up, which is how a checkout serves the
+ * interface without ever registering a daemon.
+ *
+ * Probed by binding rather than by reading a process list: the port is the thing
+ * that actually matters, and it is the same test the port check already trusts.
+ */
+async function checkDaemon(daemon: DaemonState | null): Promise<Check> {
+  if (daemon) {
+    return {
+      name: 'daemon',
+      status: 'ok',
+      detail: `running on http://${daemon.host}:${daemon.port} (pid ${daemon.pid})`,
+    }
+  }
+
+  // "Not running" while the interface is plainly open in a browser is the most
+  // confusing thing doctor can say, and it happens to everyone working from a
+  // checkout: `npm run dev` serves the interface from Vite and never registers a
+  // daemon, so there is genuinely no daemon to report. Say which of the two this
+  // is rather than leaving the reader to doubt the tool.
+  if (await isDevStackRunning()) {
+    return {
+      name: 'daemon',
+      status: 'ok',
+      detail: 'not running — a development server is serving the interface instead',
+      note: 'This reports the installed daemon. `npm run dev` serves the interface itself and registers no daemon.',
+    }
+  }
+
+  return { name: 'daemon', status: 'ok', detail: 'not running' }
 }
 
 type DatabaseInspection =
@@ -454,7 +541,15 @@ async function checkSchema(): Promise<Check> {
         schema: facts,
       }
     default:
-      return { name: 'schema', status: 'ok', detail: `version ${schema.APP_SCHEMA_VERSION}`, schema: facts }
+      // "version 1" alone reads as a version of LoopTroop. Name what it counts,
+      // and where, so the number means something to whoever is reading it.
+      return {
+        name: 'schema',
+        status: 'ok',
+        detail: `database schema v${schema.APP_SCHEMA_VERSION}, matching this LoopTroop`,
+        note: facts.databasePath,
+        schema: facts,
+      }
   }
 }
 
@@ -473,7 +568,10 @@ async function checkSchema(): Promise<Check> {
 async function checkLastStart(): Promise<Check> {
   const failure = readDaemonStartFailure()
   if (!failure) {
-    return { name: 'last start', status: 'ok', detail: 'no refused start recorded' }
+    // Reworded from "no refused start recorded", which read as an empty value
+    // rather than as good news. This check only ever reports a *refusal*, so
+    // when there is none the useful thing to say is that nothing went wrong.
+    return { name: 'last start', status: 'ok', detail: 'no failed start on record' }
   }
 
   // The versions the refusal was about, not what the file says now: this check
@@ -527,9 +625,14 @@ function checkInstallChannel(): Check {
         remedy: `${info.upgradeCommand}. To settle it, set "install": { "channel": "npm" } in ${getSettingsPath()}.`,
       }
     : {
-        name: 'install',
+        name: 'install method',
         status: 'ok',
-        detail: `${info.channel} (upgrade: ${steps})${info.upgradeNote ? `; ${info.upgradeNote}` : ''}`,
+        detail: info.channel,
+        // On its own line rather than parenthesised after the channel: this is
+        // the command a person came to `doctor` to copy, and burying it inside
+        // a sentence next to the channel name made it hard to find and easy to
+        // mistype. `note` prints under the detail even when the check is fine.
+        note: `upgrade: ${steps}${info.upgradeNote ? ` — ${info.upgradeNote}` : ''}`,
       }
 }
 
@@ -580,12 +683,19 @@ export async function runChecks(): Promise<Check[]> {
   // holding the port is our own daemon, and probing twice would be two more
   // HTTP requests for an answer that cannot have changed in between.
   const daemon = await readRunningDaemon()
+  // Started first and awaited late: it is a cached network read, and the local
+  // probes below should not queue behind it. It never rejects and never blocks
+  // longer than one timeout, so the worst case is versions shown without a
+  // "latest" beside them.
+  const latest = getLatestToolVersions()
+  const resolved = await latest
   // Run before the server check, which needs its verdict: an unreachable
   // OpenCode is survivable only when there is a binary left to start one.
-  const opencodeCli = checkOpenCodeVersion()
+  const opencodeCli = checkOpenCodeVersion(resolved.opencode)
 
   return [
-    checkNode(),
+    checkNode(resolved.node),
+    checkNpm(resolved.npm),
     checkBinary('git', ['--version'], true),
     checkBinary('gh', ['--version'], false),
     checkGitHubAuth(),
@@ -597,21 +707,38 @@ export async function runChecks(): Promise<Check[]> {
     opencodeCli,
     await checkOpenCode(daemon, opencodeCli.status === 'ok'),
     await checkPort(daemon),
-    checkDaemon(daemon),
+    await checkDaemon(daemon),
   ]
 }
 
+/**
+ * Bold, but only on a terminal.
+ *
+ * `doctor` output is piped into files and issues at least as often as it is
+ * read live, and escape codes in a pasted log are worse than no emphasis.
+ */
+function bold(text: string): string {
+  return process.stdout.isTTY === true ? `[1m${text}[22m` : text
+}
+
 function versionCheck(update: UpdateStatus): Check {
-  const latest = update.latestVersion ?? 'unavailable'
-  const detail = `current ${update.currentVersion}; latest ${latest}${update.updateAvailable ? ' (update available)' : ''}`
-  if (!update.updateAvailable) return { name: 'version', status: 'ok', detail }
+  // The one version worth emphasising, because it is the only one on this list
+  // the reader can act on directly and the whole reason to run doctor after an
+  // upgrade. The others read as plain facts.
+  const current = bold(update.currentVersion)
+  const detail = update.latestVersion === null
+    ? `${current} (latest unknown)`
+    : withLatest(current, update.updateAvailable ? update.latestVersion : null)
+  if (!update.updateAvailable) return { name: 'looptroop', status: 'ok', detail }
 
   const commands = [update.upgradeFirst, update.upgradeCommand, update.postUpgradeCommand]
     .filter((command): command is string => command !== undefined)
     .map((command) => `\`${command}\``)
     .join(', then ')
   return {
-    name: 'version',
+    name: 'looptroop',
+    // `warn`, so it prints `!` — a newer release is worth noticing and is not a
+    // failure. Nothing on this machine is broken by being one version behind.
     status: 'warn',
     detail,
     remedy: `${commands}.${update.upgradeNote ? ` ${update.upgradeNote}` : ''}`,
@@ -644,7 +771,13 @@ export async function doctorCommand(
 
   const symbol: Record<Status, string> = { ok: '✓', warn: '!', fail: '✗' }
   for (const check of displayedChecks) {
-    process.stdout.write(`${symbol[check.status]} ${check.name.padEnd(15)} ${check.detail}\n`)
+    // Absent beats degraded: a missing tool reads as `✗` whatever its severity,
+    // so "not installed" and "installed but unhappy" are told apart at a glance.
+    const mark = check.missing === true ? '✗' : symbol[check.status]
+    process.stdout.write(`${mark} ${check.name.padEnd(15)} ${check.detail}\n`)
+    if (check.note) {
+      process.stdout.write(`  ↳ ${check.note}\n`)
+    }
     if (check.status !== 'ok' && check.remedy) {
       process.stdout.write(`  ↳ ${check.remedy}\n`)
     }

@@ -998,7 +998,10 @@ async function main(argv) {
     say(`Find it with: ${process.platform === 'win32' ? 'where looptroop' : 'command -v looptroop'}`)
   }
   say('')
-  say('Next: run `looptroop doctor` to check your setup, then `looptroop setup`.')
+  // `open` rather than `setup`: LoopTroop is used through its interface, and
+  // `open` starts the daemon itself and lands the user in it. `setup` attaches a
+  // project from the terminal, which is a thing you may never need to do.
+  say('Next: run `looptroop doctor` to check this machine, then `looptroop open`.')
 }
 
 /**

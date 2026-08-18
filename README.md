@@ -97,12 +97,8 @@ Windows), or choose a directory with `--prefix`.
 **Needs Node and npm already installed.** It never installs Node for you, never
 asks for sudo, and writes nothing outside npm's global prefix.
 
-Add `-s -- --binary` (`-Binary` on Windows) to install the standalone executable
-into `~/.looptroop` instead — one file carrying its own Node runtime. Run the
-same command again to upgrade: it stops a running daemon, replaces the file,
-checks the new one actually runs, and puts the old one back if it does not.
-Note this *still* needs Node to install, because the installer is itself a Node
-program; what it removes is Node as a requirement to **run** LoopTroop.
+There is also a standalone executable that carries its own Node runtime — see
+[Installation](https://www.looptroop.ovh/docs/installation#standalone-executable).
 </details>
 
 <details>
@@ -205,22 +201,6 @@ reach, and a project mounted at its own absolute path. Both are covered on the
 place that tracks which channels are live**, and covers upgrading, uninstalling,
 verifying a download against the checksums each release publishes, and running in
 a container.
-
-### Finding and applying updates
-
-`looptroop --version`, `looptroop status`, `looptroop doctor`, `looptroop start`
-and `looptroop open` all tell you when a newer published GitHub release exists.
-`doctor` always shows the current and latest known versions and names the exact
-upgrade command for the channel that installed this copy. In the interface, the
-version beside the LoopTroop title opens **About**; a small monochrome update icon
-appears there when a newer release is available. About includes the ordered
-upgrade steps and the complete GitHub release notes under **Changelog**.
-
-After upgrading an npm, bun, pnpm, Yarn, Homebrew, Scoop, Chocolatey, AUR or
-source installation, run `looptroop restart` so an existing daemon loads the new
-files. The standalone installer handles that restart transactionally. For a
-container, pulling a new image is not enough: recreate the container with the
-same volumes, ports and environment settings.
 
 ### What you need besides LoopTroop
 

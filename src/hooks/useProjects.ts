@@ -4,6 +4,7 @@ import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
+import { failedResponseError } from '@/lib/fetchError'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
 
 interface Project {
@@ -105,7 +106,7 @@ function removeDeletedProjectTicketCaches(
 
 async function fetchProjects(): Promise<Project[]> {
   const res = await fetch('/api/projects')
-  if (!res.ok) throw new Error('Failed to fetch projects')
+  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch projects')
   const projects = await res.json() as Project[]
   return projects.map((project) => ({
     ...project,

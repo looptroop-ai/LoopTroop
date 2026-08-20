@@ -114,6 +114,76 @@ describe('KanbanBoard', () => {
     vi.useRealTimers()
   })
 
+  /**
+   * A backend that is not answering used to render as the "fetching the
+   * tickets" banner, forever and without a single mention of failure, so an
+   * unreachable daemon was indistinguishable from a slow one.
+   */
+  describe('when the tickets query fails', () => {
+    const failure = new Error('Failed to fetch tickets (HTTP 503: API token not configured)')
+
+    function mockFailedTickets(overrides: Record<string, unknown> = {}) {
+      mockUseTickets.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: failure,
+        refetch: vi.fn(),
+        isFetching: false,
+        ...overrides,
+      })
+      mockUseProjects.mockReturnValue({ data: [] })
+    }
+
+    it('says the tickets could not be loaded instead of claiming to load them', () => {
+      mockFailedTickets()
+      renderWithProviders(<KanbanBoard />)
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Tickets unavailable')
+      expect(screen.queryByText(/LoopTroop is fetching the tickets/)).not.toBeInTheDocument()
+    })
+
+    it('quotes the reason, so the status code is visible without devtools', () => {
+      mockFailedTickets()
+      renderWithProviders(<KanbanBoard />)
+
+      expect(screen.getByRole('alert')).toHaveTextContent('HTTP 503: API token not configured')
+    })
+
+    it('reassures that nothing was deleted, because an empty board reads as data loss', () => {
+      mockFailedTickets()
+      renderWithProviders(<KanbanBoard />)
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Your tickets are not lost')
+    })
+
+    it('refetches when the retry button is used', () => {
+      const refetch = vi.fn()
+      mockFailedTickets({ refetch })
+      renderWithProviders(<KanbanBoard />)
+
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+
+      expect(refetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('disables the retry button while a retry is already in flight', () => {
+      mockFailedTickets({ isFetching: true })
+      renderWithProviders(<KanbanBoard />)
+
+      expect(screen.getByRole('button', { name: /retrying/i })).toBeDisabled()
+    })
+
+    it('still shows the loading banner for a genuinely pending first load', () => {
+      mockUseTickets.mockReturnValue({ data: undefined, isLoading: true, isError: false })
+      mockUseProjects.mockReturnValue({ data: [] })
+      renderWithProviders(<KanbanBoard />)
+
+      expect(screen.getByText(/LoopTroop is fetching the tickets/)).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+  })
+
   it('renders 4 columns', () => {
     const { container } = renderWithProviders(<KanbanBoard />)
     const todo = screen.getByText('To Do')

@@ -9,6 +9,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- The board and the ticket view now say when they could not reach the server, instead of showing "loading…" forever — an unreachable backend no longer looks like a slow one, or like your tickets were deleted.
+
+### Fixed
+- Fixed the Kanban board and the ticket dashboard presenting a failed request as an ongoing one. Both read only the query's loading flag and had no error branch at all, so a backend that was not answering rendered the "LoopTroop is fetching the tickets" banner indefinitely — and, because `refetchOnWindowFocus` is enabled, re-entered it on every window focus. An empty board with no explanation reads as data loss, so the new banner states that the request failed, says the tickets are still on disk, quotes the reason, and offers a retry.
+- Fixed request failures being reported without their cause. Every fetch threw the same sentence regardless of what happened, so a missing API token, a stopped daemon and a deleted ticket were indistinguishable without opening devtools. Ticket, ticket-list and project fetches now carry the HTTP status and the server's own error message — for example `Failed to fetch tickets (HTTP 503: API token not configured)` — and that line is shown in the new banner.
+
 ## 0.5.7 (2026-08-20)
 
 

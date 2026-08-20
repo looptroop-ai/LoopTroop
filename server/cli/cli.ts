@@ -51,14 +51,23 @@ Run \`looptroop <command> --help\` for what a single command does and takes.
 const COMMAND_HELP: Record<string, string> = {
   open: `looptroop open — open the interface
 
-Usage: looptroop open
+Usage: looptroop open [--print-url]
 
 Opens LoopTroop in your browser, starting the daemon first if it is not already
 running, and signs the browser in with a single-use link. This is the normal way
 to use LoopTroop: it is a graphical application, and one command gets you into it.
 
-Nothing to configure. If a daemon is already running, it is reused rather than
-restarted, so open is safe to run repeatedly.
+Options:
+  --print-url    Print the sign-in link instead of opening a browser.
+
+The link is normally kept out of the terminal, because the nonce in it is a live
+credential. It is printed anyway when no browser could be opened, or when one was
+opened and never arrived — over SSH, in WSL, on a machine with no default
+browser — because a page that says "run looptroop open" is no help when open is
+what just failed. Paste it into any browser on this machine.
+
+If a daemon is already running, it is reused rather than restarted, so open is
+safe to run repeatedly.
 
 See also: start (no browser), status (is it running).
 `,
@@ -85,8 +94,6 @@ Usage: looptroop stop
 Asks the daemon to exit, waits for it to actually go, and reports if it did not.
 Any OpenCode process LoopTroop started is stopped with it; one that was already
 running when LoopTroop adopted it is left alone.
-
-Exits non-zero when nothing was running, so a script can tell the difference.
 `,
   restart: `looptroop restart — stop, then start again
 
@@ -109,9 +116,6 @@ Reports whether the *installed daemon* is running, its address, port, process id
 and the OpenCode it is using. Running LoopTroop from a checkout with
 \`npm run dev\` is not the daemon, and is reported as not running even though a
 browser can reach that development server.
-
-Exits 0 when running and 1 when not, so \`looptroop status >/dev/null\` works as a
-test in a script.
 `,
   logs: `looptroop logs — show the daemon log
 
@@ -138,8 +142,6 @@ daemon is running, and whether OpenCode can be reached.
 Each line is marked: a tick for fine, an exclamation for something worth knowing,
 a cross for something that will stop LoopTroop working. Anything not fine carries
 the command that fixes it.
-
-Exits non-zero if any check fails, so it can gate a script.
 `,
   setup: `looptroop setup — attach a project from the terminal
 
@@ -225,6 +227,7 @@ export async function main(argv: string[]): Promise<number> {
         lines: { type: 'string' },
         apply: { type: 'boolean' },
         yes: { type: 'boolean', short: 'y' },
+        'print-url': { type: 'boolean' },
         version: { type: 'boolean' },
         help: { type: 'boolean' },
       },
@@ -307,7 +310,10 @@ export async function main(argv: string[]): Promise<number> {
     case 'open': {
       const { openCommand } = await import('./commands')
       const update = checkCliUpdate()
-      return finishWithUpdate(await openCommand(), update)
+      return finishWithUpdate(
+        await openCommand(values['print-url'] === true ? { printUrl: true } : {}),
+        update,
+      )
     }
     case 'logs': {
       const { logsCommand } = await import('./logsCommand')

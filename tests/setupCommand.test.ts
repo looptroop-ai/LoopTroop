@@ -184,7 +184,7 @@ describe('setup command', () => {
       cwd: '/tmp',
       prompt,
       out: capture().out,
-      open: () => undefined,
+      open: () => ({ opened: true }),
     })
 
     // Attaching a subfolder would attach the same repository twice under two
@@ -203,7 +203,7 @@ describe('setup command', () => {
       cwd: '/repos/demo',
       prompt,
       out: output.out,
-      open: () => undefined,
+      open: () => ({ opened: true }),
     })
 
     expect(daemon.created).toHaveLength(0)
@@ -241,7 +241,7 @@ describe('setup command', () => {
       cwd: '/repos/not-github',
       prompt,
       out: output.out,
-      open: () => undefined,
+      open: () => ({ opened: true }),
     })
 
     expect(daemon.created).toHaveLength(0)
@@ -277,7 +277,7 @@ describe('setup command', () => {
       cwd: '/repos/demo',
       yes: true,
       out: capture().out,
-      open: (url) => opened.push(url),
+      open: (url) => { opened.push(url); return { opened: true } },
     })
 
     expect(daemon.created[0]).toMatchObject({ folderPath: '/repos/demo', ignoreMode: 'repo' })
@@ -295,7 +295,7 @@ describe('setup command', () => {
       cwd: '/repos/demo',
       prompt,
       out: output.out,
-      open: (url) => opened.push(url),
+      open: (url) => { opened.push(url); return { opened: true } },
     })
 
     expect(opened[0]).toContain(`#bootstrap=${daemon.nonce}`)
@@ -313,7 +313,7 @@ describe('setup command', () => {
       cwd: '/repos/demo',
       prompt: null,
       out: output.out,
-      open: () => undefined,
+      open: () => ({ opened: true }),
     })
 
     expect(output.text()).toContain(join(daemon.configDir, 'config.json'))
@@ -361,7 +361,7 @@ describe('setup command', () => {
         cwd: '/repos/demo',
         prompt,
         out: output.out,
-        open: () => undefined,
+        open: () => ({ opened: true }),
       })
 
       expect(code).toBe(1)
@@ -380,7 +380,7 @@ describe('setup command', () => {
         cwd: '/repos/not-a-repo',
         prompt,
         out: output.out,
-        open: () => undefined,
+        open: () => ({ opened: true }),
       })
 
       expect(code).toBe(1)
@@ -398,7 +398,7 @@ describe('setup command', () => {
         cwd: '/repos/demo',
         prompt,
         out: output.out,
-        open: () => undefined,
+        open: () => ({ opened: true }),
       })
 
       expect(code).toBe(1)
@@ -434,7 +434,7 @@ describe('setup command', () => {
         cwd: '/repos/demo',
         prompt,
         out: output.out,
-        open: () => undefined,
+        open: () => ({ opened: true }),
       })
 
       expect(code).toBe(0)

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { execFile } from 'child_process'
 import { access, constants, readdir, stat } from 'fs/promises'
@@ -12,8 +12,12 @@ import {
   clearExistingProjectTickets,
   deleteProject,
   deleteProjectWorktrees,
+  findProjectIdentityConflicts,
+  getAttachedProjectByRoot,
   getProjectWorktreesSize,
   type ExistingProjectMetadata,
+  type ProjectIdentityConflict,
+  ProjectIdentityConflictError,
   getProjectById,
   getProjectRootById,
   listProjectTickets,
@@ -73,6 +77,13 @@ interface GitRepoInfo {
   githubWriteWarning?: string
   hasLoopTroopState?: boolean
   existingProject?: ExistingProjectMetadata | null
+  alreadyAttached?: boolean
+  attachedProject?: {
+    id: number
+    name: string
+    shortname: string
+    folderPath: string
+  }
 }
 
 async function existsAsync(path: string): Promise<boolean> {
@@ -125,6 +136,9 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   const writeAccess = githubRepo ? getGitHubRepoWriteAccess(repoRoot) : null
 
   const state = resolveProjectState(repoRoot)
+  const attachedProject = getAttachedProjectByRoot(repoRoot)
+  const alreadyAttached = findProjectIdentityConflicts({ folderPath: repoRoot })
+    .some((conflict) => conflict.kind === 'folder')
   return {
     isGit: true,
     repoRoot,
@@ -140,7 +154,43 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
       : {}),
     hasLoopTroopState: state.exists,
     existingProject: state.existingProject,
+    alreadyAttached,
+    ...(attachedProject
+      ? {
+          attachedProject: {
+            id: attachedProject.id,
+            name: attachedProject.name,
+            shortname: attachedProject.shortname,
+            folderPath: attachedProject.folderPath,
+          },
+        }
+      : {}),
   }
+}
+
+function describeProjectConflict(conflict: ProjectIdentityConflict): string {
+  const projectLabel = conflict.projectName
+    ? `"${conflict.projectName}"`
+    : `project #${conflict.projectId}`
+
+  if (conflict.kind === 'folder') {
+    return `This directory is already attached as ${projectLabel}.`
+  }
+  if (conflict.kind === 'name') {
+    return `The project name is already used by ${projectLabel}.`
+  }
+  return `The short name is already used by ${projectLabel}.`
+}
+
+function projectConflictResponse(c: Context, conflicts: ProjectIdentityConflict[]) {
+  const hasFolderConflict = conflicts.some((conflict) => conflict.kind === 'folder')
+  const message = conflicts.map(describeProjectConflict).join(' ')
+  return c.json({
+    error: hasFolderConflict ? 'Project already added' : 'Project name or short name already in use',
+    code: hasFolderConflict ? 'PROJECT_ALREADY_ATTACHED' : 'PROJECT_IDENTITY_CONFLICT',
+    message,
+    conflicts,
+  }, 409)
 }
 
 function getProjectPerformanceWarning(folderPath: string): string | null {
@@ -176,6 +226,8 @@ projectRouter.get('/projects/check-git', async (c) => {
         repoRoot: gitInfo.repoRoot,
         hasLoopTroopState: gitInfo.hasLoopTroopState ?? false,
         existingProject: gitInfo.existingProject ?? null,
+        alreadyAttached: gitInfo.alreadyAttached ?? false,
+        attachedProject: gitInfo.attachedProject ?? null,
         message: 'Git repository found, but origin must resolve to github.com.',
         ...warningPayload,
       })
@@ -192,9 +244,13 @@ projectRouter.get('/projects/check-git', async (c) => {
       ...(gitInfo.githubWriteWarning ? { githubWriteWarning: gitInfo.githubWriteWarning } : {}),
       hasLoopTroopState: gitInfo.hasLoopTroopState ?? false,
       existingProject: gitInfo.existingProject ?? null,
-      message: gitInfo.isRepoRoot
-        ? (gitInfo.hasLoopTroopState ? 'Existing LoopTroop project found at repository root' : 'Git repository root selected')
-        : `Subfolder inside Git repository (root: ${gitInfo.repoRoot})`,
+      alreadyAttached: gitInfo.alreadyAttached ?? false,
+      attachedProject: gitInfo.attachedProject ?? null,
+      message: gitInfo.alreadyAttached
+        ? `Project already added${gitInfo.attachedProject ? ` as "${gitInfo.attachedProject.name}"` : ''}`
+        : gitInfo.isRepoRoot
+          ? (gitInfo.hasLoopTroopState ? 'Existing LoopTroop project found at repository root' : 'Git repository root selected')
+          : `Subfolder inside Git repository (root: ${gitInfo.repoRoot})`,
       ...warningPayload,
     })
   }
@@ -274,6 +330,16 @@ projectRouter.post('/projects', async (c) => {
     }, 400)
   }
 
+  const projectRootPath = repoRoot ?? parsed.data.folderPath
+  const conflicts = findProjectIdentityConflicts({
+    folderPath: projectRootPath,
+    name: parsed.data.name,
+    shortname: parsed.data.shortname,
+  })
+  if (conflicts.length > 0) {
+    return projectConflictResponse(c, conflicts)
+  }
+
   const githubRepo = repoRoot ? parseGitHubRemoteUrl(await readOriginRemoteUrlAsync(repoRoot)) : null
   if (!githubRepo) {
     return c.json({
@@ -282,7 +348,6 @@ projectRouter.post('/projects', async (c) => {
     }, 400)
   }
 
-  const projectRootPath = repoRoot ?? parsed.data.folderPath
   const projectState = resolveProjectState(projectRootPath)
   try {
     const action = parsed.data.existingStateAction ?? 'restore'
@@ -296,6 +361,9 @@ projectRouter.post('/projects', async (c) => {
       : attachProject(input)
     return c.json(result, 201)
   } catch (err) {
+    if (err instanceof ProjectIdentityConflictError) {
+      return projectConflictResponse(c, err.conflicts)
+    }
     return c.json({ error: 'Failed to attach project', details: String(err) }, 500)
   }
 })
@@ -309,9 +377,16 @@ projectRouter.patch('/projects/:id', async (c) => {
     return c.json({ error: 'Invalid input', details: parsed.error.flatten() }, 400)
   }
 
-  const result = updateProject(id, parsed.data)
-  if (!result) return c.json({ error: 'Project not found' }, 404)
-  return c.json(result)
+  try {
+    const result = updateProject(id, parsed.data)
+    if (!result) return c.json({ error: 'Project not found' }, 404)
+    return c.json(result)
+  } catch (err) {
+    if (err instanceof ProjectIdentityConflictError) {
+      return projectConflictResponse(c, err.conflicts)
+    }
+    throw err
+  }
 })
 
 projectRouter.get('/projects/:id/worktrees/size', async (c) => {

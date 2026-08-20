@@ -81,7 +81,10 @@ describe('AboutDialog', () => {
 
     expect(screen.getByText(`v${packageJson.version}`)).toBeInTheDocument()
     expect(screen.getByText('v0.6.0')).toBeInTheDocument()
-    expect(screen.getByText('npm install -g looptroop@latest')).toBeInTheDocument()
+    // Twice now, deliberately: once as the upgrade command for this install
+    // channel, which is shown whether or not an update is waiting, and once as a
+    // numbered step in the how-to-update list.
+    expect(screen.getAllByText('npm install -g looptroop@latest')).toHaveLength(2)
     expect(screen.getByText('looptroop restart')).toBeInTheDocument()
 
     const changelog = screen.getByRole('link', { name: /changelog/i })

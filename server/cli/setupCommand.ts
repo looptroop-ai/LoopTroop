@@ -4,7 +4,7 @@ import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { getSettingsPath } from '../lib/appSettings'
 import { getDaemonLogPath, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppDbPath } from '../db/appDbPath'
-import { mintBootstrapUrl, openInBrowser, readRunningDaemon, startCommand } from './commands'
+import { mintBootstrapUrl, openInBrowser, readRunningDaemon, startCommand, type BrowserLaunch } from './commands'
 import type { IgnoreMode } from '../git/repository'
 
 /** Asks one question. Returns `fallback` when the user just presses enter. */
@@ -19,7 +19,7 @@ export interface SetupOptions {
   prompt?: SetupPrompt | null
   out?: (text: string) => void
   /** Injected by tests so no browser is launched. */
-  open?: (url: string) => void
+  open?: (url: string) => BrowserLaunch | Promise<BrowserLaunch>
 }
 
 interface ProjectSummary {
@@ -262,7 +262,7 @@ async function stepBrowser(
   prompt: SetupPrompt | null,
   out: (text: string) => void,
   daemon: DaemonState | null,
-  open: (url: string) => void,
+  open: (url: string) => BrowserLaunch | Promise<BrowserLaunch>,
 ): Promise<Unfinished> {
   out('4. Browser\n')
 
@@ -281,14 +281,23 @@ async function stepBrowser(
     return null
   }
 
-  const url = await mintBootstrapUrl(daemon)
-  if (!url) {
+  const link = await mintBootstrapUrl(daemon)
+  if (!link) {
     out('   Could not obtain a sign-in link. Run `looptroop open` to try again.\n')
     // A running daemon that will not mint a nonce leaves no way in at all.
     return 'no sign-in link could be obtained from the daemon'
   }
 
-  open(url)
+  const launch = await open(link.url)
+  if (!launch.opened) {
+    // Same reasoning as `open`: the nonce is a credential and normally stays out
+    // of scrollback, but a browser that did not open leaves nothing else to go
+    // on, and setup has just told the user this is how they get in.
+    out(`   No browser could be opened${launch.reason === undefined ? '' : ` (${launch.reason})`}. Sign in with this link:\n`)
+    out(`   ${link.url}\n`)
+    return null
+  }
+
   // The origin, never the URL: the nonce in it is a credential, and this line
   // ends up in scrollback, in screenshots and in pasted bug reports.
   out(`   Opened http://${daemon.host}:${daemon.port}\n`)

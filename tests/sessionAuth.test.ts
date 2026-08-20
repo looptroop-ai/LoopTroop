@@ -219,6 +219,60 @@ describe('daemon session auth', () => {
     expect(response.status).toBe(401)
   })
 
+  /**
+   * How `looptroop open` finds out whether the browser it launched arrived. It
+   * cannot be told any other way: no platform reports back from an opener.
+   */
+  describe('reporting whether a sign-in link was used', () => {
+    async function askStatus(app: Hono, credentials: SessionCredentials, nonce: string) {
+      return app.request('/api/auth/bootstrap/status', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credentials.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ nonce }),
+      })
+    }
+
+    it('reports a fresh nonce as pending and a spent one as not', async () => {
+      const credentials = createSessionCredentials()
+      const app = createApp({ mode: 'production', credentials, clientDir: makeClientDir() })
+      const nonce = await issueNonce(app, credentials)
+
+      const before = await askStatus(app, credentials, nonce)
+      expect(before.status).toBe(200)
+      expect(await before.json()).toEqual({ pending: true })
+
+      await app.request('/api/auth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nonce }),
+      })
+
+      const after = await askStatus(app, credentials, nonce)
+      expect(await after.json()).toEqual({ pending: false })
+    })
+
+    it('reports an unknown nonce as not pending rather than failing', async () => {
+      const credentials = createSessionCredentials()
+      const app = createApp({ mode: 'production', credentials, clientDir: makeClientDir() })
+
+      const response = await askStatus(app, credentials, 'never-issued')
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ pending: false })
+    })
+
+    it('needs the API token, like minting does', async () => {
+      const response = await makeApp().request('/api/auth/bootstrap/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nonce: 'anything' }),
+      })
+      expect(response.status).toBe(401)
+    })
+  })
+
   it('exposes health without credentials for container probes', async () => {
     const response = await makeApp().request('/api/health')
     expect(response.status).toBe(200)

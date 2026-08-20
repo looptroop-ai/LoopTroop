@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openCommand } from '../server/cli/commands'
+import { browserOpener, openCommand } from '../server/cli/commands'
 import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 
 /**
@@ -61,11 +61,26 @@ describe('opening the interface', () => {
     apiToken: string
     /** When false, minting a sign-in nonce fails the way a wedged daemon would. */
     mintsNonce?: boolean
+    /**
+     * Whether the minted nonce is reported as still waiting to be spent — which
+     * is what a browser that never arrived looks like from the CLI.
+     */
+    staysPending?: boolean
   }): Promise<number> {
     const server = createServer((req, res) => {
       if (req.url === '/api/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ status: 'ok', instanceId: options.instanceId }))
+        return
+      }
+
+      if (req.url === '/api/auth/bootstrap/status' && req.method === 'POST') {
+        if (req.headers.authorization !== `Bearer ${options.apiToken}`) {
+          res.writeHead(401).end('{}')
+          return
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ pending: options.staysPending === true }))
         return
       }
 
@@ -113,7 +128,9 @@ describe('opening the interface', () => {
     writeState(configDir, makeState({ pid, port }))
 
     const opened: string[] = []
-    const code = await openCommand({ open: (url) => { opened.push(url) } })
+    const code = await openCommand({
+      open: (url) => { opened.push(url); return { opened: true } },
+    })
 
     expect(code).toBe(0)
     expect(opened).toHaveLength(1)
@@ -132,11 +149,128 @@ describe('opening the interface', () => {
     writeState(configDir, makeState({ pid, port }))
 
     const opened: string[] = []
-    const code = await openCommand({ open: (url) => { opened.push(url) } })
+    const code = await openCommand({
+      open: (url) => { opened.push(url); return { opened: true } },
+    })
 
     // A browser pointed at an unauthenticated origin would 401 on every
     // request, which reads as a broken app rather than a missing credential.
     expect(code).toBe(1)
     expect(opened).toEqual([])
+  })
+
+  /** stdout is the thing under test in the cases below. */
+  function captureStdout(): { text: () => string; restore: () => void } {
+    const original = process.stdout.write.bind(process.stdout)
+    let text = ''
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      text += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString()
+      return true
+    }) as typeof process.stdout.write
+    return { text: () => text, restore: () => { process.stdout.write = original } }
+  }
+
+  it('prints the sign-in link when no browser could be opened', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeState(configDir, makeState({ pid, port }))
+
+    const stdout = captureStdout()
+    let code: number
+    try {
+      code = await openCommand({
+        open: () => ({ opened: false, reason: 'no application is associated with http' }),
+      })
+    } finally {
+      stdout.restore()
+    }
+
+    // The whole point: a machine with no browser must still be able to get in.
+    expect(code).toBe(0)
+    expect(stdout.text()).toContain(`http://127.0.0.1:${port}/#bootstrap=nonce-under-test`)
+    expect(stdout.text()).toContain('no application is associated with http')
+  })
+
+  it('prints the sign-in link when a browser opened and never signed in', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({
+      instanceId: 'instance-under-test',
+      apiToken: 'test-api-token',
+      staysPending: true,
+    })
+    writeState(configDir, makeState({ pid, port }))
+
+    const stdout = captureStdout()
+    let code: number
+    try {
+      code = await openCommand({ open: () => ({ opened: true }), waitMs: 400 })
+    } finally {
+      stdout.restore()
+    }
+
+    // Launching a browser is fire-and-forget, so "it exited 0" is not the same
+    // as "someone is looking at LoopTroop".
+    expect(code).toBe(0)
+    expect(stdout.text()).toContain(`http://127.0.0.1:${port}/#bootstrap=nonce-under-test`)
+  })
+
+  it('keeps the nonce out of the terminal when the browser did sign in', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeState(configDir, makeState({ pid, port }))
+
+    const stdout = captureStdout()
+    let code: number
+    try {
+      code = await openCommand({ open: () => ({ opened: true }), waitMs: 2_000 })
+    } finally {
+      stdout.restore()
+    }
+
+    expect(code).toBe(0)
+    expect(stdout.text()).toBe(`Opened http://127.0.0.1:${port}\n`)
+    expect(stdout.text()).not.toContain('bootstrap=')
+  })
+
+  it('prints the link and opens nothing with --print-url', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeState(configDir, makeState({ pid, port }))
+
+    const opened: string[] = []
+    const stdout = captureStdout()
+    let code: number
+    try {
+      code = await openCommand({
+        open: (url) => { opened.push(url); return { opened: true } },
+        printUrl: true,
+      })
+    } finally {
+      stdout.restore()
+    }
+
+    expect(code).toBe(0)
+    expect(opened).toEqual([])
+    expect(stdout.text()).toContain(`http://127.0.0.1:${port}/#bootstrap=nonce-under-test`)
+  })
+
+  describe('the command that opens a URL', () => {
+    it('gives Windows start an empty title so the URL is not taken for one', () => {
+      const { command, args } = browserOpener('http://127.0.0.1:3000/#bootstrap=abc', 'win32')
+
+      expect(command).toBe('cmd')
+      expect(args).toEqual(['/c', 'start', '', 'http://127.0.0.1:3000/#bootstrap=abc'])
+    })
+
+    it('hands the URL straight to the opener everywhere else', () => {
+      expect(browserOpener('http://x/#bootstrap=abc', 'darwin'))
+        .toEqual({ command: 'open', args: ['http://x/#bootstrap=abc'] })
+      expect(browserOpener('http://x/#bootstrap=abc', 'linux'))
+        .toEqual({ command: 'xdg-open', args: ['http://x/#bootstrap=abc'] })
+    })
   })
 })

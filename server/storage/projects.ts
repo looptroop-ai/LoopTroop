@@ -46,6 +46,26 @@ export interface ExistingProjectMetadata {
 
 export type ExistingStateAction = 'restore' | 'clear_tickets' | 'start_fresh'
 
+export type ProjectConflictKind = 'folder' | 'name' | 'shortname'
+
+export interface ProjectIdentityConflict {
+  kind: ProjectConflictKind
+  projectId: number
+  projectName: string | null
+  projectShortname: string | null
+  folderPath: string
+}
+
+export class ProjectIdentityConflictError extends Error {
+  readonly conflicts: ProjectIdentityConflict[]
+
+  constructor(conflicts: ProjectIdentityConflict[]) {
+    super('Project identity conflicts with an existing attached project')
+    this.name = 'ProjectIdentityConflictError'
+    this.conflicts = conflicts
+  }
+}
+
 interface ProjectAttachmentInput {
   folderPath: string
   name: string
@@ -85,6 +105,66 @@ function readLocalProject(projectRoot: string): LocalProjectRow | undefined {
   if (!projectDb) return undefined
   const { db } = projectDb
   return db.select().from(projects).limit(1).get()
+}
+
+function normalizeProjectName(name: string): string {
+  return name.trim().toLowerCase()
+}
+
+function normalizeProjectShortname(shortname: string): string {
+  return shortname.trim().toUpperCase()
+}
+
+interface ProjectIdentityConflictInput {
+  folderPath?: string
+  name?: string
+  shortname?: string
+  excludeProjectId?: number
+}
+
+/**
+ * Finds conflicts against the app-level attached-project registry. Local
+ * project state without an attached row is intentionally ignored: that is the
+ * state the attachment flow exists to recover.
+ */
+export function findProjectIdentityConflicts(input: ProjectIdentityConflictInput): ProjectIdentityConflict[] {
+  const normalizedFolder = input.folderPath ? normalizeFolderPath(input.folderPath) : null
+  const normalizedName = input.name?.trim() ? normalizeProjectName(input.name) : null
+  const normalizedShortname = input.shortname?.trim() ? normalizeProjectShortname(input.shortname) : null
+  const conflicts: ProjectIdentityConflict[] = []
+
+  for (const attached of appDb.select().from(attachedProjects).all()) {
+    const project = readLocalProject(attached.folderPath)
+    if (attached.id === input.excludeProjectId) continue
+
+    const base = {
+      projectId: attached.id,
+      projectName: project?.name ?? null,
+      projectShortname: project?.shortname ?? null,
+      folderPath: attached.folderPath,
+    }
+
+    if (normalizedFolder && normalizeFolderPath(attached.folderPath) === normalizedFolder) {
+      conflicts.push({ kind: 'folder', ...base })
+    }
+    if (project && normalizedName && normalizeProjectName(project.name) === normalizedName) {
+      conflicts.push({ kind: 'name', ...base })
+    }
+    if (project && normalizedShortname && normalizeProjectShortname(project.shortname) === normalizedShortname) {
+      conflicts.push({ kind: 'shortname', ...base })
+    }
+  }
+
+  return conflicts
+}
+
+export function getAttachedProjectByRoot(projectRoot: string): PublicProject | undefined {
+  const normalizedRoot = normalizeFolderPath(projectRoot)
+  const attached = appDb.select().from(attachedProjects).all()
+    .find((candidate) => normalizeFolderPath(candidate.folderPath) === normalizedRoot)
+  if (!attached) return undefined
+  const project = readLocalProject(attached.folderPath)
+  return project ? hydrateProject(attached, project) : undefined
 }
 
 function ensureAttachedProject(projectRoot: string): AttachedProjectRow {
@@ -285,6 +365,12 @@ export function getProjectContextById(id: number): ProjectContext | undefined {
 export function updateProject(id: number, patch: Partial<Pick<LocalProjectRow, 'name' | 'icon' | 'color' | 'councilMembers' | 'manualQaOverride' | 'gitHookPolicy' | 'maxIterations' | 'perIterationTimeout' | 'executionSetupTimeout' | 'councilResponseTimeout' | 'minCouncilQuorum' | 'interviewQuestions'>>): PublicProject | undefined {
   const context = getProjectContextById(id)
   if (!context) return undefined
+  if (patch.name !== undefined) {
+    const conflicts = findProjectIdentityConflicts({ name: patch.name, excludeProjectId: id })
+    if (conflicts.length > 0) {
+      throw new ProjectIdentityConflictError(conflicts)
+    }
+  }
   context.projectDb.update(projects)
     .set({ ...patch, updatedAt: new Date().toISOString() })
     .where(eq(projects.id, context.project.id))

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { useCreateProject, useUpdateProject, useDeleteProject } from '@/hooks/useProjects'
+import { useCreateProject, useUpdateProject, useDeleteProject, useProjects } from '@/hooks/useProjects'
 import type { ExistingProjectPreview, ExistingStateAction, IgnoreMode, Project } from '@/hooks/useProjects'
 import { useToast } from '@/components/shared/useToast'
 import { ArrowLeft, HardDrive, Trash2, CheckCircle2, XCircle, CircleDot, AlertTriangle, ChevronDown } from 'lucide-react'
@@ -38,6 +38,13 @@ interface GitCheckResponse {
   repoRoot?: string
   hasLoopTroopState?: boolean
   existingProject?: ExistingProjectPreview | null
+  alreadyAttached?: boolean
+  attachedProject?: {
+    id: number
+    name: string
+    shortname: string
+    folderPath: string
+  } | null
 }
 
 function formatRelativeTime(dateStr: string) {
@@ -60,6 +67,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const deleteProject = useDeleteProject()
   const { addToast } = useToast()
   const { data: profile } = useProfile()
+  const { data: projects = [] } = useProjects()
   const isEditing = !!project
   const [name, setName] = useState(project?.name ?? '')
   const [shortname, setShortname] = useState(project?.shortname ?? '')
@@ -81,11 +89,21 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const restorePrefillKeyRef = useRef<string | null>(null)
   const closeView = onBack ?? onClose
-  const restoreMode = !isEditing && gitInfo.hasLoopTroopState === true && !!gitInfo.existingProject
+  const restoreMode = !isEditing
+    && !gitInfo.alreadyAttached
+    && gitInfo.hasLoopTroopState === true
+    && !!gitInfo.existingProject
   const isSavedShortnameLocked = restoreMode && existingStateAction !== 'start_fresh'
   const gitStatus = gitInfo.status
   const gitMessage = gitInfo.message ?? ''
   const projectStatePath = `${folder.replace(/[\\/]+$/, '')}/.looptroop`
+  const duplicateNameProject = !isEditing && name.trim()
+    ? projects.find((existingProject) => existingProject.name.trim().toLowerCase() === name.trim().toLowerCase())
+    : undefined
+  const duplicateShortnameProject = !isEditing && shortname.trim()
+    ? projects.find((existingProject) => existingProject.shortname.trim().toUpperCase() === shortname.trim().toUpperCase())
+    : undefined
+  const hasProjectIdentityConflict = !!duplicateNameProject || !!duplicateShortnameProject
 
   useEffect(() => {
     if (!folder.trim()) {
@@ -106,6 +124,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           if (cancelled) return
           if (
             !isEditing
+            && !data.alreadyAttached
             && data.hasLoopTroopState === true
             && data.existingProject
             && data.repoRoot
@@ -204,6 +223,8 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
       return
     }
 
+    if (gitInfo.alreadyAttached || hasProjectIdentityConflict) return
+
     if (restoreMode && existingStateAction !== 'restore') {
       setIsExistingStateConfirmOpen(true)
       return
@@ -265,10 +286,19 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
-                className="w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-medium text-foreground transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none"
+                className={cn(
+                  'w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-medium text-foreground transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none',
+                  duplicateNameProject && 'border-destructive focus:border-destructive focus-visible:ring-destructive/30',
+                )}
+                aria-invalid={duplicateNameProject ? true : undefined}
                 autoComplete="off"
                 required
               />
+              {duplicateNameProject && (
+                <p role="alert" className="mt-1 text-xs text-destructive">
+                  A project named <span className="font-medium">{name.trim()}</span> is already added. Choose a different project name.
+                </p>
+              )}
             </div>
             <div className="w-32">
               <label htmlFor="project-shortname" className="text-sm font-medium block mb-1">Short Name</label>
@@ -281,12 +311,21 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   type="text"
                   value={shortname}
                   onChange={e => setShortname(e.target.value.toUpperCase().slice(0, 5))}
-                  className="w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-mono font-medium text-foreground uppercase transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none"
+                  className={cn(
+                    'w-full rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm font-mono font-medium text-foreground uppercase transition-all focus:border-brand-500/50 focus-visible:ring-2 focus-visible:ring-brand-500/30 outline-none',
+                    duplicateShortnameProject && 'border-destructive focus:border-destructive focus-visible:ring-destructive/30',
+                  )}
+                  aria-invalid={duplicateShortnameProject ? true : undefined}
                   autoComplete="off"
                   minLength={3}
                   maxLength={5}
                   required
                 />
+              )}
+              {duplicateShortnameProject && (
+                <p role="alert" className="mt-1 text-xs text-destructive">
+                  The short name <span className="font-mono font-medium">{shortname.trim().toUpperCase()}</span> is already used by <span className="font-medium">{duplicateShortnameProject.name}</span>. Choose a different short name.
+                </p>
               )}
               {isSavedShortnameLocked && (
                 <p className="mt-1 text-xs text-muted-foreground">Kept from the existing project identity.</p>
@@ -477,6 +516,21 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   </p>
                 )}
               </div>
+              {gitInfo.alreadyAttached && (
+                <div role="alert" className="rounded-lg border border-destructive/50 bg-destructive/5 p-4 text-sm">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                    <div>
+                      <p className="font-medium text-destructive">Project already added</p>
+                      <p className="mt-1 text-xs text-destructive/90">
+                        This directory is already attached
+                        {gitInfo.attachedProject ? ` as ${gitInfo.attachedProject.name} (${gitInfo.attachedProject.shortname})` : ''}.
+                        Choose a different repository or open the existing project from the project list.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
               {gitInfo.performanceWarning && (
                 <div className="rounded-lg border border-amber-300/70 bg-amber-50/70 p-4 text-sm dark:border-amber-700/60 dark:bg-amber-950/20">
                   <div className="flex items-start gap-3">
@@ -505,7 +559,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               )}
             </div>
           )}
-          {!isEditing && gitStatus === 'valid' && (
+          {!isEditing && gitStatus === 'valid' && !gitInfo.alreadyAttached && (
             <div className="space-y-2">
               <div>
                 <label className="text-sm font-medium">Ignore LoopTroop&apos;s folders</label>
@@ -714,7 +768,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           <Button type="button" variant="outline" onClick={closeView} className="rounded-lg">Cancel</Button>
           <Button
             type="submit"
-            disabled={isBusy || (!isEditing && gitStatus !== 'valid')}
+            disabled={isBusy || (!isEditing && (gitStatus !== 'valid' || gitInfo.alreadyAttached || hasProjectIdentityConflict))}
             className="rounded-lg bg-foreground text-background font-semibold hover:opacity-95 active:scale-[0.98] shadow-2xs"
           >
             {isEditing

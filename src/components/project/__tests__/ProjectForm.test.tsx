@@ -24,11 +24,15 @@ const mockProjectMutations = vi.hoisted(() => ({
 }))
 
 const mockAddToast = vi.hoisted(() => vi.fn())
+const mockProjectList = vi.hoisted(() => ({
+  data: [] as Array<{ name: string; shortname: string }>,
+}))
 
 vi.mock('@/hooks/useProjects', () => ({
   useCreateProject: () => mockProjectMutations.create,
   useUpdateProject: () => mockProjectMutations.update,
   useDeleteProject: () => mockProjectMutations.remove,
+  useProjects: () => ({ data: mockProjectList.data }),
   useProjectWorktreesSize: () => ({
     data: undefined,
     isFetching: false,
@@ -89,6 +93,56 @@ describe('ProjectForm', () => {
     mockProjectMutations.update.isPending = false
     mockProjectMutations.remove.isPending = false
     mockAddToast.mockReset()
+    mockProjectList.data = []
+  })
+
+  it('warns and blocks adding a directory that is already attached', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      json: async () => ({
+        isGit: true,
+        status: 'valid',
+        message: 'Project already added as Existing Project',
+        alreadyAttached: true,
+        attachedProject: {
+          id: 1,
+          name: 'Existing Project',
+          shortname: 'EXI',
+          folderPath: '/work/existing',
+        },
+      }),
+    })))
+
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Another Name' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'NEW' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/existing' } })
+
+    expect(await screen.findByText('Project already added')).toBeInTheDocument()
+    expect(screen.getByText(/already attached as Existing Project \(EXI\)/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create Project' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
+  })
+
+  it('warns and blocks duplicate project names and short names', async () => {
+    mockProjectList.data = [{ name: 'Existing Project', shortname: 'EXI' }]
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
+    })))
+
+    render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
+    fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'existing project' } })
+    fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'exi' } })
+    fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/new-project' } })
+
+    const alerts = screen.getAllByRole('alert').map((alert) => alert.textContent ?? '')
+    expect(alerts).toContain('A project named existing project is already added. Choose a different project name.')
+    expect(alerts).toContain('The short name EXI is already used by Existing Project. Choose a different short name.')
+    expect(await screen.findByRole('button', { name: 'Create Project' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+    expect(mockProjectMutations.create.mutate).not.toHaveBeenCalled()
   })
 
   it('shows the WSL mounted-drive warning returned by project path validation', async () => {

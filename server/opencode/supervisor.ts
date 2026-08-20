@@ -192,13 +192,27 @@ export class OpenCodeSupervisor {
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
       detached: process.platform !== 'win32',
+      // Through a shell on Windows, because `opencode` is only an `.exe` when it
+      // came from the official installer or Scoop. Installed with npm, bun or
+      // pnpm it is `opencode.cmd`, which `CreateProcess` cannot find — it
+      // appends `.exe` and ignores `PATHEXT` — and which Node refuses to launch
+      // directly since the BatBadBut hardening. Without this, every Windows user
+      // who installed OpenCode from npm gets `OpenCodeMissingError` for a server
+      // that is sitting on their PATH.
+      //
+      // cmd.exe re-parses the command line, which is safe here only because both
+      // interpolations come from a parsed URL: a hostname cannot contain a space
+      // or a shell metacharacter, and a port is digits.
+      shell: process.platform === 'win32',
     })
 
     const spawnFailed = new Promise<never>((_, reject) => {
       child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))
     })
 
-    // An immediate exit almost always means the binary is missing.
+    // An immediate exit almost always means the binary is missing — including
+    // under the Windows shell above, where a missing command is not a spawn
+    // error at all: cmd.exe starts, prints "is not recognized" and exits 9009.
     const exitedEarly = new Promise<never>((_, reject) => {
       child.once('exit', (code) => {
         if (!this.stopping) reject(new OpenCodeMissingError(this.options.baseUrl))
@@ -231,6 +245,12 @@ export class OpenCodeSupervisor {
       void this.handleUnexpectedExit()
     })
 
+    // On Windows this is the cmd.exe wrapper's pid rather than OpenCode's, and
+    // that is safe on every use it is put to: `cmd /c` waits for the command it
+    // ran, so liveness and the exit event still describe OpenCode, and both stop
+    // paths escalate to `killProcessTree`, which is `taskkill /T` and reaches
+    // through the wrapper. Only `status` is affected, where it is the pid of the
+    // process LoopTroop actually started.
     return { kind: 'managed', baseUrl: this.options.baseUrl, pid: child.pid ?? 0 }
   }
 

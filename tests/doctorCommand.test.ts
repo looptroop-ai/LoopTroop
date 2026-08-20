@@ -122,13 +122,12 @@ describe('doctor command', () => {
       release: null,
     })
 
-    // The whole point of the format: a version equal to the newest carries no
-    // "(latest …)", so the only versions drawing the eye are the actionable ones.
-    // Scoped to this line — other tools on the report may legitimately be behind.
+    // Both numbers, always — "you are on the newest" is the answer being asked
+    // for, and omitting it leaves the reader unsure the check ran at all. What
+    // marks a version worth acting on is the emphasis, not its presence.
     const looptroopLine = stdout.text().split('\n').find((line) => line.includes('looptroop '))
     expect(looptroopLine).toBeDefined()
-    expect(looptroopLine).toContain(APP_VERSION)
-    expect(looptroopLine).not.toContain('latest')
+    expect(looptroopLine).toContain(`${APP_VERSION} (latest ${APP_VERSION})`)
   })
 
   it('includes structured update facts in doctor JSON', async () => {

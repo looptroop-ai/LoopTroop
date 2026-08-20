@@ -321,7 +321,10 @@ jobs:
   # here-string that swallowed its terminator all pass the unit tests and fail on
   # a user's first command. `--tarball`, not the network path, because hitting
   # the GitHub API from every runner on every push is slow and rate-limited; the
-  # network path is proved once, against a real release.
+  # network path is proved once against a real release, by the
+  # `smoke-installer-network` job in `release.yml` — which runs the published
+  # one-liner after `finalize` has un-drafted the release. That claim stood here
+  # for several releases before any job made it true.
   smoke-installer:
     name: Installer script (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -349,6 +352,15 @@ jobs:
 
       - name: Install through the real installer wrapper
         run: node scripts/smoke-installer.mjs
+
+      # Windows PowerShell 5.1, which is what a user who has never installed
+      # PowerShell 7 runs `irm .../install.ps1 | iex` in. It is a different
+      # runtime from pwsh, and it is the one that ships with Windows, so the
+      # documented one-liner has to work there — the step above proves only
+      # pwsh.
+      - name: Install through the wrapper under Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        run: node scripts/smoke-installer.mjs --shell powershell
 
   # The roadmap has claimed since it was written that `bun add -g` and
   # `pnpm add -g` work natively, and until now nothing had ever run either. They

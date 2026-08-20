@@ -43,8 +43,21 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
   const updateDurationPart = (part: keyof DurationParts, rawValue: string) => {
     if (!duration || rawValue === '') return
     const value = Number(rawValue)
-    if (!Number.isInteger(value) || value < 0) return
-    if (part === 'seconds' && value > 59) return
+    if (!Number.isInteger(value)) return
+
+    // Do not silently discard an out-of-range edit. Keep an invalid canonical
+    // value so the shared field validator can explain the boundary and block
+    // saving, just as it does when the main seconds input is edited directly.
+    if (value < 0) {
+      const attemptedTotal = (duration.minutes * 60) + value
+      onChange(fieldKey, String(Math.min(attemptedTotal, cfg.min - 1)))
+      return
+    }
+    if (part === 'seconds' && value > 59) {
+      const attemptedTotal = (duration.minutes * 60) + value
+      onChange(fieldKey, String(Math.max(attemptedTotal, cfg.max + 1)))
+      return
+    }
 
     const next = { ...duration, [part]: value }
     onChange(fieldKey, String((next.minutes * 60) + next.seconds))
@@ -81,6 +94,9 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
         >
           <input
             type="number"
+            min={cfg.min}
+            max={cfg.max}
+            step={1}
             aria-label={cfg.label}
             value={rawNumeric[fieldKey]}
             onChange={e => onChange(fieldKey, e.target.value)}
@@ -102,7 +118,7 @@ export function NumericField({ fieldKey, rawNumeric, onChange, hint, tooltip }: 
                   value={duration?.[part] ?? ''}
                   disabled={error !== null}
                   onChange={e => updateDurationPart(part, e.target.value)}
-                  className="w-10 rounded border border-transparent bg-transparent px-1 py-1 text-right text-xs text-foreground outline-none transition-colors hover:border-input focus:border-input focus:bg-background disabled:cursor-not-allowed disabled:opacity-50"
+                  className="number-input-no-spinner w-10 rounded border border-transparent bg-transparent px-1 py-1 text-right text-xs text-foreground outline-none transition-colors hover:border-input focus:border-input focus:bg-background disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <span>{unit}</span>
               </span>

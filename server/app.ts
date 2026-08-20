@@ -235,6 +235,17 @@ export function createApp(options: CreateAppOptions = {}): Hono {
     // token may mint a nonce, which is how `looptroop open` opens a browser
     // without the daemon ever writing a usable secret to its log.
     app.post('/api/auth/bootstrap', (c) => c.json({ nonce: nonces.issue() }))
+
+    // Behind it for the same reason, and answering the question `open` could not
+    // ask before: did the browser I launched actually get here? Launching one is
+    // fire-and-forget on every platform — no opener reports back — so without
+    // this the CLI could only claim success and leave a user who got no browser
+    // staring at a signed-out page with no link to reach for.
+    app.post('/api/auth/bootstrap/status', async (c) => {
+      const body = await c.req.json().catch(() => null) as { nonce?: unknown } | null
+      const candidate = typeof body?.nonce === 'string' ? body.nonce : ''
+      return c.json({ pending: candidate !== '' && nonces.isOutstanding(candidate) })
+    })
   } else {
     app.use('/api/*', createApiAuthMiddleware(options.apiToken ? { token: options.apiToken } : {}))
   }

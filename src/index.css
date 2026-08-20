@@ -241,6 +241,17 @@ body {
   @apply text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground;
 }
 
+.number-input-no-spinner {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.number-input-no-spinner::-webkit-inner-spin-button,
+.number-input-no-spinner::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .scroll-area-content-block [data-radix-scroll-area-viewport] > div {
   display: block !important;
   box-sizing: border-box;
@@ -248,4 +259,3 @@ body {
   max-width: 100%;
   min-width: 0;
 }
-

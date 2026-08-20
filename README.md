@@ -71,6 +71,11 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
+If no browser opens — over SSH, in WSL, in a fresh VM, or on a machine with none
+registered for `http` — `open` prints a sign-in link to paste instead of leaving
+you on a signed-out page. `looptroop open --print-url` asks for that link
+directly.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.
@@ -172,10 +177,17 @@ Asking for an exact version bypasses it.
 
 ```bash
 yarn global add looptroop
-yarn global upgrade looptroop@latest   # upgrade
+export PATH="$(yarn global bin):$PATH"   # Yarn does not do this for you
+yarn global upgrade looptroop@latest     # upgrade
 ```
 
 **Needs Node 24.15.0 or newer as well as Yarn**, plus git and `gh`.
+
+**Yarn does not put its global binaries on `PATH`.** This looks like a failed
+install and is not: the add reports success, and then `looptroop` is not a
+command. Add the line above to your shell profile, or the next terminal will
+have forgotten it. npm, bun and pnpm all install somewhere already on `PATH`,
+which is why this catches people out on Yarn alone.
 
 **Yarn Classic (1.x) only.** Yarn 2 removed `yarn global` and never replaced it,
 so modern Yarn cannot install a CLI globally at all — and it does not say so

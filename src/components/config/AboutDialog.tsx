@@ -62,14 +62,30 @@ export function AboutDialog() {
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Latest Version</p>
                   <p className="mt-1 font-mono text-sm font-semibold text-foreground">{update.latestVersion ? `v${update.latestVersion}` : 'Unavailable'}</p>
                 </div>
+                {/*
+                  Shown whether or not an update is waiting. Which channel
+                  installed this copy decides which command upgrades it, and
+                  getting that wrong installs a second copy beside the first
+                  rather than replacing it — so it is worth knowing before
+                  there is an upgrade to do, not only after.
+                */}
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Installed With</p>
+                  <p className="mt-1 font-mono text-sm font-semibold text-foreground">{update.installChannel}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/90 font-mono">Upgrade With</p>
+                  <p className="mt-1 break-all font-mono text-sm text-foreground">{update.upgradeCommand}</p>
+                </div>
               </div>
 
               <p className="text-sm text-muted-foreground">
                 {update.updateAvailable
-                  ? `A newer version is available for this ${update.installChannel} installation.`
+                  ? 'A newer version is available.'
                   : update.latestVersion
                     ? 'You are running the latest published version.'
                     : 'The latest release could not be checked. Cached information will be used when available.'}
+                {' '}Run <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">looptroop doctor</code> in a terminal for the full check of this machine.
               </p>
 
               {update.updateAvailable && (

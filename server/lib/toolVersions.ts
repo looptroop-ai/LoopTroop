@@ -29,18 +29,44 @@ const SOURCES = {
   node: 'https://registry.npmjs.org/node/latest',
   npm: 'https://registry.npmjs.org/npm/latest',
   opencode: 'https://registry.npmjs.org/opencode-ai/latest',
+  /** `gh` publishes GitHub releases, so the newest one is the answer. */
+  gh: 'https://api.github.com/repos/cli/cli/releases/latest',
+  /**
+   * git has no release feed — the GitHub mirror publishes tags and nothing
+   * else, so the newest stable tag is the closest thing to "current git".
+   * Release candidates (`v2.55.0-rc1`) are excluded by the shape of the match.
+   */
+  git: 'https://api.github.com/repos/git/git/tags?per_page=100',
 } as const
 
 export type ToolName = keyof typeof SOURCES
 
 export type LatestToolVersions = Record<ToolName, string | null>
 
+/** Highest `MAJOR.MINOR.PATCH`, ignoring anything with a suffix. */
+function newestStableTag(tags: unknown): string | null {
+  if (!Array.isArray(tags)) return null
+  const versions = tags
+    .map((tag) => (tag as { name?: unknown }).name)
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(name))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => [Number(match[1]), Number(match[2]), Number(match[3])] as const)
+
+  if (versions.length === 0) return null
+  // Sorted here rather than trusting the API's order, which is not documented
+  // to be by version and is not, for a repository with thousands of tags.
+  const [major, minor, patch] = versions.sort((a, b) =>
+    b[0] - a[0] || b[1] - a[1] || b[2] - a[2])[0]!
+  return `${major}.${minor}.${patch}`
+}
+
 interface ToolCache {
   lastAttemptAt: string
   versions?: Partial<LatestToolVersions>
 }
 
-const EMPTY: LatestToolVersions = { node: null, npm: null, opencode: null }
+const EMPTY: LatestToolVersions = { node: null, npm: null, opencode: null, gh: null, git: null }
 
 function getCachePath(configDir = resolveAppConfigDir()): string {
   return resolve(configDir, 'tool-versions.json')
@@ -76,15 +102,31 @@ function writeCache(cache: ToolCache, configDir?: string): void {
   }
 }
 
-async function fetchVersion(url: string, fetchImpl: typeof globalThis.fetch): Promise<string | null> {
+/**
+ * Three answer shapes behind one call: npm's registry returns `{ version }`, a
+ * GitHub release returns `{ tag_name }`, and a tag listing returns an array to
+ * pick the newest stable entry from.
+ */
+async function fetchVersion(
+  name: ToolName,
+  url: string,
+  fetchImpl: typeof globalThis.fetch,
+): Promise<string | null> {
   try {
     const response = await fetchImpl(url, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'User-Agent': 'LoopTroop-doctor' },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
     if (!response.ok) return null
-    const body = await response.json() as Record<string, unknown>
-    return typeof body.version === 'string' && body.version !== '' ? body.version : null
+    const body: unknown = await response.json()
+
+    if (name === 'git') return newestStableTag(body)
+    if (name === 'gh') {
+      const tag = (body as { tag_name?: unknown }).tag_name
+      return typeof tag === 'string' && tag !== '' ? tag.replace(/^v/, '') : null
+    }
+    const version = (body as { version?: unknown }).version
+    return typeof version === 'string' && version !== '' ? version : null
   } catch {
     return null
   }
@@ -109,9 +151,9 @@ export async function getLatestToolVersions(
   if (Number.isFinite(lastAttempt) && now - lastAttempt <= TOOL_CHECK_INTERVAL_MS) return known
 
   const names = Object.keys(SOURCES) as ToolName[]
-  // In parallel: three independent registries, and one being slow should not
-  // add its timeout to the other two.
-  const results = await Promise.all(names.map((name) => fetchVersion(SOURCES[name], fetchImpl)))
+  // In parallel: independent endpoints, and one being slow should not add its
+  // timeout to the others.
+  const results = await Promise.all(names.map((name) => fetchVersion(name, SOURCES[name], fetchImpl)))
 
   const versions: LatestToolVersions = { ...known }
   names.forEach((name, index) => {

@@ -9,6 +9,27 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- `looptroop open` no longer leaves you stranded when no browser opens. It checks whether one actually signed in, and prints a link to paste when none did — over SSH, in WSL, in a fresh VM, or on any machine with no browser registered.
+- Windows installations work with tools that are not `.exe` files: `doctor` finds npm again, and the daemon can start an OpenCode installed from npm, bun or pnpm, which it previously could not launch at all.
+- CI now proves the two things that let both of those ship: that `doctor` finds npm on every platform, and that the published `irm` one-liner installs a working LoopTroop on stock Windows PowerShell.
+- Configuration duration editors stay readable on narrow screens and now report both lower- and upper-bound errors consistently.
+- Adding an existing repository now stops with a clear conflict instead of silently reattaching it.
+
+### Added
+- Added `looptroop open --print-url`, which prints the sign-in link instead of launching a browser. `open` now also verifies the handoff: after launching, it waits for the browser to spend its single-use nonce, and prints the link if none arrives. Launch failures are no longer discarded either — the opener's exit code and message are reported rather than swallowed, so "no application is associated with http" reaches the person who needs to read it. The link is still withheld whenever a browser does sign in, because the nonce in it is a live credential; it is printed only when the alternative is no way in at all.
+- Added a `POST /api/auth/bootstrap/status` route, behind the same API token that guards nonce minting, so the CLI can ask whether a sign-in link was used. No operating system reports whether the browser it launched ever loaded the page, and this is the only honest signal available.
+- Added a release-time job that installs LoopTroop through the published one-liner — `irm https://www.looptroop.ovh/install.ps1 | iex` on a clean Windows runner, in Windows PowerShell 5.1 — and then checks the version and `doctor`. Nothing had ever exercised the network path: CI tests the installer wrappers against a local tarball, which cannot catch a stale redirect, a change in release discovery, or published bytes that differ from the ones in the commit. A comment in `ci.yml` had claimed this coverage existed for several releases.
+- Added a Windows PowerShell 5.1 lane to the installer smoke test, alongside the PowerShell 7 one. They are different runtimes, and 5.1 is the one that ships with Windows — so it is what the documented one-liner actually runs in for anyone who has never installed pwsh.
+- Added an assertion that `doctor` finds npm to the install smoke and to the release's registry smoke, on all three platforms. Every runner has npm, since it is what installed LoopTroop moments earlier, so this tests the probe rather than the machine.
+
+### Fixed
+- Fixed project attachment accepting an already-attached repository or reusing another project's name or short name. Attachment checks now compare the canonical Git root, the form warns and disables submission for visible conflicts, and the API returns a `409` conflict without changing the existing project. Local `.looptroop` state that is no longer registered remains recoverable through the existing restore, clear-tickets, and start-fresh choices.
+- Fixed `looptroop doctor` reporting `npm not found on PATH` on Windows machines where npm works — including machines it had just installed LoopTroop on with npm seconds earlier. Doctor's probes spawned without a shell, and Windows resolves a bare command name by appending `.exe` alone: it never reads `PATHEXT`, so `npm.cmd` was invisible, and naming the shim directly does not help either because Node has refused to launch `.cmd` files since the BatBadBut hardening. All of doctor's probes now go through a shell on Windows, which also fixes the OpenCode CLI check for anyone who installed OpenCode from npm.
+- Fixed the daemon being unable to start OpenCode on Windows when it was installed with npm, bun or pnpm. `opencode` is only an `.exe` when it came from the official installer or Scoop; from a package manager it is `opencode.cmd`, which the daemon could not spawn — so LoopTroop reported OpenCode as missing while it sat on the user's PATH, and there was no way to use LoopTroop at all. The same root cause as the npm check, one layer down and considerably more serious.
+- Fixed the signed-out screen answering with a command that may have just failed. It named `looptroop open`, which is what a user reaches this screen from when no browser opened, so the advice was a loop with no exit. It now also names `looptroop open --print-url`, and when the page is being viewed on `localhost` it says that LoopTroop signs browsers in at `127.0.0.1` — session cookies are host-only, so a session bought at one name is never sent to the other, and signing in again could never have fixed it.
+- Fixed compact Configuration duration editors squeezing native number spinners against their values on narrow screens. The minute and second inputs no longer show browser spinner controls, and out-of-range edits are passed through the shared validator so lower-bound errors are visible and Save is blocked just like upper-bound errors.
+
 ## 0.5.6 (2026-08-17)
 
 

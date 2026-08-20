@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.7 (2026-08-20)
+
+
 ### Summary
 - `looptroop open` no longer leaves you stranded when no browser opens. It checks whether one actually signed in, and prints a link to paste when none did — over SSH, in WSL, in a fresh VM, or on any machine with no browser registered.
 - Windows installations work with tools that are not `.exe` files: `doctor` finds npm again, and the daemon can start an OpenCode installed from npm, bun or pnpm, which it previously could not launch at all.
@@ -23,6 +26,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Added a release-time job that installs LoopTroop through the published one-liner — `irm https://www.looptroop.ovh/install.ps1 | iex` on a clean Windows runner, in Windows PowerShell 5.1 — and then checks the version and `doctor`. Nothing had ever exercised the network path: CI tests the installer wrappers against a local tarball, which cannot catch a stale redirect, a change in release discovery, or published bytes that differ from the ones in the commit. A comment in `ci.yml` had claimed this coverage existed for several releases.
 - Added a Windows PowerShell 5.1 lane to the installer smoke test, alongside the PowerShell 7 one. They are different runtimes, and 5.1 is the one that ships with Windows — so it is what the documented one-liner actually runs in for anyone who has never installed pwsh.
 - Added an assertion that `doctor` finds npm to the install smoke and to the release's registry smoke, on all three platforms. Every runner has npm, since it is what installed LoopTroop moments earlier, so this tests the probe rather than the machine.
+- Added `--opencode-logs=all` to `looptroop start` and `looptroop open`. When LoopTroop starts OpenCode itself, the option captures its full DEBUG stream in the daemon log or prints it during a foreground run; adopted and external servers remain untouched. Successful background starts now advertise `looptroop logs --follow`, while an already-running daemon explains that changing its OpenCode log mode requires a stop and start. The overview and command-specific `--help` output document both paths.
 
 ### Fixed
 - Fixed project attachment accepting an already-attached repository or reusing another project's name or short name. Attachment checks now compare the canonical Git root, the form warns and disables submission for visible conflicts, and the API returns a `409` conflict without changing the existing project. Local `.looptroop` state that is no longer registered remains recoverable through the existing restore, clear-tickets, and start-fresh choices.
@@ -30,7 +34,6 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed the daemon being unable to start OpenCode on Windows when it was installed with npm, bun or pnpm. `opencode` is only an `.exe` when it came from the official installer or Scoop; from a package manager it is `opencode.cmd`, which the daemon could not spawn — so LoopTroop reported OpenCode as missing while it sat on the user's PATH, and there was no way to use LoopTroop at all. The same root cause as the npm check, one layer down and considerably more serious.
 - Fixed the signed-out screen answering with a command that may have just failed. It named `looptroop open`, which is what a user reaches this screen from when no browser opened, so the advice was a loop with no exit. It now also names `looptroop open --print-url`, and when the page is being viewed on `localhost` it says that LoopTroop signs browsers in at `127.0.0.1` — session cookies are host-only, so a session bought at one name is never sent to the other, and signing in again could never have fixed it.
 - Fixed compact Configuration duration editors squeezing native number spinners against their values on narrow screens. The minute and second inputs no longer show browser spinner controls, and out-of-range edits are passed through the shared validator so lower-bound errors are visible and Save is blocked just like upper-bound errors.
-- Added `--opencode-logs=all` to `looptroop start` and `looptroop open`. When LoopTroop starts OpenCode itself, the option captures its full DEBUG stream in the daemon log or prints it during a foreground run; adopted and external servers remain untouched. Successful background starts now advertise `looptroop logs --follow`, while an already-running daemon explains that changing its OpenCode log mode requires a stop and start. The overview and command-specific `--help` output document both paths.
 
 ### Changed
 - Moved the LoopTroop folder-ignore choice into Project **Advanced**, added a Configuration default and contextual documentation, and changed the built-in default to **This clone only** (`.git/info/exclude`). Each project saves one of `repo`, `local`, or `skip`; restored projects retain it, and ticket worktrees continue applying the project policy.

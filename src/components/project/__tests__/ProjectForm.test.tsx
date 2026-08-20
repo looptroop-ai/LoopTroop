@@ -49,7 +49,7 @@ vi.mock('@/components/shared/useToast', () => ({
 }))
 
 vi.mock('@/hooks/useProfile', () => ({
-  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory' } }),
+  useProfile: () => ({ data: { manualQaEnabled: false, gitHookPolicy: 'validate_advisory', ignoreMode: 'local' } }),
 }))
 
 vi.mock('../FolderPicker', () => ({
@@ -189,7 +189,7 @@ describe('ProjectForm', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
     expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ gitHookPolicy: null }),
+      expect.objectContaining({ gitHookPolicy: 'validate_advisory', manualQaOverride: false, ignoreMode: 'local' }),
       expect.any(Object),
     )
   })
@@ -240,19 +240,27 @@ describe('ProjectForm', () => {
       fireEvent.change(screen.getByLabelText(/Project Name/i), { target: { value: 'Demo' } })
       fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
       fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
+      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
       return await screen.findByRole('radio', { name: /Repository \.gitignore/ })
     }
 
-    it('offers all three destinations once the folder is a repository, defaulting to .gitignore', async () => {
+    it('offers all three destinations inside Advanced once the folder is a repository, defaulting to this clone', async () => {
       const repoOption = await fillInValidProject()
 
-      expect(repoOption).toBeChecked()
-      expect(screen.getByRole('radio', { name: /This clone only/ })).not.toBeChecked()
+      expect(repoOption).not.toBeChecked()
+      expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
       expect(screen.getByRole('radio', { name: /Do not change any file/ })).not.toBeChecked()
+      const helpLink = screen.getByRole('link', { name: 'Open documentation for project folder-ignore policy' })
+      expect(helpLink).toHaveAttribute(
+        'href',
+        `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#looptroop-folder-ignore-policy`,
+      )
+      fireEvent.focus(helpLink)
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('.looptroop/ project state and .ticket/ ticket workspaces')
 
       fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
       expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
-        expect.objectContaining({ ignoreMode: 'repo' }),
+        expect.objectContaining({ ignoreMode: 'local' }),
         expect.any(Object),
       )
     })
@@ -314,6 +322,7 @@ describe('ProjectForm', () => {
           minCouncilQuorum: null,
           interviewQuestions: null,
           ticketCounter: 4,
+          ignoreMode: 'local',
           createdAt: '2026-06-01T10:00:00.000Z',
           updatedAt: '2026-06-29T10:00:00.000Z',
         }}
@@ -323,6 +332,11 @@ describe('ProjectForm', () => {
 
     expect(screen.getByText('State Folder')).toBeInTheDocument()
     expect(screen.getByText('/home/liviu/LoopTroop/.looptroop')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeDisabled()
+    expect(screen.getByText(/Saved when this project was attached/)).toBeInTheDocument()
 
     fireEvent.focus(screen.getByRole('button', { name: 'State folder info' }))
     expect(await screen.findByRole('tooltip')).toHaveTextContent("LoopTroop keeps this project's local runtime state here.")
@@ -346,6 +360,7 @@ describe('ProjectForm', () => {
           activeTicketCount: 2,
           gitHookPolicy: 'use_native_hooks',
           manualQaOverride: true,
+          ignoreMode: 'skip',
         },
       }),
     })))
@@ -363,6 +378,7 @@ describe('ProjectForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: /Do not change any file/ })).toBeChecked()
     expect(screen.getByText('7 tickets and all workflow/artifact data')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restore Project' }))
@@ -375,6 +391,7 @@ describe('ProjectForm', () => {
         existingStateAction: 'restore',
         gitHookPolicy: 'use_native_hooks',
         manualQaOverride: true,
+        ignoreMode: 'skip',
       }),
       expect.any(Object),
     )
@@ -424,7 +441,7 @@ describe('ProjectForm', () => {
       expect.objectContaining({
         shortname: 'MESE',
         existingStateAction: 'clear_tickets',
-        manualQaOverride: null,
+        manualQaOverride: false,
       }),
       expect.any(Object),
     )

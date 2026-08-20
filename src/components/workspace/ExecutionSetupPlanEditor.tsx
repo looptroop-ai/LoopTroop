@@ -11,6 +11,13 @@ import type {
   ExecutionSetupWorkspaceInput,
 } from '@/lib/executionSetupPlan'
 
+const GIT_HOOK_POLICY_AUDIT_LABELS: Record<ExecutionSetupPlan['gitHooks']['policy'], string> = {
+  observe_only: 'Observe — bypass hooks, no validation',
+  validate_advisory: 'Check — warn if validation fails',
+  validate_required: 'Require — block if validation fails',
+  use_native_hooks: 'Run — allow Git hooks to act normally',
+}
+
 function emptyProcessCommand(): CommandSpec {
   return { mode: 'process', program: '', args: [], cwd: '.', env: {} }
 }
@@ -591,18 +598,13 @@ export function ExecutionSetupPlanEditor({ plan, disabled, onChange }: Execution
         />
         <div className="space-y-3 rounded-lg border border-border bg-background p-3">
           <div>
-            <SectionLabel>Git Hook Policy</SectionLabel>
-            <select
-              value={plan.gitHooks.policy}
-              onChange={(event) => updatePlan({ gitHooks: { ...plan.gitHooks, policy: event.target.value as ExecutionSetupPlan['gitHooks']['policy'] } })}
-              disabled={disabled}
-              className="w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
-            >
-              <option value="observe_only">Observe — bypass hooks, no validation</option>
-              <option value="validate_advisory">Check — warn if validation fails</option>
-              <option value="validate_required">Require — block if validation fails</option>
-              <option value="use_native_hooks">Run hooks — allow Git hooks to act normally</option>
-            </select>
+            <SectionLabel>Git Hook Policy (read-only)</SectionLabel>
+            <div className="rounded-md border border-border bg-muted/20 px-3 py-2" aria-label="Locked Git hook policy">
+              <div className="text-xs font-medium">{GIT_HOOK_POLICY_AUDIT_LABELS[plan.gitHooks.policy]}</div>
+              <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                Locked from the project when this ticket started. Editing the plan cannot change it.
+              </p>
+            </div>
           </div>
           <div>
             <SectionLabel>Detected Git Hooks (read-only)</SectionLabel>

@@ -5,8 +5,11 @@ import { resolve as resolvePath } from 'path'
 import { spawnSync } from 'child_process'
 import { APP_DB_PATH, db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
-import { attachedProjects, projects, tickets } from '../db/schema'
+import { attachedProjects, profiles, projects, tickets } from '../db/schema'
+import { PROFILE_DEFAULTS } from '../db/defaults'
 import { applyIgnoreMode, DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '../git/repository'
+import { isGitHookPolicy } from '../git/hookPolicy'
+import type { GitHookPolicy } from '../structuredOutput/types'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
   ensureProjectStorageDirs,
@@ -39,6 +42,7 @@ export interface ExistingProjectMetadata {
   color: string | null
   gitHookPolicy: LocalProjectRow['gitHookPolicy']
   manualQaOverride: LocalProjectRow['manualQaOverride']
+  ignoreMode: LocalProjectRow['ignoreMode']
   ticketCounter: number
   ticketCount: number
   activeTicketCount: number
@@ -74,8 +78,8 @@ interface ProjectAttachmentInput {
   color?: string
   profileId?: number
   councilMembers?: string
-  manualQaOverride?: boolean | null
-  gitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks' | null
+  manualQaOverride?: boolean
+  gitHookPolicy?: GitHookPolicy
   maxIterations?: number
   perIterationTimeout?: number
   executionSetupTimeout?: number
@@ -83,6 +87,24 @@ interface ProjectAttachmentInput {
   minCouncilQuorum?: number
   interviewQuestions?: number
   ignoreMode?: IgnoreMode
+}
+
+function resolveNewProjectSettings(input: ProjectAttachmentInput): ProjectAttachmentInput & {
+  manualQaOverride: boolean
+  gitHookPolicy: GitHookPolicy
+  ignoreMode: IgnoreMode
+} {
+  const profile = appDb.select().from(profiles).limit(1).get()
+  return {
+    ...input,
+    manualQaOverride: input.manualQaOverride
+      ?? profile?.manualQaEnabled
+      ?? PROFILE_DEFAULTS.manualQaEnabled,
+    gitHookPolicy: input.gitHookPolicy
+      ?? (isGitHookPolicy(profile?.gitHookPolicy) ? profile.gitHookPolicy : PROFILE_DEFAULTS.gitHookPolicy),
+    ignoreMode: input.ignoreMode
+      ?? (isIgnoreMode(profile?.ignoreMode) ? profile.ignoreMode : DEFAULT_IGNORE_MODE),
+  }
 }
 
 function hydrateProject(attached: AttachedProjectRow, project: LocalProjectRow): PublicProject {
@@ -213,15 +235,15 @@ function ensureLocalProject(projectRoot: string, input?: ProjectAttachmentInput)
       folderPath: projectRoot,
       profileId: input.profileId ?? null,
       councilMembers: input.councilMembers ?? null,
-      manualQaOverride: input.manualQaOverride ?? null,
-      gitHookPolicy: input.gitHookPolicy ?? null,
+      manualQaOverride: input.manualQaOverride,
+      gitHookPolicy: input.gitHookPolicy,
       maxIterations: input.maxIterations ?? null,
       perIterationTimeout: input.perIterationTimeout ?? null,
       executionSetupTimeout: input.executionSetupTimeout ?? null,
       councilResponseTimeout: input.councilResponseTimeout ?? null,
       minCouncilQuorum: input.minCouncilQuorum ?? null,
       interviewQuestions: input.interviewQuestions ?? null,
-      ignoreMode: input.ignoreMode ?? DEFAULT_IGNORE_MODE,
+      ignoreMode: input.ignoreMode,
     })
     .returning()
     .get()
@@ -251,8 +273,9 @@ export function attachProject(input: ProjectAttachmentInput): PublicProject {
     throw new Error(`Folder is not a git repository: ${input.folderPath}`)
   }
 
-  applyIgnoreMode(projectRoot, input.ignoreMode ?? DEFAULT_IGNORE_MODE)
-  const localProject = ensureLocalProject(projectRoot, input)
+  const resolvedInput = resolveNewProjectSettings({ ...input, folderPath: projectRoot })
+  applyIgnoreMode(projectRoot, resolvedInput.ignoreMode)
+  const localProject = ensureLocalProject(projectRoot, resolvedInput)
   const attached = ensureAttachedProject(projectRoot)
 
   return hydrateProject(attached, localProject)
@@ -266,45 +289,47 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
   }
 
   const localProject = ensureLocalProject(projectRoot)
+  const configuredDefaults = resolveNewProjectSettings({
+    folderPath: projectRoot,
+    name: localProject.name,
+    shortname: localProject.shortname,
+  })
   const requestedIgnoreMode = typeof input === 'string' ? undefined : input.ignoreMode
   const effectiveIgnoreMode = requestedIgnoreMode
-    ?? (isIgnoreMode(localProject.ignoreMode) ? localProject.ignoreMode : DEFAULT_IGNORE_MODE)
+    ?? (isIgnoreMode(localProject.ignoreMode) ? localProject.ignoreMode : configuredDefaults.ignoreMode)
   applyIgnoreMode(projectRoot, effectiveIgnoreMode)
 
-  const patch = typeof input === 'string'
-    ? null
-    : {
-        name: input.name ?? localProject.name,
-        icon: input.icon ?? localProject.icon,
-        color: input.color ?? localProject.color,
-        folderPath: projectRoot,
-        profileId: input.profileId ?? localProject.profileId,
-        councilMembers: input.councilMembers ?? localProject.councilMembers,
-        manualQaOverride: input.manualQaOverride === undefined
-          ? localProject.manualQaOverride
-          : input.manualQaOverride,
-        gitHookPolicy: input.gitHookPolicy === undefined
-          ? localProject.gitHookPolicy
-          : input.gitHookPolicy,
-        maxIterations: input.maxIterations ?? localProject.maxIterations,
-        perIterationTimeout: input.perIterationTimeout ?? localProject.perIterationTimeout,
-        executionSetupTimeout: input.executionSetupTimeout ?? localProject.executionSetupTimeout,
-        councilResponseTimeout: input.councilResponseTimeout ?? localProject.councilResponseTimeout,
-        minCouncilQuorum: input.minCouncilQuorum ?? localProject.minCouncilQuorum,
-        interviewQuestions: input.interviewQuestions ?? localProject.interviewQuestions,
-        ignoreMode: effectiveIgnoreMode,
-        updatedAt: new Date().toISOString(),
-      }
+  const requested: Partial<ProjectAttachmentInput> = typeof input === 'string' ? {} : input
+  const patch = {
+    name: requested.name ?? localProject.name,
+    icon: requested.icon ?? localProject.icon,
+    color: requested.color ?? localProject.color,
+    folderPath: projectRoot,
+    profileId: requested.profileId ?? localProject.profileId,
+    councilMembers: requested.councilMembers ?? localProject.councilMembers,
+    manualQaOverride: requested.manualQaOverride === undefined
+      ? (localProject.manualQaOverride ?? configuredDefaults.manualQaOverride)
+      : requested.manualQaOverride,
+    gitHookPolicy: requested.gitHookPolicy === undefined
+      ? (isGitHookPolicy(localProject.gitHookPolicy) ? localProject.gitHookPolicy : configuredDefaults.gitHookPolicy)
+      : requested.gitHookPolicy,
+    maxIterations: requested.maxIterations ?? localProject.maxIterations,
+    perIterationTimeout: requested.perIterationTimeout ?? localProject.perIterationTimeout,
+    executionSetupTimeout: requested.executionSetupTimeout ?? localProject.executionSetupTimeout,
+    councilResponseTimeout: requested.councilResponseTimeout ?? localProject.councilResponseTimeout,
+    minCouncilQuorum: requested.minCouncilQuorum ?? localProject.minCouncilQuorum,
+    interviewQuestions: requested.interviewQuestions ?? localProject.interviewQuestions,
+    ignoreMode: effectiveIgnoreMode,
+    updatedAt: new Date().toISOString(),
+  }
 
   let effectiveProject = localProject
-  if (patch) {
-    const { db } = getProjectDatabase(projectRoot)
-    db.update(projects)
-      .set(patch)
-      .where(eq(projects.id, localProject.id))
-      .run()
-    effectiveProject = db.select().from(projects).where(eq(projects.id, localProject.id)).get() ?? localProject
-  }
+  const { db } = getProjectDatabase(projectRoot)
+  db.update(projects)
+    .set(patch)
+    .where(eq(projects.id, localProject.id))
+    .run()
+  effectiveProject = db.select().from(projects).where(eq(projects.id, localProject.id)).get() ?? localProject
 
   const attached = ensureAttachedProject(projectRoot)
   return hydrateProject(attached, effectiveProject)
@@ -454,6 +479,7 @@ export function getExistingProjectMetadata(projectRootOrFolder: string): Existin
     color: project.color ?? null,
     gitHookPolicy: project.gitHookPolicy,
     manualQaOverride: project.manualQaOverride,
+    ignoreMode: project.ignoreMode,
     ticketCounter: project.ticketCounter ?? 0,
     ticketCount,
     activeTicketCount,
@@ -629,9 +655,20 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
   if (!project) {
     throw new Error(`No LoopTroop project state found in ${projectRoot}`)
   }
+  const configuredDefaults = resolveNewProjectSettings({
+    folderPath: projectRoot,
+    name: project.name,
+    shortname: project.shortname,
+  })
   const manualQaOverride = input.manualQaOverride === undefined
-    ? project.manualQaOverride
+    ? (project.manualQaOverride ?? configuredDefaults.manualQaOverride)
     : input.manualQaOverride
+  const gitHookPolicy = input.gitHookPolicy === undefined
+    ? (isGitHookPolicy(project.gitHookPolicy) ? project.gitHookPolicy : configuredDefaults.gitHookPolicy)
+    : input.gitHookPolicy
+  const ignoreMode = input.ignoreMode === undefined
+    ? (isIgnoreMode(project.ignoreMode) ? project.ignoreMode : configuredDefaults.ignoreMode)
+    : input.ignoreMode
 
   projectDb.sqlite.transaction(() => {
     projectDb.sqlite.exec(`
@@ -649,7 +686,7 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
     projectDb.sqlite.prepare(`
       UPDATE projects
       SET name = ?, icon = ?, color = ?, folder_path = ?,
-          manual_qa_override = ?, git_hook_policy = ?, ticket_counter = 0,
+          manual_qa_override = ?, git_hook_policy = ?, ignore_mode = ?, ticket_counter = 0,
           updated_at = ?
       WHERE id = ?
     `).run(
@@ -657,13 +694,15 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
       input.icon ?? project.icon,
       input.color ?? project.color,
       projectRoot,
-      manualQaOverride === null ? null : Number(manualQaOverride),
-      input.gitHookPolicy === undefined ? project.gitHookPolicy : input.gitHookPolicy,
+      Number(manualQaOverride),
+      gitHookPolicy,
+      ignoreMode,
       new Date().toISOString(),
       project.id,
     )
   })()
 
+  applyIgnoreMode(projectRoot, ignoreMode)
   ensureProjectStorageDirs(projectRoot)
   return attachExistingProject(projectRoot)
 }

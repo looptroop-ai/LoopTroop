@@ -23,6 +23,7 @@ import { contentSha256 } from '../../lib/contentHash'
 import { revertTicketToApprovalStatus } from '../../machines/persistence'
 import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetupPlan/hookEvidence'
 import { saveExecutionSetupPlan } from '../../phases/executionSetupPlan/document'
+import { serializeExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 
 const shellCommand = (script: string) => ({
   mode: 'shell' as const,
@@ -329,6 +330,61 @@ describe('ticketRouter execution setup plan approval routes', () => {
       },
     })
     expect(receiptData.after.sha256).toBe(contentSha256(stored!.content))
+  })
+
+  it('reimposes the project hook policy on structured and raw saves while preserving validation commands', async () => {
+    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const validationCommand = {
+      id: 'validate-pre-commit',
+      hook: 'pre-commit',
+      command: shellCommand('npm test'),
+      purpose: 'Validate the detected hook explicitly.',
+    }
+    const structuredPlan = {
+      ...buildStructuredPlan(ticket.externalId, 'Structured policy tamper'),
+      gitHooks: {
+        policy: 'use_native_hooks' as const,
+        detected: [],
+        validationCommands: [validationCommand],
+      },
+    }
+    const structuredResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: structuredPlan }),
+    })
+    expect(structuredResponse.status).toBe(200)
+    await expect(structuredResponse.json()).resolves.toMatchObject({
+      plan: {
+        gitHooks: {
+          policy: 'validate_advisory',
+          validationCommands: [{ id: 'validate-pre-commit' }],
+        },
+      },
+    })
+
+    const rawPlan = {
+      ...structuredPlan,
+      summary: 'Raw policy tamper',
+      gitHooks: { ...structuredPlan.gitHooks, policy: 'validate_required' as const },
+    }
+    const rawContent = serializeExecutionSetupPlan(rawPlan)
+    expect(rawContent).toContain(`"ticket_id": "${ticket.externalId}"`)
+    const rawResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: rawContent }),
+    })
+    expect(rawResponse.status, await rawResponse.clone().text()).toBe(200)
+    await expect(rawResponse.json()).resolves.toMatchObject({
+      plan: {
+        summary: 'Raw policy tamper',
+        gitHooks: {
+          policy: 'validate_advisory',
+          validationCommands: [{ id: 'validate-pre-commit' }],
+        },
+      },
+    })
   })
 
   it('saves a no-op execution setup plan when the workspace is already ready', async () => {

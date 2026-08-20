@@ -5,7 +5,7 @@ import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { readTicketMeta } from '../../ticket/metadata'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
-import { attachProject } from '../projects'
+import { attachProject, updateProject } from '../projects'
 import {
   createTicket,
   createManualQaImprovementTicket,
@@ -170,7 +170,7 @@ describe('ticket start configuration locking', () => {
     expect(getTicketPaths(ticket.id)?.aiLogPath).toBe(getTicketAiLogPath(normalizedRepoDir, ticket.externalId))
   })
 
-  it('allows a Draft ticket hook override and exposes its effective inheritance source', () => {
+  it('keeps Git hook policy project-owned for Draft tickets', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({
       folderPath: repoDir,
@@ -178,20 +178,18 @@ describe('ticket start configuration locking', () => {
       shortname: 'HOOK',
       gitHookPolicy: 'observe_only',
     })
-    const ticket = createTicket({ projectId: project.id, title: 'Draft hook override', gitHookPolicy: null })
+    const ticket = createTicket({ projectId: project.id, title: 'Project hook policy' })
 
     expect(ticket).toMatchObject({
-      gitHookPolicy: null,
       effectiveGitHookPolicy: 'observe_only',
       effectiveGitHookPolicySource: 'project',
     })
-    expect(updateTicket(ticket.id, { gitHookPolicy: 'use_native_hooks' })).toMatchObject({
-      gitHookPolicy: 'use_native_hooks',
+    expect(ticket).not.toHaveProperty('gitHookPolicy')
+    updateProject(project.id, { gitHookPolicy: 'use_native_hooks' })
+    expect(getTicketByRef(ticket.id)).toMatchObject({
       effectiveGitHookPolicy: 'use_native_hooks',
-      effectiveGitHookPolicySource: 'ticket',
+      effectiveGitHookPolicySource: 'project',
     })
-    patchTicket(ticket.id, { status: 'SCANNING_RELEVANT_FILES' })
-    expect(() => updateTicket(ticket.id, { gitHookPolicy: 'validate_required' })).toThrow(/DRAFT status/)
   })
 
   it('recovers the same improvement ticket after database creation but before origin files exist', () => {

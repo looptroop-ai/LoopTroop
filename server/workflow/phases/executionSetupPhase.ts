@@ -497,9 +497,11 @@ export async function handleExecutionSetup(
       const refreshedPlan = lockExecutionSetupPlanDetectedHooks(ticketId, approvedPlan)
       const evidenceChanged = JSON.stringify({
         hostContext: refreshedPlan.hostContext,
+        policy: refreshedPlan.gitHooks.policy,
         detected: refreshedPlan.gitHooks.detected,
       }) !== JSON.stringify({
         hostContext: approvedPlan.hostContext,
+        policy: approvedPlan.gitHooks.policy,
         detected: approvedPlan.gitHooks.detected,
       })
       if (evidenceChanged) {

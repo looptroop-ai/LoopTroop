@@ -16,7 +16,6 @@ function resolveConfiguredPolicy(ticketId: string): ExecutionSetupPlan['gitHooks
       ? ticket.lockedGitHookPolicy
       : PROFILE_DEFAULTS.gitHookPolicy
   }
-  if (isGitHookPolicy(ticket?.gitHookPolicy)) return ticket.gitHookPolicy
   const projectPolicy = storage ? getProjectContextById(storage.projectId)?.project.gitHookPolicy : null
   if (isGitHookPolicy(projectPolicy)) return projectPolicy
   const profilePolicy = appDb.select().from(profiles).limit(1).get()?.gitHookPolicy
@@ -25,12 +24,19 @@ function resolveConfiguredPolicy(ticketId: string): ExecutionSetupPlan['gitHooks
 
 export function lockExecutionSetupPlanDetectedHooks(ticketId: string, plan: ExecutionSetupPlan): ExecutionSetupPlan {
   const paths = getTicketPaths(ticketId)
-  if (!paths) return plan
+  const policy = resolveConfiguredPolicy(ticketId)
+  if (!paths) {
+    return {
+      ...plan,
+      gitHooks: { ...plan.gitHooks, policy },
+    }
+  }
   return {
     ...plan,
     hostContext: detectHostContext(),
     gitHooks: {
       ...plan.gitHooks,
+      policy,
       detected: discoverGitHooks(paths.worktreePath).detected,
     },
   }

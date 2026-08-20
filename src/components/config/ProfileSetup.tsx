@@ -35,7 +35,7 @@ function isRouterModel(modelId: string | null | undefined, modelsList?: OpenCode
 }
 import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfile'
 import type { CreateProfileInput } from '@/hooks/useProfile'
-import { Plus, X, RefreshCw } from 'lucide-react'
+import { ChevronDown, Plus, X, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/shared/useToast'
 import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { useQueryClient } from '@tanstack/react-query'
@@ -46,6 +46,9 @@ import { ConfigurationDocsLink } from './ConfigurationDocsLink'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
+import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
+import { DEFAULT_IGNORE_MODE } from '@/lib/ignoreMode'
+import { cn } from '@/lib/utils'
 
 interface ProfileSetupProps {
   onClose: () => void
@@ -85,7 +88,10 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     toolErrorMaxChars: profile?.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
     manualQaEnabled: profile?.manualQaEnabled ?? false,
     gitHookPolicy: profile?.gitHookPolicy ?? 'validate_advisory',
+    ignoreMode: profile?.ignoreMode ?? DEFAULT_IGNORE_MODE,
   })
+
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
 
   const [rawNumeric, setRawNumeric] = useState<Record<string, string>>(() => buildInitialRawNumeric({ ...formData }))
 
@@ -139,6 +145,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
       manualQaEnabled: profile.manualQaEnabled ?? false,
       gitHookPolicy: profile.gitHookPolicy ?? 'validate_advisory',
+      ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })
     setRawNumeric(buildInitialRawNumeric({
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
@@ -496,31 +503,6 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           <Separator />
 
-          {/* ── Pre-Implementation ── */}
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Pre-Implementation</div>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm font-medium">Git hook policy</label>
-                <ConfigurationDocsLink
-                  docsPath="/configuration#git-hook-policy"
-                  label="Git hook policy"
-                  description="Choose how LoopTroop handles repository hooks before implementation. Open the Git hook policy documentation."
-                />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Choose how LoopTroop handles repository hooks.
-              </p>
-            </div>
-            <GitHookPolicySetting
-              value={formData.gitHookPolicy ?? 'validate_advisory'}
-              onChange={(value) => updateField('gitHookPolicy', value)}
-              compact
-            />
-          </div>
-
-          <Separator />
-
           {/* ── Implementation & Workspace Setup ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Implementation &amp; Workspace Setup</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -539,37 +521,81 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
 
           <Separator />
 
-          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Post-Implementation</div>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-1.5">
-                <label className="text-sm font-medium">Manual QA checkpoint</label>
-                <ConfigurationDocsLink
-                  docsPath="/configuration#manual-qa"
-                  label="Manual QA checkpoint"
-                  description="Set whether tickets pause for your verification after final tests. Open the Manual QA documentation."
-                />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                When enabled, new tickets pause after final tests with a generated checklist. LoopTroop never starts or controls your application.
-              </p>
-            </div>
-            <ManualQaSetting
-              idPrefix="profile-manual-qa"
-              value={formData.manualQaEnabled ? true : false}
-              onChange={(value) => updateField('manualQaEnabled', value === true)}
-              compact
-            />
-          </div>
-
-          <Separator />
-
           {/* ── Logging ── */}
           <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Logging</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NumericField fieldKey="toolInputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool input in logs (500–50K)." />
             <NumericField fieldKey="toolOutputMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool output in logs (1K–100K)." />
             <NumericField fieldKey="toolErrorMaxChars" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Max characters for tool error in logs (500–50K)." />
+          </div>
+
+          <Separator />
+
+          <div className="rounded-md border-2 border-border">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-medium"
+              onClick={() => setIsAdvancedOpen((open) => !open)}
+              aria-expanded={isAdvancedOpen}
+            >
+              Advanced
+              <ChevronDown className={cn('h-4 w-4 transition-transform', isAdvancedOpen && 'rotate-180')} />
+            </button>
+            {isAdvancedOpen && (
+              <div className="space-y-4 border-t border-border px-3 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">Manual QA checkpoint</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#manual-qa"
+                        label="Manual QA checkpoint"
+                        description="Set the Manual QA default for newly attached projects. Open the Manual QA documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Preselect whether new projects pause tickets for your QA checklist after final tests.
+                    </p>
+                  </div>
+                  <ManualQaSetting
+                    idPrefix="profile-manual-qa"
+                    value={formData.manualQaEnabled ? true : false}
+                    onChange={(value) => updateField('manualQaEnabled', value === true)}
+                    compact
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">Git hook policy</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#git-hook-policy"
+                        label="Git hook policy"
+                        description="Set the Git hook default for newly attached projects. Open the Git hook policy documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Preselect how new projects handle repository hooks before implementation.
+                    </p>
+                  </div>
+                  <GitHookPolicySetting
+                    value={formData.gitHookPolicy ?? 'validate_advisory'}
+                    onChange={(value) => updateField('gitHookPolicy', value)}
+                    compact
+                  />
+                </div>
+
+                <div className="border-t border-border pt-4">
+                  <IgnoreModeSetting
+                    idPrefix="configuration"
+                    label="Folder-ignore policy"
+                    value={formData.ignoreMode ?? DEFAULT_IGNORE_MODE}
+                    onChange={(value) => updateField('ignoreMode', value)}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
 

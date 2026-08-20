@@ -5,7 +5,7 @@ import { Hono } from 'hono'
 import { resolve } from 'node:path'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
-import { clearProjectDatabaseCache } from '../../db/project'
+import { clearProjectDatabaseCache, getProjectDatabase } from '../../db/project'
 import {
   beadExecutionMetrics,
   manualQaImprovementTickets,
@@ -81,24 +81,59 @@ function detachFromAppRegistry() {
 }
 
 describe('projectRouter project cleanup', () => {
-  it('persists all three project Manual QA override states', () => {
+  it('persists concrete project Manual QA choices', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'QA project', shortname: 'MQA' })
-    expect(project.manualQaOverride).toBeNull()
+    expect(project.manualQaOverride).toBe(false)
     expect(updateProject(project.id, { manualQaOverride: true })?.manualQaOverride).toBe(true)
     expect(updateProject(project.id, { manualQaOverride: false })?.manualQaOverride).toBe(false)
-    expect(updateProject(project.id, { manualQaOverride: null })?.manualQaOverride).toBeNull()
   })
 
-  it('persists nullable project Git hook policy overrides', () => {
+  it('persists concrete project Git hook policy choices', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'Hooks project', shortname: 'HKS' })
-    expect(project.gitHookPolicy).toBeNull()
+    expect(project.gitHookPolicy).toBe('validate_advisory')
     expect(updateProject(project.id, { gitHookPolicy: 'observe_only' })?.gitHookPolicy).toBe('observe_only')
     expect(updateProject(project.id, { gitHookPolicy: 'validate_advisory' })?.gitHookPolicy).toBe('validate_advisory')
     expect(updateProject(project.id, { gitHookPolicy: 'validate_required' })?.gitHookPolicy).toBe('validate_required')
     expect(updateProject(project.id, { gitHookPolicy: 'use_native_hooks' })?.gitHookPolicy).toBe('use_native_hooks')
-    expect(updateProject(project.id, { gitHookPolicy: null })?.gitHookPolicy).toBeNull()
+  })
+
+  it('seeds concrete project settings from the profile while preserving explicit choices', () => {
+    sqlite.exec(`
+      INSERT INTO profiles (manual_qa_enabled, git_hook_policy, ignore_mode)
+      VALUES (1, 'validate_required', 'skip');
+    `)
+    const inheritedRepo = repoManager.createRepo()
+    const inherited = attachProject({ folderPath: inheritedRepo, name: 'Inherited', shortname: 'INH' })
+    expect(inherited).toMatchObject({
+      manualQaOverride: true,
+      gitHookPolicy: 'validate_required',
+      ignoreMode: 'skip',
+    })
+
+    const explicitRepo = repoManager.createRepo()
+    const explicit = attachProject({
+      folderPath: explicitRepo,
+      name: 'Explicit',
+      shortname: 'EXP',
+      manualQaOverride: false,
+      gitHookPolicy: 'observe_only',
+      ignoreMode: 'repo',
+    })
+    expect(explicit).toMatchObject({
+      manualQaOverride: false,
+      gitHookPolicy: 'observe_only',
+      ignoreMode: 'repo',
+    })
+  })
+
+  it('omits the obsolete ticket hook override from fresh project databases', () => {
+    const repoDir = repoManager.createRepo()
+    attachProject({ folderPath: repoDir, name: 'Fresh schema', shortname: 'SCH' })
+    const projectStore = getProjectDatabase(normalizeFolderPath(repoDir)).sqlite
+    const columns = projectStore.prepare('PRAGMA table_info(tickets)').all() as Array<{ name: string }>
+    expect(columns.map((column) => column.name)).not.toContain('git_hook_policy')
   })
 
   it.each([
@@ -133,7 +168,7 @@ describe('projectRouter project cleanup', () => {
     delete process.env.WSL_DISTRO_NAME
   })
 
-  it('ignores LoopTroop state in the repository .gitignore by default', () => {
+  it('ignores LoopTroop state in this clone by default', () => {
     const repoDir = repoManager.createRepo()
 
     attachProject({
@@ -146,10 +181,10 @@ describe('projectRouter project cleanup', () => {
     mkdirSync(resolve(repoDir, '.ticket'), { recursive: true })
     writeFileSync(resolve(repoDir, '.ticket', 'runtime-marker.txt'), 'ticket runtime\n')
 
-    expect(readGitignoreRules(repoDir)).toContain('/.looptroop/')
-    expect(readGitignoreRules(repoDir)).toContain('/.ticket/')
-    // The runtime folders are ignored; only the new .gitignore is left to commit.
-    expect(git(repoDir, ['status', '--porcelain'])).toBe('?? .gitignore')
+    expect(readLocalExcludeRules(repoDir)).toContain('/.looptroop/')
+    expect(readLocalExcludeRules(repoDir)).toContain('/.ticket/')
+    expect(readGitignoreRules(repoDir)).toEqual([])
+    expect(git(repoDir, ['status', '--porcelain'])).toBe('')
   })
 
   it('installs repo-local LoopTroop excludes and keeps git status clean', () => {
@@ -233,6 +268,7 @@ describe('projectRouter project cleanup', () => {
       folderPath: repoDir,
       name: 'Existing Rules',
       shortname: 'EXR',
+      ignoreMode: 'repo',
     })
 
     // The pre-existing rules survive in order, the one already present is not

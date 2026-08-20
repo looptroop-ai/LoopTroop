@@ -259,7 +259,7 @@ describe('DashboardHeader', () => {
     expect(screen.getAllByText(/Manual QA fix beads:/).at(-1)?.parentElement).toHaveTextContent('N/A')
   })
 
-  it('shows effective Manual QA and Git hook settings in Details', () => {
+  it('shows only the ticket-level Manual QA setting in Details', () => {
     const ticket = makeTicket({
       status: 'DRAFTING_PRD',
       availableActions: ['cancel'],
@@ -280,12 +280,7 @@ describe('DashboardHeader', () => {
     expect(advancedSettings).not.toBeNull()
     expect(within(advancedSettings as HTMLElement).getByText('Manual QA checkpoint')).toBeInTheDocument()
     expect(within(advancedSettings as HTMLElement).getByText('Enabled')).toBeInTheDocument()
-    expect(within(advancedSettings as HTMLElement).getByText('Git hook policy')).toBeInTheDocument()
-    expect(within(advancedSettings as HTMLElement).getByText('Observe')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open documentation for ticket Git hook policy' })).toHaveAttribute(
-      'href',
-      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
-    )
+    expect(within(advancedSettings as HTMLElement).queryByText('Git hook policy')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Manual QA checkpoint/ })).not.toBeInTheDocument()
     const modelsSelected = screen.getByText('Models Selected')
     expect(modelsSelected.compareDocumentPosition(advancedSettings as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

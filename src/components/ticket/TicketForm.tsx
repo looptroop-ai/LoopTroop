@@ -15,8 +15,6 @@ import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { useProfile } from '@/hooks/useProfile'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
-import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
-import { resolveGitHookPolicySetting, type GitHookPolicyOverride } from '@/lib/gitHookPolicySetting'
 import { useToast } from '@/components/shared/useToast'
 
 interface TicketFormProps {
@@ -38,7 +36,6 @@ export function TicketForm({ onClose }: TicketFormProps) {
   const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false)
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
-  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicyOverride>(null)
 
   const selectedProject = projects.find(p => p.id === projectId) ?? projects[0]
   const effectiveProjectId = selectedProject?.id ?? ''
@@ -47,18 +44,12 @@ export function TicketForm({ onClose }: TicketFormProps) {
     selectedProject?.manualQaOverride ?? null,
     profile?.manualQaEnabled ?? false,
   )
-  const effectiveGitHookPolicy = resolveGitHookPolicySetting(
-    gitHookPolicy,
-    selectedProject?.gitHookPolicy ?? null,
-    profile?.gitHookPolicy ?? 'validate_advisory',
-  )
   const createInput = () => ({
     projectId: effectiveProjectId as number,
     title,
     description: description || undefined,
     priority,
     manualQaOverride: effectiveManualQa.enabled,
-    gitHookPolicy,
   })
 
   const handleCreateAndStart = async () => {
@@ -289,22 +280,6 @@ export function TicketForm({ onClose }: TicketFormProps) {
                     value={manualQaOverride}
                     onChange={setManualQaOverride}
                     inheritedEnabled={effectiveManualQa.enabled}
-                    compact
-                  />
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <label className="text-xs font-medium">Git hook policy</label>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#git-hook-policy"
-                      label="ticket Git hook policy"
-                      description="Choose how this ticket handles repository hooks before implementation. Open the Git hook policy documentation."
-                    />
-                  </div>
-                  <GitHookPolicySetting
-                    value={gitHookPolicy}
-                    onChange={setGitHookPolicy}
-                    inheritedPolicy={effectiveGitHookPolicy.policy}
                     compact
                   />
                 </div>

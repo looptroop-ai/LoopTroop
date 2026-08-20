@@ -49,6 +49,7 @@ function migrateLegacyProfilesTable() {
         main_implementer TEXT,
         manual_qa_enabled INTEGER NOT NULL DEFAULT 0,
         git_hook_policy TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.gitHookPolicy}',
+        ignore_mode TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.ignoreMode}',
         council_members TEXT,
         min_council_quorum INTEGER DEFAULT ${PROFILE_DEFAULTS.minCouncilQuorum},
         per_iteration_timeout INTEGER DEFAULT ${PROFILE_DEFAULTS.perIterationTimeout},
@@ -73,6 +74,7 @@ function migrateLegacyProfilesTable() {
         main_implementer,
         manual_qa_enabled,
         git_hook_policy,
+        ignore_mode,
         council_members,
         min_council_quorum,
         per_iteration_timeout,
@@ -96,6 +98,7 @@ function migrateLegacyProfilesTable() {
         ${selectLegacyProfileColumn(columnSet, 'main_implementer')},
         ${selectLegacyProfileValue(columnSet, 'manual_qa_enabled', 0)},
         ${selectLegacyProfileExpression(columnSet, 'git_hook_policy', `'${PROFILE_DEFAULTS.gitHookPolicy}'`)},
+        ${selectLegacyProfileExpression(columnSet, 'ignore_mode', `'${PROFILE_DEFAULTS.ignoreMode}'`)},
         ${selectLegacyProfileColumn(columnSet, 'council_members')},
         ${selectLegacyProfileValue(columnSet, 'min_council_quorum', PROFILE_DEFAULTS.minCouncilQuorum)},
         ${selectLegacyProfileValue(columnSet, 'per_iteration_timeout', PROFILE_DEFAULTS.perIterationTimeout)},
@@ -141,6 +144,7 @@ export function initializeDatabase() {
       main_implementer TEXT,
       manual_qa_enabled INTEGER NOT NULL DEFAULT 0,
       git_hook_policy TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.gitHookPolicy}',
+      ignore_mode TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.ignoreMode}',
       council_members TEXT,
       min_council_quorum INTEGER DEFAULT ${PROFILE_DEFAULTS.minCouncilQuorum},
       per_iteration_timeout INTEGER DEFAULT ${PROFILE_DEFAULTS.perIterationTimeout},
@@ -178,6 +182,7 @@ export function initializeDatabase() {
   ensureColumn('profiles', 'coverage_follow_up_budget_percent', `INTEGER DEFAULT ${PROFILE_DEFAULTS.coverageFollowUpBudgetPercent}`)
   ensureColumn('profiles', 'manual_qa_enabled', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn('profiles', 'git_hook_policy', `TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.gitHookPolicy}'`)
+  ensureColumn('profiles', 'ignore_mode', `TEXT NOT NULL DEFAULT '${PROFILE_DEFAULTS.ignoreMode}'`)
   ensureColumn('profiles', 'max_coverage_passes', `INTEGER DEFAULT ${PROFILE_DEFAULTS.maxCoveragePasses}`)
   ensureColumn('profiles', 'max_prd_coverage_passes', `INTEGER DEFAULT ${PROFILE_DEFAULTS.maxPrdCoveragePasses}`)
   ensureColumn('profiles', 'max_beads_coverage_passes', `INTEGER DEFAULT ${PROFILE_DEFAULTS.maxBeadsCoveragePasses}`)

@@ -235,7 +235,7 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     expect((await inherited.app.request(`/api/tickets/${inherited.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
     expect(getTicketByRef(inherited.ticket.id)).toMatchObject({
       lockedManualQaEnabled: true,
-      lockedManualQaSource: 'profile',
+      lockedManualQaSource: 'project',
     })
 
     const projectOverride = setupStartTicketApp()
@@ -260,7 +260,7 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     broadcaster.clearTicket(overridden.ticket.id)
   })
 
-  it('freezes the effective Git hook policy and its inheritance source at start', async () => {
+  it('freezes the saved project Git hook policy at start', async () => {
     sqlite.exec(`
       INSERT INTO profiles (main_implementer, council_members, git_hook_policy)
       VALUES ('openai/codex-mini-latest', '["openai/codex-mini-latest"]', 'observe_only');
@@ -269,7 +269,7 @@ describe('ticketRouter POST /tickets/:id/start', () => {
     expect((await inherited.app.request(`/api/tickets/${inherited.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
     expect(getTicketByRef(inherited.ticket.id)).toMatchObject({
       lockedGitHookPolicy: 'observe_only',
-      lockedGitHookPolicySource: 'profile',
+      lockedGitHookPolicySource: 'project',
     })
 
     const projectOverride = setupStartTicketApp()
@@ -280,18 +280,8 @@ describe('ticketRouter POST /tickets/:id/start', () => {
       lockedGitHookPolicySource: 'project',
     })
 
-    const overridden = setupStartTicketApp()
-    updateProject(overridden.project.id, { gitHookPolicy: 'use_native_hooks' })
-    updateTicket(overridden.ticket.id, { gitHookPolicy: 'validate_required' })
-    expect((await overridden.app.request(`/api/tickets/${overridden.ticket.id}/start`, { method: 'POST' })).status).toBe(200)
-    expect(getTicketByRef(overridden.ticket.id)).toMatchObject({
-      lockedGitHookPolicy: 'validate_required',
-      lockedGitHookPolicySource: 'ticket',
-    })
-
     broadcaster.clearTicket(inherited.ticket.id)
     broadcaster.clearTicket(projectOverride.ticket.id)
-    broadcaster.clearTicket(overridden.ticket.id)
   })
 
   it('writes a DRAFT error log when model validation fails and leaves the ticket in DRAFT', async () => {

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { GitHookPolicySetting } from '../GitHookPolicySetting'
 import {
   normalizeGitHookPolicySetting,
-  resolveGitHookPolicySetting,
 } from '@/lib/gitHookPolicySetting'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -45,21 +44,10 @@ describe('GitHookPolicySetting', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(expectedText)
   })
 
-  it('resolves ticket, project, then profile precedence', () => {
-    expect(resolveGitHookPolicySetting('observe_only', 'use_native_hooks', 'validate_advisory'))
-      .toEqual({ policy: 'observe_only', source: 'ticket' })
-    expect(resolveGitHookPolicySetting(null, 'use_native_hooks', 'validate_advisory'))
-      .toEqual({ policy: 'use_native_hooks', source: 'project' })
-    expect(resolveGitHookPolicySetting(null, null, 'validate_advisory'))
-      .toEqual({ policy: 'validate_advisory', source: 'profile' })
-  })
-
   it('normalizes persisted legacy values and falls back safely', () => {
     expect(normalizeGitHookPolicySetting('validate_explicitly')).toBe('validate_advisory')
     expect(normalizeGitHookPolicySetting('ignore_internal_only')).toBe('observe_only')
     expect(normalizeGitHookPolicySetting('use_on_internal_commits')).toBe('use_native_hooks')
     expect(normalizeGitHookPolicySetting('unknown')).toBeNull()
-    expect(resolveGitHookPolicySetting(null, 'unknown', 'unknown'))
-      .toEqual({ policy: 'validate_advisory', source: 'profile' })
   })
 })

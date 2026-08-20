@@ -4,6 +4,7 @@ import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
 
 interface Project {
   id: number
@@ -22,6 +23,7 @@ interface Project {
   minCouncilQuorum: number | null
   interviewQuestions: number | null
   manualQaOverride?: boolean | null
+  ignoreMode: IgnoreMode
   ticketCounter: number
   createdAt: string
   updatedAt: string
@@ -38,6 +40,7 @@ interface ExistingProjectPreview {
   activeTicketCount: number
   gitHookPolicy?: GitHookPolicy | null
   manualQaOverride?: boolean | null
+  ignoreMode?: IgnoreMode
 }
 
 type ExistingStateAction = 'restore' | 'clear_tickets' | 'start_fresh'
@@ -47,8 +50,6 @@ type ExistingStateAction = 'restore' | 'clear_tickets' | 'start_fresh'
  * the repository's tracked `.gitignore`, this clone's `.git/info/exclude`, or
  * nowhere, for a repository that already handles it.
  */
-type IgnoreMode = 'repo' | 'local' | 'skip'
-
 interface CreateProjectInput {
   name: string
   shortname: string
@@ -109,6 +110,7 @@ async function fetchProjects(): Promise<Project[]> {
   return projects.map((project) => ({
     ...project,
     gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+    ignoreMode: normalizeIgnoreMode(project.ignoreMode) ?? DEFAULT_IGNORE_MODE,
   }))
 }
 
@@ -127,6 +129,7 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
   return {
     ...project,
     gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+    ignoreMode: normalizeIgnoreMode(project.ignoreMode) ?? DEFAULT_IGNORE_MODE,
   }
 }
 
@@ -145,6 +148,7 @@ async function updateProject(id: number, input: Partial<Pick<Project, 'name' | '
   return {
     ...project,
     gitHookPolicy: normalizeGitHookPolicySetting(project.gitHookPolicy),
+    ignoreMode: normalizeIgnoreMode(project.ignoreMode) ?? DEFAULT_IGNORE_MODE,
   }
 }
 

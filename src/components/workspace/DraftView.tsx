@@ -17,8 +17,6 @@ import { TicketDescriptionViewer } from '@/components/ticket/TicketDescriptionVi
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
-import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
-import { resolveGitHookPolicySetting, type GitHookPolicyOverride } from '@/lib/gitHookPolicySetting'
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'Very High', 2: 'High', 3: 'Normal', 4: 'Low', 5: 'Very Low' }
 const PRIORITY_COLORS: Record<number, string> = {
@@ -102,8 +100,6 @@ export function DraftView({ ticket }: DraftViewProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(ticket.manualQaOverride ?? null)
   const [manualQaError, setManualQaError] = useState<string | null>(null)
-  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicyOverride>(ticket.gitHookPolicy ?? null)
-  const [gitHookPolicyError, setGitHookPolicyError] = useState<string | null>(null)
   const project = projects.find(p => p.id === ticket.projectId)
   const mainImplementer = typeof profile?.mainImplementer === 'string'
     ? profile.mainImplementer.trim()
@@ -126,11 +122,6 @@ export function DraftView({ ticket }: DraftViewProps) {
     project?.manualQaOverride ?? null,
     profile?.manualQaEnabled ?? false,
   )
-  const effectiveGitHookPolicy = resolveGitHookPolicySetting(
-    gitHookPolicy,
-    project?.gitHookPolicy ?? null,
-    profile?.gitHookPolicy ?? 'validate_advisory',
-  )
 
   // Sync draft from prop — use useEffect to avoid setting state during render
   // which can cause issues with React StrictMode double-rendering.
@@ -150,10 +141,6 @@ export function DraftView({ ticket }: DraftViewProps) {
   useEffect(() => {
     setManualQaOverride(ticket.manualQaOverride ?? null)
   }, [ticket.manualQaOverride])
-
-  useEffect(() => {
-    setGitHookPolicy(ticket.gitHookPolicy ?? null)
-  }, [ticket.gitHookPolicy])
 
   const handleStart = () => {
     setIsStartAttemptActive(true)
@@ -215,18 +202,6 @@ export function DraftView({ ticket }: DraftViewProps) {
     } catch (error) {
       setManualQaOverride(previous)
       setManualQaError(error instanceof Error ? error.message : 'Failed to update Manual QA setting.')
-    }
-  }
-
-  const handleGitHookPolicyChange = async (value: NonNullable<GitHookPolicyOverride>) => {
-    const previous = gitHookPolicy
-    setGitHookPolicy(value)
-    setGitHookPolicyError(null)
-    try {
-      await updateTicket({ id: ticket.id, gitHookPolicy: value })
-    } catch (error) {
-      setGitHookPolicy(previous)
-      setGitHookPolicyError(error instanceof Error ? error.message : 'Failed to update Git hook policy.')
     }
   }
 
@@ -348,25 +323,6 @@ export function DraftView({ ticket }: DraftViewProps) {
                   />
                 </div>
                 {manualQaError && <p role="alert" className="mt-2 text-xs text-destructive">{manualQaError}</p>}
-
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <h4 className="text-xs font-medium">Git hook policy</h4>
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#git-hook-policy"
-                      label="ticket Git hook policy"
-                      description="Choose how this ticket handles repository hooks before implementation. Open the Git hook policy documentation."
-                    />
-                  </div>
-                  <GitHookPolicySetting
-                    value={gitHookPolicy}
-                    onChange={(value) => { void handleGitHookPolicyChange(value) }}
-                    inheritedPolicy={effectiveGitHookPolicy.policy}
-                    disabled={isSavingDescription}
-                    compact
-                  />
-                </div>
-                {gitHookPolicyError && <p role="alert" className="mt-2 text-xs text-destructive">{gitHookPolicyError}</p>}
               </div>
             )}
           </div>

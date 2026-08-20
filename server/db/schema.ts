@@ -9,6 +9,7 @@ export const profiles = sqliteTable('profiles', {
   councilMemberVariants: text('council_member_variants'), // JSON map: { "provider/model": "variant" }
   manualQaEnabled: integer('manual_qa_enabled', { mode: 'boolean' }).notNull().default(PROFILE_DEFAULTS.manualQaEnabled),
   gitHookPolicy: text('git_hook_policy').notNull().default(PROFILE_DEFAULTS.gitHookPolicy),
+  ignoreMode: text('ignore_mode').notNull().default(PROFILE_DEFAULTS.ignoreMode),
   minCouncilQuorum: integer('min_council_quorum').default(PROFILE_DEFAULTS.minCouncilQuorum),
   perIterationTimeout: integer('per_iteration_timeout').default(PROFILE_DEFAULTS.perIterationTimeout),
   executionSetupTimeout: integer('execution_setup_timeout').default(PROFILE_DEFAULTS.executionSetupTimeout),
@@ -81,7 +82,6 @@ export const tickets = sqliteTable('tickets', {
   percentComplete: real('percent_complete'),
   errorMessage: text('error_message'),
   manualQaOverride: integer('manual_qa_override', { mode: 'boolean' }),
-  gitHookPolicy: text('git_hook_policy'),
   lockedMainImplementer: text('locked_main_implementer'),
   lockedMainImplementerVariant: text('locked_main_implementer_variant'),
   lockedCouncilMembers: text('locked_council_members'), // JSON array of model IDs, frozen at start

@@ -86,7 +86,7 @@ const LOOP_TROOP_EXCLUDE_RULES = [
  */
 export type IgnoreMode = 'repo' | 'local' | 'skip'
 
-export const DEFAULT_IGNORE_MODE: IgnoreMode = 'repo'
+export const DEFAULT_IGNORE_MODE: IgnoreMode = 'local'
 
 export function isIgnoreMode(value: unknown): value is IgnoreMode {
   return value === 'repo' || value === 'local' || value === 'skip'

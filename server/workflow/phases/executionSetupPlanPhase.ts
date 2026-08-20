@@ -276,9 +276,6 @@ async function generateAndPersistExecutionSetupPlan(input: {
           workspaceInputs: generation.plan.workspaceInputs,
         }),
       })
-      if (input.source === 'regenerate' && input.currentPlan) {
-        generation.plan.gitHooks.policy = input.currentPlan.gitHooks.policy
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       generation.parse.errors.push(message)

@@ -29,6 +29,7 @@ Commands:
 Options:
   --port <n>     Port to listen on (start, restart)
   --foreground   Run in this terminal instead of the background (start)
+  --print-url    Print the sign-in link instead of opening a browser (open)
   --opencode-logs=all
                  Include managed OpenCode DEBUG output (open, start)
   --json         Machine-readable output (status, doctor)

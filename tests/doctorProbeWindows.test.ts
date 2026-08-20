@@ -47,6 +47,19 @@ describe('probing external commands on Windows', () => {
     )
   })
 
+  it('spawns an absolute path directly, even on Windows', () => {
+    // The shell exists to resolve a name through PATHEXT. A resolved path needs
+    // none of that, and cmd.exe would re-parse the arguments — where a `>` in a
+    // value is a redirection and `()` are syntax.
+    withPlatform('win32', () => runProbe('C:\\tools\\node.exe', ['--version'], 5_000))
+
+    expect(execFileSync).toHaveBeenCalledWith(
+      'C:\\tools\\node.exe',
+      ['--version'],
+      expect.objectContaining({ shell: false }),
+    )
+  })
+
   it('leaves every other platform spawning directly', () => {
     for (const platform of ['linux', 'darwin'] as const) {
       execFileSync.mockClear()

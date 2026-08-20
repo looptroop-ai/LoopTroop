@@ -159,13 +159,20 @@ export type ProbeResult =
  * or from user input would have to be quoted first.
  */
 export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
+  // The shell is here to resolve a *name* — `npm` to `npm.cmd` — so it is used
+  // only for names. An absolute path is already resolved, and handing one to
+  // cmd.exe would buy nothing while exposing its arguments to re-parsing, where
+  // a `>` or a `(` in a value means something. That is not hypothetical: the
+  // suite probes `process.execPath` with an inline script, and cmd read the `>`
+  // of an arrow function as a redirection.
+  const needsShell = process.platform === 'win32' && !/[\\/]/.test(command)
   const started = Date.now()
   try {
     const output = execFileSync(command, args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: timeoutMs,
-      shell: process.platform === 'win32',
+      shell: needsShell,
     })
     return { kind: 'ok', output }
   } catch (error) {

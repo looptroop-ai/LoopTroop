@@ -22,6 +22,8 @@ import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { WORKSPACE_PHASE_NAVIGATE_EVENT, type WorkspacePhaseNavigateDetail } from '@/lib/workspaceNavigation'
 import { normalizeTicketForRender } from '@/lib/ticketNormalization'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
 
@@ -180,7 +182,13 @@ function SSELogConnector({
 export function TicketDashboard() {
   const { state, dispatch } = useUI()
   const ticketId = state.selectedTicketId
-  const { data: ticket } = useTicket(ticketId)
+  const {
+    data: ticket,
+    isError: isTicketError,
+    error: ticketError,
+    refetch: refetchTicket,
+    isFetching: isFetchingTicket,
+  } = useTicket(ticketId)
   const { mutate: saveTicketUiState } = useSaveTicketUIState()
   const renderedTicketIdsRef = useRef(new Set<string>())
   const [navWidth, setNavWidth] = useState(280)
@@ -502,6 +510,31 @@ export function TicketDashboard() {
   }, [dispatch, isMobileNavOpen])
 
   if (!ticketId) return null
+
+  // Checked before the skeleton: a failed fetch also leaves `ticket` undefined,
+  // and rendering the "loading…" skeleton for it is what makes a dead backend
+  // look like a slow one.
+  if (!ticket && isTicketError) return (
+    <div className="fixed inset-0 z-[60] bg-background flex flex-col">
+      <div className="h-12 border-b border-border flex items-center px-4 gap-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => dispatch({ type: 'CLOSE_TICKET' })}
+          className="h-8 text-xs"
+        >
+          Back to board
+        </Button>
+      </div>
+      <DataUnavailableBanner
+        title="Ticket unavailable"
+        description="LoopTroop could not load this ticket from the server. Check that the LoopTroop backend is running, then retry."
+        error={ticketError}
+        onRetry={() => { void refetchTicket() }}
+        isRetrying={isFetchingTicket}
+      />
+    </div>
+  )
 
   if (!ticket) return (
     <div className="fixed inset-0 z-[60] bg-background flex flex-col">

@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { RefreshCw, X, ChevronDown, FolderOpen } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Button } from '@/components/ui/button'
+import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
 import { ticketMatchesDashboardSearch } from './kanbanSearch'
 import { cn } from '@/lib/utils'
 import {
@@ -132,7 +133,14 @@ function ProjectIcon({
 
 export function KanbanBoard() {
   const { state, dispatch } = useUI()
-  const { data: tickets, isLoading: isLoadingTickets } = useTickets()
+  const {
+    data: tickets,
+    isLoading: isLoadingTickets,
+    isError: isTicketsError,
+    error: ticketsError,
+    refetch: refetchTickets,
+    isFetching: isFetchingTickets,
+  } = useTickets()
   const { data: projects = [] } = useProjects()
 
   const selectedProjectId = state.filters?.projectId ?? null
@@ -674,7 +682,16 @@ export function KanbanBoard() {
         )}
       </div>
 
-      {isLoadingTickets && (
+      {isTicketsError && (
+        <DataUnavailableBanner
+          title="Tickets unavailable"
+          description="LoopTroop could not reach the server, so the board is empty. Your tickets are not lost — check that the LoopTroop backend is running, then retry."
+          error={ticketsError}
+          onRetry={() => { void refetchTickets() }}
+          isRetrying={isFetchingTickets}
+        />
+      )}
+      {isLoadingTickets && !isTicketsError && (
         <div
           className="border-b border-amber-200 bg-amber-50/90 px-4 py-2 dark:border-amber-900/60 dark:bg-amber-950/40 shrink-0"
           role="status"

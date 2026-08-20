@@ -5,6 +5,7 @@ import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCach
 import type { WorkflowAction } from '@shared/workflowMeta'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
+import { failedResponseError } from '@/lib/fetchError'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
   createTicketUiStateActionId,
@@ -255,13 +256,13 @@ export function getTicketsAutoRefreshInterval(
 async function fetchTickets(projectId?: number): Promise<Ticket[]> {
   const url = projectId ? `/api/tickets?projectId=${projectId}` : '/api/tickets'
   const res = await fetch(url)
-  if (!res.ok) throw new Error('Failed to fetch tickets')
+  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch tickets')
   return res.json()
 }
 
 async function fetchTicket(id: string): Promise<Ticket> {
   const res = await fetch(`/api/tickets/${id}`)
-  if (!res.ok) throw new Error('Failed to fetch ticket')
+  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch ticket')
   return res.json()
 }
 

@@ -18,7 +18,13 @@ const mockSSEState = vi.hoisted(() => ({
   connectionState: 'connected' as 'connecting' | 'connected' | 'reconnecting',
 }))
 const mockTicketQuery = vi.hoisted(() => ({
-  override: null as null | { data: Ticket | undefined },
+  override: null as null | {
+    data: Ticket | undefined
+    isError?: boolean
+    error?: unknown
+    refetch?: () => void
+    isFetching?: boolean
+  },
 }))
 const useRecoveryAutoReloadMock = vi.hoisted(() => vi.fn())
 const saveUiStateMutate = vi.hoisted(() => vi.fn())
@@ -422,6 +428,32 @@ describe('TicketDashboard', () => {
     await waitFor(() => {
       expect(useRecoveryAutoReloadMock).toHaveBeenCalledWith(`ticket-loading:${selectedTicketId}`, true)
     })
+  })
+
+  /**
+   * A failed fetch leaves `ticket` undefined, which is the same state as a
+   * pending one. Showing the skeleton for both is what made an unreachable
+   * backend read as "still loading".
+   */
+  it('reports a failed ticket fetch instead of showing the loading skeleton', async () => {
+    const refetch = vi.fn()
+    mockTicketQuery.override = {
+      data: undefined,
+      isError: true,
+      error: new Error('Failed to fetch ticket (HTTP 503: API token not configured)'),
+      refetch,
+      isFetching: false,
+    }
+
+    renderDashboard()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Ticket unavailable')
+    expect(alert).toHaveTextContent('HTTP 503: API token not configured')
+    expect(screen.queryByText('Loading ticket...')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(refetch).toHaveBeenCalledTimes(1)
   })
 
   it('renders SSE log events in the active ticket without reopening it', async () => {

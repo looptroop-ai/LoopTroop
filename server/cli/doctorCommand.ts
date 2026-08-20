@@ -159,6 +159,7 @@ export type ProbeResult =
  * or from user input would have to be quoted first.
  */
 export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
+  const started = Date.now()
   try {
     const output = execFileSync(command, args, {
       encoding: 'utf8',
@@ -173,9 +174,16 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
     //
     // Missing still lands here under a shell, by a different route: cmd.exe
     // starts perfectly well and exits 9009 with "is not recognized", which
-    // execFileSync raises as a non-zero exit rather than as `ENOENT`. Both
-    // shapes mean unavailable, so only the deadline needs telling apart.
-    return (error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+    // execFileSync raises as a non-zero exit rather than as `ENOENT`.
+    //
+    // The deadline is recognised by how long this took, not only by `ETIMEDOUT`,
+    // because under a shell that code does not arrive: the deadline kills
+    // cmd.exe, and what surfaces is an ordinary non-zero exit from the wrapper.
+    // Relying on the code alone reported every hung probe on Windows as a
+    // missing one — telling someone to install a tool they already have, which
+    // is the exact confusion this branch exists to prevent.
+    const elapsed = Date.now() - started
+    return (error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || elapsed >= timeoutMs
       ? { kind: 'timed-out' }
       : { kind: 'unavailable' }
   }

@@ -80,4 +80,23 @@ describe('probing external commands on Windows', () => {
     const result = withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 5_000))
     expect(result).toEqual({ kind: 'timed-out' })
   })
+
+  /**
+   * Under a shell the deadline does not arrive as `ETIMEDOUT`: it kills cmd.exe,
+   * and what surfaces is an ordinary non-zero exit from the wrapper — the same
+   * shape a missing command produces. Recognising the deadline by how long the
+   * call took is what keeps the two apart, and getting this wrong reported every
+   * hung probe on Windows as a missing one, sending people to install `gh` when
+   * their `gh auth status` was stuck on a black-holed proxy.
+   */
+  it('recognises the deadline even when the shell swallows ETIMEDOUT', () => {
+    execFileSync.mockImplementation(() => {
+      const started = Date.now()
+      while (Date.now() - started < 60) { /* spin past the deadline */ }
+      throw Object.assign(new Error('Command failed'), { status: 1 })
+    })
+
+    const result = withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 50))
+    expect(result).toEqual({ kind: 'timed-out' })
+  })
 })

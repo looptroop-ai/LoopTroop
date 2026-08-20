@@ -85,6 +85,8 @@ export const defaultTermination: ProcessTermination = {
 export interface OpenCodeSupervisorOptions {
   baseUrl: string
   mock?: boolean
+  /** Pass full DEBUG output through stdout/stderr for a managed server. */
+  printLogs?: boolean
   /** Injected by tests so no real process is spawned. */
   spawnProcess?: typeof spawn
   probe?: (baseUrl: string) => Promise<boolean>
@@ -187,7 +189,8 @@ export class OpenCodeSupervisor {
     const port = url.port || (url.protocol === 'https:' ? '443' : '80')
     const spawnProcess = this.options.spawnProcess ?? spawn
 
-    const child = spawnProcess('opencode', ['serve', '--hostname', host, '--port', port], {
+    const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
+    const child = spawnProcess('opencode', ['serve', ...logArgs, '--hostname', host, '--port', port], {
       stdio: ['ignore', 'inherit', 'inherit'],
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.

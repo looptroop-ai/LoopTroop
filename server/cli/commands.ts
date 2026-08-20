@@ -36,7 +36,11 @@ export const DEFAULT_STOP_BUDGETS: StopBudgets = {
 export interface CliOptions {
   port?: number
   foreground?: boolean
+  /** Include full DEBUG output from an OpenCode server this daemon starts. */
+  opencodeLogs?: 'all'
 }
+
+const OPENCODE_LOG_MODE_ENV = 'LOOPTROOP_OPENCODE_LOGS'
 
 /**
  * A pid alone cannot prove the daemon is alive: the number may have been
@@ -139,6 +143,7 @@ async function launchDaemon(configDir: string, options: CliOptions): Promise<Lau
     env: {
       ...process.env,
       ...(options.port === undefined ? {} : { LOOPTROOP_BACKEND_PORT: String(options.port) }),
+      ...(options.opencodeLogs === 'all' ? { [OPENCODE_LOG_MODE_ENV]: 'all' } : {}),
     },
   })
   child.unref()
@@ -180,6 +185,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
       `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n` +
       'Run `looptroop open` for a signed-in link.\n',
     )
+    if (options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
     return 0
   }
 
@@ -188,6 +194,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
     await runDaemonProcess({
       foreground: true,
       ...(options.port === undefined ? {} : { port: options.port }),
+      ...(options.opencodeLogs === 'all' ? { opencodeLogs: 'all' } : {}),
     })
     return 0
   }
@@ -205,7 +212,11 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
     `  URL:   ${bootstrapUrl?.url ?? `http://${state.host}:${state.port}`}\n` +
     `  PID:   ${state.pid}\n` +
     `  Logs:  ${logPath}\n` +
+    '  Follow: looptroop logs --follow\n' +
     `  Stop:  looptroop stop\n` +
+    (options.opencodeLogs === 'all'
+      ? '  OpenCode: full managed DEBUG output enabled\n'
+      : '  OpenCode: start with --opencode-logs=all for full managed DEBUG output\n') +
     (bootstrapUrl
       ? '\nThe link signs this browser in once and then expires. Run `looptroop open` for a new one.\n'
       : '\nCould not mint a sign-in link; run `looptroop open` to try again.\n'),
@@ -684,6 +695,25 @@ export interface OpenOptions {
   printUrl?: boolean
   /** How long to wait for the browser to sign in. Shortened by tests. */
   waitMs?: number
+  /** Include full DEBUG output from an OpenCode server this command starts. */
+  opencodeLogs?: 'all'
+}
+
+
+function writeAllLogsRequiresRestart(): void {
+  process.stderr.write(
+    '`--opencode-logs=all` only applies when LoopTroop starts the daemon. ' +
+    'Run `looptroop stop`, then start it again with that option.\n',
+  )
+}
+
+function writeLogHint(opencodeLogs: OpenOptions['opencodeLogs']): void {
+  process.stdout.write(
+    'Logs: run `looptroop logs --follow` to stream them. ' +
+    (opencodeLogs === 'all'
+      ? 'Full managed OpenCode DEBUG output is enabled.\n'
+      : 'Start with `--opencode-logs=all` for full managed OpenCode DEBUG output.\n'),
+  )
 }
 
 /** How long a launched browser gets to spend its nonce before `open` gives up. */
@@ -746,9 +776,11 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
   let state = await readRunningDaemon(configDir)
   let started = false
 
+  if (state && options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
+
   if (!state) {
     process.stdout.write('LoopTroop is not running. Starting it...\n')
-    const launched = await launchDaemon(configDir, {})
+    const launched = await launchDaemon(configDir, options.opencodeLogs === 'all' ? { opencodeLogs: 'all' } : {})
     // launchDaemon has already said why, in more detail than this command could.
     if (!launched) return 1
     state = launched.state
@@ -763,7 +795,10 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
 
   if (options.printUrl === true) {
     printSignInLink(link.url, 'Sign in to LoopTroop with this link:')
-    if (started) await hintFirstRun(state)
+    if (started) {
+      writeLogHint(options.opencodeLogs)
+      await hintFirstRun(state)
+    }
     return 0
   }
 
@@ -784,6 +819,10 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
     // still finishing its first run when the nonce expires.
     printSignInLink(link.url, 'No browser signed in. If none opened, use this link:')
   }
+
+  // Printed once, whichever way the browser went: it describes the daemon this
+  // command started, not how the browser was signed in.
+  if (started) writeLogHint(options.opencodeLogs)
 
   // Only after a start we performed: an already-running daemon has been asked
   // this question before, and the answer is on the screen the browser just

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type ProxyOptions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { readFileSync } from 'fs'
@@ -20,6 +20,56 @@ const backendOrigin = getBackendOrigin()
 const apiToken = process.env.LOOPTROOP_API_TOKEN?.trim() ?? ''
 const apiTokenHeader = 'X-LoopTroop-Token'
 const devHostMode = resolveDevHostMode()
+
+/**
+ * The `/api` proxy, shared by `vite dev` and `vite preview`.
+ *
+ * It carries three jobs the browser cannot do for itself, and all three are
+ * load-bearing:
+ *
+ * - it attaches the API token, so the page never holds a credential;
+ * - `changeOrigin` rewrites Host to the backend's own authority, without which
+ *   the daemon's loopback guard rejects every request that reached the frontend
+ *   under any other name — a tunnel or a reverse proxy, for instance;
+ * - it overrides Origin for the same guard.
+ *
+ * Defined once because a second copy would drift, and the drift would surface
+ * as a blanket 403 with nothing to point at.
+ */
+const apiProxy: Record<string, ProxyOptions> = {
+  '/api': {
+    target: backendOrigin,
+    changeOrigin: true,
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq, req) => {
+        if (apiToken) {
+          proxyReq.setHeader(apiTokenHeader, apiToken)
+        }
+
+        const originOverride = getDevProxyOriginOverride({
+          origin: req.headers.origin,
+          host: req.headers.host,
+          secFetchSite: req.headers['sec-fetch-site'],
+          backendOrigin,
+        })
+        if (originOverride) {
+          proxyReq.setHeader('Origin', originOverride)
+        }
+      })
+      proxy.on('error', (err, _req, res) => {
+        if ('code' in err && err.code === 'ECONNREFUSED') {
+          // Backend not ready yet — return 503 silently so the
+          // client-side health poller can retry without noisy logs.
+          if (res && 'writeHead' in res) {
+            (res as ServerResponse).writeHead(503, { 'Content-Type': 'application/json' })
+            ;(res as ServerResponse).end(JSON.stringify({ error: 'Backend not ready' }))
+          }
+          return
+        }
+      })
+    },
+  },
+}
 
 function detectWslRuntime() {
   if (process.platform !== 'linux') return false
@@ -195,39 +245,17 @@ export default defineConfig({
     watch: {
       usePolling: watchPolling.usePolling,
     },
-    proxy: {
-      '/api': {
-        target: backendOrigin,
-        changeOrigin: true,
-        configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq, req) => {
-            if (apiToken) {
-              proxyReq.setHeader(apiTokenHeader, apiToken)
-            }
-
-            const originOverride = getDevProxyOriginOverride({
-              origin: req.headers.origin,
-              host: req.headers.host,
-              secFetchSite: req.headers['sec-fetch-site'],
-              backendOrigin,
-            })
-            if (originOverride) {
-              proxyReq.setHeader('Origin', originOverride)
-            }
-          })
-          proxy.on('error', (err, _req, res) => {
-            if ('code' in err && err.code === 'ECONNREFUSED') {
-              // Backend not ready yet — return 503 silently so the
-              // client-side health poller can retry without noisy logs.
-              if (res && 'writeHead' in res) {
-                (res as import('http').ServerResponse).writeHead(503, { 'Content-Type': 'application/json' })
-                ;(res as import('http').ServerResponse).end(JSON.stringify({ error: 'Backend not ready' }))
-              }
-              return
-            }
-          })
-        },
-      },
-    },
+    proxy: apiProxy,
+  },
+  // `vite preview` serves the built bundle, and it needs the same proxy for one
+  // reason that is easy to miss: the proxy is not a routing convenience, it is
+  // what authenticates the browser. Without it `preview` serves a working page
+  // whose every request is rejected, which is worse than not running at all.
+  preview: {
+    headers: DEV_SERVER_RESOURCE_HEADERS,
+    host: devHostMode.enabled ? devHostMode.bindHost : undefined,
+    port: getFrontendPort(),
+    strictPort: true,
+    proxy: apiProxy,
   },
 })

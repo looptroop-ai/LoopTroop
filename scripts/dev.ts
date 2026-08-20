@@ -19,6 +19,7 @@ import {
   type DependencySyncReport,
 } from './dev-maintenance'
 import { getDevLanUrls, LOOPTROOP_DEV_HOST, resolveDevHostMode } from './dev-host-mode'
+import { describeDevFrontendMode, resolveDevFrontendMode } from './dev-frontend-mode'
 import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
 import { LOOPTROOP_OPENCODE_LOGS, resolveOpenCodeLogMode } from './opencode-log-mode'
 import { getWslLanAccessPlan } from './wsl-lan-access'
@@ -90,6 +91,8 @@ if (opencodeLogMode.mode === 'all') {
 if (devHostMode.enabled) {
   childEnv[LOOPTROOP_DEV_HOST] = devHostMode.bindHost
 }
+
+const frontendMode = resolveDevFrontendMode(process.env)
 
 const { baseUrl, note, status } = await resolveOpenCodeBaseUrl({
   requestedBaseUrl,
@@ -292,13 +295,21 @@ const services: DevService[] = [
     displayCommand: 'tsx scripts/dev-opencode.ts',
     description: 'Ensure the local OpenCode server is reachable, then start it if needed.',
   },
-  {
-    name: 'WEB',
-    prefixColor: 'bgBlue.black',
-    command: 'npm:dev:frontend',
-    displayCommand: 'vite',
-    description: 'Start the frontend dev server for the LoopTroop dashboard.',
-  },
+  frontendMode === 'preview'
+    ? {
+      name: 'WEB',
+      prefixColor: 'bgBlue.black',
+      command: 'npm:dev:frontend:preview',
+      displayCommand: 'vite build && vite preview',
+      description: 'Build the dashboard, then serve the built bundle. No hot reload.',
+    }
+    : {
+      name: 'WEB',
+      prefixColor: 'bgBlue.black',
+      command: 'npm:dev:frontend',
+      displayCommand: 'vite',
+      description: 'Start the frontend dev server for the LoopTroop dashboard.',
+    },
   {
     name: 'API',
     prefixColor: 'bgGreen.black',
@@ -315,6 +326,7 @@ printSummaryLine('Documentation', `${docsOrigin}/docs/ (external)`)
 printSummaryLine('OpenCode', baseUrl)
 printSummaryLine('LAN sharing', formatLanSharingSummary())
 await printLanSharingDetails()
+printSummaryLine('Frontend', describeDevFrontendMode(frontendMode))
 printSummaryLine('OpenCode logs', formatOpenCodeLogSummary(status))
 printSummaryBlock('Package gate', formatDependencyReleasePolicySummaryLines())
 

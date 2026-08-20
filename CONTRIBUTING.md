@@ -28,6 +28,18 @@ npm run dev
 
 Open `http://localhost:5173` after the dev server starts.
 
+Running the stack over a tunnel or a remote link? The dev server sends every
+source file as a separate request, and each one pays the round trip. Serve the
+built bundle instead:
+
+```bash
+LOOPTROOP_DEV_FRONTEND=preview npm run dev
+```
+
+Same URL, same backend, same ports — but the frontend is built once and served
+as a bundle. Hot reload is the trade: code changes need a restart. Use it when
+you are running LoopTroop rather than developing it; leave it unset otherwise.
+
 Useful commands:
 
 ```bash

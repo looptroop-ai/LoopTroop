@@ -60,11 +60,3 @@ copyFileSync(
   resolve(root, 'dist/server/cli/launcher.cjs'),
 )
 console.log('[build:server] dist/server/cli/launcher.cjs (copied verbatim)')
-
-// Copied for the same reason, and it runs even earlier: npm executes it during
-// the install, before anything has confirmed this machine's Node is new enough.
-copyFileSync(
-  resolve(root, 'server/cli/postinstall.cjs'),
-  resolve(root, 'dist/server/cli/postinstall.cjs'),
-)
-console.log('[build:server] dist/server/cli/postinstall.cjs (copied verbatim)')

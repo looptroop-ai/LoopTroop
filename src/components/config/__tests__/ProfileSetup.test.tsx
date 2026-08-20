@@ -426,6 +426,24 @@ describe('ProfileSetup', () => {
     ))
   })
 
+  it('surfaces lower and upper duration bounds from the minute and second editors', async () => {
+    await renderProfileSetup()
+
+    const setupMinutes = screen.getByLabelText('Execution Setup Timeout minutes')
+    expect(setupMinutes).toHaveClass('number-input-no-spinner')
+
+    fireEvent.change(setupMinutes, { target: { value: '-1' } })
+    expect(screen.getByText('Minimum is 0')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('Execution Setup Timeout'), { target: { value: '1200' } })
+    expect(screen.getByLabelText('Execution Setup Timeout minutes')).toBeEnabled()
+
+    fireEvent.change(screen.getByLabelText('Execution Setup Timeout seconds'), { target: { value: '60' } })
+    expect(screen.getByText('Maximum is 3600')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
   it('explains the timeout boundaries in field help', async () => {
     await renderProfileSetup()
 

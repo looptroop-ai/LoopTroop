@@ -85,8 +85,6 @@ Usage: looptroop stop
 Asks the daemon to exit, waits for it to actually go, and reports if it did not.
 Any OpenCode process LoopTroop started is stopped with it; one that was already
 running when LoopTroop adopted it is left alone.
-
-Exits non-zero when nothing was running, so a script can tell the difference.
 `,
   restart: `looptroop restart — stop, then start again
 
@@ -109,9 +107,6 @@ Reports whether the *installed daemon* is running, its address, port, process id
 and the OpenCode it is using. Running LoopTroop from a checkout with
 \`npm run dev\` is not the daemon, and is reported as not running even though a
 browser can reach that development server.
-
-Exits 0 when running and 1 when not, so \`looptroop status >/dev/null\` works as a
-test in a script.
 `,
   logs: `looptroop logs — show the daemon log
 
@@ -138,8 +133,6 @@ daemon is running, and whether OpenCode can be reached.
 Each line is marked: a tick for fine, an exclamation for something worth knowing,
 a cross for something that will stop LoopTroop working. Anything not fine carries
 the command that fixes it.
-
-Exits non-zero if any check fails, so it can gate a script.
 `,
   setup: `looptroop setup — attach a project from the terminal
 

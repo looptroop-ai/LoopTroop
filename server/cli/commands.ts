@@ -223,7 +223,11 @@ async function hintFirstRun(state: DaemonState): Promise<void> {
 
     const projects = await response.json() as unknown
     if (Array.isArray(projects) && projects.length === 0) {
-      process.stdout.write('\nNo projects attached yet. Run `looptroop setup` to attach one.\n')
+      // Points at the interface, not at `looptroop setup`. LoopTroop is used
+      // through its interface; attaching a project is a thing you do there, and
+      // sending a new user back to the terminal for it teaches the wrong shape
+      // of the application.
+      process.stdout.write('\nNo projects attached yet. Add one in the interface.\n')
     }
   } catch {
     // Only a hint. A daemon that cannot answer has a real problem, and every

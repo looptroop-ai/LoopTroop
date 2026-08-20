@@ -87,16 +87,33 @@ const REQUIRED_NODE_MAJOR = 24
 const REQUIRED_NODE_MINOR = 15
 
 /**
- * "1.2.3 (latest 1.2.4)", or just "1.2.3" when the newest version is unknown or
- * already in hand.
+ * Bold, but only on a terminal.
  *
- * Deliberately silent when the two match: a line that repeats itself is noise,
- * and the useful signal is only ever the difference.
+ * `doctor` output is piped into files and issues at least as often as it is read
+ * live, and escape codes in a pasted log are worse than no emphasis.
+ */
+function bold(text: string): string {
+  return process.stdout.isTTY === true ? `[1m${text}[22m` : text
+}
+
+/**
+ * "1.2.3 (latest 1.2.4)" — always both, with the current version emphasised when
+ * it is behind.
+ *
+ * Shown even when the two match, because "you are on the newest" is the answer
+ * to the question being asked, and a line that omits it leaves the reader unsure
+ * whether the check ran at all. The emphasis, not the presence of the number,
+ * is what marks the ones worth acting on.
  */
 function withLatest(current: string, latest: string | null): string {
-  if (latest === null || latest === '') return current
-  const bare = current.replace(/^v/, '')
-  return bare === latest.replace(/^v/, '') ? current : `${current} (latest ${latest})`
+  if (latest === null || latest === '') return `${current} (latest unknown)`
+  const behind = current.replace(/^v/, '') !== latest.replace(/^v/, '')
+  return `${behind ? bold(current) : current} (latest ${latest})`
+}
+
+/** Pulls `1.2.3` out of `git version 2.47.3` or `gh version 2.97.0 (2026-07-31)`. */
+function versionIn(text: string): string | null {
+  return /(\d+\.\d+\.\d+)/.exec(text)?.[1] ?? null
 }
 
 /** Enough for a local binary to print its version and exit. */
@@ -194,10 +211,19 @@ function checkNpm(latest: string | null = null): Check {
   return { name: 'npm', status: 'ok', detail: withLatest(current, latest) }
 }
 
-function checkBinary(name: string, args: string[], required: boolean): Check {
+function checkBinary(
+  name: string,
+  args: string[],
+  required: boolean,
+  latest: string | null = null,
+): Check {
   const probe = runProbe(name, args, PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
-    return { name, status: 'ok', detail: probe.output.trim().split('\n')[0] ?? 'present' }
+    const line = probe.output.trim().split('\n')[0] ?? 'present'
+    // The tools print a sentence, not a version. Compare the number inside it
+    // and show that, so `git version 2.47.3` reads as `2.47.3 (latest 2.55.0)`.
+    const found = versionIn(line)
+    return { name, status: 'ok', detail: found === null ? line : withLatest(found, latest) }
   }
 
   if (probe.kind === 'timed-out') {
@@ -351,8 +377,9 @@ function checkOpenCodeVersion(latest: string | null = null): Check {
 
   const probe = runProbe('opencode', ['--version'], PROBE_TIMEOUT_MS)
   if (probe.kind === 'ok') {
-    const current = probe.output.trim().split('\n')[0] || 'present'
-    return { name: 'opencode cli', status: 'ok', detail: withLatest(current, latest) }
+    const line = probe.output.trim().split('\n')[0] || 'present'
+    const found = versionIn(line) ?? line
+    return { name: 'opencode cli', status: 'ok', detail: withLatest(found, latest) }
   }
 
   if (probe.kind === 'timed-out') {
@@ -600,7 +627,11 @@ async function checkLastStart(): Promise<Check> {
     // Reworded from "no refused start recorded", which read as an empty value
     // rather than as good news. This check only ever reports a *refusal*, so
     // when there is none the useful thing to say is that nothing went wrong.
-    return { name: 'last start', status: 'ok', detail: 'no failed start on record' }
+    // Named for what it reports. This check only ever surfaces a start that was
+    // *refused* — there is no record of successful starts to report a time from
+    // — and calling it "last start" invited the reasonable reading that it would
+    // show when LoopTroop last started, which it cannot.
+    return { name: 'last start', label: 'start failures', status: 'ok', detail: 'none recorded' }
   }
 
   // The versions the refusal was about, not what the file says now: this check
@@ -680,7 +711,7 @@ function checkInstallChannel(): Check {
 async function checkProjectIgnores(): Promise<Check> {
   const { APP_DB_PATH } = await import('../db/index')
   if (!existsSync(APP_DB_PATH)) {
-    return { name: 'project ignores', status: 'ok', detail: 'no projects attached yet' }
+    return { name: 'project ignores', label: 'git ignores', status: 'ok', detail: 'no projects attached yet' }
   }
 
   const [{ db }, { attachedProjects }, { areLoopTroopPathsIgnored }] = await Promise.all([
@@ -694,11 +725,11 @@ async function checkProjectIgnores(): Promise<Check> {
     rows = db.select().from(attachedProjects).all()
   } catch {
     // The schema check above already reports an unreadable database.
-    return { name: 'project ignores', status: 'ok', detail: 'skipped, database unreadable' }
+    return { name: 'project ignores', label: 'git ignores', status: 'ok', detail: 'skipped, database unreadable' }
   }
 
   if (rows.length === 0) {
-    return { name: 'project ignores', status: 'ok', detail: 'no projects attached yet' }
+    return { name: 'project ignores', label: 'git ignores', status: 'ok', detail: 'no projects attached yet' }
   }
 
   const unignored = rows
@@ -706,9 +737,19 @@ async function checkProjectIgnores(): Promise<Check> {
     .map((row) => row.folderPath)
 
   return unignored.length === 0
-    ? { name: 'project ignores', status: 'ok', detail: `${rows.length} project(s) ignore LoopTroop state` }
+    ? {
+        name: 'project ignores',
+        label: 'git ignores',
+        status: 'ok',
+        // Says what is being ignored and why anyone should care. LoopTroop puts
+        // its worktrees and per-ticket state inside each attached repository, so
+        // a repo that does not ignore those paths will offer them up as changes
+        // to commit.
+        detail: `LoopTroop's worktrees and state are git-ignored in ${rows.length} project(s)`,
+      }
     : {
         name: 'project ignores',
+        label: 'git ignores',
         status: 'warn',
         detail: `not ignored in: ${unignored.join(', ')}`,
         remedy: 'Re-attach the project and pick an ignore option, or add /.looptroop/ and /.ticket/ yourself.',
@@ -733,8 +774,8 @@ export async function runChecks(): Promise<Check[]> {
   return [
     checkNode(resolved.node),
     checkNpm(resolved.npm),
-    checkBinary('git', ['--version'], true),
-    checkBinary('gh', ['--version'], false),
+    checkBinary('git', ['--version'], true, resolved.git),
+    checkBinary('gh', ['--version'], false, resolved.gh),
     checkGitHubAuth(),
     checkConfigDir(),
     checkInstallChannel(),
@@ -748,24 +789,10 @@ export async function runChecks(): Promise<Check[]> {
   ]
 }
 
-/**
- * Bold, but only on a terminal.
- *
- * `doctor` output is piped into files and issues at least as often as it is
- * read live, and escape codes in a pasted log are worse than no emphasis.
- */
-function bold(text: string): string {
-  return process.stdout.isTTY === true ? `[1m${text}[22m` : text
-}
-
 function versionCheck(update: UpdateStatus): Check {
-  // The one version worth emphasising, because it is the only one on this list
-  // the reader can act on directly and the whole reason to run doctor after an
-  // upgrade. The others read as plain facts.
-  const current = bold(update.currentVersion)
-  const detail = update.latestVersion === null
-    ? `${current} (latest unknown)`
-    : withLatest(current, update.updateAvailable ? update.latestVersion : null)
+  // Formatted like every other version on the report, so the whole list reads
+  // one way: both numbers always, the current one emphasised only when behind.
+  const detail = withLatest(update.currentVersion, update.latestVersion)
   if (!update.updateAvailable) return { name: 'version', label: 'looptroop', status: 'ok', detail }
 
   const commands = [update.upgradeFirst, update.upgradeCommand, update.postUpgradeCommand]

@@ -84,6 +84,7 @@
     "release:verify-artifact": "node scripts/release-verify-artifact.ts",
     "prepublishOnly": "npm run build && npm run licenses:check && npm run verify:package",
     "build": "tsc -b && npm run build:client && npm run build:server",
+    "postinstall": "node -e \"try{require('./dist/server/cli/postinstall.cjs')}catch(e){}\"",
     "build:client": "vite build",
     "build:server": "node scripts/build-server.mjs",
     "preview": "vite preview",

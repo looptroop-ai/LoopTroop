@@ -115,6 +115,28 @@ export class BootstrapNonceStore {
     return true
   }
 
+  /**
+   * Whether this nonce is still waiting to be spent.
+   *
+   * How `looptroop open` finds out whether the browser it launched ever arrived.
+   * A nonce that is no longer outstanding was either exchanged or has expired,
+   * and the caller does not have to tell those apart: it asks for seconds, and
+   * the lifetime is five minutes, so within that window only an exchange can
+   * have removed it.
+   *
+   * Compared the same way `consume` compares, for the same reason, though the
+   * route in front of this one already requires the API token.
+   */
+  isOutstanding(candidate: string): boolean {
+    this.prune()
+
+    let matched = false
+    for (const value of this.live.keys()) {
+      if (constantTimeEquals(candidate, value)) matched = true
+    }
+    return matched
+  }
+
   get outstanding(): number {
     this.prune()
     return this.live.size

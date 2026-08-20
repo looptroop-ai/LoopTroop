@@ -145,6 +145,18 @@ export type ProbeResult =
  * turns the command someone runs to diagnose a hang into a second hang, with no
  * output and nothing to interrupt — execFileSync blocks the whole process, so
  * there is no later point at which this could be given up on.
+ *
+ * Through a shell on Windows, because half the tools doctor asks about are not
+ * `.exe` files. `CreateProcess` appends only `.exe` and never reads `PATHEXT`,
+ * so a bare `npm` — which ships as `npm.cmd` — is invisible to it, and naming
+ * the shim outright does not help either: Node has refused to launch `.cmd` and
+ * `.bat` directly since the BatBadBut hardening (18.20.2/20.12.2/21+) and
+ * throws `EINVAL`. That is why doctor called npm missing on a machine where npm
+ * works, and it would have said the same about an npm-installed OpenCode.
+ *
+ * Only ever called with literal arguments, which is what makes routing through
+ * cmd.exe safe: it re-parses the command line, so anything derived from a path
+ * or from user input would have to be quoted first.
  */
 export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
   try {
@@ -152,11 +164,17 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: timeoutMs,
+      shell: process.platform === 'win32',
     })
     return { kind: 'ok', output }
   } catch (error) {
     // A command that was found and then hung is a different problem from one
     // that is not installed, and the install hint would be wrong advice.
+    //
+    // Missing still lands here under a shell, by a different route: cmd.exe
+    // starts perfectly well and exits 9009 with "is not recognized", which
+    // execFileSync raises as a non-zero exit rather than as `ENOENT`. Both
+    // shapes mean unavailable, so only the deadline needs telling apart.
     return (error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
       ? { kind: 'timed-out' }
       : { kind: 'unavailable' }
@@ -188,9 +206,10 @@ function checkNode(latest: string | null = null): Check {
 }
 
 /**
- * npm, which LoopTroop shells out to for the npm-channel upgrade path and which
- * the engines floor names — so a too-old npm is worth seeing before it fails
- * mid-upgrade rather than after.
+ * npm, which the engines floor names and which the npm-channel upgrade command
+ * is run with — by the reader, not by LoopTroop, which only ever prints it. A
+ * too-old or unreachable npm is worth seeing before that command fails rather
+ * than after.
  */
 function checkNpm(latest: string | null = null): Check {
   const probe = runProbe('npm', ['--version'], PROBE_TIMEOUT_MS)

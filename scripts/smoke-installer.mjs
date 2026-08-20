@@ -3,6 +3,7 @@
  * Runs the real installer wrapper the way a user would, against a local tarball.
  *
  *   node scripts/smoke-installer.mjs
+ *   node scripts/smoke-installer.mjs --shell powershell   # Windows PowerShell 5.1
  *
  * `install.sh` and `install.ps1` are what `looptroop.ovh/install` serves, and
  * they are the only two files in this repository that nothing else exercises:
@@ -50,8 +51,26 @@ try {
   const prefix = join(work, 'prefix')
   mkdirSync(prefix, { recursive: true })
 
+  // `--shell powershell` runs the wrapper under Windows PowerShell 5.1 rather
+  // than PowerShell 7. They are different runtimes, and 5.1 is the one preinstalled
+  // on Windows — so it is what `irm https://www.looptroop.ovh/install.ps1 | iex`
+  // lands in for a user who has never installed pwsh. Testing only pwsh left the
+  // documented one-liner's actual runtime unproven.
+  const shellArg = process.argv.indexOf('--shell')
+  const windowsShell = shellArg === -1 ? 'pwsh' : process.argv[shellArg + 1]
+  if (!['pwsh', 'powershell'].includes(windowsShell)) {
+    fail(`Unknown --shell "${windowsShell}". Expected pwsh or powershell.`)
+  }
+
   const [command, args] = IS_WINDOWS
-    ? ['pwsh', ['-NoProfile', '-File', join(repoRoot, 'install.ps1'), '-Tarball', tarball]]
+    ? [windowsShell, [
+        '-NoProfile',
+        // 5.1 defaults to a policy that refuses to run a script from a file;
+        // pwsh accepts the flag too, so one argument list serves both.
+        '-ExecutionPolicy', 'Bypass',
+        '-File', join(repoRoot, 'install.ps1'),
+        '-Tarball', tarball,
+      ]]
     : ['sh', [join(repoRoot, 'install.sh'), '--tarball', tarball]]
 
   const install = spawnSync(command, args, {

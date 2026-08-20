@@ -71,6 +71,11 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
+If no browser opens — over SSH, in WSL, in a fresh VM, or on a machine with none
+registered for `http` — `open` prints a sign-in link to paste instead of leaving
+you on a signed-out page. `looptroop open --print-url` asks for that link
+directly.
+
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.

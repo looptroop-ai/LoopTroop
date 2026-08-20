@@ -66,6 +66,12 @@ export async function readRunningDaemon(configDir?: string): Promise<DaemonState
   return state
 }
 
+/** A sign-in link, and the nonce inside it that says whether it was used. */
+export interface BootstrapLink {
+  url: string
+  nonce: string
+}
+
 /**
  * Asks the running daemon for a fresh single-use nonce and builds the URL that
  * exchanges it for a browser session.
@@ -73,8 +79,11 @@ export async function readRunningDaemon(configDir?: string): Promise<DaemonState
  * The nonce is minted per call rather than kept anywhere: it is single-use and
  * expires in minutes, so a URL printed once cannot be reused, and nothing
  * durable ever holds a credential a browser could replay.
+ *
+ * The nonce is returned alongside the URL so the caller can ask the daemon
+ * whether a browser ever spent it; see `waitForSignIn`.
  */
-export async function mintBootstrapUrl(state: DaemonState): Promise<string | null> {
+export async function mintBootstrapUrl(state: DaemonState): Promise<BootstrapLink | null> {
   const origin = `http://${state.host}:${state.port}`
   try {
     const response = await fetch(`${origin}/api/auth/bootstrap`, {
@@ -88,7 +97,7 @@ export async function mintBootstrapUrl(state: DaemonState): Promise<string | nul
     if (typeof body.nonce !== 'string' || !body.nonce) return null
     // The fragment is never sent to the server as part of the request line, so
     // the nonce cannot reach an access log on the way in.
-    return `${origin}/#bootstrap=${body.nonce}`
+    return { url: `${origin}/#bootstrap=${body.nonce}`, nonce: body.nonce }
   } catch {
     return null
   }
@@ -193,7 +202,7 @@ export async function startCommand(options: CliOptions = {}): Promise<number> {
 
   process.stdout.write(
     'LoopTroop is running in the background.\n' +
-    `  URL:   ${bootstrapUrl ?? `http://${state.host}:${state.port}`}\n` +
+    `  URL:   ${bootstrapUrl?.url ?? `http://${state.host}:${state.port}`}\n` +
     `  PID:   ${state.pid}\n` +
     `  Logs:  ${logPath}\n` +
     `  Stop:  looptroop stop\n` +
@@ -573,22 +582,91 @@ export async function restartCommand(options: CliOptions = {}): Promise<number> 
   return startCommand(options)
 }
 
-/**
- * Hands a URL to the desktop's browser.
- *
- * The failure is swallowed on purpose: a headless server or a bare container
- * has no opener at all, and an unhandled spawn error would take the whole CLI
- * down over a convenience the caller can always perform by hand.
- */
-export function openInBrowser(url: string): void {
-  const opener = process.platform === 'darwin' ? 'open'
-    : process.platform === 'win32' ? 'cmd'
-      : 'xdg-open'
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+/** What became of an attempt to hand a URL to the desktop's browser. */
+export interface BrowserLaunch {
+  opened: boolean
+  /** Present only on a failure, and only when the opener said something. */
+  reason?: string
+}
 
-  const child = spawn(opener, args, { detached: true, stdio: 'ignore' })
-  child.on('error', () => undefined)
-  child.unref()
+/** How long an opener gets to fail before it is assumed to have worked. */
+const OPENER_GRACE_MS = 1_500
+
+/**
+ * Hands a URL to the desktop's browser, and reports whether that worked.
+ *
+ * It still never throws: a headless server or a bare container has no opener at
+ * all, and an unhandled spawn error would take the whole CLI down over a
+ * convenience the caller can always perform by hand. But it no longer discards
+ * the answer either. `cmd /c start` and macOS `open` both exit as soon as they
+ * have handed the URL over, so within the grace period their exit code is a real
+ * verdict — including the case that started this, a Windows machine with no
+ * browser registered for http, where the launch failed silently and the CLI
+ * cheerfully reported success. `xdg-open` may keep running instead; still being
+ * alive at the deadline counts as opened, because it got far enough to try.
+ *
+ * stderr is captured rather than discarded so the failure can be quoted back.
+ */
+/**
+ * The command that opens a URL on this platform.
+ *
+ * Separated from the spawn so the shapes can be asserted without launching
+ * anything: the Windows one is the delicate case. `start` treats a leading
+ * quoted argument as the window title, so the empty string is what stops the URL
+ * from being swallowed as one, and cmd.exe re-parses the rest of the line — safe
+ * only while the nonce stays base64url and the URL keeps no `&` in it.
+ */
+export function browserOpener(url: string, platform: NodeJS.Platform): {
+  command: string
+  args: string[]
+} {
+  if (platform === 'darwin') return { command: 'open', args: [url] }
+  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', url] }
+  return { command: 'xdg-open', args: [url] }
+}
+
+export function openInBrowser(url: string): Promise<BrowserLaunch> {
+  const { command: opener, args } = browserOpener(url, process.platform)
+
+  return new Promise<BrowserLaunch>((resolve) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(opener, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    } catch (error) {
+      resolve({ opened: false, reason: error instanceof Error ? error.message : String(error) })
+      return
+    }
+
+    let complaint = ''
+    // Bounded: an opener that decides to narrate must not be able to hold a
+    // growing buffer for the lifetime of the CLI.
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (complaint.length < 500) complaint += chunk.toString()
+    })
+
+    let settled = false
+    const finish = (result: BrowserLaunch): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.unref()
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => { finish({ opened: true }) }, OPENER_GRACE_MS)
+    // Nothing else keeps the CLI waiting on this timer if the command is done.
+    timer.unref?.()
+
+    child.on('error', (error) => {
+      finish({ opened: false, reason: error.message })
+    })
+    child.on('exit', (code) => {
+      const detail = complaint.trim().split('\n')[0]?.trim()
+      finish(code === 0 || code === null
+        ? { opened: true }
+        : { opened: false, ...(detail ? { reason: detail } : {}) })
+    })
+  })
 }
 
 /**
@@ -601,7 +679,65 @@ export function openInBrowser(url: string): void {
  */
 export interface OpenOptions {
   /** Injected by tests, which must not launch a real browser. */
-  open?: (url: string) => void
+  open?: (url: string) => BrowserLaunch | Promise<BrowserLaunch>
+  /** Print the sign-in link instead of opening anything. */
+  printUrl?: boolean
+  /** How long to wait for the browser to sign in. Shortened by tests. */
+  waitMs?: number
+}
+
+/** How long a launched browser gets to spend its nonce before `open` gives up. */
+const SIGN_IN_WAIT_MS = 8_000
+
+/**
+ * Waits for a browser to spend the nonce, and says whether one did.
+ *
+ * Polled rather than pushed because the daemon has no way to reach back into
+ * the CLI, and it is the only honest signal available: no operating system
+ * reports whether the browser it launched ever loaded the page.
+ *
+ * Any failure to ask counts as signed in. This decides nothing but whether to
+ * print a link, and a daemon that has stopped answering is not a problem a
+ * sign-in link solves.
+ */
+async function waitForSignIn(state: DaemonState, nonce: string, waitMs: number): Promise<boolean> {
+  const origin = `http://${state.host}:${state.port}`
+  const deadline = Date.now() + waitMs
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${origin}/api/auth/bootstrap/status`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${state.apiToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nonce }),
+        signal: AbortSignal.timeout(2_000),
+      })
+      if (!response.ok) return true
+
+      const body = await response.json() as { pending?: unknown }
+      if (body.pending !== true) return true
+    } catch {
+      return true
+    }
+    await delay(250)
+  }
+
+  return false
+}
+
+/**
+ * Prints the sign-in link, for the cases where the browser cannot be reached.
+ *
+ * `open` withholds this URL by default, and should: the nonce in it is a live
+ * credential, and this line lands in scrollback, in screenshots and in pasted
+ * bug reports. But withholding it unconditionally is what turned a browser that
+ * did not open into a dead end — the page says to run `looptroop open`, and
+ * `looptroop open` is what just failed. `start` has always printed this same
+ * link; the cost is identical, and it is only paid when the alternative is no
+ * way in at all.
+ */
+function printSignInLink(url: string, lead: string): void {
+  process.stdout.write(`${lead}\n  ${url}\nIt signs one browser in and then expires.\n`)
 }
 
 export async function openCommand(options: OpenOptions = {}): Promise<number> {
@@ -619,16 +755,35 @@ export async function openCommand(options: OpenOptions = {}): Promise<number> {
     started = true
   }
 
-  const url = await mintBootstrapUrl(state)
-  if (!url) {
+  const link = await mintBootstrapUrl(state)
+  if (!link) {
     process.stderr.write('Could not obtain a sign-in link from the running daemon.\n')
     return 1
   }
 
-  launchBrowser(url)
-  // The origin, not the URL: the nonce belongs in the browser, not in a
-  // terminal scrollback or a shell history file.
-  process.stdout.write(`Opened http://${state.host}:${state.port}\n`)
+  if (options.printUrl === true) {
+    printSignInLink(link.url, 'Sign in to LoopTroop with this link:')
+    if (started) await hintFirstRun(state)
+    return 0
+  }
+
+  const launch = await launchBrowser(link.url)
+
+  if (!launch.opened) {
+    printSignInLink(
+      link.url,
+      `No browser could be opened${launch.reason === undefined ? '' : ` (${launch.reason})`}. Sign in with this link:`,
+    )
+  } else if (await waitForSignIn(state, link.nonce, options.waitMs ?? SIGN_IN_WAIT_MS)) {
+    // The origin, not the URL: the nonce belongs in the browser, not in a
+    // terminal scrollback or a shell history file.
+    process.stdout.write(`Opened http://${state.host}:${state.port}\n`)
+  } else {
+    // A browser was launched and never arrived. It happens on a machine with no
+    // default browser, over SSH, in WSL, and in a fresh VM whose browser is
+    // still finishing its first run when the nonce expires.
+    printSignInLink(link.url, 'No browser signed in. If none opened, use this link:')
+  }
 
   // Only after a start we performed: an already-running daemon has been asked
   // this question before, and the answer is on the screen the browser just

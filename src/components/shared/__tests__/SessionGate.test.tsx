@@ -51,4 +51,26 @@ describe('SessionGate', () => {
     expect(document.body.textContent).not.toMatch(/https?:\/\//)
     expect(document.body.textContent).not.toMatch(/bootstrap=/)
   })
+
+  it('names the flag for when no browser opens', () => {
+    render(<SessionGate><p>workspace</p></SessionGate>)
+    act(() => { reportSignedOut() })
+
+    // `looptroop open` cannot make a browser appear over SSH, in WSL, or on a
+    // machine with none registered for http. Naming only that command left this
+    // screen pointing at the thing that had just failed.
+    expect(screen.getByText('looptroop open --print-url')).toBeInTheDocument()
+  })
+
+  it('explains a session that cannot arrive because the page is on localhost', () => {
+    // jsdom serves these tests from localhost, which is exactly the case: the
+    // session cookie is host-only, so one bought at 127.0.0.1 is never sent
+    // here, and signing in again would not change that.
+    expect(window.location.hostname).toBe('localhost')
+
+    render(<SessionGate><p>workspace</p></SessionGate>)
+    act(() => { reportSignedOut() })
+
+    expect(document.body.textContent).toContain('127.0.0.1')
+  })
 })

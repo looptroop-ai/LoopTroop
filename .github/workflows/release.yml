@@ -983,6 +983,12 @@ jobs:
       # the running module sits under a `node_modules/looptroop/` path, so an
       # `ok` here proves the published layout is intact and that the upgrade
       # command shown to users will be the right one.
+      #
+      # `npm` is asserted for a different reason: every runner has it, since it
+      # is what installed LoopTroop three steps ago, so this tests the probe and
+      # not the runner. On Windows `npm` is `npm.cmd`, which the probe could not
+      # spawn at all, and a release shipped telling users npm was missing on the
+      # machine it had just installed itself on.
       - name: Doctor reports healthy
         shell: bash
         env:
@@ -999,7 +1005,7 @@ jobs:
             if (!Array.isArray(report.checks) || report.checks.length === 0) {
               throw new Error("doctor reported no checks")
             }
-            for (const name of ["install", "git"]) {
+            for (const name of ["install", "git", "npm"]) {
               const check = report.checks.find((c) => c.name === name)
               if (!check) throw new Error(`doctor did not report the ${name} check`)
               if (check.status !== "ok") {
@@ -1661,6 +1667,79 @@ jobs:
   # The nupkg is separate: it is not byte-reproducible, but a Chocolatey version
   # is immutable once accepted — there is no such thing as re-pushing the same
   # bytes — so attaching it would buy nothing regardless.
+  # The one path that is never exercised anywhere else: the command the website
+  # and the README tell Windows users to run. Everything before this proves the
+  # wrapper against a local tarball, which cannot fail on a stale Vercel
+  # redirect, a release-discovery change, or a wrapper whose published bytes are
+  # not the ones in this commit. It runs after `finalize` because that is what
+  # un-drafts the release, and `releases/latest/download/install.ps1` resolves to
+  # the previous release until it does.
+  #
+  # Windows PowerShell 5.1, not pwsh: that is what is preinstalled, and so what
+  # the documented one-liner actually runs in.
+  #
+  # It cannot gate the release — by now it is published — but a failure here is
+  # a user who cannot install, so it is reported like any other stage.
+  smoke-installer-network:
+    name: Installer one-liner over the network (windows)
+    needs: [detect, finalize]
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+      && needs.finalize.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Install with the documented one-liner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          irm https://www.looptroop.ovh/install.ps1 | iex
+          if ($LASTEXITCODE -ne 0) { throw "installer exited $LASTEXITCODE" }
+
+      - name: It installed the version this run published
+        shell: bash
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          installed="$(looptroop --version)"
+          if [ "${installed}" != "${VERSION}" ]; then
+            echo "::error::the one-liner installed ${installed}, expected ${VERSION}"
+            exit 1
+          fi
+          echo "irm install.ps1 delivered ${installed}."
+
+      - name: Doctor agrees the machine is usable
+        shell: bash
+        env:
+          LOOPTROOP_OPENCODE_MODE: mock
+        run: |
+          set -euo pipefail
+          looptroop doctor --json > doctor.json || {
+            echo "::error::doctor exited non-zero after a network install"
+            cat doctor.json || true
+            exit 1
+          }
+          node -e '
+            const report = JSON.parse(require("node:fs").readFileSync("doctor.json", "utf8"))
+            for (const name of ["install", "git", "npm"]) {
+              const check = report.checks.find((c) => c.name === name)
+              if (!check) throw new Error(`doctor did not report the ${name} check`)
+              if (check.status !== "ok") {
+                throw new Error(`${name} check is ${check.status}: ${check.detail ?? ""}`)
+              }
+            }
+            console.log("doctor is happy after an irm install.")
+          '
+
   publish-homebrew:
     name: Publish to Homebrew
     needs: [detect, build, finalize]
@@ -2061,6 +2140,7 @@ jobs:
       - publish-winget
       - publish-aur
       - binary
+      - smoke-installer-network
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -2082,6 +2162,7 @@ jobs:
           R_DRAFT: ${{ needs.draft-release.result }}
           R_NPM: ${{ needs.npm.result }}
           R_SMOKE: ${{ needs.smoke.result }}
+          R_NETSMOKE: ${{ needs.smoke-installer-network.result }}
           R_FINAL: ${{ needs.finalize.result }}
           R_CBUILD: ${{ needs.container-build.result }}
           R_CMANIFEST: ${{ needs.container-manifest.result }}
@@ -2126,6 +2207,7 @@ jobs:
             printf 'draft      %s\n' "${R_DRAFT}"
             printf 'npm        %s  (dist-tag %s)\n' "${R_NPM}" "${DIST_TAG}"
             printf 'smoke      %s\n' "${R_SMOKE}"
+            printf 'irm smoke  %s\n' "${R_NETSMOKE}"
             printf 'finalize   %s\n' "${R_FINAL}"
             printf 'image      %s  (amd64 + arm64)\n' "${R_CBUILD}"
             printf 'image tag  %s  index %s\n' "${R_CMANIFEST}" "${index_short}"
@@ -2161,6 +2243,7 @@ jobs:
           for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
                       "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}" \
+                      "smoke-installer-network:${R_NETSMOKE}" \
                       "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
                       "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \

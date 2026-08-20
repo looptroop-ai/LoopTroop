@@ -305,6 +305,16 @@ try {
     check('doctor reports the install channel',
       doctorJson.checks?.some((entry) => entry.id === 'install' || entry.name === 'install'),
       'install check present')
+
+    // Every runner has npm — it is how LoopTroop got here. So this asserts the
+    // probe, not the machine, and it is the assertion that was missing: on
+    // Windows `npm` is `npm.cmd`, which the probe could not spawn, and doctor
+    // told users npm was missing on machines where it had just installed
+    // LoopTroop. Checking only that the JSON parsed kept that green for a
+    // release.
+    const npmCheck = doctorJson.checks?.find((entry) => entry.name === 'npm')
+    check('doctor finds npm', npmCheck?.status === 'ok',
+      `${npmCheck?.status ?? '(no npm check)'}: ${npmCheck?.detail ?? ''}`)
   }
 
   heading('status before start')
@@ -483,7 +493,14 @@ try {
     check('open succeeds with no daemon running', opened.code === 0,
       opened.code === 0 ? 'exit 0' : `exit ${opened.code}: ${opened.combined.trim().split('\n').slice(-6).join(' | ')}`)
     check('open says it is starting one', /Starting it/.test(opened.combined), 'announced the start')
-    check('open prints no secret', !/#bootstrap=/.test(opened.combined), 'origin only')
+    // $BROWSER is `true`, which exits 0 and opens nothing — the same shape as a
+    // machine with no browser registered, a headless server, or an SSH session.
+    // `open` must notice that nobody signed in and print the link, because the
+    // signed-out page it would otherwise land on says to run `looptroop open`,
+    // and that is the command that just failed. Before this, `open` reported
+    // success, printed a URL with no nonce in it, and left no way in at all.
+    check('open prints a sign-in link when no browser arrives', /#bootstrap=/.test(opened.combined),
+      'link offered as a fallback')
 
     const afterOpen = await waitForHealth(baseUrl)
     check('the daemon open started answers', afterOpen?.status === 'ok', `status=${afterOpen?.status}`)
@@ -492,6 +509,8 @@ try {
     const reopened = runShim(bin, ['open'], { ...at, env: { ...at.env, ...CHILD_ENV, BROWSER: 'true' } })
     check('open succeeds against a running daemon', reopened.code === 0, `exit ${reopened.code}`)
     check('open does not start a second daemon', !/Starting it/.test(reopened.combined), 'no start')
+    check('open offers the link again for the running daemon', /#bootstrap=/.test(reopened.combined),
+      'link offered as a fallback')
     const stillSame = await waitForHealth(baseUrl)
     check('open did not replace the daemon', stillSame?.instanceId === afterOpen?.instanceId,
       'same instance id')

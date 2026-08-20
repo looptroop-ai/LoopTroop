@@ -117,6 +117,65 @@ describe('OpenCode supervision', () => {
     expect(spawned).toBe(1)
   })
 
+  /**
+   * Installed from npm, bun or pnpm, OpenCode is `opencode.cmd` on Windows — a
+   * batch shim that `CreateProcess` cannot find (it appends only `.exe`) and
+   * that Node refuses to launch directly. Without a shell the daemon reported
+   * OpenCode as missing for every user who installed it that way.
+   */
+  it('launches OpenCode through a shell on Windows and directly elsewhere', async () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    const seen: { command: unknown; options: { shell?: boolean; detached?: boolean } }[] = []
+
+    for (const platform of ['win32', 'linux'] as const) {
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+      try {
+        const child = makeChild()
+        // Per iteration: a probe that counted every spawn so far would report
+        // the second platform's server as already running and never launch it.
+        let spawned = false
+        const supervisor = new OpenCodeSupervisor({
+          baseUrl: makeBaseUrl(),
+          spawnProcess: ((command: unknown, _args: unknown, options: { shell?: boolean }) => {
+            spawned = true
+            seen.push({ command, options })
+            return child as never
+          }) as never,
+          probe: async () => spawned,
+        })
+        await supervisor.start()
+      } finally {
+        if (original) Object.defineProperty(process, 'platform', original)
+      }
+    }
+
+    expect(seen[0]?.command).toBe('opencode')
+    expect(seen[0]?.options.shell).toBe(true)
+    // Windows has no process groups to lead, and the shell does not change that.
+    expect(seen[0]?.options.detached).toBe(false)
+    expect(seen[1]?.options.shell).toBe(false)
+    expect(seen[1]?.options.detached).toBe(true)
+  })
+
+  it('fails loudly when a shell reports the binary missing by exit code', async () => {
+    const baseUrl = makeBaseUrl()
+
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      spawnProcess: (() => {
+        const child = makeChild()
+        // What cmd.exe does for a command it cannot find: it starts, prints
+        // "is not recognized" and exits 9009. There is no 'error' event at all,
+        // so the early exit is the only signal that the binary is not there.
+        queueMicrotask(() => child.emit('exit', 9009))
+        return child as never
+      }) as never,
+      probe: async () => false,
+    })
+
+    await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
+  })
+
   it('fails loudly when the binary is missing', async () => {
     const baseUrl = makeBaseUrl()
 

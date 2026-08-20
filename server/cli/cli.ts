@@ -29,6 +29,8 @@ Commands:
 Options:
   --port <n>     Port to listen on (start, restart)
   --foreground   Run in this terminal instead of the background (start)
+  --opencode-logs=all
+                 Include managed OpenCode DEBUG output (open, start)
   --json         Machine-readable output (status, doctor)
   --follow, -f   Keep streaming (logs)
   --lines <n>    Number of log lines to show (logs)
@@ -51,7 +53,7 @@ Run \`looptroop <command> --help\` for what a single command does and takes.
 const COMMAND_HELP: Record<string, string> = {
   open: `looptroop open — open the interface
 
-Usage: looptroop open [--print-url]
+Usage: looptroop open [--print-url] [--opencode-logs=all]
 
 Opens LoopTroop in your browser, starting the daemon first if it is not already
 running, and signs the browser in with a single-use link. This is the normal way
@@ -59,6 +61,9 @@ to use LoopTroop: it is a graphical application, and one command gets you into i
 
 Options:
   --print-url    Print the sign-in link instead of opening a browser.
+  --opencode-logs=all
+                 Include full DEBUG output when LoopTroop starts OpenCode.
+                 Follow it with \`looptroop logs --follow\`.
 
 The link is normally kept out of the terminal, because the nonce in it is a live
 credential. It is printed anyway when no browser could be opened, or when one was
@@ -67,13 +72,13 @@ browser — because a page that says "run looptroop open" is no help when open i
 what just failed. Paste it into any browser on this machine.
 
 If a daemon is already running, it is reused rather than restarted, so open is
-safe to run repeatedly.
+safe to run repeatedly. The OpenCode log option then requires a stop and start.
 
 See also: start (no browser), status (is it running).
 `,
   start: `looptroop start — run the daemon in the background
 
-Usage: looptroop start [--port <n>] [--foreground]
+Usage: looptroop start [--port <n>] [--foreground] [--opencode-logs=all]
 
 Options:
   --port <n>     Listen on this port instead of choosing one. When the port is
@@ -81,6 +86,9 @@ Options:
   --foreground   Run in this terminal and log to it, instead of detaching.
                  Ctrl-C stops it. Useful for watching startup, and for running
                  under a service manager that expects a foreground process.
+  --opencode-logs=all
+                 Include full DEBUG output when LoopTroop starts OpenCode.
+                 In background mode, follow it with \`looptroop logs --follow\`.
 
 Without --foreground the daemon detaches, survives the terminal closing, and
 writes to the log that \`looptroop logs\` reads.
@@ -228,6 +236,7 @@ export async function main(argv: string[]): Promise<number> {
         apply: { type: 'boolean' },
         yes: { type: 'boolean', short: 'y' },
         'print-url': { type: 'boolean' },
+        'opencode-logs': { type: 'string' },
         version: { type: 'boolean' },
         help: { type: 'boolean' },
       },
@@ -267,6 +276,12 @@ export async function main(argv: string[]): Promise<number> {
     return 1
   }
 
+  const opencodeLogs = values['opencode-logs']
+  if (opencodeLogs !== undefined && opencodeLogs !== 'all') {
+    process.stderr.write(`Invalid --opencode-logs "${opencodeLogs}". Expected "all".\n`)
+    return 1
+  }
+
   // Imported per command so metadata commands never load the database, the
   // OpenCode client, or anything else with a startup cost.
   switch (command) {
@@ -280,6 +295,7 @@ export async function main(argv: string[]): Promise<number> {
       const options = {
         ...(port === undefined ? {} : { port }),
         ...(values.foreground ? { foreground: true } : {}),
+        ...(opencodeLogs === 'all' ? { opencodeLogs: 'all' as const } : {}),
       }
       if (values.foreground) {
         writeUpdateNotice(await update)
@@ -311,7 +327,10 @@ export async function main(argv: string[]): Promise<number> {
       const { openCommand } = await import('./commands')
       const update = checkCliUpdate()
       return finishWithUpdate(
-        await openCommand(values['print-url'] === true ? { printUrl: true } : {}),
+        await openCommand({
+          ...(values['print-url'] === true ? { printUrl: true } : {}),
+          ...(opencodeLogs === 'all' ? { opencodeLogs: 'all' as const } : {}),
+        }),
         update,
       )
     }

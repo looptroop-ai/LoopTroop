@@ -48,6 +48,8 @@ export interface StartDaemonOptions {
   version: string
   /** Reported to the parent once the daemon is genuinely serving requests. */
   onReady?: (state: DaemonState) => void
+  /** Include full DEBUG output from an OpenCode server this daemon starts. */
+  opencodeLogs?: 'all'
 }
 
 /**
@@ -234,6 +236,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<DaemonHa
     opencode = new OpenCodeSupervisor({
       baseUrl: settings.opencodeBaseUrl,
       mock: settings.opencodeMode === 'mock',
+      printLogs: options.opencodeLogs === 'all',
       onStatusChange: recordOpenCodeStatus,
     })
     const opencodeStatus = await opencode.start()

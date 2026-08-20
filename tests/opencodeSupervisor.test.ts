@@ -176,6 +176,37 @@ describe('OpenCode supervision', () => {
     await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
   })
 
+  it('prints full DEBUG output only when the all-log mode is requested', async () => {
+    const baseUrl = makeBaseUrl()
+    const child = makeChild()
+    let spawned = false
+    let args: string[] = []
+
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl,
+      printLogs: true,
+      spawnProcess: ((_command: string, commandArgs: string[]) => {
+        args = commandArgs
+        spawned = true
+        return child as never
+      }) as never,
+      probe: async () => spawned,
+    })
+
+    await supervisor.start()
+
+    expect(args).toEqual([
+      'serve',
+      '--print-logs',
+      '--log-level',
+      'DEBUG',
+      '--hostname',
+      '127.0.0.1',
+      '--port',
+      new URL(baseUrl).port,
+    ])
+  })
+
   it('fails loudly when the binary is missing', async () => {
     const baseUrl = makeBaseUrl()
 

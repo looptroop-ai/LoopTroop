@@ -292,6 +292,8 @@ try {
   const help = cli('--help')
   check('--help lists commands', help.code === 0 && help.stdout.includes('looptroop <command>'),
     `exit ${help.code}`)
+  check('--help lists the managed OpenCode all-log mode', help.stdout.includes('--opencode-logs=all'),
+    'option present')
   const unknown = cli('nonsense-command')
   check('unknown command fails', unknown.code === 1, `exit ${unknown.code}`)
 
@@ -327,6 +329,9 @@ try {
   check('start succeeds', started.code === 0, `exit ${started.code}`)
   // The nonce in the URL is a credential; assert on the shape, never print it.
   check('start prints a sign-in URL', /#bootstrap=/.test(started.stdout), 'bootstrap URL present')
+  check('start points to live logs', started.stdout.includes('looptroop logs --follow'), 'follow command present')
+  check('start points to full managed OpenCode logs', started.stdout.includes('--opencode-logs=all'),
+    'all-log option present')
 
   const health = await waitForHealth(baseUrl)
   check('/api/health answers', health?.status === 'ok', `status=${health?.status}`)
@@ -501,6 +506,9 @@ try {
     // success, printed a URL with no nonce in it, and left no way in at all.
     check('open prints a sign-in link when no browser arrives', /#bootstrap=/.test(opened.combined),
       'link offered as a fallback')
+    check('open points to live and full logs',
+      opened.combined.includes('looptroop logs --follow') && opened.combined.includes('--opencode-logs=all'),
+      'logging hints present')
 
     const afterOpen = await waitForHealth(baseUrl)
     check('the daemon open started answers', afterOpen?.status === 'ok', `status=${afterOpen?.status}`)
@@ -578,4 +586,3 @@ if (failures.length > 0) {
 }
 log(`PASS: the installed package started, served its interface, authenticated a`)
 log('browser, restarted, stopped, and left nothing running.')
-

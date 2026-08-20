@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { signInLine } from '../server/cli/daemonProcess'
+import { resolveDaemonOpenCodeLogs, signInLine } from '../server/cli/daemonProcess'
 
 /**
  * A foreground daemon is the one path that can print a bootstrap URL, and that
@@ -23,5 +23,13 @@ describe('foreground sign-in line', () => {
     // Not minted at all: an unshown nonce would still occupy a slot in the
     // bootstrap store until it expired, for a line nobody can read.
     expect(mint).not.toHaveBeenCalled()
+  })
+})
+
+describe('daemon OpenCode log mode', () => {
+  it('accepts the direct foreground option and detached-process environment handoff', () => {
+    expect(resolveDaemonOpenCodeLogs({ opencodeLogs: 'all' }, {})).toBe('all')
+    expect(resolveDaemonOpenCodeLogs({}, { LOOPTROOP_OPENCODE_LOGS: 'all' })).toBe('all')
+    expect(resolveDaemonOpenCodeLogs({}, {})).toBeUndefined()
   })
 })

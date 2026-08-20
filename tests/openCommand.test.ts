@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -136,6 +136,20 @@ describe('opening the interface', () => {
     expect(opened).toHaveLength(1)
     // The nonce travels in the fragment, so it never reaches an access log.
     expect(opened[0]).toBe(`http://127.0.0.1:${port}/#bootstrap=nonce-under-test`)
+  })
+
+  it('explains that all-log mode needs a restart when the daemon is already running', async () => {
+    const configDir = useConfigDir()
+    const pid = spawnStandIn()
+    const port = await startFakeDaemon({ instanceId: 'instance-under-test', apiToken: 'test-api-token' })
+    writeState(configDir, makeState({ pid, port }))
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const code = await openCommand({ open: () => ({ opened: true }), opencodeLogs: 'all' })
+
+    expect(code).toBe(0)
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('Run `looptroop stop`, then start it again'))
+    stderr.mockRestore()
   })
 
   it('fails without opening a browser when the daemon will not mint a link', async () => {

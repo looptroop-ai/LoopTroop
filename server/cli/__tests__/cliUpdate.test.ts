@@ -120,6 +120,22 @@ describe('CLI update surfaces', () => {
     expect(stderr).toContain('UPDATE AVAILABLE')
   })
 
+  it('passes the OpenCode all-log mode to start and open', async () => {
+    await main(['start', '--opencode-logs=all'])
+    await main(['open', '--opencode-logs=all'])
+
+    expect(mocks.startCommand).toHaveBeenCalledWith({ opencodeLogs: 'all' })
+    expect(mocks.openCommand).toHaveBeenCalledWith({ opencodeLogs: 'all' })
+  })
+
+  it('rejects unsupported OpenCode log modes before running a command', async () => {
+    const code = await main(['start', '--opencode-logs=debug'])
+
+    expect(code).toBe(1)
+    expect(stderr).toContain('Invalid --opencode-logs "debug". Expected "all".')
+    expect(mocks.startCommand).not.toHaveBeenCalled()
+  })
+
   /**
    * The lookup is started before the command it decorates, so a rejection would
    * arrive as an unhandled rejection — which Node treats as a crash. A failed

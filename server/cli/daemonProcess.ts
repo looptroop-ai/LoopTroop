@@ -6,12 +6,23 @@ import { resolveSettings } from '../lib/appSettings'
 
 export interface DaemonProcessOptions {
   port?: number
+  /** Include full DEBUG output from a managed OpenCode child. */
+  opencodeLogs?: 'all'
   /**
    * True when the user asked for a foreground run. The detached daemon's stdout
    * is a log file that outlives the run, so the bootstrap URL is never printed
    * there; `looptroop start` mints its own over the API instead.
    */
   foreground?: boolean
+}
+
+export function resolveDaemonOpenCodeLogs(
+  options: DaemonProcessOptions,
+  env: NodeJS.ProcessEnv = process.env,
+): 'all' | undefined {
+  return options.opencodeLogs === 'all' || env.LOOPTROOP_OPENCODE_LOGS === 'all'
+    ? 'all'
+    : undefined
 }
 
 /**
@@ -36,10 +47,12 @@ export function signInLine(bootstrapUrl: () => string, stdoutIsTerminal: boolean
  */
 export async function runDaemonProcess(options: DaemonProcessOptions = {}): Promise<void> {
   const settings = resolveSettings(options.port === undefined ? {} : { flags: { port: options.port } })
+  const opencodeLogs = resolveDaemonOpenCodeLogs(options)
 
   const handle = await startDaemon({
     settings,
     version: APP_VERSION,
+    ...(opencodeLogs === undefined ? {} : { opencodeLogs }),
     onReady: (state) => {
       console.log(`[daemon] Serving on http://${state.host}:${state.port} (pid ${state.pid}).`)
     },

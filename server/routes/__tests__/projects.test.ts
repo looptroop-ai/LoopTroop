@@ -76,6 +76,10 @@ function addGithubOrigin(repoDir: string) {
   git(repoDir, ['remote', 'add', 'origin', 'git@github.com:test/looptroop.git'])
 }
 
+function detachFromAppRegistry() {
+  sqlite.exec('DELETE FROM attached_projects')
+}
+
 describe('projectRouter project cleanup', () => {
   it('persists all three project Manual QA override states', () => {
     const repoDir = repoManager.createRepo()
@@ -295,6 +299,117 @@ describe('projectRouter project cleanup', () => {
     expect(recreated.shortname).toBe('NEW')
   })
 
+  it('reports an attached repository and rejects exact and alternate-path duplicates', async () => {
+    const repoDir = repoManager.createRepo()
+    const nestedDir = resolve(repoDir, 'nested')
+    mkdirSync(nestedDir, { recursive: true })
+    addGithubOrigin(repoDir)
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const firstResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Original Project', shortname: 'ORP', folderPath: repoDir }),
+    })
+    expect(firstResponse.status).toBe(201)
+
+    const checkResponse = await app.request(`/api/projects/check-git?path=${encodeURIComponent(nestedDir)}`)
+    expect(checkResponse.status).toBe(200)
+    expect(await checkResponse.json()).toMatchObject({
+      alreadyAttached: true,
+      attachedProject: {
+        name: 'Original Project',
+        shortname: 'ORP',
+        folderPath: normalizeFolderPath(repoDir),
+      },
+    })
+
+    const exactDuplicateResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Another Project', shortname: 'ANP', folderPath: repoDir }),
+    })
+    expect(exactDuplicateResponse.status).toBe(409)
+    expect(await exactDuplicateResponse.json()).toMatchObject({
+      error: 'Project already added',
+      code: 'PROJECT_ALREADY_ATTACHED',
+    })
+
+    const alternatePathResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Third Project', shortname: 'THI', folderPath: nestedDir }),
+    })
+    expect(alternatePathResponse.status).toBe(409)
+    expect(await alternatePathResponse.json()).toMatchObject({
+      error: 'Project already added',
+      code: 'PROJECT_ALREADY_ATTACHED',
+    })
+  })
+
+  it('rejects a duplicate project name or short name across attached repositories', async () => {
+    const firstRepo = repoManager.createRepo()
+    const secondRepo = repoManager.createRepo()
+    const thirdRepo = repoManager.createRepo()
+    addGithubOrigin(firstRepo)
+    addGithubOrigin(secondRepo)
+    addGithubOrigin(thirdRepo)
+    const app = new Hono()
+    app.route('/api', projectRouter)
+
+    const firstResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Shared Project', shortname: 'SHR', folderPath: firstRepo }),
+    })
+    expect(firstResponse.status).toBe(201)
+    const firstProject = await firstResponse.json() as { id: number }
+
+    const secondResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Other Project', shortname: 'OTH', folderPath: secondRepo }),
+    })
+    expect(secondResponse.status).toBe(201)
+
+    const duplicateRenameResponse = await app.request(`/api/projects/${firstProject.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' other project ' }),
+    })
+    expect(duplicateRenameResponse.status).toBe(409)
+    expect(await duplicateRenameResponse.json()).toMatchObject({
+      error: 'Project name or short name already in use',
+      code: 'PROJECT_IDENTITY_CONFLICT',
+      conflicts: [expect.objectContaining({ kind: 'name' })],
+    })
+
+    const duplicateNameResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' shared project ', shortname: 'NEW', folderPath: thirdRepo }),
+    })
+    expect(duplicateNameResponse.status).toBe(409)
+    expect(await duplicateNameResponse.json()).toMatchObject({
+      error: 'Project name or short name already in use',
+      code: 'PROJECT_IDENTITY_CONFLICT',
+      conflicts: [expect.objectContaining({ kind: 'name' })],
+    })
+
+    const duplicateShortnameResponse = await app.request('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Different Project', shortname: 'SHR', folderPath: thirdRepo }),
+    })
+    expect(duplicateShortnameResponse.status).toBe(409)
+    expect(await duplicateShortnameResponse.json()).toMatchObject({
+      error: 'Project name or short name already in use',
+      code: 'PROJECT_IDENTITY_CONFLICT',
+      conflicts: [expect.objectContaining({ kind: 'shortname' })],
+    })
+  })
+
   it('previews active tickets and saved editable settings', async () => {
     const repoDir = repoManager.createRepo()
     addGithubOrigin(repoDir)
@@ -312,6 +427,7 @@ describe('projectRouter project cleanup', () => {
     patchTicket(activeTicket.id, { status: 'CODING' })
     const completedTicket = createTicket({ projectId: project.id, title: 'Completed ticket' })
     patchTicket(completedTicket.id, { status: 'COMPLETED' })
+    detachFromAppRegistry()
 
     const app = new Hono()
     app.route('/api', projectRouter)
@@ -382,6 +498,7 @@ describe('projectRouter project cleanup', () => {
     context.projectDb.update(projects)
       .set({ folderPath: '/old-machine/saved-project' })
       .run()
+    detachFromAppRegistry()
 
     const app = new Hono()
     app.route('/api', projectRouter)
@@ -398,6 +515,7 @@ describe('projectRouter project cleanup', () => {
     })
     expect(response.status).toBe(201)
     const restored = await response.json() as {
+      id: number
       name: string
       shortname: string
       icon: string | null
@@ -411,7 +529,7 @@ describe('projectRouter project cleanup', () => {
       color: '#123456',
       folderPath: normalizeFolderPath(repoDir),
     })
-    expect(getProjectContextById(project.id)?.projectDb.select().from(tickets).all())
+    expect(getProjectContextById(restored.id)?.projectDb.select().from(tickets).all())
       .toContainEqual(expect.objectContaining({ externalId: ticket.externalId }))
 
     const explicitRestoreResponse = await app.request('/api/projects', {
@@ -424,11 +542,10 @@ describe('projectRouter project cleanup', () => {
         existingStateAction: 'restore',
       }),
     })
-    expect(explicitRestoreResponse.status).toBe(201)
+    expect(explicitRestoreResponse.status).toBe(409)
     expect(await explicitRestoreResponse.json()).toMatchObject({
-      name: 'Explicit Restore',
-      shortname: 'SVD',
-      folderPath: normalizeFolderPath(repoDir),
+      error: 'Project already added',
+      code: 'PROJECT_ALREADY_ATTACHED',
     })
   })
 
@@ -453,6 +570,7 @@ describe('projectRouter project cleanup', () => {
     context.projectDb.update(projects)
       .set({ updatedAt: '2000-01-01T00:00:00.000Z' })
       .run()
+    detachFromAppRegistry()
     const originalCreatedAt = context.project.createdAt
     const worktreePath = resolve(repoDir, '.looptroop', 'worktrees', ticket.externalId)
     rmSync(worktreePath, { recursive: true, force: true })
@@ -527,7 +645,8 @@ describe('projectRouter project cleanup', () => {
     })
     expect(response.status, await response.clone().text()).toBe(201)
 
-    const cleared = getProjectContextById(project.id)!
+    const clearedProject = await response.json() as { id: number }
+    const cleared = getProjectContextById(clearedProject.id)!
     expect(cleared.project).toMatchObject({
       name: 'Updated Name',
       shortname: 'SVD',
@@ -571,6 +690,7 @@ describe('projectRouter project cleanup', () => {
       councilMembers: '["old/model"]',
     })
     createTicket({ projectId: original.id, title: 'Remove me' })
+    detachFromAppRegistry()
 
     const app = new Hono()
     app.route('/api', projectRouter)

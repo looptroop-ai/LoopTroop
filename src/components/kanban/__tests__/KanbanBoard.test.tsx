@@ -95,6 +95,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     updatedAt: TEST.timestamp,
     ...overrides,
     gitHookPolicy: overrides.gitHookPolicy ?? null,
+    ignoreMode: overrides.ignoreMode ?? 'local',
   }
 }
 

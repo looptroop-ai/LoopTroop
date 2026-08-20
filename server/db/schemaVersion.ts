@@ -24,10 +24,10 @@
 export const SCHEMA_VERSIONING_SINCE = '0.5.0'
 
 /** Bump when the app database schema changes in a way older builds cannot read. */
-export const APP_SCHEMA_VERSION = 1
+export const APP_SCHEMA_VERSION = 2
 
 /** Bump when the project database schema changes in a way older builds cannot read. */
-export const PROJECT_SCHEMA_VERSION = 1
+export const PROJECT_SCHEMA_VERSION = 2
 
 /** Version recorded for databases created before schema versioning existed. */
 export const UNVERSIONED_SCHEMA_VERSION = 0

@@ -32,6 +32,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed compact Configuration duration editors squeezing native number spinners against their values on narrow screens. The minute and second inputs no longer show browser spinner controls, and out-of-range edits are passed through the shared validator so lower-bound errors are visible and Save is blocked just like upper-bound errors.
 - Added `--opencode-logs=all` to `looptroop start` and `looptroop open`. When LoopTroop starts OpenCode itself, the option captures its full DEBUG stream in the daemon log or prints it during a foreground run; adopted and external servers remain untouched. Successful background starts now advertise `looptroop logs --follow`, while an already-running daemon explains that changing its OpenCode log mode requires a stop and start. The overview and command-specific `--help` output document both paths.
 
+### Changed
+- Moved the LoopTroop folder-ignore choice into Project **Advanced**, added a Configuration default and contextual documentation, and changed the built-in default to **This clone only** (`.git/info/exclude`). Each project saves one of `repo`, `local`, or `skip`; restored projects retain it, and ticket worktrees continue applying the project policy.
+- Made Git-hook policy project-scoped. Configuration **Advanced** seeds new projects, tickets snapshot their project's `observe_only`, `validate_advisory`, `validate_required`, or `use_native_hooks` choice at Start, and execution setup now presents that policy read-only while leaving detected-hook validation commands editable. Ticket create/update and ticket UI controls no longer accept a Git-hook override.
+
 ## 0.5.6 (2026-08-17)
 
 

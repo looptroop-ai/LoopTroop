@@ -43,6 +43,9 @@ describe('ExecutionSetupPlanEditor workspace verification', () => {
     const { rerender } = render(<ExecutionSetupPlanEditor plan={plan} onChange={onChange} />)
 
     expect(screen.getByText('Detected Git Hooks (read-only)')).toBeInTheDocument()
+    expect(screen.getByText('Git Hook Policy (read-only)')).toBeInTheDocument()
+    expect(screen.getByLabelText('Locked Git hook policy')).toHaveTextContent('Check — warn if validation fails')
+    expect(screen.queryByRole('combobox', { name: /Git Hook Policy/i })).not.toBeInTheDocument()
     expect(screen.getByText('.husky/pre-commit')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('.husky/pre-commit')).not.toBeInTheDocument()
     expect(screen.getByText('manager configuration')).toBeInTheDocument()

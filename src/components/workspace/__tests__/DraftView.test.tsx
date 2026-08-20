@@ -119,7 +119,7 @@ describe('DraftView', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows Manual QA and Git hook options inside a collapsed Advanced section for ordinary Draft tickets', async () => {
+  it('shows only Manual QA inside the collapsed Advanced section for ordinary Draft tickets', async () => {
     const ordinaryTicket = makeTicket({ availableActions: ['start', 'cancel'] })
     renderWithProviders(<DraftView ticket={ordinaryTicket} />)
 
@@ -139,11 +139,7 @@ describe('DraftView', () => {
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#manual-qa`,
     )
-    expect(screen.getByRole('radio', { name: 'Check' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('link', { name: 'Open documentation for ticket Git hook policy' })).toHaveAttribute(
-      'href',
-      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
-    )
+    expect(screen.queryByText('Git hook policy')).not.toBeInTheDocument()
   })
 
   it('mounts the draft log viewer immediately when start begins and keeps it open on failure', async () => {

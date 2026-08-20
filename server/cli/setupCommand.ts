@@ -28,6 +28,10 @@ interface ProjectSummary {
   folderPath: string
 }
 
+interface ProfileDefaults {
+  ignoreMode?: IgnoreMode
+}
+
 interface GitCheck {
   status?: string
   repoRoot?: string
@@ -176,6 +180,10 @@ async function stepProject(
     out('   Could not read the project list from the daemon.\n\n')
     return 'the project list could not be read from the daemon'
   }
+  const profile = await api<ProfileDefaults | null>(daemon, '/api/profile')
+  const configuredIgnoreMode = profile.ok && profile.body && isIgnoreMode(profile.body.ignoreMode)
+    ? profile.body.ignoreMode
+    : 'local'
 
   if (!prompt) {
     out(attached.body.length > 0
@@ -209,7 +217,7 @@ async function stepProject(
   const name = await prompt(`   Name [${basename(repoRoot)}]:`, basename(repoRoot))
   const suggested = suggestShortname(name)
   const shortname = (await prompt(`   Short code, 3-5 letters or digits [${suggested}]:`, suggested)).toUpperCase()
-  const ignoreMode = await askIgnoreMode(prompt, out)
+  const ignoreMode = await askIgnoreMode(prompt, out, configuredIgnoreMode)
 
   const created = await api<{ error?: string; message?: string }>(daemon, '/api/projects', {
     method: 'POST',
@@ -232,16 +240,25 @@ async function stepProject(
  * the user's call: .gitignore is a tracked file their colleagues will see in a
  * diff, and some repositories have a policy about it.
  */
-async function askIgnoreMode(prompt: SetupPrompt, out: (text: string) => void): Promise<IgnoreMode> {
+async function askIgnoreMode(
+  prompt: SetupPrompt,
+  out: (text: string) => void,
+  configuredDefault: IgnoreMode,
+): Promise<IgnoreMode> {
   out('   LoopTroop keeps .looptroop/ and .ticket/ inside the repository.\n')
   out('     1) add them to .gitignore, shared with everyone who clones it\n')
   out('     2) add them to .git/info/exclude, this clone only\n')
   out('     3) leave git alone, the repository already handles it\n')
 
-  const answer = (await prompt('   Choice [1]:', '1')).trim().toLowerCase()
+  const defaultChoice = configuredDefault === 'repo' ? '1' : configuredDefault === 'local' ? '2' : '3'
+  const answer = (await prompt(`   Choice [${defaultChoice}]:`, defaultChoice)).trim().toLowerCase()
   if (answer === '2' || answer === 'local') return 'local'
   if (answer === '3' || answer === 'skip') return 'skip'
   return 'repo'
+}
+
+function isIgnoreMode(value: unknown): value is IgnoreMode {
+  return value === 'repo' || value === 'local' || value === 'skip'
 }
 
 /** A shortname is 3-5 uppercase letters or digits; the API rejects anything else. */

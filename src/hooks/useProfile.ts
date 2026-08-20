@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
 
 interface Profile {
   id: number
@@ -27,6 +28,7 @@ interface Profile {
   toolErrorMaxChars: number
   manualQaEnabled: boolean
   gitHookPolicy: GitHookPolicy
+  ignoreMode: IgnoreMode
   createdAt: string
   updatedAt: string
 }
@@ -55,18 +57,22 @@ interface CreateProfileInput {
   toolErrorMaxChars?: number
   manualQaEnabled?: boolean
   gitHookPolicy?: GitHookPolicy
+  ignoreMode?: IgnoreMode
+}
+
+function normalizeProfile(profile: Profile): Profile {
+  return {
+    ...profile,
+    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
+    ignoreMode: normalizeIgnoreMode(profile.ignoreMode) ?? DEFAULT_IGNORE_MODE,
+  }
 }
 
 async function fetchProfile(): Promise<Profile | null> {
   const res = await fetch('/api/profile')
   if (!res.ok) throw new Error('Failed to fetch profile')
   const profile = await res.json() as Profile | null
-  return profile
-    ? {
-        ...profile,
-        gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
-      }
-    : null
+  return profile ? normalizeProfile(profile) : null
 }
 
 async function createProfile(input: CreateProfileInput): Promise<Profile> {
@@ -80,10 +86,7 @@ async function createProfile(input: CreateProfileInput): Promise<Profile> {
     throw new Error(err.error || 'Failed to create profile')
   }
   const profile = await res.json() as Profile
-  return {
-    ...profile,
-    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
-  }
+  return normalizeProfile(profile)
 }
 
 async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profile> {
@@ -97,10 +100,7 @@ async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profil
     throw new Error(err.error || 'Failed to update profile')
   }
   const profile = await res.json() as Profile
-  return {
-    ...profile,
-    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
-  }
+  return normalizeProfile(profile)
 }
 
 export function useProfile() {

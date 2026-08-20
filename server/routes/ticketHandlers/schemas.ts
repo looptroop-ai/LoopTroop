@@ -2,24 +2,20 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 
-const gitHookPolicySchema = z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'])
-
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
-  gitHookPolicy: gitHookPolicySchema.nullable().optional(),
-})
+}).strict()
 
 export const updateTicketSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
-  gitHookPolicy: gitHookPolicySchema.nullable().optional(),
-})
+}).strict()
 
 export const cancelTicketSchema = z.object({
   deleteContent: z.boolean().default(false),

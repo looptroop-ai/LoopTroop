@@ -31,6 +31,7 @@ describe('setup command', () => {
     /** Bodies of every POST /api/projects this run made. */
     created: Record<string, unknown>[]
     gitCheck: { status: string; repoRoot?: string; message?: string }
+    profile: { ignoreMode: 'repo' | 'local' | 'skip' } | null
     nonce: string
     /** Overrides the reply to GET /api/projects, for a daemon that is unwell. */
     listFailure: number | null
@@ -52,6 +53,7 @@ describe('setup command', () => {
       attached: [],
       created: [],
       gitCheck: { status: 'valid', repoRoot: '/repos/demo' },
+      profile: { ignoreMode: 'local' },
       nonce: 'nonce-value-that-must-not-be-printed',
       listFailure: null,
       createFailure: null,
@@ -86,6 +88,10 @@ describe('setup command', () => {
       }
       if (url.pathname === '/api/projects/check-git') {
         reply(200, daemon.gitCheck)
+        return
+      }
+      if (url.pathname === '/api/profile') {
+        reply(200, daemon.profile)
         return
       }
       if (url.pathname === '/api/auth/bootstrap') {
@@ -280,8 +286,24 @@ describe('setup command', () => {
       open: (url) => { opened.push(url); return { opened: true } },
     })
 
-    expect(daemon.created[0]).toMatchObject({ folderPath: '/repos/demo', ignoreMode: 'repo' })
+    expect(daemon.created[0]).toMatchObject({ folderPath: '/repos/demo', ignoreMode: 'local' })
     expect(opened).toHaveLength(1)
+  })
+
+  it('uses the configured folder-ignore default for an unanswered choice', async () => {
+    const daemon = await startFakeDaemon()
+    daemon.profile = { ignoreMode: 'repo' }
+    const { prompt } = scripted(['y', '/repos/demo', '', '', '', 'n'])
+
+    await setupCommand({
+      configDir: daemon.configDir,
+      cwd: '/repos/demo',
+      prompt,
+      out: capture().out,
+      open: () => undefined,
+    })
+
+    expect(daemon.created[0]).toMatchObject({ ignoreMode: 'repo' })
   })
 
   it('opens the sign-in link without printing it', async () => {

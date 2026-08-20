@@ -9,6 +9,7 @@ import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { normalizeExecutionSetupPlanOutput } from '../../structuredOutput'
 import type { ExecutionSetupPlan } from './types'
+import { lockExecutionSetupPlanDetectedHooks } from './hookEvidence'
 import {
   EXECUTION_SETUP_PLAN_ARTIFACT_TYPE,
   EXECUTION_SETUP_PLAN_RESULT_END,
@@ -85,8 +86,12 @@ export function saveExecutionSetupPlan(ticketId: string, plan: ExecutionSetupPla
   contentSha256: string
   plan: ExecutionSetupPlan
 } {
-  const raw = serializeExecutionSetupPlan(plan)
-  const normalized = normalizeStoredExecutionSetupPlanContent(raw, plan.ticketId)
+  const authoritativePlan = lockExecutionSetupPlanDetectedHooks(ticketId, {
+    ...plan,
+    ticketId: getTicketByRef(ticketId)?.externalId ?? plan.ticketId,
+  })
+  const raw = serializeExecutionSetupPlan(authoritativePlan)
+  const normalized = normalizeStoredExecutionSetupPlanContent(raw, authoritativePlan.ticketId)
   if (!normalized.ok) {
     throw new Error(normalized.error)
   }
@@ -158,8 +163,12 @@ export function saveGeneratedExecutionSetupPlan(ticketId: string, plan: Executio
   contentSha256: string
   plan: ExecutionSetupPlan
 } {
-  const raw = serializeExecutionSetupPlan(plan)
-  const normalized = normalizeStoredExecutionSetupPlanContent(raw, plan.ticketId)
+  const authoritativePlan = lockExecutionSetupPlanDetectedHooks(ticketId, {
+    ...plan,
+    ticketId: getTicketByRef(ticketId)?.externalId ?? plan.ticketId,
+  })
+  const raw = serializeExecutionSetupPlan(authoritativePlan)
+  const normalized = normalizeStoredExecutionSetupPlanContent(raw, authoritativePlan.ticketId)
   if (!normalized.ok) {
     throw new Error(normalized.error)
   }

@@ -121,8 +121,7 @@ describe('TicketForm', () => {
     expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('radio', { name: 'Observe' })).toHaveAttribute('data-state', 'checked')
+    expect(screen.queryByText('Git hook policy')).not.toBeInTheDocument()
     const helpLink = screen.getByRole('link', { name: 'Open documentation for ticket Manual QA checkpoint' })
     expect(helpLink).toHaveAttribute(
       'href',
@@ -130,17 +129,13 @@ describe('TicketForm', () => {
     )
     fireEvent.focus(helpLink)
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Choose whether this ticket pauses for your verification after final tests.')
-    expect(screen.getByRole('link', { name: 'Open documentation for ticket Git hook policy' })).toHaveAttribute(
-      'href',
-      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
-    )
-
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
     expect(mockUseCreateTicket().mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ manualQaOverride: true, gitHookPolicy: null }),
+      expect.objectContaining({ manualQaOverride: true }),
       expect.any(Object),
     )
+    expect(mockUseCreateTicket().mutate.mock.calls[0]?.[0]).not.toHaveProperty('gitHookPolicy')
   })
 
   it('reports a failed ticket creation instead of leaving the form silent', () => {

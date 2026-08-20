@@ -19,6 +19,8 @@ import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { ExistingProjectActionDialog } from './ExistingProjectActionDialog'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
+import { IgnoreModeSetting } from './IgnoreModeSetting'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@/lib/ignoreMode'
 
 interface ProjectFormProps {
   onClose: () => void
@@ -74,9 +76,13 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [folder, setFolder] = useState(project?.folderPath ?? '')
   const [icon, setIcon] = useState(project?.icon ?? '📦')
   const [color, setColor] = useState(project?.color ?? '#3b82f6')
-  const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(project?.manualQaOverride ?? null)
-  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy | null>(
-    normalizeGitHookPolicySetting(project?.gitHookPolicy),
+  const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(
+    project?.manualQaOverride ?? profile?.manualQaEnabled ?? false,
+  )
+  const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
+    normalizeGitHookPolicySetting(project?.gitHookPolicy)
+      ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
+      ?? 'validate_advisory',
   )
   const [isIconPickerOpen, setIsIconPickerOpen] = useState(false)
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false)
@@ -84,10 +90,13 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false)
   const [isWorktreesDialogOpen, setIsWorktreesDialogOpen] = useState(false)
   const [existingStateAction, setExistingStateAction] = useState<ExistingStateAction>('restore')
-  const [ignoreMode, setIgnoreMode] = useState<IgnoreMode>('repo')
+  const [ignoreMode, setIgnoreMode] = useState<IgnoreMode>(
+    normalizeIgnoreMode(project?.ignoreMode) ?? normalizeIgnoreMode(profile?.ignoreMode) ?? DEFAULT_IGNORE_MODE,
+  )
   const [isExistingStateConfirmOpen, setIsExistingStateConfirmOpen] = useState(false)
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const restorePrefillKeyRef = useRef<string | null>(null)
+  const profileDefaultsAppliedRef = useRef(isEditing || !!profile)
   const closeView = onBack ?? onClose
   const restoreMode = !isEditing
     && !gitInfo.alreadyAttached
@@ -130,15 +139,23 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
             && data.repoRoot
             && restorePrefillKeyRef.current !== data.repoRoot
           ) {
+            profileDefaultsAppliedRef.current = true
             setName(data.existingProject.name)
             setShortname(data.existingProject.shortname)
             setIcon(data.existingProject.icon ?? '📁')
             setColor(data.existingProject.color ?? '#3b82f6')
             if (data.existingProject.manualQaOverride !== undefined) {
-              setManualQaOverride(data.existingProject.manualQaOverride)
+              setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? false)
             }
             if (data.existingProject.gitHookPolicy !== undefined) {
-              setGitHookPolicy(normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy))
+              setGitHookPolicy(
+                normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
+                  ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
+                  ?? 'validate_advisory',
+              )
+            }
+            if (data.existingProject.ignoreMode !== undefined) {
+              setIgnoreMode(normalizeIgnoreMode(data.existingProject.ignoreMode) ?? DEFAULT_IGNORE_MODE)
             }
             setExistingStateAction('restore')
             setIsExistingStateConfirmOpen(false)
@@ -159,7 +176,15 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [folder, isEditing])
+  }, [folder, isEditing, profile?.gitHookPolicy, profile?.manualQaEnabled])
+
+  useEffect(() => {
+    if (profileDefaultsAppliedRef.current || isEditing || !profile || restorePrefillKeyRef.current) return
+    profileDefaultsAppliedRef.current = true
+    setManualQaOverride(profile.manualQaEnabled)
+    setGitHookPolicy(profile.gitHookPolicy)
+    setIgnoreMode(profile.ignoreMode ?? DEFAULT_IGNORE_MODE)
+  }, [isEditing, profile])
 
   const handleBrowseFolder = () => {
     setIsFolderPickerOpen(true)
@@ -180,9 +205,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         color,
         gitHookPolicy,
         ignoreMode,
-        manualQaOverride: restoreMode
-          ? manualQaOverride
-          : manualQaOverride ?? profile?.manualQaEnabled ?? false,
+        manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? false,
         ...(restoreMode ? { existingStateAction } : {}),
       },
       {
@@ -393,7 +416,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   <ManualQaSetting
                     idPrefix="project-manual-qa"
                     value={manualQaOverride}
-                    onChange={setManualQaOverride}
+                    onChange={(value) => setManualQaOverride(value ?? false)}
                     inheritedEnabled={profile?.manualQaEnabled ?? false}
                     compact
                   />
@@ -419,6 +442,21 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     compact
                   />
                 </div>
+                {(isEditing || (gitStatus === 'valid' && !gitInfo.alreadyAttached)) && (
+                  <div className="border-t border-border pt-3">
+                    <IgnoreModeSetting
+                      idPrefix="project"
+                      value={ignoreMode}
+                      onChange={setIgnoreMode}
+                      disabled={isBusy || isEditing}
+                    />
+                    {isEditing && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Saved when this project was attached. Existing ignore rules are not removed automatically.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -556,67 +594,6 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     </div>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-          {!isEditing && gitStatus === 'valid' && !gitInfo.alreadyAttached && (
-            <div className="space-y-2">
-              <div>
-                <label className="text-sm font-medium">Ignore LoopTroop&apos;s folders</label>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  LoopTroop keeps <span className="font-mono">.looptroop/</span> and{' '}
-                  <span className="font-mono">.ticket/</span> inside this repository. Choose where to
-                  ignore them. Rules are appended; nothing already in the file is changed.
-                </p>
-              </div>
-              <fieldset className="grid gap-2" disabled={isBusy}>
-                <legend className="sr-only">Ignore location</legend>
-                {([
-                  {
-                    value: 'repo',
-                    title: 'Repository .gitignore',
-                    description: 'Committed with the repository, so every clone and worktree inherits it.',
-                  },
-                  {
-                    value: 'local',
-                    title: 'This clone only (.git/info/exclude)',
-                    description: 'Untracked and private to this machine. Nothing to commit.',
-                  },
-                  {
-                    value: 'skip',
-                    title: 'Do not change any file',
-                    description: 'For a repository that already ignores them, or ignores them elsewhere.',
-                  },
-                ] as const).map((option) => (
-                  <label
-                    key={option.value}
-                    className={cn(
-                      'flex cursor-pointer gap-3 rounded-md border bg-background/70 p-3 transition-colors',
-                      ignoreMode === option.value
-                        ? 'border-primary ring-1 ring-primary'
-                        : 'border-border hover:border-muted-foreground/50',
-                    )}
-                  >
-                    <input
-                      type="radio"
-                      name="ignore-mode"
-                      value={option.value}
-                      checked={ignoreMode === option.value}
-                      onChange={() => setIgnoreMode(option.value)}
-                      className="mt-0.5 h-4 w-4 accent-primary"
-                    />
-                    <span>
-                      <span className="block font-medium text-foreground">{option.title}</span>
-                      <span className="mt-0.5 block text-xs text-muted-foreground">{option.description}</span>
-                    </span>
-                  </label>
-                ))}
-              </fieldset>
-              {ignoreMode === 'skip' && (
-                <p className="text-xs text-amber-700 dark:text-amber-300">
-                  If these folders are not already ignored, Git will see LoopTroop&apos;s runtime files
-                  as changes to commit.
-                </p>
               )}
             </div>
           )}

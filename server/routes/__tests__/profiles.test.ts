@@ -48,6 +48,7 @@ describe('profileRouter numeric validation', () => {
     expect(response.status).toBe(201)
     await expect(response.json()).resolves.toMatchObject({
       manualQaEnabled: false,
+      ignoreMode: 'local',
       maxPrdCoveragePasses: 2,
       maxBeadsCoveragePasses: 20,
       structuredRetryCount: 5,
@@ -83,6 +84,7 @@ describe('profileRouter numeric validation', () => {
     const stored = db.select().from(profiles).get()
     expect(stored?.structuredRetryCount).toBe(1)
     expect(stored?.gitHookPolicy).toBe('validate_advisory')
+    expect(stored?.ignoreMode).toBe('local')
     expect(stored?.manualQaEnabled).toBe(false)
     expect(stored?.opencodeRetryLimit).toBe(10)
     expect(stored?.opencodeRetryDelay).toBe(60_000)
@@ -102,6 +104,23 @@ describe('profileRouter numeric validation', () => {
       })
       expect(response.status).toBe(200)
       await expect(response.json()).resolves.toMatchObject({ gitHookPolicy })
+    }
+  })
+
+  it('persists each supported folder-ignore default', async () => {
+    db.insert(profiles).values({
+      mainImplementer: 'openai/gpt-5.4',
+      councilMembers: '["openai/gpt-5.4"]',
+    }).run()
+    const app = createProfileApp()
+    for (const ignoreMode of ['repo', 'local', 'skip'] as const) {
+      const response = await app.request('/api/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ignoreMode }),
+      })
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toMatchObject({ ignoreMode })
     }
   })
 

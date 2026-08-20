@@ -49,11 +49,14 @@ function shouldRewindRuntimeSetup(status: string): boolean {
   return status === 'PREPARING_EXECUTION_ENV'
 }
 
-function normalizeRawSetupPlanContent(rawContent: string) {
+function normalizeRawSetupPlanContent(rawContent: string, ticketId: string) {
   const content = rawContent.includes(EXECUTION_SETUP_PLAN_RESULT_MARKER)
     ? rawContent
     : `${EXECUTION_SETUP_PLAN_RESULT_MARKER}\n${rawContent}\n${EXECUTION_SETUP_PLAN_RESULT_END}`
-  return normalizeExecutionSetupPlanOutput(content)
+  return normalizeExecutionSetupPlanOutput(content, {
+    preserveBackendFields: true,
+    authoritativeTicketId: getTicketByRef(ticketId)?.externalId,
+  })
 }
 
 function validateWorkspaceInputsForTicket(ticketId: string, plan: ExecutionSetupPlan): ExecutionSetupPlan {
@@ -67,8 +70,8 @@ function validateWorkspaceInputsForTicket(ticketId: string, plan: ExecutionSetup
   return plan
 }
 
-function validateRawSetupPlanContent(rawContent: string): string | null {
-  const normalized = normalizeRawSetupPlanContent(rawContent)
+function validateRawSetupPlanContent(ticketId: string, rawContent: string): string | null {
+  const normalized = normalizeRawSetupPlanContent(rawContent, ticketId)
   return normalized.ok ? null : normalized.error
 }
 
@@ -176,7 +179,7 @@ export async function handlePutExecutionSetupPlan(c: Context) {
   const body = await c.req.json().catch(() => ({}))
   const rawParsed = rawExecutionSetupPlanSaveSchema.safeParse(body)
   if (rawParsed.success) {
-    const validationError = validateRawSetupPlanContent(rawParsed.data.content)
+    const validationError = validateRawSetupPlanContent(ticketId, rawParsed.data.content)
     if (validationError) {
       return c.json({
         error: 'Failed to save execution setup plan',
@@ -185,7 +188,7 @@ export async function handlePutExecutionSetupPlan(c: Context) {
     }
 
     try {
-      const normalized = normalizeRawSetupPlanContent(rawParsed.data.content)
+      const normalized = normalizeRawSetupPlanContent(rawParsed.data.content, ticketId)
       if (!normalized.ok) throw new Error(normalized.error)
       validateWorkspaceInputsForTicket(ticketId, normalized.value)
       const restart = rewindsRuntimeSetup ? await prepareExecutionSetupRuntimeRewind(ticketId) : null
@@ -221,7 +224,7 @@ export async function handlePutExecutionSetupPlan(c: Context) {
     return c.json({ error: 'Invalid execution setup plan payload', details: structuredParsed.error.flatten() }, 400)
   }
 
-  const validationError = validateRawSetupPlanContent(serializeExecutionSetupPlan(structuredParsed.data.plan))
+  const validationError = validateRawSetupPlanContent(ticketId, serializeExecutionSetupPlan(structuredParsed.data.plan))
   if (validationError) {
     return c.json({
       error: 'Failed to save execution setup plan',
@@ -279,7 +282,7 @@ export async function handleRegenerateExecutionSetupPlan(c: Context) {
   // Read current plan before archiving (for context in background generation)
   let currentPlan = parsed.data.plan ?? null
   if (!currentPlan && parsed.data.rawContent) {
-    const normalized = normalizeRawSetupPlanContent(parsed.data.rawContent)
+    const normalized = normalizeRawSetupPlanContent(parsed.data.rawContent, ticketId)
     if (!normalized.ok) {
       return c.json({ error: 'Invalid raw setup plan draft', details: normalized.error }, 400)
     }

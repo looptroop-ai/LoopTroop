@@ -34,6 +34,7 @@ const existingProfile = {
   toolErrorMaxChars: 6000,
   manualQaEnabled: false,
   gitHookPolicy: 'use_native_hooks' as const,
+  ignoreMode: 'local' as const,
   createdAt: '2026-03-08T14:28:53.309Z',
   updatedAt: '2026-03-11T10:49:38.623Z',
 }
@@ -136,7 +137,10 @@ describe('ProfileSetup', () => {
     expect(screen.getByText('Minimum council votes required (1–6)')).toBeInTheDocument()
     expect(screen.getByText('Coverage')).toBeInTheDocument()
     expect(screen.getByText('OpenCode Provider Recovery')).toBeInTheDocument()
-    expect(screen.getByText('Post-Implementation')).toBeInTheDocument()
+    const advancedButton = screen.getByRole('button', { name: 'Advanced' })
+    expect(advancedButton).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('radio', { name: 'Disabled' })).not.toBeInTheDocument()
+    fireEvent.click(advancedButton)
     expect(screen.getByRole('radio', { name: 'Disabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText('Coverage Follow-Up Budget (%)')).toBeInTheDocument()
     expect(screen.getByText('Interview Coverage Passes')).toBeInTheDocument()
@@ -148,7 +152,6 @@ describe('ProfileSetup', () => {
     expect(screen.getByLabelText('OpenCode Retry Limit')).toHaveValue(7)
     expect(screen.getByLabelText('OpenCode Retry Grace Window')).toHaveValue(45)
     expect(screen.getByText('Execution Setup Timeout (s)')).toBeInTheDocument()
-    expect(screen.getByText('Pre-Implementation')).toBeInTheDocument()
     expect(screen.getByText('Implementation & Workspace Setup')).toBeInTheDocument()
     expect(screen.queryByText('Execution Phase')).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
@@ -297,10 +300,11 @@ describe('ProfileSetup', () => {
   it('renders documentation links for configuration descriptions', async () => {
     await renderProfileSetup()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('data-state', 'checked')
     const docsLinks = screen.getAllByRole('link', { name: /Open documentation for / })
-    expect(docsLinks).toHaveLength(21)
+    expect(docsLinks).toHaveLength(22)
 
     expect(screen.getByRole('link', { name: 'Open documentation for Manual QA checkpoint' })).toHaveAttribute(
       'href',
@@ -310,6 +314,11 @@ describe('ProfileSetup', () => {
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#git-hook-policy`,
     )
+    expect(screen.getByRole('link', { name: 'Open documentation for configuration folder-ignore policy' })).toHaveAttribute(
+      'href',
+      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#looptroop-folder-ignore-policy`,
+    )
+    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
 
     const mainImplementerLink = screen.getByRole('link', { name: 'Open documentation for Main Implementer Model' })
     expect(mainImplementerLink).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#main-implementer-model`)
@@ -363,6 +372,25 @@ describe('ProfileSetup', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'Wait time for planning and other AI-only responses (10–3600s). Open the detailed documentation.',
     )
+  })
+
+  it('persists all three defaults from Advanced', async () => {
+    await renderProfileSetup()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Enabled' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Observe' }))
+    fireEvent.click(screen.getByRole('radio', { name: /Repository \.gitignore/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manualQaEnabled: true,
+        gitHookPolicy: 'observe_only',
+        ignoreMode: 'repo',
+      }),
+      expect.anything(),
+    ))
   })
 
   it('keeps seconds and editable duration parts synchronized for every duration field', async () => {

@@ -69,8 +69,7 @@ const CreateTicketInputSchema = z.object({
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
-  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).nullable().optional(),
-})
+}).strict()
 
 function truncateLoggedValue(value: string, maxLength = 200): string {
   const trimmed = value.trim()
@@ -372,7 +371,6 @@ export function createTicket(input: {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
-  gitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks' | null
 }): PublicTicket {
   const parsedInput = CreateTicketInputSchema.safeParse(input)
   if (!parsedInput.success) {
@@ -402,7 +400,6 @@ export function createTicket(input: {
       description: validatedInput.description ?? null,
       priority: validatedInput.priority ?? 3,
       manualQaOverride: validatedInput.manualQaOverride ?? null,
-      gitHookPolicy: validatedInput.gitHookPolicy ?? null,
       status: 'DRAFT',
     })
     .returning()
@@ -517,14 +514,11 @@ export function createManualQaImprovementTicket(input: {
   return materializeTicketFiles(created)
 }
 
-export function updateTicket(ticketRef: string, patch: Partial<Pick<LocalTicketRow, 'title' | 'description' | 'priority' | 'manualQaOverride' | 'gitHookPolicy'>>): PublicTicket | undefined {
+export function updateTicket(ticketRef: string, patch: Partial<Pick<LocalTicketRow, 'title' | 'description' | 'priority' | 'manualQaOverride'>>): PublicTicket | undefined {
   const context = getTicketContext(ticketRef)
   if (!context) return undefined
   if ('manualQaOverride' in patch && context.localTicket.status !== 'DRAFT') {
     throw new Error('Manual QA override can only be changed while the ticket is in DRAFT status.')
-  }
-  if ('gitHookPolicy' in patch && context.localTicket.status !== 'DRAFT') {
-    throw new Error('Git hook policy can only be changed while the ticket is in DRAFT status.')
   }
   context.projectDb.update(tickets)
     .set({ ...patch, updatedAt: new Date().toISOString() })
@@ -553,13 +547,6 @@ export function patchTicket(
     && patch.manualQaOverride !== context.localTicket.manualQaOverride
   ) {
     throw new Error('Manual QA override can only be changed while the ticket is in DRAFT status.')
-  }
-  if (
-    'gitHookPolicy' in patch
-    && context.localTicket.status !== 'DRAFT'
-    && patch.gitHookPolicy !== context.localTicket.gitHookPolicy
-  ) {
-    throw new Error('Git hook policy can only be changed while the ticket is in DRAFT status.')
   }
   assertLockedModelConfigurationMutable(context.localTicket, patch)
   assertLockedManualQaConfigurationMutable(context.localTicket, patch)
@@ -616,7 +603,7 @@ export function lockTicketStartConfiguration(
     lockedManualQaEnabled?: boolean
     lockedManualQaSource?: 'profile' | 'project' | 'ticket'
     lockedGitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
-    lockedGitHookPolicySource?: 'profile' | 'project' | 'ticket'
+    lockedGitHookPolicySource?: 'profile' | 'project'
   },
 ): PublicTicket | undefined {
   const context = getTicketContext(ticketRef)

@@ -36,8 +36,8 @@ const execFileAsync = promisify(execFile)
 const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 const perProjectOverrides = {
-  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).nullable().optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
+  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).optional(),
+  manualQaOverride: z.boolean().optional(),
   councilMembers: z.string().optional(),
   maxIterations: z.number().int().min(0).max(20).optional(),
   perIterationTimeout: z.number().int().nonnegative().optional(),

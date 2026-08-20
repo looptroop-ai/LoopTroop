@@ -22,18 +22,10 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { TicketDescriptionViewer } from './TicketDescriptionViewer'
 import { TicketExternalId } from './TicketExternalId'
 import { CancelTicketDialog } from './CancelTicketDialog'
-import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 
 interface DashboardHeaderProps {
   ticket: Ticket
 }
-
-const GIT_HOOK_POLICY_LABELS = {
-  observe_only: 'Observe',
-  validate_advisory: 'Check',
-  validate_required: 'Require',
-  use_native_hooks: 'Run',
-} as const
 
 function ProjectIcon({
   icon,
@@ -614,19 +606,6 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                   <span>Manual QA checkpoint</span>
                   <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium">
                     {ticket.effectiveManualQaEnabled === true ? 'Enabled' : 'Disabled'}
-                  </Badge>
-                </div>
-                <div className="flex items-center justify-between gap-3 border-t border-border/70 pt-2 text-xs">
-                  <span className="flex items-center gap-1.5">
-                    Git hook policy
-                    <ConfigurationDocsLink
-                      docsPath="/configuration#git-hook-policy"
-                      label="ticket Git hook policy"
-                      description="Review what this ticket's locked hook choice does. Open the Git hook policy documentation."
-                    />
-                  </span>
-                  <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium">
-                    {GIT_HOOK_POLICY_LABELS[ticket.effectiveGitHookPolicy ?? 'validate_advisory']}
                   </Badge>
                 </div>
               </div>

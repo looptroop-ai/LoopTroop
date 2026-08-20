@@ -11,6 +11,7 @@ import {
 } from '../server/daemon/startDaemon'
 import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
+import { APP_SCHEMA_VERSION } from '../server/db/schemaVersion'
 
 /**
  * 2.7 contract: the daemon reports ready only once it is genuinely serving, and
@@ -314,7 +315,11 @@ describe('daemon startup and shutdown', () => {
       expect(failure?.version).toBe('0.0.0-test')
       // Which database, what it reports, and what this build accepts — enough
       // for a later command to re-check without parsing the message.
-      expect(failure?.schema).toMatchObject({ databasePath: dbPath, found: 99, expected: 1 })
+      expect(failure?.schema).toMatchObject({
+        databasePath: dbPath,
+        found: 99,
+        expected: APP_SCHEMA_VERSION,
+      })
       expect(failure?.message).toContain(dbPath)
     })
 

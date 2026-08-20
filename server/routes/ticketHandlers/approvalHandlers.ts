@@ -448,9 +448,11 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
     const refreshedPlan = lockExecutionSetupPlanDetectedHooks(ticketId, plan)
     const evidenceChanged = JSON.stringify({
       hostContext: refreshedPlan.hostContext,
+      policy: refreshedPlan.gitHooks.policy,
       detected: refreshedPlan.gitHooks.detected,
     }) !== JSON.stringify({
       hostContext: plan.hostContext,
+      policy: plan.gitHooks.policy,
       detected: plan.gitHooks.detected,
     })
     if (evidenceChanged) {

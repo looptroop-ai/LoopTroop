@@ -61,6 +61,7 @@
     "opencode:upgrade": "tsx scripts/dev-opencode-upgrade.ts",
     "dev:opencode": "tsx scripts/dev-opencode.ts",
     "dev:frontend": "vite",
+    "dev:frontend:preview": "vite build && vite preview",
     "dev:backend": "tsx scripts/dev-backend.ts",
     "diagnose:stall": "tsx scripts/diagnose-runtime-stall.ts",
     "verify:no-native-addons": "node scripts/verify-no-native-addons.mjs",

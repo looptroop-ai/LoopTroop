@@ -13,9 +13,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The board and the ticket view now say when they could not reach the server, instead of showing "loading…" forever — an unreachable backend no longer looks like a slow one, or like your tickets were deleted.
 - The dev stack can serve the built frontend bundle instead of the dev server, which makes running LoopTroop over a tunnel or a remote link dramatically faster.
 - A backend that dies during `npm run dev` now takes the dev stack down with it, instead of leaving a frontend serving a dashboard whose every request fails.
+- The folder-ignore policy now looks like every other **Advanced** option: one row, one selector, with each choice explained on hover.
 
 ### Added
 - Added `LOOPTROOP_DEV_FRONTEND=preview`, which makes `npm run dev` build the dashboard once and serve the bundle rather than starting the frontend dev server. The dev server sends every source file as its own request — over 300 source modules before dependencies — and over a tunnel each one pays the round trip; the built bundle is a few dozen assets. Hot reload is the trade, so code changes need a restart. Everything else is unchanged: same port, same backend, same proxy. An unrecognised value warns and falls back to the dev server rather than silently serving the slow path to someone who asked for the fast one.
+
+### Changed
+- Changed the folder-ignore policy control, in both Configuration **Advanced** and Project **Advanced**, from a stack of three description cards to the single-row layout its neighbours already use: label, `?` documentation link and a one-line description on the left, a compact **Repository / This clone / Nowhere** selector on the right, and each choice's full explanation on hover. It was the one option in that section that did not look like the others, and it took three times the height to ask a smaller question. The stored values (`repo`, `local`, `skip`), the `local` default, and the warning shown when no rules are written are unchanged; the visible option labels are shorter, and their previous wording now lives in the hover text.
 
 ### Fixed
 - Fixed the Kanban board and the ticket dashboard presenting a failed request as an ongoing one. Both read only the query's loading flag and had no error branch at all, so a backend that was not answering rendered the "LoopTroop is fetching the tickets" banner indefinitely — and, because `refetchOnWindowFocus` is enabled, re-entered it on every window focus. An empty board with no explanation reads as data loss, so the new banner states that the request failed, says the tickets are still on disk, quotes the reason, and offers a retry.

@@ -589,7 +589,12 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                 <div className="border-t border-border pt-4">
                   <IgnoreModeSetting
                     idPrefix="configuration"
-                    label="Folder-ignore policy"
+                    description={
+                      <>
+                        Preselect where new projects ignore <span className="font-mono">.looptroop/</span> and{' '}
+                        <span className="font-mono">.ticket/</span>. Rules are appended; existing file content is not changed.
+                      </>
+                    }
                     value={formData.ignoreMode ?? DEFAULT_IGNORE_MODE}
                     onChange={(value) => updateField('ignoreMode', value)}
                   />

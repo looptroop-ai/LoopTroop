@@ -1092,16 +1092,17 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
   const logPhaseAttempt = phaseAttempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
   const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
-  const { artifacts: archivedPhaseArtifacts } = useTicketArtifacts(
+  const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null
       ? { phase: phaseForView, phaseAttempt: archivedAttemptNumber }
       : undefined,
   )
-  const { artifacts: codingPhaseArtifacts } = useTicketArtifacts(
+  const { artifacts: loadedCodingPhaseArtifacts } = useTicketArtifacts(
     viewingBeadId ? ticket.id : undefined,
     viewingBeadId ? { phase: 'CODING' } : undefined,
   )
+  const codingPhaseArtifacts = useMemo(() => loadedCodingPhaseArtifacts ?? [], [loadedCodingPhaseArtifacts])
   
   // -- Auto-scroll state for the model log tab --
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -1387,7 +1388,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
             phase={phaseForView}
             isCompleted={isCompleted}
             ticketId={ticket.id}
-            preloadedArtifacts={archivedAttemptNumber != null ? archivedPhaseArtifacts : undefined}
+            artifactState={archivedAttemptNumber != null ? archivedArtifactState : undefined}
           />
         </div>
       )}

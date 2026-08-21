@@ -33,13 +33,13 @@ vi.mock('@/hooks/useTicketPhaseAttempts', () => ({
 vi.mock('../PhaseArtifactsPanel', () => ({
   PhaseArtifactsPanel: ({
     phase,
-    preloadedArtifacts,
+    artifactState,
   }: {
     phase: string
-    preloadedArtifacts?: Array<{ content?: string | null }>
+    artifactState?: { artifacts?: Array<{ content?: string | null }> }
   }) => (
     <div data-testid="phase-artifacts-panel">
-      {phase}:{preloadedArtifacts?.[0]?.content ?? 'live'}
+      {phase}:{artifactState?.artifacts?.[0]?.content ?? 'live'}
     </div>
   ),
 }))

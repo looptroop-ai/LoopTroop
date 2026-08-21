@@ -12,6 +12,31 @@ import {
   createArtifactFactory,
 } from '@/test/workspaceArtifactBuilders'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
+import type { DBartifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
+
+function successfulArtifactState(artifacts: DBartifact[]): TicketArtifactCollectionState {
+  return {
+    artifacts,
+    status: 'success',
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(async () => undefined),
+  }
+}
+
+function TestPhaseArtifactsPanel({
+  preloadedArtifacts,
+  ...props
+}: React.ComponentProps<typeof PhaseArtifactsPanel> & { preloadedArtifacts?: DBartifact[] }) {
+  return (
+    <PhaseArtifactsPanel
+      {...props}
+      artifactState={preloadedArtifacts === undefined ? undefined : successfulArtifactState(preloadedArtifacts)}
+    />
+  )
+}
 
 /** Find the innermost element whose full textContent (including children) matches exactly. */
 function hasExactTextContent(text: string) {
@@ -61,6 +86,94 @@ describe('PhaseArtifactsPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows artifact loading and request failures with a working retry action', () => {
+    const retry = vi.fn(async () => undefined)
+    const { unmount } = renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="GENERATING_QA_CHECKLIST"
+        isCompleted={false}
+        artifactState={{
+          artifacts: undefined,
+          status: 'loading',
+          isLoading: true,
+          isFetching: true,
+          isError: false,
+          error: null,
+          refetch: retry,
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByText('Loading artifact')).toBeInTheDocument()
+
+    unmount()
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="GENERATING_QA_CHECKLIST"
+        isCompleted={false}
+        artifactState={{
+          artifacts: undefined,
+          status: 'error',
+          isLoading: false,
+          isFetching: false,
+          isError: true,
+          error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
+          refetch: retry,
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTP 503: busy')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [true, 'This artifact was not produced or is unavailable for this phase version.'],
+    [false, 'This artifact is not available yet.'],
+  ])('uses a truthful missing-content message when completed is %s', (isCompleted, message) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="GENERATING_QA_CHECKLIST"
+        isCompleted={isCompleted}
+        ticketId={TEST.ticketId}
+        artifactState={successfulArtifactState([])}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(message)
+    expect(screen.queryByText(/will be generated during this phase/i)).not.toBeInTheDocument()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('keeps loaded content visible when a background refresh fails', () => {
+    const checklistArtifact = makeArtifact({
+      phase: 'GENERATING_QA_CHECKLIST',
+      artifactType: 'manual_qa_checklist',
+      content: JSON.stringify({ version: 1, summary: 'Previously loaded checklist' }),
+    })
+    renderWithProviders(
+      <PhaseArtifactsPanel
+        phase="GENERATING_QA_CHECKLIST"
+        isCompleted
+        artifactState={{
+          ...successfulArtifactState([checklistArtifact]),
+          status: 'error',
+          isError: true,
+          error: new Error('refresh unavailable'),
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Previously loaded checklist')
+    expect(screen.getByRole('alert')).toHaveTextContent('Showing previously loaded content')
+  })
+
   it('adds each bead title and execution priority to completed commit artifacts', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -81,7 +194,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_PR_REVIEW"
         isCompleted
         ticketId={TEST.ticketId}
@@ -113,7 +226,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="GENERATING_QA_CHECKLIST"
         isCompleted
         preloadedArtifacts={[checklistArtifact]}
@@ -140,7 +253,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="PREPARING_EXECUTION_ENV"
         isCompleted
         preloadedArtifacts={[profileArtifact, reportArtifact]}
@@ -199,7 +312,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COUNCIL_VOTING_INTERVIEW"
         isCompleted={false}
         councilMemberCount={4}
@@ -297,7 +410,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COMPILING_INTERVIEW"
         isCompleted={false}
         councilMemberCount={2}
@@ -419,7 +532,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         councilMemberCount={2}
@@ -468,7 +581,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COUNCIL_DELIBERATING"
         isCompleted
         councilMemberCount={2}
@@ -535,7 +648,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
         councilMemberCount={2}
@@ -583,7 +696,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -635,7 +748,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -671,7 +784,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -772,7 +885,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -830,7 +943,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COUNCIL_VOTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -878,7 +991,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COUNCIL_VOTING_PRD"
         isCompleted={false}
         councilMemberCount={1}
@@ -1001,7 +1114,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COUNCIL_VOTING_BEADS"
         isCompleted={false}
         councilMemberCount={2}
@@ -1051,7 +1164,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_PRD_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact]}
@@ -1123,7 +1236,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_PRD_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, coverageInputArtifact]}
@@ -1202,7 +1315,7 @@ describe('PhaseArtifactsPanel', () => {
       })
 
       renderWithProviders(
-        <PhaseArtifactsPanel
+        <TestPhaseArtifactsPanel
           phase={testCase.phase}
           isCompleted={false}
           councilMemberNames={['openai/gpt-5.2']}
@@ -1304,7 +1417,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="EXPANDING_BEADS"
         isCompleted={false}
         preloadedArtifacts={[coverageArtifact, expandedArtifact]}
@@ -1395,7 +1508,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_PRD_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, coverageInputArtifact, coverageArtifact]}
@@ -1513,7 +1626,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_PRD_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[
@@ -1567,7 +1680,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="REFINING_PRD"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact]}
@@ -1706,7 +1819,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="VERIFYING_PRD_COVERAGE"
         isCompleted={false}
         preloadedArtifacts={[coverageRevisionArtifact]}
@@ -1848,7 +1961,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="VERIFYING_PRD_COVERAGE"
         isCompleted={false}
         preloadedArtifacts={[coverageArtifact]}
@@ -1980,7 +2093,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         preloadedArtifacts={[voteArtifact, compiledArtifact, winnerArtifact, uiDiffArtifact]}
@@ -2038,7 +2151,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="VERIFYING_BEADS_COVERAGE"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact]}
@@ -2105,7 +2218,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, coverageInputArtifact, coverageArtifact]}
@@ -2204,7 +2317,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         preloadedArtifacts={[
@@ -2284,7 +2397,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="REFINING_PRD"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact]}
@@ -2333,7 +2446,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="REFINING_PRD"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact]}
@@ -2403,7 +2516,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_INTERVIEW_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[voteArtifact, compiledArtifact, compiledCompanionArtifact]}
@@ -2432,7 +2545,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_INTERVIEW_ANSWERS"
         isCompleted={false}
         preloadedArtifacts={[compiledArtifact]}
@@ -2478,7 +2591,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_INTERVIEW_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[voteArtifact, compiledArtifact]}
@@ -2582,7 +2695,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="COMPILING_INTERVIEW"
         isCompleted={false}
         preloadedArtifacts={[voteArtifact, compiledArtifact, compiledCompanionArtifact, winnerArtifact, uiDiffArtifact]}
@@ -2670,7 +2783,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, uiDiffArtifact]}
@@ -2773,7 +2886,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase={phase}
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, uiDiffArtifact]}
@@ -2835,7 +2948,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="REFINING_PRD"
         isCompleted={false}
         preloadedArtifacts={[refinedArtifact, uiDiffArtifact]}
@@ -2877,7 +2990,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_BEADS"
         isCompleted={false}
         councilMemberCount={1}
@@ -2917,7 +3030,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="DRAFTING_BEADS"
         isCompleted={false}
         councilMemberCount={2}
@@ -2982,7 +3095,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="WAITING_INTERVIEW_APPROVAL"
         isCompleted={false}
         preloadedArtifacts={[compiledArtifact, coverageInputArtifact]}
@@ -3041,7 +3154,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="VERIFYING_INTERVIEW_COVERAGE"
         isCompleted={false}
         preloadedArtifacts={[coverageInputArtifact]}
@@ -3091,7 +3204,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="VERIFYING_INTERVIEW_COVERAGE"
         isCompleted={false}
         preloadedArtifacts={[coverageArtifact]}
@@ -3131,7 +3244,7 @@ describe('PhaseArtifactsPanel', () => {
     })
 
     renderWithProviders(
-      <PhaseArtifactsPanel
+      <TestPhaseArtifactsPanel
         phase="CREATING_PULL_REQUEST"
         isCompleted={true}
         preloadedArtifacts={[pullRequestArtifact]}

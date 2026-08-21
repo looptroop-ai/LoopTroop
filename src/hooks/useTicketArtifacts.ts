@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { failedResponseError } from '@/lib/fetchError'
 import { queryClient } from '@/lib/queryClient'
 
 export interface DBartifact {
@@ -11,6 +12,21 @@ export interface DBartifact {
   content: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface TicketArtifactQueryScope {
+  phase?: string
+  phaseAttempt?: number
+}
+
+export interface TicketArtifactCollectionState {
+  artifacts: DBartifact[] | undefined
+  status: 'idle' | 'loading' | 'success' | 'error'
+  isLoading: boolean
+  isFetching: boolean
+  isError: boolean
+  error: unknown
+  refetch: () => Promise<unknown>
 }
 
 export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: string): DBartifact | null {
@@ -53,26 +69,9 @@ export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: strin
   }
 }
 
-export function mergeTicketArtifactSnapshot(
-  currentArtifacts: DBartifact[] | undefined,
-  artifact: DBartifact,
-): DBartifact[] {
-  const existing = currentArtifacts ?? []
-  const existingIndex = existing.findIndex(entry => entry.id === artifact.id)
-
-  if (existingIndex < 0) {
-    return [...existing, artifact]
-  }
-
-  return existing.map((entry, index) => (index === existingIndex ? artifact : entry))
-}
-
-async function fetchTicketArtifacts(
+export async function fetchTicketArtifacts(
   ticketId: string,
-  options?: {
-    phase?: string
-    phaseAttempt?: number
-  },
+  options?: TicketArtifactQueryScope,
 ): Promise<DBartifact[]> {
   const params = new URLSearchParams()
   if (options?.phase) params.set('phase', options.phase)
@@ -81,15 +80,19 @@ async function fetchTicketArtifacts(
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : ''
   const res = await fetch(`/api/tickets/${ticketId}/artifacts${suffix}`)
-  if (!res.ok) return []
-  const payload = await res.json()
-  if (!Array.isArray(payload)) return []
-  return payload
-    .map((artifact) => normalizeTicketArtifact(artifact, ticketId))
-    .filter((artifact): artifact is DBartifact => artifact !== null)
+  if (!res.ok) throw await failedResponseError(res, 'Failed to load ticket artifacts')
+
+  const payload: unknown = await res.json()
+  if (!Array.isArray(payload)) throw new Error('Failed to load ticket artifacts: invalid response')
+
+  return payload.map((artifact) => {
+    const normalized = normalizeTicketArtifact(artifact, ticketId)
+    if (!normalized) throw new Error('Failed to load ticket artifacts: invalid artifact record')
+    return normalized
+  })
 }
 
-export function getTicketArtifactsQueryKey(ticketId: string, options?: { phase?: string; phaseAttempt?: number }) {
+export function getTicketArtifactsQueryKey(ticketId: string, options?: TicketArtifactQueryScope) {
   return [
     'ticket-artifacts',
     ticketId,
@@ -104,36 +107,85 @@ export function clearTicketArtifactsCache(ticketId: string) {
   queryClient.removeQueries({ queryKey: ['ticket-artifacts', ticketId] })
 }
 
-/**
- * Fetches and caches ticket artifacts. Returns cached data instantly on cache hit,
- * then background-refreshes for live phases.
- */
+function queryStatus(
+  enabled: boolean,
+  isLoading: boolean,
+  isError: boolean,
+): TicketArtifactCollectionState['status'] {
+  if (!enabled) return 'idle'
+  if (isError) return 'error'
+  if (isLoading) return 'loading'
+  return 'success'
+}
+
+/** Fetches one exact artifact scope without erasing successful data during refreshes. */
 export function useTicketArtifacts(
   ticketId?: string,
-  opts?: {
-    skipFetch?: boolean
-    phase?: string
-    phaseAttempt?: number
-  },
-) {
-  const queryKey = ticketId
-    ? getTicketArtifactsQueryKey(ticketId, { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt })
-    : ['ticket-artifacts', '__missing__'] as const
-
-  const cached = ticketId
-    ? queryClient.getQueryData<DBartifact[]>(getTicketArtifactsQueryKey(ticketId, { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt }))
-    : undefined
-
+  opts?: TicketArtifactQueryScope & { skipFetch?: boolean },
+): TicketArtifactCollectionState {
+  const enabled = Boolean(ticketId && !opts?.skipFetch)
+  const scope = { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt }
   const query = useQuery({
-    queryKey,
-    queryFn: () => fetchTicketArtifacts(ticketId!, { phase: opts?.phase, phaseAttempt: opts?.phaseAttempt }),
-    enabled: !!ticketId && !opts?.skipFetch,
-    // Only hydrate from the exact query cache entry for this ticket.
-    placeholderData: cached,
+    queryKey: ticketId
+      ? getTicketArtifactsQueryKey(ticketId, scope)
+      : ['ticket-artifacts', '__missing__'] as const,
+    queryFn: () => fetchTicketArtifacts(ticketId!, scope),
+    enabled,
   })
 
   return {
-    artifacts: opts?.skipFetch ? (cached ?? []) : (query.data ?? cached ?? []),
-    isLoading: opts?.skipFetch ? false : query.isLoading,
+    artifacts: enabled ? query.data : undefined,
+    status: queryStatus(enabled, query.isLoading, query.isError),
+    isLoading: enabled && query.isLoading,
+    isFetching: enabled && query.isFetching,
+    isError: enabled && query.isError,
+    error: enabled ? query.error : null,
+    refetch: query.refetch,
+  }
+}
+
+function uniqueScopes(scopes: readonly TicketArtifactQueryScope[]): TicketArtifactQueryScope[] {
+  const seen = new Set<string>()
+  return scopes.filter((scope) => {
+    const key = `${scope.phase ?? '__all__'}:${scope.phaseAttempt ?? 'active'}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/** Loads a phase and its explicitly declared dependencies as independently cached scopes. */
+export function useTicketArtifactBundle(
+  ticketId: string | undefined,
+  requestedScopes: readonly TicketArtifactQueryScope[],
+): TicketArtifactCollectionState {
+  const scopes = uniqueScopes(requestedScopes)
+  const enabled = Boolean(ticketId && scopes.length > 0)
+  const queries = useQueries({
+    queries: scopes.map((scope) => ({
+      queryKey: ticketId
+        ? getTicketArtifactsQueryKey(ticketId, scope)
+        : ['ticket-artifacts', '__missing__', scope.phase ?? '__all__'] as const,
+      queryFn: () => fetchTicketArtifacts(ticketId!, scope),
+      enabled,
+    })),
+  })
+
+  const isLoading = enabled && queries.some((query) => query.isLoading)
+  const isFetching = enabled && queries.some((query) => query.isFetching)
+  const failedQuery = queries.find((query) => query.isError)
+  const hasCompleteData = enabled && queries.every((query) => query.data !== undefined)
+  const artifacts = hasCompleteData
+    ? Array.from(new Map(queries.flatMap((query) => query.data ?? []).map((artifact) => [artifact.id, artifact])).values())
+    : undefined
+
+  return {
+    artifacts,
+    status: queryStatus(enabled, isLoading, Boolean(failedQuery)),
+    isLoading,
+    isFetching,
+    isError: Boolean(failedQuery),
+    error: failedQuery?.error ?? null,
+    refetch: () => Promise.all(queries.map((query) => query.refetch())),
   }
 }

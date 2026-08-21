@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
-import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
+import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { getTicketCouncilMembers } from '@/lib/ticketNormalization'
@@ -15,6 +15,7 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { isRecord } from '@shared/typeGuards'
+import { getArtifactSourcePhases } from './phaseArtifactTypes'
 
 import type { Ticket } from '@/hooks/useTickets'
 import type { DBartifact } from '@/hooks/useTicketArtifacts'
@@ -154,12 +155,17 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
   const logPhaseAttempt = attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
   const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
-  const { artifacts: phaseArtifacts } = useTicketArtifacts(ticket.id, archivedAttemptNumber != null
-    ? {
-        phase,
-        phaseAttempt: archivedAttemptNumber,
-      }
-    : undefined)
+  const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
+    if (!selectedAttempt) return []
+    if (selectedAttempt.state === 'archived') {
+      return [{ phase, phaseAttempt: selectedAttempt.attemptNumber }]
+    }
+    return getArtifactSourcePhases(phase).map((sourcePhase) => sourcePhase === phase
+      ? { phase, phaseAttempt: selectedAttempt.attemptNumber }
+      : { phase: sourcePhase })
+  }, [phase, selectedAttempt])
+  const artifactState = useTicketArtifactBundle(ticket.id, artifactScopes)
+  const phaseArtifacts = useMemo(() => artifactState.artifacts ?? [], [artifactState.artifacts])
   const councilMemberNames = useMemo(
     () => getTicketCouncilMembers(ticket),
     [ticket],
@@ -216,7 +222,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
           ticketId={ticket.id}
           councilMemberCount={councilMemberCount}
           councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
-          preloadedArtifacts={phaseArtifacts}
+          artifactState={artifactState}
         />
       </div>
 

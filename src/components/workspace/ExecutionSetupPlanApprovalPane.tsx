@@ -333,9 +333,10 @@ export function ExecutionSetupPlanApprovalPane({
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
-  const { artifacts } = useTicketArtifacts(ticket.id, isArchivedAttempt
+  const artifactState = useTicketArtifacts(ticket.id, isArchivedAttempt
     ? { phase: 'WAITING_EXECUTION_SETUP_APPROVAL', phaseAttempt }
     : undefined)
+  const artifacts = useMemo(() => artifactState.artifacts ?? [], [artifactState.artifacts])
   const planQueryKey = phaseAttempt != null
     ? ['artifact', ticket.id, 'execution-setup-plan', phaseAttempt]
     : ['artifact', ticket.id, 'execution-setup-plan']
@@ -796,7 +797,7 @@ export function ExecutionSetupPlanApprovalPane({
           ticketId={ticket.id}
           councilMemberCount={ticket.lockedCouncilMembers.length || 1}
           councilMemberNames={ticket.lockedCouncilMembers}
-          preloadedArtifacts={artifacts}
+          artifactState={artifactState}
         />
 
         {!readOnly && isEditMode ? (

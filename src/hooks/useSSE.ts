@@ -5,12 +5,7 @@ import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { patchTicketStatusInCache } from './ticketStatusCache'
-import {
-  getTicketArtifactsQueryKey,
-  mergeTicketArtifactSnapshot,
-  normalizeTicketArtifact,
-  type DBartifact,
-} from './useTicketArtifacts'
+import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
 
 interface SSEOptions {
@@ -294,27 +289,60 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
           const data = JSON.parse(e.data) as Record<string, unknown>
-          const snapshot = normalizeTicketArtifact(
-            data.artifact,
-            typeof data.ticketId === 'string' ? data.ticketId : ticketId ?? undefined,
-          )
+          const artifact = data.artifact && typeof data.artifact === 'object'
+            ? data.artifact as Record<string, unknown>
+            : null
           const artifactTicketId = typeof data.ticketId === 'string'
             ? data.ticketId
-            : snapshot?.ticketId ?? null
+            : typeof artifact?.ticketId === 'string'
+              ? artifact.ticketId
+              : null
 
           if (ticketId && (!artifactTicketId || artifactTicketId === ticketId)) {
-            if (snapshot) {
-              queryClient.setQueryData<DBartifact[]>(
-                getTicketArtifactsQueryKey(ticketId),
-                (current) => mergeTicketArtifactSnapshot(current, snapshot),
-              )
-              queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
-            } else {
-              queryClient.invalidateQueries({ queryKey: ['ticket-artifacts', ticketId] })
+            // artifact_change carries manifest metadata only. Never merge it into
+            // body caches, because absent content would temporarily erase a
+            // successfully loaded artifact while the API refetch is in flight.
+            void queryClient.invalidateQueries({
+              queryKey: getTicketArtifactsQueryKey(ticketId),
+              exact: true,
+            })
+
+            const phases = new Set<string>()
+            if (typeof data.phase === 'string') phases.add(data.phase)
+            if (typeof artifact?.phase === 'string') phases.add(artifact.phase)
+            if (Array.isArray(data.invalidatedPhases)) {
+              for (const phase of data.invalidatedPhases) {
+                if (typeof phase === 'string') phases.add(phase)
+              }
+            }
+            for (const phase of phases) {
+              void queryClient.invalidateQueries({
+                queryKey: getTicketArtifactsQueryKey(ticketId, { phase }),
+                exact: true,
+              })
+            }
+
+            const phaseAttempt = typeof artifact?.phaseAttempt === 'number'
+              ? artifact.phaseAttempt
+              : Number(artifact?.phaseAttempt)
+            const artifactPhase = typeof artifact?.phase === 'string'
+              ? artifact.phase
+              : typeof data.phase === 'string'
+                ? data.phase
+                : null
+            if (artifactPhase && Number.isFinite(phaseAttempt) && phaseAttempt > 0) {
+              void queryClient.invalidateQueries({
+                queryKey: getTicketArtifactsQueryKey(ticketId, { phase: artifactPhase, phaseAttempt }),
+                exact: true,
+              })
             }
 
             const beadId = getBeadIdFromArtifactType(
-              typeof data.artifactType === 'string' ? data.artifactType : snapshot?.artifactType,
+              typeof data.artifactType === 'string'
+                ? data.artifactType
+                : typeof artifact?.artifactType === 'string'
+                  ? artifact.artifactType
+                  : undefined,
             )
             if (beadId) {
               invalidateBeadDiffQuery(ticketId, beadId)
@@ -322,7 +350,9 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
             const artifactType = typeof data.artifactType === 'string'
               ? data.artifactType
-              : snapshot?.artifactType
+              : typeof artifact?.artifactType === 'string'
+                ? artifact.artifactType
+                : undefined
             if (artifactType?.startsWith('manual_qa_')) {
               invalidateManualQaQueries(ticketId)
             }

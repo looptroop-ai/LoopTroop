@@ -1,4 +1,4 @@
-import { beforeAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode, Ref } from 'react'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import { LogProvider } from '@/context/LogContext'
@@ -6,6 +6,8 @@ import { serverLogCache } from '@/context/logUtils'
 import { makeTicket } from '@/test/factories'
 import { renderWithProviders, createJsonResponse } from '@/test/renderHelpers'
 import { PhaseReviewView } from '../PhaseReviewView'
+
+const mockUseTicketArtifactBundle = vi.hoisted(() => vi.fn())
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({
@@ -29,7 +31,7 @@ vi.mock('@/hooks/useTicketArtifacts', async () => {
   const actual = await vi.importActual<typeof import('@/hooks/useTicketArtifacts')>('@/hooks/useTicketArtifacts')
   return {
     ...actual,
-    useTicketArtifacts: () => ({ artifacts: [], isLoading: false }),
+    useTicketArtifactBundle: (...args: unknown[]) => mockUseTicketArtifactBundle(...args),
   }
 })
 
@@ -65,6 +67,18 @@ beforeAll(() => {
   })
 })
 
+beforeEach(() => {
+  mockUseTicketArtifactBundle.mockReturnValue({
+    artifacts: [],
+    status: 'success',
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  })
+})
+
 afterEach(() => {
   localStorage.clear()
   serverLogCache.clear()
@@ -72,6 +86,41 @@ afterEach(() => {
 })
 
 describe('PhaseReviewView', () => {
+  it('loads a normally completed active attempt through an exact phase scope', async () => {
+    const phase = 'COUNCIL_VOTING_INTERVIEW'
+    const ticket = makeTicket({ status: 'DRAFTING_PRD' })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes(`/phases/${phase}/attempts`)) {
+        return createJsonResponse([{
+          ticketId: ticket.id,
+          phase,
+          attemptNumber: 1,
+          state: 'active',
+          archivedReason: null,
+          createdAt: '2026-08-21T10:00:00.000Z',
+          archivedAt: null,
+        }])
+      }
+      if (url.includes('/logs?')) return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <LogProvider ticketId={ticket.id} currentStatus={ticket.status}>
+        <PhaseReviewView phase={phase} ticket={ticket} />
+      </LogProvider>,
+    )
+
+    await waitFor(() => {
+      expect(mockUseTicketArtifactBundle).toHaveBeenCalledWith(ticket.id, expect.arrayContaining([
+        { phase, phaseAttempt: 1 },
+        { phase: 'COUNCIL_DELIBERATING' },
+      ]))
+    })
+  })
+
   it.each([
     'COUNCIL_DELIBERATING',
     'COUNCIL_VOTING_INTERVIEW',

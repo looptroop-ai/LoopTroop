@@ -3,7 +3,7 @@ import { Badge } from '@/components/ui/badge'
 import { CalendarDays, Loader2, Sparkles } from 'lucide-react'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
-import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
+import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
@@ -13,6 +13,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { TicketDescriptionTabs, type TicketDescriptionMode } from '@/components/ticket/TicketDescriptionTabs'
 import { CopyButton } from './RawTextDisplay'
 import { TicketDescriptionViewer } from '@/components/ticket/TicketDescriptionViewer'
+import { getArtifactSourcePhases } from './phaseArtifactTypes'
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'Very High', 2: 'High', 3: 'Normal', 4: 'Low', 5: 'Very Low' }
 
@@ -50,14 +51,18 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
   const logPhaseAttempt = attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
   const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
-  const artifactQueryOptions = archivedAttemptNumber != null
-    ? { phase, phaseAttempt: archivedAttemptNumber }
-    : isExecutionSetupDraft
-      ? { phase }
-      : undefined
-  const { artifacts: preloadedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticket.id, artifactQueryOptions)
+  const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
+    if (!selectedAttempt) return []
+    if (selectedAttempt.state === 'archived') {
+      return [{ phase, phaseAttempt: selectedAttempt.attemptNumber }]
+    }
+    return getArtifactSourcePhases(phase).map((sourcePhase) => sourcePhase === phase
+      ? { phase, phaseAttempt: selectedAttempt.attemptNumber }
+      : { phase: sourcePhase })
+  }, [phase, selectedAttempt])
+  const artifactState = useTicketArtifactBundle(ticket.id, artifactScopes)
 
-  if (isLoadingArtifacts && !isExecutionSetupDraft) {
+  if (artifactState.isLoading && !isExecutionSetupDraft) {
     return (
       <div className="h-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-2">
@@ -101,7 +106,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             ticketId={ticket.id}
             councilMemberCount={councilMemberCount}
             councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
-            preloadedArtifacts={preloadedArtifacts}
+            artifactState={artifactState}
           />
         )}
       </div>

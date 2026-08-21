@@ -2017,6 +2017,24 @@ export function getArtifactTargetPhases(phase: string): string[] {
   return phaseMap[phase] || [phase]
 }
 
+/** Every phase whose active artifacts are needed to render a complete phase review. */
+export function getArtifactSourcePhases(phase: string): string[] {
+  const councilDependencies: Record<string, string[]> = {
+    COUNCIL_VOTING_INTERVIEW: ['COUNCIL_DELIBERATING'],
+    COMPILING_INTERVIEW: ['COUNCIL_DELIBERATING', 'COUNCIL_VOTING_INTERVIEW'],
+    COUNCIL_VOTING_PRD: ['DRAFTING_PRD'],
+    REFINING_PRD: ['DRAFTING_PRD', 'COUNCIL_VOTING_PRD'],
+    COUNCIL_VOTING_BEADS: ['DRAFTING_BEADS'],
+    REFINING_BEADS: ['DRAFTING_BEADS', 'COUNCIL_VOTING_BEADS'],
+  }
+
+  return [...new Set([
+    ...getArtifactTargetPhases(phase),
+    ...(councilDependencies[phase] ?? []),
+    phase,
+  ])]
+}
+
 export function resolveStaticArtifact(
   artifactDef: ArtifactDef,
   phase: string,

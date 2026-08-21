@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { encode } from 'gpt-tokenizer'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { FileText, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { AlertTriangle, FileText, Loader2 } from 'lucide-react'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import { normalizeTicketArtifact, useTicketArtifacts, type DBartifact } from '@/hooks/useTicketArtifacts'
+import { useTicketArtifacts, type TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
+import { describeQueryError } from '@/lib/fetchError'
 import {
   buildCouncilMemberArtifacts,
   buildFullAnswerMemberArtifacts,
@@ -86,7 +88,7 @@ interface PhaseArtifactsPanelProps {
   councilMemberCount?: number
   councilMemberNames?: string[]
   prefixElement?: React.ReactNode
-  preloadedArtifacts?: DBartifact[]
+  artifactState?: TicketArtifactCollectionState
 }
 
 interface BeadCommitMetadata {
@@ -103,39 +105,14 @@ function normalizeBeadCommitMetadata(value: unknown): BeadCommitMetadata | null 
   return { id, title, priority }
 }
 
-export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, preloadedArtifacts }: PhaseArtifactsPanelProps) {
+export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, artifactState }: PhaseArtifactsPanelProps) {
   const supplementalArtifacts = useMemo(() => getSupplementalArtifacts(phase, isCompleted), [phase, isCompleted])
   const [viewingSelection, setViewingSelection] = useState<ViewingArtifactSelection | null>(null)
-  const [fallbackArtifacts, setFallbackArtifacts] = useState<DBartifact[]>([])
   const [beadCommitMetadata, setBeadCommitMetadata] = useState<BeadCommitMetadata[]>([])
-  const hasPreloadedArtifacts = preloadedArtifacts !== undefined
-  const { artifacts: cachedArtifacts, isLoading: isLoadingArtifacts } = useTicketArtifacts(ticketId, { skipFetch: hasPreloadedArtifacts })
-  const normalizedCachedArtifacts = useMemo(() => cachedArtifacts ?? [], [cachedArtifacts])
-
-  useEffect(() => {
-    if (!ticketId || hasPreloadedArtifacts || normalizedCachedArtifacts.length > 0) return
-
-    let cancelled = false
-    void fetch(`/api/tickets/${ticketId}/artifacts`)
-      .then(async (res) => {
-        if (!res.ok) return []
-        const payload = await res.json()
-        if (!Array.isArray(payload)) return []
-        return payload
-          .map((artifact) => normalizeTicketArtifact(artifact, ticketId))
-          .filter((artifact): artifact is DBartifact => artifact !== null)
-      })
-      .then((artifacts) => {
-        if (!cancelled) setFallbackArtifacts(artifacts)
-      })
-      .catch(() => {
-        if (!cancelled) setFallbackArtifacts([])
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [hasPreloadedArtifacts, normalizedCachedArtifacts.length, ticketId])
+  const internalArtifactState = useTicketArtifacts(artifactState ? undefined : ticketId)
+  const resolvedArtifactState = artifactState ?? internalArtifactState
+  const dbArtifacts = useMemo(() => resolvedArtifactState.artifacts ?? [], [resolvedArtifactState.artifacts])
+  const artifactErrorMessage = describeQueryError(resolvedArtifactState.error) ?? 'The artifact request failed.'
 
   useEffect(() => {
     if (viewingSelection?.kind !== 'supplemental' || viewingSelection.id !== 'bead-commits' || !ticketId) return
@@ -163,14 +140,6 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     [beadCommitMetadata],
   )
 
-  const dbArtifacts = useMemo(
-    () => (hasPreloadedArtifacts
-      ? (preloadedArtifacts ?? [])
-      : normalizedCachedArtifacts.length > 0
-        ? normalizedCachedArtifacts
-        : fallbackArtifacts),
-    [fallbackArtifacts, hasPreloadedArtifacts, normalizedCachedArtifacts, preloadedArtifacts],
-  )
   const reversedArtifacts = useMemo(() => [...dbArtifacts].reverse(), [dbArtifacts])
   const configuredMembers = useMemo(() => councilMemberNames ?? [], [councilMemberNames])
   const memberArtifacts = useMemo(
@@ -843,21 +812,40 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
           </DialogHeader>
           <div className="max-h-[60vh] min-w-0 max-w-full overflow-y-auto overflow-x-hidden">
             <div className="min-w-0 max-w-full overflow-x-hidden bg-muted/60 rounded-lg border border-border/30 p-4">
-              {isLoadingArtifacts ? (
+              {resolvedArtifactState.isLoading && resolvedArtifactState.artifacts === undefined ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  <span className="sr-only">Loading artifact</span>
+                </div>
+              ) : resolvedArtifactState.isError && resolvedArtifactState.artifacts === undefined ? (
+                <div role="alert" className="space-y-3 py-4 text-center">
+                  <AlertTriangle className="mx-auto h-5 w-5 text-destructive" />
+                  <p className="text-xs text-destructive">{artifactErrorMessage}</p>
+                  <Button size="sm" variant="outline" onClick={() => void resolvedArtifactState.refetch()}>
+                    Retry
+                  </Button>
                 </div>
               ) : (
-                <ErrorBoundary>
-                  <ArtifactContent
-                    artifactId={viewingArtifact?.id}
-                    content={viewingArtifact
-                      ? (viewingArtifact.content || `# ${viewingArtifact.label}\n\n${viewingArtifact.description}\n\nNo content available yet — artifact will be generated during this phase.`)
-                      : ''}
-                    phase={phase}
-                    reportContent={viewingArtifact?.reportContent}
-                  />
-                </ErrorBoundary>
+                <div className="space-y-3">
+                  {resolvedArtifactState.isError ? (
+                    <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs">
+                      <span>Showing previously loaded content. Refresh failed: {artifactErrorMessage}</span>
+                      <Button size="sm" variant="outline" onClick={() => void resolvedArtifactState.refetch()}>Retry</Button>
+                    </div>
+                  ) : null}
+                  <ErrorBoundary>
+                    <ArtifactContent
+                      artifactId={viewingArtifact?.id}
+                      content={viewingArtifact
+                        ? (viewingArtifact.content || `# ${viewingArtifact.label}\n\n${viewingArtifact.description}\n\n${isCompleted
+                          ? 'This artifact was not produced or is unavailable for this phase version.'
+                          : 'This artifact is not available yet.'}`)
+                        : ''}
+                      phase={phase}
+                      reportContent={viewingArtifact?.reportContent}
+                    />
+                  </ErrorBoundary>
+                </div>
               )}
             </div>
           </div>

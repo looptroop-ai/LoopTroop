@@ -1,7 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryClient } from '@/lib/queryClient'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { getTicketArtifactsQueryKey, useTicketArtifacts, type DBartifact } from '../useTicketArtifacts'
 
 vi.mock('@/lib/devApi', () => ({
   getApiUrl: (path: string, options?: { directInDevelopment?: boolean }) =>
@@ -177,6 +179,113 @@ describe('useSSE', () => {
       expect(MockEventSource.instances[0]!.url).toContain('http://frontend.test/api/stream')
       expect(MockEventSource.instances[0]!.url).not.toContain('http://localhost:3000')
     })
+  })
+
+  it('keeps loaded historical bodies and invalidates only artifact scopes affected by metadata events', async () => {
+    const ticketId = '1:T-42'
+    const historicalArtifact: DBartifact = {
+      id: 11,
+      ticketId,
+      phase: 'COUNCIL_VOTING_PRD',
+      phaseAttempt: 1,
+      artifactType: 'prd_votes',
+      filePath: null,
+      content: 'historical voting content',
+      createdAt: '2026-08-21T10:00:00.000Z',
+      updatedAt: '2026-08-21T10:00:00.000Z',
+    }
+    const broadKey = getTicketArtifactsQueryKey(ticketId)
+    const historicalKey = getTicketArtifactsQueryKey(ticketId, {
+      phase: historicalArtifact.phase,
+      phaseAttempt: historicalArtifact.phaseAttempt,
+    })
+    queryClient.setQueryData(broadKey, [historicalArtifact])
+    queryClient.setQueryData(historicalKey, [historicalArtifact])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('artifact_change', {
+        ticketId,
+        phase: 'CODING',
+        artifactType: 'bead_diff:bead-1',
+        artifact: {
+          id: 22,
+          ticketId,
+          phase: 'CODING',
+          phaseAttempt: 2,
+          artifactType: 'bead_diff:bead-1',
+          createdAt: '2026-08-21T11:00:00.000Z',
+          updatedAt: '2026-08-21T11:00:00.000Z',
+          available: true,
+        },
+      }, '1')
+    })
+
+    expect(queryClient.getQueryData(broadKey)).toEqual([historicalArtifact])
+    expect(queryClient.getQueryData(historicalKey)).toEqual([historicalArtifact])
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: broadKey, exact: true })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: getTicketArtifactsQueryKey(ticketId, { phase: 'CODING' }),
+      exact: true,
+    })
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: getTicketArtifactsQueryKey(ticketId, { phase: 'CODING', phaseAttempt: 2 }),
+      exact: true,
+    })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: historicalKey, exact: true })
+  })
+
+  it('refetches a mounted successful-empty phase cache when its artifact arrives', async () => {
+    const ticketId = '1:T-42'
+    const createdArtifact = {
+      id: 23,
+      ticketId,
+      phase: 'COUNCIL_VOTING_PRD',
+      phaseAttempt: 1,
+      artifactType: 'prd_votes',
+      filePath: null,
+      content: 'now available',
+      createdAt: '2026-08-21T12:00:00.000Z',
+      updatedAt: '2026-08-21T12:00:00.000Z',
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([createdArtifact]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    const { result } = renderHook(() => {
+      const artifacts = useTicketArtifacts(ticketId, { phase: 'COUNCIL_VOTING_PRD', phaseAttempt: 1 })
+      useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() })
+      return artifacts
+    }, { wrapper })
+
+    await waitFor(() => expect(result.current.artifacts).toEqual([]))
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('artifact_change', {
+        ticketId,
+        phase: createdArtifact.phase,
+        artifactType: createdArtifact.artifactType,
+        artifact: {
+          id: createdArtifact.id,
+          ticketId,
+          phase: createdArtifact.phase,
+          phaseAttempt: createdArtifact.phaseAttempt,
+          artifactType: createdArtifact.artifactType,
+          createdAt: createdArtifact.createdAt,
+          updatedAt: createdArtifact.updatedAt,
+          available: true,
+        },
+      }, '1')
+    })
+
+    await waitFor(() => expect(result.current.artifacts?.[0]?.content).toBe('now available'))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('refreshes interview data when a ticket enters interview approval', async () => {

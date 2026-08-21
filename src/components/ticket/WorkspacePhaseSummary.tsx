@@ -496,7 +496,8 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   const isLivePhase = ticket.status === phase
   const shouldTrackCoverageProgress = isLivePhase && isCoveragePhase(phase)
   const shouldTrackPhaseAttempt = isLivePhase && phase !== 'CODING' && !isCoveragePhase(phase)
-  const { artifacts } = useTicketArtifacts(ticket.id, { skipFetch: !shouldTrackCoverageProgress })
+  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id, { skipFetch: !shouldTrackCoverageProgress })
+  const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
   const { data: phaseAttempts = [] } = useTicketPhaseAttempts(
     shouldTrackPhaseAttempt ? ticket.id : undefined,
     shouldTrackPhaseAttempt ? phase : undefined,

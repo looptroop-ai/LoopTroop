@@ -170,7 +170,8 @@ function BeadsApprovalPane({
     [ticket.lockedCouncilMembers],
   )
   const councilMemberCount = councilMemberNames.length || 3
-  const { artifacts } = useTicketArtifacts(ticket.id)
+  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)
   const { data: fetchedBeads, isLoading } = useQuery({
@@ -622,10 +623,11 @@ function ReadOnlyApprovalAttemptView({
   )
   const councilMemberCount = councilMemberNames.length || 3
   const archivedAttempt = typeof phaseAttempt === 'number'
-  const { artifacts } = useTicketArtifacts(ticket.id, {
+  const artifactState = useTicketArtifacts(ticket.id, {
     phase,
     ...(archivedAttempt ? { phaseAttempt } : {}),
   })
+  const artifacts = useMemo(() => artifactState.artifacts ?? [], [artifactState.artifacts])
   const snapshotArtifactType = `approval_snapshot:${artifactType}`
   const snapshotRaw = useMemo(() => {
     const snapshotArtifact = artifacts.find((artifact) => artifact.artifactType === snapshotArtifactType)
@@ -699,7 +701,7 @@ function ReadOnlyApprovalAttemptView({
           ticketId={ticket.id}
           councilMemberCount={councilMemberCount}
           councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
-          preloadedArtifacts={artifacts}
+          artifactState={artifactState}
         />
       </div>
 

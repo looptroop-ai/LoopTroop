@@ -41,10 +41,27 @@ describe('probing external commands on Windows', () => {
 
     expect(result).toEqual({ kind: 'ok', output: '11.12.1\n' })
     expect(execFileSync).toHaveBeenCalledWith(
-      'npm',
-      ['--version'],
+      'npm --version',
+      [],
       expect.objectContaining({ shell: true }),
     )
+  })
+
+  /**
+   * The command line is joined here rather than handed to Node as an array.
+   * Node joins the two itself and, since DEP0190 (Node 22), prints a
+   * DeprecationWarning for doing so — which arrived on stderr above the report
+   * on every Windows `doctor` run, making the diagnostic command look like the
+   * thing with the problem. The joined line is byte-for-byte what Node
+   * would have built, and safe for the same reason it always was: every
+   * argument here is a literal.
+   */
+  it('passes no argument array under the shell, so Node does not warn', () => {
+    withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 5_000))
+
+    const [file, args] = execFileSync.mock.calls[0] as [string, string[]]
+    expect(file).toBe('gh auth status')
+    expect(args).toEqual([])
   })
 
   it('spawns an absolute path directly, even on Windows', () => {

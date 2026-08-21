@@ -494,7 +494,11 @@ function quoteForShell(value: string): string {
 }
 
 function spawnViaShell(command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) {
-  return spawnSync(quoteForShell(command), args.map(quoteForShell), {
+  // Under the shell the quoted parts are joined here rather than handed over as
+  // an array. Node joins them the same way and, since DEP0190 (Node 22), warns
+  // about doing so — noise on top of whatever the command itself printed.
+  const quoted = [quoteForShell(command), ...args.map(quoteForShell)]
+  return spawnSync(isWindows ? quoted.join(' ') : command, isWindows ? [] : args, {
     ...options,
     shell: isWindows,
   })

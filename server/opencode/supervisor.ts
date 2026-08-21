@@ -190,7 +190,12 @@ export class OpenCodeSupervisor {
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
-    const child = spawnProcess('opencode', ['serve', ...logArgs, '--hostname', host, '--port', port], {
+    const useShell = process.platform === 'win32'
+    const argv = ['serve', ...logArgs, '--hostname', host, '--port', port]
+    // Under the Windows shell the command line is joined here rather than passed
+    // as an array: Node would join it identically and, since DEP0190 (Node 22),
+    // print a deprecation warning about doing so on top of our own output.
+    const child = spawnProcess(useShell ? ['opencode', ...argv].join(' ') : 'opencode', useShell ? [] : argv, {
       stdio: ['ignore', 'inherit', 'inherit'],
       // Its own group, so terminating the daemon can take the whole tree down
       // rather than orphaning children of OpenCode.
@@ -206,7 +211,7 @@ export class OpenCodeSupervisor {
       // cmd.exe re-parses the command line, which is safe here only because both
       // interpolations come from a parsed URL: a hostname cannot contain a space
       // or a shell metacharacter, and a port is digits.
-      shell: process.platform === 'win32',
+      shell: useShell,
     })
 
     const spawnFailed = new Promise<never>((_, reject) => {

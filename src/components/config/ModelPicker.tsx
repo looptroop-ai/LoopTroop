@@ -55,11 +55,13 @@ function ModelRow({ model, selected, disabled, onSelect }: {
   onSelect: () => void
 }) {
   const cost = costLabel(model.costInput)
+  const showFullId = model.name !== model.fullId
   return (
     <button
       type="button"
       onClick={onSelect}
       disabled={disabled}
+      title={showFullId ? `${model.name} (${model.fullId})` : model.name}
       className={cn(
         'w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors',
         'hover:bg-accent focus:bg-accent outline-none',
@@ -69,9 +71,14 @@ function ModelRow({ model, selected, disabled, onSelect }: {
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className={cn('text-sm font-medium truncate', selected && 'text-primary')}>
+          <span className={cn('text-sm font-medium truncate min-w-0', selected && 'text-primary')}>
             {model.name}
           </span>
+          {showFullId && (
+            <span className="font-mono text-xs text-muted-foreground truncate shrink-0 max-w-[min(100%,18rem)]">
+              ({model.fullId})
+            </span>
+          )}
           {selected && (
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground font-medium shrink-0">
               selected
@@ -279,6 +286,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
       m.providerName.toLowerCase().includes(q) ||
       m.providerID.toLowerCase().includes(q) ||
       m.id.toLowerCase().includes(q) ||
+      m.fullId.toLowerCase().includes(q) ||
       m.family.toLowerCase().includes(q)
     )
   }, [models, query, isShowingOnlyFree])

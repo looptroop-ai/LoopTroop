@@ -125,7 +125,12 @@ describe('OpenCode supervision', () => {
    */
   it('launches OpenCode through a shell on Windows and directly elsewhere', async () => {
     const original = Object.getOwnPropertyDescriptor(process, 'platform')
-    const seen: { command: unknown; options: { shell?: boolean; detached?: boolean } }[] = []
+    const seen: {
+      command: unknown
+      args: unknown
+      port: string
+      options: { shell?: boolean; detached?: boolean }
+    }[] = []
 
     for (const platform of ['win32', 'linux'] as const) {
       Object.defineProperty(process, 'platform', { value: platform, configurable: true })
@@ -134,11 +139,15 @@ describe('OpenCode supervision', () => {
         // Per iteration: a probe that counted every spawn so far would report
         // the second platform's server as already running and never launch it.
         let spawned = false
+        // Each iteration gets its own port, so the expected command line has to
+        // be built from the URL this supervisor was actually given.
+        const baseUrl = makeBaseUrl()
+        const port = new URL(baseUrl).port
         const supervisor = new OpenCodeSupervisor({
-          baseUrl: makeBaseUrl(),
-          spawnProcess: ((command: unknown, _args: unknown, options: { shell?: boolean }) => {
+          baseUrl,
+          spawnProcess: ((command: unknown, args: unknown, options: { shell?: boolean }) => {
             spawned = true
-            seen.push({ command, options })
+            seen.push({ command, args, port, options })
             return child as never
           }) as never,
           probe: async () => spawned,
@@ -149,10 +158,17 @@ describe('OpenCode supervision', () => {
       }
     }
 
-    expect(seen[0]?.command).toBe('opencode')
+    // Under the shell the command line is joined here rather than handed over as
+    // a separate array: Node joins the two identically and, since DEP0190, warns
+    // about doing so — a security-flavoured notice about our own internals.
+    expect(seen[0]?.command).toBe(`opencode serve --hostname 127.0.0.1 --port ${seen[0]?.port}`)
+    expect(seen[0]?.args).toEqual([])
     expect(seen[0]?.options.shell).toBe(true)
     // Windows has no process groups to lead, and the shell does not change that.
     expect(seen[0]?.options.detached).toBe(false)
+    // Off the shell there is nothing to join, so the argument array stays.
+    expect(seen[1]?.command).toBe('opencode')
+    expect(seen[1]?.args).toEqual(['serve', '--hostname', '127.0.0.1', '--port', seen[1]?.port])
     expect(seen[1]?.options.shell).toBe(false)
     expect(seen[1]?.options.detached).toBe(true)
   })

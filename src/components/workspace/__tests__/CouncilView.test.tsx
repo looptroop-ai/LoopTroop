@@ -7,7 +7,7 @@ const mockUseTicketArtifacts = vi.fn()
 const mockUseTicketPhaseAttempts = vi.fn()
 
 vi.mock('@/hooks/useTicketArtifacts', () => ({
-  useTicketArtifacts: (...args: unknown[]) => mockUseTicketArtifacts(...args),
+  useTicketArtifactBundle: (...args: unknown[]) => mockUseTicketArtifacts(...args),
 }))
 
 vi.mock('@/hooks/useTicketPhaseAttempts', () => ({
@@ -20,16 +20,16 @@ vi.mock('../PhaseArtifactsPanel', () => ({
     ticketId,
     councilMemberCount,
     councilMemberNames,
-    preloadedArtifacts,
+    artifactState,
   }: {
     phase: string
     ticketId?: string
     councilMemberCount?: number
     councilMemberNames?: string[]
-    preloadedArtifacts?: Array<{ content?: string | null }>
+    artifactState?: { artifacts?: Array<{ content?: string | null }> }
   }) => (
     <div data-testid="phase-artifacts-panel">
-      {phase}:{ticketId}:{councilMemberCount ?? 0}:{councilMemberNames?.join(',') ?? ''}:{preloadedArtifacts?.[0]?.content ?? ''}
+      {phase}:{ticketId}:{councilMemberCount ?? 0}:{councilMemberNames?.join(',') ?? ''}:{artifactState?.artifacts?.[0]?.content ?? ''}
     </div>
   ),
 }))
@@ -100,8 +100,8 @@ describe('CouncilView', () => {
         },
       ],
     })
-    mockUseTicketArtifacts.mockImplementation((_ticketId: string, options?: { phaseAttempt?: number }) => ({
-      artifacts: options?.phaseAttempt === 1
+    mockUseTicketArtifacts.mockImplementation((_ticketId: string, scopes?: Array<{ phaseAttempt?: number }>) => ({
+      artifacts: scopes?.some((scope) => scope.phaseAttempt === 1)
         ? [{ content: 'archived-prd-draft' }]
         : [{ content: 'current-prd-draft' }],
       isLoading: false,
@@ -119,10 +119,10 @@ describe('CouncilView', () => {
 
     fireEvent.change(selector, { target: { value: '1' } })
 
-    expect(mockUseTicketArtifacts).toHaveBeenCalledWith(TEST.ticketId, {
+    expect(mockUseTicketArtifacts).toHaveBeenCalledWith(TEST.ticketId, [{
       phase: 'DRAFTING_PRD',
       phaseAttempt: 1,
-    })
+    }])
     expect(screen.getByTestId('phase-artifacts-panel')).toHaveTextContent('archived-prd-draft')
     expect(screen.getByTestId('phase-log-section')).toHaveTextContent('DRAFTING_PRD:1')
     expect(screen.getByTestId('phase-log-section')).toHaveAttribute('data-log-mode', 'snapshot')

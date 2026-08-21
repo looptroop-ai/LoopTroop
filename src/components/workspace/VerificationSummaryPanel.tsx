@@ -42,7 +42,8 @@ function shortSha(sha: string | null | undefined): string {
 }
 
 export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isPending }: VerificationSummaryPanelProps) {
-  const { artifacts } = useTicketArtifacts(ticket.id)
+  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
   const targetPhases = useMemo(() => getArtifactTargetPhases('WAITING_PR_REVIEW'), [])
 
   const integrationReport = useMemo(() => {

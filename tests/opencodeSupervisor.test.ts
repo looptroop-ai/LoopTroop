@@ -196,12 +196,14 @@ describe('OpenCode supervision', () => {
     const baseUrl = makeBaseUrl()
     const child = makeChild()
     let spawned = false
+    let command = ''
     let args: string[] = []
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
       printLogs: true,
-      spawnProcess: ((_command: string, commandArgs: string[]) => {
+      spawnProcess: ((spawnCommand: string, commandArgs: string[]) => {
+        command = spawnCommand
         args = commandArgs
         spawned = true
         return child as never
@@ -211,7 +213,15 @@ describe('OpenCode supervision', () => {
 
     await supervisor.start()
 
-    expect(args).toEqual([
+    // This test is about the log flags, not about how the launch is spawned,
+    // and unlike its neighbour it does not pin `process.platform` -- so on a
+    // real Windows runner it sees the shell form, where the arguments are
+    // joined into the command line and the array is empty. Asserting the
+    // effective command line covers the contract on either platform.
+    const argv = args.length > 0 ? [command, ...args] : command.split(' ')
+
+    expect(argv).toEqual([
+      'opencode',
       'serve',
       '--print-logs',
       '--log-level',

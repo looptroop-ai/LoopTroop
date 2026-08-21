@@ -84,7 +84,7 @@ describe('projectRouter project cleanup', () => {
   it('persists concrete project Manual QA choices', () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({ folderPath: repoDir, name: 'QA project', shortname: 'MQA' })
-    expect(project.manualQaOverride).toBe(false)
+    expect(project.manualQaOverride).toBe(true)
     expect(updateProject(project.id, { manualQaOverride: true })?.manualQaOverride).toBe(true)
     expect(updateProject(project.id, { manualQaOverride: false })?.manualQaOverride).toBe(false)
   })

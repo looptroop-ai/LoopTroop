@@ -1,3 +1,4 @@
+import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { cn } from '@/lib/utils'
 import type { ManualQaOverride } from '@/lib/manualQaSetting'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -32,7 +33,7 @@ export function ManualQaSetting({
   inheritedEnabled,
   compact = false,
 }: ManualQaSettingProps) {
-  const selectedValue = value ?? inheritedEnabled ?? false
+  const selectedValue = value ?? inheritedEnabled ?? PROFILE_DEFAULTS.manualQaEnabled
 
   return (
     <div>

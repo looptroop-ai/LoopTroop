@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { TicketDescriptionViewer } from './TicketDescriptionViewer'
 import { TicketDescriptionTabs, type TicketDescriptionMode } from './TicketDescriptionTabs'
+import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { useProfile } from '@/hooks/useProfile'
@@ -42,7 +43,7 @@ export function TicketForm({ onClose }: TicketFormProps) {
   const effectiveManualQa = resolveManualQaSettingLabel(
     manualQaOverride,
     selectedProject?.manualQaOverride ?? null,
-    profile?.manualQaEnabled ?? false,
+    profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   )
   const createInput = () => ({
     projectId: effectiveProjectId as number,

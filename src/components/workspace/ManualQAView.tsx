@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
 import { CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
 import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePhaseLogSection'
+import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel } from '@/lib/manualQaSetting'
 import { buildCanonicalManualQaDraft, buildDefaultManualQaImprovementContext, composeManualQaImprovementPreview, validateManualQaItem, validateManualQaMergeGroups } from '@/lib/manualQaDraft'
@@ -226,7 +227,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   const defaultImprovementManualQaEnabled = resolveManualQaSettingLabel(
     null,
     selectedProject?.manualQaOverride ?? null,
-    profile?.manualQaEnabled ?? false,
+    profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   ).enabled
   const selectedVersionEntry = artifactVersions.find((entry) => entry.version === version)
 

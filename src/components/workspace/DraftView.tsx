@@ -14,6 +14,7 @@ import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePh
 import { TicketDescriptionTabs, type TicketDescriptionMode } from '@/components/ticket/TicketDescriptionTabs'
 import { CopyButton } from './RawTextDisplay'
 import { TicketDescriptionViewer } from '@/components/ticket/TicketDescriptionViewer'
+import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
@@ -120,7 +121,7 @@ export function DraftView({ ticket }: DraftViewProps) {
   const effectiveManualQa = resolveManualQaSettingLabel(
     manualQaOverride,
     project?.manualQaOverride ?? null,
-    profile?.manualQaEnabled ?? false,
+    profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   )
 
   // Sync draft from prop — use useEffect to avoid setting state during render

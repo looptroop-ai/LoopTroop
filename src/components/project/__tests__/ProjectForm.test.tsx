@@ -241,15 +241,15 @@ describe('ProjectForm', () => {
       fireEvent.change(screen.getByLabelText(/Short Name/i), { target: { value: 'DEMO' } })
       fireEvent.change(screen.getByLabelText(/Project Folder/i), { target: { value: '/work/demo' } })
       fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-      return await screen.findByRole('radio', { name: /Repository \.gitignore/ })
+      return await screen.findByRole('radio', { name: 'Repository' })
     }
 
     it('offers all three destinations inside Advanced once the folder is a repository, defaulting to this clone', async () => {
       const repoOption = await fillInValidProject()
 
       expect(repoOption).not.toBeChecked()
-      expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
-      expect(screen.getByRole('radio', { name: /Do not change any file/ })).not.toBeChecked()
+      expect(screen.getByRole('radio', { name: 'This clone' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Nowhere' })).not.toBeChecked()
       const helpLink = screen.getByRole('link', { name: 'Open documentation for project folder-ignore policy' })
       expect(helpLink).toHaveAttribute(
         'href',
@@ -268,7 +268,7 @@ describe('ProjectForm', () => {
     it('submits the destination the user picked', async () => {
       await fillInValidProject()
 
-      fireEvent.click(screen.getByRole('radio', { name: /This clone only/ }))
+      fireEvent.click(screen.getByRole('radio', { name: 'This clone' }))
       fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
 
       expect(mockProjectMutations.create.mutate).toHaveBeenCalledWith(
@@ -280,7 +280,7 @@ describe('ProjectForm', () => {
     it('warns about what skipping means, without blocking it', async () => {
       await fillInValidProject()
 
-      fireEvent.click(screen.getByRole('radio', { name: /Do not change any file/ }))
+      fireEvent.click(screen.getByRole('radio', { name: 'Nowhere' }))
 
       expect(screen.getByText(/Git will see LoopTroop's runtime files as changes to commit/)).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
@@ -297,7 +297,7 @@ describe('ProjectForm', () => {
       render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
 
       // Nothing can be written until there is a repository to write it into.
-      expect(screen.queryByRole('radio', { name: /Repository \.gitignore/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole('radio', { name: 'Repository' })).not.toBeInTheDocument()
     })
   })
 
@@ -334,8 +334,8 @@ describe('ProjectForm', () => {
     expect(screen.getByText('/home/liviu/LoopTroop/.looptroop')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
-    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
-    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: 'This clone' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'This clone' })).toBeDisabled()
     expect(screen.getByText(/Saved when this project was attached/)).toBeInTheDocument()
 
     fireEvent.focus(screen.getByRole('button', { name: 'State folder info' }))
@@ -378,7 +378,7 @@ describe('ProjectForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('radio', { name: /Do not change any file/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Nowhere' })).toBeChecked()
     expect(screen.getByText('7 tickets and all workflow/artifact data')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restore Project' }))

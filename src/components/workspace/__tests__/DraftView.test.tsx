@@ -133,7 +133,7 @@ describe('DraftView', () => {
     expect(advancedButton).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('Manual QA checkpoint')).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Disabled' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open documentation for ticket Manual QA checkpoint' })).toHaveAttribute(
       'href',

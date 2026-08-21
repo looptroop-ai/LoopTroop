@@ -86,7 +86,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     toolInputMaxChars: profile?.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
     toolOutputMaxChars: profile?.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
     toolErrorMaxChars: profile?.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-    manualQaEnabled: profile?.manualQaEnabled ?? false,
+    manualQaEnabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
     gitHookPolicy: profile?.gitHookPolicy ?? 'validate_advisory',
     ignoreMode: profile?.ignoreMode ?? DEFAULT_IGNORE_MODE,
   })
@@ -143,7 +143,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolInputMaxChars: profile.toolInputMaxChars ?? PROFILE_DEFAULTS.toolInputMaxChars,
       toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
-      manualQaEnabled: profile.manualQaEnabled ?? false,
+      manualQaEnabled: profile.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
       gitHookPolicy: profile.gitHookPolicy ?? 'validate_advisory',
       ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })

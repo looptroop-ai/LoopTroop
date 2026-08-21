@@ -10,6 +10,7 @@ import { FolderPicker } from '@/components/project/FolderPicker'
 import { EmojiPickerSection, ColorPickerSection } from './AppearancePickers'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { DeleteWorktreesDialog } from './DeleteWorktreesDialog'
+import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { PROJECT_GIT_CHECK_DEBOUNCE_MS, SECONDS_PER_HOUR, SECONDS_PER_DAY } from '@/lib/constants'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
@@ -77,7 +78,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [icon, setIcon] = useState(project?.icon ?? '📦')
   const [color, setColor] = useState(project?.color ?? '#3b82f6')
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(
-    project?.manualQaOverride ?? profile?.manualQaEnabled ?? false,
+    project?.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   )
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
     normalizeGitHookPolicySetting(project?.gitHookPolicy)
@@ -145,7 +146,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
             setIcon(data.existingProject.icon ?? '📁')
             setColor(data.existingProject.color ?? '#3b82f6')
             if (data.existingProject.manualQaOverride !== undefined) {
-              setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? false)
+              setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
             }
             if (data.existingProject.gitHookPolicy !== undefined) {
               setGitHookPolicy(
@@ -205,7 +206,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         color,
         gitHookPolicy,
         ignoreMode,
-        manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? false,
+        manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
         ...(restoreMode ? { existingStateAction } : {}),
       },
       {
@@ -234,7 +235,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           icon,
           color,
           gitHookPolicy,
-          manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? false,
+          manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
         },
         {
           onSuccess: () => {
@@ -417,7 +418,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     idPrefix="project-manual-qa"
                     value={manualQaOverride}
                     onChange={(value) => setManualQaOverride(value ?? false)}
-                    inheritedEnabled={profile?.manualQaEnabled ?? false}
+                    inheritedEnabled={profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled}
                     compact
                   />
                 </div>

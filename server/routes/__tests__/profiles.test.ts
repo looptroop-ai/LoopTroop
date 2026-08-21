@@ -47,7 +47,7 @@ describe('profileRouter numeric validation', () => {
 
     expect(response.status).toBe(201)
     await expect(response.json()).resolves.toMatchObject({
-      manualQaEnabled: false,
+      manualQaEnabled: true,
       ignoreMode: 'local',
       maxPrdCoveragePasses: 2,
       maxBeadsCoveragePasses: 20,
@@ -85,7 +85,7 @@ describe('profileRouter numeric validation', () => {
     expect(stored?.structuredRetryCount).toBe(1)
     expect(stored?.gitHookPolicy).toBe('validate_advisory')
     expect(stored?.ignoreMode).toBe('local')
-    expect(stored?.manualQaEnabled).toBe(false)
+    expect(stored?.manualQaEnabled).toBe(true)
     expect(stored?.opencodeRetryLimit).toBe(10)
     expect(stored?.opencodeRetryDelay).toBe(60_000)
   })

@@ -11,10 +11,14 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Summary
 - Historical artifacts remain available while later phases are busy: live artifact notifications no longer blank completed content, and failed loads now explain themselves and offer a retry.
+- Manual QA is now enabled by default — new profiles, projects, and tickets start with the verification checkpoint turned on.
 - The board and the ticket view now say when they could not reach the server, instead of showing "loading…" forever — an unreachable backend no longer looks like a slow one, or like your tickets were deleted.
 - The dev stack can serve the built frontend bundle instead of the dev server, which makes running LoopTroop over a tunnel or a remote link dramatically faster.
 - A backend that dies during `npm run dev` now takes the dev stack down with it, instead of leaving a frontend serving a dashboard whose every request fails.
 - The folder-ignore policy now looks like every other **Advanced** option: one row, one selector, with each choice explained on hover.
+
+### Changed
+- Manual QA is now enabled by default. The profile default (`PROFILE_DEFAULTS.manualQaEnabled`) flips to `true`, new database profiles seed the enabled value, and every place that fell back to "disabled" when no explicit choice existed — profile setup, project creation, ticket creation, and the draft ticket view — now falls back to the profile default. Existing profiles, projects, and tickets keep whatever they had set; only unset values change. Tickets already in flight are unaffected because the Manual QA route is locked when the ticket starts.
 
 ### Added
 - Added `LOOPTROOP_DEV_FRONTEND=preview`, which makes `npm run dev` build the dashboard once and serve the bundle rather than starting the frontend dev server. The dev server sends every source file as its own request — over 300 source modules before dependencies — and over a tunnel each one pays the round trip; the built bundle is a few dozen assets. Hot reload is the trade, so code changes need a restart. Everything else is unchanged: same port, same backend, same proxy. An unrecognised value warns and falls back to the dev server rather than silently serving the slow path to someone who asked for the fast one.

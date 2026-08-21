@@ -166,9 +166,17 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
   // suite probes `process.execPath` with an inline script, and cmd read the `>`
   // of an arrow function as a redirection.
   const needsShell = process.platform === 'win32' && !/[\\/]/.test(command)
+  // Under a shell, the command line is joined here rather than handed over as an
+  // array. Node concatenates the two itself and, since DEP0190 (Node 22), prints
+  // a deprecation warning about doing so — which landed at the top of every
+  // `doctor` run on Windows, above the report it was asked for. Joining the
+  // literals ourselves is the same command line without the warning; it is safe
+  // for exactly the reason above, that nothing here comes from user input.
+  const file = needsShell ? [command, ...args].join(' ') : command
+  const fileArgs = needsShell ? [] : args
   const started = Date.now()
   try {
-    const output = execFileSync(command, args, {
+    const output = execFileSync(file, fileArgs, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: timeoutMs,

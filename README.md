@@ -71,17 +71,6 @@ looptroop open
 `open` starts LoopTroop in the background if it is not already running. Use
 `looptroop start` if you want the service without a browser.
 
-If no browser opens — over SSH, in WSL, in a fresh VM, or on a machine with none
-registered for `http` — `open` prints a sign-in link to paste instead of leaving
-you on a signed-out page. `looptroop open --print-url` asks for that link
-directly.
-
-Both commands point to `looptroop logs --follow` when they start the daemon, so
-you can stream its startup and runtime output. Add `--opencode-logs=all` to
-`looptroop open` or `looptroop start` to include full DEBUG output from an
-OpenCode server LoopTroop starts; an already-running or external OpenCode server
-keeps its own logging configuration.
-
 Then configure your settings and models (from providers already added in
 OpenCode), attach a local repository with a GitHub origin, create a ticket, and
 start it.

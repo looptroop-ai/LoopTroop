@@ -318,7 +318,7 @@ describe('ProfileSetup', () => {
       'href',
       `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#looptroop-folder-ignore-policy`,
     )
-    expect(screen.getByRole('radio', { name: /This clone only/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'This clone' })).toBeChecked()
 
     const mainImplementerLink = screen.getByRole('link', { name: 'Open documentation for Main Implementer Model' })
     expect(mainImplementerLink).toHaveAttribute('href', `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#main-implementer-model`)
@@ -380,7 +380,7 @@ describe('ProfileSetup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Enabled' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Observe' }))
-    fireEvent.click(screen.getByRole('radio', { name: /Repository \.gitignore/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Repository' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(

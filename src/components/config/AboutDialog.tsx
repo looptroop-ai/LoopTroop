@@ -36,10 +36,6 @@ export function AboutDialog() {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-xl border border-border/60 bg-muted/30 p-3.5 text-sm text-muted-foreground leading-relaxed">
-        LoopTroop stores application data centrally and keeps project-specific state inside each attached repository.
-      </div>
-
       <Card className="rounded-xl border border-border/70 bg-card shadow-2xs">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2.5 text-base font-semibold text-foreground">
@@ -199,6 +195,9 @@ export function AboutDialog() {
               The exact repository path is shown in Project Details.
             </p>
           </div>
+          <p className="border-t border-border/40 pt-3 text-xs leading-relaxed text-muted-foreground">
+            LoopTroop stores application data centrally and keeps project-specific state inside each attached repository.
+          </p>
         </CardContent>
       </Card>
     </div>

@@ -160,7 +160,8 @@ export function PrdApprovalPane({
     },
     staleTime: QUERY_STALE_TIME_5M,
   })
-  const { artifacts } = useTicketArtifacts(ticket.id)
+  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   const rawContent = fetchedPrd?.content ?? ''
   const currentContentSha256 = fetchedPrd?.contentSha256 ?? null

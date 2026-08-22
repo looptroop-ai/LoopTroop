@@ -98,6 +98,58 @@ describe.concurrent('parseYamlOrJsonCandidate', () => {
     })
   })
 
+  it('preserves colon-containing scalar list items instead of turning them into mappings', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'values:',
+      '  - style:main',
+      '  - package:version',
+      '  - https://example.test/path',
+      '  - C:\\temp\\file.txt',
+    ].join('\n'), { repairWarnings }) as { values: string[] }
+
+    expect(parsed.values).toEqual([
+      'style:main',
+      'package:version',
+      'https://example.test/path',
+      'C:\\temp\\file.txt',
+    ])
+    expect(repairWarnings).not.toContain('Repaired YAML mapping keys missing a space after colon before parsing.')
+  })
+
+  it('repairs missing list-item mapping separators when an indented child proves the structure', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'items:',
+      '  - id:Q01',
+      '    title: Example item',
+    ].join('\n'), { repairWarnings }) as { items: Array<{ id: string; title: string }> }
+
+    expect(parsed.items).toEqual([{ id: 'Q01', title: 'Example item' }])
+    expect(repairWarnings).toContain('Repaired YAML mapping keys missing a space after colon before parsing.')
+  })
+
+  it('keeps process command arguments containing colons as strings', () => {
+    const repairWarnings: string[] = []
+    const parsed = parseYamlOrJsonCandidate([
+      'verification:',
+      '  required_commands:',
+      '    - mode: process',
+      '      program: npm',
+      '      args:',
+      '        - run',
+      '        - style:main',
+      '        - test:doc',
+      '      cwd: .',
+      '      env: {}',
+    ].join('\n'), { repairWarnings }) as {
+      verification: { required_commands: Array<{ args: unknown[] }> }
+    }
+
+    expect(parsed.verification.required_commands[0]?.args).toEqual(['run', 'style:main', 'test:doc'])
+    expect(repairWarnings).not.toContain('Repaired YAML mapping keys missing a space after colon before parsing.')
+  })
+
   it('folds wrapped colon-containing list prose through the shared parser', () => {
     const repairWarnings: string[] = []
 

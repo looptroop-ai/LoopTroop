@@ -173,6 +173,19 @@ describe('parser fix interventions', () => {
     expectIntervention(i, { code: 'parser_plain_scalar_colon', stage: 'parse', category: 'parser_fix' })
   })
 
+  it('maps context-safe mapping separator repairs with exact formatting details', () => {
+    const i = deriveOne('Repaired YAML mapping keys missing a space after colon before parsing.')
+    expectIntervention(i, { code: 'parser_mapping_key_colon_space', stage: 'parse', category: 'parser_fix' })
+    expect(i.rule).toEqual({ id: 'parser_mapping_key_colon_space', label: 'YAML Mapping Separator' })
+    expect(i.exactCorrection).toBe('Inserted the missing space after a YAML mapping key colon without changing the key or value text.')
+    expect(i.examples).toEqual([{
+      scope: 'YAML mapping entry',
+      before: 'key:value',
+      after: 'key: value',
+      note: 'Only a missing separator was corrected; scalar list values containing colons were preserved.',
+    }])
+  })
+
   it('maps wrapped colon-containing list scalar repairs', () => {
     const i = deriveOne('Folded wrapped YAML list scalar text containing colon-space before reparsing.')
     expectIntervention(i, { code: 'parser_plain_scalar_colon', stage: 'parse', category: 'parser_fix' })

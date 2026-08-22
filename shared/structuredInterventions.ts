@@ -123,6 +123,7 @@ function buildDefaultRule(code: string): StructuredInterventionRule {
     parser_indentation: 'YAML Indentation Repair',
     parser_inline_yaml: 'Inline YAML Normalize',
     parser_list_dash: 'YAML List Dash Repair',
+    parser_mapping_key_colon_space: 'YAML Mapping Separator',
     parser_malformed_yaml: 'Malformed YAML Recovery',
     parser_markdown_fence: 'Markdown Fence Unwrap',
     parser_quoted_scalar: 'Quoted Scalar Repair',
@@ -465,6 +466,19 @@ function buildExactInterventionDetails(
       exactCorrection: lineMatch
         ? `Fixed the malformed YAML list dash at line ${lineMatch[1]}.`
         : 'Fixed a malformed YAML list-item dash.',
+    }
+  }
+
+  if (code === 'parser_mapping_key_colon_space') {
+    const example = buildBeforeAfterExample(
+      'YAML mapping entry',
+      'key:value',
+      'key: value',
+      'Only a missing separator was corrected; scalar list values containing colons were preserved.',
+    )
+    return {
+      exactCorrection: 'Inserted the missing space after a YAML mapping key colon without changing the key or value text.',
+      ...(example ? { examples: [example] } : {}),
     }
   }
 
@@ -1068,6 +1082,18 @@ function deriveInterventionFromWarning(warning: string): StructuredIntervention 
       summary: 'A structured YAML list entry used a bare scalar where the item object should have started with its primary key.',
       why: 'YAML cannot attach nested object fields to a scalar list item, so the generated list entry fails strict parsing.',
       how: 'LoopTroop moved the existing bare scalar text into the configured primary key for that list and reparsed the payload.',
+    })
+  }
+
+  if (/yaml mapping keys missing a space after colon/i.test(normalized)) {
+    return buildIntervention(warning, {
+      code: 'parser_mapping_key_colon_space',
+      stage: 'parse',
+      category: 'parser_fix',
+      title: 'Repaired a YAML mapping separator',
+      summary: 'A YAML mapping key was missing the space after its colon, but the surrounding structure proved it was a mapping entry.',
+      why: 'Without the separator, YAML can read an intended mapping entry as one plain text value. The same-looking text can also be a legitimate scalar, so standalone list values are left unchanged unless structure proves the mapping meaning.',
+      how: 'LoopTroop inserted only the missing separator and kept the original key and value text unchanged before reparsing the payload.',
     })
   }
 

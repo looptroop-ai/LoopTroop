@@ -1543,6 +1543,41 @@ describe.concurrent('structured output normalization', () => {
     ])
   })
 
+  it('preserves colon-containing structured command arguments as strings', () => {
+    const interviewContent = buildInterviewContent(TICKET_ID)
+    const prdContent = buildStandardPrdYaml({
+      ticketId: TICKET_ID,
+      storyVerificationCommands: ['placeholder'],
+    }).replace(
+      '          required_commands:\n            - "placeholder"',
+      [
+        '          required_commands:',
+        '            - mode: process',
+        '              program: npm',
+        '              args:',
+        '                - run',
+        '                - style:main',
+        '                - test:doc',
+        '              cwd: .',
+        '              env: {}',
+      ].join('\n'),
+    )
+
+    const result = normalizePrdYamlOutput(prdContent, {
+      ticketId: TICKET_ID,
+      interviewContent,
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.epics[0]?.user_stories[0]?.verification.required_commands[0]).toEqual(expect.objectContaining({
+      mode: 'process',
+      program: 'npm',
+      args: ['run', 'style:main', 'test:doc'],
+    }))
+    expect(result.repairWarnings).not.toContain('Repaired YAML mapping keys missing a space after colon before parsing.')
+  })
+
   it('repairs wrapped colon-containing acceptance criteria from PRD refinement output', () => {
     const interviewContent = buildInterviewContent(TICKET_ID)
     const malformedCriterion = [

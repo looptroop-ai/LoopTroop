@@ -638,7 +638,9 @@ export function parseYamlOrJsonCandidate(
       const inlineKeyPreRepaired = repairYamlInlineKeys(inlineSequencePreRepaired, {
         nestedMappingChildren: options?.nestedMappingChildren,
       })
-      const mappingKeyColonSpacePreRepaired = repairYamlMappingKeyColonSpace(inlineKeyPreRepaired)
+      const mappingKeyColonSpacePreRepaired = repairYamlMappingKeyColonSpace(inlineKeyPreRepaired, {
+        sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys,
+      })
       const wrappedPlainListScalarPreRepaired = repairYamlWrappedPlainListScalars(mappingKeyColonSpacePreRepaired)
       const plainScalarColonPreRepaired = repairYamlPlainScalarColons(wrappedPlainListScalarPreRepaired)
       const sequenceItemPrimaryKeyPreRepaired = repairYamlSequenceItemPrimaryKeys(
@@ -680,7 +682,9 @@ export function parseYamlOrJsonCandidate(
         const inlineRepaired = repairYamlInlineKeys(inlineSequenceRepaired, {
           nestedMappingChildren: options?.nestedMappingChildren,
         })
-        const mappingKeyColonSpaceRepaired = repairYamlMappingKeyColonSpace(inlineRepaired)
+        const mappingKeyColonSpaceRepaired = repairYamlMappingKeyColonSpace(inlineRepaired, {
+          sequenceItemPrimaryKeys: options?.sequenceItemPrimaryKeys,
+        })
         const sequenceItemPrimaryKeyInlineRepaired = repairYamlSequenceItemPrimaryKeys(
           mappingKeyColonSpaceRepaired,
           options?.sequenceItemPrimaryKeys,

@@ -222,6 +222,13 @@ function isKnownSequenceItemChildLine(
   return childKey !== config.normalizedPrimaryKey && config.childKeys.has(childKey)
 }
 
+function isSequenceItemMappingChildLine(line: string, dashIndent: number): boolean {
+  const match = line.match(/^(\s*)([A-Za-z_][\w_-]*)\s*:/)
+  if (!match) return false
+
+  return match[1]!.length > dashIndent
+}
+
 /**
  * Repair structured YAML list entries that emit the primary key as a bare item.
  *
@@ -432,26 +439,43 @@ export function repairYamlInlineSequenceParents(yaml: string): string {
   return result.join('\n')
 }
 
+export interface YamlMappingKeyColonSpaceOptions {
+  sequenceItemPrimaryKeys?: YamlSequenceItemPrimaryKeyOptions
+}
+
 /**
  * Repair mapping keys where the colon is missing the required following space.
  *
  * Models sometimes emit `artifact:interview` or `- id:Q01`. YAML treats those
  * as plain scalars rather than mapping entries, so this repair runs before the
- * first YAML parse. It is intentionally line-scoped and only targets lines that
- * already look like simple mapping entries, while preserving block scalar bodies
- * and avoiding one-letter keys such as Windows drive paths (`C:\...`).
+ * first YAML parse. A dash-prefixed line is repaired only when its surrounding
+ * structure proves it is a mapping item: it has an indented mapping child, or
+ * it uses the configured primary key for a known structured sequence. This
+ * preserves valid scalar list values such as `- style:main` and `- package:version`.
  */
-export function repairYamlMappingKeyColonSpace(yaml: string): string {
+export function repairYamlMappingKeyColonSpace(
+  yaml: string,
+  options?: YamlMappingKeyColonSpaceOptions,
+): string {
   const lines = yaml.split('\n')
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
+  const BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$/
+  const normalizedSequenceOptions = normalizeSequenceItemPrimaryKeyOptions(options?.sequenceItemPrimaryKeys)
+  const parentStack: YamlSequenceParentContext[] = []
 
   let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!
     const trimmed = line.trim()
     const indent = getLineIndent(line)
+
+    if (!trimmed || trimmed.startsWith('#')) {
+      result.push(line)
+      continue
+    }
 
     if (insideBlockScalar) {
       if (!trimmed || indent > blockScalarBaseIndent) {
@@ -462,18 +486,55 @@ export function repairYamlMappingKeyColonSpace(yaml: string): string {
       blockScalarBaseIndent = -1
     }
 
+    while (parentStack.length > 0 && parentStack[parentStack.length - 1]!.indent >= indent) {
+      parentStack.pop()
+    }
+
     const match = line.match(/^(\s*(?:-\s+)?)([A-Za-z_][\w-]*):(?![\s]|$)(.*)$/)
     if (match && match[2]!.length >= 2 && !match[3]?.startsWith('//')) {
-      const repaired = `${match[1]}${match[2]}: ${match[3]}`
-      result.push(repaired)
-      if (BLOCK_SCALAR_PATTERN.test(repaired.trimEnd())) {
-        insideBlockScalar = true
-        blockScalarBaseIndent = indent
+      const listPrefix = match[1]!.match(/^(\s*)-\s+$/)
+      let shouldRepair = !listPrefix
+
+      if (listPrefix) {
+        const dashIndent = listPrefix[1]!.length
+        const immediateParent = parentStack[parentStack.length - 1]
+        const config = immediateParent
+          ? normalizedSequenceOptions.get(immediateParent.normalizedKey)
+          : undefined
+        const nextLine = findNextSignificantLine(lines, index + 1)
+        const hasIndentedMappingChild = nextLine
+          ? isSequenceItemMappingChildLine(nextLine, dashIndent)
+          : false
+        const isConfiguredPrimaryKey = Boolean(
+          immediateParent
+          && config
+          && dashIndent > immediateParent.indent
+          && normalizeYamlRepairKey(match[2]!) === config.normalizedPrimaryKey,
+        )
+
+        shouldRepair = hasIndentedMappingChild || isConfiguredPrimaryKey
       }
-      continue
+
+      if (shouldRepair) {
+        const repaired = `${match[1]}${match[2]}: ${match[3]}`
+        result.push(repaired)
+        if (BLOCK_SCALAR_PATTERN.test(repaired.trimEnd())) {
+          insideBlockScalar = true
+          blockScalarBaseIndent = indent
+        }
+        continue
+      }
     }
 
     result.push(line)
+    const parentMatch = line.match(BARE_COLLECTION_KEY)
+    if (parentMatch) {
+      parentStack.push({
+        key: parentMatch[2]!,
+        normalizedKey: normalizeYamlRepairKey(parentMatch[2]!),
+        indent: parentMatch[1]!.length,
+      })
+    }
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
       insideBlockScalar = true
       blockScalarBaseIndent = indent

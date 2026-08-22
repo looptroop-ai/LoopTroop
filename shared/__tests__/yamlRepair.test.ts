@@ -191,11 +191,27 @@ describe.concurrent('repairYamlMappingKeyColonSpace', () => {
       'artifact:interview',
       'questions:',
       '  - id:Q01',
-    ].join('\n'))
+    ].join('\n'), {
+      sequenceItemPrimaryKeys: {
+        questions: { primaryKey: 'id', childKeys: ['phase'] },
+      },
+    })
 
     const parsed = jsYaml.load(repaired) as { artifact: string; questions: { id: string }[] }
     expect(parsed.artifact).toBe('interview')
     expect(parsed.questions[0]!.id).toBe('Q01')
+  })
+
+  it('preserves ambiguous colon-containing scalar list items', () => {
+    const input = [
+      'values:',
+      '  - style:main',
+      '  - package:version',
+      '  - https://example.test/path',
+      '  - C:\\temp\\file.txt',
+    ].join('\n')
+
+    expect(repairYamlMappingKeyColonSpace(input)).toBe(input)
   })
 })
 

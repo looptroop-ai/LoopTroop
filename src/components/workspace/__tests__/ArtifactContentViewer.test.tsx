@@ -3403,6 +3403,48 @@ items:
     expect(screen.getAllByText(hasTextContent(warning)).length).toBeGreaterThan(0)
   })
 
+  it('shows context-safe YAML mapping separator repairs with exact details', () => {
+    const warning = 'Repaired YAML mapping keys missing a space after colon before parsing.'
+
+    render(
+      <ArtifactContent
+        artifactId="relevant-files-scan"
+        phase="PREPARING_CONTEXT"
+        content={JSON.stringify({
+          fileCount: 1,
+          files: [
+            {
+              path: 'src/app.ts',
+              rationale: 'Main app entry point.',
+              relevance: 'high',
+              likely_action: 'modify',
+              contentPreview: 'export function app() {}',
+              contentLength: 25,
+            },
+          ],
+          structuredOutput: futureStructuredOutput({
+            repairApplied: true,
+            repairWarnings: [warning],
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText('LoopTroop adjusted this relevant files scan.')).toBeInTheDocument()
+    expect(screen.getByText('1 intervention: YAML Mapping Separator.')).toBeInTheDocument()
+    expect(screen.getByText('Parser Fix 1')).toBeInTheDocument()
+
+    openNotice('LoopTroop adjusted this relevant files scan.')
+
+    expect(screen.getByText('Repaired a YAML mapping separator')).toBeInTheDocument()
+    expect(screen.getByText('YAML Mapping Separator')).toBeInTheDocument()
+    expect(screen.getByText('parser_mapping_key_colon_space')).toBeInTheDocument()
+    expect(screen.getByText(/Inserted the missing space after a YAML mapping key colon/i)).toBeInTheDocument()
+    expect(screen.getByText('key:value')).toBeInTheDocument()
+    expect(screen.getByText('key: value')).toBeInTheDocument()
+    expect(screen.getByText(/scalar list values containing colons were preserved/i)).toBeInTheDocument()
+  })
+
   it('hides the relevant-files parser notice when there are no warnings or retries to explain', () => {
     render(
       <ArtifactContent

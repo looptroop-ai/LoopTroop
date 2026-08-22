@@ -3938,7 +3938,7 @@ items:
               reviewedFiles: 1,
             },
             message: 'Candidate file audit excluded 1 file from the final PR.',
-            warnings: [],
+            warnings: ['Repaired YAML mapping keys missing a space after colon before parsing.'],
           },
         })}
       />,
@@ -3948,6 +3948,8 @@ items:
     expect(screen.getByText('tmp/output.log')).toBeInTheDocument()
     expect(screen.getByText('Temporary test log output.')).toBeInTheDocument()
     expect(screen.getByText('Reviewed')).toBeInTheDocument()
+    expect(screen.getByText('Audit Warnings')).toBeInTheDocument()
+    expect(screen.getByText('Repaired YAML mapping keys missing a space after colon before parsing.')).toBeInTheDocument()
   })
 
   it('does not render unsafe pull request report URLs as links', () => {

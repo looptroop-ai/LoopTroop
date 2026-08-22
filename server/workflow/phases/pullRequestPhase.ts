@@ -554,13 +554,25 @@ async function runCandidateFileAudit(input: {
       },
     })
 
-    const entries = parseCandidateFileAuditResponse(auditResult.response, changedFiles)
+    const repairWarnings: string[] = []
+    const entries = parseCandidateFileAuditResponse(auditResult.response, changedFiles, repairWarnings)
+    if (repairWarnings.length > 0) {
+      emitPhaseLog(
+        input.ticketId,
+        input.context.externalId,
+        'CREATING_PULL_REQUEST',
+        'info',
+        `Candidate file audit normalization applied repairs: ${repairWarnings.join(' | ')}`,
+        { source: 'system', audience: 'all' },
+      )
+    }
     return buildCandidateFileAuditReport({
       status: 'passed',
       baseCommit: input.mergeBase,
       originalCandidateCommitSha: input.candidateCommitSha,
       candidateCommitSha: input.candidateCommitSha,
       entries,
+      warnings: repairWarnings,
     })
   } catch (error) {
     if (input.signal?.aborted) throw error

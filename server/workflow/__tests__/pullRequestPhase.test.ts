@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import {
   makeBeadsYaml,
   makeInterviewYaml,
@@ -231,13 +231,18 @@ describe('pull request drafting context', () => {
 
   it('retries malformed PR drafts before push and PR side effects', async () => {
     resetTestDb()
-    const { ticket, context, project } = createPullRequestReadyTicket({ structuredRetryCount: 1 })
+    const { ticket, context, project, paths } = createPullRequestReadyTicket({ structuredRetryCount: 1 })
     const sendEvent = vi.fn()
     updateProject(project.id, { councilResponseTimeout: 456_000 })
 
     mocks.runOpenCodePrompt.mockResolvedValueOnce({
       session: { id: 'candidate-audit-1' },
-      response: validCandidateAuditResponse(),
+      response: [
+        'files:',
+        '  - path:src/example.ts',
+        '    decision: include',
+        '    reason: Source contains: a colon and remains unchanged.',
+      ].join('\n'),
       messages: [],
     })
     mocks.runOpenCodePrompt.mockResolvedValueOnce({
@@ -289,6 +294,11 @@ describe('pull request drafting context', () => {
 
     const report = readPullRequestReport(ticket.id)
     expect(report?.candidateFileAudit?.includedFiles).toEqual(['src/example.ts'])
+    expect(report?.candidateFileAudit?.warnings).toEqual(expect.arrayContaining([
+      'Repaired YAML mapping keys missing a space after colon before parsing.',
+      'Quoted YAML plain scalar values containing colon-space before reparsing.',
+    ]))
+    expect(readFileSync(paths.executionLogPath, 'utf8')).toContain('Candidate file audit normalization applied repairs')
     expect(report?.structuredOutput?.autoRetryCount).toBe(1)
     expect(report?.rawAttempts).toEqual([
       expect.objectContaining({ attempt: 1, outcome: 'rejected' }),

@@ -1,9 +1,9 @@
-import * as jsYaml from 'js-yaml'
 import type {
   CandidateFileAuditEntry,
   CandidateFileAuditReport,
   CandidateFileDecision,
 } from '@shared/candidateFileAudit'
+import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
 
 export { CANDIDATE_DIFF_ARTIFACT, CANDIDATE_FILE_AUDIT_ARTIFACT } from '@shared/candidateFileAudit'
 export type { CandidateFileAuditEntry, CandidateFileAuditReport, CandidateFileDecision } from '@shared/candidateFileAudit'
@@ -18,6 +18,13 @@ interface CandidateFileAuditPayload {
 }
 
 const VALID_DECISIONS = new Set<CandidateFileDecision>(['include', 'exclude', 'review'])
+
+const CANDIDATE_FILE_AUDIT_SEQUENCE_ITEM_PRIMARY_KEYS = {
+  files: {
+    primaryKey: 'path',
+    childKeys: ['decision', 'reason'],
+  },
+} as const
 
 export const CANDIDATE_FILE_AUDIT_SCHEMA_REMINDER = [
   'Return strict YAML only with exactly one top-level key: files.',
@@ -79,15 +86,16 @@ function normalizeReason(value: unknown, fallback: string): string {
   return trimmed || fallback
 }
 
-export function parseCandidateFileAuditResponse(response: string, changedFiles: CandidateChangedFile[]): CandidateFileAuditEntry[] {
-  let parsed: CandidateFileAuditPayload | null = null
-
-  try {
-    const loaded = jsYaml.load(response) as CandidateFileAuditPayload | null
-    parsed = loaded && typeof loaded === 'object' && !Array.isArray(loaded) ? loaded : null
-  } catch {
-    parsed = null
-  }
+export function parseCandidateFileAuditResponse(
+  response: string,
+  changedFiles: CandidateChangedFile[],
+  repairWarnings: string[] = [],
+): CandidateFileAuditEntry[] {
+  const loaded = parseYamlOrJsonCandidate(response, {
+    sequenceItemPrimaryKeys: CANDIDATE_FILE_AUDIT_SEQUENCE_ITEM_PRIMARY_KEYS,
+    repairWarnings,
+  }) as CandidateFileAuditPayload | null
+  const parsed = loaded && typeof loaded === 'object' && !Array.isArray(loaded) ? loaded : null
 
   if (!parsed) {
     throw new Error('Candidate file audit output was not valid YAML.')

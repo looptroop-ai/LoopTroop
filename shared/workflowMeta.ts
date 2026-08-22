@@ -953,7 +953,7 @@ const WORKFLOW_PHASE_DETAILS = {
   CREATING_PULL_REQUEST: {
     overview: 'LoopTroop audits the final candidate files, pushes the approved candidate SHA to the remote ticket branch, and creates or updates a draft pull request on GitHub. This is the automatic GitHub handoff. It packages the final diff, the ticket intent, validation results, and any ignored-file decisions into a reviewer-facing draft PR without merging anything yet.',
     steps: [
-      'Candidate File Audit: Before any remote side effects, the locked main implementer classifies every final changed file as include, exclude, or review using ticket scope, diff metadata, final-test results, and conservative generated-file rules. Exclusions need evidence. Generated or tracked files stay included unless the audit can explain why they are unrelated byproducts.',
+      'Candidate File Audit: Before any remote side effects, the locked main implementer classifies every final changed file as include, exclude, or review using ticket scope, diff metadata, final-test results, and conservative generated-file rules. Exclusions need evidence. Generated or tracked files stay included unless the audit can explain why they are unrelated byproducts. Formatting-only YAML repairs are allowed only when the output structure proves the intended mapping, preserve the emitted text, and are recorded as audit warnings.',
       'Filtered Candidate Rewrite: If the audit excludes files, LoopTroop rewrites the local candidate from the merge base using only include and review files, records ignored files and reasons in `candidate_file_audit`, updates the integration handoff SHA, and captures the final net diff in `candidate_diff` before pushing.',
       'PR Drafting: Before any git or GitHub side effects, the locked main implementer generates a draft PR title and body in a fresh session under the configured AI Response Timeout using only ticket details and PRD as context, with integration report, final test report, diff stat, changed-file status, and diff patch appended as explicit prompt sections. Interview and beads artifacts are not fed into PR drafting.',
       'PR Draft Validation: The draft title and body response is parsed as structured output before branch push or PR create or update. If parsing fails, the ticket\'s configured Structured Output Retries count applies. Validation errors may use a continued-session prompt, while empty, provider, or session failures use a fresh session. If parsing still fails, LoopTroop records diagnostics and raw attempts, then falls back to deterministic title and body instead of blocking the ticket.',
@@ -965,6 +965,7 @@ const WORKFLOW_PHASE_DETAILS = {
     outputs: [
       'A Pull Request report artifact with PR URL, state, number, generated title and body, head SHA, and timestamps.',
       'A candidate-file audit artifact listing included, excluded, and reviewed files with reasons.',
+      'Any formatting-only repairs applied while reading the candidate-file audit, listed as audit warnings and in the phase log.',
       'A candidate net-diff artifact used by PR review as the default diff view.',
       'The remote ticket branch updated to the final candidate commit.',
       'A draft GitHub pull request ready for human review.',
@@ -975,7 +976,7 @@ const WORKFLOW_PHASE_DETAILS = {
     ],
     notes: [
       'Context available: Ticket Details and PRD, plus explicit integration report, final test report, diff stat, diff name or status, and diff patch sections.',
-      'Candidate-file audit runs in its own fresh session and falls back to including all files if the audit output cannot be parsed, so malformed audit text cannot silently remove files.',
+      'Candidate-file audit runs in its own fresh session. Safe formatting-only repairs preserve the model-emitted paths and reasons and are shown as warnings; if validation still fails, LoopTroop falls back to including all files so malformed audit text cannot silently remove files.',
       'PR drafting starts in a fresh session after candidate-file auditing. If a matching active CREATING_PULL_REQUEST session exists, LoopTroop aborts and abandons it before creating the first draft session. AI Response Timeout bounds both the initial draft and structured retry prompts, and the draft session is completed before remote side effects begin.',
       'Structured PR draft retries happen before the remote branch push and before PR creation or update. If PR draft parsing is exhausted, LoopTroop records diagnostics and uses fallback text. Git or GitHub failures still move the ticket to Blocked Error with no automatic retry.',
       'This is the GitHub-native handoff from execution into review.',
@@ -1546,7 +1547,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'CREATING_PULL_REQUEST',
     label: 'Creating Pull Request',
-    description: 'LoopTroop is auditing the candidate files, drafting the PR text, pushing the ticket branch, and creating or updating the draft pull request. This packages the final diff for review without merging anything yet.',
+    description: 'LoopTroop is auditing the candidate files, recording any safe formatting corrections, drafting the PR text, pushing the ticket branch, and creating or updating the draft pull request. This packages the final diff for review without merging anything yet.',
     details: WORKFLOW_PHASE_DETAILS.CREATING_PULL_REQUEST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',

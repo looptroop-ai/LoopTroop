@@ -226,14 +226,39 @@ jobs:
           PINS: 'bun=bun@1.3.14 pnpm=pnpm@11.21.0 yarn=yarn@1.22.22'
         run: |
           set -euo pipefail
+          installed=""
           for pin in ${PINS}; do
             if [ "${pin%%=*}" = "${{ matrix.channel }}" ]; then
               npm install --global "${pin#*=}"
-              exit 0
+              installed="${pin#*=}"
             fi
           done
-          echo "::error::No pinned version recorded for ${{ matrix.channel }}."
-          exit 1
+          if [ -z "${installed}" ]; then
+            echo "::error::No pinned version recorded for ${{ matrix.channel }}."
+            exit 1
+          fi
+
+          # Each manager keeps its global installs somewhere of its own, and
+          # only puts that directory on PATH as part of its *own* installer —
+          # which is skipped when the manager itself comes from npm, as it does
+          # here and in `ci.yml`. Without this, `bun add -g` succeeds and leaves
+          # nothing runnable, and `pnpm add -g` refuses outright with "run
+          # `pnpm setup`". Setting the variable and the PATH is what that
+          # command does; `smoke-node-manager.mjs` reaches the same conclusion
+          # from the other direction.
+          #
+          # Yarn needs nothing here: the driver resolves its global bin from
+          # `yarn global bin`, because the documentation tells users to put that
+          # on PATH themselves and that instruction is part of the install.
+          case "${{ matrix.channel }}" in
+            bun)
+              echo "${BUN_INSTALL:-$HOME/.bun}/bin" >> "$GITHUB_PATH"
+              ;;
+            pnpm)
+              echo "PNPM_HOME=$HOME/.local/share/pnpm" >> "$GITHUB_ENV"
+              echo "$HOME/.local/share/pnpm" >> "$GITHUB_PATH"
+              ;;
+          esac
 
       # Homebrew ships on the ubuntu images but is deliberately kept off PATH,
       # so `brew` is simply not a command there until this runs.

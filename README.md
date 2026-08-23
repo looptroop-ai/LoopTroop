@@ -209,12 +209,6 @@ place that tracks which channels are live**, and covers upgrading, uninstalling,
 verifying a download against the checksums each release publishes, and running in
 a container.
 
-Every command above is run against the real feed after each release and again
-every week: installed on a clean machine, started, checked on its health
-endpoint, and uninstalled again. A channel that breaks after it was published —
-a tap that never received its commit, a registry still serving the previous
-version — is meant to be our problem before it is yours.
-
 ### What you need besides LoopTroop
 
 - **git**, and **`gh`** authenticated, for the pull-request step at the end of a

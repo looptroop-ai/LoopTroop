@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { planMatrix, CHANNELS, binaryPrefix } from '../scripts/smoke-published.mjs'
 
 /**
@@ -222,5 +223,67 @@ describe('planMatrix', () => {
     // happened to share a machine.
     expect(daemonPorts).not.toContain(39117)
     for (const port of [...daemonPorts, ...opencodePorts]) expect(port).toBeGreaterThan(39117)
+  })
+})
+
+describe('workflow dispatch wiring', () => {
+  const workflow = readFileSync('.github/workflows/published-smoke.yml', 'utf8')
+
+  /** The `workflow_dispatch` inputs the smoke workflow actually declares. */
+  function declaredInputs(): Set<string> {
+    const block = workflow.slice(workflow.indexOf('workflow_dispatch:'), workflow.indexOf('schedule:'))
+    return new Set([...block.matchAll(/^ {6}([a-z_]+):$/gm)].map((m) => m[1]))
+  }
+
+  /** Every `-f name=` a workflow passes when dispatching the smoke. */
+  function dispatchedInputs(file: string): Array<{ file: string, name: string }> {
+    const text = readFileSync(file, 'utf8')
+    return text
+      .split('gh workflow run published-smoke.yml')
+      .slice(1)
+      .flatMap((block) => [...block.split(/\n\s*\n/)[0].matchAll(/-f ([a-z_]+)=/g)]
+        .map((m) => ({ file, name: m[1] })))
+  }
+
+  it('passes only inputs the smoke workflow declares', () => {
+    // A name that does not exist is a 422 from `gh workflow run`, and the only
+    // place that surfaces is a real release — after the tag, when the thing it
+    // was meant to verify has already shipped. Both dispatchers are checked:
+    // the one in the release, and the one that verifies a repaired channel.
+    const declared = declaredInputs()
+    expect(declared.size).toBeGreaterThan(0)
+
+    const dispatched = [
+      ...dispatchedInputs('.github/workflows/release.yml'),
+      ...dispatchedInputs('.github/workflows/channel-republish.yml'),
+    ]
+    expect(dispatched.length).toBeGreaterThan(0)
+
+    for (const { file, name } of dispatched) {
+      expect(declared.has(name), `${file} passes -f ${name}, which is not declared`).toBe(true)
+    }
+  })
+
+  it('keeps the release dispatch on stable releases only', () => {
+    // A release candidate publishes to npm under a different dist-tag and never
+    // touches the tap, the bucket or `releases/latest`, so every non-npm leg
+    // would assert against the previous stable release.
+    const release = readFileSync('.github/workflows/release.yml', 'utf8')
+    const job = release.slice(release.indexOf('published-smoke-dispatch:'))
+    expect(job.slice(0, job.indexOf('steps:'))).toContain("dist_tag == 'latest'")
+  })
+
+  it('gives every gh step a token as well as a permission', () => {
+    // `permissions:` scopes a token; it does not put one in the environment.
+    // Without GH_TOKEN a `gh` call fails with an auth error rather than a
+    // permissions one, which is a confusing way to learn this.
+    for (const file of ['.github/workflows/release.yml', '.github/workflows/channel-republish.yml']) {
+      const text = readFileSync(file, 'utf8')
+      for (const block of text.split('gh workflow run published-smoke.yml').slice(1)) {
+        // The env block sits above the run block within the same step.
+        const step = text.slice(0, text.indexOf(block)).lastIndexOf('- name:')
+        expect(text.slice(step, text.indexOf(block)), `${file} dispatch step`).toContain('GH_TOKEN')
+      }
+    }
   })
 })

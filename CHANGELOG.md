@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.8 (2026-08-23)
+
+
 ### Summary
 - Execution-lock errors now explain the blocking ticket, user-facing workflow step, and the LoopTroop alpha concurrency limit at every entry point.
 - Project status now documents the council-size and per-project execution limits users should plan around.

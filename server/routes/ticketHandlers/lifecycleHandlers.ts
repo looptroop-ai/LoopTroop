@@ -537,7 +537,7 @@ export async function handleRetryTicket(c: Context) {
   if (isExecutionBandStatus(ticket.previousStatus)) {
     const executionConflict = findProjectExecutionBandConflict(ticket.projectId, ticket.id)
     if (executionConflict) {
-      return c.json({ error: buildExecutionBandConflictMessage(executionConflict) }, 409)
+      return c.json({ error: buildExecutionBandConflictMessage(ticket, executionConflict) }, 409)
     }
   }
 
@@ -660,7 +660,7 @@ export async function handleContinueTicket(c: Context) {
   if (isExecutionBandStatus(continuation.previousStatus)) {
     const executionConflict = findProjectExecutionBandConflict(ticket.projectId, ticket.id)
     if (executionConflict) {
-      return c.json({ error: buildExecutionBandConflictMessage(executionConflict) }, 409)
+      return c.json({ error: buildExecutionBandConflictMessage(ticket, executionConflict) }, 409)
     }
   }
 

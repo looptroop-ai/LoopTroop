@@ -302,8 +302,12 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
     blockTicketWithContinuableError(ticket.id, 'PREPARING_EXECUTION_ENV')
 
     const response = await app.request(`/api/tickets/${ticket.id}/continue`, { method: 'POST' })
+    const body = await response.json() as { error: string }
 
     expect(response.status).toBe(409)
+    expect(body.error).toBe(
+      `${ticket.externalId} can’t enter execution yet because ${otherTicket.externalId} is still running and currently at Implementing. Finish or cancel ${otherTicket.externalId}, then try again.`,
+    )
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 

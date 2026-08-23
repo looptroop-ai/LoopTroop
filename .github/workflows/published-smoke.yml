@@ -272,6 +272,22 @@ jobs:
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
 
+      # Updated here, before the install, and never during it.
+      #
+      # A stale Homebrew snapshot on the runner image is a known failure: it
+      # died mid-install with "unknown install step: run" — a message about
+      # brew's own state machine rather than about the formula — which is why
+      # `ci.yml` updates first too. The install itself then runs with
+      # HOMEBREW_NO_AUTO_UPDATE so brew cannot decide to do this halfway
+      # through and bury the real output.
+      - name: Update Homebrew
+        if: matrix.channel == 'homebrew'
+        shell: bash
+        env:
+          HOMEBREW_NO_ENV_HINTS: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
+        run: brew update --quiet
+
       - name: Install Scoop
         if: matrix.channel == 'scoop'
         shell: pwsh
@@ -333,6 +349,10 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           CHANNEL: ${{ matrix.channel }}
           OPENCODE: ${{ matrix.opencode }}
+          # Echoed back into the result file so the reporter pairs a result with
+          # the leg that produced it. `process.platform` says `darwin`, which
+          # cannot be matched to a runner label.
+          LEG: ${{ matrix.name }}
           PIN: ${{ inputs.pin && '--pin' || '' }}
         run: |
           set -euo pipefail
@@ -341,6 +361,7 @@ jobs:
             --channel "${CHANNEL}" \
             --version "${VERSION}" \
             --opencode "${OPENCODE}" \
+            --leg "${LEG}" \
             --result-file "${RUNNER_TEMP}/result.json" \
             ${PIN}
 
@@ -382,7 +403,7 @@ jobs:
         run: |
           set -euo pipefail
           node -e '
-            const { readdirSync, readFileSync, existsSync, writeFileSync } = require("node:fs")
+            const { readdirSync, readFileSync, existsSync, writeFileSync, appendFileSync } = require("node:fs")
             const { join } = require("node:path")
             const root = "results"
             const version = process.env.VERSION
@@ -392,37 +413,61 @@ jobs:
               ? JSON.parse(readFileSync(expectedPath, "utf8")).include
               : []
 
-            const results = new Map()
+            // An empty plan is a failure, never a pass. If the plan job died,
+            // or `--only` named a channel that does not exist, there is no
+            // manifest and no results — and without this the report renders an
+            // empty table, reports nothing wrong, and closes any open failure
+            // issue as though every channel had just been verified.
+            if (expected.length === 0) {
+              const lines = [`## Published install smoke — v${version}`, "",
+                "**No legs were planned.** Either the plan job failed, or a channel filter matched nothing.",
+                "Nothing was verified; this is not a pass.", ""]
+              writeFileSync("report.md", lines.join("\n"))
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
+              appendFileSync(process.env.GITHUB_OUTPUT, "failed=plan\n")
+              console.log(lines.join("\n"))
+              process.exit(0)
+            }
+
+            // Keyed by the planned leg name the driver echoes back, so a result
+            // pairs with the leg that produced it. Matching on channel alone
+            // put any npm result against any npm row, and a failure could be
+            // reported against the wrong operating system entirely.
+            const byLeg = new Map()
             for (const dir of existsSync(root) ? readdirSync(root) : []) {
               if (dir === "published-smoke-expected") continue
               const file = join(root, dir, "result.json")
               if (!existsSync(file)) continue
               const parsed = JSON.parse(readFileSync(file, "utf8"))
-              results.set(`${parsed.channel} (${parsed.os})`, parsed)
+              if (parsed.leg) byLeg.set(parsed.leg, parsed)
             }
 
             const rows = []
             const failed = []
+            const details = []
             for (const leg of expected) {
-              // Legs are keyed by channel + runner label, but a result records
-              // the platform it ran on. Match on channel and fall back to the
-              // planned name, so a setup failure before the driver ever ran is
-              // reported rather than silently dropped.
-              const hit = [...results.values()].find((r) => leg.name.startsWith(`${r.channel} (`))
-                ?? [...results.values()].find((r) => r.channel === leg.channel)
+              const hit = byLeg.get(leg.name)
               if (!hit) {
+                // No result file at all: the leg died before the driver could
+                // write one — a failed checkout, a manager that would not
+                // install, a runner that never came up.
                 rows.push([leg.name, "—", "SETUP FAILED", "no result file — the leg died before the driver ran"])
                 failed.push(leg.name)
                 continue
               }
-              results.delete(`${hit.channel} (${hit.os})`)
               // A leg can be deliberately not run — pnpm inside its 24-hour
               // hold, or a tap-backed channel under --pin. Those record
               // `ok: true` because nothing is wrong, but reporting them as a
               // pass would claim coverage that did not happen.
               const outcome = hit.skipped ? "not run" : hit.ok ? "ok" : "FAIL"
               rows.push([leg.name, hit.served ?? "—", outcome, hit.skipped ?? ""])
-              if (!hit.ok) failed.push(leg.name)
+              if (!hit.ok) {
+                failed.push(leg.name)
+                // Carried here rather than looked up again later: the previous
+                // version searched a map it had already emptied, so the
+                // assertions never reached the report at all.
+                if (hit.failures?.length) details.push([leg.name, hit.failures])
+              }
             }
 
             const width = Math.max(20, ...rows.map((r) => r[0].length))
@@ -435,18 +480,22 @@ jobs:
             }
             lines.push("```", "")
 
-            for (const leg of expected) {
-              const hit = rows.find((r) => r[0] === leg.name)
-              if (!hit || hit[2] === "ok") continue
-              const detail = [...results.values()].find((r) => leg.name.startsWith(`${r.channel} (`))
-              if (detail?.failures?.length) {
-                lines.push(`**${leg.name}**`, "", ...detail.failures.map((f) => `- ${f}`), "")
+            for (const [name, failures] of details) {
+              lines.push(`**${name}**`, "", ...failures.map((f) => `- ${f}`), "")
+            }
+
+            // A result with no matching planned leg means the two disagree
+            // about what exists, which is worth saying out loud rather than
+            // dropping on the floor.
+            for (const [name] of byLeg) {
+              if (!expected.some((leg) => leg.name === name)) {
+                lines.push(`> Unplanned result reported by \`${name}\`.`, "")
               }
             }
 
             writeFileSync("report.md", lines.join("\n"))
-            require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
-            require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `failed=${failed.join(" ")}\n`)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
+            appendFileSync(process.env.GITHUB_OUTPUT, `failed=${failed.join(" ")}\n`)
             console.log(lines.join("\n"))
           '
 

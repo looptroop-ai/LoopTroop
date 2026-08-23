@@ -69,8 +69,21 @@ describe('planMatrix', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
+  it('exercises the adopt path on exactly one leg', () => {
+    // `startDaemon` has two OpenCode paths — spawn one, or adopt a server that
+    // is already listening. Without a leg set to adopt, that branch is never
+    // executed against a published release and the driver's support for it is
+    // dead code. More than one would be duplicate coverage of the rarer path
+    // at the cost of the commoner one.
+    const adopt = planMatrix({ tier: 'weekly' }).filter((leg) => leg.opencode === 'adopt')
+    expect(adopt.map((leg) => leg.name)).toEqual(['bun (ubuntu-latest)'])
+  })
+
   it('declares a known OpenCode mode on every leg', () => {
-    const allowed = new Set(['installer', 'npm', 'adopt', 'mock', 'none'])
+    // No `installer`: nothing in the workflow provisions it, so a leg set to it
+    // would run with no OpenCode at all and fail for a reason that looks like
+    // the release's fault.
+    const allowed = new Set(['npm', 'adopt', 'mock', 'none'])
     for (const leg of planMatrix({ tier: 'weekly' })) {
       expect(allowed.has(leg.opencode), `${leg.name} has opencode=${leg.opencode}`).toBe(true)
     }
@@ -118,6 +131,17 @@ describe('planMatrix', () => {
     for (const key of ['chocolatey', 'winget', 'aur']) {
       expect(CHANNELS[key].stub, `${key} has no stated reason`).toBeTruthy()
       expect(scheduled).not.toContain(key)
+    }
+  })
+
+  it('checks the latest pointer on every channel whose command resolves one', () => {
+    // The documented command for these names a moving target — `@latest`,
+    // a tap's single formula, `:latest` — so the pointer having moved is part
+    // of what "this release published correctly" means. A channel that only
+    // ever pulled the exact version could stay green with a stale pointer
+    // forever, which is the silent failure this whole workflow exists to find.
+    for (const key of ['npm', 'homebrew', 'scoop', 'container']) {
+      expect(typeof CHANNELS[key].latest, `${key} has no latest probe`).toBe('function')
     }
   })
 

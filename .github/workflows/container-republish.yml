@@ -597,3 +597,43 @@ jobs:
             echo "- index \`${INDEX_DIGEST}\`"
             echo "- tags \`${TAGS}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Verify the repaired image against the registry.
+  # ---------------------------------------------------------------------------
+  #
+  # `verify` above pulls from GHCR and smokes it, which proves the rebuild. This
+  # additionally hands the version to the published install smoke, whose
+  # container leg pulls the *Docker Hub* image and checks that `:latest` resolves
+  # to it — the tag the README tells people to pull, and the one a repair is
+  # most likely to have left pointing at the old image.
+  #
+  # Dispatched rather than waited on, for the same reasons as in `release.yml`:
+  # a red smoke must not retroactively fail a repair that succeeded, and it has
+  # to be re-runnable on its own. Without it a container repair is unverified
+  # from a user's perspective until the next Monday.
+  verify-repair:
+    name: Verify the repaired image from Docker Hub
+    needs: [prepare, verify]
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch the published install smoke
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh workflow run published-smoke.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f version="${VERSION}" \
+            -f tier=weekly \
+            -f only=container \
+            -f report_mode=issue
+          echo "Dispatched the container leg of the published install smoke for v${VERSION}."

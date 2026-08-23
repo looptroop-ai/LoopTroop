@@ -28,7 +28,7 @@
  * AGENTS.md forbids it.
  */
 import { spawnSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -283,7 +283,15 @@ export const CHANNELS = {
   // that defect, which is why `upgradeCommand` is asserted too.
   bun: {
     documented: 'bun add -g looptroop',
-    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
+    // THE ADOPT LEG. `startDaemon` has two OpenCode paths: spawn one, or adopt
+    // a server that is already listening. Every other leg covers spawn, so
+    // without this one the adopt branch of the supervisor is never exercised
+    // against a published release — and the code in this driver that supports
+    // it would be dead.
+    //
+    // Deliberately not one of the npm legs: those are the spawn coverage, and
+    // the Windows one is the `opencode.cmd` regression guard.
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'adopt' }],
     daemon: true,
     pinnable: true,
     port: 39128,
@@ -398,6 +406,12 @@ export const CHANNELS = {
     publishJob: 'container-manifest',
     publishHint: 'Check hub.docker.com/r/looptroopai/looptroop/tags.',
     published: probeDockerHubTag,
+    // The documented command is `:latest`, so the tag that command resolves is
+    // the one that has to have moved. Without this a stale `latest` on Docker
+    // Hub stays green forever, because the leg would only ever pull the exact
+    // version tag — which is precisely the silent-failure class every other
+    // channel's pointer check exists to catch.
+    latest: probeDockerHubLatest,
     // The image ships no OpenCode by design, and `smoke-container.mjs` is
     // mock-only for that reason.
     delegate: ({ version }) => ({
@@ -895,6 +909,24 @@ async function probeScoopManifest(_recipe, _version) {
  * pushed it and by nobody else, so an authenticated probe would pass happily on
  * a repository from which every documented `docker pull` fails for users.
  */
+/**
+ * Which version `looptroopai/looptroop:latest` currently is.
+ *
+ * Compared by digest rather than by name, because `latest` is a separate tag
+ * pointing at an image, and the only way to ask "what is latest" is to ask
+ * which versioned tag shares its digest.
+ */
+async function probeDockerHubLatest() {
+  const tags = await fetch('https://hub.docker.com/v2/repositories/looptroopai/looptroop/tags?page_size=100')
+  if (!tags.ok) throw new Error(`Docker Hub tags -> ${tags.status}`)
+  const results = (await tags.json()).results ?? []
+  const latest = results.find((t) => t.name === 'latest')
+  if (!latest) return null
+  const match = results.find((t) => t.name !== 'latest' && t.digest && t.digest === latest.digest
+    && /^\d+\.\d+\.\d+$/.test(t.name))
+  return match?.name ?? null
+}
+
 async function probeDockerHubTag(_recipe, version) {
   const response = await fetch(`https://hub.docker.com/v2/repositories/looptroopai/looptroop/tags/${version}`)
   if (response.status === 404) return null
@@ -990,6 +1022,12 @@ async function runChannel(recipe, options) {
   // a shared runner may already have something on the default 4096, and a leg
   // that talked to it would be reporting on the runner, not the release.
   const childEnv = {
+    // The CLI, the daemon it starts and the OpenCode it spawns are the code
+    // under test. None of them should ever see this workflow's token: it is
+    // read-only, but handing credentials to the software you are testing is how
+    // a test starts passing for a reason that has nothing to do with the
+    // software.
+    ...ANONYMOUS,
     LOOPTROOP_CONFIG_DIR: configDir,
     LOOPTROOP_BACKEND_PORT: String(port),
     LOOPTROOP_OPENCODE_BASE_URL: `http://127.0.0.1:${opencodePort}`,
@@ -997,6 +1035,9 @@ async function runChannel(recipe, options) {
   }
 
   let adopted = null
+  // Recorded before anything is installed: the uninstall step refuses to delete
+  // a directory it did not create.
+  const prefixExistedBefore = existsSync(recipe.uninstall({ version })?.removePath ?? '\u0000')
   // Resolved from PATH after the install, never guessed from a prefix.
   //
   // Every channel puts the launcher somewhere different — npm's global bin,
@@ -1143,13 +1184,33 @@ async function runChannel(recipe, options) {
 
     if (opencodeMode === 'adopt') {
       heading('Pre-start an OpenCode for LoopTroop to adopt')
-      adopted = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(opencodePort)], {
-        stdio: 'ignore',
+      const opencodeLog = join(scratch, 'adopted-opencode.log')
+      const logFd = openSync(opencodeLog, 'a')
+      // Through a shell on every platform, not only Windows. Installed from
+      // npm, `opencode` is a shim — `opencode.cmd` on Windows, and on POSIX a
+      // symlink into a package directory — and letting the shell resolve it is
+      // the same reasoning the daemon's own supervisor applies.
+      //
+      // Output goes to a file rather than `ignore`. A server that refuses to
+      // start otherwise reports itself as "nothing is listening", which says
+      // what happened but nothing about why, and this is a detached process
+      // whose stderr is gone the moment it exits.
+      adopted = spawn(`opencode serve --hostname 127.0.0.1 --port ${opencodePort}`, [], {
+        stdio: ['ignore', logFd, logFd],
         detached: !IS_WINDOWS,
-        shell: IS_WINDOWS,
+        shell: true,
       })
+      adopted.unref()
       const up = await waitForOpenCode(opencodePort)
-      if (!check('adopted OpenCode is listening', up, `nothing on ${opencodePort}`)) return { ok: false, served }
+      if (!check('adopted OpenCode is listening', up, `nothing on ${opencodePort} after 4 minutes`)) {
+        try {
+          log(`  --- ${opencodeLog} ---`)
+          for (const line of readFileSync(opencodeLog, 'utf8').trim().split('\n').slice(-15)) log(`  ${line}`)
+        } catch {
+          log('  (the adopted OpenCode wrote nothing at all)')
+        }
+        return { ok: false, served }
+      }
     }
 
     heading('The daemon starts on the port it was given')
@@ -1252,9 +1313,19 @@ async function runChannel(recipe, options) {
       // The standalone executable has no uninstall command; the documentation
       // says to remove the directory. Asserting the whole prefix is gone, not
       // just the launcher, is the difference between uninstalled and orphaned.
-      log(`  $ rm -rf ${removal.removePath}`)
-      rmSync(removal.removePath, { recursive: true, force: true })
-      check('the install prefix is gone', !existsSync(removal.removePath), `${removal.removePath} survived`)
+      //
+      // Refused when the directory already existed before this run. On a hosted
+      // runner it never does, but `verify:published` is documented for use by
+      // hand, and there this is a recursive delete of somebody's real
+      // installation — one they did not ask a test to remove.
+      if (prefixExistedBefore) {
+        log(`  skipped  (${removal.removePath} existed before this run; refusing to delete it)`)
+        log('  Remove it yourself if you want the uninstall covered here.')
+      } else {
+        log(`  $ rm -rf ${removal.removePath}`)
+        rmSync(removal.removePath, { recursive: true, force: true })
+        check('the install prefix is gone', !existsSync(removal.removePath), `${removal.removePath} survived`)
+      }
     } else {
       log(`  $ ${removal.display ?? [removal.command, ...removal.args].join(' ')}`)
       const removed = run(removal.command, removal.args, {
@@ -1294,10 +1365,26 @@ async function runChannel(recipe, options) {
   }
 }
 
-async function waitForOpenCode(port, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs
+/**
+ * Waits for a pre-started OpenCode to answer.
+ *
+ * Generous, and bounded. This is a readiness wait for a prerequisite, not a
+ * retry of an assertion: nothing about the release is being judged until it
+ * returns. OpenCode's start-up is highly variable — a few seconds on an idle
+ * machine, and observed above five minutes on a loaded one — so a tight cap
+ * turns a slow prerequisite into a failure report about LoopTroop.
+ *
+ * The elapsed time is printed on success as well as failure, so a server that
+ * is quietly getting slower is visible before it starts timing out.
+ */
+async function waitForOpenCode(port, timeoutMs = 240_000) {
+  const started = Date.now()
+  const deadline = started + timeoutMs
   while (Date.now() < deadline) {
-    if (await openCodeAnswers(port)) return true
+    if (await openCodeAnswers(port)) {
+      log(`  ready after ${Math.round((Date.now() - started) / 1000)}s`)
+      return true
+    }
     await sleep(500)
   }
   return false
@@ -1361,9 +1448,10 @@ function parseArgs(argv) {
     plan: false,
     only: [],
     skip: [],
+    leg: null,
   }
   const takesValue = new Set([
-    '--channel', '--version', '--opencode', '--profile', '--tier', '--result-file', '--only', '--skip',
+    '--channel', '--version', '--opencode', '--profile', '--tier', '--result-file', '--only', '--skip', '--leg',
   ])
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -1391,6 +1479,7 @@ function parseArgs(argv) {
     else if (arg === '--result-file') options.resultFile = value
     else if (arg === '--only') options.only = value.split(',').map((s) => s.trim()).filter(Boolean)
     else if (arg === '--skip') options.skip = value.split(',').map((s) => s.trim()).filter(Boolean)
+    else if (arg === '--leg') options.leg = value
   }
   return options
 }
@@ -1416,6 +1505,7 @@ function writeSkipResult(options, recipe, version, reason) {
   if (!options.resultFile) return
   writeFileSync(options.resultFile, `${JSON.stringify({
     channel: recipe.key,
+    leg: options.leg ?? `${recipe.key} (${process.platform})`,
     os: process.platform,
     arch: process.arch,
     version,
@@ -1512,7 +1602,7 @@ async function main() {
     return
   }
 
-  const opencodeMode = options.opencode ?? 'installer'
+  const opencodeMode = options.opencode ?? 'npm'
   log(`\nChannel ${recipe.key} | version ${version} | profile ${options.profile} | opencode ${opencodeMode}`)
   log(`Documented command: ${recipe.documented}`)
 
@@ -1526,6 +1616,11 @@ async function main() {
 
   const summary = {
     channel: recipe.key,
+    // The name the plan gave this leg — `npm (macos-latest)` — not
+    // `process.platform`, which says `darwin` and cannot be matched back to a
+    // runner label. Without it the reporter can only match by channel, and
+    // pins a failure on whichever operating system it happens to find first.
+    leg: options.leg ?? `${recipe.key} (${process.platform})`,
     os: process.platform,
     arch: process.arch,
     version,

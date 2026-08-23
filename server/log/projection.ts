@@ -104,6 +104,8 @@ function ensureProjectionSchema(ticketId: string): ProjectionStorage | null {
     );
     CREATE INDEX IF NOT EXISTS idx_execution_log_projection_query
       ON execution_log_projection(ticket_id, classification, phase, phase_attempt, model_id, ordinal DESC);
+    CREATE INDEX IF NOT EXISTS idx_execution_log_projection_bead
+      ON execution_log_projection(ticket_id, channel, phase, phase_attempt, bead_id, ordinal DESC);
   `)
   initializedProjectionDatabases.add(sqlite)
   return { context, sqlite, statements: prepareProjectionStatements(sqlite) }
@@ -264,6 +266,7 @@ export interface LogPageQuery {
   scope: 'phase' | 'lifecycle'
   view: LogView
   modelId?: string
+  beadId?: string
   before?: string
   limit: number
   includeTotals?: boolean
@@ -291,6 +294,7 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   const params: SQLInputValue[] = [context.localTicketId]
   if (query.scope === 'phase' && query.phase) { clauses.push('phase = ?'); params.push(query.phase) }
   if (typeof query.phaseAttempt === 'number') { clauses.push('phase_attempt = ?'); params.push(query.phaseAttempt) }
+  if (query.beadId) { clauses.push('bead_id = ?'); params.push(query.beadId) }
   if (query.view === 'debug') { clauses.push("channel = 'debug'") }
   else if (query.view === 'ai') { clauses.push("channel = 'ai'") }
   else { clauses.push("channel = 'normal'") }

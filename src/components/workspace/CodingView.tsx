@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { useLogs } from '@/context/useLogContext'
-import type { LogEntry } from '@/context/logUtils'
+import { mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
 import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
@@ -23,6 +23,7 @@ import type { BeadNoteEntry, Ticket } from '@/hooks/useTickets'
 import { useTicketAction } from '@/hooks/useTickets'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useTicketHistoricalLogs } from '@/hooks/useTicketHistoricalLogs'
 import { cn } from '@/lib/utils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { parsePrdDocument, parsePrdDocumentContent, normalizePrdDocumentLike } from '@/lib/prdDocument'
@@ -1198,12 +1199,33 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     [beads, viewingBeadId],
   )
   const { prd, isLoading: prdLoading, isError: prdError } = usePrdDocument(ticket.id)
+  const historicalBeadLogs = useTicketHistoricalLogs(ticket.id, {
+    scope: 'phase',
+    phase: 'CODING',
+    phaseAttempt: logPhaseAttempt,
+    view: 'ai',
+    beadId: viewedBead?.id,
+  }, Boolean(viewedBead))
+  const {
+    entries: historicalBeadLogEntries,
+    fetchAllOlder: fetchAllHistoricalBeadLogs,
+    hasOlder: hasOlderHistoricalBeadLogs,
+    isFetchingOlder: isFetchingOlderHistoricalBeadLogs,
+  } = historicalBeadLogs
   const beadLogEntries = useMemo(() => {
     if (!viewedBead) return []
     const phaseLogs = logCtx?.getLogsForPhase(phaseForView, { phaseAttempt: logPhaseAttempt }) ?? []
-    const beadLogs = phaseLogs.filter((entry) => entry.beadId === viewedBead.id)
+    const beadLogs = mergeEntriesBatch(
+      historicalBeadLogEntries,
+      phaseLogs,
+    ).filter((entry) => entry.beadId === viewedBead.id)
     return filterBeadLogEntries(beadLogs)
-  }, [logCtx, logPhaseAttempt, phaseForView, viewedBead])
+  }, [historicalBeadLogEntries, logCtx, logPhaseAttempt, phaseForView, viewedBead])
+
+  useEffect(() => {
+    if (!viewedBead || !hasOlderHistoricalBeadLogs || isFetchingOlderHistoricalBeadLogs) return
+    void fetchAllHistoricalBeadLogs().catch(() => undefined)
+  }, [fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, isFetchingOlderHistoricalBeadLogs, viewedBead])
 
   useEffect(() => {
     if (!viewedBead || !logCtx?.loadLogsForPhase) return

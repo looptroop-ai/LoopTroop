@@ -58,17 +58,6 @@ on:
   schedule:
     - cron: '17 6 * * 1'
 
-  # TEMPORARY, AGAIN — removed in the next commit.
-  #
-  # Re-added to validate the review fixes: the leg-name plumbing touches every
-  # result file, `brew update` touches the Homebrew legs, and the adopt leg is
-  # brand new and failed the first time it was tried. `workflow_dispatch` is
-  # only offered for workflows already on the default branch, so a branch
-  # cannot dispatch itself — a push trigger is the only way to exercise this
-  # before review.
-  push:
-    branches: ['feat/published-distribution-smoke']
-
 # Least privilege at the top; jobs widen only where they must.
 permissions:
   contents: read

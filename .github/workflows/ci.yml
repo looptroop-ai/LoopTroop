@@ -680,6 +680,14 @@ jobs:
   #
   # macOS x64 is absent deliberately: Node supports single-executable
   # applications on arm64 only there, so Intel Macs keep Homebrew and npm.
+  #
+  # The macOS runner is pinned rather than floating so the OS the binary is
+  # built on is a decision rather than something that moves underneath it. It is
+  # not what decides the binary's minimum macOS version — the build copies the
+  # running Node executable and re-signs it, so that comes from Node, which
+  # `setup-node` pins. Bump this deliberately when the image is retired;
+  # `macos-14` was withdrawn on 2 Nov 2026, and a retired image fails the whole
+  # release, because `build` requires all four archives.
   binary:
     name: Binary (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -690,7 +698,7 @@ jobs:
         include:
           - { os: ubuntu-latest, target: linux-x64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: macos-14, target: darwin-arm64 }
+          - { os: macos-15, target: darwin-arm64 }
           - { os: windows-latest, target: win-x64 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

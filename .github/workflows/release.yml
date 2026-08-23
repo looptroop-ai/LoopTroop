@@ -47,7 +47,7 @@ on:
         default: true
       # An escape hatch for a runner-class outage, not a convenience. The
       # binaries are built on four native runners and they gate `build`, so if
-      # (say) macos-14 or ubuntu-24.04-arm is unavailable, nothing can be
+      # (say) macos-15 or ubuntu-24.04-arm is unavailable, nothing can be
       # released at all — including a security fix. This releases without them,
       # deliberately and visibly.
       #
@@ -213,7 +213,15 @@ jobs:
   # These gate `build` rather than running beside it, because the release
   # manifest has to record their checksums — WinGet's descriptor points at the
   # win-x64 archive by URL and hash, and that hash has exactly one source of
-  # truth.
+  # truth. That also means a retired runner image stops releases outright:
+  # `build` refuses to proceed without all four archives.
+  #
+  # The macOS runner is pinned rather than floating so the OS the binary is
+  # built on is a decision rather than something that moves underneath it. It is
+  # not what decides the binary's minimum macOS version — the build copies the
+  # running Node executable and re-signs it, so that comes from Node, which
+  # `setup-node` pins. Bump this deliberately when the image is retired;
+  # `macos-14` was withdrawn on 2 Nov 2026.
   binary:
     name: Binary (${{ matrix.target }})
     needs: [detect]
@@ -230,7 +238,7 @@ jobs:
         include:
           - { os: ubuntu-latest, target: linux-x64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: macos-14, target: darwin-arm64 }
+          - { os: macos-15, target: darwin-arm64 }
           - { os: windows-latest, target: win-x64 }
     steps:
       - name: Checkout

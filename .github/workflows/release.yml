@@ -2030,6 +2030,76 @@ jobs:
             --sha256 "${BUNDLE_SHA256}"
           echo "state=published" >> "$GITHUB_OUTPUT"
 
+  # ---------------------------------------------------------------------------
+  # Hand the published release to the install smoke, and do not wait for it.
+  # ---------------------------------------------------------------------------
+  #
+  # Dispatched rather than called with `uses:`. A called workflow would turn the
+  # whole Release run red *after* the release had already succeeded, could not
+  # be re-run on its own — a re-run resolves to `complete` and skips it — and
+  # would hold `report`, and therefore the failure issue, for as long as the
+  # slowest channel took.
+  #
+  # It still waits for the publish jobs, because it has to know their outcome:
+  # fire-and-forget describes who waits for the *result*, not when it fires. A
+  # channel whose publish failed is passed in `skip` so it is never scheduled,
+  # rather than failing on the version it serves and reporting a second time on
+  # an incident the release report already names.
+  #
+  # Deliberately not `needs: container-manifest`: the release tier has no
+  # container or binary legs, so waiting on the image build would delay this by
+  # the whole container graph for nothing.
+  published-smoke-dispatch:
+    name: Dispatch the published install smoke
+    needs: [detect, finalize, publish-homebrew, publish-scoop]
+    # Stable only. A release candidate publishes to npm under a different
+    # dist-tag and never touches the tap, the bucket or `releases/latest`, so
+    # every non-npm leg would assert against the previous stable release.
+    if: >-
+      always()
+      && needs.detect.outputs.proceed == 'true'
+      && needs.detect.outputs.dry_run == 'false'
+      && needs.detect.outputs.dist_tag == 'latest'
+      && needs.finalize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Creating a workflow dispatch is an Actions write. Without it this is a
+      # 403, and a `permissions:` block alone is not authentication — `gh` also
+      # needs the token in its environment.
+      actions: write
+    steps:
+      - name: Dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          BREW: ${{ needs.publish-homebrew.result }}
+          SCOOP: ${{ needs.publish-scoop.result }}
+        run: |
+          set -euo pipefail
+          skip=""
+          [ "${BREW}" = "success" ] || skip="${skip}homebrew,"
+          [ "${SCOOP}" = "success" ] || skip="${skip}scoop,"
+          skip="${skip%,}"
+          if [ -n "${skip}" ]; then
+            echo "Not scheduling (publish did not succeed): ${skip}"
+          fi
+
+          # `--ref` is the released tag, not main. `release_sha` decides which
+          # pull request gets the comment; only the ref decides which *driver
+          # code* runs, and main may already have moved past this release.
+          gh workflow run published-smoke.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "v${VERSION}" \
+            -f version="${VERSION}" \
+            -f tier=release \
+            -f skip="${skip}" \
+            -f release_sha="${GITHUB_SHA}" \
+            -f report_mode=release-pr
+          echo "Dispatched the published install smoke for v${VERSION}."
+
   report:
     name: Report
     needs:
@@ -2051,6 +2121,9 @@ jobs:
       - publish-winget
       - publish-aur
       - binary
+      # A real graph edge, not just an env read: without it `report` can finish
+      # before the dispatcher has failed, and a 403 goes unnoticed.
+      - published-smoke-dispatch
     if: always() && needs.detect.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -2072,6 +2145,7 @@ jobs:
           R_DRAFT: ${{ needs.draft-release.result }}
           R_NPM: ${{ needs.npm.result }}
           R_SMOKE: ${{ needs.smoke.result }}
+          R_PUBSMOKE: ${{ needs.published-smoke-dispatch.result }}
           R_FINAL: ${{ needs.finalize.result }}
           R_CBUILD: ${{ needs.container-build.result }}
           R_CMANIFEST: ${{ needs.container-manifest.result }}
@@ -2116,6 +2190,7 @@ jobs:
             printf 'draft      %s\n' "${R_DRAFT}"
             printf 'npm        %s  (dist-tag %s)\n' "${R_NPM}" "${DIST_TAG}"
             printf 'smoke      %s\n' "${R_SMOKE}"
+            printf 'pub smoke  %s  (dispatched; results report separately)\n' "${R_PUBSMOKE}"
             printf 'finalize   %s\n' "${R_FINAL}"
             printf 'image      %s  (amd64 + arm64)\n' "${R_CBUILD}"
             printf 'image tag  %s  index %s\n' "${R_CMANIFEST}" "${index_short}"
@@ -2151,6 +2226,7 @@ jobs:
           for pair in "build:${R_BUILD}" "verify-artifact:${R_VERIFY}" \
                       "verify-readonly:${R_READONLY}" "draft-release:${R_DRAFT}" \
                       "npm:${R_NPM}" "smoke:${R_SMOKE}" "finalize:${R_FINAL}" \
+                      "published-smoke-dispatch:${R_PUBSMOKE}" \
                       "container-build:${R_CBUILD}" "container-manifest:${R_CMANIFEST}" \
                       "container-verify:${R_CVERIFY}" "container-notes:${R_CNOTES}" \
                       "publish-homebrew:${R_BREW}" "publish-scoop:${R_SCOOP}" \

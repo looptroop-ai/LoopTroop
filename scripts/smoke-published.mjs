@@ -1030,10 +1030,14 @@ async function openCodeAnswers(port) {
 // never disagree about what exists.
 // ---------------------------------------------------------------------------
 
-export function planMatrix({ tier = 'release', only = [] } = {}) {
+export function planMatrix({ tier = 'release', only = [], skip = [] } = {}) {
   const legs = []
   for (const [key, recipe] of Object.entries(CHANNELS)) {
     if (only.length > 0 && !only.includes(key)) continue
+    // A channel whose publish job failed is not scheduled at all. Running it
+    // would fail on the version it serves and report a second time on an
+    // incident the release report already names.
+    if (skip.includes(key)) continue
     if (recipe.stub) continue
     for (const leg of recipe.legs) {
       if (tier === 'release' && leg.tier !== 'release') continue
@@ -1065,8 +1069,11 @@ function parseArgs(argv) {
     resultFile: null,
     plan: false,
     only: [],
+    skip: [],
   }
-  const takesValue = new Set(['--channel', '--version', '--opencode', '--profile', '--tier', '--result-file', '--only'])
+  const takesValue = new Set([
+    '--channel', '--version', '--opencode', '--profile', '--tier', '--result-file', '--only', '--skip',
+  ])
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--pin') {
@@ -1092,6 +1099,7 @@ function parseArgs(argv) {
     else if (arg === '--tier') options.tier = value
     else if (arg === '--result-file') options.resultFile = value
     else if (arg === '--only') options.only = value.split(',').map((s) => s.trim()).filter(Boolean)
+    else if (arg === '--skip') options.skip = value.split(',').map((s) => s.trim()).filter(Boolean)
   }
   return options
 }
@@ -1115,12 +1123,13 @@ async function main() {
   }
 
   if (options.plan) {
-    const legs = planMatrix({ tier: options.tier, only: options.only })
+    const legs = planMatrix({ tier: options.tier, only: options.only, skip: options.skip })
     const payload = JSON.stringify({ include: legs })
     if (process.env.GITHUB_OUTPUT) {
       writeFileSync(process.env.GITHUB_OUTPUT, `matrix=${payload}\n`, { flag: 'a' })
     }
     log(`matrix=${payload}`)
+    if (options.skip.length > 0) log(`\nNot scheduled (publish did not succeed): ${options.skip.join(', ')}`)
     log(`\n${legs.length} leg(s) for tier "${options.tier}":`)
     for (const leg of legs) log(`  ${leg.name.padEnd(30)} tier=${leg.tier} opencode=${leg.opencode}`)
     return

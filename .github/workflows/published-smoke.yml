@@ -32,11 +32,31 @@ on:
         description: 'Comma-separated channels, or blank for the whole tier'
         type: string
         default: ''
+      skip:
+        description: 'Comma-separated channels to leave unscheduled (a failed publish)'
+        type: string
+        default: ''
+      release_sha:
+        description: 'Commit the release was cut from, for finding its bump PR'
+        type: string
+        default: ''
       report_mode:
         description: 'Where a failure is reported'
         type: choice
-        options: [issue, none]
+        options: [issue, release-pr, none]
         default: issue
+
+  # Mondays, at a non-zero minute: GitHub delays runs scheduled on the hour.
+  #
+  # This is where most of the value is. Releases are infrequent, and a channel
+  # can rot between them without anybody touching this repository — a runner
+  # image bumps, Homebrew moves `node@24`, someone edits the tap by hand, a
+  # registry has a bad day. A release-time smoke cannot see any of that.
+  #
+  # Scheduled runs only ever execute on the default branch, and GitHub disables
+  # them after 60 days without repository activity.
+  schedule:
+    - cron: '17 6 * * 1'
 
   # TEMPORARY — removed before this branch merges, together with the
   # PUBLISHED_SMOKE_ONLY variable.
@@ -135,10 +155,12 @@ jobs:
           # On the temporary push trigger, a repository variable narrows the run
           # to the milestone under construction instead of the whole tier.
           ONLY: ${{ inputs.only || vars.PUBLISHED_SMOKE_ONLY || '' }}
+          SKIP: ${{ inputs.skip }}
         run: |
           set -euo pipefail
           args=(--plan --tier "${TIER}")
           if [ -n "${ONLY}" ]; then args+=(--only "${ONLY}"); fi
+          if [ -n "${SKIP}" ]; then args+=(--skip "${SKIP}"); fi
           node scripts/smoke-published.mjs "${args[@]}"
 
       # Setup failures happen before the driver can write a result file, so the
@@ -346,6 +368,48 @@ jobs:
       # Reporting is explicit, never inferred from github.event_name: the same
       # workflow is dispatched by a release, by a repair and by a schedule, and
       # only the caller knows which thread a failure belongs on.
+      #
+      # A release-triggered failure goes to the bump pull request — the artefact
+      # of record for that release, and something the author is subscribed to.
+      # It is deliberately NOT also added to release.yml's failure issue: one
+      # incident, one place.
+      - name: Comment on the release pull request
+        if: steps.compose.outputs.failed != '' && inputs.report_mode == 'release-pr'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published install smoke failed for v${VERSION}"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            cat report.md
+          } > body.md
+
+          # The commit is passed in rather than read from `github.sha`: a
+          # dispatched run checks out the default branch, whose head may already
+          # have moved past the release.
+          pr=""
+          if [ -n "${RELEASE_SHA}" ]; then
+            pr=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+          fi
+
+          if [ -n "${pr}" ]; then
+            gh pr comment "${pr}" --repo "${GITHUB_REPOSITORY}" --body-file body.md
+            echo "Reported on pull request #${pr}."
+          else
+            # A release cut by dispatch, or a branch deleted since. Falling back
+            # to an issue keeps the failure visible instead of dropping it.
+            echo "::warning::No pull request found for ${RELEASE_SHA:-<none>}; opening an issue instead."
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "Published install smoke: v${VERSION}" --body-file body.md
+          fi
+
       - name: Open or update the failure issue
         if: steps.compose.outputs.failed != '' && (inputs.report_mode == 'issue' || inputs.report_mode == '')
         shell: bash
@@ -366,6 +430,25 @@ jobs:
             gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file issue.md
           else
             gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file issue.md
+          fi
+
+      # A channel that has recovered should not leave a stale open issue behind
+      # implying it is still broken.
+      - name: Close the failure issue when everything passed
+        if: steps.compose.outputs.failed == '' && (inputs.report_mode == 'issue' || inputs.report_mode == '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Published install smoke: v${VERSION}"
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Every leg passed on ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing."
+            gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}"
           fi
 
       - name: Fail if any channel failed

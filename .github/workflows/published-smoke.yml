@@ -1,0 +1,594 @@
+name: Published install smoke
+
+# Installs published releases from their real feeds, the way the documentation
+# tells users to, and drives each one until it serves.
+#
+# THIS CAN NEVER BE A REQUIRED CHECK, and must never look like one. It runs
+# after the tag exists, so by the time it can say anything the release has
+# already shipped. Its job is to tell somebody quickly, not to hold a gate.
+#
+# `ci.yml` proves the same channels work from locally built bytes. Only this
+# can see a broken publish — a tap that never received its commit, a `bin`
+# mapping that survived `npm pack` but not `npm publish`, a registry still
+# serving the previous version behind `@latest`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to test (blank = latest stable)'
+        type: string
+        default: ''
+      tier:
+        description: 'Which legs to run'
+        type: choice
+        options: [release, weekly]
+        default: weekly
+      pin:
+        description: 'Install this exact version where the channel allows it'
+        type: boolean
+        default: false
+      only:
+        description: 'Comma-separated channels, or blank for the whole tier'
+        type: string
+        default: ''
+      skip:
+        description: 'Comma-separated channels to leave unscheduled (a failed publish)'
+        type: string
+        default: ''
+      release_sha:
+        description: 'Commit the release was cut from, for finding its bump PR'
+        type: string
+        default: ''
+      report_mode:
+        description: 'Where a failure is reported'
+        type: choice
+        options: [issue, release-pr, none]
+        default: issue
+
+  # Mondays, at a non-zero minute: GitHub delays runs scheduled on the hour.
+  #
+  # This is where most of the value is. Releases are infrequent, and a channel
+  # can rot between them without anybody touching this repository — a runner
+  # image bumps, Homebrew moves `node@24`, someone edits the tap by hand, a
+  # registry has a bad day. A release-time smoke cannot see any of that.
+  #
+  # Scheduled runs only ever execute on the default branch, and GitHub disables
+  # them after 60 days without repository activity.
+  schedule:
+    - cron: '17 6 * * 1'
+
+# Least privilege at the top; jobs widen only where they must.
+permissions:
+  contents: read
+
+# Scoped so that runs almost never share a group, rather than serialised.
+#
+# The hazard being avoided is GitHub's default queueing behaviour: one pending
+# run is kept per group, and a third arrival CANCELS AND REPLACES it. A single
+# constant group would therefore let a weekly run silently discard a
+# release-triggered one waiting behind it, and the release would look as though
+# it had never been smoked. `queue: max` fixes that directly, but the pinned
+# actionlint does not know the key yet and rejects the workflow; bumping it
+# inside this change would re-lint 4,400 lines of unrelated workflow YAML.
+#
+# Keying on the version avoids the hazard instead of managing it. A dispatch
+# always passes an explicit version, so two runs for the same version serialise,
+# which is the only case worth serialising. Everything else — a schedule, a
+# push — gets a unique group and simply runs. Concurrent runs are harmless here:
+# each job gets its own runner, so the fixed per-channel ports cannot collide
+# across runs.
+#
+# Never `group: release`. The republish workflows share that group on purpose so
+# a repair cannot race a release; this one must not, or it would queue behind a
+# release that is waiting on it.
+concurrency:
+  group: published-smoke-${{ inputs.version || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      # Blank resolves to the newest stable release. That is what makes the
+      # temporary push trigger usable at all: a push event carries no inputs.
+      # Prereleases are excluded because every channel except npm ignores them.
+      - name: Resolve the version under test
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED:-}"
+          if [ -z "${version}" ]; then
+            version=$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --exclude-pre-releases \
+              --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          version="${version#v}"
+          if [ -z "${version}" ]; then
+            echo "::error::Could not resolve a version to test."
+            exit 1
+          fi
+          echo "Testing ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # The matrix comes from the recipe table in the driver, so the workflow
+      # and the recipes cannot disagree about which legs exist.
+      - name: Plan the matrix
+        id: plan
+        shell: bash
+        env:
+          TIER: ${{ inputs.tier || 'weekly' }}
+          # Narrowing comes from an explicit dispatch input only — never from a
+          # repository variable. A variable that quietly shrinks the weekly
+          # matrix would reduce coverage with nothing in the run to say so,
+          # which is the failure this workflow exists to prevent rather than
+          # commit.
+          ONLY: ${{ inputs.only }}
+          SKIP: ${{ inputs.skip }}
+        run: |
+          set -euo pipefail
+          args=(--plan --tier "${TIER}")
+          if [ -n "${ONLY}" ]; then args+=(--only "${ONLY}"); fi
+          if [ -n "${SKIP}" ]; then args+=(--skip "${SKIP}"); fi
+          node scripts/smoke-published.mjs "${args[@]}"
+
+      # Setup failures happen before the driver can write a result file, so the
+      # reporter needs to know which legs were meant to run in order to say
+      # "setup failed" rather than silently omitting them.
+      - name: Record the expected legs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '${{ steps.plan.outputs.matrix }}' > expected.json
+          node -e "
+            const legs = JSON.parse(require('node:fs').readFileSync('expected.json','utf8')).include
+            console.log(\`\${legs.length} leg(s) expected\`)
+            for (const leg of legs) console.log('  ' + leg.name)
+          "
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: published-smoke-expected
+          path: expected.json
+          retention-days: 14
+
+  smoke:
+    name: ${{ matrix.name }}
+    needs: [plan]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      # Non-negotiable: a broken Scoop bucket must not hide a broken tap. Each
+      # leg is independently named so a failure identifies its own channel.
+      fail-fast: false
+      # Held below the matrix size so this never saturates the account's
+      # concurrency while `ci.yml` is still running on the same commit.
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.15.0
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      # Provisioning the *manager* is runner setup, not the thing under test:
+      # nobody documents "install Homebrew" as part of installing LoopTroop.
+      # What is under test is the documented LoopTroop command, which the driver
+      # runs. Versions are pinned to match `ci.yml`, so a break in one of them
+      # is a deliberate change here rather than a surprise on an unrelated pull
+      # request.
+      - name: Install the node manager
+        if: matrix.channel == 'bun' || matrix.channel == 'pnpm' || matrix.channel == 'yarn'
+        shell: bash
+        env:
+          # Yarn Classic deliberately: Yarn 2 removed `yarn global` and never
+          # replaced it, so 1.x is the only version that can install a CLI
+          # globally at all.
+          PINS: 'bun=bun@1.3.14 pnpm=pnpm@11.21.0 yarn=yarn@1.22.22'
+        run: |
+          set -euo pipefail
+          installed=""
+          for pin in ${PINS}; do
+            if [ "${pin%%=*}" = "${{ matrix.channel }}" ]; then
+              npm install --global "${pin#*=}"
+              installed="${pin#*=}"
+            fi
+          done
+          if [ -z "${installed}" ]; then
+            echo "::error::No pinned version recorded for ${{ matrix.channel }}."
+            exit 1
+          fi
+
+          # Each manager keeps its global installs somewhere of its own, and
+          # only puts that directory on PATH as part of its *own* installer —
+          # which is skipped when the manager itself comes from npm, as it does
+          # here and in `ci.yml`. Without this, `bun add -g` succeeds and leaves
+          # nothing runnable, and `pnpm add -g` refuses outright with "run
+          # `pnpm setup`". Setting the variable and the PATH is what that
+          # command does; `smoke-node-manager.mjs` reaches the same conclusion
+          # from the other direction.
+          #
+          # Yarn needs nothing here: the driver resolves its global bin from
+          # `yarn global bin`, because the documentation tells users to put that
+          # on PATH themselves and that instruction is part of the install.
+          case "${{ matrix.channel }}" in
+            bun)
+              echo "${BUN_INSTALL:-$HOME/.bun}/bin" >> "$GITHUB_PATH"
+              ;;
+            pnpm)
+              # `$PNPM_HOME/bin`, not `$PNPM_HOME`. pnpm names the directory it
+              # wants in its own error, and on 11.21.0 that is a `bin`
+              # subdirectory of the home — checked by running it rather than
+              # inferred from the variable's name, which reads as though it were
+              # the bin directory itself. It must exist before pnpm looks.
+              echo "PNPM_HOME=$HOME/.local/share/pnpm" >> "$GITHUB_ENV"
+              mkdir -p "$HOME/.local/share/pnpm/bin"
+              echo "$HOME/.local/share/pnpm/bin" >> "$GITHUB_PATH"
+              ;;
+          esac
+
+      # Homebrew ships on the ubuntu images but is deliberately kept off PATH,
+      # so `brew` is simply not a command there until this runs.
+      - name: Put Linuxbrew on PATH
+        if: matrix.channel == 'homebrew' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+
+      # Updated here, before the install, and never during it.
+      #
+      # A stale Homebrew snapshot on the runner image is a known failure: it
+      # died mid-install with "unknown install step: run" — a message about
+      # brew's own state machine rather than about the formula — which is why
+      # `ci.yml` updates first too. The install itself then runs with
+      # HOMEBREW_NO_AUTO_UPDATE so brew cannot decide to do this halfway
+      # through and bury the real output.
+      - name: Update Homebrew
+        if: matrix.channel == 'homebrew'
+        shell: bash
+        env:
+          HOMEBREW_NO_ENV_HINTS: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
+        run: brew update --quiet
+
+      - name: Install Scoop
+        if: matrix.channel == 'scoop'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          # The installer adds the shim directory to the *user* PATH, which this
+          # process has already read; without this `scoop` is not a command in
+          # the next step.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          scoop --version
+
+      # OpenCode is a hard prerequisite of `looptroop start`, so every daemon leg
+      # installs a real one rather than using mock mode — mock cannot see whether
+      # the daemon can actually launch what a user has.
+      #
+      # From npm on every platform, which is the interesting shape where it
+      # matters: on Windows an npm-installed `opencode` is `opencode.cmd`, not an
+      # `.exe`, and a release once shipped a daemon that could not spawn it. On
+      # Linux and macOS both routes leave an ordinary executable on PATH, so the
+      # official installer would prove nothing extra.
+      #
+      # It is also the reliable route. `opencode.ai/install` resolves its version
+      # through the GitHub API, and third-party installers get no token here — so
+      # it ran unauthenticated from a shared runner address and intermittently
+      # died on the anonymous rate limit ("Failed to fetch version information").
+      # The npm registry has no such limit, so this avoids the flake without
+      # handing a repository token to someone else's install script.
+      - name: Install OpenCode
+        if: matrix.opencode == 'npm' || matrix.opencode == 'adopt'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
+        run: npm install --global opencode-ai
+
+      - name: Confirm OpenCode is on PATH
+        if: matrix.opencode != 'mock' && matrix.opencode != 'none'
+        shell: bash
+        run: opencode --version
+
+      # The token reaches the driver and the install commands; it never reaches
+      # the CLI, the daemon, the OpenCode they spawn, or any uninstall.
+      #
+      # Blanking it for the whole step was tried and reverted. The installers do
+      # read GITHUB_TOKEN || GH_TOKEN, so running them anonymously did exercise
+      # the path a real user takes — and it put every installer leg behind
+      # GitHub's 60-per-hour limit for an address shared with every other tenant
+      # on the runner pool. The macOS leg failed twice on exactly that,
+      # reporting a rate limit as though the release were broken. That branch is
+      # covered deterministically now, by a fixture in `tests/installer.test.ts`
+      # that answers 403 and asserts the message a user actually sees.
+      - name: Install it, run it, and uninstall it again
+        id: smoke
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          CHANNEL: ${{ matrix.channel }}
+          OPENCODE: ${{ matrix.opencode }}
+          # Echoed back into the result file so the reporter pairs a result with
+          # the leg that produced it. `process.platform` says `darwin`, which
+          # cannot be matched to a runner label.
+          LEG: ${{ matrix.name }}
+          PIN: ${{ inputs.pin && '--pin' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          node scripts/smoke-published.mjs \
+            --channel "${CHANNEL}" \
+            --version "${VERSION}" \
+            --opencode "${OPENCODE}" \
+            --leg "${LEG}" \
+            --result-file "${RUNNER_TEMP}/result.json" \
+            ${PIN}
+
+      # Unique per leg: upload-artifact rejects duplicate names, and two legs
+      # sharing one would overwrite a result and read as a missing leg.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: published-smoke-${{ matrix.channel }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/result.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  report:
+    name: Report
+    needs: [plan, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      # The release-triggered path comments on the bump pull request. Comments
+      # are pull-request writes, not issue writes.
+      pull-requests: write
+    outputs:
+      failed: ${{ steps.compose.outputs.failed }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: published-smoke-*
+          path: results
+
+      - name: Compose the report
+        id: compose
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const { readdirSync, readFileSync, existsSync, writeFileSync, appendFileSync } = require("node:fs")
+            const { join } = require("node:path")
+            const root = "results"
+            const version = process.env.VERSION
+
+            const expectedPath = join(root, "published-smoke-expected", "expected.json")
+            const expected = existsSync(expectedPath)
+              ? JSON.parse(readFileSync(expectedPath, "utf8")).include
+              : []
+
+            // An empty plan is a failure, never a pass. If the plan job died,
+            // or `--only` named a channel that does not exist, there is no
+            // manifest and no results — and without this the report renders an
+            // empty table, reports nothing wrong, and closes any open failure
+            // issue as though every channel had just been verified.
+            if (expected.length === 0) {
+              const lines = [`## Published install smoke — v${version}`, "",
+                "**No legs were planned.** Either the plan job failed, or a channel filter matched nothing.",
+                "Nothing was verified; this is not a pass.", ""]
+              writeFileSync("report.md", lines.join("\n"))
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
+              appendFileSync(process.env.GITHUB_OUTPUT, "failed=plan\n")
+              console.log(lines.join("\n"))
+              process.exit(0)
+            }
+
+            // Keyed by the planned leg name the driver echoes back, so a result
+            // pairs with the leg that produced it. Matching on channel alone
+            // put any npm result against any npm row, and a failure could be
+            // reported against the wrong operating system entirely.
+            const byLeg = new Map()
+            for (const dir of existsSync(root) ? readdirSync(root) : []) {
+              if (dir === "published-smoke-expected") continue
+              const file = join(root, dir, "result.json")
+              if (!existsSync(file)) continue
+              const parsed = JSON.parse(readFileSync(file, "utf8"))
+              if (parsed.leg) byLeg.set(parsed.leg, parsed)
+            }
+
+            const rows = []
+            const failed = []
+            const details = []
+            for (const leg of expected) {
+              const hit = byLeg.get(leg.name)
+              if (!hit) {
+                // No result file at all: the leg died before the driver could
+                // write one — a failed checkout, a manager that would not
+                // install, a runner that never came up.
+                rows.push([leg.name, "—", "SETUP FAILED", "no result file — the leg died before the driver ran"])
+                failed.push(leg.name)
+                continue
+              }
+              // A leg can be deliberately not run — pnpm inside its 24-hour
+              // hold, or a tap-backed channel under --pin. Those record
+              // `ok: true` because nothing is wrong, but reporting them as a
+              // pass would claim coverage that did not happen.
+              const outcome = hit.skipped ? "not run" : hit.ok ? "ok" : "FAIL"
+              rows.push([leg.name, hit.served ?? "—", outcome, hit.skipped ?? ""])
+              if (!hit.ok) {
+                failed.push(leg.name)
+                // Carried here rather than looked up again later: the previous
+                // version searched a map it had already emptied, so the
+                // assertions never reached the report at all.
+                if (hit.failures?.length) details.push([leg.name, hit.failures])
+              }
+            }
+
+            const width = Math.max(20, ...rows.map((r) => r[0].length))
+            const lines = [`## Published install smoke — v${version}`, "", "```"]
+            lines.push(`${"leg".padEnd(width)}  ${"served".padEnd(10)}  ${"result".padEnd(12)}  why`)
+            lines.push("-".repeat(width + 34))
+            for (const [name, served, result, note] of rows) {
+              const row = `${name.padEnd(width)}  ${String(served).padEnd(10)}  ${result.padEnd(12)}`
+              lines.push(note ? `${row}  ${note}` : row.trimEnd())
+            }
+            lines.push("```", "")
+
+            for (const [name, failures] of details) {
+              lines.push(`**${name}**`, "", ...failures.map((f) => `- ${f}`), "")
+            }
+
+            // A result with no matching planned leg means the two disagree
+            // about what exists, which is worth saying out loud rather than
+            // dropping on the floor.
+            for (const [name] of byLeg) {
+              if (!expected.some((leg) => leg.name === name)) {
+                lines.push(`> Unplanned result reported by \`${name}\`.`, "")
+              }
+            }
+
+            writeFileSync("report.md", lines.join("\n"))
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n")
+            appendFileSync(process.env.GITHUB_OUTPUT, `failed=${failed.join(" ")}\n`)
+            console.log(lines.join("\n"))
+          '
+
+      # Reporting is explicit, never inferred from github.event_name: the same
+      # workflow is dispatched by a release, by a repair and by a schedule, and
+      # only the caller knows which thread a failure belongs on.
+      #
+      # A release-triggered failure goes to the bump pull request — the artefact
+      # of record for that release, and something the author is subscribed to.
+      # It is deliberately NOT also added to release.yml's failure issue: one
+      # incident, one place.
+      - name: Comment on the release pull request
+        if: steps.compose.outputs.failed != '' && inputs.report_mode == 'release-pr'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published install smoke failed for v${VERSION}"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            cat report.md
+          } > body.md
+
+          # The commit is passed in rather than read from `github.sha`: a
+          # dispatched run checks out the default branch, whose head may already
+          # have moved past the release.
+          pr=""
+          if [ -n "${RELEASE_SHA}" ]; then
+            pr=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+          fi
+
+          if [ -n "${pr}" ]; then
+            gh pr comment "${pr}" --repo "${GITHUB_REPOSITORY}" --body-file body.md
+            echo "Reported on pull request #${pr}."
+          else
+            # A release cut by dispatch, or a branch deleted since. Falling back
+            # to an issue keeps the failure visible instead of dropping it.
+            echo "::warning::No pull request found for ${RELEASE_SHA:-<none>}; opening an issue instead."
+            gh issue create --repo "${GITHUB_REPOSITORY}" \
+              --title "Published install smoke: v${VERSION}" --body-file body.md
+          fi
+
+      - name: Open or update the failure issue
+        if: steps.compose.outputs.failed != '' && (inputs.report_mode == 'issue' || inputs.report_mode == '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Published install smoke: v${VERSION}"
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number --jq '.[0].number // empty')
+          {
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            cat report.md
+          } > issue.md
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file issue.md
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file issue.md
+          fi
+
+      # A channel that has recovered should not leave a stale open issue behind
+      # implying it is still broken.
+      - name: Close the failure issue when everything passed
+        if: steps.compose.outputs.failed == '' && (inputs.report_mode == 'issue' || inputs.report_mode == '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          title="Published install smoke: v${VERSION}"
+          existing=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Every leg passed on ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Closing."
+            gh issue close "${existing}" --repo "${GITHUB_REPOSITORY}"
+          fi
+
+      - name: Fail if any channel failed
+        if: steps.compose.outputs.failed != ''
+        shell: bash
+        env:
+          FAILED: ${{ steps.compose.outputs.failed }}
+        run: |
+          echo "::error::Published install smoke failed: ${FAILED}"
+          exit 1

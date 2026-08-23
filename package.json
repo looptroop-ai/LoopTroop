@@ -70,6 +70,7 @@
     "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:install": "node scripts/smoke-install.mjs",
     "verify:installer": "node scripts/smoke-installer.mjs",
+    "verify:published": "node scripts/smoke-published.mjs",
     "verify:bundle": "node scripts/smoke-bundle.mjs",
     "installers:sync": "node scripts/sync-installers.mjs",
     "installers:check": "node scripts/sync-installers.mjs --check",

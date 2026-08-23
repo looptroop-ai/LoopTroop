@@ -456,3 +456,50 @@ jobs:
             --version "${VERSION}" \
             --url "${WIN_BINARY_URL}" \
             --sha256 "${WIN_BINARY_SHA256}"
+
+  # ---------------------------------------------------------------------------
+  # Verify the repair against the real feed.
+  # ---------------------------------------------------------------------------
+  #
+  # Without this, a repaired channel is unverified until the next scheduled run
+  # — which is up to a week of believing a fix worked because the push reported
+  # success. Dispatched rather than called, for the same reasons as in
+  # `release.yml`: a red smoke must not retroactively fail the repair that
+  # succeeded, and it must be re-runnable on its own.
+  #
+  # `--only` narrows it to the channel that was repaired. A full matrix here
+  # would fail unrelated latest-pointer assertions whenever the repair is for
+  # anything other than the newest release.
+  #
+  # Chocolatey and WinGet are excluded on purpose: a push to either is a
+  # submission, and the package is not publicly installable until moderation or
+  # a manifest review completes — hours to days later. Dispatching immediately
+  # would report a healthy repair as a failure.
+  verify-repair:
+    name: Verify the repaired channel
+    needs: [prepare, push-formula, push-manifest]
+    if: >-
+      always()
+      && (needs.push-formula.result == 'success' || needs.push-manifest.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch the published install smoke
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          gh workflow run published-smoke.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main \
+            -f version="${VERSION}" \
+            -f tier=weekly \
+            -f only="${CHANNEL}" \
+            -f report_mode=issue
+          echo "Dispatched the published install smoke for ${CHANNEL} at v${VERSION}."

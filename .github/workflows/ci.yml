@@ -321,10 +321,11 @@ jobs:
   # here-string that swallowed its terminator all pass the unit tests and fail on
   # a user's first command. `--tarball`, not the network path, because hitting
   # the GitHub API from every runner on every push is slow and rate-limited; the
-  # network path is proved once against a real release, by the
-  # `smoke-installer-network` job in `release.yml` — which runs the published
-  # one-liner after `finalize` has un-drafted the release. That claim stood here
-  # for several releases before any job made it true.
+  # network path is proved against a real release by `published-smoke.yml`,
+  # which runs the published one-liners — on Linux and macOS as well as
+  # Windows, and both the default and `--binary` modes — after the release has
+  # been un-drafted. That claim stood here for several releases before any job
+  # made it true, so it is worth keeping the pointer accurate.
   smoke-installer:
     name: Installer script (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

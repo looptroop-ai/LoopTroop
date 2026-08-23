@@ -30,7 +30,7 @@
 import { spawnSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -69,7 +69,7 @@ const POLL_INTERVAL_MS = 15_000
  * version information". Installing from the npm registry avoids that API
  * entirely without weakening the no-token rule.
  */
-const CHANNELS = {
+export const CHANNELS = {
   npm: {
     // Verbatim from README.md. If that changes, this must change with it.
     documented: 'npm install -g looptroop',
@@ -86,10 +86,11 @@ const CHANNELS = {
     propagationCapMs: 3 * 60_000,
     publishJob: 'npm',
     publishHint: 'Check https://www.npmjs.com/package/looptroop?activeTab=versions',
-    install: (version, pin) => ['install', '--global', pin ? `looptroop@${version}` : 'looptroop'],
-    uninstall: () => ['uninstall', '--global', 'looptroop'],
-    manager: 'npm',
+    install: ({ version, pin }) =>
+      npmSpec(['install', '--global', pin ? `looptroop@${version}` : 'looptroop']),
+    uninstall: () => npmSpec(['uninstall', '--global', 'looptroop']),
     published: probeNpmRegistry,
+    latest: async () => probeNpmLatest(),
     expect: {
       channel: 'npm',
       // A function, not a string: the binary channel's command differs by
@@ -99,6 +100,196 @@ const CHANNELS = {
       okChecksPost: ['opencode', 'daemon', 'port'],
     },
   },
+
+  // The POSIX one-liner, through the website. `install.sh` and `install.ps1`
+  // are the only two files in the repository that nothing else exercises
+  // end-to-end: `smoke-installer.mjs` runs the wrappers against a *local*
+  // tarball and says so in its header — "the network path is proved once,
+  // against a real release". This is that proof, and until now it existed only
+  // for PowerShell.
+  'installer-sh': {
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh',
+    legs: [
+      { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
+      { os: 'macos-latest', tier: 'release', opencode: 'npm' },
+    ],
+    daemon: true,
+    pinnable: true,
+    port: 39122,
+    opencodePort: 39622,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'finalize',
+    publishHint: 'The website redirects /install to the latest release asset; check the release has install.sh attached.',
+    install: ({ version, pin }) => shellSpec(
+      `curl -fsSL ${installerUrl('install.sh', version, pin)} | sh${pin ? ` -s -- --version ${version}` : ''}`,
+    ),
+    // The installer's default mode hands the verified tarball to `npm install
+    // -g`, precisely so that npm's own uninstall keeps working.
+    uninstall: () => npmSpec(['uninstall', '--global', 'looptroop']),
+    published: probeReleaseAsset('install.sh'),
+    expect: {
+      // `npm`, not some "installer" channel. The installer writes no marker
+      // file, so `detectFromShape` classifies it by where the module sits — and
+      // in default mode that is under `node_modules/looptroop/`. Anyone
+      // "correcting" this to `installer-sh` will break the leg.
+      channel: 'npm',
+      upgradeCommand: () => 'npm install -g looptroop@latest',
+      okChecksPre: ['install', 'git', 'npm', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // The same wrapper under Windows PowerShell 5.1 rather than PowerShell 7.
+  // They are different runtimes, and 5.1 is the one that ships with Windows —
+  // so it is what the documented one-liner lands in for anyone who has never
+  // installed pwsh.
+  'installer-ps1': {
+    documented: 'irm https://www.looptroop.ovh/install.ps1 | iex',
+    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39123,
+    opencodePort: 39623,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'finalize',
+    publishHint: 'The website redirects /install.ps1 to the latest release asset.',
+    install: ({ version, pin }) => powershellSpec(
+      pin
+        // A piped script cannot be given a parameter, so a pinned run needs the
+        // scriptblock form — the same shape `installChannel.ts` uses for the
+        // binary upgrade command.
+        ? `& ([scriptblock]::Create((irm ${installerUrl('install.ps1', version, pin)}))) -Version ${version}`
+        : 'irm https://www.looptroop.ovh/install.ps1 | iex',
+    ),
+    uninstall: () => npmSpec(['uninstall', '--global', 'looptroop']),
+    published: probeReleaseAsset('install.ps1'),
+    expect: {
+      channel: 'npm',
+      upgradeCommand: () => 'npm install -g looptroop@latest',
+      okChecksPre: ['install', 'git', 'npm', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // `--binary` installs the standalone executable — one file carrying its own
+  // Node runtime — into `~/.looptroop`. Documented as a way to *install*, not
+  // only to upgrade.
+  'installer-sh-binary': {
+    documented: 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39124,
+    opencodePort: 39624,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'binary',
+    publishHint: 'Check the release carries looptroop-<version>-linux-x64.tar.gz.',
+    pathHint: () => join(binaryPrefix(), 'bin'),
+    install: ({ version, pin }) => shellSpec(
+      `curl -fsSL ${installerUrl('install.sh', version, pin)} | sh -s -- --binary${pin ? ` --version ${version}` : ''}`,
+    ),
+    // No uninstall command exists for this channel; the documentation says to
+    // remove the directory.
+    uninstall: () => ({ removePath: binaryPrefix() }),
+    published: probeReleaseAsset('install.sh'),
+    expect: {
+      channel: 'binary',
+      // Genuinely platform-dependent: a piped script cannot take a parameter,
+      // so Windows gets the scriptblock form. One string here would fail on one
+      // of the two operating systems.
+      upgradeCommand: (platform) => platform === 'win32'
+        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      // No `npm` check: the standalone binary carries its own runtime and a
+      // machine using it need not have npm at all, so asserting it would be
+      // testing the runner.
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  'installer-ps1-binary': {
+    documented: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
+    legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39125,
+    opencodePort: 39625,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'binary',
+    publishHint: 'Check the release carries looptroop-<version>-win-x64.zip.',
+    pathHint: () => join(binaryPrefix(), 'bin'),
+    install: ({ version, pin }) => powershellSpec(
+      `& ([scriptblock]::Create((irm ${installerUrl('install.ps1', version, pin)}))) -Binary${pin ? ` -Version ${version}` : ''}`,
+    ),
+    uninstall: () => ({ removePath: binaryPrefix() }),
+    published: probeReleaseAsset('install.ps1'),
+    expect: {
+      channel: 'binary',
+      upgradeCommand: (platform) => platform === 'win32'
+        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Command specs. A recipe describes *what to run*; `runChannel` runs it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where `--binary` puts the standalone executable.
+ *
+ * The same resolution the installer uses, so the two cannot disagree about
+ * what to remove. Deliberately *not* the configuration directory, which lives
+ * under `~/.config/looptroop` (or `%APPDATA%`) — a test asserts they are
+ * different, because this path is passed to a recursive delete.
+ */
+export function binaryPrefix() {
+  return process.env.LOOPTROOP_INSTALL_DIR || join(homedir(), '.looptroop')
+}
+
+/** npm is a shell script on POSIX and a `.cmd` on Windows, so it needs a shell there. */
+function npmSpec(args) {
+  return { command: IS_WINDOWS ? 'npm.cmd' : 'npm', args, shell: IS_WINDOWS }
+}
+
+/** A POSIX pipeline. `sh -c` because the documented command is a pipe. */
+function shellSpec(line) {
+  return { command: 'sh', args: ['-c', line], display: line }
+}
+
+/**
+ * Windows PowerShell 5.1 — `powershell.exe`, never `pwsh`.
+ *
+ * They are different runtimes and 5.1 is the one preinstalled on Windows, so it
+ * is where `irm … | iex` lands for anyone who has never installed PowerShell 7.
+ * `$ProgressPreference` is silenced first because `irm`'s progress bar makes a
+ * download take minutes on a runner.
+ */
+function powershellSpec(line) {
+  return {
+    command: 'powershell.exe',
+    args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      `$ProgressPreference = 'SilentlyContinue'; ${line}`],
+    display: line,
+  }
+}
+
+/**
+ * Where to fetch an installer wrapper from.
+ *
+ * Unpinned runs use the documented website URL, which is the path a user takes
+ * and which also exercises the redirect. A pinned run cannot: the website
+ * always points at `releases/latest`, so it would pair the *newest* wrapper
+ * with an older payload and prove nothing about the release being reproduced.
+ */
+function installerUrl(asset, version, pin) {
+  return pin
+    ? `https://github.com/${REPO}/releases/download/v${version}/${asset}`
+    : `https://www.looptroop.ovh/${asset === 'install.sh' ? 'install' : asset}`
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +419,28 @@ function readJson(text, name) {
   }
 }
 
+/**
+ * Where the shell would find `looptroop`, or null.
+ *
+ * `pathHint` is prepended for channels that install somewhere a fresh process
+ * has not been told about: the standalone installer writes into `~/.looptroop`
+ * and edits a shell profile, which this process never sources.
+ *
+ * On Windows `where` prints every match, one per line, and the first is the one
+ * that would run.
+ */
+function whichLooptroop(pathHint) {
+  const env = pathHint
+    ? { PATH: `${pathHint}${IS_WINDOWS ? ';' : ':'}${process.env.PATH ?? ''}` }
+    : {}
+  const probe = IS_WINDOWS
+    ? run('where', ['looptroop'], { shell: true, env })
+    : run('sh', ['-c', 'command -v looptroop'], { env })
+  if (probe.code !== 0) return null
+  const first = probe.stdout.split('\n').map((line) => line.trim()).find(Boolean)
+  return first && existsSync(first) ? first : null
+}
+
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 /** True when nothing holds the port. */
@@ -287,6 +500,31 @@ function probeNpmRegistry(recipe, version) {
   if (result.code === 0) return printed === '' ? null : printed
   if (/E404|is not in this registry|No match(ing versions)? found/i.test(result.combined)) return null
   throw new Error(`npm view failed (exit ${result.code}): ${result.combined.trim().split('\n')[0]}`)
+}
+
+/**
+ * Presence of a named asset on the release for a version.
+ *
+ * The installer wrappers and the standalone archives are release assets, so
+ * "has this published yet" means "does the tag exist and carry this file".
+ * Returns the version when both are true, so the caller compares like for like
+ * with every other channel.
+ */
+function probeReleaseAsset(asset) {
+  return async (_recipe, version) => {
+    let release
+    try {
+      release = await getJson(`${API}/repos/${REPO}/releases/tags/v${version}`)
+    } catch (error) {
+      // A tag that does not exist yet is "not published", which is what the
+      // poll is for. Anything else is a real failure and must not be swallowed
+      // into a propagation timeout that blames the release.
+      if (/-> 404/.test(String(error.message))) return null
+      throw error
+    }
+    if (release.draft === true) return null
+    return (release.assets ?? []).some((a) => a.name === asset) ? version : null
+  }
 }
 
 /** What `@latest` resolves to — the assertion that the channel's pointer moved. */
@@ -354,12 +592,11 @@ async function runChannel(recipe, options) {
   const gateOnly = profile === 'gate'
 
   const scratch = mkdtempSync(join(tmpdir(), `looptroop-published-${recipe.key}-`))
-  const prefix = join(scratch, 'prefix')
   const configDir = join(scratch, 'config')
   // Every command runs from a directory with nothing in it: a stray package.json
   // or .git in the working directory changes what several commands do.
   const elsewhere = join(scratch, 'elsewhere')
-  for (const dir of [prefix, elsewhere]) mkdirSync(dir, { recursive: true })
+  mkdirSync(elsewhere, { recursive: true })
 
   const port = recipe.port
   const opencodePort = recipe.opencodePort
@@ -380,7 +617,16 @@ async function runChannel(recipe, options) {
   }
 
   let adopted = null
-  const shim = () => (IS_WINDOWS ? join(prefix, 'looptroop.cmd') : join(prefix, 'bin', 'looptroop'))
+  // Resolved from PATH after the install, never guessed from a prefix.
+  //
+  // Every channel puts the launcher somewhere different — npm's global bin,
+  // Homebrew's Cellar, a Scoop shim, `~/.looptroop` for the standalone binary —
+  // and passing `--prefix` to force a common location would change the code
+  // path under test for the installers, where the prefix flag is itself a
+  // documented option. Asking the operating system where `looptroop` is, is
+  // both channel-agnostic and what a user's shell does.
+  let shimPath = null
+  const shim = () => shimPath ?? 'looptroop'
   const cli = (args, extra = {}) =>
     runShim(shim(), args, { cwd: elsewhere, env: { ...childEnv, ...(extra.env ?? {}) }, ...extra })
 
@@ -391,18 +637,27 @@ async function runChannel(recipe, options) {
 
     heading('The channel serves the version under test')
     if (pin) {
-      log(`  skipped  (--pin: a pinned install says nothing about the latest pointer)`)
-    } else {
-      const latest = probeNpmLatest()
+      log('  skipped  (--pin: a pinned install says nothing about the latest pointer)')
+    } else if (recipe.latest) {
+      const latest = await recipe.latest()
       check(
         'latest resolves to the version under test',
         latest === version,
         `${recipe.key} serves ${latest}, this run is testing ${version}`,
+        version,
       )
+    } else {
+      // Channels whose documented command always takes the newest release —
+      // the installer wrappers resolve it themselves — have no separate pointer
+      // to check. Step 4 catches a stale one: it asserts the *installed*
+      // version, which is the same guarantee arrived at from the other side.
+      log('  n/a  (this channel resolves the newest release itself; step 4 asserts what arrived)')
     }
 
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
-    const install = npm([...recipe.install(version, pin), '--prefix', prefix], { cwd: elsewhere })
+    const spec = recipe.install({ version, pin })
+    log(`  $ ${spec.display ?? [spec.command, ...spec.args].join(' ')}`)
+    const install = run(spec.command, spec.args, { cwd: elsewhere, shell: spec.shell ?? false })
     // A barrier, not an assertion: every later step would otherwise run against
     // whatever the runner already had, and report a pass for software this leg
     // never installed.
@@ -412,8 +667,11 @@ async function runChannel(recipe, options) {
     }
     pass('install', recipe.documented)
 
-    heading('The installed launcher is where the channel puts it')
-    if (!check('shim exists', existsSync(shim()), shim())) return { ok: false, served }
+    heading('The installed launcher is on PATH')
+    shimPath = whichLooptroop(recipe.pathHint?.())
+    if (!check('looptroop is on PATH', shimPath !== null, 'nothing named looptroop resolved after the install', shimPath ?? '')) {
+      return { ok: false, served }
+    }
 
     heading('It reports the published version')
     const printed = cli(['--version'])
@@ -570,9 +828,20 @@ async function runChannel(recipe, options) {
     }
 
     heading('It uninstalls the way the documentation says')
-    const removed = npm([...recipe.uninstall(), '--prefix', prefix], { cwd: elsewhere })
-    check('uninstall', removed.code === 0, `exit ${removed.code}: ${removed.combined.trim().slice(-200)}`)
-    check('the launcher is gone', !existsSync(shim()), `${shim()} survived uninstall`)
+    const removal = recipe.uninstall({ version })
+    if (removal.removePath) {
+      // The standalone executable has no uninstall command; the documentation
+      // says to remove the directory. Asserting the whole prefix is gone, not
+      // just the launcher, is the difference between uninstalled and orphaned.
+      log(`  $ rm -rf ${removal.removePath}`)
+      rmSync(removal.removePath, { recursive: true, force: true })
+      check('the install prefix is gone', !existsSync(removal.removePath), `${removal.removePath} survived`)
+    } else {
+      log(`  $ ${removal.display ?? [removal.command, ...removal.args].join(' ')}`)
+      const removed = run(removal.command, removal.args, { cwd: elsewhere, shell: removal.shell ?? false })
+      check('uninstall', removed.code === 0, `exit ${removed.code}: ${removed.combined.trim().slice(-200)}`)
+    }
+    check('the launcher is gone from PATH', whichLooptroop(recipe.pathHint?.()) === null, 'looptroop still resolves')
 
     return { ok: failures.length === 0, served }
   } finally {

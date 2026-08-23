@@ -111,7 +111,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       version: ${{ steps.resolve.outputs.version }}
-      expected: ${{ steps.plan.outputs.expected }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -210,6 +209,57 @@ jobs:
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs
         shell: bash
+
+      # Provisioning the *manager* is runner setup, not the thing under test:
+      # nobody documents "install Homebrew" as part of installing LoopTroop.
+      # What is under test is the documented LoopTroop command, which the driver
+      # runs. Versions are pinned to match `ci.yml`, so a break in one of them
+      # is a deliberate change here rather than a surprise on an unrelated pull
+      # request.
+      - name: Install the node manager
+        if: matrix.channel == 'bun' || matrix.channel == 'pnpm' || matrix.channel == 'yarn'
+        shell: bash
+        env:
+          # Yarn Classic deliberately: Yarn 2 removed `yarn global` and never
+          # replaced it, so 1.x is the only version that can install a CLI
+          # globally at all.
+          PINS: 'bun=bun@1.3.14 pnpm=pnpm@11.21.0 yarn=yarn@1.22.22'
+        run: |
+          set -euo pipefail
+          for pin in ${PINS}; do
+            if [ "${pin%%=*}" = "${{ matrix.channel }}" ]; then
+              npm install --global "${pin#*=}"
+              exit 0
+            fi
+          done
+          echo "::error::No pinned version recorded for ${{ matrix.channel }}."
+          exit 1
+
+      # Homebrew ships on the ubuntu images but is deliberately kept off PATH,
+      # so `brew` is simply not a command there until this runs.
+      - name: Put Linuxbrew on PATH
+        if: matrix.channel == 'homebrew' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo "::error::This runner image no longer ships Homebrew at the expected path."
+            exit 1
+          fi
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "${HOMEBREW_PREFIX}/bin" >> "$GITHUB_PATH"
+
+      - name: Install Scoop
+        if: matrix.channel == 'scoop'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          # The installer adds the shim directory to the *user* PATH, which this
+          # process has already read; without this `scoop` is not a command in
+          # the next step.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          scoop --version
 
       # OpenCode is a hard prerequisite of `looptroop start`, so every daemon leg
       # installs a real one rather than using mock mode — mock cannot see whether
@@ -332,21 +382,27 @@ jobs:
               const hit = [...results.values()].find((r) => leg.name.startsWith(`${r.channel} (`))
                 ?? [...results.values()].find((r) => r.channel === leg.channel)
               if (!hit) {
-                rows.push([leg.name, "—", "SETUP FAILED"])
+                rows.push([leg.name, "—", "SETUP FAILED", "no result file — the leg died before the driver ran"])
                 failed.push(leg.name)
                 continue
               }
               results.delete(`${hit.channel} (${hit.os})`)
-              rows.push([leg.name, hit.served ?? "—", hit.ok ? "ok" : "FAIL"])
+              // A leg can be deliberately not run — pnpm inside its 24-hour
+              // hold, or a tap-backed channel under --pin. Those record
+              // `ok: true` because nothing is wrong, but reporting them as a
+              // pass would claim coverage that did not happen.
+              const outcome = hit.skipped ? "not run" : hit.ok ? "ok" : "FAIL"
+              rows.push([leg.name, hit.served ?? "—", outcome, hit.skipped ?? ""])
               if (!hit.ok) failed.push(leg.name)
             }
 
             const width = Math.max(20, ...rows.map((r) => r[0].length))
             const lines = [`## Published install smoke — v${version}`, "", "```"]
-            lines.push(`${"leg".padEnd(width)}  ${"served".padEnd(10)}  result`)
-            lines.push("-".repeat(width + 22))
-            for (const [name, served, result] of rows) {
-              lines.push(`${name.padEnd(width)}  ${String(served).padEnd(10)}  ${result}`)
+            lines.push(`${"leg".padEnd(width)}  ${"served".padEnd(10)}  ${"result".padEnd(12)}  why`)
+            lines.push("-".repeat(width + 34))
+            for (const [name, served, result, note] of rows) {
+              const row = `${name.padEnd(width)}  ${String(served).padEnd(10)}  ${result.padEnd(12)}`
+              lines.push(note ? `${row}  ${note}` : row.trimEnd())
             }
             lines.push("```", "")
 

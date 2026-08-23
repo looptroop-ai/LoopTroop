@@ -407,6 +407,31 @@ export const CHANNELS = {
     }),
   },
 
+  // ---------------------------------------------------------------------------
+  // Channels that exist but are not publicly installable yet.
+  // ---------------------------------------------------------------------------
+  //
+  // Report-only stubs, and activating one is a code change rather than a
+  // variable flip. An earlier design had it both ways — stub recipes switched
+  // on by a `CHANNEL_*_LIVE` variable — which is incoherent: a variable cannot
+  // fill in a recipe nobody wrote. Whichever way it went, the recipe has to be
+  // written when the feed goes live, so the honest arrangement is to say so.
+  //
+  // Deliberately not keyed to `vars.PUBLISH_*`. Those mean "submit for
+  // publication", which is days away from "installable": Chocolatey moderates,
+  // WinGet needs a manifest review and an index refresh, and the AUR is closed
+  // to new registrations upstream.
+  //
+  // When one goes live, the same commit writes its recipe and drops the stub.
+  // `ci.yml` keeps proving the packages themselves in the meantime —
+  // `choco-install`, `winget-install` and `aur-package` all build and install
+  // locally on every change — and `channel-republish.yml` already has a
+  // live-feed path for Chocolatey (`smoke-choco.ts --from-feed`) to wrap when
+  // the time comes.
+  chocolatey: { stub: 'Chocolatey moderation has not accepted a first version', documented: 'choco install looptroop' },
+  winget: { stub: 'the WinGet manifest has not been merged and indexed', documented: 'winget install LoopTroopAI.LoopTroop' },
+  aur: { stub: 'AUR registration is closed upstream', documented: 'yay -S looptroop-bin' },
+
   'installer-ps1-binary': {
     documented: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
     legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
@@ -632,11 +657,18 @@ function run(command, args, options = {}) {
     ...options,
     env: { ...process.env, ...(options.env ?? {}) },
   })
+  // A null status means the process never started — almost always because the
+  // command is not on PATH. Left as `exit null: ` with empty output it reads as
+  // a mysterious failure of the thing being tested; `spawnSync` puts the real
+  // reason in `error`, so surface it.
+  const combined = `${result.stdout ?? ''}${result.stderr ?? ''}`
   return {
     code: result.status,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    combined: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+    combined: result.status === null && result.error
+      ? `${combined}${result.error.code === 'ENOENT' ? `${command} is not on PATH` : String(result.error.message)}`
+      : combined,
   }
 }
 
@@ -1266,6 +1298,8 @@ export function planMatrix({ tier = 'release', only = [], skip = [] } = {}) {
   const legs = []
   for (const [key, recipe] of Object.entries(CHANNELS)) {
     if (only.length > 0 && !only.includes(key)) continue
+    // Stubs are never scheduled. They exist so `--plan` can report what is not
+    // covered, which is a standing, accurate statement rather than silence.
     // A channel whose publish job failed is not scheduled at all. Running it
     // would fail on the version it serves and report a second time on an
     // incident the release report already names.
@@ -1396,7 +1430,15 @@ async function main() {
     log(`matrix=${payload}`)
     if (options.skip.length > 0) log(`\nNot scheduled (publish did not succeed): ${options.skip.join(', ')}`)
     log(`\n${legs.length} leg(s) for tier "${options.tier}":`)
-    for (const leg of legs) log(`  ${leg.name.padEnd(30)} tier=${leg.tier} opencode=${leg.opencode}`)
+    for (const leg of legs) log(`  ${leg.name.padEnd(38)} tier=${leg.tier} opencode=${leg.opencode}`)
+
+    // Printed on every plan, including green ones. A channel nobody mentions is
+    // indistinguishable from a channel nobody covers.
+    const stubs = Object.entries(CHANNELS).filter(([, recipe]) => recipe.stub)
+    if (stubs.length > 0) {
+      log('\nNot covered:')
+      for (const [key, recipe] of stubs) log(`  ${key.padEnd(38)} ${recipe.stub}`)
+    }
     return
   }
 

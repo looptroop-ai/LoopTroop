@@ -108,6 +108,18 @@ describe('planMatrix', () => {
     }
   })
 
+  it('never schedules a stub, but always names it', () => {
+    // Chocolatey, WinGet and the AUR are written down as explicitly uncovered
+    // rather than omitted. A channel nobody mentions is indistinguishable from
+    // a channel nobody covers, and these are the ones most likely to be assumed
+    // done because CI builds their packages on every change.
+    const scheduled = planMatrix({ tier: 'weekly' }).map((leg) => leg.channel)
+    for (const key of ['chocolatey', 'winget', 'aur']) {
+      expect(CHANNELS[key].stub, `${key} has no stated reason`).toBeTruthy()
+      expect(scheduled).not.toContain(key)
+    }
+  })
+
   it('honours --only', () => {
     expect(planMatrix({ tier: 'weekly', only: ['npm'] }).every((leg) => leg.channel === 'npm')).toBe(true)
     expect(planMatrix({ tier: 'weekly', only: ['nothing-by-this-name'] })).toEqual([])

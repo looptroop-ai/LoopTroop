@@ -752,17 +752,23 @@ function whichLooptroop(pathHint) {
 /**
  * Strips this workflow's GitHub token from a child process.
  *
- * Applied to every install and uninstall command. Two reasons, and they point
- * the same way. The installers read `GITHUB_TOKEN || GH_TOKEN`
- * (`installer-core.mjs`), so running them with one exercises an authenticated
- * path no user takes and hides a rate-limit regression in their error handling.
- * And several of these commands are somebody else's install script, which has
- * no business being handed a repository token at all.
+ * Applied to the CLI, the daemon and the OpenCode it spawns — the code under
+ * test — and to every uninstall command. Handing credentials to the software
+ * you are testing is how a test starts passing for a reason that has nothing to
+ * do with the software.
  *
- * The driver keeps its own token: the presence probe asks the releases API
- * whether a version exists yet, which is infrastructure rather than the user
- * path, and unauthenticated from a shared runner address that is a 403 on other
- * tenants' traffic.
+ * NOT applied to the install commands any more, which is a reversal worth
+ * explaining. `installer-core.mjs` reads `GITHUB_TOKEN || GH_TOKEN`, so running
+ * the installers anonymously exercised the path a real user takes. It also put
+ * them behind GitHub's 60-per-hour anonymous limit, from an address shared with
+ * every other tenant on the runner pool — and the macOS leg failed twice on
+ * exactly that, reporting a rate limit as though the release were broken.
+ *
+ * The anonymous branch is worth covering; a shared rate limit is a bad way to
+ * cover it. `tests/installer.test.ts` now drives the installer against a
+ * fixture that answers 403 and asserts the message a user actually sees, which
+ * is deterministic and tests the thing that matters. The legs are free to
+ * authenticate.
  */
 const ANONYMOUS = { GITHUB_TOKEN: '', GH_TOKEN: '' }
 
@@ -1037,7 +1043,9 @@ async function runChannel(recipe, options) {
   let adopted = null
   // Recorded before anything is installed: the uninstall step refuses to delete
   // a directory it did not create.
-  const prefixExistedBefore = existsSync(recipe.uninstall({ version })?.removePath ?? '\u0000')
+  // Optional call: a delegated channel (the container) has no uninstall at all,
+  // and calling it unconditionally crashed that leg before it ran.
+  const prefixExistedBefore = existsSync(recipe.uninstall?.({ version })?.removePath ?? '\u0000')
   // Resolved from PATH after the install, never guessed from a prefix.
   //
   // Every channel puts the launcher somewhere different — npm's global bin,
@@ -1095,10 +1103,13 @@ async function runChannel(recipe, options) {
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
     const spec = recipe.install({ version, pin })
     log(`  $ ${spec.display ?? [spec.command, ...spec.args].join(' ')}`)
+    // Authenticated on purpose; see ANONYMOUS. The installers' unauthenticated
+    // branch is covered by a unit test rather than by whether a shared runner
+    // address has requests left.
     const install = run(spec.command, spec.args, {
       cwd: elsewhere,
       shell: spec.shell ?? false,
-      env: { ...ANONYMOUS, ...(spec.env ?? {}) },
+      env: spec.env ?? {},
     })
     // A barrier, not an assertion: every later step would otherwise run against
     // whatever the runner already had, and report a pass for software this leg

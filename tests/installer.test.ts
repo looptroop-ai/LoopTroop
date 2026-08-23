@@ -101,6 +101,9 @@ describe('installer core', () => {
     }
   }
 
+  /** Overridden by the rate-limit test; reset after every test. */
+  let releaseListStatus = 200
+
   beforeAll(async () => {
     server = createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://localhost')
@@ -108,6 +111,13 @@ describe('installer core', () => {
       const downloadMatch = /^\/download\/([^/]+)\/(.+)$/.exec(url.pathname)
 
       if (url.pathname.endsWith('/releases')) {
+        // Lets one test make the release list answer 403, the way GitHub does
+        // to an unauthenticated caller that has run out of anonymous requests.
+        if (releaseListStatus !== 200) {
+          response.writeHead(releaseListStatus, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ message: 'API rate limit exceeded' }))
+          return
+        }
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify(RELEASES.map(withAssetUrls)))
         return
@@ -206,6 +216,32 @@ describe('installer core', () => {
       child.on('close', (status) => done({ status, stdout, stderr }))
     })
   }
+
+  /**
+   * The unauthenticated path, which is the one real users take.
+   *
+   * `installer-core.mjs` sends a token when one happens to be present, so on a
+   * developer machine or in CI it usually has one — and the anonymous branch,
+   * including the message shown when GitHub refuses, only runs for people who
+   * do not. That message was previously exercised only by accident, when a
+   * published-install smoke leg happened to exhaust the shared-address rate
+   * limit on a hosted runner: real coverage, but arriving at random and
+   * indistinguishable from a broken release.
+   */
+  it('explains an anonymous rate limit rather than just failing', async () => {
+    releaseListStatus = 403
+    try {
+      const result = await runInstaller(['--dry-run'])
+      expect(result.status).not.toBe(0)
+      const output = `${result.stdout}${result.stderr}`
+      expect(output).toContain('GitHub answered 403 for the release list')
+      // The part that makes it actionable: without it a user reads a bare 403
+      // and has no idea whether to retry or report a broken release.
+      expect(output).toContain('anonymous rate limit')
+    } finally {
+      releaseListStatus = 200
+    }
+  })
 
   it('picks the newest stable release that actually carries assets', async () => {
     const result = await runInstaller(['--dry-run'])

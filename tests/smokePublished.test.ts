@@ -145,6 +145,27 @@ describe('planMatrix', () => {
     }
   })
 
+  it('keeps every recipe shape the driver assumes', () => {
+    // A delegated channel has no install/uninstall of its own, and a stub has
+    // neither plus no legs. The driver calls these unconditionally in places,
+    // and doing so crashed the container leg before it ran a single assertion.
+    for (const [key, recipe] of Object.entries(CHANNELS)) {
+      if (recipe.stub) {
+        expect(typeof recipe.documented, `${key}`).toBe('string')
+        continue
+      }
+      expect(Array.isArray(recipe.legs), `${key} has no legs`).toBe(true)
+      if (recipe.delegate) {
+        expect(typeof recipe.delegate, `${key}`).toBe('function')
+        continue
+      }
+      for (const field of ['install', 'uninstall', 'published']) {
+        expect(typeof recipe[field], `${key}.${field}`).toBe('function')
+      }
+      expect(typeof recipe.port, `${key}.port`).toBe('number')
+    }
+  })
+
   it('honours --only', () => {
     expect(planMatrix({ tier: 'weekly', only: ['npm'] }).every((leg) => leg.channel === 'npm')).toBe(true)
     expect(planMatrix({ tier: 'weekly', only: ['nothing-by-this-name'] })).toEqual([])

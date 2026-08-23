@@ -383,7 +383,7 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
 
   const executionConflict = findProjectExecutionBandConflict(ticket.projectId, ticket.id)
   if (executionConflict) {
-    return c.json({ error: buildExecutionBandConflictMessage(executionConflict) }, 409)
+    return c.json({ error: buildExecutionBandConflictMessage(ticket, executionConflict) }, 409)
   }
 
   try {
@@ -426,7 +426,7 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
 
   const executionConflict = findProjectExecutionBandConflict(ticket.projectId, ticket.id)
   if (executionConflict) {
-    return c.json({ error: buildExecutionBandConflictMessage(executionConflict) }, 409)
+    return c.json({ error: buildExecutionBandConflictMessage(ticket, executionConflict) }, 409)
   }
 
   let plan: ExecutionSetupPlan | null = null

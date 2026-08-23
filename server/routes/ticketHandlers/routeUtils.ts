@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import type { TicketContext as MachineTicketContext } from '../../machines/types'
+import { getWorkflowPhaseMeta } from '@shared/workflowMeta'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -128,12 +129,17 @@ export function getMachineContext(ticketId: string): MachineTicketContext {
   return state.context as MachineTicketContext
 }
 
-export function buildExecutionBandConflictMessage(conflict: {
+export function buildExecutionBandConflictMessage(blockedTicket: {
   externalId: string
-  title: string
+}, conflict: {
+  externalId: string
   status: string
 }) {
-  return `Project execution is busy with ${conflict.externalId} (${conflict.status}): ${conflict.title}`
+  const statusLabel = getWorkflowPhaseMeta(conflict.status)?.label
+    .replace(/\s*\([^()]*\?[^()]*\)/g, '')
+    .trim()
+    || conflict.status.toLowerCase().replace(/_/g, ' ')
+  return `${blockedTicket.externalId} can’t enter execution yet because ${conflict.externalId} is still running and currently at ${statusLabel}. Finish or cancel ${conflict.externalId}, then try again.`
 }
 
 export interface PhaseRestartSummary {

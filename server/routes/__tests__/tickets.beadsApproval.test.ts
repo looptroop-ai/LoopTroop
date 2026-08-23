@@ -248,7 +248,7 @@ describe('ticketRouter beads approval routes', () => {
       branchName: waitingInit.branchName,
     })
     patchTicket(runningTicket.id, {
-      status: 'CODING',
+      status: 'WAITING_MANUAL_QA',
       branchName: runningTicket.externalId,
     })
 
@@ -271,7 +271,9 @@ describe('ticketRouter beads approval routes', () => {
 
     expect(response.status).toBe(409)
     const payload = (await response.json()) as { error: string }
-    expect(payload.error).toContain(runningTicket.externalId)
+    expect(payload.error).toBe(
+      `${waitingTicket.externalId} can’t enter execution yet because ${runningTicket.externalId} is still running and currently at Manual QA. Finish or cancel ${runningTicket.externalId}, then try again.`,
+    )
   })
 
   it('rejects approval when ticket is not in WAITING_BEADS_APPROVAL status', async () => {

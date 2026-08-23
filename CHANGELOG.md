@@ -20,8 +20,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - A backend that dies during `npm run dev` now takes the dev stack down with it, instead of leaving a frontend serving a dashboard whose every request fails.
 - The folder-ignore policy now looks like every other **Advanced** option: one row, one selector, with each choice explained on hover.
 - Completed bead transcripts now remain available in the per-bead and per-iteration log view after execution advances.
+- Releases keep working past the macOS 14 runner retirement, which would otherwise have stopped them entirely from November 2026.
 
 ### Changed
+- Moved the `darwin-arm64` standalone-binary build from the `macos-14` runner image to `macos-15`, in both CI and the release workflow. GitHub began deprecating `macos-14` on 6 July 2026 and withdrew it on 2 November 2026; because the binary jobs gate `build`, and `build` refuses to proceed without all four archives, losing that image would have stopped every release rather than just the macOS one — including a security fix. Both sites now record why the runner is pinned rather than floating: so the OS a distributed binary is built on stays a deliberate choice. It is explicitly *not* what sets the binary's minimum macOS version — the build copies the running Node executable and re-signs it, so that comes from Node, which `setup-node` already pins. The runner-outage example in the `skip_binaries` documentation was updated to match.
 - Manual QA is now enabled by default. The profile default (`PROFILE_DEFAULTS.manualQaEnabled`) flips to `true`, new database profiles seed the enabled value, and every place that fell back to "disabled" when no explicit choice existed — profile setup, project creation, ticket creation, and the draft ticket view — now falls back to the profile default. Existing profiles, projects, and tickets keep whatever they had set; only unset values change. Tickets already in flight are unaffected because the Manual QA route is locked when the ticket starts.
 
 ### Added

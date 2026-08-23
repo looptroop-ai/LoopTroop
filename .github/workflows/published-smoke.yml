@@ -58,17 +58,6 @@ on:
   schedule:
     - cron: '17 6 * * 1'
 
-  # TEMPORARY — removed before this branch merges, together with the
-  # PUBLISHED_SMOKE_ONLY variable.
-  #
-  # `workflow_dispatch` and `schedule` only offer workflows that already exist
-  # on the default branch, so a brand new workflow cannot be dispatched until it
-  # is merged. A `push:` trigger runs from the branch's own copy, which is the
-  # only way to exercise this before review. Scoped to the feature branch so it
-  # cannot fire for anyone else.
-  push:
-    branches: ['feat/published-distribution-smoke']
-
 # Least privilege at the top; jobs widen only where they must.
 permissions:
   contents: read
@@ -151,9 +140,12 @@ jobs:
         shell: bash
         env:
           TIER: ${{ inputs.tier || 'weekly' }}
-          # On the temporary push trigger, a repository variable narrows the run
-          # to the milestone under construction instead of the whole tier.
-          ONLY: ${{ inputs.only || vars.PUBLISHED_SMOKE_ONLY || '' }}
+          # Narrowing comes from an explicit dispatch input only — never from a
+          # repository variable. A variable that quietly shrinks the weekly
+          # matrix would reduce coverage with nothing in the run to say so,
+          # which is the failure this workflow exists to prevent rather than
+          # commit.
+          ONLY: ${{ inputs.only }}
           SKIP: ${{ inputs.skip }}
         run: |
           set -euo pipefail

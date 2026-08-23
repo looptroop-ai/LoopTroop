@@ -272,7 +272,7 @@ describe('ticketRouter beads approval routes', () => {
     expect(response.status).toBe(409)
     const payload = (await response.json()) as { error: string }
     expect(payload.error).toBe(
-      `${waitingTicket.externalId} can’t enter execution yet because ${runningTicket.externalId} is still running and currently at Manual QA. Finish or cancel ${runningTicket.externalId}, then try again.`,
+      `${waitingTicket.externalId} can’t enter execution yet because ${runningTicket.externalId} is still running and currently at Manual QA. Configured limitation in LoopTroop alpha: Each project may have only one active ticket in the execution band at a time. Finish or cancel ${runningTicket.externalId}, then try again.`,
     )
   })
 

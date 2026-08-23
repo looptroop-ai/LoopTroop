@@ -7,6 +7,7 @@ import { throwIfAborted } from '../../council/types'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
 import { getRunnable } from '../execution/scheduler'
 import { getCurrentBranch } from '../../git/repository'
+import { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
 import {
   getGhAuthStatus,
   getGitHubRepoAccess,
@@ -40,6 +41,7 @@ export interface DoctorDeps {
   getLatestPhaseArtifact: typeof getLatestPhaseArtifact
   fetchConnectedModelIds: typeof fetchConnectedModelIds
   findExecutionBandConflict: (ticketId: string) => ReturnType<typeof findProjectExecutionBandConflict>
+  getTicketExternalId?: (ticketId: string) => string | undefined
   getWorktreeChangeSummary: typeof summarizeWorktreeChanges
 }
 
@@ -66,6 +68,7 @@ export const defaultDoctorDeps: DoctorDeps = {
     const ticket = getTicketContext(ticketId)
     return ticket ? findProjectExecutionBandConflict(ticket.projectId, ticket.ticketRef) : null
   },
+  getTicketExternalId: (ticketId: string) => getTicketContext(ticketId)?.externalId,
   getWorktreeChangeSummary: summarizeWorktreeChanges,
 }
 
@@ -558,12 +561,14 @@ export async function runPreFlightChecks(
 
   // 17. Project execution exclusivity
   const executionConflict = deps.findExecutionBandConflict(ticketId)
+  const blockedTicketExternalId = deps.getTicketExternalId?.(ticketId)
+    ?? (ticketId.includes(':') ? ticketId.slice(ticketId.indexOf(':') + 1) : ticketId)
   checks.push({
     name: 'Project Execution Lock',
     category: 'config',
     result: executionConflict ? 'fail' : 'pass',
     message: executionConflict
-      ? `Another ticket is already in execution: ${executionConflict.externalId} (${executionConflict.status})`
+      ? buildExecutionBandConflictMessage({ externalId: blockedTicketExternalId }, executionConflict)
       : 'No competing execution-band ticket found for this project',
   })
 

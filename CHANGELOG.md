@@ -10,6 +10,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Execution-lock errors now explain the blocking ticket, user-facing workflow step, and the LoopTroop alpha concurrency limit at every entry point.
+- Project status now documents the council-size and per-project execution limits users should plan around.
 - Structured-output cleanup now preserves colon-containing list text for every project type while safely repairing clearly proven mappings in shared artifacts and candidate-file audits.
 - Historical artifacts remain available while later phases are busy: live artifact notifications no longer blank completed content, and failed loads now explain themselves and offer a retry.
 - Manual QA is now enabled by default — new profiles, projects, and tickets start with the verification checkpoint turned on.
@@ -22,6 +24,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Manual QA is now enabled by default. The profile default (`PROFILE_DEFAULTS.manualQaEnabled`) flips to `true`, new database profiles seed the enabled value, and every place that fell back to "disabled" when no explicit choice existed — profile setup, project creation, ticket creation, and the draft ticket view — now falls back to the profile default. Existing profiles, projects, and tickets keep whatever they had set; only unset values change. Tickets already in flight are unaffected because the Manual QA route is locked when the ticket starts.
 
 ### Added
+- Added a project-status note documenting the 2–10 distinct-model council range, including the main implementer, and the one-active-execution-ticket limit per project.
 - Added `LOOPTROOP_DEV_FRONTEND=preview`, which makes `npm run dev` build the dashboard once and serve the bundle rather than starting the frontend dev server. The dev server sends every source file as its own request — over 300 source modules before dependencies — and over a tunnel each one pays the round trip; the built bundle is a few dozen assets. Hot reload is the trade, so code changes need a restart. Everything else is unchanged: same port, same backend, same proxy. An unrecognised value warns and falls back to the dev server rather than silently serving the slow path to someone who asked for the fast one.
 
 ### Changed
@@ -29,7 +32,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed the Configuration model list so each row shows the catalog pretty name with the stored `provider/model` id in parentheses, so two models that share a display name can still be told apart. The closed picker still shows pretty name and provider; the main-implementer auto-included council row is unchanged.
 
 ### Fixed
-- Replaced the project execution-lock error's internal status code and vague "busy" wording with an actionable explanation that identifies both tickets, names the blocking workflow step, and tells the user to finish or cancel the running ticket before trying again.
+- Replaced the project execution-lock error's internal status code and vague "busy" wording at blueprint/setup approvals, retry, continue, and pre-flight diagnostics with an actionable explanation that identifies both tickets, names the blocking workflow step, states the configured LoopTroop alpha limitation that each project may have only one active ticket in the execution band at a time, and tells the user to finish or cancel the running ticket before trying again.
 - Fixed shared YAML cleanup converting valid colon-containing list text such as `style:main` into mappings. List-item mapping repairs now require structural evidence or configured structured-list context, preserve the original key/value text, and report the formatting-only correction in artifact processing notices.
 - Fixed candidate-file audits rejecting otherwise usable structured output such as `- path:src/feature.ts`. The audit now uses the shared context-safe YAML repairs for its known `files` object shape, preserves emitted paths and reasons, records any formatting correction as an audit warning, and still falls back to including every changed file if validation remains unsuccessful.
 - Fixed completed and historical artifacts temporarily appearing empty while another phase streamed work. Artifact-change events contain metadata rather than bodies, but the interface merged them into the full-content cache as `content: null` before refetching; the same broad cache was shared by unrelated historical phases, and request failures were silently converted to successful empty lists. Historical review now loads explicit phase/attempt scopes and required upstream artifacts, metadata events invalidate only affected caches without erasing loaded bodies, successful empty results remain authoritative, and loading, failure, retry, refresh-warning, and genuinely unavailable states are presented distinctly.

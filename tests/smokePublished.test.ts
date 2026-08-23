@@ -166,6 +166,25 @@ describe('planMatrix', () => {
     }
   })
 
+  it('reads the OpenCode field the daemon actually persists', () => {
+    // The supervisor's in-memory `OpenCodeStatus` is discriminated by `kind`;
+    // `describeOpenCode()` maps it to `DaemonState['opencode']`, which uses
+    // `status`. Reading the wrong one is invisible locally — the assertion just
+    // sees `undefined` and fails — and it failed every leg of a real release
+    // against a package that was working perfectly.
+    //
+    // Pinned against the code that renders the persisted shape, so renaming the
+    // discriminant breaks here rather than in a post-release smoke.
+    const renderer = readFileSync('server/cli/commands.ts', 'utf8')
+    const fn = renderer.slice(renderer.indexOf('export function describeOpenCodeForStatus'))
+    expect(fn.slice(0, fn.indexOf('\n}'))).toContain('opencode.status')
+
+    const driver = readFileSync('scripts/smoke-published.mjs', 'utf8')
+    expect(driver).toContain("oc?.status === 'managed'")
+    expect(driver).toContain("oc?.status === 'adopted'")
+    expect(driver).not.toContain("oc?.kind")
+  })
+
   it('honours --only', () => {
     expect(planMatrix({ tier: 'weekly', only: ['npm'] }).every((leg) => leg.channel === 'npm')).toBe(true)
     expect(planMatrix({ tier: 'weekly', only: ['nothing-by-this-name'] })).toEqual([])

@@ -189,28 +189,24 @@ jobs:
         run: node scripts/pin-npm.mjs
         shell: bash
 
-      # OpenCode is a hard prerequisite of `looptroop start`, and which *shape*
-      # of OpenCode matters: from the official installer it is a real binary,
-      # from npm it is `opencode.cmd` on Windows. A past release shipped a daemon
-      # that could not spawn the second one, which mock mode cannot see.
-      - name: Install OpenCode (official installer)
-        if: matrix.opencode == 'installer' || matrix.opencode == 'adopt'
-        shell: bash
-        env:
-          # Deliberately no token: this is a third-party installer.
-          GITHUB_TOKEN: ''
-          GH_TOKEN: ''
-        run: |
-          set -euo pipefail
-          curl -fsSL https://opencode.ai/install | bash
-          # `curl | bash` edits a shell profile that later steps never read, so
-          # the bin directory has to be published to the job explicitly.
-          for dir in "${HOME}/.opencode/bin" "${HOME}/.local/bin"; do
-            if [ -x "${dir}/opencode" ]; then echo "${dir}" >> "$GITHUB_PATH"; fi
-          done
-
-      - name: Install OpenCode (npm)
-        if: matrix.opencode == 'npm'
+      # OpenCode is a hard prerequisite of `looptroop start`, so every daemon leg
+      # installs a real one rather than using mock mode — mock cannot see whether
+      # the daemon can actually launch what a user has.
+      #
+      # From npm on every platform, which is the interesting shape where it
+      # matters: on Windows an npm-installed `opencode` is `opencode.cmd`, not an
+      # `.exe`, and a release once shipped a daemon that could not spawn it. On
+      # Linux and macOS both routes leave an ordinary executable on PATH, so the
+      # official installer would prove nothing extra.
+      #
+      # It is also the reliable route. `opencode.ai/install` resolves its version
+      # through the GitHub API, and third-party installers get no token here — so
+      # it ran unauthenticated from a shared runner address and intermittently
+      # died on the anonymous rate limit ("Failed to fetch version information").
+      # The npm registry has no such limit, so this avoids the flake without
+      # handing a repository token to someone else's install script.
+      - name: Install OpenCode
+        if: matrix.opencode == 'npm' || matrix.opencode == 'adopt'
         shell: bash
         env:
           GITHUB_TOKEN: ''

@@ -47,7 +47,7 @@ describe('planMatrix', () => {
     }
   })
 
-  it('covers the OpenCode launch shapes that have actually broken', () => {
+  it('covers the OpenCode launch shape that has actually broken', () => {
     // A past release shipped a daemon that could not spawn an npm-installed
     // OpenCode on Windows, because it is `opencode.cmd` rather than an `.exe`.
     // Mock mode cannot see that class of defect, so at least one Windows leg
@@ -55,6 +55,14 @@ describe('planMatrix', () => {
     const windowsNpmOpencode = planMatrix({ tier: 'weekly' })
       .filter((leg) => leg.os.startsWith('windows') && leg.opencode === 'npm')
     expect(windowsNpmOpencode.length).toBeGreaterThan(0)
+  })
+
+  it('never leaves a daemon leg on mock OpenCode', () => {
+    // Mock would make every leg pass without proving the daemon can launch
+    // anything, which is most of the point of testing a published release.
+    for (const leg of planMatrix({ tier: 'weekly' })) {
+      expect(leg.opencode, `${leg.name} is on mock`).not.toBe('mock')
+    }
   })
 
   it('honours --only', () => {

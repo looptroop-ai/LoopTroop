@@ -47,22 +47,36 @@ const POLL_INTERVAL_MS = 15_000
 // ---------------------------------------------------------------------------
 
 /**
- * `tier` and `opencode` belong to a *leg*, not to a channel.
+ * `tier` and `opencode` belong to a *leg*, not to a channel, because Homebrew
+ * is release-tier on macOS while Linuxbrew is weekly-tier, and a single `tier`
+ * string per channel cannot express that.
  *
- * Two things force this. npm is release-tier on all three operating systems,
- * but Windows must use an npm-installed OpenCode so the `opencode.cmd` launch
- * path is covered — the shape that once shipped broken, and made LoopTroop
- * unusable for anyone on Windows who installed OpenCode from npm. And Homebrew
- * is release-tier on macOS while Linuxbrew is weekly-tier. A single `tier` or
- * `opencode` string per channel cannot express either.
+ * OPENCODE IS INSTALLED FROM NPM ON EVERY LEG.
+ *
+ * The launch shape only matters on Windows, and there npm is the interesting
+ * one: from the official installer or Scoop `opencode` is an `.exe`, but from
+ * npm, bun or pnpm it is `opencode.cmd`, which `CreateProcess` cannot find and
+ * which Node refuses to launch directly. A release once shipped a daemon that
+ * could not spawn it, leaving LoopTroop unusable for every Windows user who
+ * had installed OpenCode that way. On Linux and macOS both routes leave an
+ * ordinary executable on PATH and LoopTroop cannot tell them apart, so the
+ * official installer would prove nothing extra there.
+ *
+ * It also removes a real flake. `opencode.ai/install` resolves its version
+ * through the GitHub API, and this workflow deliberately gives third-party
+ * installers no token — so it ran unauthenticated from a shared runner address
+ * and intermittently died on the anonymous rate limit with "Failed to fetch
+ * version information". Installing from the npm registry avoids that API
+ * entirely without weakening the no-token rule.
  */
 const CHANNELS = {
   npm: {
     // Verbatim from README.md. If that changes, this must change with it.
     documented: 'npm install -g looptroop',
     legs: [
-      { os: 'ubuntu-latest', tier: 'release', opencode: 'installer' },
-      { os: 'macos-latest', tier: 'release', opencode: 'installer' },
+      { os: 'ubuntu-latest', tier: 'release', opencode: 'npm' },
+      { os: 'macos-latest', tier: 'release', opencode: 'npm' },
+      // The `.cmd` shape, and the reason this is real OpenCode rather than mock.
       { os: 'windows-latest', tier: 'release', opencode: 'npm' },
     ],
     daemon: true,

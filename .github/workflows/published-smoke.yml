@@ -255,8 +255,14 @@ jobs:
               echo "${BUN_INSTALL:-$HOME/.bun}/bin" >> "$GITHUB_PATH"
               ;;
             pnpm)
+              # `$PNPM_HOME/bin`, not `$PNPM_HOME`. pnpm names the directory it
+              # wants in its own error, and on 11.21.0 that is a `bin`
+              # subdirectory of the home — checked by running it rather than
+              # inferred from the variable's name, which reads as though it were
+              # the bin directory itself. It must exist before pnpm looks.
               echo "PNPM_HOME=$HOME/.local/share/pnpm" >> "$GITHUB_ENV"
-              echo "$HOME/.local/share/pnpm" >> "$GITHUB_PATH"
+              mkdir -p "$HOME/.local/share/pnpm/bin"
+              echo "$HOME/.local/share/pnpm/bin" >> "$GITHUB_PATH"
               ;;
           esac
 

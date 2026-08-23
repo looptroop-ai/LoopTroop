@@ -102,4 +102,26 @@ describe('useTicketHistoricalLogs', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
+
+  it('includes a bead filter in durable history requests', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementation(() => createJsonResponse({
+        entries: [],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+    const client = createTestQueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+    renderHook(() => useTicketHistoricalLogs('ticket-1', {
+      scope: 'phase', phase: 'CODING', view: 'ai', beadId: 'bead-1',
+    }), { wrapper })
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/tickets/ticket-1/logs?scope=phase&view=ai&limit=20&phase=CODING&beadId=bead-1',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
 })

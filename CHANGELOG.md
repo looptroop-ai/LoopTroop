@@ -19,6 +19,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The dev stack can serve the built frontend bundle instead of the dev server, which makes running LoopTroop over a tunnel or a remote link dramatically faster.
 - A backend that dies during `npm run dev` now takes the dev stack down with it, instead of leaving a frontend serving a dashboard whose every request fails.
 - The folder-ignore policy now looks like every other **Advanced** option: one row, one selector, with each choice explained on hover.
+- Completed bead transcripts now remain available in the per-bead and per-iteration log view after execution advances.
 
 ### Changed
 - Manual QA is now enabled by default. The profile default (`PROFILE_DEFAULTS.manualQaEnabled`) flips to `true`, new database profiles seed the enabled value, and every place that fell back to "disabled" when no explicit choice existed — profile setup, project creation, ticket creation, and the draft ticket view — now falls back to the profile default. Existing profiles, projects, and tickets keep whatever they had set; only unset values change. Tickets already in flight are unaffected because the Manual QA route is locked when the ticket starts.
@@ -32,6 +33,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Changed the Configuration model list so each row shows the catalog pretty name with the stored `provider/model` id in parentheses, so two models that share a display name can still be told apart. The closed picker still shows pretty name and provider; the main-implementer auto-included council row is unchanged.
 
 ### Fixed
+- Fixed completed bead log panels showing no entries after their logs fell outside the newest phase-history page. The panel now reads durable history scoped to the selected bead and fetches older pages as needed, while retaining the existing iteration-level filtering.
 - Replaced the project execution-lock error's internal status code and vague "busy" wording at blueprint/setup approvals, retry, continue, and pre-flight diagnostics with an actionable explanation that identifies both tickets, names the blocking workflow step, states the configured LoopTroop alpha limitation that each project may have only one active ticket in the execution band at a time, and tells the user to finish or cancel the running ticket before trying again.
 - Fixed shared YAML cleanup converting valid colon-containing list text such as `style:main` into mappings. List-item mapping repairs now require structural evidence or configured structured-list context, preserve the original key/value text, and report the formatting-only correction in artifact processing notices.
 - Fixed candidate-file audits rejecting otherwise usable structured output such as `- path:src/feature.ts`. The audit now uses the shared context-safe YAML repairs for its known `files` object shape, preserves emitted paths and reasons, records any formatting correction as an audit warning, and still falls back to including every changed file if validation remains unsuccessful.

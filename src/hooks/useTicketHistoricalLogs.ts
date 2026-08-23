@@ -16,6 +16,7 @@ export interface HistoricalLogScope {
   phaseAttempt?: number
   view: HistoricalLogView
   modelId?: string
+  beadId?: string
 }
 
 interface HistoricalLogPage {
@@ -41,6 +42,7 @@ function getQuery(ticketId: string, scope: HistoricalLogScope, before?: string):
   if (scope.phase) params.set('phase', scope.phase)
   if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))
   if (scope.modelId) params.set('modelId', scope.modelId)
+  if (scope.beadId) params.set('beadId', scope.beadId)
   if (before) params.set('before', before)
   return `/api/tickets/${encodeURIComponent(ticketId)}/logs?${params.toString()}`
 }
@@ -66,8 +68,8 @@ function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogP
  */
 export function useTicketHistoricalLogs(ticketId: string | undefined, scope: HistoricalLogScope, enabled = true) {
   const queryKey = useMemo(() => [
-    'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '',
-  ], [scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
+    'ticket-log-history', ticketId ?? '__missing__', scope.scope, scope.phase ?? '', scope.phaseAttempt ?? '', scope.view, scope.modelId ?? '', scope.beadId ?? '',
+  ], [scope.beadId, scope.modelId, scope.phase, scope.phaseAttempt, scope.scope, scope.view, ticketId])
 
   const query = useInfiniteQuery({
     queryKey,
@@ -110,6 +112,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     if (scope.phase) params.set('phase', scope.phase)
     if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))
     if (scope.modelId) params.set('modelId', scope.modelId)
+    if (scope.beadId) params.set('beadId', scope.beadId)
     const response = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/logs/export?${params.toString()}`, { signal })
     if (!response.ok) throw new Error(`Unable to export logs (${response.status})`)
     return response.text()

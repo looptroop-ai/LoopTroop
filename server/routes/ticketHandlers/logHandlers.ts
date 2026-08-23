@@ -27,6 +27,7 @@ function parseQuery(c: Context, allowCursor: boolean) {
     phase: c.req.query('phase'),
     phaseAttempt,
     modelId: c.req.query('modelId'),
+    beadId: c.req.query('beadId'),
     before,
     limit,
   } as const

@@ -659,6 +659,51 @@ describe('CodingView', () => {
     expect(screen.queryByText(/hidden debug row/)).toBeNull()
   })
 
+  it('loads a completed bead transcript from durable history after it leaves the newest phase page', async () => {
+    const historicalEntry = {
+      phase: 'CODING',
+      status: 'CODING',
+      entryId: 'historical-bead-output',
+      timestamp: '2026-01-01T00:00:01.000Z',
+      type: 'model_output',
+      content: '[MODEL] historical older output',
+      source: 'opencode',
+      audience: 'ai',
+      kind: 'text',
+      beadId: 'bead-1',
+      beadIteration: 1,
+      streaming: false,
+      op: 'finalize',
+    }
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/logs?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          entries: [historicalEntry],
+          olderCursor: null,
+          hasOlder: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+    })
+
+    renderCoding({
+      runtime: {
+        beads: [
+          { id: 'bead-1', title: 'Historical bead', status: 'done', iteration: 1 },
+        ],
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Historical bead/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Log' }))
+
+    expect(await screen.findByText(/historical older output/)).toBeInTheDocument()
+    expect(fetchSpy.mock.calls.some(([url]: [string, ...unknown[]]) =>
+      url.includes('/logs?scope=phase&view=ai&limit=20&phase=CODING&beadId=bead-1'),
+    )).toBe(true)
+  })
+
   it('shows bead raw tabs in order with tooltips', () => {
     renderCoding({
       runtime: {

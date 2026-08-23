@@ -81,6 +81,31 @@ describe('ticket log projection API', () => {
     expect(commandBody.hasOlder).toBe(true)
   })
 
+  it('filters historical rows by bead id so completed bead transcripts remain addressable', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    appendLogEvent(ticket.id, 'model_output', 'CODING', 'older bead output', {
+      audience: 'ai',
+      kind: 'text',
+      entryId: 'bead-1-output',
+      beadId: 'bead-1',
+      beadIteration: 1,
+    }, 'opencode', 'CODING')
+    appendLogEvent(ticket.id, 'model_output', 'CODING', 'other bead output', {
+      audience: 'ai',
+      kind: 'text',
+      entryId: 'bead-2-output',
+      beadId: 'bead-2',
+      beadIteration: 1,
+    }, 'opencode', 'CODING')
+
+    const response = await app.request(
+      `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=ai&beadId=bead-1`,
+    )
+    expect(response.status).toBe(200)
+    expect((await response.json() as { entries: Array<{ entryId: string }> }).entries.map((entry) => entry.entryId))
+      .toEqual(['bead-1-output'])
+  })
+
   it('filters AI detail-only rows before paginating the overview', async () => {
     const { ticket } = createInitializedTestTicket(repoManager)
     for (let index = 0; index < 25; index += 1) {

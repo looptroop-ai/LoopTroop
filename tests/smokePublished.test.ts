@@ -8,10 +8,6 @@ import { planMatrix, CHANNELS, binaryPrefix } from '../scripts/smoke-published.m
  * four different directions — and a count alone would still let one leg be
  * swapped for another silently. Naming them means adding, moving or removing a
  * leg has to be an explicit edit here, where the reviewer sees it.
- *
- * These lists grow as each milestone lands. The final shape is 8 release legs
- * and 17 weekly ones; anything short of that is a milestone still in progress,
- * not a regression.
  */
 const RELEASE_LEGS = [
   'npm (ubuntu-latest)',
@@ -24,17 +20,44 @@ const RELEASE_LEGS = [
   'scoop (windows-latest)',
 ]
 
+/** Everything the release tier runs, plus the rot-detection legs. */
+const WEEKLY_ONLY_LEGS = [
+  'installer-sh-binary (ubuntu-latest)',
+  'installer-ps1-binary (windows-latest)',
+  'homebrew (ubuntu-latest)',
+  'bun (ubuntu-latest)',
+  'pnpm (ubuntu-latest)',
+  'yarn (ubuntu-latest)',
+  'binary-linux-x64 (ubuntu-latest)',
+  'binary-win-x64 (windows-latest)',
+  'container (ubuntu-latest)',
+]
+
 describe('planMatrix', () => {
   it('emits exactly the release-tier legs, by name', () => {
     const names = planMatrix({ tier: 'release' }).map((leg) => leg.name)
     expect(names.sort()).toEqual([...RELEASE_LEGS].sort())
   })
 
+  it('emits exactly the weekly-tier legs, by name', () => {
+    const names = planMatrix({ tier: 'weekly' }).map((leg) => leg.name)
+    expect(names.sort()).toEqual([...RELEASE_LEGS, ...WEEKLY_ONLY_LEGS].sort())
+  })
+
   it('makes the weekly tier a superset of the release tier', () => {
     const release = planMatrix({ tier: 'release' }).map((leg) => leg.name)
     const weekly = planMatrix({ tier: 'weekly' }).map((leg) => leg.name)
     for (const name of release) expect(weekly).toContain(name)
-    expect(weekly.length).toBeGreaterThanOrEqual(release.length)
+  })
+
+  it('leaves a channel unscheduled when --skip names it', () => {
+    // How a failed publish is handled: the leg is never scheduled, rather than
+    // run and failed on the version the feed still serves, which would report a
+    // second time on an incident the release report already names.
+    const names = planMatrix({ tier: 'release', skip: ['homebrew', 'scoop'] }).map((leg) => leg.name)
+    expect(names).not.toContain('homebrew (macos-latest)')
+    expect(names).not.toContain('scoop (windows-latest)')
+    expect(names).toContain('npm (ubuntu-latest)')
   })
 
   it('gives every leg a unique name', () => {
@@ -64,9 +87,24 @@ describe('planMatrix', () => {
 
   it('never leaves a daemon leg on mock OpenCode', () => {
     // Mock would make every leg pass without proving the daemon can launch
-    // anything, which is most of the point of testing a published release.
+    // anything, which is most of the point of testing a published release. The
+    // container is the one exemption: the image ships no OpenCode by design and
+    // its own smoke script is mock-only for that reason.
     for (const leg of planMatrix({ tier: 'weekly' })) {
+      if (CHANNELS[leg.channel].delegate) continue
       expect(leg.opencode, `${leg.name} is on mock`).not.toBe('mock')
+    }
+  })
+
+  it('gives every node manager its own upgrade command, never npm\'s', () => {
+    // bun and pnpm both once reported channel `npm` and offered
+    // `npm install -g`, which installs a *second* copy under npm's prefix and
+    // leaves the first in place — so which one answers depends on PATH order.
+    // Asserting only that some channel was reported passes on exactly that.
+    for (const key of ['bun', 'pnpm', 'yarn']) {
+      expect(CHANNELS[key].expect.channel).toBe(key)
+      expect(CHANNELS[key].expect.upgradeCommand('linux')).toContain(key)
+      expect(CHANNELS[key].expect.upgradeCommand('linux')).not.toContain('npm install')
     }
   })
 

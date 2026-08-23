@@ -274,6 +274,139 @@ export const CHANNELS = {
     },
   },
 
+
+  // The same npm package through a different global store. The bug this exists
+  // for is real and has shipped: bun and pnpm both reported channel `npm` and
+  // offered `npm install -g`, which installs a *second* copy under npm's prefix
+  // and leaves the first where it was — so which one answers depends on PATH
+  // order. Asserting only that a channel line was printed passes on exactly
+  // that defect, which is why `upgradeCommand` is asserted too.
+  bun: {
+    documented: 'bun add -g looptroop',
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39128,
+    opencodePort: 39628,
+    propagationCapMs: 3 * 60_000,
+    publishJob: 'npm',
+    install: ({ version, pin }) => ({
+      command: 'bun',
+      args: ['add', '-g', pin ? `looptroop@${version}` : 'looptroop'],
+    }),
+    uninstall: () => ({ command: 'bun', args: ['remove', '-g', 'looptroop'] }),
+    published: probeNpmRegistry,
+    latest: async () => probeNpmLatest(),
+    expect: {
+      channel: 'bun',
+      upgradeCommand: () => 'bun add -g looptroop@latest',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  pnpm: {
+    documented: 'pnpm add -g looptroop',
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39129,
+    opencodePort: 39629,
+    propagationCapMs: 3 * 60_000,
+    publishJob: 'npm',
+    // pnpm refuses to resolve a tag to a version published in the last 24
+    // hours — a supply-chain protection, on by default, and documented to
+    // users in `installChannel.ts`. Unpinned inside that window it would
+    // install the *previous* release and fail an assertion that is working
+    // correctly, so the leg reports itself as not run instead.
+    holdHours: 24,
+    install: ({ version, pin }) => ({
+      command: 'pnpm',
+      args: ['add', '-g', pin ? `looptroop@${version}` : 'looptroop'],
+    }),
+    uninstall: () => ({ command: 'pnpm', args: ['remove', '-g', 'looptroop'] }),
+    published: probeNpmRegistry,
+    latest: async () => probeNpmLatest(),
+    expect: {
+      channel: 'pnpm',
+      upgradeCommand: () => 'pnpm add -g looptroop@latest',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // Yarn Classic only. Yarn 2 removed `yarn global` and never replaced it, so a
+  // LoopTroop installed by Yarn is by definition a 1.x install.
+  yarn: {
+    documented: 'yarn global add looptroop',
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port: 39130,
+    opencodePort: 39630,
+    propagationCapMs: 3 * 60_000,
+    publishJob: 'npm',
+    // Yarn does not put its global binaries on PATH, and says nothing about it:
+    // the add reports success and then `looptroop` is not a command. The
+    // documentation tells users to add this themselves, so it is part of the
+    // install rather than test scaffolding.
+    pathHint: () => run('yarn', ['global', 'bin'], { shell: IS_WINDOWS }).stdout.trim() || null,
+    install: ({ version, pin }) => ({
+      command: 'yarn',
+      args: ['global', 'add', pin ? `looptroop@${version}` : 'looptroop'],
+      shell: IS_WINDOWS,
+    }),
+    uninstall: () => ({ command: 'yarn', args: ['global', 'remove', 'looptroop'], shell: IS_WINDOWS }),
+    published: probeNpmRegistry,
+    latest: async () => probeNpmLatest(),
+    expect: {
+      channel: 'yarn',
+      upgradeCommand: () => 'yarn global upgrade looptroop@latest',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // The archive straight off the releases page, with no installer involved.
+  //
+  // Not a duplicate of `installer-sh-binary`: `installer-core.mjs` is itself a
+  // Node program and says so, refusing to run without Node on PATH. A user who
+  // has no Node at all — the entire audience for a standalone executable —
+  // cannot use the installer, and downloading this archive is their only route.
+  // Nothing else covers it.
+  'binary-linux-x64': binaryChannel('linux-x64', 'ubuntu-latest', 39131, 39631),
+  'binary-win-x64': binaryChannel('win-x64', 'windows-latest', 39132, 39632),
+
+  // Docker Hub only, and weekly only.
+  //
+  // `container-verify` already pulls the published GHCR tag on both
+  // architectures after every release and runs `smoke-container.mjs` against
+  // it, so a second GHCR leg here would re-run that verbatim. What nobody
+  // covers is a runtime pull from Docker Hub: the release job inspects it
+  // anonymously but never runs what it serves, and `docker pull
+  // looptroopai/looptroop:latest` is the command in the README.
+  //
+  // Delegated rather than reimplemented. `smoke-container.mjs` drives the image
+  // through a fuller lifecycle than this driver can from outside it — Docker's
+  // own health verdict, an unprivileged uid, a named volume, SIGTERM handling —
+  // and two sets of assertions about one artefact would only drift.
+  container: {
+    documented: 'docker pull looptroopai/looptroop:latest',
+    legs: [{ os: 'ubuntu-latest', tier: 'weekly', opencode: 'none' }],
+    pinnable: true,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'container-manifest',
+    publishHint: 'Check hub.docker.com/r/looptroopai/looptroop/tags.',
+    published: probeDockerHubTag,
+    // The image ships no OpenCode by design, and `smoke-container.mjs` is
+    // mock-only for that reason.
+    delegate: ({ version }) => ({
+      command: 'node',
+      args: ['scripts/smoke-container.mjs', '--image', `docker.io/looptroopai/looptroop:${version}`, '--version', version],
+      pull: `docker.io/looptroopai/looptroop:${version}`,
+    }),
+  },
+
   'installer-ps1-binary': {
     documented: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
     legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
@@ -315,6 +448,69 @@ export const CHANNELS = {
  */
 export function binaryPrefix() {
   return process.env.LOOPTROOP_INSTALL_DIR || join(homedir(), '.looptroop')
+}
+
+/**
+ * A standalone-executable channel: fetch the release archive, unpack it, run it.
+ *
+ * The archive is downloaded and extracted with the tools a user has — `tar` on
+ * POSIX, PowerShell's `Expand-Archive` on Windows — rather than through the
+ * installer, which is the point: the installer needs Node, and this channel
+ * exists for machines that have none.
+ */
+function binaryChannel(target, os, port, opencodePort) {
+  const archive = (version) => target === 'win-x64'
+    ? `looptroop-${version}-win-x64.zip`
+    : `looptroop-${version}-${target}.tar.gz`
+  const dest = () => join(binaryPrefix(), 'bin')
+
+  return {
+    documented: `download looptroop-<version>-${target} from the releases page`,
+    legs: [{ os, tier: 'weekly', opencode: 'npm' }],
+    daemon: true,
+    pinnable: true,
+    port,
+    opencodePort,
+    propagationCapMs: 5 * 60_000,
+    publishJob: 'binary',
+    publishHint: `Check the release carries ${archive('<version>')}.`,
+    // The whole claim of this channel: one file with a Node runtime inside it.
+    provesOwnRuntime: true,
+    pathHint: dest,
+    // Both archives wrap their contents in a `looptroop-<version>-<target>/`
+    // directory, so the executable has to be lifted out of it — `tar` can strip
+    // the level itself, `Expand-Archive` cannot and needs the inner folder
+    // copied out afterwards.
+    install: ({ version }) => {
+      const url = `https://github.com/${REPO}/releases/download/v${version}/${archive(version)}`
+      const out = dest()
+      const inner = `looptroop-${version}-${target}`
+      return target === 'win-x64'
+        ? powershellSpec(
+            `New-Item -ItemType Directory -Force -Path '${out}' | Out-Null; ` +
+            `Invoke-WebRequest -Uri '${url}' -OutFile "$env:TEMP\\lt.zip"; ` +
+            `Expand-Archive -Force -Path "$env:TEMP\\lt.zip" -DestinationPath "$env:TEMP\\lt"; ` +
+            `Copy-Item -Force -Recurse "$env:TEMP\\lt\\${inner}\\*" '${out}'`,
+          )
+        : shellSpec(
+            `mkdir -p '${out}' && curl -fsSL '${url}' | tar -xz --strip-components=1 -C '${out}' ` +
+            `&& chmod +x '${out}/looptroop'`,
+          )
+    },
+    // No uninstall command exists for this channel; the documentation says to
+    // remove the directory.
+    uninstall: () => ({ removePath: binaryPrefix() }),
+    published: probeReleaseAssetNamed(archive),
+    expect: {
+      channel: 'binary',
+      upgradeCommand: (platform) => platform === 'win32'
+        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      // No `npm`: a machine on this channel need not have it at all.
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  }
 }
 
 /** npm is a shell script on POSIX and a `.cmd` on Windows, so it needs a shell there. */
@@ -643,6 +839,25 @@ async function probeScoopManifest(_recipe, _version) {
   return JSON.parse(await response.text()).version ?? null
 }
 
+/**
+ * Whether Docker Hub serves a tag, read anonymously.
+ *
+ * Anonymously on purpose: a private repository is readable by the account that
+ * pushed it and by nobody else, so an authenticated probe would pass happily on
+ * a repository from which every documented `docker pull` fails for users.
+ */
+async function probeDockerHubTag(_recipe, version) {
+  const response = await fetch(`https://hub.docker.com/v2/repositories/looptroopai/looptroop/tags/${version}`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`Docker Hub -> ${response.status}`)
+  return (await response.json()).name ?? null
+}
+
+/** As `probeReleaseAsset`, for assets whose name carries the version. */
+function probeReleaseAssetNamed(nameFor) {
+  return async (recipe, version) => probeReleaseAsset(nameFor(version))(recipe, version)
+}
+
 /** What `@latest` resolves to — the assertion that the channel's pointer moved. */
 function probeNpmLatest() {
   const result = npm(['view', 'looptroop', 'version'])
@@ -768,6 +983,23 @@ async function runChannel(recipe, options) {
       // to check. Step 4 catches a stale one: it asserts the *installed*
       // version, which is the same guarantee arrived at from the other side.
       log('  n/a  (this channel resolves the newest release itself; step 4 asserts what arrived)')
+    }
+
+    if (recipe.delegate) {
+      const spec = recipe.delegate({ version })
+      heading(`Pull ${spec.pull}`)
+      // Pulled explicitly rather than left to the smoke script, so a registry
+      // that does not serve the tag fails here and says so, instead of failing
+      // somewhere inside a container lifecycle.
+      const pulled = run('docker', ['pull', spec.pull], { cwd: elsewhere })
+      if (!check('docker pull', pulled.code === 0, pulled.combined.trim().slice(-300), spec.pull)) {
+        return { ok: false, served }
+      }
+
+      heading(`Delegate to ${spec.args[0]}`)
+      const delegated = run(spec.command, spec.args, { stdio: 'inherit' })
+      check('container smoke', delegated.code === 0, `exit ${delegated.code}`)
+      return { ok: failures.length === 0, served }
     }
 
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
@@ -1104,6 +1336,39 @@ function parseArgs(argv) {
   return options
 }
 
+/** How long ago a release was published, in hours, or null if unknown. */
+async function releaseAgeHours(version) {
+  try {
+    const release = await getJson(`${API}/repos/${REPO}/releases/tags/v${version}`)
+    const at = Date.parse(release.published_at ?? release.created_at ?? '')
+    return Number.isNaN(at) ? null : (Date.now() - at) / 3_600_000
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Records a leg that was deliberately not run.
+ *
+ * Without a result file the reporter cannot tell "not run on purpose" from
+ * "died before it could report", and prints SETUP FAILED for a healthy channel.
+ */
+function writeSkipResult(options, recipe, version, reason) {
+  if (!options.resultFile) return
+  writeFileSync(options.resultFile, `${JSON.stringify({
+    channel: recipe.key,
+    os: process.platform,
+    arch: process.arch,
+    version,
+    served: null,
+    profile: options.profile,
+    ok: true,
+    skipped: reason,
+    failures: [],
+    durationMs: 0,
+  }, null, 2)}\n`)
+}
+
 async function main() {
   let options
   try {
@@ -1156,26 +1421,27 @@ async function main() {
     }
   }
 
+  // pnpm's supply-chain hold, and any future channel with one. Reported as a
+  // deliberate skip rather than run and failed: inside the window the manager
+  // is behaving exactly as documented, and the assertion that would fail is
+  // correct.
+  if (recipe.holdHours && !options.pin) {
+    const age = await releaseAgeHours(version)
+    if (age !== null && age < recipe.holdHours) {
+      const reason = `${recipe.key} holds a release for ${recipe.holdHours}h; this one is ${Math.round(age)}h old`
+      log(`\n${recipe.key}: not run (${reason})`)
+      writeSkipResult(options, recipe, version, reason)
+      return
+    }
+  }
+
   if (options.pin && recipe.pinnable === false) {
     // Not a failure, and not a silent skip either: without a result file the
     // reporter cannot tell "deliberately not run" from "died before it could
     // report", and would print SETUP FAILED for a healthy channel.
     const reason = '--pin; this channel serves one version at a time'
     log(`\n${recipe.key}: not run (${reason})`)
-    if (options.resultFile) {
-      writeFileSync(options.resultFile, `${JSON.stringify({
-        channel: recipe.key,
-        os: process.platform,
-        arch: process.arch,
-        version,
-        served: null,
-        profile: options.profile,
-        ok: true,
-        skipped: reason,
-        failures: [],
-        durationMs: 0,
-      }, null, 2)}\n`)
-    }
+    writeSkipResult(options, recipe, version, reason)
     return
   }
 

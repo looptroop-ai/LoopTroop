@@ -20,6 +20,8 @@ const RELEASE_LEGS = [
   'installer-sh (ubuntu-latest)',
   'installer-sh (macos-latest)',
   'installer-ps1 (windows-latest)',
+  'homebrew (macos-latest)',
+  'scoop (windows-latest)',
 ]
 
 describe('planMatrix', () => {
@@ -71,6 +73,24 @@ describe('planMatrix', () => {
   it('honours --only', () => {
     expect(planMatrix({ tier: 'weekly', only: ['npm'] }).every((leg) => leg.channel === 'npm')).toBe(true)
     expect(planMatrix({ tier: 'weekly', only: ['nothing-by-this-name'] })).toEqual([])
+  })
+
+  it('marks tap- and bucket-backed channels unpinnable', () => {
+    // A tap carries one formula and a bucket one manifest, so an older version
+    // is not installable at all. Claiming otherwise would make a --pin run
+    // report a failure for a channel that is working exactly as designed.
+    for (const key of ['homebrew', 'scoop']) expect(CHANNELS[key].pinnable).toBe(false)
+    for (const key of ['npm', 'installer-sh', 'installer-ps1']) expect(CHANNELS[key].pinnable).toBe(true)
+  })
+
+  it('only claims a self-contained runtime where the channel provides one', () => {
+    // Homebrew installs keg-only node@24 and wires it up in a wrapper, and the
+    // standalone binary embeds Node — both must run with no Node on PATH.
+    // Scoop *depends* on nodejs-lts rather than carrying it, so stripping Node
+    // would break it correctly, and asserting otherwise would be wrong.
+    expect(CHANNELS.homebrew.provesOwnRuntime).toBe(true)
+    expect(CHANNELS.scoop.provesOwnRuntime).toBeUndefined()
+    expect(CHANNELS.npm.provesOwnRuntime).toBeUndefined()
   })
 
   it('runs the documented command verbatim when it is not pinned', () => {

@@ -208,6 +208,72 @@ export const CHANNELS = {
     },
   },
 
+  // The real tap, after `publish-homebrew` has pushed to it. `ci.yml` proves
+  // the *formula* against a throwaway local tap on every change; only this can
+  // fail when the push itself did not land, which is invisible until a user
+  // types the documented command.
+  homebrew: {
+    documented: 'brew install looptroop-ai/tap/looptroop',
+    legs: [
+      { os: 'macos-latest', tier: 'release', opencode: 'npm' },
+      // Linuxbrew is a genuinely different dependency path, not a second
+      // platform — it builds more from source and resolves `node@24` its own way.
+      { os: 'ubuntu-latest', tier: 'weekly', opencode: 'npm' },
+    ],
+    daemon: true,
+    // A tap carries one formula, so an older version simply is not installable.
+    pinnable: false,
+    port: 39126,
+    opencodePort: 39626,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-homebrew',
+    publishHint: 'Check looptroop-ai/homebrew-tap commits — if the commit is there, brew\'s fetch is stale; if not, the push failed.',
+    // The bundle carries its own locked dependency tree and the formula puts
+    // keg-only node@24 on PATH itself, so the launcher must work with no Node
+    // of its own on PATH. On a runner that already has one, a formula that
+    // forgot the wrapper would pass anyway and fail for the user who does not.
+    provesOwnRuntime: true,
+    install: () => ({ command: 'brew', args: ['install', '--formula', 'looptroop-ai/tap/looptroop'], env: HOMEBREW_ENV }),
+    uninstall: () => ({ command: 'brew', args: ['uninstall', '--formula', 'looptroop'], env: HOMEBREW_ENV }),
+    published: probeTapFormula,
+    latest: () => probeTapFormula(),
+    expect: {
+      channel: 'homebrew',
+      upgradeCommand: () => 'brew upgrade looptroop',
+      // No `npm`: Homebrew installs its own Node, and a machine on this channel
+      // need not have npm at all, so asserting it would test the runner.
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
+  // Two documented steps, not one: adding the bucket is part of the install.
+  scoop: {
+    documented: 'scoop bucket add looptroop … ; scoop install looptroop',
+    legs: [{ os: 'windows-latest', tier: 'release', opencode: 'npm' }],
+    daemon: true,
+    pinnable: false,
+    port: 39127,
+    opencodePort: 39627,
+    propagationCapMs: 10 * 60_000,
+    publishJob: 'publish-scoop',
+    publishHint: 'Check looptroop-ai/scoop-bucket commits.',
+    // Not `provesOwnRuntime`: the manifest *depends* on nodejs-lts rather than
+    // carrying a runtime, so removing Node from PATH would break it correctly.
+    install: () => powershellSpec(
+      'scoop bucket add looptroop https://github.com/looptroop-ai/scoop-bucket; scoop install looptroop',
+    ),
+    uninstall: () => powershellSpec('scoop uninstall looptroop; scoop bucket rm looptroop'),
+    published: probeScoopManifest,
+    latest: () => probeScoopManifest(),
+    expect: {
+      channel: 'scoop',
+      upgradeCommand: () => 'scoop update looptroop',
+      okChecksPre: ['install', 'git', 'opencode cli'],
+      okChecksPost: ['opencode', 'daemon', 'port'],
+    },
+  },
+
   'installer-ps1-binary': {
     documented: '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary',
     legs: [{ os: 'windows-latest', tier: 'weekly', opencode: 'npm' }],
@@ -443,6 +509,15 @@ function whichLooptroop(pathHint) {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
+/** A PATH with every directory holding a `node` removed. */
+function pathWithoutNode() {
+  const separator = IS_WINDOWS ? ';' : ':'
+  return (process.env.PATH ?? '')
+    .split(separator)
+    .filter((entry) => entry !== '' && !existsSync(join(entry, 'node')) && !existsSync(join(entry, 'node.exe')))
+    .join(separator)
+}
+
 /** True when nothing holds the port. */
 function portIsFree(port) {
   return new Promise((resolve) => {
@@ -525,6 +600,47 @@ function probeReleaseAsset(asset) {
     if (release.draft === true) return null
     return (release.assets ?? []).some((a) => a.name === asset) ? version : null
   }
+}
+
+/**
+ * Homebrew's environment for an install.
+ *
+ * `HOMEBREW_DOWNLOAD_CONCURRENCY=1` is not tuning: the concurrent downloader's
+ * progress display is what once reported "unknown install step: run", a message
+ * about its own state machine rather than about the formula, which made a real
+ * failure unreadable. The rest keep brew from auto-updating mid-install or
+ * emitting hints that bury the actual output.
+ */
+const HOMEBREW_ENV = {
+  HOMEBREW_DOWNLOAD_CONCURRENCY: '1',
+  HOMEBREW_NO_ENV_HINTS: '1',
+  HOMEBREW_NO_AUTO_UPDATE: '1',
+  HOMEBREW_NO_ANALYTICS: '1',
+}
+
+/**
+ * The version the published tap serves, read from the formula itself.
+ *
+ * Read over HTTP rather than through `brew info`, because the question this
+ * answers is "has `publish-homebrew` pushed yet" and the tap is a git
+ * repository — its file contents are exactly what `brew update` will fetch.
+ * Whether brew's *local* index is stale is a different question, and one the
+ * installed-version assertion answers from the other side.
+ */
+async function probeTapFormula(_recipe, _version) {
+  const response = await fetch('https://raw.githubusercontent.com/looptroop-ai/homebrew-tap/main/Formula/looptroop.rb')
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`tap formula -> ${response.status}`)
+  const body = await response.text()
+  return body.match(/\/releases\/download\/v(\d+\.\d+\.\d+[^/]*)\//)?.[1] ?? null
+}
+
+/** The version the published Scoop bucket serves. Same reasoning as the tap. */
+async function probeScoopManifest(_recipe, _version) {
+  const response = await fetch('https://raw.githubusercontent.com/looptroop-ai/scoop-bucket/main/bucket/looptroop.json')
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`scoop manifest -> ${response.status}`)
+  return JSON.parse(await response.text()).version ?? null
 }
 
 /** What `@latest` resolves to — the assertion that the channel's pointer moved. */
@@ -657,7 +773,7 @@ async function runChannel(recipe, options) {
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
     const spec = recipe.install({ version, pin })
     log(`  $ ${spec.display ?? [spec.command, ...spec.args].join(' ')}`)
-    const install = run(spec.command, spec.args, { cwd: elsewhere, shell: spec.shell ?? false })
+    const install = run(spec.command, spec.args, { cwd: elsewhere, shell: spec.shell ?? false, env: spec.env ?? {} })
     // A barrier, not an assertion: every later step would otherwise run against
     // whatever the runner already had, and report a pass for software this leg
     // never installed.
@@ -676,6 +792,24 @@ async function runChannel(recipe, options) {
     heading('It reports the published version')
     const printed = cli(['--version'])
     check('--version', printed.stdout.trim() === version, `printed "${printed.stdout.trim()}", expected "${version}"`, version)
+
+    if (recipe.provesOwnRuntime) {
+      heading('It carries its own Node runtime')
+      // The entire claim of this channel. On a runner that already has Node,
+      // a package that forgot to ship or wire up its own would pass every other
+      // assertion here and fail for the user who has none.
+      //
+      // Only `--version` runs this way. The daemon lifecycle needs an OpenCode
+      // to spawn, and an npm-installed OpenCode is a Node program — hiding Node
+      // from that would be testing the wrong thing.
+      const withoutNode = cli(['--version'], { env: { PATH: pathWithoutNode() } })
+      check(
+        'runs with no Node on PATH',
+        withoutNode.stdout.trim() === version,
+        `exit ${withoutNode.code}: ${withoutNode.combined.trim().slice(-200)}`,
+        version,
+      )
+    }
 
     heading('doctor, before start')
     // Not gated on the exit code: doctor exits 1 when any check fails, and the
@@ -838,7 +972,7 @@ async function runChannel(recipe, options) {
       check('the install prefix is gone', !existsSync(removal.removePath), `${removal.removePath} survived`)
     } else {
       log(`  $ ${removal.display ?? [removal.command, ...removal.args].join(' ')}`)
-      const removed = run(removal.command, removal.args, { cwd: elsewhere, shell: removal.shell ?? false })
+      const removed = run(removal.command, removal.args, { cwd: elsewhere, shell: removal.shell ?? false, env: removal.env ?? {} })
       check('uninstall', removed.code === 0, `exit ${removed.code}: ${removed.combined.trim().slice(-200)}`)
     }
     check('the launcher is gone from PATH', whichLooptroop(recipe.pathHint?.()) === null, 'looptroop still resolves')
@@ -1014,7 +1148,25 @@ async function main() {
   }
 
   if (options.pin && recipe.pinnable === false) {
-    log(`\n${recipe.key}: not run (--pin; this channel serves one version at a time)`)
+    // Not a failure, and not a silent skip either: without a result file the
+    // reporter cannot tell "deliberately not run" from "died before it could
+    // report", and would print SETUP FAILED for a healthy channel.
+    const reason = '--pin; this channel serves one version at a time'
+    log(`\n${recipe.key}: not run (${reason})`)
+    if (options.resultFile) {
+      writeFileSync(options.resultFile, `${JSON.stringify({
+        channel: recipe.key,
+        os: process.platform,
+        arch: process.arch,
+        version,
+        served: null,
+        profile: options.profile,
+        ok: true,
+        skipped: reason,
+        failures: [],
+        durationMs: 0,
+      }, null, 2)}\n`)
+    }
     return
   }
 

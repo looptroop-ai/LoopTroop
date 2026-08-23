@@ -951,6 +951,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      # The assertions moved into scripts/smoke-published.mjs, which is shared
+      # with the post-release published smoke, so there is one definition of
+      # "this release installs correctly" rather than two that drift. That needs
+      # a checkout, which this job did not previously have.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -959,65 +967,35 @@ jobs:
       - name: Pin npm
         run: node -e "require('node:child_process').execSync('npm install --global npm@11.12.1',{stdio:'inherit'})"
 
-      - name: Install from the registry
-        run: npm install --global "looptroop@${{ needs.detect.outputs.version }}"
-
-      - name: The CLI reports the released version
-        shell: bash
-        run: |
-          set -euo pipefail
-          printed=$(looptroop --version)
-          echo "looptroop --version -> ${printed}"
-          [ "${printed}" = "${{ needs.detect.outputs.version }}" ] || {
-            echo "::error::Expected ${{ needs.detect.outputs.version }}, got ${printed}"
-            exit 1
-          }
-
-      # Mock mode because the OpenCode check fails when nothing is running *and*
-      # the CLI is absent — exactly a clean runner — and doctor exits non-zero on
-      # any failing check. Without it this asserts the runner's lack of OpenCode,
-      # not the package. Warnings are tolerated: an unauthenticated `gh` and a
-      # busy port are properties of the runner, not of the release.
+      # `--profile gate` keeps this exactly as large as it was: install, version,
+      # and the doctor checks. Deliberately NOT the full lifecycle the published
+      # smoke runs. This job gates `finalize`, which pushes the tag, so every
+      # assertion added here is another way to leave a version published on npm
+      # with no tag and no release — and an npm version cannot be taken back.
       #
-      # `install` is the check worth asserting. It resolves to `npm` only when
-      # the running module sits under a `node_modules/looptroop/` path, so an
-      # `ok` here proves the published layout is intact and that the upgrade
-      # command shown to users will be the right one.
+      # `--pin` is not optional. This job has no `dist_tag` condition, so it also
+      # runs for release candidates, where `npm install -g looptroop` resolves
+      # `latest` to the *previous stable* release. Unpinned, an RC would fail its
+      # own version assertion and block tagging after npm had already published.
       #
-      # `npm` is asserted for a different reason: every runner has it, since it
-      # is what installed LoopTroop three steps ago, so this tests the probe and
-      # not the runner. On Windows `npm` is `npm.cmd`, which the probe could not
-      # spawn at all, and a release shipped telling users npm was missing on the
-      # machine it had just installed itself on.
-      - name: Doctor reports healthy
+      # `--opencode mock` for the same reason in the other direction: the
+      # published smoke installs a real OpenCode to cover the launch paths, but
+      # putting opencode.ai's CDN between "npm has published" and "the tag
+      # exists" would let a third-party outage strand a release. Mock also keeps
+      # the `opencode` check off `fail` on a clean runner, which is what made
+      # this job pass at all.
+      - name: Registry smoke
         shell: bash
         env:
-          LOOPTROOP_OPENCODE_MODE: mock
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
-          looptroop doctor --json > doctor.json || {
-            echo "::error::doctor exited non-zero under mock mode"
-            cat doctor.json || true
-            exit 1
-          }
-          node -e '
-            const report = JSON.parse(require("node:fs").readFileSync("doctor.json", "utf8"))
-            if (!Array.isArray(report.checks) || report.checks.length === 0) {
-              throw new Error("doctor reported no checks")
-            }
-            for (const name of ["install", "git", "npm"]) {
-              const check = report.checks.find((c) => c.name === name)
-              if (!check) throw new Error(`doctor did not report the ${name} check`)
-              if (check.status !== "ok") {
-                throw new Error(`${name} check is ${check.status}: ${check.detail ?? ""}`)
-              }
-            }
-            const install = report.checks.find((c) => c.name === "install")
-            if (!/^npm\b/.test(install.detail ?? "")) {
-              throw new Error(`install channel is "${install.detail}", expected npm`)
-            }
-            console.log(`doctor reported ${report.checks.length} checks; install=${install.detail}`)
-          '
+          node scripts/smoke-published.mjs \
+            --channel npm \
+            --version "${VERSION}" \
+            --pin \
+            --opencode mock \
+            --profile gate
 
   # ---------------------------------------------------------------------------
   # Tag last. A tag means the release finished.

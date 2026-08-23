@@ -191,8 +191,8 @@ jobs:
 
       # OpenCode is a hard prerequisite of `looptroop start`, and which *shape*
       # of OpenCode matters: from the official installer it is a real binary,
-      # from npm it is `opencode.cmd` on Windows. 0.5.7 shipped a daemon that
-      # could not spawn the second one, which mock mode cannot see.
+      # from npm it is `opencode.cmd` on Windows. A past release shipped a daemon
+      # that could not spawn the second one, which mock mode cannot see.
       - name: Install OpenCode (official installer)
         if: matrix.opencode == 'installer' || matrix.opencode == 'adopt'
         shell: bash

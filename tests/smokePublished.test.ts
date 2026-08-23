@@ -48,10 +48,10 @@ describe('planMatrix', () => {
   })
 
   it('covers the OpenCode launch shapes that have actually broken', () => {
-    // 0.5.7 shipped a daemon that could not spawn an npm-installed OpenCode on
-    // Windows, because it is `opencode.cmd` rather than an `.exe`. Mock mode
-    // cannot see that class of defect, so at least one Windows leg has to
-    // install OpenCode from npm and start a real daemon.
+    // A past release shipped a daemon that could not spawn an npm-installed
+    // OpenCode on Windows, because it is `opencode.cmd` rather than an `.exe`.
+    // Mock mode cannot see that class of defect, so at least one Windows leg
+    // has to install OpenCode from npm and start a real daemon.
     const windowsNpmOpencode = planMatrix({ tier: 'weekly' })
       .filter((leg) => leg.os.startsWith('windows') && leg.opencode === 'npm')
     expect(windowsNpmOpencode.length).toBeGreaterThan(0)

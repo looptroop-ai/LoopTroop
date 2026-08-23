@@ -3,8 +3,8 @@
  * Installs a published release the way its documentation tells a user to, from
  * the real feed, and drives it until it serves.
  *
- *   node scripts/smoke-published.mjs --channel npm --version 0.5.7
- *   node scripts/smoke-published.mjs --channel npm --version 0.5.7 --pin --profile gate
+ *   node scripts/smoke-published.mjs --channel npm --version 9.9.9
+ *   node scripts/smoke-published.mjs --channel npm --version 9.9.9 --pin --profile gate
  *   node scripts/smoke-published.mjs --plan --tier release
  *
  * The rest of this repository's smoke tests prove that a locally built artefact
@@ -51,7 +51,7 @@ const POLL_INTERVAL_MS = 15_000
  *
  * Two things force this. npm is release-tier on all three operating systems,
  * but Windows must use an npm-installed OpenCode so the `opencode.cmd` launch
- * path is covered — the shape that shipped broken in 0.5.7 and made LoopTroop
+ * path is covered — the shape that once shipped broken, and made LoopTroop
  * unusable for anyone on Windows who installed OpenCode from npm. And Homebrew
  * is release-tier on macOS while Linuxbrew is weekly-tier. A single `tier` or
  * `opencode` string per channel cannot express either.
@@ -516,7 +516,7 @@ async function runChannel(recipe, options) {
     heading('doctor, after start')
     // The point of installing a real OpenCode. Health answering proves the
     // daemon bound a port; only this proves OpenCode was actually launched or
-    // adopted — the 0.5.7 `opencode.cmd` defect is exactly this check.
+    // adopted — the `opencode.cmd` launch defect is exactly this check.
     const post = cli(['doctor', '--json'])
     const postReport = readJson(post.stdout, 'doctor --json (post-start)')
     if (postReport) {

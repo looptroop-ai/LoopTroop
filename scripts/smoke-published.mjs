@@ -735,6 +735,23 @@ function whichLooptroop(pathHint) {
   return first && existsSync(first) ? first : null
 }
 
+/**
+ * Strips this workflow's GitHub token from a child process.
+ *
+ * Applied to every install and uninstall command. Two reasons, and they point
+ * the same way. The installers read `GITHUB_TOKEN || GH_TOKEN`
+ * (`installer-core.mjs`), so running them with one exercises an authenticated
+ * path no user takes and hides a rate-limit regression in their error handling.
+ * And several of these commands are somebody else's install script, which has
+ * no business being handed a repository token at all.
+ *
+ * The driver keeps its own token: the presence probe asks the releases API
+ * whether a version exists yet, which is infrastructure rather than the user
+ * path, and unauthenticated from a shared runner address that is a 403 on other
+ * tenants' traffic.
+ */
+const ANONYMOUS = { GITHUB_TOKEN: '', GH_TOKEN: '' }
+
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 /** A PATH with every directory holding a `node` removed. */
@@ -1037,7 +1054,11 @@ async function runChannel(recipe, options) {
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
     const spec = recipe.install({ version, pin })
     log(`  $ ${spec.display ?? [spec.command, ...spec.args].join(' ')}`)
-    const install = run(spec.command, spec.args, { cwd: elsewhere, shell: spec.shell ?? false, env: spec.env ?? {} })
+    const install = run(spec.command, spec.args, {
+      cwd: elsewhere,
+      shell: spec.shell ?? false,
+      env: { ...ANONYMOUS, ...(spec.env ?? {}) },
+    })
     // A barrier, not an assertion: every later step would otherwise run against
     // whatever the runner already had, and report a pass for software this leg
     // never installed.
@@ -1236,7 +1257,11 @@ async function runChannel(recipe, options) {
       check('the install prefix is gone', !existsSync(removal.removePath), `${removal.removePath} survived`)
     } else {
       log(`  $ ${removal.display ?? [removal.command, ...removal.args].join(' ')}`)
-      const removed = run(removal.command, removal.args, { cwd: elsewhere, shell: removal.shell ?? false, env: removal.env ?? {} })
+      const removed = run(removal.command, removal.args, {
+        cwd: elsewhere,
+        shell: removal.shell ?? false,
+        env: { ...ANONYMOUS, ...(removal.env ?? {}) },
+      })
       check('uninstall', removed.code === 0, `exit ${removed.code}: ${removed.combined.trim().slice(-200)}`)
     }
     check('the launcher is gone from PATH', whichLooptroop(recipe.pathHint?.()) === null, 'looptroop still resolves')

@@ -321,17 +321,23 @@ jobs:
         shell: bash
         run: opencode --version
 
-      # The documented commands resolve through looptroop.ovh and the GitHub
-      # releases API. Both are left unauthenticated, because that is the path a
-      # real user takes: `installer-core.mjs` reads GITHUB_TOKEN || GH_TOKEN and
-      # would otherwise be exercising a code path no user reaches, hiding a
-      # rate-limit regression in its error handling.
+      # The token is available to the driver, and the driver strips it from the
+      # install command it spawns.
+      #
+      # Blanking it for the whole step was wrong in both directions. The
+      # *installer* must be anonymous, because that is the path a real user
+      # takes and `installer-core.mjs` reads GITHUB_TOKEN || GH_TOKEN — running
+      # it with one would exercise a code path nobody reaches and hide a
+      # rate-limit regression in its error handling. But the driver's own
+      # presence probe is infrastructure, not the user path, and it has no
+      # reason to be anonymous: it asks the releases API whether a version
+      # exists yet, and unauthenticated from a shared runner address that is a
+      # 403 on somebody else's traffic. Which is exactly what happened here.
       - name: Install it, run it, and uninstall it again
         id: smoke
         shell: bash
         env:
-          GITHUB_TOKEN: ''
-          GH_TOKEN: ''
+          GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           CHANNEL: ${{ matrix.channel }}
           OPENCODE: ${{ matrix.opencode }}

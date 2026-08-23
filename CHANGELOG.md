@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Fixed
+- Fixed the published install smoke reporting every channel as broken when the release was fine. Its check on how the daemon obtained OpenCode read `kind`, the discriminant of the supervisor's in-memory status, rather than `status`, which is what `describeOpenCode` writes into `daemon.json`. Nothing else in any leg failed — install, version, doctor, start, the health endpoint, the interface, the refused unauthenticated call, stop and uninstall all passed on all eight legs of the 0.5.8 release — so the only defect was the assertion. A test now pins the field against the code that renders the persisted shape, so renaming the discriminant fails in CI rather than in a post-release smoke.
+
 ## 0.5.8 (2026-08-23)
 
 

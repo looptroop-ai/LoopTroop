@@ -1347,16 +1347,24 @@ async function runChannel(recipe, options) {
       const state = readJson(readFileSync(statePath, 'utf8'), 'daemon.json')
       check('daemon.json port', state?.port === port, `recorded ${state?.port}, expected ${port}`)
 
-      // `OpenCodeStatus` distinguishes a server LoopTroop started from one it
-      // found already running. Asserting only that OpenCode is reachable cannot
-      // tell those apart — an adopt leg whose pre-started server had died and
-      // been replaced by a spawned one would look identical, and the path this
-      // leg exists to cover would go untested while reporting success.
+      // Distinguishes a server LoopTroop started from one it found already
+      // running. Asserting only that OpenCode is reachable cannot tell those
+      // apart — an adopt leg whose pre-started server had died and been
+      // replaced by a spawned one would look identical, and the path that leg
+      // exists to cover would go untested while reporting success.
+      //
+      // The field is `status`, NOT `kind`. The supervisor's in-memory
+      // `OpenCodeStatus` is discriminated by `kind`, but `describeOpenCode()`
+      // maps it to `DaemonState['opencode']` on the way to the state file, and
+      // that shape uses `status` — see `describeOpenCodeForStatus` in
+      // `commands.ts`, which switches on exactly these values. Reading the
+      // in-memory type and assuming it was the persisted one made every leg
+      // fail against a perfectly good release.
       const oc = state?.opencode
       if (opencodeMode === 'adopt') {
-        check('OpenCode was adopted, not spawned', oc?.kind === 'adopted', `daemon recorded kind=${oc?.kind}`, 'adopted')
+        check('OpenCode was adopted, not spawned', oc?.status === 'adopted', `daemon recorded status=${oc?.status}`, 'adopted')
       } else if (opencodeMode !== 'mock') {
-        check('OpenCode was spawned by the daemon', oc?.kind === 'managed', `daemon recorded kind=${oc?.kind}`, 'managed')
+        check('OpenCode was spawned by the daemon', oc?.status === 'managed', `daemon recorded status=${oc?.status}`, 'managed')
         check('the managed OpenCode has a pid', Number.isInteger(oc?.pid), `pid=${oc?.pid}`, String(oc?.pid ?? ''))
         managedPid = Number.isInteger(oc?.pid) ? oc.pid : null
       }

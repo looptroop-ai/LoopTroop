@@ -28,6 +28,7 @@
  * AGENTS.md forbids it.
  */
 import { spawnSync, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -772,6 +773,16 @@ function whichLooptroop(pathHint) {
  */
 const ANONYMOUS = { GITHUB_TOKEN: '', GH_TOKEN: '' }
 
+/** Whether a pid still exists. Signal 0 checks without delivering anything. */
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
 /** A PATH with every directory holding a `node` removed. */
@@ -1094,10 +1105,47 @@ async function runChannel(recipe, options) {
         return { ok: false, served }
       }
 
+      // The other registry's moving tag. `container-verify` pulls GHCR by exact
+      // version after every release, and the weekly leg below pulls Docker Hub
+      // — so `ghcr.io/...:latest` is the one documented pointer nothing checks,
+      // and a repair that retagged only one registry would leave it stale
+      // indefinitely. Compared by manifest rather than pulled: this asks where
+      // a tag points, which needs no image on disk.
+      heading('The GHCR latest tag points at this release')
+      const ghcr = `ghcr.io/${REPO.toLowerCase()}`
+      const digestOf = (ref) => {
+        const out = run('docker', ['manifest', 'inspect', ref])
+        return out.code === 0 ? createHash('sha256').update(out.stdout).digest('hex') : null
+      }
+      const latestDigest = digestOf(`${ghcr}:latest`)
+      const versionDigest = digestOf(`${ghcr}:${version}`)
+      check(
+        'ghcr latest matches this version',
+        latestDigest !== null && latestDigest === versionDigest,
+        latestDigest === null
+          ? `could not read ${ghcr}:latest`
+          : `${ghcr}:latest is a different image from :${version}`,
+      )
+
       heading(`Delegate to ${spec.args[0]}`)
       const delegated = run(spec.command, spec.args, { stdio: 'inherit' })
       check('container smoke', delegated.code === 0, `exit ${delegated.code}`)
       return { ok: failures.length === 0, served }
+    }
+
+    // Checked before installing, not before cleaning up. The earlier guard only
+    // refused to *delete* a pre-existing prefix, by which point the install had
+    // already written into it — so a directory this run had no business
+    // touching was overwritten and then left in place. On a hosted runner it
+    // never exists; run by hand, which `verify:published` is documented for, it
+    // is somebody's working installation.
+    if (prefixExistedBefore) {
+      abort(
+        `${recipe.uninstall({ version }).removePath} already exists.`,
+        'This channel installs into that directory and would overwrite what is there.',
+        'Remove it yourself, or point LOOPTROOP_INSTALL_DIR somewhere disposable.',
+      )
+      return { ok: false, served }
     }
 
     heading(`Install: ${recipe.documented}${pin ? ` (pinned to ${version})` : ''}`)
@@ -1210,6 +1258,9 @@ async function runChannel(recipe, options) {
         stdio: ['ignore', logFd, logFd],
         detached: !IS_WINDOWS,
         shell: true,
+        // Somebody else's server. It has no more business holding this
+        // workflow's token than the CLI under test does.
+        env: { ...process.env, ...ANONYMOUS },
       })
       adopted.unref()
       const up = await waitForOpenCode(opencodePort)
@@ -1289,11 +1340,26 @@ async function runChannel(recipe, options) {
       }
     }
 
-    heading('The daemon state records the port it was asked for')
+    heading('The daemon state records the port and how it got its OpenCode')
     const statePath = join(configDir, 'daemon.json')
+    let managedPid = null
     if (existsSync(statePath)) {
       const state = readJson(readFileSync(statePath, 'utf8'), 'daemon.json')
       check('daemon.json port', state?.port === port, `recorded ${state?.port}, expected ${port}`)
+
+      // `OpenCodeStatus` distinguishes a server LoopTroop started from one it
+      // found already running. Asserting only that OpenCode is reachable cannot
+      // tell those apart — an adopt leg whose pre-started server had died and
+      // been replaced by a spawned one would look identical, and the path this
+      // leg exists to cover would go untested while reporting success.
+      const oc = state?.opencode
+      if (opencodeMode === 'adopt') {
+        check('OpenCode was adopted, not spawned', oc?.kind === 'adopted', `daemon recorded kind=${oc?.kind}`, 'adopted')
+      } else if (opencodeMode !== 'mock') {
+        check('OpenCode was spawned by the daemon', oc?.kind === 'managed', `daemon recorded kind=${oc?.kind}`, 'managed')
+        check('the managed OpenCode has a pid', Number.isInteger(oc?.pid), `pid=${oc?.pid}`, String(oc?.pid ?? ''))
+        managedPid = Number.isInteger(oc?.pid) ? oc.pid : null
+      }
     } else {
       fail('daemon.json exists', statePath)
     }
@@ -1313,9 +1379,17 @@ async function runChannel(recipe, options) {
     if (afterStop) check('status reports stopped', afterStop.running === false, `running=${afterStop.running}`)
 
     if (opencodeMode === 'adopt') {
+      // A daemon that killed a server it did not start would take a user's own
+      // OpenCode down with it.
       check('adopted OpenCode outlived the daemon', await openCodeAnswers(opencodePort), 'the adopted server was killed')
     } else if (opencodeMode !== 'mock') {
       check('managed OpenCode stopped with the daemon', await portIsClosed(opencodePort), `${opencodePort} still answers`)
+      // The port closing is not the same as the process being gone: a
+      // supervisor that leaked its child would leave it holding the config
+      // directory, which only shows up as a mysterious failure on the next run.
+      if (managedPid !== null) {
+        check('the managed OpenCode process is gone', !processAlive(managedPid), `pid ${managedPid} is still alive`)
+      }
     }
 
     heading('It uninstalls the way the documentation says')

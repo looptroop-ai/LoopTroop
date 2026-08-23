@@ -329,18 +329,17 @@ jobs:
         shell: bash
         run: opencode --version
 
-      # The token is available to the driver, and the driver strips it from the
-      # install command it spawns.
+      # The token reaches the driver and the install commands; it never reaches
+      # the CLI, the daemon, the OpenCode they spawn, or any uninstall.
       #
-      # Blanking it for the whole step was wrong in both directions. The
-      # *installer* must be anonymous, because that is the path a real user
-      # takes and `installer-core.mjs` reads GITHUB_TOKEN || GH_TOKEN — running
-      # it with one would exercise a code path nobody reaches and hide a
-      # rate-limit regression in its error handling. But the driver's own
-      # presence probe is infrastructure, not the user path, and it has no
-      # reason to be anonymous: it asks the releases API whether a version
-      # exists yet, and unauthenticated from a shared runner address that is a
-      # 403 on somebody else's traffic. Which is exactly what happened here.
+      # Blanking it for the whole step was tried and reverted. The installers do
+      # read GITHUB_TOKEN || GH_TOKEN, so running them anonymously did exercise
+      # the path a real user takes — and it put every installer leg behind
+      # GitHub's 60-per-hour limit for an address shared with every other tenant
+      # on the runner pool. The macOS leg failed twice on exactly that,
+      # reporting a rate limit as though the release were broken. That branch is
+      # covered deterministically now, by a fixture in `tests/installer.test.ts`
+      # that answers 403 and asserts the message a user actually sees.
       - name: Install it, run it, and uninstall it again
         id: smoke
         shell: bash

@@ -306,7 +306,7 @@ describe('ticketRouter POST /tickets/:id/continue', () => {
 
     expect(response.status).toBe(409)
     expect(body.error).toBe(
-      `${ticket.externalId} can’t enter execution yet because ${otherTicket.externalId} is still running and currently at Implementing. Finish or cancel ${otherTicket.externalId}, then try again.`,
+      `${ticket.externalId} can’t enter execution yet because ${otherTicket.externalId} is still running and currently at Implementing. Configured limitation in LoopTroop alpha: Each project may have only one active ticket in the execution band at a time. Finish or cancel ${otherTicket.externalId}, then try again.`,
     )
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })

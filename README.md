@@ -394,7 +394,7 @@ When the app is running, the same docs are also available from the dashboard.
 
 LoopTroop is early alpha software, but it is usable for real work. The full ticket lifecycle is implemented, but some bugs are still likely. The core primitives (planning, execution, retries) are functional.
 
-**Configured limitations:** LLM Councils support 2–10 distinct models, including the main implementer. Each project may have only one active ticket in the execution band at a time; additional tickets must wait until it finishes or is canceled.
+**Configured limitations:** In LoopTroop alpha, LLM Councils support 2–10 distinct models, including the main implementer. Each project may have only one active ticket in the execution band at a time; additional tickets must wait until it finishes or is canceled.
 
 Roadmap: [Roadmap](https://www.looptroop.ovh/docs/roadmap)
 

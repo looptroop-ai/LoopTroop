@@ -339,7 +339,9 @@ describe('Pre-Flight Doctor', () => {
 
     const lockCheck = report.criticalFailures.find(c => c.name === 'Project Execution Lock')
     expect(lockCheck).toBeDefined()
-    expect(lockCheck?.message).toContain(`${TEST.shortname}-2`)
+    expect(lockCheck?.message).toBe(
+      `${TEST.externalId} can’t enter execution yet because ${TEST.shortname}-2 is still running and currently at Implementing. Configured limitation in LoopTroop alpha: Each project may have only one active ticket in the execution band at a time. Finish or cancel ${TEST.shortname}-2, then try again.`,
+    )
   })
 
   it('fails when the execution capability probe does not return the exact OK marker', async () => {

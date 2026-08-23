@@ -1,6 +1,5 @@
 import type { Context } from 'hono'
 import type { TicketContext as MachineTicketContext } from '../../machines/types'
-import { getWorkflowPhaseMeta } from '@shared/workflowMeta'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -27,6 +26,8 @@ import {
   type PublicTicketPhaseAttemptRow,
 } from '../../storage/tickets'
 import { clearExecutionSetupRuntimeArtifacts } from '../../phases/executionSetup/storage'
+
+export { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
 
 export function getProfileDefaults() {
   return appDb.select().from(profiles).get()
@@ -127,19 +128,6 @@ export function getMachineContext(ticketId: string): MachineTicketContext {
     throw new Error('Ticket actor state is unavailable')
   }
   return state.context as MachineTicketContext
-}
-
-export function buildExecutionBandConflictMessage(blockedTicket: {
-  externalId: string
-}, conflict: {
-  externalId: string
-  status: string
-}) {
-  const statusLabel = getWorkflowPhaseMeta(conflict.status)?.label
-    .replace(/\s*\([^()]*\?[^()]*\)/g, '')
-    .trim()
-    || conflict.status.toLowerCase().replace(/_/g, ' ')
-  return `${blockedTicket.externalId} can’t enter execution yet because ${conflict.externalId} is still running and currently at ${statusLabel}. Finish or cancel ${conflict.externalId}, then try again.`
 }
 
 export interface PhaseRestartSummary {

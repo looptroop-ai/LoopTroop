@@ -5,6 +5,12 @@ on:
   # request, so restricting this to main leaves that work unverified.
   push:
   pull_request:
+  # Required by the merge queue, and required *before* it is enabled. GitHub
+  # does not trigger status checks when a pull request enters a queue unless
+  # the workflow subscribes to this event, and a required check that never
+  # reports fails the merge rather than skipping it — so enabling the queue
+  # without this line would stop every merge into main.
+  merge_group:
   workflow_dispatch:
 
 permissions:

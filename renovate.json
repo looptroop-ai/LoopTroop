@@ -2,38 +2,51 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    ":dependencyDashboard",
     ":semanticCommits",
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Europe/Bucharest",
-  "schedule": ["* 0-5 * * *"],
-  "prConcurrentLimit": 2,
-  "prHourlyLimit": 1,
-  "labels": ["dependencies"],
+  "schedule": [
+    "at any time"
+  ],
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "labels": [
+    "dependencies"
+  ],
   "commitMessagePrefix": "chore(deps):",
   "rangeStrategy": "bump",
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
-  "postUpdateOptions": ["npmDedupe"],
+  "postUpdateOptions": [
+    "npmDedupe"
+  ],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["* 0-5 1 * *"],
+    "schedule": [
+      "* 0-5 1 * *"
+    ],
     "commitMessageAction": "Refresh"
   },
   "vulnerabilityAlerts": {
-    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. automerge is pinned off so a vulnerable package can never inherit an automerge rule from the list below and merge without review. dependencyDashboardApproval is pinned off for the opposite reason: several rules below hold their package behind a manual tick, and without this an advisory against one of them would be queued on the dashboard instead of raised as a fix.",
+    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. automerge is pinned off so a vulnerable package can never inherit an automerge rule from the list below and merge without review.",
     "enabled": true,
     "minimumReleaseAge": "2 days",
-    "schedule": ["at any time"],
+    "schedule": [
+      "at any time"
+    ],
     "automerge": false,
-    "dependencyDashboardApproval": false,
-    "labels": ["dependencies", "security"]
+    "labels": [
+      "dependencies",
+      "security"
+    ]
   },
   "packageRules": [
     {
       "description": "Frontend packages are declared as devDependencies but Vite inlines them into dist/client, so they ship to users exactly like a runtime dependency. They also carry licence text: every version here is recorded in THIRD-PARTY-NOTICES.md, which `npm run licenses:check` re-derives from dist/client/bundled-packages.json and CI fails when it is stale. Renovate cannot regenerate that file on the hosted app, so each of these pull requests needs `npm run licenses:generate` committed onto the branch by hand. Never automerge.",
-      "matchDepTypes": ["devDependencies"],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
       "matchPackageNames": [
         "@codemirror/autocomplete",
         "@codemirror/lang-yaml",
@@ -58,11 +71,16 @@
         "tailwind-merge"
       ],
       "automerge": false,
-      "labels": ["dependencies", "frontend"]
+      "labels": [
+        "dependencies",
+        "frontend"
+      ]
     },
     {
       "description": "Group the bundled frontend only below a major. A major here still needs the licence regeneration above, but it must arrive on its own so a regression is attributable to one library rather than to a batch of them — which is the same reason majors are ungrouped everywhere else.",
-      "matchDepTypes": ["devDependencies"],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
       "matchPackageNames": [
         "@codemirror/autocomplete",
         "@codemirror/lang-yaml",
@@ -86,26 +104,41 @@
         "react-virtuoso",
         "tailwind-merge"
       ],
-      "matchUpdateTypes": ["patch", "minor"],
+      "matchUpdateTypes": [
+        "patch",
+        "minor"
+      ],
       "groupName": "bundled frontend (ships to users)"
     },
     {
       "description": "Runtime dependencies ship to users; group them but always review by hand.",
-      "matchDepTypes": ["dependencies"],
-      "matchUpdateTypes": ["patch", "minor"],
+      "matchDepTypes": [
+        "dependencies"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "minor"
+      ],
       "groupName": "runtime dependencies (non-major)",
       "automerge": false
     },
     {
       "description": "Everything else declared as a devDependency. Build and release tooling lands here — vite, typescript, postject, drizzle-kit — and all of it shapes the published artefact even though none of it is inlined into it, so none of it automerges by default. The narrower allowlist below opts specific packages back in.",
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["patch", "minor"],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "minor"
+      ],
       "groupName": "dev tooling (non-major)",
       "automerge": false
     },
     {
       "description": "The only automerge lane. These are lint, test and type-only packages: none is inlined into dist/client, none runs in the published server bundle, and none emits an artefact users receive, so all eleven required checks passing is sufficient review. Patch only. Stable only — matchCurrentVersion excludes 0.x, where a patch release can still break compatibility, which is what keeps eslint-plugin-react-refresh out.",
-      "matchDepTypes": ["devDependencies"],
+      "matchDepTypes": [
+        "devDependencies"
+      ],
       "matchPackageNames": [
         "@eslint/js",
         "@testing-library/jest-dom",
@@ -120,7 +153,9 @@
         "typescript-eslint",
         "vitest"
       ],
-      "matchUpdateTypes": ["patch"],
+      "matchUpdateTypes": [
+        "patch"
+      ],
       "matchCurrentVersion": "!/^0\\./",
       "groupName": "lint and test tooling (patch)",
       "automerge": true,
@@ -128,77 +163,113 @@
     },
     {
       "description": "Majors land one at a time so a failure is attributable.",
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "automerge": false,
-      "dependencyDashboardApproval": true,
-      "labels": ["dependencies", "major"]
+      "labels": [
+        "dependencies",
+        "major"
+      ]
     },
     {
       "description": "Drizzle tracks a release candidate; orm and kit must move together.",
-      "matchPackageNames": ["drizzle-orm", "drizzle-kit"],
+      "matchPackageNames": [
+        "drizzle-orm",
+        "drizzle-kit"
+      ],
       "groupName": "drizzle (orm + kit)",
       "followTag": "rc",
       "rangeStrategy": "pin",
-      "automerge": false,
-      "dependencyDashboardApproval": true
+      "automerge": false
     },
     {
-      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking. It therefore takes the ordinary seven days and relies on the manual tick instead, which is what actually gates it. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path.",
-      "matchPackageNames": ["@opencode-ai/sdk"],
+      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking the pull request. It takes the ordinary seven days. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path.",
+      "matchPackageNames": [
+        "@opencode-ai/sdk"
+      ],
       "automerge": false,
-      "dependencyDashboardApproval": true,
-      "labels": ["dependencies", "opencode"]
+      "labels": [
+        "dependencies",
+        "opencode"
+      ]
     },
     {
-      "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts entries for it, added for npm v12+ compatibility. Renovate bumps the version but cannot add the matching esbuild@X.Y.Z permission, so an unattended bump would leave the native postinstall unapproved. Approve on the dashboard and add the allowScripts key in the same pull request.",
-      "matchPackageNames": ["esbuild"],
+      "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts entries for it, added for npm v12+ compatibility. Renovate bumps the version but cannot add the matching esbuild@X.Y.Z permission, so its pull request needs that key added by hand before the native postinstall is approved and the branch can go green.",
+      "matchPackageNames": [
+        "esbuild"
+      ],
       "rangeStrategy": "pin",
       "groupName": "esbuild (needs an allowScripts entry)",
-      "automerge": false,
-      "dependencyDashboardApproval": true
+      "automerge": false
     },
     {
       "description": "Node types must stay on the supported major, never follow the current release. Kept out of the dev tooling group so that holding it back cannot stall an unrelated grouped update.",
-      "matchPackageNames": ["@types/node"],
+      "matchPackageNames": [
+        "@types/node"
+      ],
       "allowedVersions": "<25",
       "groupName": "node types",
       "automerge": false
     },
     {
-      "description": "The Node floor is not an ordinary dependency. engines.node and .nvmrc pin the same version as the Dockerfile base image, and the workflows, packaging manifests, install scripts and tests all assert against it, so moving one alone ships a runtime nothing in CI exercised. Approve deliberately and move every copy together.",
-      "matchManagers": ["nvm", "npm"],
-      "matchDepTypes": ["engines"],
+      "description": "The Node floor is not an ordinary dependency. engines.node and .nvmrc pin the same version as the Dockerfile base image, and the workflows, packaging manifests, install scripts and tests all assert against it, so moving one alone ships a runtime nothing in CI exercised. Its pull request is a starting point, not a complete change: every other copy has to move onto the branch before it can merge.",
+      "matchManagers": [
+        "nvm",
+        "npm"
+      ],
+      "matchDepTypes": [
+        "engines"
+      ],
       "groupName": "node floor (engines + .nvmrc)",
       "automerge": false,
-      "dependencyDashboardApproval": true,
-      "labels": ["dependencies", "container"]
+      "labels": [
+        "dependencies",
+        "container"
+      ]
     },
     {
       "description": "Keep Tailwind and its Vite integration aligned. Neither is inlined into the client bundle, but the compiler emits the stylesheet that ships, so this stays a reviewed change.",
-      "matchPackageNames": ["tailwindcss", "@tailwindcss/vite"],
+      "matchPackageNames": [
+        "tailwindcss",
+        "@tailwindcss/vite"
+      ],
       "groupName": "tailwindcss",
       "automerge": false
     },
     {
       "description": "Pin GitHub Actions to commit SHAs for supply-chain integrity.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github actions",
       "pinDigests": true,
       "automerge": false
     },
     {
       "description": "The Dockerfile pins its base image by digest as well as by tag, so without this the pin would never be refreshed and the image would ship whatever CVEs the base had on the day it was written. The rule above is scoped to github-actions only.",
-      "matchManagers": ["dockerfile"],
+      "matchManagers": [
+        "dockerfile"
+      ],
       "groupName": "container base image",
       "pinDigests": true,
       "automerge": false
     },
     {
-      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image is pinned to the floor in engines.node, and moving it alone would ship users a runtime nothing in CI ran. Approve one only together with engines.node and .nvmrc.",
-      "matchManagers": ["dockerfile"],
-      "matchUpdateTypes": ["major", "minor", "patch"],
-      "dependencyDashboardApproval": true,
-      "labels": ["dependencies", "container"]
+      "description": "A digest bump is the same Node on a rebuilt base and lands as an ordinary PR. A version bump is not: the base image is pinned to the floor in engines.node, and moving it alone would ship users a runtime nothing in CI ran. It has to travel with engines.node and .nvmrc on one branch.",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor",
+        "patch"
+      ],
+      "labels": [
+        "dependencies",
+        "container"
+      ]
     }
-  ]
+  ],
+  "dependencyDashboard": false
 }

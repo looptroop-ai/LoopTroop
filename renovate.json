@@ -57,9 +57,37 @@
         "react-virtuoso",
         "tailwind-merge"
       ],
-      "groupName": "bundled frontend (ships to users)",
       "automerge": false,
       "labels": ["dependencies", "frontend"]
+    },
+    {
+      "description": "Group the bundled frontend only below a major. A major here still needs the licence regeneration above, but it must arrive on its own so a regression is attributable to one library rather than to a batch of them — which is the same reason majors are ungrouped everywhere else.",
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": [
+        "@codemirror/autocomplete",
+        "@codemirror/lang-yaml",
+        "@codemirror/language",
+        "@codemirror/merge",
+        "@codemirror/state",
+        "@codemirror/view",
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-dropdown-menu",
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slot",
+        "@radix-ui/react-tooltip",
+        "@tanstack/react-query",
+        "class-variance-authority",
+        "clsx",
+        "lucide-react",
+        "react",
+        "react-dom",
+        "react-virtuoso",
+        "tailwind-merge"
+      ],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "bundled frontend (ships to users)"
     },
     {
       "description": "Runtime dependencies ship to users; group them but always review by hand.",

@@ -213,22 +213,6 @@
       "automerge": false
     },
     {
-      "description": "The Node floor is not an ordinary dependency. engines.node and .nvmrc pin the same version as the Dockerfile base image, and the workflows, packaging manifests, install scripts and tests all assert against it, so moving one alone ships a runtime nothing in CI exercised. Its pull request is a starting point, not a complete change: every other copy has to move onto the branch before it can merge.",
-      "matchManagers": [
-        "nvm",
-        "npm"
-      ],
-      "matchDepTypes": [
-        "engines"
-      ],
-      "groupName": "node floor (engines + .nvmrc)",
-      "automerge": false,
-      "labels": [
-        "dependencies",
-        "container"
-      ]
-    },
-    {
       "description": "Keep Tailwind and its Vite integration aligned. Neither is inlined into the client bundle, but the compiler emits the stylesheet that ships, so this stays a reviewed change.",
       "matchPackageNames": [
         "tailwindcss",
@@ -265,6 +249,29 @@
         "minor",
         "patch"
       ],
+      "labels": [
+        "dependencies",
+        "container"
+      ]
+    },
+    {
+      "description": "The toolchain floor moves as one change or not at all. node and npm are each pinned in more than one place — .nvmrc, engines.node, engines.npm, packageManager and the Dockerfile base image — and Renovate's managers treat those as unrelated dependencies. Without this they arrive as five separate pull requests, none of which is mergeable on its own: each ships a runtime or a package manager that nothing else in the repository agrees with. The version is also asserted across the workflows, packaging manifests and tests, so the grouped PR is still a starting point rather than a complete change. Digest-only refreshes of the base image are excluded: those are the same version on a rebuilt base and belong with the container group.",
+      "matchPackageNames": [
+        "node",
+        "npm"
+      ],
+      "matchManagers": [
+        "nvm",
+        "npm",
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor",
+        "patch"
+      ],
+      "groupName": "toolchain floor (node + npm)",
+      "automerge": false,
       "labels": [
         "dependencies",
         "container"

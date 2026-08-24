@@ -18,7 +18,7 @@ frontend packages inlined into the client bundle.
 | `@codemirror/language` | 6.12.4 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/merge` | 6.12.2 | MIT | Copyright (C) 2018-2022 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/state` | 6.7.1 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/view` | 6.43.7 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/view` | 6.43.9 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@floating-ui/core` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
@@ -73,14 +73,14 @@ frontend packages inlined into the client bundle.
 | `hono` | 4.12.32 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.2.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.28.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.31.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.11 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.12 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `scheduler` | 0.27.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
@@ -157,7 +157,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.12.4`, `@codemirror/state@6.7.1`, `@codemirror/view@6.43.7`
+Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.12.4`, `@codemirror/state@6.7.1`, `@codemirror/view@6.43.9`
 
 ```text
 MIT License
@@ -1088,7 +1088,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.28.0`
+Applies to: `lucide-react@1.31.0`
 
 ```text
 ISC License
@@ -1138,7 +1138,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.11`
+Applies to: `react-virtuoso@4.18.12`
 
 ```text
 MIT License

@@ -1,0 +1,85 @@
+# THIRD-PARTY-NOTICES.md records the exact version of every redistributed
+# package, and `licenses:check` in the Verify job fails when it is stale. Any
+# dependency update therefore invalidates it, and the hosted Renovate app cannot
+# run postUpgradeTasks — so without this workflow every dependency pull request
+# arrives red and needs a person to run one command and commit the result.
+#
+# This regenerates the file on Renovate's own branches and pushes the result
+# back, so those pull requests are green on arrival.
+name: Renovate notices
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-notices-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  notices:
+    name: Regenerate third-party notices
+    # Renovate's branches only. Nothing else may be pushed to by a workflow.
+    if: startsWith(github.head_ref, 'renovate/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # RELEASE_PR_TOKEN rather than GITHUB_TOKEN: a push made with
+      # GITHUB_TOKEN does not start workflow runs, so the required checks would
+      # never re-run and the pull request would sit at "expected" forever.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.RELEASE_PR_TOKEN }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # Exact floor from engines.node and .nvmrc, not floating "24".
+          node-version: 24.15.0
+          cache: npm
+
+      - name: Fail early when the token is absent
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+        run: |
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
+            exit 1
+          fi
+
+      - name: Pin npm to the declared version
+        run: node scripts/pin-npm.mjs
+        shell: bash
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The generator reads dist/client/bundled-packages.json, which the Vite
+      # build emits. Without this step it silently omits every inlined frontend
+      # package and writes a file that is wrong rather than merely stale.
+      - name: Build application
+        run: npm run build
+
+      - name: Regenerate third-party notices
+        run: npm run licenses:generate
+
+      # A no-op push would retrigger this workflow through `synchronize`, so the
+      # commit is conditional. With no change there is no push, and the loop
+      # ends on the second run rather than continuing.
+      - name: Commit and push when the notices changed
+        run: |
+          if git diff --quiet -- THIRD-PARTY-NOTICES.md; then
+            echo "THIRD-PARTY-NOTICES.md is already current; nothing to push."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add THIRD-PARTY-NOTICES.md
+          git commit -m "chore(deps): regenerate third-party notices"
+          git push origin "HEAD:${HEAD_REF}"
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        shell: bash

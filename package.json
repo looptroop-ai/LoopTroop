@@ -103,12 +103,12 @@
     "db:push:project": "drizzle-kit push --config=drizzle.project.config.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^2.0.12",
-    "@opencode-ai/sdk": "^1.18.13",
+    "@hono/node-server": "^2.1.1",
+    "@opencode-ai/sdk": "^1.18.18",
     "drizzle-orm": "1.0.0-rc.4",
     "gpt-tokenizer": "^3.4.0",
     "hono": "^4.12.31",
-    "js-yaml": "^5.2.2",
+    "js-yaml": "^5.3.0",
     "xstate": "^5.32.5",
     "zod": "^4.4.3"
   },

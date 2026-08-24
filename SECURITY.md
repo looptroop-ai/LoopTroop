@@ -96,6 +96,7 @@ committing them.
 as reviewed changes rather than automatically, so an advisory never rewrites the
 lockfile without a human deciding to.
 
-Routine dependency updates are batched weekly with a maturity delay; security
-advisories bypass that schedule. The full policy is documented in
+Routine dependency updates are grouped and proposed daily behind a seven-day
+release-maturity delay; security advisories bypass that schedule and shorten the
+delay to two days. The full policy is documented in
 [Operations Guide](https://www.looptroop.ovh/docs/operations#scheduled-dependency-updates).

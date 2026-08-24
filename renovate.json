@@ -7,9 +7,9 @@
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "Europe/Bucharest",
-  "schedule": ["before 6am on monday"],
-  "prConcurrentLimit": 5,
-  "prHourlyLimit": 0,
+  "schedule": ["* 0-5 * * *"],
+  "prConcurrentLimit": 2,
+  "prHourlyLimit": 1,
   "labels": ["dependencies"],
   "commitMessagePrefix": "chore(deps):",
   "rangeStrategy": "bump",
@@ -18,22 +18,48 @@
   "postUpdateOptions": ["npmDedupe"],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 6am on the first day of the month"],
+    "schedule": ["* 0-5 1 * *"],
     "commitMessageAction": "Refresh"
   },
   "vulnerabilityAlerts": {
+    "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. automerge is pinned off so a vulnerable package can never inherit an automerge rule from the list below and merge without review. dependencyDashboardApproval is pinned off for the opposite reason: several rules below hold their package behind a manual tick, and without this an advisory against one of them would be queued on the dashboard instead of raised as a fix.",
     "enabled": true,
     "minimumReleaseAge": "2 days",
     "schedule": ["at any time"],
+    "automerge": false,
+    "dependencyDashboardApproval": false,
     "labels": ["dependencies", "security"]
   },
   "packageRules": [
     {
-      "description": "Dev dependencies: group patch and minor. Auto-merge stays off until the Phase 2 CI smoke test is green and in required checks.",
+      "description": "Frontend packages are declared as devDependencies but Vite inlines them into dist/client, so they ship to users exactly like a runtime dependency. They also carry licence text: every version here is recorded in THIRD-PARTY-NOTICES.md, which `npm run licenses:check` re-derives from dist/client/bundled-packages.json and CI fails when it is stale. Renovate cannot regenerate that file on the hosted app, so each of these pull requests needs `npm run licenses:generate` committed onto the branch by hand. Never automerge.",
       "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["patch", "minor"],
-      "groupName": "dev dependencies (non-major)",
-      "automerge": false
+      "matchPackageNames": [
+        "@codemirror/autocomplete",
+        "@codemirror/lang-yaml",
+        "@codemirror/language",
+        "@codemirror/merge",
+        "@codemirror/state",
+        "@codemirror/view",
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-dropdown-menu",
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slot",
+        "@radix-ui/react-tooltip",
+        "@tanstack/react-query",
+        "class-variance-authority",
+        "clsx",
+        "lucide-react",
+        "react",
+        "react-dom",
+        "react-virtuoso",
+        "tailwind-merge"
+      ],
+      "groupName": "bundled frontend (ships to users)",
+      "automerge": false,
+      "labels": ["dependencies", "frontend"]
     },
     {
       "description": "Runtime dependencies ship to users; group them but always review by hand.",
@@ -41,6 +67,36 @@
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "runtime dependencies (non-major)",
       "automerge": false
+    },
+    {
+      "description": "Everything else declared as a devDependency. Build and release tooling lands here — vite, typescript, postject, drizzle-kit — and all of it shapes the published artefact even though none of it is inlined into it, so none of it automerges by default. The narrower allowlist below opts specific packages back in.",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "groupName": "dev tooling (non-major)",
+      "automerge": false
+    },
+    {
+      "description": "The only automerge lane. These are lint, test and type-only packages: none is inlined into dist/client, none runs in the published server bundle, and none emits an artefact users receive, so all eleven required checks passing is sufficient review. Patch only. Stable only — matchCurrentVersion excludes 0.x, where a patch release can still break compatibility, which is what keeps eslint-plugin-react-refresh out.",
+      "matchDepTypes": ["devDependencies"],
+      "matchPackageNames": [
+        "@eslint/js",
+        "@testing-library/jest-dom",
+        "@testing-library/react",
+        "@types/qrcode",
+        "@types/react",
+        "@types/react-dom",
+        "eslint",
+        "eslint-plugin-react-hooks",
+        "globals",
+        "jsdom",
+        "typescript-eslint",
+        "vitest"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "matchCurrentVersion": "!/^0\\./",
+      "groupName": "lint and test tooling (patch)",
+      "automerge": true,
+      "automergeStrategy": "squash"
     },
     {
       "description": "Majors land one at a time so a failure is attributable.",
@@ -59,21 +115,38 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "OpenCode is slated for replacement; let its SDK settle before adopting, and update the documented minimum version in the same PR.",
+      "description": "The SDK talks to an OpenCode CLI that users install separately and that Renovate cannot see, so the risk here is version skew rather than an immature release — no maturity window addresses that, only a person checking. It therefore takes the ordinary seven days and relies on the manual tick instead, which is what actually gates it. Update the documented minimum version in the same PR. The OpenCode CLI itself is a local binary outside npm and is invisible to Renovate; `npm run opencode:upgrade` remains its only update path.",
       "matchPackageNames": ["@opencode-ai/sdk"],
-      "minimumReleaseAge": "30 days",
       "automerge": false,
       "dependencyDashboardApproval": true,
       "labels": ["dependencies", "opencode"]
     },
     {
-      "description": "Node types must stay on the supported major, never follow the current release.",
+      "description": "esbuild is exact-pinned because package.json carries version-keyed allowScripts entries for it, added for npm v12+ compatibility. Renovate bumps the version but cannot add the matching esbuild@X.Y.Z permission, so an unattended bump would leave the native postinstall unapproved. Approve on the dashboard and add the allowScripts key in the same pull request.",
+      "matchPackageNames": ["esbuild"],
+      "rangeStrategy": "pin",
+      "groupName": "esbuild (needs an allowScripts entry)",
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Node types must stay on the supported major, never follow the current release. Kept out of the dev tooling group so that holding it back cannot stall an unrelated grouped update.",
       "matchPackageNames": ["@types/node"],
       "allowedVersions": "<25",
+      "groupName": "node types",
       "automerge": false
     },
     {
-      "description": "Keep Tailwind and its Vite integration aligned.",
+      "description": "The Node floor is not an ordinary dependency. engines.node and .nvmrc pin the same version as the Dockerfile base image, and the workflows, packaging manifests, install scripts and tests all assert against it, so moving one alone ships a runtime nothing in CI exercised. Approve deliberately and move every copy together.",
+      "matchManagers": ["nvm", "npm"],
+      "matchDepTypes": ["engines"],
+      "groupName": "node floor (engines + .nvmrc)",
+      "automerge": false,
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "container"]
+    },
+    {
+      "description": "Keep Tailwind and its Vite integration aligned. Neither is inlined into the client bundle, but the compiler emits the stylesheet that ships, so this stays a reviewed change.",
       "matchPackageNames": ["tailwindcss", "@tailwindcss/vite"],
       "groupName": "tailwindcss",
       "automerge": false

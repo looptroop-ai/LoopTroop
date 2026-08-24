@@ -24,9 +24,10 @@
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": [
-      "* 0-5 1 * *"
+      "* 0-5 * * 1"
     ],
-    "commitMessageAction": "Refresh"
+    "commitMessageAction": "Refresh",
+    "description": "Weekly, not monthly. Renovate's daily pass only sees the 56 packages declared in package.json; the lockfile holds 501, and the ~445 transitive ones are invisible to it. Security advisories against those get no pull request either, so this refresh is the only response path they have — which makes its cadence the exposure window for a transitive CVE. A monthly run meant up to thirty days, and did: a high-severity brace-expansion advisory sat unfixed until it was refreshed by hand. Weekly caps it at seven. It is not daily because a full re-resolve produces a large diff whenever anything among those 445 publishes, which is most days, and no per-package gate can apply to it."
   },
   "vulnerabilityAlerts": {
     "description": "Renovate's own default here is minimumReleaseAge: null, which opens security PRs immediately. The two-day floor below deliberately overrides that: it means the fixed release must itself be two days old, not that Renovate waits two days after disclosure. automerge is pinned off so a vulnerable package can never inherit an automerge rule from the list below and merge without review.",

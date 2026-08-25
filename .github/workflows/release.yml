@@ -796,7 +796,7 @@ jobs:
 
       - name: Pin npm
         run: |
-          npm install --global npm@11.12.1
+          npm install --global npm@12.0.2
           npm --version
 
       - name: Download the release artefacts
@@ -978,7 +978,7 @@ jobs:
           node-version: 24.15.0
 
       - name: Pin npm
-        run: node -e "require('node:child_process').execSync('npm install --global npm@11.12.1',{stdio:'inherit'})"
+        run: node -e "require('node:child_process').execSync('npm install --global npm@12.0.2',{stdio:'inherit'})"
 
       # `--profile gate` keeps this exactly as large as it was: install, version,
       # and the doctor checks. Deliberately NOT the full lifecycle the published

@@ -72,7 +72,16 @@ function readPackedFiles() {
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'inherit'],
   })
-  const [result] = JSON.parse(raw)
+  // npm 11 reports an array of packed tarballs here; npm 12 reports an object
+  // keyed by package name. Reading only the array shape throws "is not
+  // iterable" on npm 12 and fails this required check for a reason that names
+  // neither npm nor the change.
+  const parsed = JSON.parse(raw)
+  const result = Array.isArray(parsed)
+    ? parsed[0]
+    : parsed?.files
+      ? parsed
+      : Object.values(parsed ?? {})[0]
   if (!result?.files) throw new Error('npm pack --json returned no file list')
   return result.files.map((file) => file.path)
 }

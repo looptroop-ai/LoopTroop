@@ -140,7 +140,7 @@
     "clsx": "^2.1.1",
     "concurrently": "^10.0.4",
     "drizzle-kit": "1.0.0-rc.4",
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "eslint": "^10.8.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
@@ -163,10 +163,7 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true,
-    "esbuild@0.28.0": true,
     "esbuild@0.25.12": true,
-    "esbuild@0.18.20": true,
-    "esbuild@0.21.5": true
+    "esbuild@0.28.2": true
   }
 }

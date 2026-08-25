@@ -42,32 +42,89 @@ export interface CliOptions {
 
 const OPENCODE_LOG_MODE_ENV = 'LOOPTROOP_OPENCODE_LOGS'
 
+/** How long the health probe waits before it gives up on an answer. */
+const HEALTH_PROBE_MS = 2_000
+
+/**
+ * What the recorded daemon actually is, as opposed to whether it answered.
+ *
+ * A single nullable state cannot carry this. "The health probe timed out" and
+ * "there is no daemon" are the same `null`, and treating them as the same thing
+ * is what let `stop` delete a live daemon's state file — taking its API token
+ * with it, so nothing could ever stop it again, and leaving `clean` free to
+ * remove worktrees it was using.
+ *
+ * The distinction that matters to a caller about to signal something is whether
+ * the pid's identity is *proven*. `running` proves it over HTTP. `not-answering`
+ * proves it with the start token taken when the daemon was spawned. `unverifiable`
+ * proves nothing — the pid is alive, but it may have been recycled since the
+ * record was written, so it must be left alone.
+ */
+export type DaemonProbe =
+  /** Answered, and reported the instance id in the record. */
+  | { kind: 'running'; state: DaemonState }
+  /** Did not answer, but the pid is provably still the process we recorded. */
+  | { kind: 'not-answering'; state: DaemonState }
+  /** Alive, but nothing can prove it is still our daemon. Do not signal it. */
+  | { kind: 'unverifiable'; state: DaemonState; reason: string }
+  /** Alive and provably somebody else, or answering as a different instance. */
+  | { kind: 'different'; state: DaemonState; reason: string }
+  /** No record at all, or the recorded pid is gone. */
+  | { kind: 'not-running' }
+
 /**
  * A pid alone cannot prove the daemon is alive: the number may have been
- * recycled by an unrelated process. The instance id in the state file is
- * checked against the running daemon's own report before we act on it, so a
- * stale file can never point `stop` at somebody else's process.
+ * recycled by an unrelated process. Identity is established over HTTP where the
+ * daemon answers, and from the recorded start token where it does not.
  */
-export async function readRunningDaemon(configDir?: string): Promise<DaemonState | null> {
+export async function probeRecordedDaemon(configDir?: string): Promise<DaemonProbe> {
   const state = readDaemonState(configDir)
-  if (!state) return null
-  if (!isProcessAlive(state.pid)) return null
+  if (!state) return { kind: 'not-running' }
+  if (!isProcessAlive(state.pid)) return { kind: 'not-running' }
 
   try {
     const response = await fetch(`http://${state.host}:${state.port}/api/health`, {
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(HEALTH_PROBE_MS),
     })
-    if (!response.ok) return null
-
-    const body = await response.json() as { instanceId?: unknown }
-    // An older daemon reports no id at all; a different one reports its own.
-    // Only a mismatch is disqualifying.
-    if (typeof body.instanceId === 'string' && body.instanceId !== state.instanceId) return null
+    if (response.ok) {
+      const body = await response.json() as { instanceId?: unknown }
+      // An older daemon reports no id at all; a different one reports its own.
+      // Only a mismatch is disqualifying.
+      if (typeof body.instanceId === 'string' && body.instanceId !== state.instanceId) {
+        return {
+          kind: 'different',
+          state,
+          reason: 'the daemon answering on that port reports a different instance',
+        }
+      }
+      return { kind: 'running', state }
+    }
   } catch {
-    return null
+    // Unreachable, refused, or slower than the probe allows. Which of those it
+    // was does not change the next question, which is whose pid this is.
   }
 
-  return state
+  // Not answering. The pid is alive, so the only remaining question is whether
+  // it is still the process the record describes.
+  const match = matchProcess(state.pid, state.startToken)
+  if (match.kind === 'same') return { kind: 'not-answering', state }
+  if (match.kind === 'different') {
+    return { kind: 'different', state, reason: 'the pid now belongs to a different process' }
+  }
+  return { kind: 'unverifiable', state, reason: match.reason }
+}
+
+/**
+ * The daemon, but only when it answered — the shape every caller that just wants
+ * to talk to a daemon needs.
+ *
+ * Callers that are about to *act* on the process rather than talk to it want
+ * `probeRecordedDaemon` instead: this collapses "not answering" into `null`, and
+ * that collapse is exactly what must not reach `stop`.
+ */
+export async function readRunningDaemon(configDir?: string): Promise<DaemonState | null> {
+  const probe = await probeRecordedDaemon(configDir)
+  return probe.kind === 'running' ? probe.state : null
 }
 
 /** A sign-in link, and the nonce inside it that says whether it was used. */
@@ -179,14 +236,29 @@ async function launchDaemon(configDir: string, options: CliOptions): Promise<Lau
 
 export async function startCommand(options: CliOptions = {}): Promise<number> {
   const configDir = resolveAppConfigDir()
-  const existing = await readRunningDaemon(configDir)
-  if (existing) {
+  const existing = await probeRecordedDaemon(configDir)
+  if (existing.kind === 'running') {
     process.stdout.write(
-      `LoopTroop is already running on http://${existing.host}:${existing.port} (pid ${existing.pid}).\n` +
+      `LoopTroop is already running on http://${existing.state.host}:${existing.state.port} ` +
+      `(pid ${existing.state.pid}).\n` +
       'Run `looptroop open` for a signed-in link.\n',
     )
     if (options.opencodeLogs === 'all') writeAllLogsRequiresRestart()
     return 0
+  }
+
+  // A daemon that is alive but not answering is still a daemon holding the
+  // single-instance lock. Starting would fail on that lock anyway; saying so
+  // here names the actual situation instead of reporting a refused start.
+  if (existing.kind === 'not-answering' || existing.kind === 'unverifiable') {
+    process.stderr.write(
+      `LoopTroop is already running on http://${existing.state.host}:${existing.state.port} ` +
+      `(pid ${existing.state.pid}) but is not answering` +
+      `${existing.kind === 'unverifiable' ? `, and ${existing.reason}` : ''}. ` +
+      'Nothing was started. Run `looptroop stop` and try again, or `looptroop doctor` to see ' +
+      'what that process is.\n',
+    )
+    return 1
   }
 
   if (options.foreground) {
@@ -352,11 +424,12 @@ export type StopOutcome =
 /**
  * Whether the pid recorded for this daemon still belongs to it.
  *
- * `readRunningDaemon` proved the identity over HTTP before the escalation
- * started, but that proof expires the moment the daemon stops answering — which
- * is exactly what the graceful rung is waiting for. Between rungs the pid can be
- * released and handed to something else, and the next rung would signal that
- * instead. A pid we cannot vouch for is left alone: a daemon that outlives
+ * `probeRecordedDaemon` proved the identity before the escalation started —
+ * over HTTP for a daemon that answered, from the recorded start token for one
+ * that did not — but that proof expires the moment the daemon stops answering,
+ * which is exactly what the graceful rung is waiting for. Between rungs the pid
+ * can be released and handed to something else, and the next rung would signal
+ * that instead. A pid we cannot vouch for is left alone: a daemon that outlives
  * `stop` is a nuisance, and killing an unrelated process is not.
  */
 function stillTheDaemon(state: DaemonState): 'gone' | 'ours' | { reason: string } {
@@ -365,9 +438,11 @@ function stillTheDaemon(state: DaemonState): 'gone' | 'ours' | { reason: string 
   const match = matchProcess(state.pid, state.startToken)
   if (match.kind === 'same') return 'ours'
   if (match.kind === 'different') return { reason: 'the pid now belongs to a different process' }
-  // Older daemons recorded no token. Their pid was confirmed over HTTP at the
-  // start of this call, and refusing every one of them would leave no way to
-  // stop them at all.
+  // Older daemons recorded no token. Reaching here at all means the daemon
+  // answered over HTTP when this call began — a tokenless record that never
+  // answered is stopped by nobody, because `probeRecordedDaemon` reports it as
+  // `unverifiable` and the escalation is never entered. Refusing these as well
+  // would leave no way to stop an old daemon that is working perfectly.
   return state.startToken === undefined ? 'ours' : { reason: match.reason }
 }
 
@@ -389,7 +464,7 @@ export async function stopRunningDaemon(
 
   const accepted = await requestShutdown(state)
   if (accepted && await waitForExit(state.pid, budgets.gracefulMs)) {
-    return { kind: 'stopped', forced: false }
+    return finishStop(state, options.configDir, false)
   }
 
   const beforeSignal = stillTheDaemon(state)
@@ -399,7 +474,7 @@ export async function stopRunningDaemon(
   }
 
   if (signalTermination(state.pid) && await waitForExit(state.pid, budgets.signalMs)) {
-    return { kind: 'stopped', forced: false }
+    return finishStop(state, options.configDir, false)
   }
 
   const beforeKill = stillTheDaemon(state)
@@ -422,6 +497,13 @@ export async function stopRunningDaemon(
  * Both writes are scoped to this daemon's own identity, so a daemon that started
  * in the meantime keeps its lock and its state file. A daemon that exited
  * cleanly has already removed both and these are no-ops.
+ *
+ * Every rung that confirms the process is gone ends here, including the two that
+ * used to return without it. Those were written for a daemon that answered and
+ * therefore ran its own cleanup on the way out — but `stop` now also reaches a
+ * daemon that never answered, and a wedged process does not run its shutdown
+ * handler. Leaving its records behind would mean a successful `stop` reporting
+ * success while `status` still described a daemon.
  */
 function finishStop(state: DaemonState, configDir: string | undefined, forced: boolean): StopOutcome {
   clearLockOwnedBy(state.pid, configDir)
@@ -445,45 +527,72 @@ async function requestShutdown(state: DaemonState): Promise<boolean> {
 
 export async function stopCommand(): Promise<number> {
   const configDir = resolveAppConfigDir()
-  const state = await readRunningDaemon(configDir)
+  const probe = await probeRecordedDaemon(configDir)
 
-  if (!state) {
-    // Clear debris so the next start is not blocked by a lock whose owner died.
-    // A recorded start failure survives: `stop` is what someone runs after a
-    // start that did not take, and it is the only account of why.
-    clearStaleDaemonState(configDir)
-    const lock = releaseStaleLock(configDir)
-
-    if (lock.kind === 'held') {
-      // A daemon that is not answering is still a daemon. Removing its lock here
-      // would let the next start run a second one on the same databases.
-      process.stderr.write(
-        `LoopTroop is not answering, but pid ${lock.owner.pid} still holds its single-instance lock ` +
-        `(started ${lock.owner.startedAt}). Nothing was stopped, and the lock was left in place so a ` +
-        'second daemon cannot start alongside it. Run `looptroop doctor` to see what that process is.\n',
-      )
-      return 1
-    }
-
-    if (lock.kind === 'unreadable') {
-      // The lock file is there but names nobody yet — most likely a daemon
-      // partway through writing its record. Saying "not running" would be a
-      // lie, and removing it would let the next start run a second daemon
-      // alongside the one currently starting.
-      process.stderr.write(
-        'LoopTroop is not answering, and its single-instance lock exists but does not yet name an owner — ' +
-        'most likely a daemon still starting up. Nothing was stopped, and the lock was left in place. ' +
-        'Try again in a moment, or run `looptroop doctor` if it persists.\n',
-      )
-      return 1
-    }
-
-    process.stdout.write('LoopTroop is not running.\n')
-    return 0
+  // Alive, and provably still ours: stop it. That the health probe timed out
+  // changes nothing about whose process it is — the start token says that, and
+  // the escalation re-checks it before every rung it can act on.
+  if (probe.kind === 'running' || probe.kind === 'not-answering') {
+    return reportStopOutcome(await stopRunningDaemon(probe.state, { configDir }))
   }
 
-  const outcome = await stopRunningDaemon(state, { configDir })
+  // Alive, but nothing proves it is still the daemon the record describes. The
+  // record and the lock are both left exactly as they are: the state file holds
+  // the only copy of this daemon's API token, and deleting it would strand a
+  // process that may well be a working daemon whose health probe was merely
+  // slow — unstoppable afterwards, because the credential to ask it to stop
+  // would be gone.
+  if (probe.kind === 'unverifiable') {
+    process.stderr.write(
+      `LoopTroop is not answering, and pid ${probe.state.pid} was left alone because ${probe.reason}. ` +
+      'Nothing was stopped, and its records were left in place so a working daemon is not stranded. ' +
+      'Run `looptroop doctor` to see what that process is.\n',
+    )
+    return 1
+  }
 
+  if (probe.kind === 'different') {
+    // The recorded pid is provably not our daemon, so the record describes
+    // nothing that is running and clearing it is safe.
+    process.stderr.write(`The recorded daemon is gone: ${probe.reason}.\n`)
+  }
+
+  // Clear debris so the next start is not blocked by a lock whose owner died.
+  // A recorded start failure survives: `stop` is what someone runs after a
+  // start that did not take, and it is the only account of why.
+  clearStaleDaemonState(configDir)
+  const lock = releaseStaleLock(configDir)
+
+  if (lock.kind === 'held') {
+    // A daemon that is not answering is still a daemon. Removing its lock here
+    // would let the next start run a second one on the same databases.
+    process.stderr.write(
+      `LoopTroop is not answering, but pid ${lock.owner.pid} still holds its single-instance lock ` +
+      `(started ${lock.owner.startedAt}). Nothing was stopped, and the lock was left in place so a ` +
+      'second daemon cannot start alongside it. Run `looptroop doctor` to see what that process is.\n',
+    )
+    return 1
+  }
+
+  if (lock.kind === 'unreadable') {
+    // The lock file is there but names nobody yet — most likely a daemon
+    // partway through writing its record. Saying "not running" would be a
+    // lie, and removing it would let the next start run a second daemon
+    // alongside the one currently starting.
+    process.stderr.write(
+      'LoopTroop is not answering, and its single-instance lock exists but does not yet name an owner — ' +
+      'most likely a daemon still starting up. Nothing was stopped, and the lock was left in place. ' +
+      'Try again in a moment, or run `looptroop doctor` if it persists.\n',
+    )
+    return 1
+  }
+
+  process.stdout.write('LoopTroop is not running.\n')
+  return 0
+}
+
+/** Turns the escalation's outcome into what the user sees and the shell reads. */
+function reportStopOutcome(outcome: StopOutcome): number {
   if (outcome.kind === 'failed') {
     process.stderr.write(
       `LoopTroop (pid ${outcome.pid}) did not stop and could not be killed. ` +
@@ -502,7 +611,12 @@ export async function stopCommand(): Promise<number> {
     return 1
   }
 
-  process.stdout.write(outcome.kind === 'stopped' && outcome.forced
+  if (outcome.kind === 'not-running') {
+    process.stdout.write('LoopTroop is not running.\n')
+    return 0
+  }
+
+  process.stdout.write(outcome.forced
     ? 'LoopTroop did not shut down cleanly and was killed.\n'
     : 'LoopTroop stopped.\n')
   return 0
@@ -535,10 +649,17 @@ export function describeOpenCodeForStatus(opencode: DaemonState['opencode']): st
 
 export async function statusCommand(json: boolean, update?: UpdateStatus): Promise<number> {
   const configDir = resolveAppConfigDir()
-  const state = await readRunningDaemon(configDir)
+  const probe = await probeRecordedDaemon(configDir)
+  const state = probe.kind === 'running' ? probe.state : null
   // Only meaningful when nothing is running: a live daemon overwrote the record
   // when it started, so anything still there describes an earlier attempt.
   const failure = state ? null : readDaemonStartFailure(configDir)
+  // A process that is there but not talking. Reported separately rather than
+  // folded into `running`, which every installer and smoke reads as "answering"
+  // and which must keep meaning exactly that.
+  const unresponsive = probe.kind === 'not-answering' || probe.kind === 'unverifiable'
+    ? { pid: probe.state.pid, reason: probe.kind === 'unverifiable' ? probe.reason : null }
+    : null
 
   if (json) {
     // Redacted: the token is a credential for this daemon, and status output is
@@ -546,10 +667,22 @@ export async function statusCommand(json: boolean, update?: UpdateStatus): Promi
     process.stdout.write(`${JSON.stringify({
       running: state !== null,
       daemon: state ? redactDaemonState(state) : null,
+      notAnswering: unresponsive,
       lastStartFailure: failure,
       ...(update === undefined ? {} : { update: summarizeUpdateStatus(update) }),
     }, null, 2)}\n`)
     return state ? 0 : 1
+  }
+
+  if (unresponsive) {
+    // "Not running" would be a lie that sends someone to `start`, which the
+    // lock then refuses for reasons that read as unrelated.
+    process.stdout.write(
+      `LoopTroop is not answering, but pid ${unresponsive.pid} is still running` +
+      `${unresponsive.reason === null ? '' : `, and ${unresponsive.reason}`}.\n\n` +
+      'Run `looptroop stop` to end it, or `looptroop doctor` to see what it is.\n',
+    )
+    return 1
   }
 
   if (!state) {

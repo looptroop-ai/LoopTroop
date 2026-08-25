@@ -126,7 +126,7 @@
 # as by tag: a tag is a mutable pointer, so two builds of the same commit can
 # otherwise disagree about what they were built on. The digest is the multi-arch
 # index, so one value serves both amd64 and arm64. Renovate updates it.
-FROM node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
+FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS build
 
 ARG TARBALL
 WORKDIR /build
@@ -142,7 +142,7 @@ RUN npm install --global --omit=dev --prefix /opt/looptroop ./package.tgz \
   && rm -f package.tgz
 
 
-FROM node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS runtime
+FROM node:24.18.1-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
 
 # Passed by the build so the image can say what it is without a second source of
 # truth for the version. Declared here rather than at the top because build args

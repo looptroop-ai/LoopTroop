@@ -77,7 +77,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Exact floor from engines.node and .nvmrc, not floating "24".
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -172,15 +172,15 @@ jobs:
           # Exact floor, not "24": `node-version: 24` resolves to the newest
           # patch, so the version `engines` actually promises stays untested.
           # Every platform runs it, because the floor is a promise on all three
-          # and a macOS-only regression at 24.15.0 would otherwise reach users.
+          # and a macOS-only regression at 24.18.1 would otherwise reach users.
           - os: ubuntu-latest
-            node: 24.15.0
+            node: 24.18.1
             label: toolchain floor
           - os: macos-latest
-            node: 24.15.0
+            node: 24.18.1
             label: toolchain floor
           - os: windows-latest
-            node: 24.15.0
+            node: 24.18.1
             label: toolchain floor
           # Newest 24, so a patch release that breaks us is seen early. Advisory:
           # a required check must fail only for something this repository can fix.
@@ -227,7 +227,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -272,7 +272,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -357,7 +357,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -421,7 +421,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -493,7 +493,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -548,7 +548,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -574,7 +574,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Audit the formula this release would publish
         run: >
@@ -605,7 +605,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -676,7 +676,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Download the bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -730,7 +730,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version
@@ -827,7 +827,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Download the Windows binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -875,7 +875,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Pin npm to the declared version

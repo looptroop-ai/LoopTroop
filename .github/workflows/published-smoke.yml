@@ -107,7 +107,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       # Blank resolves to the newest stable release. That is what makes the
       # temporary push trigger usable at all: a push event carries no inputs.
@@ -196,7 +196,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24.15.0
+          node-version: 24.18.1
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs

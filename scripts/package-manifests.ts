@@ -182,7 +182,7 @@ export function renderNuspec(inputs: ChannelInputs): string {
     <summary>${SHORT_DESCRIPTION}</summary>
     <description>${SHORT_DESCRIPTION}. LoopTroop runs as a local background service and drives OpenCode in isolated git worktrees, with human approval gates before anything is delivered.</description>
     <dependencies>
-      <dependency id="nodejs-lts" version="24.15.0" />
+      <dependency id="nodejs-lts" version="24.18.1" />
       <dependency id="git" />
       <dependency id="gh" />
     </dependencies>

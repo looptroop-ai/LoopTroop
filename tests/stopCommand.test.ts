@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
+import { readProcessStartToken } from '../server/lib/processIdentity'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
@@ -279,6 +280,103 @@ describe('stopping a running daemon', () => {
 
     expect(written.join('')).toContain(String(pid))
     expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+  })
+
+  /**
+   * The health probe answering "no" is not the daemon answering "I am gone".
+   *
+   * `readRunningDaemon` collapses an unreachable daemon and an absent one into
+   * the same `null`, and `stop` used to act on that by clearing the state file
+   * before it had looked at the lock. The state file holds the only copy of the
+   * daemon's API token, so a two-second blip on a loaded machine cost the CLI
+   * the credential it needs to ask that daemon to stop — permanently, since
+   * every later `stop` took the same branch. `clean` then found no record,
+   * reported nothing running, and was free to delete worktrees in use.
+   *
+   * All three cases below run against a port nobody is listening on, so the
+   * probe fails in microseconds rather than waiting out its budget.
+   */
+  describe('a daemon that is alive but not answering', () => {
+    /** Nothing listens here, so the health probe is refused rather than slow. */
+    const DEAD_PORT = 1
+
+    async function runStopCommand(configDir: string): Promise<{ code: number; output: string }> {
+      const previous = process.env.LOOPTROOP_CONFIG_DIR
+      process.env.LOOPTROOP_CONFIG_DIR = configDir
+      const written: string[] = []
+      const restoreOut = process.stdout.write.bind(process.stdout)
+      const restoreErr = process.stderr.write.bind(process.stderr)
+      const capture = ((chunk: string) => { written.push(String(chunk)); return true })
+
+      process.stdout.write = capture as typeof process.stdout.write
+      process.stderr.write = capture as typeof process.stderr.write
+      try {
+        const { stopCommand } = await import('../server/cli/commands')
+        return { code: await stopCommand(), output: written.join('') }
+      } finally {
+        process.stdout.write = restoreOut
+        process.stderr.write = restoreErr
+        if (previous === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
+        else process.env.LOOPTROOP_CONFIG_DIR = previous
+      }
+    }
+
+    it('stops it when the recorded start token still matches the pid', async () => {
+      const configDir = makeConfigDir()
+      const pid = spawnStandIn(false)
+      // The real token for this real process, so identity is proven without the
+      // HTTP round trip the daemon is failing to serve.
+      const startToken = readProcessStartToken(pid)
+      expect(startToken).not.toBeNull()
+
+      writeFileSync(getDaemonStatePath(configDir), JSON.stringify(
+        makeState({ pid, port: DEAD_PORT, startToken: startToken ?? undefined }),
+      ))
+      writeLock(configDir, pid)
+
+      const { code } = await runStopCommand(configDir)
+
+      expect(code).toBe(0)
+      expect(isAlive(pid)).toBe(false)
+      // Removed because the stop finished, not because debris cleanup ran: a
+      // successful escalation clears both, scoped to this daemon's identity.
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(false)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(false)
+    })
+
+    it('leaves an unverifiable process and its records completely alone', async () => {
+      const configDir = makeConfigDir()
+      const pid = spawnStandIn(false)
+      // No start token: the record cannot prove this pid was not recycled, so
+      // the process must not be signalled and its records must not be deleted.
+      writeFileSync(getDaemonStatePath(configDir), JSON.stringify(makeState({ pid, port: DEAD_PORT })))
+      writeLock(configDir, pid)
+
+      const { code, output } = await runStopCommand(configDir)
+
+      expect(code).toBe(1)
+      expect(isAlive(pid)).toBe(true)
+      expect(output).toContain(String(pid))
+      // The whole point: the token survives, so `stop` can still work once the
+      // daemon answers again, and `clean` still refuses.
+      expect(existsSync(getDaemonStatePath(configDir))).toBe(true)
+      expect(existsSync(getDaemonLockPath(configDir))).toBe(true)
+    })
+
+    it('never signals a pid whose recorded token cannot match', async () => {
+      const configDir = makeConfigDir()
+      const pid = spawnStandIn(true)
+      // A token that is present and wrong: the pid was recycled, so whatever
+      // holds the number now belongs to somebody else.
+      writeFileSync(getDaemonStatePath(configDir), JSON.stringify(
+        makeState({ pid, port: DEAD_PORT, startToken: 'f'.repeat(32) }),
+      ))
+
+      const { code } = await runStopCommand(configDir)
+
+      expect(code).toBe(0)
+      expect(isAlive(pid)).toBe(true)
+    })
   })
 
   function writeLock(configDir: string, pid: number): void {

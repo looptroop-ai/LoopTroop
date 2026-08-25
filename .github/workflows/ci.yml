@@ -651,6 +651,24 @@ jobs:
           "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
           scoop --version
 
+          # Scoop ships its own private 7-Zip and downloads it the first time it
+          # has to unpack anything. That download failed the job once already —
+          # `The SSL connection could not be established` fetching 7z2602-x64.msi
+          # from GitHub releases — which is a network hiccup entirely outside
+          # this repository failing a check about a LoopTroop manifest.
+          #
+          # The runner image already carries 7-Zip, so pointing Scoop at it
+          # removes the download rather than retrying it. Retrying would re-run
+          # the same fetch against the same flaky path; this makes the fetch
+          # unnecessary.
+          #
+          # `Get-Command` first, and fatal: if the image ever stops putting 7z
+          # on PATH, this must fail here saying so, rather than silently leaving
+          # `use_external_7zip` pointing at nothing and turning a fixed flake
+          # into a permanent red.
+          Get-Command 7z -ErrorAction Stop | Out-Null
+          scoop config use_external_7zip true
+
       # `--strip-node` on macOS only, and it is the point of the job there:
       # node@24 is keg-only, so the formula has to put the keg's node on PATH
       # itself. On a runner that already has Node, a formula that forgot to

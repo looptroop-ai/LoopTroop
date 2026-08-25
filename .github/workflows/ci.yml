@@ -421,9 +421,16 @@ jobs:
       # same file and fails with EBUSY on `bun.exe` about half the time. Bun's
       # own error message names the remedy, so use it — pinned through a
       # scriptblock so the version stays fixed rather than tracking latest.
+      # `--allow-scripts` because npm 12 blocks dependency install scripts by
+      # default, and bun's npm package downloads its binary from a postinstall.
+      # Without this npm 12 skips it with a warning rather than an error, and
+      # the install "succeeds" with no usable bun — which surfaced as a failed
+      # assertion two steps later rather than as a failed install. Named per
+      # manager rather than blanket-enabled, so this approves exactly the one
+      # package the job installs.
       - name: Install ${{ matrix.manager }}
         if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g ${{ matrix.package }}
+        run: npm install -g --allow-scripts=${{ matrix.manager }} ${{ matrix.package }}
 
       # The release archive, checked against the digest bun published for it,
       # rather than piping bun.sh/install.ps1 into a shell. That script is

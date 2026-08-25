@@ -137,6 +137,19 @@ function readJson(text, name) {
 }
 
 /**
+ * `npm pack --json` reports an array of packed tarballs on npm 11 and an object
+ * keyed by package name on npm 12. Both majors are in play — engines names one
+ * and a contributor's shell may have the other — so read either, and treat a
+ * bare object carrying the fields directly as a third possibility.
+ */
+function firstPackEntry(parsed) {
+  if (Array.isArray(parsed)) return parsed[0]
+  if (!parsed || typeof parsed !== 'object') return undefined
+  if (parsed.filename || parsed.files) return parsed
+  return Object.values(parsed)[0]
+}
+
+/**
  * Polls until the port answers. The daemon reports ready before returning, so
  * this is only insurance against a slow runner, not part of the contract.
  */
@@ -261,10 +274,16 @@ try {
       fail('npm pack', `exited ${packed.code}: ${packed.stderr.trim().split('\n').slice(-3).join(' ')}`)
       throw new Error('cannot continue without a tarball')
     }
-    const [packResult] = readJson(packed.stdout, 'npm pack --json') ?? []
-    tarball = resolve(repoRoot, packResult?.filename ?? '')
+    const packResult = firstPackEntry(readJson(packed.stdout, 'npm pack --json'))
+    // Never resolve an absent filename: resolve(repoRoot, '') is repoRoot
+    // itself, and the cleanup below would then try to remove the checkout.
+    if (!packResult?.filename) {
+      fail('npm pack --json', 'no filename in the report')
+      throw new Error('cannot continue without a tarball')
+    }
+    tarball = resolve(repoRoot, packResult.filename)
     packedHere = true
-    check('tarball exists', existsSync(tarball), packResult?.filename ?? 'no filename reported')
+    check('tarball exists', existsSync(tarball), packResult.filename)
   }
 
   heading('Install it globally into a throwaway prefix')

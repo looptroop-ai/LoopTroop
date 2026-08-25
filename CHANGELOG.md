@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- Raising the Node floor no longer requires editing branch protection by hand before the change can merge.
 - Automated dependency updates run again, proposed behind a seven-day maturity delay and two days for security advisories, with only non-shipping lint and test tooling allowed to merge itself.
 - Dependency pull requests now arrive with their licence notices already regenerated, instead of failing until someone updated the file by hand.
 
@@ -33,6 +34,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Pull request concurrency and creation rate are throttled while the accumulated backlog is worked through, so the first batch arrives in reviewable order rather than all at once.
 
 ### Fixed
+- Fixed the four required CI checks carrying the Node version in the names branch protection matches on, which made every toolchain floor bump unmergeable. Raising the floor renamed those jobs, so they reported under names nothing required while the required names were never reported at all — and GitHub waits on an unreported required check indefinitely rather than failing it. The result was a pull request showing every check green and a merge button that never unlocked, with nothing on the pull request naming the cause. The required lanes are now named for their purpose rather than their version, so a floor bump changes only the files that pin it. The advisory lanes keep the version in their names, since nothing requires them and the marker that separates a blocking lane from a `continue-on-error` one is retained.
 - Fixed the published install smoke reporting every channel as broken when the release was fine. Its check on how the daemon obtained OpenCode read `kind`, the discriminant of the supervisor's in-memory status, rather than `status`, which is what `describeOpenCode` writes into `daemon.json`. Nothing else in any leg failed — install, version, doctor, start, the health endpoint, the interface, the refused unauthenticated call, stop and uninstall all passed on all eight legs of the 0.5.8 release — so the only defect was the assertion. A test now pins the field against the code that renders the persisted shape, so renaming the discriminant fails in CI rather than in a post-release smoke.
 
 ## 0.5.8 (2026-08-23)

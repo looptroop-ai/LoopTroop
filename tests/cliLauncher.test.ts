@@ -63,12 +63,12 @@ describe('cli launcher', () => {
     const result = runGuard('22.9.0')
 
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('requires Node.js 24.15.0 or newer')
+    expect(result.stderr).toContain('requires Node.js 24.19.0 or newer')
     expect(result.stderr).toContain('22.9.0')
   })
 
   it('accepts a supported runtime', () => {
-    expect(runGuard('24.15.0', 'process.stdout.write("passed");').stdout).toBe('passed')
+    expect(runGuard('24.19.0', 'process.stdout.write("passed");').stdout).toBe('passed')
   })
 
   it('accepts a newer major', () => {

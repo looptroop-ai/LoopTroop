@@ -109,7 +109,7 @@ npm install -g looptroop
 npm install -g looptroop@latest   # upgrade
 ```
 
-**Needs Node 24.15.0 or newer and npm 11.12.1 or newer**, plus git and `gh`.
+**Needs Node 24.19.0 or newer and npm 11.19.0 or newer**, plus git and `gh`.
 </details>
 
 <details>
@@ -147,7 +147,7 @@ bun add -g looptroop
 bun add -g looptroop@latest       # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as bun** — the launcher is a Node program,
+**Needs Node 24.19.0 or newer as well as bun** — the launcher is a Node program,
 so bun installs it but Node runs it — plus git and `gh`.
 </details>
 
@@ -159,7 +159,7 @@ pnpm add -g looptroop
 pnpm add -g looptroop@latest      # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as pnpm**, plus git and `gh`.
+**Needs Node 24.19.0 or newer as well as pnpm**, plus git and `gh`.
 
 pnpm holds a new version back for about a day: it will not resolve a tag to a
 version published in the last 24 hours — a supply-chain protection, on by
@@ -176,7 +176,7 @@ export PATH="$(yarn global bin):$PATH"   # Yarn does not do this for you
 yarn global upgrade looptroop@latest     # upgrade
 ```
 
-**Needs Node 24.15.0 or newer as well as Yarn**, plus git and `gh`.
+**Needs Node 24.19.0 or newer as well as Yarn**, plus git and `gh`.
 
 **Yarn does not put its global binaries on `PATH`.** This looks like a failed
 install and is not: the add reports success, and then `looptroop` is not a

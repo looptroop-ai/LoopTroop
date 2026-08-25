@@ -6,7 +6,7 @@
 // produce a SyntaxError instead of the friendly message below.
 
 var REQUIRED_MAJOR = 24
-var REQUIRED_MINOR = 15
+var REQUIRED_MINOR = 19
 var REQUIRED_LABEL = REQUIRED_MAJOR + '.' + REQUIRED_MINOR + '.0'
 
 function parseVersion(raw) {

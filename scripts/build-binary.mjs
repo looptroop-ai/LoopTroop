@@ -12,7 +12,7 @@
  * ## Why the two-step flow and not `--build-sea`
  *
  * `node --build-sea` is one command and arrived in Node 25.5. This project
- * pins 24.15.0 everywhere, and 24 has only `--experimental-sea-config` plus
+ * pins 24.19.0 everywhere, and 24 has only `--experimental-sea-config` plus
  * `postject`. Building on a newer Node would embed a runtime the test matrix
  * never exercises, which contradicts the floor being a promise on all three
  * platforms — and Node 25 is EOL besides. Revisit at the Node 26 LTS bump,

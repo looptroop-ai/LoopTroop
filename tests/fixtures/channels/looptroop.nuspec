@@ -18,7 +18,7 @@
     <summary>Local AI coding orchestration with council planning and human-gated PRs</summary>
     <description>Local AI coding orchestration with council planning and human-gated PRs. LoopTroop runs as a local background service and drives OpenCode in isolated git worktrees, with human approval gates before anything is delivered.</description>
     <dependencies>
-      <dependency id="nodejs-lts" version="24.15.0" />
+      <dependency id="nodejs-lts" version="24.19.0" />
       <dependency id="git" />
       <dependency id="gh" />
     </dependencies>

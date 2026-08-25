@@ -109,7 +109,7 @@ npm install -g looptroop
 npm install -g looptroop@latest   # upgrade
 ```
 
-**Needs Node 24.15.0 or newer and npm 11.12.1 or newer**, plus git and `gh`.
+**Needs Node 24.15.0 or newer and npm 12.0.2 or newer**, plus git and `gh`.
 </details>
 
 <details>

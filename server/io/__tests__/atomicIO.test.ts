@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeAtomicWrite } from '../atomicWrite'
@@ -37,6 +37,107 @@ describe('safeAtomicWrite', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('nested content')
   })
 
+  /**
+   * Windows refuses to rename over a file another process still has open, and
+   * reports it as EPERM, EACCES or EBUSY depending on how the holder opened it.
+   * A published-install smoke hit exactly that renaming `daemon.json`.
+   *
+   * Driven through injected deps rather than a real lock: the behaviour under
+   * test only occurs on Windows, and a test that can only run there is a test
+   * that runs on a third of the matrix and is debugged on none of it.
+   */
+  describe('renaming over a file Windows will not release', () => {
+    /** Fails the first `failures` attempts with `code`, then succeeds. */
+    function flakyRename(failures: number, code: string) {
+      const attempts: string[] = []
+      let remaining = failures
+
+      return {
+        attempts,
+        rename: (from: string, to: string) => {
+          attempts.push(from)
+          if (remaining > 0) {
+            remaining -= 1
+            throw Object.assign(new Error(`${code}: rename failed`), { code })
+          }
+          renameSync(from, to)
+        },
+      }
+    }
+
+    function windowsDeps(rename: (from: string, to: string) => void, waits: number[]) {
+      return { platform: 'win32' as NodeJS.Platform, rename, wait: (ms: number) => { waits.push(ms) } }
+    }
+
+    it('succeeds without waiting when the rename works first time', () => {
+      const filePath = join(TEST_DIR, 'first-try.txt')
+      const waits: number[] = []
+      const flaky = flakyRename(0, 'EPERM')
+
+      safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits))
+
+      expect(readFileSync(filePath, 'utf-8')).toBe('content')
+      expect(waits).toEqual([])
+    })
+
+    it('waits out a handle that is released part way through', () => {
+      const filePath = join(TEST_DIR, 'transient.txt')
+      const waits: number[] = []
+      const flaky = flakyRename(3, 'EBUSY')
+
+      safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits))
+
+      expect(readFileSync(filePath, 'utf-8')).toBe('content')
+      expect(waits).toEqual([50, 50, 50])
+      // The same temporary file every time: it is already written, mode-matched
+      // and fsynced, and only the final step is being repeated.
+      expect(new Set(flaky.attempts).size).toBe(1)
+    })
+
+    it('gives up after a bounded number of attempts and reports the real error', () => {
+      const filePath = join(TEST_DIR, 'never-released.txt')
+      const waits: number[] = []
+      const flaky = flakyRename(Number.POSITIVE_INFINITY, 'EACCES')
+
+      expect(() => safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits)))
+        .toThrow(/EACCES/)
+
+      expect(flaky.attempts).toHaveLength(10)
+      expect(waits).toHaveLength(9)
+      // The half-written file must not be left behind for `recoverOrphanTmpFiles`
+      // to find, and the target must not have been touched.
+      expect(existsSync(filePath)).toBe(false)
+      expect(readdirSync(TEST_DIR).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    })
+
+    it('does not retry an error that will not resolve itself', () => {
+      const filePath = join(TEST_DIR, 'not-transient.txt')
+      const waits: number[] = []
+      const flaky = flakyRename(Number.POSITIVE_INFINITY, 'ENOSPC')
+
+      expect(() => safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits)))
+        .toThrow(/ENOSPC/)
+
+      // Waiting 500ms to report a full disk helps nobody.
+      expect(flaky.attempts).toHaveLength(1)
+      expect(waits).toEqual([])
+    })
+
+    it('does not retry at all off Windows, where the rename cannot fail this way', () => {
+      const filePath = join(TEST_DIR, 'posix.txt')
+      const waits: number[] = []
+      const flaky = flakyRename(1, 'EPERM')
+
+      expect(() => safeAtomicWrite(filePath, 'content', {
+        platform: 'linux',
+        rename: flaky.rename,
+        wait: (ms: number) => { waits.push(ms) },
+      })).toThrow(/EPERM/)
+
+      expect(flaky.attempts).toHaveLength(1)
+      expect(waits).toEqual([])
+    })
+  })
 })
 
 describe('safeAtomicAppend', () => {

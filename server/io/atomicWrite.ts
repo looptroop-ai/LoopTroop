@@ -5,6 +5,85 @@ import { randomBytes } from 'crypto'
 /** POSIX modes are advisory on Windows, where ACLs already restrict the profile. */
 const SUPPORTS_POSIX_MODES = process.platform !== 'win32'
 
+/**
+ * What Windows reports when something else still holds a handle to the target.
+ *
+ * POSIX replaces a file that other processes have open; Windows refuses while
+ * the handle exists, and the refusal arrives as one of these three depending on
+ * how the holder opened it. All three are transient by nature — a reader
+ * finishing, a virus scanner releasing the file it just indexed — which is what
+ * makes them worth waiting on and everything else worth failing on.
+ */
+const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+/**
+ * Matches the budget `rmSync` is already given against this same class of
+ * Windows lock in the test fixtures — 500ms total, in short steps.
+ */
+const RENAME_ATTEMPTS = 10
+const RENAME_RETRY_DELAY_MS = 50
+
+/**
+ * The platform-dependent parts, injectable so the Windows behaviour can be
+ * tested somewhere other than Windows.
+ */
+export interface AtomicWriteDeps {
+  platform: NodeJS.Platform
+  rename: (from: string, to: string) => void
+  wait: (ms: number) => void
+}
+
+const defaultDeps: AtomicWriteDeps = {
+  platform: process.platform,
+  rename: renameSync,
+  // `Atomics.wait` blocks without a busy loop. Deliberately not a spin: this is
+  // a synchronous API, so there is no event loop to yield to, and spinning
+  // would steal the core from whatever process is holding the handle we are
+  // waiting on.
+  wait: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) },
+}
+
+/**
+ * Replaces the target, waiting out a Windows handle that has not been let go.
+ *
+ * The rename is the atomic step, and on Windows it is also the step that fails
+ * for reasons having nothing to do with this process: a `daemon.json` rename
+ * failed a published-install smoke with EPERM because something still had the
+ * previous file open. The retries wait for that to end.
+ *
+ * Deliberately *not* how this is usually worked around. The destination is
+ * never unlinked first — that trades an atomic replace for a window where the
+ * file does not exist, which is the property this module exists to provide. The
+ * temporary file is not rewritten between attempts either: it is already
+ * written, mode-matched and fsynced, and only the last step is being repeated.
+ *
+ * POSIX gets the bare rename with no retry loop at all, because it has no such
+ * failure: replacing a file other processes have open is defined behaviour.
+ */
+function renameWithRetry(tmpPath: string, filePath: string, deps: AtomicWriteDeps): void {
+  if (deps.platform !== 'win32') {
+    deps.rename(tmpPath, filePath)
+    return
+  }
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      deps.rename(tmpPath, filePath)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      // Anything else is a real failure — a missing directory, a full disk, a
+      // read-only volume — and waiting 500ms to report it helps nobody. The
+      // original error is rethrown rather than one describing the retries,
+      // because it is the one that says what actually went wrong.
+      if (attempt >= RENAME_ATTEMPTS || code === undefined || !RETRYABLE_RENAME_CODES.has(code)) {
+        throw error
+      }
+      deps.wait(RENAME_RETRY_DELAY_MS)
+    }
+  }
+}
+
 function currentMode(filePath: string): number | null {
   if (!SUPPORTS_POSIX_MODES) return null
   try {
@@ -14,7 +93,11 @@ function currentMode(filePath: string): number | null {
   }
 }
 
-export function safeAtomicWrite(filePath: string, content: string): void {
+export function safeAtomicWrite(
+  filePath: string,
+  content: string,
+  deps: AtomicWriteDeps = defaultDeps,
+): void {
   // Unique suffix: a fixed ".tmp" collides when concurrent processes write the
   // same target, and one rename then clobbers the other's partial file.
   const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
@@ -44,7 +127,7 @@ export function safeAtomicWrite(filePath: string, content: string): void {
       closeSync(fd)
     }
 
-    renameSync(tmpPath, filePath)
+    renameWithRetry(tmpPath, filePath, deps)
     tmpCreated = false
 
     // Best-effort parent-directory fsync for crash durability on Linux/macOS.

@@ -18,18 +18,18 @@ frontend packages inlined into the client bundle.
 | `@codemirror/language` | 6.12.4 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/merge` | 6.12.2 | MIT | Copyright (C) 2018-2022 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@codemirror/state` | 6.7.1 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
-| `@codemirror/view` | 6.43.7 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
+| `@codemirror/view` | 6.43.9 | MIT | Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@floating-ui/core` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/dom` | 1.8.0 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/react-dom` | 2.1.9 | MIT | Copyright (c) 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.12 | MIT | Copyright (c) 2021-present Floating UI contributors |
-| `@hono/node-server` | 2.0.12 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `@hono/node-server` | 2.1.1 | MIT | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
 | `@lezer/common` | 1.5.1 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/highlight` | 1.2.3 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/lr` | 1.4.8 | MIT | Copyright (C) 2018 by Marijn Haverbeke <marijn@haverbeke.berlin> and others |
 | `@lezer/yaml` | 1.0.4 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijnh@gmail.com> and others |
 | `@marijn/find-cluster-break` | 1.0.2 | MIT | Copyright (C) 2024 by Marijn Haverbeke <marijn@haverbeke.berlin> |
-| `@opencode-ai/sdk` | 1.18.13 | MIT | — |
+| `@opencode-ai/sdk` | 1.18.18 | MIT | — |
 | `@radix-ui/number` | 1.1.3 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/primitive` | 1.1.7 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-collection` | 1.1.15 | MIT | Copyright (c) 2022 WorkOS |
@@ -69,11 +69,11 @@ frontend packages inlined into the client bundle.
 | `cross-spawn` | 7.0.6 | MIT | Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> |
 | `drizzle-orm` | 1.0.0-rc.4 | Apache-2.0 | Drizzle Team |
 | `get-nonce` | 1.0.1 | MIT | Copyright (c) 2020 Anton Korzunov |
-| `gpt-tokenizer` | 3.4.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
+| `gpt-tokenizer` | 4.0.0 | MIT | Copyright (c) 2023-2024 Bazyli Brzoska |
 | `hono` | 4.12.34 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
-| `js-yaml` | 5.2.2 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.28.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `js-yaml` | 5.3.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
+| `lucide-react` | 1.31.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
@@ -157,7 +157,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.12.4`, `@codemirror/state@6.7.1`, `@codemirror/view@6.43.7`
+Applies to: `@codemirror/autocomplete@6.20.3`, `@codemirror/language@6.12.4`, `@codemirror/state@6.7.1`, `@codemirror/view@6.43.9`
 
 ```text
 MIT License
@@ -390,7 +390,7 @@ THE SOFTWARE.
 
 ### MIT
 
-Applies to: `@hono/node-server@2.0.12`
+Applies to: `@hono/node-server@2.1.1`
 
 ```text
 MIT License
@@ -1004,7 +1004,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `gpt-tokenizer@3.4.0`
+Applies to: `gpt-tokenizer@4.0.0`
 
 ```text
 MIT License
@@ -1060,7 +1060,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `js-yaml@5.2.2`
+Applies to: `js-yaml@5.3.0`
 
 ```text
 (The MIT License)
@@ -1088,7 +1088,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.28.0`
+Applies to: `lucide-react@1.31.0`
 
 ```text
 ISC License

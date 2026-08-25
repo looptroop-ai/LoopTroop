@@ -59,12 +59,13 @@ const isWindows = process.platform === 'win32'
  * vitest requires a single worker count per group, so a lower cap here is only
  * expressible by leaving the group — and lowering the shared count instead
  * would also throttle the jsdom and pure-logic buckets, which are not what is
- * starving. Groups run in sequence, so this costs wall-clock time on a lane
- * already near 400 s. Forcing this branch on locally took the full suite from
- * 132 s to 253 s, but that machine drops the integration cap from 6 to 2; a
- * 4-vCPU runner drops it from 3 to 2, so the real cost there is smaller than
- * that figure suggests. The job timeout is 30 minutes, so there is room either
- * way, and it is worth watching.
+ * starving. Groups run in sequence, so this costs wall-clock time — but much
+ * less than it first appears. Forcing this branch on locally took the full
+ * suite from 132 s to 253 s, on a machine where the integration cap drops from
+ * 6 to 2; a 4-vCPU runner drops it from 3 to 2 instead. Measured on CI the
+ * Windows lane ran 514 s and 584 s with this change against 414–558 s without
+ * it across six runs the same afternoon, so the cost is inside the lane's own
+ * run-to-run spread, against a 30-minute job timeout.
  *
  * Windows only, on both axes. An unconditional `groupOrder: 1` would serialise
  * the integration bucket on Linux and macOS too, where none of this happens.

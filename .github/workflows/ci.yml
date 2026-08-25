@@ -5,12 +5,6 @@ on:
   # request, so restricting this to main leaves that work unverified.
   push:
   pull_request:
-  # Required by the merge queue, and required *before* it is enabled. GitHub
-  # does not trigger status checks when a pull request enters a queue unless
-  # the workflow subscribes to this event, and a required check that never
-  # reports fails the merge rather than skipping it — so enabling the queue
-  # without this line would stop every merge into main.
-  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -68,7 +62,14 @@ jobs:
         run: /tmp/actionlint -color -shellcheck="shellcheck -S warning"
 
   verify:
-    name: Verify (ubuntu, Node 24.18.1)
+    # Named for the lane's purpose, not for the version it happens to pin. This
+    # name is what branch protection matches on, so putting the toolchain
+    # version in it made every floor bump a change to repository settings: the
+    # renamed check reported under a name nothing required, the required name
+    # was never reported at all, and GitHub waits on an unreported required
+    # check forever rather than failing it. The bump therefore looked green and
+    # merged never.
+    name: Verify (ubuntu, toolchain floor)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -152,7 +153,14 @@ jobs:
     # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
     # commit and an advisory one in the next is a required check that quietly
     # stops meaning anything.
-    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})${{ matrix.optional && ' [advisory]' || '' }}
+    #
+    # `matrix.label` rather than `matrix.node` for the same reason the required
+    # lanes no longer carry a version: a name branch protection matches on must
+    # not change when the thing it describes is bumped. The floor lanes are
+    # required and now keep one stable name across every floor move; the
+    # advisory lanes keep the version, because nothing requires them and a name
+    # that moves costs nothing there.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ matrix.optional && ' [advisory]' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # The floating lanes are compatibility news, not a defect in this commit.
@@ -167,17 +175,22 @@ jobs:
           # and a macOS-only regression at 24.18.1 would otherwise reach users.
           - os: ubuntu-latest
             node: 24.18.1
+            label: toolchain floor
           - os: macos-latest
             node: 24.18.1
+            label: toolchain floor
           - os: windows-latest
             node: 24.18.1
+            label: toolchain floor
           # Newest 24, so a patch release that breaks us is seen early. Advisory:
           # a required check must fail only for something this repository can fix.
           - os: ubuntu-latest
             node: 24
+            label: Node 24
             optional: true
           - os: windows-latest
             node: 24
+            label: Node 24
             optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -427,9 +440,16 @@ jobs:
       # same file and fails with EBUSY on `bun.exe` about half the time. Bun's
       # own error message names the remedy, so use it — pinned through a
       # scriptblock so the version stays fixed rather than tracking latest.
+      # `--allow-scripts` because npm 12 blocks dependency install scripts by
+      # default, and bun's npm package downloads its binary from a postinstall.
+      # Without this npm 12 skips it with a warning rather than an error, and
+      # the install "succeeds" with no usable bun — which surfaced as a failed
+      # assertion two steps later rather than as a failed install. Named per
+      # manager rather than blanket-enabled, so this approves exactly the one
+      # package the job installs.
       - name: Install ${{ matrix.manager }}
         if: matrix.manager != 'bun' || runner.os != 'Windows'
-        run: npm install -g ${{ matrix.package }}
+        run: npm install -g --allow-scripts=${{ matrix.manager }} ${{ matrix.package }}
 
       # The release archive, checked against the digest bun published for it,
       # rather than piping bun.sh/install.ps1 into a shell. That script is

@@ -221,7 +221,17 @@ jobs:
           installed=""
           for pin in ${PINS}; do
             if [ "${pin%%=*}" = "${{ matrix.channel }}" ]; then
-              npm install --global "${pin#*=}"
+              # `--allow-scripts` because npm 12 blocks dependency install
+              # scripts by default, and bun's npm package downloads its binary
+              # from a postinstall. npm skips a blocked script with a warning
+              # rather than an error, so without this the install "succeeds"
+              # and leaves nothing runnable — which surfaces much later as the
+              # driver failing to find the manager. Named per channel rather
+              # than blanket-enabled, so this approves exactly the one package
+              # the step installs. Legal here only because the install is
+              # global: npm 12 rejects the flag outright on a project-scoped
+              # install.
+              npm install --global --allow-scripts="${pin%%=*}" "${pin#*=}"
               installed="${pin#*=}"
             fi
           done
@@ -316,13 +326,19 @@ jobs:
       # died on the anonymous rate limit ("Failed to fetch version information").
       # The npm registry has no such limit, so this avoids the flake without
       # handing a repository token to someone else's install script.
+      #
+      # `--allow-scripts` because `opencode-ai` fetches its platform binary from
+      # a postinstall, which npm 12 blocks by default and skips with a warning
+      # rather than an error. Without it the install reports success and the
+      # next step — `opencode --version` — is what fails, naming neither npm nor
+      # the blocked script. Legal here only because the install is global.
       - name: Install OpenCode
         if: matrix.opencode == 'npm' || matrix.opencode == 'adopt'
         shell: bash
         env:
           GITHUB_TOKEN: ''
           GH_TOKEN: ''
-        run: npm install --global opencode-ai
+        run: npm install --global --allow-scripts=opencode-ai opencode-ai
 
       - name: Confirm OpenCode is on PATH
         if: matrix.opencode != 'mock' && matrix.opencode != 'none'

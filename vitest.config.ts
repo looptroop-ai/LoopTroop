@@ -11,10 +11,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 /**
  * How many test workers the machine can actually carry.
  *
- * Every project below shares `sequence.groupOrder: 0`, which puts them in one
+ * The projects below share `sequence.groupOrder: 0`, which puts them in one
  * scheduling group whose worker count is this number in total — not per project.
  * vitest requires the value to agree across a group and throws otherwise, so it
- * is computed once here rather than written out four times.
+ * is computed once here rather than written out four times. On Windows
+ * `server-integration` leaves that group; see `integrationGroupOrder`.
  *
  * It was a hardcoded 6, which is fine on a developer machine and oversubscribes
  * a 4-vCPU CI runner. Two of these projects use `pool: 'forks'` with
@@ -31,6 +32,46 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  * was already comfortable.
  */
 const testMaxWorkers = Math.max(2, Math.min(6, availableParallelism() - 1))
+
+const isWindows = process.platform === 'win32'
+
+/**
+ * `server-integration` runs alone, and narrower, on Windows.
+ *
+ * The failure this addresses is not a slow test. It is several unrelated files
+ * crossing their ceilings in the same job while the same commit passes in its
+ * sibling run — `beadsRefinePhase` at 45 s and `daemonLock`'s hook at 60 s
+ * together in one job, `tickets.start` at 45 s in another, and once a whole
+ * suite taking 861 s against a sibling's 413 s while every other Windows job in
+ * that run was normal. Budgets were already raised from 20 s once for this;
+ * raising them again only moves the ceiling, and a bounded budget is what keeps
+ * a genuine hang failing instead of holding the job for thirty minutes.
+ *
+ * Part of that is a runner we do not control — a machine that turns 413 s into
+ * 861 s will still miss a deadline with two workers. The part we do control is
+ * how much of the contention is self-inflicted: this is the only bucket using
+ * `pool: 'forks'` with `isolate: true` against real git worktrees and real
+ * SQLite, and on a 4-vCPU `windows-latest` the shared count above puts three of
+ * those in flight at once, each doing thousands of individual file operations
+ * through Defender.
+ *
+ * So it gets its own group rather than a smaller share of the existing one:
+ * vitest requires a single worker count per group, so a lower cap here is only
+ * expressible by leaving the group — and lowering the shared count instead
+ * would also throttle the jsdom and pure-logic buckets, which are not what is
+ * starving. Groups run in sequence, so this costs wall-clock time — but much
+ * less than it first appears. Forcing this branch on locally took the full
+ * suite from 132 s to 253 s, on a machine where the integration cap drops from
+ * 6 to 2; a 4-vCPU runner drops it from 3 to 2 instead. Measured on CI the
+ * Windows lane ran 514 s and 584 s with this change against 414–558 s without
+ * it across six runs the same afternoon, so the cost is inside the lane's own
+ * run-to-run spread, against a 30-minute job timeout.
+ *
+ * Windows only, on both axes. An unconditional `groupOrder: 1` would serialise
+ * the integration bucket on Linux and macOS too, where none of this happens.
+ */
+const integrationMaxWorkers = isWindows ? 2 : testMaxWorkers
+const integrationGroupOrder = isWindows ? 1 : 0
 
 const sharedResolve = {
   alias: {
@@ -230,9 +271,9 @@ export default defineConfig({
           environment: 'node',
           pool: 'forks',
           fileParallelism: true,
-          maxWorkers: testMaxWorkers,
+          maxWorkers: integrationMaxWorkers,
           isolate: true,
-          sequence: { groupOrder: 0 },
+          sequence: { groupOrder: integrationGroupOrder },
           setupFiles: ['./server/test/setup.ts'],
           include: [...serverIntegrationTests],
           // Longer on Windows, and only there. These tests drive real git

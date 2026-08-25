@@ -657,6 +657,33 @@ export type StaleLockRelease =
    */
   | { kind: 'unreadable' }
 
+/** What the lock file says, without changing any of it. */
+export type LockInspection =
+  | { kind: 'absent' }
+  /** Held by a live owner, or by one too recent to judge abandoned. */
+  | { kind: 'held'; owner: LockOwner }
+  /** The owner is provably gone; `releaseStaleLock` would clear this one. */
+  | { kind: 'stale'; owner: LockOwner }
+  /** Present but naming nobody — most likely a daemon still writing its record. */
+  | { kind: 'unreadable' }
+
+/**
+ * Reads the lock without touching it.
+ *
+ * `releaseStaleLock` answers a similar question but earns its answer by
+ * mutating — it removes what it judges abandoned. A caller that is only asking
+ * whether something holds the lock, such as a `clean` that has not been told to
+ * apply anything, must not have that side effect: refusing to run and silently
+ * clearing a lock on the way are very different acts.
+ */
+export function inspectDaemonLock(configDir?: string): LockInspection {
+  const lockPath = getDaemonLockPath(configDir)
+  const owner = readOwner(lockPath)
+
+  if (owner === null) return existsSync(lockPath) ? { kind: 'unreadable' } : { kind: 'absent' }
+  return isStale(owner, Date.now()) ? { kind: 'stale', owner } : { kind: 'held', owner }
+}
+
 export function releaseStaleLock(configDir?: string): StaleLockRelease {
   const lockPath = getDaemonLockPath(configDir)
   const existing = readOwner(lockPath)

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { resolve } from 'node:path'
+import { inspectDaemonLock } from '../lib/daemonLock'
 import { clearStaleDaemonState, readDaemonState } from '../lib/daemonPaths'
 import { matchProcess } from '../lib/processIdentity'
 import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
@@ -341,6 +342,30 @@ export async function cleanCommand(options: CleanOptions): Promise<number> {
     process.stderr.write(
       `A LoopTroop process (pid ${recorded.pid}) is still alive but not answering. ` +
       'Stop it with `looptroop stop` before cleaning up.\n',
+    )
+    return 1
+  }
+
+  // Both guards above read the state file, so both fail open if it is missing
+  // while a daemon is up — which is precisely the state a `stop` that gave up
+  // used to leave behind. The lock is written by a different process at a
+  // different time and survives that, so it is the independent witness. Read
+  // without releasing: refusing to run and quietly clearing a live daemon's
+  // lock on the way out are not the same act.
+  const lock = inspectDaemonLock(options.configDir)
+  if (lock.kind === 'held') {
+    process.stderr.write(
+      `A LoopTroop process (pid ${lock.owner.pid}) still holds the single-instance lock ` +
+      `(started ${lock.owner.startedAt}), even though no daemon record names it. ` +
+      'Stop it with `looptroop stop` before cleaning up.\n',
+    )
+    return 1
+  }
+
+  if (lock.kind === 'unreadable') {
+    process.stderr.write(
+      'The single-instance lock exists but does not yet name an owner — most likely a daemon ' +
+      'still starting up. Nothing was cleaned. Try again in a moment.\n',
     )
     return 1
   }

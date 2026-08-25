@@ -38,6 +38,42 @@ const PORT = 39117
 const failures = []
 let step = 0
 
+/**
+ * Literal secrets to strip from anything this script prints.
+ *
+ * Populated as they become known — the API token only exists once a daemon has
+ * written its record. Diagnostics are pasted into issues, so nothing goes to
+ * the log until it has been through `redact`.
+ */
+const secrets = []
+
+function redact(text) {
+  let out = String(text ?? '')
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join('[redacted]')
+  }
+  // Nonces are single-use, but a sign-in URL in a public CI log is still a
+  // credential in a public CI log.
+  return out.replace(/#bootstrap=[^\s'"]+/g, '#bootstrap=[redacted]')
+}
+
+/**
+ * Everything the shell can say about a command that did not do what was asked.
+ *
+ * `exit ${code}` alone is what turned one bug into three unexplained failures:
+ * the process printed why it refused, and this script threw it away. A signal
+ * or a spawn error is not an exit code at all, and reporting `exit null` for
+ * those hid which of the two had happened.
+ */
+function commandDetail(result) {
+  const parts = [result.error ? `spawn error ${result.error}` : `exit ${result.code}`]
+  if (result.signal) parts.push(`signal ${result.signal}`)
+
+  const tail = redact(result.combined).trim().split('\n').filter(Boolean).slice(-8)
+  if (tail.length > 0) parts.push(tail.join(' | '))
+  return parts.join(', ')
+}
+
 function log(message) {
   process.stdout.write(`${message}\n`)
 }
@@ -76,6 +112,11 @@ function run(command, args, options = {}) {
   })
   return {
     code: result.status,
+    // A command killed by a signal, or one that never started, has no exit code
+    // at all. Both arrive here as `status: null`, and only these two fields say
+    // which happened.
+    signal: result.signal ?? null,
+    error: result.error ? result.error.message : null,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     combined: `${result.stdout ?? ''}${result.stderr ?? ''}`,
@@ -134,6 +175,55 @@ function readJson(text, name) {
     fail(name, 'output is not valid JSON')
     return null
   }
+}
+
+/** The last `lines` lines of a file, or a note saying why there are none. */
+function tailFile(path, lines) {
+  try {
+    const content = readFileSync(path, 'utf8').trim()
+    if (content === '') return '(empty)'
+    return redact(content).split('\n').slice(-lines).join('\n')
+  } catch (error) {
+    return `(unreadable: ${error.code ?? error.message})`
+  }
+}
+
+/**
+ * Everything about the daemon's state at the moment a lifecycle command failed.
+ *
+ * Printed at the point of failure rather than left for a rerun, because these
+ * failures do not reproduce: the whole class is timing-dependent, and the CI
+ * job is torn down seconds later. Without this a Windows failure arrives as
+ * `exit 1` and the investigation starts from nothing — which is exactly how the
+ * same defect was reported three times as three different bugs.
+ *
+ * Redacted throughout, since CI logs are public and get pasted into issues.
+ */
+function dumpDaemonContext(cli, configDir, what) {
+  log(`\n  --- daemon context after ${what} failed ---`)
+
+  const status = cli('status', '--json')
+  log(`  status --json (exit ${status.code}):`)
+  // `status --json` redacts the token itself; this is the record as the CLI
+  // sees it, including whether a live-but-silent process was detected.
+  for (const line of redact(status.stdout).trim().split('\n').slice(0, 30)) log(`    ${line}`)
+
+  log(`  daemon.lock: ${tailFile(join(configDir, 'daemon.lock'), 20)}`)
+  log('  daemon.log (last 25 lines):')
+  for (const line of tailFile(join(configDir, 'logs', 'daemon.log'), 25).split('\n')) {
+    log(`    ${line}`)
+  }
+
+  const doctor = cli('doctor', '--json')
+  const report = readJson(doctor.stdout, `doctor --json (after ${what})`)
+  if (report?.checks) {
+    const notable = report.checks.filter((entry) => entry.status !== 'ok')
+    log(`  doctor: ${notable.length === 0
+      ? 'every check ok'
+      : notable.map((entry) => `${entry.name}=${entry.status} (${entry.detail ?? ''})`).join('; ')}`)
+  }
+
+  log('  --- end daemon context ---\n')
 }
 
 /**
@@ -345,7 +435,9 @@ try {
   check('status --json reports running: false', idleJson?.running === false, `running=${idleJson?.running}`)
   heading('Start the detached daemon')
   const started = cli('start', '--port', String(PORT))
-  check('start succeeds', started.code === 0, `exit ${started.code}`)
+  if (!check('start succeeds', started.code === 0, commandDetail(started))) {
+    dumpDaemonContext(cli, configDir, 'start')
+  }
   // The nonce in the URL is a credential; assert on the shape, never print it.
   check('start prints a sign-in URL', /#bootstrap=/.test(started.stdout), 'bootstrap URL present')
   check('start points to live logs', started.stdout.includes('looptroop logs --follow'), 'follow command present')
@@ -391,6 +483,10 @@ try {
   // Read from daemon.json rather than scraping the printed URL: the token is
   // what a browser exchanges, and the record is where the daemon publishes it.
   const record = readJson(readFileSync(join(configDir, 'daemon.json'), 'utf8'), 'daemon.json')
+  // Registered before anything can print it: from here on the diagnostics below
+  // may dump the log, the lock and the status record, and this token is in
+  // scope for all three.
+  if (typeof record?.apiToken === 'string') secrets.push(record.apiToken)
   check('daemon.json records this port', record?.port === PORT, `port=${record?.port}`)
   if (!IS_WINDOWS) {
     // The record holds the API token, so it must not be group- or world-readable.
@@ -473,20 +569,35 @@ try {
 
   heading('restart keeps the daemon usable')
   const restarted = cli('restart', '--port', String(PORT))
-  check('restart succeeds', restarted.code === 0, `exit ${restarted.code}`)
-  const afterRestart = await waitForHealth(baseUrl)
-  check('the daemon answers after restart', afterRestart?.status === 'ok', `status=${afterRestart?.status}`)
-  check('restart produced a new instance', afterRestart?.instanceId !== health?.instanceId,
-    'instance id changed')
+  const restartWorked = check('restart succeeds', restarted.code === 0, commandDetail(restarted))
+  if (!restartWorked) dumpDaemonContext(cli, configDir, 'restart')
+
+  // A restart that failed poisons everything downstream: the instance id cannot
+  // change if no new instance started, and `clean` cannot refuse for a daemon
+  // that is no longer recorded. Scoring those as separate findings is what made
+  // one bug read as three, and sent three reviews looking for three causes.
+  if (restartWorked) {
+    const afterRestart = await waitForHealth(baseUrl)
+    check('the daemon answers after restart', afterRestart?.status === 'ok', `status=${afterRestart?.status}`)
+    check('restart produced a new instance', afterRestart?.instanceId !== health?.instanceId,
+      'instance id changed')
+  } else {
+    log('  skip  the daemon answers after restart  (restart already failed)')
+    log('  skip  restart produced a new instance  (restart already failed)')
+  }
 
   heading('clean refuses to run while the daemon holds worktrees')
   const cleanWhileUp = cli('clean')
-  check('clean refuses while running', cleanWhileUp.code === 1, `exit ${cleanWhileUp.code}`)
+  if (!check('clean refuses while running', cleanWhileUp.code === 1, commandDetail(cleanWhileUp))) {
+    dumpDaemonContext(cli, configDir, 'clean')
+  }
   check('clean says to stop first', /looptroop stop/.test(cleanWhileUp.combined), 'points at stop')
 
   heading('stop releases everything')
   const stopped = cli('stop')
-  check('stop succeeds', stopped.code === 0, `exit ${stopped.code}`)
+  if (!check('stop succeeds', stopped.code === 0, commandDetail(stopped))) {
+    dumpDaemonContext(cli, configDir, 'stop')
+  }
 
   const afterStop = cli('status')
   check('status says not running again', afterStop.combined.includes('not running'),

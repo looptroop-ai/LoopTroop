@@ -261,7 +261,12 @@ try {
       fail('npm pack', `exited ${packed.code}: ${packed.stderr.trim().split('\n').slice(-3).join(' ')}`)
       throw new Error('cannot continue without a tarball')
     }
-    const [packResult] = readJson(packed.stdout, 'npm pack --json') ?? []
+    // npm 11 reports an array of packed tarballs; npm 12 reports a single
+    // object. Destructuring assumed the array and threw "is not iterable" under
+    // npm 12, which failed the smoke on all three platforms with an error that
+    // named neither npm nor the shape change.
+    const packReport = readJson(packed.stdout, 'npm pack --json')
+    const packResult = Array.isArray(packReport) ? packReport[0] : packReport
     tarball = resolve(repoRoot, packResult?.filename ?? '')
     packedHere = true
     check('tarball exists', existsSync(tarball), packResult?.filename ?? 'no filename reported')

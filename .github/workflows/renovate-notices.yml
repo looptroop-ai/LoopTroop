@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Exact floor from engines.node and .nvmrc, not floating "24".
-          node-version: 24.19.0
+          node-version: 24.18.1
           cache: npm
 
       - name: Fail early when the token is absent

@@ -63,12 +63,16 @@ describe('cli launcher', () => {
     const result = runGuard('22.9.0')
 
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('requires Node.js 24.19.0 or newer')
+    // The guard compares major and minor only — it is ES5 and dependency-free
+    // by design, so it cannot parse a full semver range. Its label is therefore
+    // the floor's major.minor with a zero patch, which is what it prints here
+    // even when engines names a patch release. npm enforces the exact floor.
+    expect(result.stderr).toContain('requires Node.js 24.18.0 or newer')
     expect(result.stderr).toContain('22.9.0')
   })
 
   it('accepts a supported runtime', () => {
-    expect(runGuard('24.19.0', 'process.stdout.write("passed");').stdout).toBe('passed')
+    expect(runGuard('24.18.1', 'process.stdout.write("passed");').stdout).toBe('passed')
   })
 
   it('accepts a newer major', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -11,6 +11,7 @@ import {
   resolveInstallInfo,
 } from '../server/lib/installChannel'
 import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice, getUpdateStatus } from '../server/lib/updateCheck'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.13 contract: the upgrade command shown must match how this copy was
@@ -24,7 +25,7 @@ describe('install channel detection', () => {
   afterEach(() => {
     if (previousContainer === undefined) delete process.env.LOOPTROOP_CONTAINER
     else process.env.LOOPTROOP_CONTAINER = previousContainer
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   /** A package root with a real `package.json`, which is what detection anchors on. */
@@ -196,7 +197,7 @@ describe('recorded install channel', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 
@@ -446,7 +447,7 @@ describe('update check', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

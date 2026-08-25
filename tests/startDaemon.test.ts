@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { request as httpRequest } from 'node:http'
@@ -12,6 +12,7 @@ import {
 import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { resolveSettings } from '../server/lib/appSettings'
 import { APP_SCHEMA_VERSION } from '../server/db/schemaVersion'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.7 contract: the daemon reports ready only once it is genuinely serving, and
@@ -25,7 +26,7 @@ describe('daemon startup and shutdown', () => {
   afterEach(async () => {
     for (const handle of running.splice(0)) await handle.stop()
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

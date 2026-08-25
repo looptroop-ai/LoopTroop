@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import type { ExecutionSetupProfile } from '../types'
 import {
   EXECUTION_SETUP_RUN_WRAPPER,
@@ -15,7 +15,7 @@ const tempDirectories: string[] = []
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true })
+    removeTempDir(directory)
   }
 })
 

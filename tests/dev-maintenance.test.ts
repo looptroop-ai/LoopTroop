@@ -1,7 +1,7 @@
-import { rmSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { makeTempDir } from '../server/test/tempDir'
+import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 import {
   classifyAuditMaintenanceFailure,
   chooseAgedDependencyTarget,
@@ -49,7 +49,7 @@ afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   }
 })

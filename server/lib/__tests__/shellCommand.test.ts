@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { getCommandShell, runShellCommand } from '../shellCommand'
 
 const tempDirectories: string[] = []
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true })
+    removeTempDir(directory)
   }
 })
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -25,6 +25,29 @@ export function canonicalTmpdir(): string {
 /** `mkdtempSync` under a canonicalised temp root. */
 export function makeTempDir(prefix: string): string {
   return mkdtempSync(join(canonicalTmpdir(), prefix))
+}
+
+/**
+ * Removes a temporary tree, waiting out a Windows handle that has not closed.
+ *
+ * POSIX unlinks a file other processes still have open. Windows refuses, and a
+ * test that spawned `git`, a hook command or any other child into the directory
+ * it is about to delete is racing that child's handles being released — the
+ * process has exited, but the handles have not necessarily gone with it, and a
+ * virus scanner walking the tree holds its own. The removal then throws EPERM
+ * from an `afterEach`, which vitest reports as a failing test with a real name
+ * and a real assertion, in a file that is working perfectly.
+ *
+ * That is a Windows-only failure signature this repository has chased more than
+ * once. `rmSync`'s own `maxRetries` handles it — 500ms in short steps, which is
+ * far longer than a released handle takes and short enough that a genuinely
+ * stuck tree still fails the run.
+ *
+ * The options are inert off Windows, so this is the right call everywhere and
+ * there is nothing to make conditional.
+ */
+export function removeTempDir(path: string): void {
+  rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 
 /**

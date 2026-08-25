@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { setupCommand, suggestShortname, type SetupPrompt } from '../server/cli/setupCommand'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.14 contract: setup walks a fresh install through what it cannot infer, and
@@ -21,7 +22,7 @@ describe('setup command', () => {
       await new Promise<void>((done) => server.close(() => done()))
     }
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

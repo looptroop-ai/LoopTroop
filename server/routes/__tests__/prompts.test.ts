@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { rmSync } from 'node:fs'
+import {  } from 'node:fs'
 import { Hono } from 'hono'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 let configDir: string
 const previousConfigDir = process.env.LOOPTROOP_CONFIG_DIR
@@ -23,7 +23,7 @@ beforeEach(() => {
 afterEach(() => {
   if (previousConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
   else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir
-  rmSync(configDir, { recursive: true, force: true })
+  removeTempDir(configDir)
 })
 
 describe('prompts routes', () => {

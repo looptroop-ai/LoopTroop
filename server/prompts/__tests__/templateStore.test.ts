@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
+import { writeFileSync, existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { ALL_PROMPTS } from '../index'
 import { PROMPT_CATALOG, buildPromptGroups, GLOBAL_RULE_PROMPT_IDS } from '@shared/promptCatalog'
 import {
@@ -21,7 +21,7 @@ beforeEach(() => {
 afterEach(() => {
   if (previousConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
   else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir
-  rmSync(configDir, { recursive: true, force: true })
+  removeTempDir(configDir)
 })
 
 // The store reads LOOPTROOP_CONFIG_DIR at call time, so import it lazily per test.

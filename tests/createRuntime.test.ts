@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.1 contract: importing the runtime module and constructing a runtime must not
@@ -14,7 +15,7 @@ describe('createRuntime side-effect freedom', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

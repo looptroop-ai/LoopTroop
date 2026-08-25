@@ -1,8 +1,8 @@
-import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, symlinkSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { normalizeFolderPath } from '../paths'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 let scratchDir: string
 
@@ -11,7 +11,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(scratchDir, { recursive: true, force: true })
+  removeTempDir(scratchDir)
 })
 
 describe('normalizeFolderPath', () => {

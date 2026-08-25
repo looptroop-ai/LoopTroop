@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, chmodSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { doctorCommand, runChecks, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import type { DaemonState } from '../server/lib/daemonPaths'
 import { APP_VERSION } from '../server/lib/appVersion'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.12 contract: doctor tells a user whether this machine can run LoopTroop,
@@ -25,7 +26,7 @@ describe('doctor command', () => {
       } catch {
         // Already removable.
       }
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
     if (previousConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
     else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../../structuredOutput/types'
 import {
   materializeExecutionSetupWorkspaceInputs,
   validateExecutionSetupWorkspaceInputs,
 } from '../workspaceInputs'
-import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 
 interface WorkspaceFixture {
   projectRoot: string
@@ -55,7 +55,7 @@ function input(
 }
 
 afterEach(() => {
-  for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of fixtureRoots.splice(0)) removeTempDir(root)
 })
 
 describe('execution setup workspace inputs', () => {
@@ -158,7 +158,7 @@ describe('execution setup workspace inputs', () => {
     const workspaceInputs = [input('ignored-inputs', 'directory', 'ignored')]
 
     materializeExecutionSetupWorkspaceInputs({ ...fixture, workspaceInputs })
-    rmSync(join(fixture.worktreePath, 'ignored-inputs'), { recursive: true, force: true })
+    removeTempDir(join(fixture.worktreePath, 'ignored-inputs'))
     materializeExecutionSetupWorkspaceInputs({ ...fixture, workspaceInputs })
 
     expect(readFileSync(join(fixture.worktreePath, 'ignored-inputs', 'nested', 'state.txt'), 'utf8')).toBe('prepared input\n')

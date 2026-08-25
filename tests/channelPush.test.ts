@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderHomebrewFormula } from '../scripts/package-manifests.ts'
+import { removeTempDir } from '../server/test/tempDir'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PUSH = join(repoRoot, 'scripts', 'channel-push.ts')
@@ -81,7 +82,7 @@ if (joined.includes('.permissions.push')) {
   })
 
   afterAll(() => {
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   function setState(state: { push?: boolean | 'unknown', remote?: string | null, blobSha?: string }): void {

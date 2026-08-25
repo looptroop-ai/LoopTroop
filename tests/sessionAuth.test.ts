@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../server/app'
 import { createSessionCredentials, SESSION_COOKIE_NAME, type SessionCredentials } from '../server/middleware/sessionAuth'
 import type { Hono } from 'hono'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.8 contract: a browser session, a script bearer token, and a one-time
@@ -16,7 +17,7 @@ describe('daemon session auth', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

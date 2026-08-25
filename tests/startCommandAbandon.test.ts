@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { abandonFailedStart } from '../server/cli/commands'
 import { getDaemonLockPath, getDaemonStatePath } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { isProcessAlive } from '../server/cli/processControl'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.7 contract, the failure half: a start that times out must not leave the
@@ -27,7 +28,7 @@ describe('abandoning a start that never reported ready', () => {
     for (const child of children.splice(0)) {
       try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   function makeConfigDir(): string {

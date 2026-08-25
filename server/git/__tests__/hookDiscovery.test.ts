@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import { makeTempDir, pinGitLineEndings } from '../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { discoverGitHooks } from '../hookDiscovery'
@@ -21,7 +21,7 @@ function writeExecutable(path: string, content = '#!/bin/sh\nexit 0\n') {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 describe('discoverGitHooks', () => {

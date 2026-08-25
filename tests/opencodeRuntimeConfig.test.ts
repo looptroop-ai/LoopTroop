@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_OPENCODE_BASE_URL } from '../shared/appConfig'
@@ -12,6 +12,7 @@ import {
 import { getOpenCodeAdapter, isMockOpenCodeMode, resetOpenCodeAdapter } from '../server/opencode/factory'
 import { resolveSettings } from '../server/lib/appSettings'
 import { startDaemon } from '../server/daemon/startDaemon'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * `opencodeBaseUrl` and `opencodeMode` in config.json were resolved, printed by
@@ -159,7 +160,7 @@ describe('OpenCode runtime configuration', () => {
         await handle.stop()
       }
     } finally {
-      rmSync(configDir, { recursive: true, force: true })
+      removeTempDir(configDir)
     }
   })
 })

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -15,6 +15,7 @@ import {
 } from '../server/lib/daemonLock'
 import { getDaemonLockPath } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
+import { removeTempDir } from '../server/test/tempDir'
 
 /** A URL because a Windows drive letter reads as a scheme to `import()`. */
 const lockModule = pathToFileURL(resolve(import.meta.dirname, '../server/lib/daemonLock.ts')).href
@@ -74,7 +75,7 @@ describe('daemon lock', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

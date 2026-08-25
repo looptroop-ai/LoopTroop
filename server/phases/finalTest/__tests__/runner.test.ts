@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { executeFinalTestCommands } from '../runner'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import type { CommandSpec } from '@shared/commandSpec'
 
 function nodeCommand(script: string, overrides: Partial<CommandSpec> = {}): CommandSpec {
@@ -66,7 +66,7 @@ describe('executeFinalTestCommands', () => {
       expect(report.commands[0]?.stdout).toContain('"env":"✓"')
       expect(report.commands[0]?.stdout).toContain('folder with spaces')
     } finally {
-      rmSync(worktree, { recursive: true, force: true })
+      removeTempDir(worktree)
     }
   })
 
@@ -89,7 +89,7 @@ describe('executeFinalTestCommands', () => {
       expect(report.commands[0]?.stdout).toContain('ready')
       expect(report.commands[0]?.stdout).toContain(join(worktree, 'local-bin'))
     } finally {
-      rmSync(worktree, { recursive: true, force: true })
+      removeTempDir(worktree)
     }
   })
 

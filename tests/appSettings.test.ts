@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { removeTempDir } from '../server/test/tempDir'
 import {
   DEFAULT_SETTINGS,
   getSettingsPath,
@@ -19,7 +20,7 @@ describe('appSettings', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

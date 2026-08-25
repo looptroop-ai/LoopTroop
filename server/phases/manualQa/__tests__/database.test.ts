@@ -1,14 +1,14 @@
-import { rmSync } from 'node:fs'
+import {  } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import { closeProjectDatabase, getProjectDatabase } from '../../../db/project'
 import { manualQaOperations, projects, tickets } from '../../../db/schema'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
   for (const root of roots.splice(0)) {
     closeProjectDatabase(root)
-    rmSync(root, { recursive: true, force: true })
+    removeTempDir(root)
   }
 })
 

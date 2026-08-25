@@ -1,7 +1,7 @@
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../../../shared/openRouterRouting'
 import { registerOpenRouterRoutingModels } from '../openRouterRoutingConfig'
 
@@ -10,7 +10,7 @@ const temporaryDirectories: string[] = []
 afterEach(() => {
   vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true })
+    removeTempDir(directory)
   }
 })
 

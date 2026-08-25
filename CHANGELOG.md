@@ -10,6 +10,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
 ### Summary
+- LoopTroop now builds, packages and installs correctly under npm 12, whose install-script blocking and changed `npm pack` output silently broke two release checks.
 - Automated dependency updates run again, proposed behind a seven-day maturity delay and two days for security advisories, with only non-shipping lint and test tooling allowed to merge itself.
 - Dependency pull requests now arrive with their licence notices already regenerated, instead of failing until someone updated the file by hand.
 
@@ -34,6 +35,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Pull request concurrency and creation rate are throttled while the accumulated backlog is worked through, so the first batch arrives in reviewable order rather than all at once.
 
 ### Fixed
+- Fixed the packaging and install checks misreading `npm pack --json` on npm 12, where its report changed from an array to an object keyed by package name. Both readers took the first array element, which is now `undefined`: `verify:package` — a required check — stopped finding the file list, and the install smoke resolved the tarball to the repository root and tried to delete it, surfacing as `EISDIR` rather than as a parse failure. Both now accept either shape, and the smoke aborts loudly when no filename is reported instead of continuing with an empty path.
+- Fixed the package managers installed by CI and by the published install smoke arriving unusable under npm 12. npm 12 blocks dependency install scripts by default and *skips* an unapproved one with a warning rather than an error, so `bun` and `opencode-ai` — both of which fetch their real binary from a postinstall — installed "successfully" with nothing runnable behind them, failing several steps later on an assertion that named neither npm nor the blocked script. Each global install now names the single package it approves through `--allow-scripts`, rather than enabling scripts wholesale. The flag is deliberately confined to those steps: npm 12 rejects it outright in a project-scoped install, so the repository's own `npm ci` continues to take its policy from the `allowScripts` field in `package.json`. LoopTroop itself declares no install scripts, so nothing changes for users installing it under npm 12.
 - Fixed the published install smoke reporting every channel as broken when the release was fine. Its check on how the daemon obtained OpenCode read `kind`, the discriminant of the supervisor's in-memory status, rather than `status`, which is what `describeOpenCode` writes into `daemon.json`. Nothing else in any leg failed — install, version, doctor, start, the health endpoint, the interface, the refused unauthenticated call, stop and uninstall all passed on all eight legs of the 0.5.8 release — so the only defect was the assertion. A test now pins the field against the code that renders the persisted shape, so renaming the discriminant fails in CI rather than in a post-release smoke.
 
 ## 0.5.8 (2026-08-23)

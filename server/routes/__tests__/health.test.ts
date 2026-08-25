@@ -1,12 +1,13 @@
 import { Database } from '../../db/sqliteShim'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { getProjectDbPath, normalizeFolderPath } from '../../storage/paths'
 import packageJson from '../../../package.json'
+import { removeTempDir } from '../../test/tempDir'
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-health-route-',
@@ -85,7 +86,7 @@ describe('health startup routes', () => {
     vi.resetModules()
 
     for (const root of tempRoots) {
-      rmSync(root, { recursive: true, force: true })
+      removeTempDir(root)
     }
     tempRoots.clear()
   })

@@ -1,15 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { makeTempDir, pinGitLineEndings } from '../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { removeWorktree } from '../worktreeRemoval'
 
@@ -42,7 +34,7 @@ function createRepoWithWorktree() {
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true })
+    removeTempDir(root)
   }
 })
 

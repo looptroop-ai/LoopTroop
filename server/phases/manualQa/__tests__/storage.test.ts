@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import {
   MAX_MANUAL_QA_EVIDENCE_BYTES,
   ManualQaEvidenceLinkSchema,
@@ -34,7 +34,7 @@ import { reserveManualQaSubmissionOperation } from '../operations'
 
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 function root() {
@@ -270,7 +270,7 @@ describe('Manual QA canonical storage', () => {
       itemId: evidence.itemId,
       evidenceId: evidence.id,
     }).path
-    rmSync(dirname(storedPath), { recursive: true, force: true })
+    removeTempDir(dirname(storedPath))
 
     expect(removeManualQaEvidence({
       ticketDir,
@@ -386,7 +386,7 @@ describe('Manual QA canonical storage', () => {
       evidenceId: evidence.id,
     }).path
     const itemDir = dirname(storedPath)
-    rmSync(itemDir, { recursive: true, force: true })
+    removeTempDir(itemDir)
     mkdirSync(outside, { recursive: true })
     writeFileSync(join(outside, basename(storedPath)), 'outside')
     symlinkSync(outside, itemDir, 'dir')
@@ -414,7 +414,7 @@ describe('Manual QA canonical storage', () => {
     })
     const versionDir = getManualQaStoragePaths(ticketDir, 1).versionDir
     cpSync(versionDir, outside, { recursive: true })
-    rmSync(versionDir, { recursive: true, force: true })
+    removeTempDir(versionDir)
     symlinkSync(outside, versionDir, 'dir')
 
     expect(() => resolveManualQaEvidence({
@@ -431,7 +431,7 @@ describe('Manual QA canonical storage', () => {
     persistChecklist(ticketDir)
     const versionDir = getManualQaStoragePaths(ticketDir, 1).versionDir
     cpSync(versionDir, outside, { recursive: true })
-    rmSync(versionDir, { recursive: true, force: true })
+    removeTempDir(versionDir)
     symlinkSync(outside, versionDir, 'dir')
 
     await expect(streamManualQaEvidence({

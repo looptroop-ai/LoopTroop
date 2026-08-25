@@ -1,9 +1,9 @@
-import { rmSync } from 'node:fs'
+import {  } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ManualQaSummary } from '../types'
 import { persistManualQaSummary } from '../storage'
 import { readManualQaDeliverySummary } from '../delivery'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 
@@ -33,7 +33,7 @@ function summary(version: number, input: Partial<ManualQaSummary>): ManualQaSumm
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 describe('Manual QA delivery summary', () => {

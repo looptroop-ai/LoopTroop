@@ -1,15 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import {
-  closeSync,
-  existsSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-  writeSync,
-} from 'node:fs'
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -20,6 +10,7 @@ import {
   startDaemonLogRotation,
 } from '../server/lib/daemonLog'
 import { getDaemonLogPath } from '../server/lib/daemonPaths'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.11 contract: a long-lived install must not grow one unbounded log file, and
@@ -31,7 +22,7 @@ describe('daemon log rotation', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

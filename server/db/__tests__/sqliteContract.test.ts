@@ -2,9 +2,9 @@ import { Database } from '../sqliteShim'
 import { drizzle } from 'drizzle-orm/node-sqlite'
 import { eq, sql } from 'drizzle-orm'
 import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
-import { rmSync } from 'node:fs'
+import {  } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 /**
@@ -78,7 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   try { sqlite.close() } catch { /* already closed by a test */ }
-  rmSync(tempDir, { recursive: true, force: true })
+  removeTempDir(tempDir)
 })
 
 describe('value conversion', () => {

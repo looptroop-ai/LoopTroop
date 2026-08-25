@@ -1,12 +1,12 @@
-import { rmSync } from 'node:fs'
+import {  } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runExplicitGitHookValidation } from '../hookValidation'
-import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 function profile(policy: string, command = ''): string {

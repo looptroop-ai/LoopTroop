@@ -1,7 +1,7 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { makeTempDir } from '../../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../../test/tempDir'
 import type { TicketContext } from '../../../machines/types'
 import type { PrdDocument } from '../../../structuredOutput/types'
 import {
@@ -19,7 +19,7 @@ import {
 
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 function root() {

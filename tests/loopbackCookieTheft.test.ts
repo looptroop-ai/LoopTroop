@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import { serve } from '@hono/node-server'
 import { createApp } from '../server/app'
 import { createSessionCredentials, SESSION_COOKIE_NAME } from '../server/middleware/sessionAuth'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * The cross-port cookie attack, played out over real sockets.
@@ -29,7 +30,7 @@ describe('a second loopback service cannot use a captured session cookie', () =>
     for (const server of servers.splice(0)) {
       await new Promise<void>((done) => server.close(() => done()))
     }
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   function makeClientDir(): string {

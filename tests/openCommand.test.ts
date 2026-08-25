@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { browserOpener, openCommand } from '../server/cli/commands'
 import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * `open` starts the daemon when it is not running, so the interface is one
@@ -31,7 +32,7 @@ describe('opening the interface', () => {
       await new Promise<void>((done) => server.close(() => done()))
     }
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
     if (originalConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
     else process.env.LOOPTROOP_CONFIG_DIR = originalConfigDir

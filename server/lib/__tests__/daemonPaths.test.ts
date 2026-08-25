@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { removeTempDir } from '../../test/tempDir'
 import {
   clearStaleDaemonState,
   getDaemonStatePath,
@@ -22,7 +23,7 @@ describe('daemon.json', () => {
   const tempDirs: string[] = []
 
   afterEach(() => {
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   function makeConfigDir(): string {

@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { safeAtomicWrite } from '../atomicWrite'
 import { safeAtomicAppend } from '../atomicAppend'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
 import { readJsonl, writeJsonl, appendJsonl } from '../jsonl'
+import { removeTempDir } from '../../test/tempDir'
 
 const TEST_DIR = join(tmpdir(), `looptroop-test-${process.pid}-${Date.now()}`)
 
@@ -14,7 +15,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  rmSync(TEST_DIR, { recursive: true, force: true })
+  removeTempDir(TEST_DIR)
 })
 
 describe('safeAtomicWrite', () => {

@@ -2,11 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { readRunningDaemon, stopRunningDaemon, type StopBudgets } from '../server/cli/commands'
 import { getDaemonLockPath, getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.7 contract: `stop` asks the daemon over HTTP, escalates only as far as it
@@ -26,7 +27,7 @@ describe('stopping a running daemon', () => {
       await new Promise<void>((done) => server.close(() => done()))
     }
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

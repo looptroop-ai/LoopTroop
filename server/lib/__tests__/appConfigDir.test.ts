@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { chmodSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   CONFIG_DIR_MODE,
   CONFIG_FILE_MODE,
@@ -22,7 +22,7 @@ describePosix('config directory permissions', () => {
   })
 
   afterEach(() => {
-    rmSync(scratch, { recursive: true, force: true })
+    removeTempDir(scratch)
   })
 
   function modeOf(target: string): number {

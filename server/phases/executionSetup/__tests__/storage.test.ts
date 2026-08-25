@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   createExecutionSetupPathSnapshot,
   removeExecutionSetupPathViolations,
@@ -32,7 +32,7 @@ describe('execution setup storage tracking', () => {
 
   afterAll(() => {
     for (const dir of repoDirs) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

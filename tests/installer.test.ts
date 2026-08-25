@@ -1,16 +1,14 @@
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  rmSync, symlinkSync, utimesSync, writeFileSync,
-} from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath } from '../scripts/installer-core.mjs'
+import { removeTempDir } from '../server/test/tempDir'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CORE = join(repoRoot, 'scripts', 'installer-core.mjs')
@@ -185,7 +183,7 @@ describe('installer core', () => {
 
   afterAll(async () => {
     await new Promise<void>((done) => server.close(() => done()))
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    for (const dir of tempDirs.splice(0)) removeTempDir(dir)
   })
 
   /**

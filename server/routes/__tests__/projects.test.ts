@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { Hono } from 'hono'
 import { resolve } from 'node:path'
 import { initializeDatabase } from '../../db/init'
@@ -32,6 +32,7 @@ import {
 import { createTicket, patchTicket } from '../../storage/ticketMutations'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { projectRouter } from '../projects'
+import { removeTempDir } from '../../test/tempDir'
 
 const getGitHubRepoWriteAccessMock = vi.hoisted(() => vi.fn())
 
@@ -609,7 +610,7 @@ describe('projectRouter project cleanup', () => {
     detachFromAppRegistry()
     const originalCreatedAt = context.project.createdAt
     const worktreePath = resolve(repoDir, '.looptroop', 'worktrees', ticket.externalId)
-    rmSync(worktreePath, { recursive: true, force: true })
+    removeTempDir(worktreePath)
     git(repoDir, ['worktree', 'add', '-b', 'looptroop-clear-test', worktreePath])
     writeFileSync(resolve(worktreePath, 'worktree-marker.txt'), 'remove me\n')
 
@@ -773,7 +774,7 @@ describe('projectRouter project cleanup', () => {
     // Windows refuses to unlink an open file, and attaching leaves a cached
     // handle on <repo>/.looptroop/db.sqlite.
     clearProjectDatabaseCache()
-    rmSync(getProjectLoopTroopDir(repoDir), { recursive: true, force: true })
+    removeTempDir(getProjectLoopTroopDir(repoDir))
 
     const stateAfterDelete = resolveProjectState(repoDir)
     expect(stateAfterDelete.exists).toBe(false)

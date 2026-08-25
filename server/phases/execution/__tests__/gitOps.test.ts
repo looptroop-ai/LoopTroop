@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   captureBeadDiff,
   commitBeadChanges,
@@ -124,7 +124,7 @@ describe('recordBeadStartCommit', () => {
   })
 
   afterAll(() => {
-    rmSync(repoDir, { recursive: true, force: true })
+    removeTempDir(repoDir)
   })
 
   it('returns a valid 40-char hex SHA', () => {
@@ -150,7 +150,7 @@ describe('resetToBeadStart', () => {
   }
 
   afterAll(() => {
-    for (const dir of repoDirs) rmSync(dir, { recursive: true, force: true })
+    for (const dir of repoDirs) removeTempDir(dir)
   })
 
   it('reverts uncommitted file changes to tracked files', () => {
@@ -257,7 +257,7 @@ describe('captureBeadDiff', () => {
   }
 
   afterAll(() => {
-    for (const dir of repoDirs) rmSync(dir, { recursive: true, force: true })
+    for (const dir of repoDirs) removeTempDir(dir)
   })
 
   it('returns empty string when there are no changes since the start commit', () => {
@@ -306,7 +306,7 @@ describe('commitBeadChanges', () => {
   }
 
   afterAll(() => {
-    for (const dir of repoDirs) rmSync(dir, { recursive: true, force: true })
+    for (const dir of repoDirs) removeTempDir(dir)
   })
 
   it('returns { committed: false, pushed: false } when there are no changes', () => {

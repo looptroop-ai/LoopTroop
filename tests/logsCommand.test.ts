@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logsCommand } from '../server/cli/logsCommand'
 import { getDaemonLogDir, getDaemonLogPath } from '../server/lib/daemonPaths'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.11 contract: `logs` shows recent output without loading the whole file into
@@ -16,7 +17,7 @@ describe('logs command', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
     if (previousConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
     else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir

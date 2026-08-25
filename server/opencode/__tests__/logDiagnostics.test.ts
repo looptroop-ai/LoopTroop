@@ -1,7 +1,7 @@
-import { rmSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import {
   enrichGenericOpenCodeProviderError,
   findOpenCodeLogErrorDetails,
@@ -22,7 +22,7 @@ function writeLog(dir: string, content: string, name = '2026-05-22T151603.log') 
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true })
+    removeTempDir(dir)
   }
 })
 

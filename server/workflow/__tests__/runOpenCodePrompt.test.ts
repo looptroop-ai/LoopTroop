@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -38,6 +38,7 @@ import {
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
 import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
+import { removeTempDir } from '../../test/tempDir'
 
 type OpenCodeSDKClient = NonNullable<ConstructorParameters<typeof OpenCodeSDKAdapter>[1]>
 
@@ -1555,7 +1556,7 @@ describe('runOpenCodePrompt', () => {
       } else {
         process.env.LOOPTROOP_OPENCODE_LOG_DIR = previousLogDir
       }
-      rmSync(logDir, { recursive: true, force: true })
+      removeTempDir(logDir)
     }
   })
 

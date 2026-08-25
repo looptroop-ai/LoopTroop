@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp, resolveDefaultClientDir } from '../server/app'
+import { removeTempDir } from '../server/test/tempDir'
 
 /**
  * 2.3 contract: in production the interface and the API share one origin. The API
@@ -15,7 +16,7 @@ describe('production static serving', () => {
 
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 

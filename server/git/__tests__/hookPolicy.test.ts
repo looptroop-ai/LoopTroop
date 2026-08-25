@@ -1,13 +1,13 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { afterEach, describe, expect, it } from 'vitest'
 import { migrateGitHookPolicy, readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../hookPolicy'
 
 const roots: string[] = []
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 describe('Git hook policy', () => {

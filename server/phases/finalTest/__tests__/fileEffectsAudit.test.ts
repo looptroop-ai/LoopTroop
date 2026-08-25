@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { makeTempDir, pinGitLineEndings } from '../../../test/tempDir'
+import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 import {
   buildFinalTestFileEffectsAudit,
   captureFinalTestDirtyFiles,
@@ -38,7 +38,7 @@ describe('buildFinalTestFileEffectsAudit', () => {
         captureFinalTestDirtyFiles(repo, ['coverage/candidate.json']).map((file) => file.path),
       ).toEqual(['.gitignore', 'coverage/candidate.json'])
     } finally {
-      rmSync(repo, { recursive: true, force: true })
+      removeTempDir(repo)
     }
   })
 
@@ -68,7 +68,7 @@ describe('buildFinalTestFileEffectsAudit', () => {
       expect(restoreTrackedFinalTestLocalFiles(repo, audit)).toEqual(['tracked.txt'])
       expect(captureFinalTestDirtyFiles(repo).map((file) => file.path)).toEqual(['local.tmp'])
     } finally {
-      rmSync(repo, { recursive: true, force: true })
+      removeTempDir(repo)
     }
   })
 

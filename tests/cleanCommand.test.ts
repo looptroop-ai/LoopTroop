@@ -25,6 +25,7 @@ import { getDaemonStatePath, type DaemonState } from '../server/lib/daemonPaths'
 import { readProcessStartToken } from '../server/lib/processIdentity'
 import { normalizeFolderPath } from '../server/storage/paths'
 import { attachProject } from '../server/storage/projects'
+import { removeTempDir } from '../server/test/tempDir'
 import {
   ensureWorktreeOwnerMarker,
   getWorktreeOwnerMarkerPath,
@@ -60,7 +61,7 @@ describe('clean command', () => {
     }
     clearProjectDatabaseCache()
     for (const dir of tempDirs.splice(0)) {
-      rmSync(dir, { recursive: true, force: true })
+      removeTempDir(dir)
     }
   })
 
@@ -127,7 +128,7 @@ describe('clean command', () => {
 
   /** Strips the admin directory, leaving a checkout git can no longer speak for. */
   function unregister(projectRoot: string, externalId: string): void {
-    rmSync(resolve(projectRoot, '.git', 'worktrees', externalId), { recursive: true, force: true })
+    removeTempDir(resolve(projectRoot, '.git', 'worktrees', externalId))
   }
 
   /**

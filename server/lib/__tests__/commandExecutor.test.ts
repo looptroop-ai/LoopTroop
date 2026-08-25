@@ -1,15 +1,15 @@
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
 import { buildCommandInvocation, executeCommand, resolveCommandCwd } from '../commandExecutor'
-import { makeTempDir } from '../../test/tempDir'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 
 const tempDirectories: string[] = []
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true })
+    removeTempDir(directory)
   }
 })
 

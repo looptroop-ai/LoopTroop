@@ -7,10 +7,10 @@
   ],
   "timezone": "Europe/Bucharest",
   "schedule": [
-    "at any time"
+    "* 0-5 * * *"
   ],
-  "prConcurrentLimit": 0,
-  "prHourlyLimit": 0,
+  "prConcurrentLimit": 2,
+  "prHourlyLimit": 1,
   "labels": [
     "dependencies"
   ],

@@ -62,7 +62,14 @@ jobs:
         run: /tmp/actionlint -color -shellcheck="shellcheck -S warning"
 
   verify:
-    name: Verify (ubuntu, Node 24.15.0)
+    # Named for the lane's purpose, not for the version it happens to pin. This
+    # name is what branch protection matches on, so putting the toolchain
+    # version in it made every floor bump a change to repository settings: the
+    # renamed check reported under a name nothing required, the required name
+    # was never reported at all, and GitHub waits on an unreported required
+    # check forever rather than failing it. The bump therefore looked green and
+    # merged never.
+    name: Verify (ubuntu, toolchain floor)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -146,7 +153,14 @@ jobs:
     # collide: "Test (windows-latest, Node 24)" naming a blocking lane in one
     # commit and an advisory one in the next is a required check that quietly
     # stops meaning anything.
-    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})${{ matrix.optional && ' [advisory]' || '' }}
+    #
+    # `matrix.label` rather than `matrix.node` for the same reason the required
+    # lanes no longer carry a version: a name branch protection matches on must
+    # not change when the thing it describes is bumped. The floor lanes are
+    # required and now keep one stable name across every floor move; the
+    # advisory lanes keep the version, because nothing requires them and a name
+    # that moves costs nothing there.
+    name: Test (${{ matrix.os }}, ${{ matrix.label }})${{ matrix.optional && ' [advisory]' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # The floating lanes are compatibility news, not a defect in this commit.
@@ -161,17 +175,22 @@ jobs:
           # and a macOS-only regression at 24.15.0 would otherwise reach users.
           - os: ubuntu-latest
             node: 24.15.0
+            label: toolchain floor
           - os: macos-latest
             node: 24.15.0
+            label: toolchain floor
           - os: windows-latest
             node: 24.15.0
+            label: toolchain floor
           # Newest 24, so a patch release that breaks us is seen early. Advisory:
           # a required check must fail only for something this repository can fix.
           - os: ubuntu-latest
             node: 24
+            label: Node 24
             optional: true
           - os: windows-latest
             node: 24
+            label: Node 24
             optional: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

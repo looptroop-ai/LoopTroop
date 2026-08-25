@@ -80,7 +80,7 @@ frontend packages inlined into the client bundle.
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.12 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.11 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `scheduler` | 0.27.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
@@ -1138,7 +1138,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.12`
+Applies to: `react-virtuoso@4.18.11`
 
 ```text
 MIT License

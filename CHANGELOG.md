@@ -9,6 +9,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+## 0.5.9 (2026-08-26)
+
+
 ### Summary
 - `stop` no longer strands a running LoopTroop it briefly could not reach, leaving it impossible to stop and `clean` free to delete worktrees it was still using.
 - Raising the Node floor no longer requires editing branch protection by hand before the change can merge.

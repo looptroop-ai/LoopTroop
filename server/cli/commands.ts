@@ -755,17 +755,17 @@ const OPENER_GRACE_MS = 1_500
  * The command that opens a URL on this platform.
  *
  * Separated from the spawn so the shapes can be asserted without launching
- * anything: the Windows one is the delicate case. `start` treats a leading
- * quoted argument as the window title, so the empty string is what stops the URL
- * from being swallowed as one, and cmd.exe re-parses the rest of the line — safe
- * only while the nonce stays base64url and the URL keeps no `&` in it.
+ * anything. Windows uses the URL protocol handler directly: unlike `cmd /c
+ * start`, it does not send the URL through a command interpreter first.
  */
 export function browserOpener(url: string, platform: NodeJS.Platform): {
   command: string
   args: string[]
 } {
   if (platform === 'darwin') return { command: 'open', args: [url] }
-  if (platform === 'win32') return { command: 'cmd', args: ['/c', 'start', '', url] }
+  if (platform === 'win32') {
+    return { command: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] }
+  }
   return { command: 'xdg-open', args: [url] }
 }
 

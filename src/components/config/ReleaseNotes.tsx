@@ -62,8 +62,11 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 export function ReleaseNotes({ notes }: { notes: string }) {
   const blocks: ReactNode[] = []
   // Release bodies carry `<!-- container:start -->` markers around the generated
-  // image section. They are structure for the release tooling, not content.
-  const lines = notes.replace(/<!--[\s\S]*?-->/g, '').split(/\r?\n/)
+  // image section. Recognise those two complete lines rather than treating
+  // arbitrary release text as HTML that needs sanitising.
+  const lines = notes
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== '<!-- container:start -->' && line.trim() !== '<!-- container:end -->')
 
   let bullets: string[] = []
   let code: string[] | null = null

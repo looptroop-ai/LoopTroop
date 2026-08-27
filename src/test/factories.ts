@@ -103,7 +103,7 @@ export function makeTicket(overrides: TicketOverrides = {}): Ticket {
       activeBeadId: null,
       activeBeadIteration: null,
       lastFailedBeadId: null,
-      artifactRoot: '/tmp/test-ticket',
+      artifactRoot: 'test-artifacts/test-ticket',
       candidateCommitSha: null,
       preSquashHead: null,
       finalTestStatus: 'pending',

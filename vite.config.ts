@@ -5,15 +5,15 @@ import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type { IncomingMessage, ServerResponse } from 'http'
-import { getBackendOrigin, getDocsBaseUrl, getFrontendPort } from './shared/appConfig'
-import { resolveDevHostMode } from './scripts/dev-host-mode'
-import { resolveWatchPollingDecision } from './shared/wslPerformance'
+import { getBackendOrigin, getDocsBaseUrl, getFrontendPort } from './shared/appConfig.ts'
+import { resolveDevHostMode } from './scripts/dev-host-mode.ts'
+import { resolveWatchPollingDecision } from './shared/wslPerformance.ts'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
   FRONTEND_DEDUPED_DEPENDENCIES,
   frontendOptimizeDeps,
-} from './scripts/vite-optimize-deps'
-import { getDevProxyOriginOverride } from './scripts/dev-api-proxy'
+} from './scripts/vite-optimize-deps.ts'
+import { getDevProxyOriginOverride } from './scripts/dev-api-proxy.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const backendOrigin = getBackendOrigin()

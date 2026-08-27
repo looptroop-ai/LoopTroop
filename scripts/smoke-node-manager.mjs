@@ -29,12 +29,23 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const IS_WINDOWS = process.platform === 'win32'
-const MANAGER = process.argv[2]
 
-if (MANAGER !== 'bun' && MANAGER !== 'pnpm' && MANAGER !== 'yarn') {
-  process.stderr.write('Usage: node scripts/smoke-node-manager.mjs <bun|pnpm|yarn>\n')
-  process.exit(1)
+function parseManager(value) {
+  switch (value) {
+    case 'bun':
+      return { name: 'bun', tempPrefix: 'looptroop-bun-' }
+    case 'pnpm':
+      return { name: 'pnpm', tempPrefix: 'looptroop-pnpm-' }
+    case 'yarn':
+      return { name: 'yarn', tempPrefix: 'looptroop-yarn-' }
+    default:
+      process.stderr.write('Usage: node scripts/smoke-node-manager.mjs <bun|pnpm|yarn>\n')
+      process.exit(1)
+  }
 }
+
+const managerSelection = parseManager(process.argv[2])
+const MANAGER = managerSelection.name
 
 const failures = []
 let step = 0
@@ -67,7 +78,7 @@ function run(command, args, options = {}) {
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
-const home = mkdtempSync(join(tmpdir(), `looptroop-${MANAGER}-`))
+const home = mkdtempSync(join(tmpdir(), managerSelection.tempPrefix))
 /** Nothing here to resolve against, so a path taken from the cwd finds nothing. */
 const empty = mkdtempSync(join(tmpdir(), 'looptroop-empty-'))
 

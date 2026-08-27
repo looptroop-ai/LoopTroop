@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import { availableParallelism } from 'node:os'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig'
+import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig.ts'
 
 // Never add tests that hard-code ticket/project-specific fixture ids, refs, shortnames, or worktree names.
 const __dirname = dirname(fileURLToPath(import.meta.url))

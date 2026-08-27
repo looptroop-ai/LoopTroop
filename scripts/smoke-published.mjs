@@ -42,6 +42,24 @@ const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 
 const POLL_INTERVAL_MS = 15_000
 
+/** The two release names the release tooling can publish. */
+const PUBLISHED_VERSION_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.(?:[1-9]\d*))?$/
+
+/**
+ * Accepts a release identifier produced by this repository and rejects
+ * everything else.
+ *
+ * Versions are used as argv entries and, for the two documented installer
+ * pipelines, inside a fixed shell program. Keep this allowlist at the boundary
+ * shared by command-line and release-API values so neither source can add shell
+ * syntax to those programs.
+ */
+export function validatePublishedVersion(value) {
+  const version = String(value)
+  if (!PUBLISHED_VERSION_PATTERN.test(version)) throw new Error(`invalid release version: "${version}"`)
+  return version
+}
+
 // ---------------------------------------------------------------------------
 // The recipe table. One entry per documented install method; the only place a
 // channel is defined, so `--plan` and the assertions cannot disagree.
@@ -1669,6 +1687,12 @@ async function main() {
       abort(`could not resolve the latest stable release: ${error.message}`)
       return
     }
+  }
+  try {
+    version = validatePublishedVersion(version)
+  } catch (error) {
+    abort(error.message)
+    return
   }
 
   // pnpm's supply-chain hold, and any future channel with one. Reported as a

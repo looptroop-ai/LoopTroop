@@ -9,6 +9,12 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- The installation documentation now shows how downloads change over time, with source, date range, interval, metric and chart controls.
+
+### Added
+- Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
+
 ## 0.5.9 (2026-08-26)
 
 

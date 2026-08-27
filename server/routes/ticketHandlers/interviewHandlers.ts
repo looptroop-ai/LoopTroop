@@ -39,7 +39,7 @@ import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
-import { deriveSkipActionId, writeSkipReceipts } from '../../workflow/skipReceipts'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
 import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
@@ -96,7 +96,7 @@ function recordInterviewApprovalSkips(input: {
   })
   if (items.length === 0) return
 
-  writeSkipReceipts({
+  const receipts = writeSkipReceipts({
     ticketId: input.ticketId,
     surface: 'interview_approval_mark_skipped',
     itemType: 'interview_question',
@@ -108,6 +108,9 @@ function recordInterviewApprovalSkips(input: {
     ]),
     items,
   })
+  for (const line of formatSkipReceiptLogLines(receipts)) {
+    emitRoutePhaseLog(input.ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', line)
+  }
 }
 
 function buildInterviewPayload(ticketId: string): {

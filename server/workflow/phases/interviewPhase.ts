@@ -39,7 +39,7 @@ import {
   buildInterviewUiRefinementDiffArtifactFromChanges,
 } from '@shared/refinementDiffArtifacts'
 import { calculateFollowUpLimit } from '../../phases/interview/followUpBudget'
-import { deriveSkipActionId, writeSkipReceipts } from '../skipReceipts'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../skipReceipts'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { persistUiRefinementDiffArtifact } from '../refinementDiffArtifacts'
@@ -172,6 +172,7 @@ export function buildFormattedBatchAnswers(
  */
 function recordInterviewSkipReceipts(input: {
   ticketId: string
+  externalId: string
   ticketStatusBefore: string
   surface: 'interview_question' | 'interview_all'
   snapshot: InterviewSessionSnapshot
@@ -196,7 +197,7 @@ function recordInterviewSkipReceipts(input: {
     input.bulkReason ?? null,
   ])
 
-  writeSkipReceipts({
+  const receipts = writeSkipReceipts({
     ticketId: input.ticketId,
     surface: input.surface,
     itemType: 'interview_question',
@@ -210,6 +211,10 @@ function recordInterviewSkipReceipts(input: {
       ? { itemType: 'interview_batch', reason: input.bulkReason ?? null }
       : null,
   })
+
+  for (const line of formatSkipReceiptLogLines(receipts)) {
+    emitPhaseLog(input.ticketId, input.externalId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+  }
 }
 
 export function skipAllInterviewQuestionsToApproval(
@@ -249,6 +254,7 @@ export function skipAllInterviewQuestionsToApproval(
   persistInterviewSession(ticketId, finalizedSnapshot)
   recordInterviewSkipReceipts({
     ticketId,
+    externalId,
     ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
     surface: 'interview_all',
     snapshot: finalizedSnapshot,
@@ -1194,6 +1200,7 @@ export async function handleInterviewQABatch(
   // person submitted a question blank rather than clicking Skip.
   recordInterviewSkipReceipts({
     ticketId,
+    externalId,
     ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
     surface: 'interview_question',
     snapshot: answeredSnapshot,

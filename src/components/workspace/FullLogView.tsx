@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId } from 'react'
-import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle } from 'lucide-react'
+import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle, SkipForward } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -25,6 +25,8 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
 import { useTicketAiDetails } from '@/hooks/useTicketAiDetails'
+import { useTicketSkips } from '@/hooks/useTicketSkips'
+import { SkipSummary } from './SkipSummary'
 import { LoadingRemainingLogsLine } from './LoadingRemainingLogsLine'
 import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
 
@@ -141,6 +143,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const [activeTab, setActiveTab] = useState<string>('ALL')
   const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
   const aiDetailsPanelId = useId()
+  const [isSkipsOpen, setIsSkipsOpen] = useState(false)
+  const skipsPanelId = useId()
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
   const [isSysCollapsed, setIsSysCollapsed] = useState(true)
   const historicalView: HistoricalLogView = activeTab === 'ALL'
@@ -244,6 +248,10 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     ...(aiDetailsModelId ? { modelId: aiDetailsModelId } : {}),
   }), [aiDetailsModelId])
   const aiDetails = useTicketAiDetails(ticket?.id, aiDetailsRequest, showAiDetails && isAiDetailsOpen)
+  // Ticket-wide by construction: this view already runs at lifecycle scope, so
+  // the audit trail spans every phase and every attempt without touching the
+  // attempt-filtered artifact path.
+  const skips = useTicketSkips(ticket?.id, Boolean(ticket?.id) && isSkipsOpen)
 
   useEffect(() => {
     if (ticket?.id || !isAiLogTab(effectiveTab)) return
@@ -691,6 +699,21 @@ export function FullLogView({ ticket }: FullLogViewProps) {
           )
         })}
         <div className="ml-auto flex items-center pl-2 gap-2 text-xs text-muted-foreground">
+          {ticket?.id ? (
+            <button
+              type="button"
+              aria-expanded={isSkipsOpen}
+              aria-controls={skipsPanelId}
+              onClick={() => setIsSkipsOpen(open => !open)}
+              className={cn(
+                'inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono transition-all',
+                isSkipsOpen ? 'bg-muted/60 text-foreground border border-border/70 shadow-2xs' : 'hover:bg-muted/30 hover:text-foreground',
+              )}
+            >
+              <SkipForward className="h-3.5 w-3.5" />
+              Skips
+            </button>
+          ) : null}
           {showAiDetails ? (
             <button
               type="button"
@@ -767,6 +790,17 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
+            {isSkipsOpen ? (
+              <div id={skipsPanelId} className="sticky top-0 z-20 bg-muted">
+                <SkipSummary
+                  skips={skips.data}
+                  isLoading={skips.isLoading}
+                  isError={skips.isError}
+                  isFetching={skips.isFetching}
+                  onRetry={() => void skips.refetch()}
+                />
+              </div>
+            ) : null}
             {showAiDetails && isAiDetailsOpen ? (
               <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary

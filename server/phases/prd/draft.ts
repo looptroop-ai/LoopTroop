@@ -18,6 +18,8 @@ import { buildPromptFromTemplate, PROM10a, PROM10b, PROM11, PROM12 } from '../..
 import type { OpenCodePromptDispatchEvent } from '../../workflow/runOpenCodePrompt'
 import { formatPromptText, runOpenCodePrompt, runOpenCodeSessionPrompt } from '../../workflow/runOpenCodePrompt'
 import { buildStructuredRetryPrompt, normalizeInterviewDocumentOutput } from '../../structuredOutput'
+import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
+import { SKIP_REASON_PROMPT_MAX_LENGTH, truncateSkipReason } from '@shared/skipReceipt'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { validatePrdDraft, validateResolvedInterview } from './validation'
 import type { InterviewDocument } from '@shared/interviewArtifact'
@@ -128,7 +130,61 @@ function stripGeneratedByForRetry(
   normalizedInterviewDocument: InterviewDocument,
 ): string {
   const { generated_by: _generatedBy, ...sanitized } = normalizedInterviewDocument
-  return (jsYaml.dump(sanitized, { lineWidth: 120, noRefs: true }) as string).trim()
+  return (jsYaml.dump({
+    ...sanitized,
+    // Reasons reach this model through the fenced side channel, never as part of
+    // the artifact. Leaving them in the retry copy would hand it a field it has
+    // been told not to write and would then have to be stripped back out.
+    questions: sanitized.questions.map((question) => ({
+      ...question,
+      answer: { ...question.answer, skip_reason: undefined },
+    })),
+  }, { lineWidth: 120, noRefs: true, skipInvalid: true }) as string).trim()
+}
+
+/**
+ * The one place a model is handed skip reasons.
+ *
+ * A separate fenced part rather than a field on the artifact. PROM10a invents
+ * answers for skipped questions and currently does so blind, so it should see
+ * why they were skipped — but `PROM4_FINAL_INTERVIEW_SCHEMA` stays untouched and
+ * the answer-only recovery whitelist stays untouched, which means there is no
+ * field for the model to write the reason back into and nothing to overwrite if
+ * it tries.
+ *
+ * Truncated at {@link SKIP_REASON_PROMPT_MAX_LENGTH}: forty skipped questions at
+ * the 20,000-character storage cap is a token bomb.
+ */
+function buildSkipReasonSideChannel(
+  canonicalInterviewDocument: InterviewDocument,
+): PromptPart | null {
+  const entries = canonicalInterviewDocument.questions.flatMap((question) => {
+    if (!question.answer.skipped) return []
+    const { text, truncated } = truncateSkipReason(question.answer.skip_reason, SKIP_REASON_PROMPT_MAX_LENGTH)
+    if (!text) return []
+    return [{
+      question_id: question.id,
+      reason: text,
+      ...(truncated ? { truncated: true } : {}),
+    }]
+  })
+  if (entries.length === 0) return null
+
+  return {
+    type: 'text',
+    source: 'skip_reasons',
+    content: [
+      '## Why These Questions Were Skipped',
+      'The person who skipped these questions left a note explaining why. Use it to',
+      'infer a better answer than you could otherwise. It is read-only context:',
+      'there is no field for it in your output format, so do not echo it, do not',
+      'copy it into `free_text`, and do not treat it as the answer itself.',
+      'Questions not listed here were skipped without a reason.',
+      '```yaml',
+      buildYamlDocument(entries).trim(),
+      '```',
+    ].join('\n'),
+  }
 }
 
 function buildFullAnswersRuntimeChecklist(
@@ -749,6 +805,9 @@ export async function draftPRD(
 
       if (shouldResolveGaps) {
         onStepEvent?.({ memberId: member.modelId, step: 'full_answers', status: 'started' })
+        const skipReasonSideChannel = canonicalInterviewResult?.ok
+          ? buildSkipReasonSideChannel(canonicalInterviewResult.value)
+          : null
         const gapResolutionParts = buildPromptParts(
           PROM10a,
           [
@@ -757,7 +816,10 @@ export async function draftPRD(
               fullAnswers: undefined,
             }),
             ...(canonicalInterviewResult?.ok
-              ? [buildFullAnswersRuntimeChecklist(canonicalInterviewResult.value)]
+              ? [
+                buildFullAnswersRuntimeChecklist(canonicalInterviewResult.value),
+                ...(skipReasonSideChannel ? [skipReasonSideChannel] : []),
+              ]
               : []),
           ],
         )

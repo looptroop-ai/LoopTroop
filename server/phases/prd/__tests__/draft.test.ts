@@ -275,6 +275,99 @@ describe.concurrent('draftPRD', () => {
     }
   })
 
+
+  it('hands PROM10a the skip reasons through a fenced side channel and nowhere else', async () => {
+    clearContextCache(TEST.externalId)
+
+    try {
+      const longReason = `Decided in the architecture review. ${'Detail. '.repeat(120)}`
+      const canonicalInterview = makeInterviewYaml({
+        questions: [
+          makeInterviewQuestion({
+            id: 'Q01',
+            answer: {
+              skipped: true,
+              selected_option_ids: [],
+              free_text: '',
+              answered_by: 'user_skip',
+              answered_at: TEST.timestamp,
+              skip_reason: 'Already answered in the ticket description.',
+            },
+          }),
+          makeInterviewQuestion({
+            id: 'Q02',
+            phase: 'Structure',
+            prompt: 'What scope stays minimal?',
+            answer: {
+              skipped: true,
+              selected_option_ids: [],
+              free_text: '',
+              answered_by: 'user_skip',
+              answered_at: TEST.timestamp,
+              skip_reason: longReason,
+            },
+          }),
+          makeInterviewQuestion({
+            id: 'Q03',
+            phase: 'Assembly',
+            prompt: 'Which retries matter?',
+          }),
+        ],
+      })
+      const resolvedInterview = makeInterviewYaml({
+        status: 'draft',
+        generated_by: GENERATED_BY,
+        questions: ['Q01', 'Q02', 'Q03'].map((id, index) => makeInterviewQuestion({
+          id,
+          phase: ['Foundation', 'Structure', 'Assembly'][index]!,
+          prompt: ['What are the key requirements?', 'What scope stays minimal?', 'Which retries matter?'][index]!,
+          answer: {
+            skipped: false,
+            selected_option_ids: [],
+            free_text: `Filled answer for ${id}.`,
+            answered_by: 'ai_skip',
+            answered_at: TEST.timestamp,
+            skip_reason: null,
+          },
+        })),
+      })
+
+      const adapter = new TestOpenCodeAdapter([resolvedInterview, makePrdYaml()])
+      const result = await draftPRD(adapter, COUNCIL,
+        ticket('Skip reasons reach PROM10a', 'Only through the side channel.', canonicalInterview),
+        '/tmp/test', DRAFT_OPTS,
+      )
+
+      expect(result.fullAnswers[0]?.outcome).toBe('completed')
+      const fullAnswersPrompt = adapter.promptCalls[0]?.parts.map((part) => part.content).join('\n') ?? ''
+
+      // The reasons arrive as their own labelled part, not as part of the artifact.
+      expect(fullAnswersPrompt).toContain('### skip_reasons')
+      expect(fullAnswersPrompt).toContain('Why These Questions Were Skipped')
+      expect(fullAnswersPrompt).toContain('question_id: Q01')
+      expect(fullAnswersPrompt).toContain('Already answered in the ticket description.')
+
+      // Truncated where a prompt reads it, and it says so.
+      expect(fullAnswersPrompt).not.toContain(longReason)
+      expect(fullAnswersPrompt).toContain('truncated: true')
+
+      // A question skipped without a reason is simply absent.
+      expect(fullAnswersPrompt).not.toContain('question_id: Q03')
+
+      // The interview artifact itself carries no reason field for the model to write into.
+      const interviewSection = fullAnswersPrompt.split('### skip_reasons')[0] ?? ''
+      expect(interviewSection).toContain('### interview')
+      expect(interviewSection).not.toContain('skip_reason:')
+
+      // And the PRD draft prompt, which reads Full Answers, never sees them at all.
+      const prdPrompt = adapter.promptCalls[1]?.parts.map((part) => part.content).join('\n') ?? ''
+      expect(prdPrompt).not.toContain('skip_reason')
+      expect(prdPrompt).not.toContain('Already answered in the ticket description.')
+    } finally {
+      clearContextCache(TEST.externalId)
+    }
+  })
+
   it('salvages near-miss full answers without using a structured retry', async () => {
     const adapter = new TestOpenCodeAdapter([
       makeInterviewYaml({

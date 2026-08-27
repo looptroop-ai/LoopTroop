@@ -60,7 +60,7 @@ import {
   respondWithState,
 } from './routeUtils'
 import { cancelTicketSchema, closeUnmergedSchema, retryTicketSchema } from './schemas'
-import { deriveSkipActionId, writeSkipReceipts } from '../../workflow/skipReceipts'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
 import { normalizeSkipReason } from '@shared/skipReceipt'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
@@ -390,7 +390,7 @@ export async function handleCancelTicket(c: Context) {
       patchTicket(ticketId, { cancelReason })
     }
     if (!deleteTicket) {
-      writeSkipReceipts({
+      const receipts = writeSkipReceipts({
         ticketId,
         surface: 'cancel_ticket',
         itemType: 'ticket',
@@ -399,6 +399,9 @@ export async function handleCancelTicket(c: Context) {
         actionId: deriveSkipActionId('cancel_ticket', [ticketId, statusBeforeCancel, cancelReason]),
         items: [{ itemId: null, reason: cancelReason }],
       })
+      for (const line of formatSkipReceiptLogLines(receipts)) {
+        emitRoutePhaseLog(ticketId, statusBeforeCancel, 'info', line)
+      }
     }
     if (deleteTicket) {
       broadcaster.clearTicket(ticketId)
@@ -524,7 +527,7 @@ export async function handleCloseUnmergedTicket(c: Context) {
       prNumber: report.prNumber,
       prUrl: report.prUrl,
     })
-    writeSkipReceipts({
+    const closeReceipts = writeSkipReceipts({
       ticketId,
       surface: 'close_unmerged',
       itemType: 'ticket',
@@ -533,6 +536,9 @@ export async function handleCloseUnmergedTicket(c: Context) {
       actionId: deriveSkipActionId('close_unmerged', [ticketId, closeReason]),
       items: [{ itemId: null, reason: closeReason }],
     })
+    for (const line of formatSkipReceiptLogLines(closeReceipts)) {
+      emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'info', line)
+    }
     sendTicketEvent(ticketId, { type: 'CLOSE_UNMERGED_COMPLETE' })
   } catch (err) {
     console.error(`[tickets] Failed to close ticket ${ticketId} without merge:`, err)

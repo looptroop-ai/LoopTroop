@@ -226,6 +226,80 @@ describe('FullLogView', () => {
     fetchSpy.mockRestore()
   })
 
+
+  it('loads the skips panel only after it is opened, and counts a bulk action once', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/skips')) {
+        return createJsonResponse({
+          ticketId: TEST.ticketId,
+          events: [
+            {
+              receiptId: 'skip-parent',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: null,
+              itemType: 'interview_batch',
+              isActionSummary: true,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: 'Shipping before the demo.',
+              supersedes: null,
+              superseded: false,
+            },
+            {
+              receiptId: 'skip-q01',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: 'Q01',
+              itemType: 'interview_question',
+              isActionSummary: false,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: 'Answered in the ticket description.',
+              supersedes: null,
+              superseded: false,
+            },
+            {
+              receiptId: 'skip-q02',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: 'Q02',
+              itemType: 'interview_question',
+              isActionSummary: false,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: null,
+              supersedes: null,
+              superseded: false,
+            },
+          ],
+          counts: { actions: 1, items: 2, itemsWithReason: 1, itemsWithoutReason: 1 },
+        })
+      }
+      return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+    })
+
+    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/skips'))).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skips' }))
+
+    expect(await screen.findByText('Answered in the ticket description.')).toBeInTheDocument()
+    expect(screen.getByText(/1 action · 2 items skipped · 1 with a reason · 1 without/)).toBeInTheDocument()
+    // The bulk summary row is the count, not a line of its own.
+    expect(screen.queryByText('Shipping before the demo.')).not.toBeInTheDocument()
+    expect(screen.getByText('No reason given')).toBeInTheDocument()
+
+    fetchSpy.mockRestore()
+  })
+
   it('shows configured effort on lifecycle model tabs', () => {
     const firstModel = 'openai/gpt-5.4'
     const secondModel = 'anthropic/claude-sonnet-4.6'

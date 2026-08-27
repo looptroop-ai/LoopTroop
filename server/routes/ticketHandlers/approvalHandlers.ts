@@ -30,7 +30,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
-import { deriveSkipActionId, writeSkipReceipts } from '../../workflow/skipReceipts'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import {
   buildExecutionBandConflictMessage,
@@ -320,7 +320,7 @@ function recordGapAcknowledgement(input: {
     }
   }
 
-  writeSkipReceipts({
+  const receipts = writeSkipReceipts({
     ticketId: input.ticketId,
     surface: 'approval_with_gaps',
     itemType: 'approval',
@@ -329,6 +329,9 @@ function recordGapAcknowledgement(input: {
     actionId: deriveSkipActionId('approval_with_gaps', [input.ticketId, input.phase, input.artifactType, reason]),
     items: [{ itemId: input.artifactType, reason }],
   })
+  for (const line of formatSkipReceiptLogLines(receipts)) {
+    emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
+  }
 }
 
 export async function handleApproveInterview(c: Context) {

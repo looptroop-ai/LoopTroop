@@ -73,14 +73,14 @@ frontend packages inlined into the client bundle.
 | `hono` | 4.13.3 | MIT | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
 | `isexe` | 2.0.0 | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
 | `js-yaml` | 5.3.0 | MIT | Copyright (C) 2011-2015 by Vitaly Puzrin |
-| `lucide-react` | 1.31.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
+| `lucide-react` | 1.33.0 | ISC | Copyright (c) 2026 Lucide Icons and Contributors |
 | `path-key` | 3.1.1 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
 | `react` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-dom` | 19.2.8 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `react-remove-scroll` | 2.7.2 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `react-remove-scroll-bar` | 2.3.8 | MIT | Anton Korzunov <thekashey@gmail.com> |
 | `react-style-singleton` | 2.2.3 | MIT | Copyright (c) 2017 Anton Korzunov |
-| `react-virtuoso` | 4.18.11 | MIT | Copyright (c) 2020 Petyo Ivanov |
+| `react-virtuoso` | 4.18.12 | MIT | Copyright (c) 2020 Petyo Ivanov |
 | `scheduler` | 0.27.0 | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | `shebang-command` | 2.0.0 | MIT | Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva) |
 | `shebang-regex` | 3.0.0 | MIT | Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com) |
@@ -1088,7 +1088,7 @@ THE SOFTWARE.
 
 ### ISC
 
-Applies to: `lucide-react@1.31.0`
+Applies to: `lucide-react@1.33.0`
 
 ```text
 ISC License
@@ -1138,7 +1138,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `react-virtuoso@4.18.11`
+Applies to: `react-virtuoso@4.18.12`
 
 ```text
 MIT License

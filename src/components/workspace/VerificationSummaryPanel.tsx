@@ -111,7 +111,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
             value={closeReason}
             onChange={setCloseReason}
             disabled={isPending}
-            help="Saved with the merge report. It is the only record of why this branch stopped."
+            help="Saved with the merge report and the ticket's skip history. Nothing else explains why this branch stopped."
           />
           {closeError && <p role="alert" className="text-xs text-destructive">{closeError}</p>}
           <div className="flex justify-end gap-2">

@@ -77,13 +77,19 @@ export function completeInterviewBySkippingRemaining(
       }
       continue
     }
+    // A question that was never presented still accepts its own reason: the
+    // route validates per-question reasons against this same set, so accepting
+    // one there and dropping it here would lose a reason the caller was told
+    // was fine. The bulk reason is only the fallback.
+    const ownReason = options.skipReasons?.[question.id]?.trim()
+    const reason = ownReason || bulkReason
     answeredSnapshot.answers[question.id] = {
       answer: '',
       skipped: true,
       answeredAt: null,
       skippedAt,
       batchNumber: currentBatchNumber,
-      ...(bulkReason ? { skipReason: bulkReason } : {}),
+      ...(reason ? { skipReason: reason } : {}),
     }
   }
 

@@ -320,17 +320,25 @@ function recordGapAcknowledgement(input: {
     }
   }
 
-  const receipts = writeSkipReceipts({
-    ticketId: input.ticketId,
-    surface: 'approval_with_gaps',
-    itemType: 'approval',
-    phase: input.phase,
-    ticketStatusBefore: input.ticketStatusBefore,
-    actionId: deriveSkipActionId('approval_with_gaps', [input.ticketId, input.phase, input.artifactType, reason]),
-    items: [{ itemId: input.artifactType, reason }],
-  })
-  for (const line of formatSkipReceiptLogLines(receipts)) {
-    emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
+  // The approval is already persisted by the time this runs, and the APPROVE
+  // event has not been sent yet. Letting a receipt write throw would return 500
+  // and strand the ticket: approved on disk, still sitting in the approval
+  // state. Recording why something happened must never undo it.
+  try {
+    const receipts = writeSkipReceipts({
+      ticketId: input.ticketId,
+      surface: 'approval_with_gaps',
+      itemType: 'approval',
+      phase: input.phase,
+      ticketStatusBefore: input.ticketStatusBefore,
+      actionId: deriveSkipActionId('approval_with_gaps', [input.ticketId, input.phase, input.artifactType, reason]),
+      items: [{ itemId: input.artifactType, reason }],
+    })
+    for (const line of formatSkipReceiptLogLines(receipts)) {
+      emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
+    }
+  } catch (err) {
+    console.error(`[tickets] Failed to record the gap acknowledgement for ${input.ticketId}:`, err)
   }
 }
 

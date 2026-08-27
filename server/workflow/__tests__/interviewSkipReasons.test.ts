@@ -151,6 +151,24 @@ describe('interview skip reasons', () => {
     expect(finalized.answers.Q01?.skipReason).toBeUndefined()
   })
 
+
+  it('keeps a per-question reason for a question that was never presented', () => {
+    const finalized = completeInterviewBySkippingRemaining(
+      buildSnapshotWithSecondBatch(),
+      { Q03: '' },
+      {
+        // Q04 is outside the current batch. The route validates reasons against
+        // the same set that includes it, so dropping it here would lose a reason
+        // the caller was told was acceptable.
+        skipReasons: { Q04: 'Decided in the design review.' },
+        bulkReason: 'Shipping before the demo.',
+      },
+    )
+
+    expect(finalized.answers.Q04?.skipReason).toBe('Decided in the design review.')
+    expect(finalized.answers.Q03?.skipReason).toBe('Shipping before the demo.')
+  })
+
   it('carries reasons into interview.yaml and leaves one action with N items behind', () => {
     const ticket = makeStartedTicket()
     upsertLatestPhaseArtifact(

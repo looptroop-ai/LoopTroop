@@ -50,6 +50,7 @@ import {
   emitRoutePhaseLog,
   getTicketParam,
   preparePlanningRestart,
+  readJsonBody,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
@@ -109,6 +110,20 @@ function recordInterviewApprovalSkips(input: {
   })
   if (items.length === 0) return
 
+  try {
+    recordApprovalSkipReceipts(input, items)
+  } catch (err) {
+    // The document is already saved and the restart may already have fired.
+    // Failing here would report a save failure for a save that succeeded, and
+    // the retry would run the whole planning restart a second time.
+    console.error(`[tickets] Failed to record approval skip receipts for ${input.ticketId}:`, err)
+  }
+}
+
+function recordApprovalSkipReceipts(
+  input: { ticketId: string; ticketStatusBefore: string },
+  items: SkipReceiptItemInput[],
+): void {
   const receipts = writeSkipReceipts({
     ticketId: input.ticketId,
     surface: 'interview_approval_mark_skipped',
@@ -215,8 +230,11 @@ export async function handleSkipTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  const body = await c.req.json().catch(() => ({}))
-  const parsed = interviewSkipAllPayloadSchema.safeParse(body)
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Skip request body must be valid JSON' }, 400)
+  }
+  const parsed = interviewSkipAllPayloadSchema.safeParse(rawBody.body)
   if (!parsed.success) {
     return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
   }
@@ -273,8 +291,11 @@ export async function handleAnswerBatch(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  const body = await c.req.json().catch(() => ({}))
-  const parsed = interviewBatchAnswerPayloadSchema.safeParse(body)
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Answer batch request body must be valid JSON' }, 400)
+  }
+  const parsed = interviewBatchAnswerPayloadSchema.safeParse(rawBody.body)
   if (!parsed.success) {
     return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
   }
@@ -422,6 +443,7 @@ export async function handleEditAnswer(c: Context) {
     const nextAnswer = updated.answers[questionId]
     const nowSkipped = nextAnswer?.skipped === true
     if (nowSkipped !== previous.skipped || (nowSkipped && nextAnswer?.skipReason !== previous.skipReason)) {
+      try {
       const receipts = writeSkipReceipts({
         ticketId,
         surface: 'interview_question',
@@ -442,6 +464,11 @@ export async function handleEditAnswer(c: Context) {
       })
       for (const line of formatSkipReceiptLogLines(receipts)) {
         emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+      }
+      } catch (err) {
+        // The edited answer is already persisted; the trail is not worth
+        // failing the edit over.
+        console.error(`[tickets] Failed to record the edit-answer skip for ${ticketId}:`, err)
       }
     }
 

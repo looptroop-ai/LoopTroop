@@ -379,6 +379,9 @@ export function PrdApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
       clearTicketArtifactsCache(ticket.id)
+      // The acknowledgement described the gaps that were just repaired. Keeping
+      // it would attach an explanation for old gaps to a later approval.
+      setGapReason('')
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {

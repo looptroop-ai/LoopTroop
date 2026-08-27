@@ -1209,6 +1209,13 @@ export async function handleInterviewQABatch(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
+  // Cleared before anything can throw. A stale entry from a previously committed
+  // batch would otherwise be read by the revert path below and used to delete
+  // that batch's receipts — append-only records, for work that was never
+  // reverted. A duplicate or late submission reaches the throw below and is
+  // exactly the case that triggers it.
+  pendingBatchSkipActions.delete(ticketId)
+
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
     throw new Error('No active interview batch for this ticket')

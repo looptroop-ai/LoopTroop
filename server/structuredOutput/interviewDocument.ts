@@ -723,7 +723,7 @@ function stripSkipReasonLines(rawContent: string): string {
       if (line.trim().length === 0 || indent > dropIndent) continue
       dropIndent = null
     }
-    if (/^\s*skip_reason\s*:/.test(line)) {
+    if (/^[^\S\n]*skip_reason[^\S\n]*:/.test(line)) {
       dropIndent = indent
       continue
     }
@@ -746,7 +746,7 @@ function stripSkipReasonLines(rawContent: string): string {
  * prompt that needs it.
  */
 export function stripSkipReasonsFromInterviewYaml(rawContent: string): string {
-  if (!/^\s*skip_reason\s*:/m.test(rawContent)) return rawContent
+  if (!/^[^\S\n]*skip_reason[^\S\n]*:/m.test(rawContent)) return rawContent
 
   try {
     const parsed = parseYamlOrJsonCandidate(rawContent, {
@@ -1204,9 +1204,17 @@ export function updateInterviewDocumentAnswers(
       // An edit that skips an answer is a person skipping it. An answer that was
       // *already* skipped keeps whoever it was attributed to: re-saving the
       // document unchanged must not rewrite history into a decision nobody made.
+      //
+      // The exception is a reason. Only a `user_skip` may carry one, so writing
+      // a reason onto an `ai_skip` placeholder would store a field the next load
+      // strips straight back out. Supplying a reason *is* claiming the skip.
+      const claimsSkipByReason = skipped
+        && skipReason !== null
+        && question.answer.answered_by !== 'user_skip'
       const answeredBy = skipped
-        ? (question.answer.skipped ? question.answer.answered_by : 'user_skip')
+        ? (question.answer.skipped && !claimsSkipByReason ? question.answer.answered_by : 'user_skip')
         : 'user'
+      const unchangedSkip = skipped && question.answer.skipped && !claimsSkipByReason
 
       return {
         ...question,
@@ -1215,7 +1223,7 @@ export function updateInterviewDocumentAnswers(
           selected_option_ids: skipped ? [] : selectedOptionIds,
           free_text: skipped ? '' : freeText,
           answered_by: answeredBy,
-          answered_at: skipped && question.answer.skipped ? question.answer.answered_at : answeredAt,
+          answered_at: unchangedSkip ? question.answer.answered_at : answeredAt,
           skip_reason: skipReason,
         },
       }

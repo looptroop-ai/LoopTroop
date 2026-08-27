@@ -268,3 +268,21 @@ export async function prepareExecutionSetupRuntimeRegeneration(
     createdAttempts,
   }
 }
+
+/**
+ * Reads a JSON request body, distinguishing "empty" from "malformed".
+ *
+ * `c.req.json().catch(() => ({}))` collapses the two, so a body that is not
+ * JSON at all arrives at a schema whose fields all have defaults, parses
+ * cleanly, and the request proceeds as though nothing were sent. On a
+ * destructive route that means the destructive part runs while the field the
+ * caller actually sent is silently discarded.
+ */
+export async function readJsonBody(c: Context): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  try {
+    const raw = await c.req.text()
+    return { ok: true, body: raw.trim().length === 0 ? {} : JSON.parse(raw) }
+  } catch {
+    return { ok: false }
+  }
+}

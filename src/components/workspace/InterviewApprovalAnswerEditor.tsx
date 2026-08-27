@@ -85,6 +85,9 @@ export function InterviewApprovalAnswerEditor({
                 skipped: question.answer.skipped,
                 selected_option_ids: question.answer.selected_option_ids,
                 free_text: question.answer.free_text,
+                // Without this the reason box renders empty for a stored reason,
+                // and editing the answer writes that emptiness back.
+                skip_reason: question.answer.skip_reason,
               }
               const choiceQuestion = isChoiceQuestion(question.answer_type)
 

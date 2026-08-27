@@ -34,7 +34,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 ### Fixed
 - Fixed a skip reason surviving a change of mind. Undoing a skip, typing an answer, or picking an option now discards the reason, so it cannot re-attach itself to a later skip made for an entirely different reason.
-- Fixed a cancellation reason being stored and then impossible to read. It is now shown on the canceled ticket, which matters most in the case it was built for: cancelling with the artifacts deleted, where the reason is the only record left.
+- Fixed a cancellation reason being stored and then impossible to read. It is now shown on the canceled ticket, which matters most in the case it was built for: cancelling with the artifacts deleted, where the column is all that survives.
 - Fixed the reason given for skipping all remaining interview questions never appearing anywhere. It is stored against the action rather than any single question, and the panel was hiding exactly that row.
 - Fixed skipping the rest of an interview re-recording questions that had already been skipped in an earlier batch, which replaced their original entries with a decision made at a different time for different reasons.
 - Fixed a failed interview batch leaving behind entries for skips it had rolled back. Retrying with different answers no longer contradicts a record of something that never happened.

@@ -56,6 +56,7 @@ import {
   emitRoutePhaseLog,
   getProfileDefaults,
   getTicketParam,
+  readJsonBody,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
@@ -345,8 +346,11 @@ export async function handleCancelTicket(c: Context) {
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
 
-  const body = await c.req.json().catch(() => ({}))
-  const cancelOptions = cancelTicketSchema.safeParse(body)
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Cancel request body must be valid JSON' }, 400)
+  }
+  const cancelOptions = cancelTicketSchema.safeParse(rawBody.body)
   // Rejecting rather than falling back to defaults. The old behaviour cancelled
   // the ticket anyway, which meant an oversized or malformed reason was dropped
   // while the destructive part of the request went ahead regardless.
@@ -503,8 +507,11 @@ export async function handleCloseUnmergedTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
   }
 
-  const body = await c.req.json().catch(() => ({}))
-  const parsed = closeUnmergedSchema.safeParse(body)
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Close request body must be valid JSON' }, 400)
+  }
+  const parsed = closeUnmergedSchema.safeParse(rawBody.body)
   if (!parsed.success) {
     return c.json({ error: 'Invalid close payload', details: parsed.error.flatten() }, 400)
   }

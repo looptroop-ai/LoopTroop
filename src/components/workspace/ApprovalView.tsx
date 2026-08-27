@@ -396,6 +396,9 @@ function BeadsApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
       clearTicketArtifactsCache(ticket.id)
+      // The acknowledgement described the gaps that were just repaired. Keeping
+      // it would attach an explanation for old gaps to a later approval.
+      setGapReason('')
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {

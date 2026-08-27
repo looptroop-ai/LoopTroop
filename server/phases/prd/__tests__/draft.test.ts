@@ -141,7 +141,7 @@ const DEADLINE_MS = 250
 const GENERATED_BY = { winner_model: 'model-a', generated_at: TEST.timestamp }
 const ANSWERED = {
   skipped: false, selected_option_ids: [] as string[], free_text: 'Preserve council retry behavior and strict validation.',
-  answered_by: 'ai_skip', answered_at: TEST.timestamp,
+  answered_by: 'ai_skip', answered_at: TEST.timestamp, skip_reason: null,
 } as const
 
 function resolvedYaml() {
@@ -188,7 +188,7 @@ describe.concurrent('draftPRD', () => {
         selected_option_ids: [],
         free_text: 'Keep the approved answer verbatim.',
         answered_by: 'user' as const,
-        answered_at: TEST.timestamp,
+        answered_at: TEST.timestamp, skip_reason: null,
       }
       const staleInterview = makeInterviewYaml({
         questions: [
@@ -224,7 +224,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the scope minimal.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -238,7 +238,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Yes, keep the same minimal scope.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
         ],
@@ -331,7 +331,7 @@ describe.concurrent('draftPRD', () => {
       ticket('Keep PRD sessions isolated', 'Skip gap resolution when the approved interview is complete.',
         makeInterviewYaml({
           questions: [makeInterviewQuestion({
-            answer: { skipped: false, selected_option_ids: [], free_text: 'Use explicit PRD session boundaries.', answered_by: 'user', answered_at: TEST.timestamp },
+            answer: { skipped: false, selected_option_ids: [], free_text: 'Use explicit PRD session boundaries.', answered_by: 'user', answered_at: TEST.timestamp, skip_reason: null },
           })],
         }),
       ),
@@ -368,7 +368,7 @@ describe.concurrent('draftPRD', () => {
           selected_option_ids: [],
           free_text: 'Preserve this answer even though it mentions skipped: true as literal text.',
           answered_by: 'user',
-          answered_at: TEST.timestamp,
+          answered_at: TEST.timestamp, skip_reason: null,
         },
       })],
     })
@@ -404,7 +404,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the approved answer verbatim.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -430,7 +430,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the approved answer verbatim.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -442,7 +442,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Limit the change to theme selection and shared tokens.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -454,7 +454,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Defer any theme-system redesign.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
         ],
@@ -473,7 +473,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the approved answer verbatim.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -509,7 +509,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the approved answer verbatim.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -523,7 +523,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Use a soft pink palette with #EC4899 as the primary token.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -542,7 +542,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: ['yes'],
               free_text: 'Yes',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
         ],
@@ -568,7 +568,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Preserve the existing theme selector.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -582,7 +582,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the palette note concise.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -607,7 +607,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Infer the fallback from the current light-theme behavior.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -619,7 +619,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Preserve the existing theme selector.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -633,7 +633,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Keep the palette note concise.',
               answered_by: 'user',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -647,7 +647,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: [],
               free_text: 'Infer the remaining detail from the approved selector behavior.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
         ],
@@ -951,7 +951,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: ['opt1'],
               free_text: 'Prioritize internal operators first, mainly support and operations staff, because the current workflow still needs validation.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
           makeInterviewQuestion({
@@ -961,7 +961,7 @@ describe.concurrent('draftPRD', () => {
               selected_option_ids: ['opt1', 'opt3'],
               free_text: 'Keep the API internal-only during the first rollout; do not expose partner access yet.',
               answered_by: 'ai_skip',
-              answered_at: TEST.timestamp,
+              answered_at: TEST.timestamp, skip_reason: null,
             },
           }),
         ],

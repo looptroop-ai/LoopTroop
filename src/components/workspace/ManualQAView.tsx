@@ -34,6 +34,7 @@ import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel } from '@/lib/manualQaSetting'
 import { buildCanonicalManualQaDraft, buildDefaultManualQaImprovementContext, composeManualQaImprovementPreview, validateManualQaItem, validateManualQaMergeGroups } from '@/lib/manualQaDraft'
 import { AutosaveStatus } from './AutosaveStatus'
+import { SkipReasonField } from './SkipReasonField'
 
 interface ManualQAViewProps {
   ticket: Ticket
@@ -849,7 +850,11 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       <Dialog open={skipOpen} onOpenChange={setSkipOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Skip Manual QA?</DialogTitle><DialogDescription>Your entered results, notes, links, and files will be saved in the archived draft and cannot be edited later. No fix bead or improvement ticket will be created, and the workflow will continue to integration.</DialogDescription></DialogHeader>
-          <div><label className="text-sm font-medium">Reason <span className="font-normal text-muted-foreground">(optional)</span></label><textarea value={skipReason} onChange={(event) => setSkipReason(event.target.value)} className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" /></div>
+          <SkipReasonField
+            value={skipReason}
+            onChange={setSkipReason}
+            help="Saved with the ticket. Nobody is blocked if you leave it empty."
+          />
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setSkipOpen(false)}>Cancel</Button><Button variant="destructive" onClick={handleSkip} disabled={skip.isPending || saveState === 'conflict' || evidenceMutationInProgress}>{skip.isPending ? <LoadingText text="Skipping" /> : 'Skip and integrate'}</Button></div>
         </DialogContent>
       </Dialog>

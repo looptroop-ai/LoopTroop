@@ -2,6 +2,7 @@ import type { PromptPart } from './types'
 import { encode } from 'gpt-tokenizer'
 import { DEFAULT_OPENCODE_TOKEN_BUDGET } from '../lib/constants'
 import { logIfVerbose, warnIfVerbose } from '../runtime'
+import { stripSkipReasonsFromInterviewYaml } from '../structuredOutput/interviewDocument'
 
 // Phase allowlists — only specified sources are included
 // Phase allowlists derived from cl-prompt.md PROM context_input specs
@@ -204,8 +205,12 @@ export function buildMinimalContext(
       }
       case 'interview': {
         const cached = getCachedContext(cacheKey)
-        const content = cached ?? ticketState.interview ?? ''
-        if (!cached && ticketState.interview) setCachedContext(cacheKey, content)
+        // Every prompt that reads the interview artifact reads it through here,
+        // which makes this the one place a skip reason can be kept out of a
+        // model's context. PROM10a gets the reasons back deliberately, as a
+        // separate fenced part it can read but has no field to write.
+        const content = cached ?? (ticketState.interview ? stripSkipReasonsFromInterviewYaml(ticketState.interview) : '')
+        if (!cached && content) setCachedContext(cacheKey, content)
         if (content) parts.push({ source, content, order: order++ })
         break
       }

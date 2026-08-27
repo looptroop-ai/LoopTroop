@@ -33,7 +33,7 @@ function buildInterviewData(): InterviewSessionView {
             selected_option_ids: [],
             free_text: 'Protect imports.',
             answered_by: 'user',
-            answered_at: '2026-03-17T10:05:00.000Z',
+            answered_at: '2026-03-17T10:05:00.000Z', skip_reason: null,
           },
         },
         {
@@ -49,7 +49,7 @@ function buildInterviewData(): InterviewSessionView {
             selected_option_ids: [],
             free_text: '',
             answered_by: 'ai_skip',
-            answered_at: '',
+            answered_at: '', skip_reason: null,
           },
         },
       ],
@@ -128,7 +128,7 @@ describe('InterviewApprovalNavigator', () => {
           selected_option_ids: [],
           free_text: 'Imports stay inside the sync worker.',
           answered_by: 'user',
-          answered_at: '2026-03-17T10:06:00.000Z',
+          answered_at: '2026-03-17T10:06:00.000Z', skip_reason: null,
         },
       },
       {
@@ -144,7 +144,7 @@ describe('InterviewApprovalNavigator', () => {
           selected_option_ids: [],
           free_text: 'Validate retries and dedupe behavior.',
           answered_by: 'user',
-          answered_at: '2026-03-17T10:07:00.000Z',
+          answered_at: '2026-03-17T10:07:00.000Z', skip_reason: null,
         },
       },
     )
@@ -194,7 +194,7 @@ describe('InterviewApprovalNavigator', () => {
         selected_option_ids: [],
         free_text: '',
         answered_by: 'ai_skip',
-        answered_at: '',
+        answered_at: '', skip_reason: null,
       },
     }
     data.document!.follow_up_rounds = [{

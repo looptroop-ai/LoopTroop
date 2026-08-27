@@ -31,6 +31,18 @@ export interface InterviewSessionAnswer {
   answeredAt: string | null
   batchNumber: number | null
   selectedOptionIds?: string[]
+  /**
+   * Why the person skipped this question, captured at the moment the batch was
+   * committed. Carried into `interview.yaml` when the canonical document is
+   * built; the append-only receipt keeps the history separately.
+   */
+  skipReason?: string | null
+  /**
+   * When the skip was committed. Separate from `answeredAt`, which stays null
+   * for a skip, so that "skipped at 10:14" and "answered at 10:14" cannot be
+   * confused for one another.
+   */
+  skippedAt?: string | null
 }
 
 export interface PersistedInterviewBatch {

@@ -1,4 +1,5 @@
 import type {
+  InterviewAnsweredBy,
   InterviewAnswerUpdate,
   InterviewDocument,
   InterviewDocumentAnswer,
@@ -6,6 +7,7 @@ import type {
   InterviewDocumentGeneratedBy,
   InterviewDocumentQuestion,
 } from '@shared/interviewArtifact'
+import { normalizeSkipReason } from '@shared/skipReceipt'
 import type {
   InterviewBatchSource,
   InterviewQuestionAnswerType,
@@ -38,7 +40,7 @@ const INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR = 'Interview document output echoed t
 
 const INTERVIEW_DOCUMENT_NESTED_MAPPING_CHILDREN = {
   generated_by: ['winner_model', 'generated_at', 'canonicalization'],
-  answer: ['skipped', 'selected_option_ids', 'free_text', 'answered_by', 'answered_at'],
+  answer: ['skipped', 'selected_option_ids', 'free_text', 'answered_by', 'answered_at', 'skip_reason'],
   summary: ['goals', 'constraints', 'non_goals', 'final_free_form_answer'],
   approval: ['approved_by', 'approved_at'],
 } as const
@@ -157,14 +159,21 @@ function normalizeQuestionAnswer(
   const skipped = explicitSkipped ?? (freeText.trim().length === 0 && nextSelectedOptionIds.length === 0)
   const answeredByRaw = toOptionalString(getValueByAliases(value, ['answeredby', 'answered_by'])) ?? ''
   const answeredByNormalized = normalizeKey(answeredByRaw)
-  const answeredBy = skipped
-    ? 'ai_skip'
+  const isUserSkip = answeredByNormalized === 'userskip' || answeredByNormalized === 'user_skip'
+  // A skipped answer defaults to `ai_skip`, which is what every artifact written
+  // before user skips existed says. Only an explicit `user_skip` overrides it,
+  // so an old interview keeps loading exactly as it always did.
+  const answeredBy: InterviewAnsweredBy = skipped
+    ? (isUserSkip ? 'user_skip' : 'ai_skip')
     : answeredByNormalized === 'aiskip' || answeredByNormalized === 'ai_skip'
       ? 'ai_skip'
       : 'user'
-  const answeredAt = skipped
-    ? ''
-    : (toOptionalString(getValueByAliases(value, ['answeredat', 'answered_at'])) ?? '')
+  const rawAnsweredAt = toOptionalString(getValueByAliases(value, ['answeredat', 'answered_at'])) ?? ''
+  // A user skip is a decision with a time. An AI-fill placeholder is not.
+  const answeredAt = skipped && answeredBy !== 'user_skip' ? '' : rawAnsweredAt
+  const skipReason = answeredBy === 'user_skip'
+    ? normalizeSkipReason(toOptionalString(getValueByAliases(value, ['skipreason', 'skip_reason'])))
+    : null
 
   return {
     skipped,
@@ -172,6 +181,7 @@ function normalizeQuestionAnswer(
     free_text: freeText,
     answered_by: answeredBy,
     answered_at: answeredAt,
+    skip_reason: skipReason,
   }
 }
 
@@ -673,8 +683,86 @@ function buildAnswerOnlyResolvedInterviewCandidate(
   }
 }
 
+/**
+ * Serialises the answer block, dropping `skip_reason` when there is none.
+ *
+ * Emitting `skip_reason: null` on every one of forty questions would add a line
+ * of noise per question to an artifact that several prompts read in full, and
+ * would rewrite every interview already on disk for no gain. The field appears
+ * only where a person actually left a reason.
+ */
+function toSerializableAnswer(answer: InterviewDocumentAnswer): Record<string, unknown> {
+  const { skip_reason: skipReason, ...rest } = answer
+  return skipReason === null ? rest : { ...rest, skip_reason: skipReason }
+}
+
 export function buildInterviewDocumentYaml(document: InterviewDocument): string {
-  return buildYamlDocument(document)
+  return buildYamlDocument({
+    ...document,
+    questions: document.questions.map((question) => ({
+      ...question,
+      answer: toSerializableAnswer(question.answer),
+    })),
+  })
+}
+
+/**
+ * Removes `skip_reason:` and everything indented under it.
+ *
+ * The last line of defence, for a document that no longer parses. Handles block
+ * scalars, which a single-line regex would leave half-deleted.
+ */
+function stripSkipReasonLines(rawContent: string): string {
+  const lines = rawContent.split('\n')
+  const kept: string[] = []
+  let dropIndent: number | null = null
+
+  for (const line of lines) {
+    const indent = line.length - line.trimStart().length
+    if (dropIndent !== null) {
+      if (line.trim().length === 0 || indent > dropIndent) continue
+      dropIndent = null
+    }
+    if (/^\s*skip_reason\s*:/.test(line)) {
+      dropIndent = indent
+      continue
+    }
+    kept.push(line)
+  }
+
+  return kept.join('\n')
+}
+
+/**
+ * The same document with every skip reason removed.
+ *
+ * Reasons are for people and for PROM10a, which receives them through its own
+ * fenced context part. Every other prompt that reads `interview.yaml` — PRD
+ * drafting, PRD voting, interview coverage — gets this instead, so a reason
+ * cannot reach a model that was never meant to weigh it.
+ *
+ * Falls back rather than failing, because a stripped-but-imperfect interview is
+ * always better than either leaking a reason or dropping the interview from a
+ * prompt that needs it.
+ */
+export function stripSkipReasonsFromInterviewYaml(rawContent: string): string {
+  if (!/^\s*skip_reason\s*:/m.test(rawContent)) return rawContent
+
+  try {
+    const parsed = parseYamlOrJsonCandidate(rawContent, {
+      nestedMappingChildren: INTERVIEW_DOCUMENT_NESTED_MAPPING_CHILDREN,
+    })
+    if (isRecord(parsed) && Array.isArray(parsed.questions)) {
+      for (const question of parsed.questions) {
+        if (isRecord(question) && isRecord(question.answer)) delete question.answer.skip_reason
+      }
+      return buildYamlDocument(parsed)
+    }
+  } catch {
+    // Fall through to the textual strip below.
+  }
+
+  return stripSkipReasonLines(rawContent)
 }
 
 export function normalizeInterviewDocumentOutput(
@@ -966,6 +1054,10 @@ export function normalizeResolvedInterviewDocumentOutput(
               free_text: candidateQuestion.answer.free_text,
               answered_by: 'ai_skip' as const,
               answered_at: candidateQuestion.answer.answered_at,
+              // The question is answered now, so there is no skip left to explain.
+              // This is also where the reason stops travelling: Full Answers feeds
+              // PROM10b, PROM12 and PRD coverage, none of which may see it.
+              skip_reason: null,
             },
           }
         }
@@ -985,6 +1077,7 @@ export function normalizeResolvedInterviewDocumentOutput(
             free_text: normalizedChoiceAnswer.freeText,
             answered_by: 'ai_skip' as const,
             answered_at: candidateQuestion.answer.answered_at,
+            skip_reason: null,
           },
         }
       })
@@ -1099,14 +1192,24 @@ export function updateInterviewDocumentAnswers(
       const freeText = update.answer.free_text
       const skipped = update.answer.skipped || (freeText.trim().length === 0 && selectedOptionIds.length === 0)
 
+      // An edit that skips an answer is a person skipping it, so it is a
+      // `user_skip` — and the reason has to survive the round trip, or the
+      // approval editor would silently discard whatever was just typed.
+      const skipReason = skipped
+        ? (update.answer.skip_reason === undefined
+          ? question.answer.skip_reason
+          : normalizeSkipReason(update.answer.skip_reason))
+        : null
+
       return {
         ...question,
         answer: {
           skipped,
           selected_option_ids: skipped ? [] : selectedOptionIds,
           free_text: skipped ? '' : freeText,
-          answered_by: skipped ? 'ai_skip' : 'user',
-          answered_at: skipped ? '' : answeredAt,
+          answered_by: skipped ? 'user_skip' : 'user',
+          answered_at: answeredAt,
+          skip_reason: skipReason,
         },
       }
     }),

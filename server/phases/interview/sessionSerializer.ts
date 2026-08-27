@@ -6,7 +6,8 @@ import type {
   InterviewSessionQuestion,
   InterviewSessionSnapshot,
 } from '@shared/interviewSession'
-import type { InterviewDocument, InterviewDocumentQuestion } from '@shared/interviewArtifact'
+import type { InterviewDocument, InterviewDocumentAnswer, InterviewDocumentQuestion } from '@shared/interviewArtifact'
+import { normalizeSkipReason } from '@shared/skipReceipt'
 import { calculateFollowUpLimit } from './followUpBudget'
 import { buildInterviewDocumentYaml } from '../../structuredOutput'
 import { isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
@@ -67,19 +68,14 @@ export function serializeInterviewSessionSnapshot(snapshot: InterviewSessionSnap
   return JSON.stringify(snapshot)
 }
 
-function emptyAnswer(): {
-  skipped: boolean
-  selected_option_ids: string[]
-  free_text: string
-  answered_by: 'user' | 'ai_skip'
-  answered_at: string
-} {
+function emptyAnswer(): InterviewDocumentAnswer {
   return {
     skipped: true,
     selected_option_ids: [],
     free_text: '',
     answered_by: 'ai_skip',
     answered_at: '',
+    skip_reason: null,
   }
 }
 
@@ -138,8 +134,12 @@ export function buildCanonicalInterviewYaml(
             skipped: answer.skipped,
             selected_option_ids: answer.selectedOptionIds ?? [],
             free_text: answer.answer,
-            answered_by: answer.skipped ? 'ai_skip' as const : 'user' as const,
-            answered_at: answer.skipped ? '' : answer.answeredAt ?? '',
+            // A recorded skip came from a person clicking Skip (or leaving a
+            // question blank in a submitted batch), which is a `user_skip`.
+            // Only a question nobody ever reached stays an `ai_skip` placeholder.
+            answered_by: answer.skipped ? 'user_skip' as const : 'user' as const,
+            answered_at: (answer.skipped ? answer.skippedAt : answer.answeredAt) ?? '',
+            skip_reason: answer.skipped ? normalizeSkipReason(answer.skipReason) : null,
           }
         : emptyAnswer(),
     }

@@ -1,5 +1,6 @@
 import * as jsYaml from 'js-yaml'
 import type {
+  InterviewAnsweredBy,
   InterviewAnswerUpdate,
   InterviewDocument,
   InterviewDocumentAnswer,
@@ -75,6 +76,12 @@ function normalizeOption(value: unknown, index: number): InterviewQuestionOption
   return { id, label }
 }
 
+function normalizeAnsweredBy(value: unknown): InterviewAnsweredBy {
+  if (value === 'user') return 'user'
+  if (value === 'user_skip') return 'user_skip'
+  return 'ai_skip'
+}
+
 function normalizeAnswer(value: unknown): InterviewDocumentAnswer {
   if (!isRecord(value)) {
     return {
@@ -83,19 +90,27 @@ function normalizeAnswer(value: unknown): InterviewDocumentAnswer {
       free_text: '',
       answered_by: 'ai_skip',
       answered_at: '',
+      skip_reason: null,
     }
   }
 
   const isSkipped = value.skipped === true
   const freeText = toStringValue(value.free_text || value.text)
   const selectedOptionIds = toStringArray(value.selected_option_ids || value.selected)
+  const answeredBy = normalizeAnsweredBy(value.answered_by)
 
   return {
     skipped: isSkipped,
     selected_option_ids: isSkipped ? [] : selectedOptionIds,
     free_text: isSkipped ? '' : freeText,
-    answered_by: value.answered_by === 'user' ? 'user' : 'ai_skip',
+    answered_by: answeredBy,
     answered_at: toStringValue(value.answered_at),
+    // This normaliser rebuilds a fixed object and drops everything it does not
+    // name, so a reason the server round-tripped correctly would still die here
+    // if it were not listed.
+    skip_reason: answeredBy === 'user_skip'
+      ? (toStringValue(value.skip_reason).trim() || null)
+      : null,
   }
 }
 
@@ -330,6 +345,7 @@ export function buildInterviewAnswerDrafts(document: InterviewDocument): Record<
       skipped: question.answer.skipped,
       selected_option_ids: [...question.answer.selected_option_ids],
       free_text: question.answer.free_text,
+      skip_reason: question.answer.skip_reason,
     },
   ]))
 }

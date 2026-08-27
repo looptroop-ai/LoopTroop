@@ -5226,6 +5226,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: '',
       answered_by: 'ai_skip',
       answered_at: '2026-03-25T18:20:00.000Z',
+      skip_reason: null,
     })
     expect(result.value.summary.final_free_form_answer).toBe('')
     expect(result.repairWarnings).toContain('Accepted empty final_free_form answer as an explicit no-additions response for AI-filled question QFF1.')
@@ -5619,6 +5620,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: 'Introduce a deterministic, risk-first planning checkpoint.',
       answered_by: 'ai_skip',
       answered_at: '2026-04-30T15:29:01Z',
+      skip_reason: null,
     })
     expect(result.value.questions[1]?.prompt).toBe('Who should consume the strategy?')
     expect(result.value.questions[1]?.answer).toEqual({

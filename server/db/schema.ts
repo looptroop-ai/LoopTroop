@@ -81,6 +81,11 @@ export const tickets = sqliteTable('tickets', {
   totalBeads: integer('total_beads'),
   percentComplete: real('percent_complete'),
   errorMessage: text('error_message'),
+  // Why the operator canceled. A ticket-row column rather than a phase artifact
+  // on purpose: `cleanupCanceledTicketData({ deleteContent: true })` deletes every
+  // phase artifact for the ticket, so the one surface this feature exists for is
+  // exactly the one that would wipe its own reason.
+  cancelReason: text('cancel_reason'),
   manualQaOverride: integer('manual_qa_override', { mode: 'boolean' }),
   lockedMainImplementer: text('locked_main_implementer'),
   lockedMainImplementerVariant: text('locked_main_implementer_variant'),

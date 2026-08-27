@@ -1,6 +1,20 @@
 import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
+
+/**
+ * Every skip reason on every surface, validated once.
+ *
+ * Empty and whitespace-only reasons are normalized to `null` at the storage
+ * boundary rather than rejected here — a person clearing the box is saying "no
+ * reason", not making a mistake.
+ */
+export const skipReasonSchema = z.string()
+  .max(SKIP_REASON_MAX_LENGTH, `Reason must be ${SKIP_REASON_MAX_LENGTH.toLocaleString('en-US')} characters or fewer`)
+
+/** Idempotency key for one user action, so a retried request writes one receipt. */
+export const skipActionIdSchema = z.string().min(1).max(120)
 
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),

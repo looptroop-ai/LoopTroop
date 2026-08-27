@@ -117,7 +117,7 @@ export function makeInterviewQuestion(
       selected_option_ids: [],
       free_text: '',
       answered_by: 'ai_skip',
-      answered_at: '',
+      answered_at: '', skip_reason: null,
     },
     ...overrides,
   }
@@ -256,7 +256,7 @@ export function buildInterviewDocument(
           selected_option_ids: [],
           free_text: 'Protect the import pipeline.',
           answered_by: 'user',
-          answered_at: TEST.timestamp,
+          answered_at: TEST.timestamp, skip_reason: null,
         },
       },
       {
@@ -272,7 +272,7 @@ export function buildInterviewDocument(
           selected_option_ids: [],
           free_text: 'Keep retries observable.',
           answered_by: 'user',
-          answered_at: TEST.timestamp,
+          answered_at: TEST.timestamp, skip_reason: null,
         },
       },
     ],

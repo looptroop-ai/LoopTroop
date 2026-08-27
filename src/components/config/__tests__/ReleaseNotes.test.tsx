@@ -47,6 +47,16 @@ describe('ReleaseNotes', () => {
     expect(container.textContent).not.toContain('<!--')
   })
 
+  it('only hides the release tooling markers and renders other comment-like text safely', () => {
+    const { container } = render(
+      <ReleaseNotes notes={'<!<!-- container:start -->--><script>unsafe</script>'} />,
+    )
+
+    expect(container.querySelector('script')).toBeNull()
+    expect(container.textContent).toContain('<script>unsafe</script>')
+    expect(container.textContent).toContain('container:start')
+  })
+
   /** Release bodies are third-party text; a `javascript:` URL must not become a link. */
   it('renders a non-http link target as plain text', () => {
     render(<ReleaseNotes notes={'See [the notes](javascript:alert(1)) here.'} />)

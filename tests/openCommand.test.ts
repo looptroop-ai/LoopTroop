@@ -274,11 +274,13 @@ describe('opening the interface', () => {
   })
 
   describe('the command that opens a URL', () => {
-    it('gives Windows start an empty title so the URL is not taken for one', () => {
-      const { command, args } = browserOpener('http://127.0.0.1:3000/#bootstrap=abc', 'win32')
+    it('hands Windows URLs to the protocol handler without a command shell', () => {
+      const url = 'http://127.0.0.1:3000/?next=a&other=b%7Cc#bootstrap=abc'
+      const { command, args } = browserOpener(url, 'win32')
 
-      expect(command).toBe('cmd')
-      expect(args).toEqual(['/c', 'start', '', 'http://127.0.0.1:3000/#bootstrap=abc'])
+      expect(command).toBe('rundll32.exe')
+      expect(args).toEqual(['url.dll,FileProtocolHandler', url])
+      expect(args).not.toContain('/c')
     })
 
     it('hands the URL straight to the opener everywhere else', () => {

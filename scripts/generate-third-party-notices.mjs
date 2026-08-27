@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { escapeMarkdownTableCell } from './output-safety.ts'
 
 const OUTPUT_PATH = 'THIRD-PARTY-NOTICES.md'
 const LICENSE_FILENAMES = /^(LICENSE|LICENCE|COPYING|NOTICE)(\.(md|txt))?$/i
@@ -185,7 +186,12 @@ function render(packages) {
   lines.push('| --- | --- | --- | --- |')
 
   for (const entry of packages) {
-    const copyright = entry.copyright ? entry.copyright.replace(/\|/g, '\\|') : '—'
+    // Escape existing backslashes before adding the Markdown escape for a
+    // pipe. Otherwise a copyright ending in `\\|` can consume the inserted
+    // escape and split this row into an extra cell.
+    const copyright = entry.copyright
+      ? escapeMarkdownTableCell(entry.copyright)
+      : '—'
     lines.push(`| \`${entry.name}\` | ${entry.version} | ${entry.license} | ${copyright} |`)
   }
 

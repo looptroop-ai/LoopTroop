@@ -16,6 +16,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Finishing a ticket without merging now asks for confirmation instead of ending the ticket on one click.
 - A cancelled ticket keeps its reason even when its artifacts are deleted with it.
 - The installation documentation now shows how downloads change over time, with source, date range, interval, metric and chart controls.
+- Browser launching, release checks and rendered third-party text now keep externally controlled values out of command shells and executable markup.
 
 ### Added
 - Every skip surface now takes an optional reason. Interview questions can be skipped individually with their own reason, or all at once with a single reason for the action. An answer marked skipped at the interview approval screen takes one, as does approving a PRD or bead plan with unresolved coverage gaps, skipping a Manual QA round, finishing a ticket without merging, and cancelling. Reasons are always optional; nothing is blocked for lack of one, and no screen nags about a skip that has none.
@@ -25,6 +26,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Skipping an interview question now records the moment it happened. It previously recorded nothing, which made a deliberate human skip indistinguishable from an unanswered placeholder.
 - Undoing a skip is recorded too. Answering a question you had skipped, or clearing an answer during the interview, both update the trail instead of leaving the old decision standing as though it were still current.
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
+
+### Security
+- Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions; ticket links receive URI encoding after protocol validation; release-note markers and third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
 - PROM10a, which invents answers for skipped interview questions, now receives the reasons as a separate read-only section of its prompt. They are not part of the interview artifact it is asked to reproduce, so there is no field for it to write one back into, and reasons are stripped from the artifact everywhere else — PRD drafting, PRD voting, interview coverage and every downstream prompt see the interview without them. Reasons are shortened to 500 characters where a prompt reads them, because forty skipped questions at the full storage limit is a great deal of prompt spent on notes.
@@ -42,6 +46,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a failed interview batch leaving behind entries for skips it had rolled back. Retrying with different answers no longer contradicts a record of something that never happened.
 - Fixed the Skips panel overlapping the AI details panel when both were open.
 - Fixed the Skips panel showing state from up to thirty seconds earlier when it was already open as a skip was recorded.
+- Removed Vite's native-config compatibility warnings from build and test runs by using explicit TypeScript extensions for local config imports.
 
 ## 0.5.9 (2026-08-26)
 

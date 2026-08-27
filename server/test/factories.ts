@@ -28,7 +28,7 @@ export const TEST = {
   projectName: 'TestProject',
   shortname: 'TEST',
   shortnameB: 'TSTB',
-  projectPath: '/tmp/looptroop-test-project',
+  projectPath: 'test-fixtures/looptroop-test-project',
   model: 'test-vendor/test-model',
   implementer: 'test-vendor/test-implementer',
   councilMembers: ['test-vendor/council-a', 'test-vendor/council-b'],

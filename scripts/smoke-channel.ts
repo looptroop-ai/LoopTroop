@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import type { Channel } from './package-manifests.ts'
 import { renderDescriptor } from './package-manifests.ts'
 import { createLocalTap, removeLocalTap } from './brew-local-tap.ts'
+import { doctorReportsInstallChannel } from './output-safety.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -193,7 +194,7 @@ async function assertInstalled(commandPath: string): Promise<void> {
   // plenty; what is being asserted is the line it prints about this install.
   const doctor = await invoke(commandPath, ['doctor'], { env, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
-  if (!new RegExp(`install\\b.*\\b${channel}\\b`).test(report)) {
+  if (!doctorReportsInstallChannel(report, channel)) {
     fail(
       `\`doctor\` does not report this as a ${channel} install.`,
       'That means the upgrade command shown to the user is the wrong one.',

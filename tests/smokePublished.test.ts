@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { planMatrix, CHANNELS, binaryPrefix } from '../scripts/smoke-published.mjs'
+import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
 
 /**
  * The matrix is asserted by name rather than by count.
@@ -35,6 +35,23 @@ const WEEKLY_ONLY_LEGS = [
 ]
 
 describe('planMatrix', () => {
+  it('allows SemVer release names but rejects shell syntax', () => {
+    expect(validatePublishedVersion('9.9.9')).toBe('9.9.9')
+    expect(validatePublishedVersion('9.9.9-rc.1')).toBe('9.9.9-rc.1')
+
+    for (const value of [
+      '9.9.9; touch owned',
+      '9.9.9 && whoami',
+      '9.9.9|whoami',
+      '9.9.9%PATH%',
+      '9.9.9$(whoami)',
+      '../9.9.9',
+      '9.9.9-rc.01',
+    ]) {
+      expect(() => validatePublishedVersion(value), value).toThrow('invalid release version')
+    }
+  })
+
   it('emits exactly the release-tier legs, by name', () => {
     const names = planMatrix({ tier: 'release' }).map((leg) => leg.name)
     expect(names.sort()).toEqual([...RELEASE_LEGS].sort())

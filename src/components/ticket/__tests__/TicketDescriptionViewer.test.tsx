@@ -66,4 +66,17 @@ describe('TicketDescriptionViewer', () => {
     expect(screen.getByText('unsafe markdown link').tagName).toBe('SPAN')
     expect(screen.getByRole('link', { name: 'safe link' })).toHaveAttribute('href', 'https://example.com')
   })
+
+  it('encodes validated link targets before putting DOM text in an href', () => {
+    render(
+      <TicketDescriptionViewer
+        description={'[safe punctuation](https://example.com/path?q="value")'}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: 'safe punctuation' })).toHaveAttribute(
+      'href',
+      'https://example.com/path?q=%22value%22',
+    )
+  })
 })

@@ -323,8 +323,6 @@ LoopTroop keeps you in control of critical state transitions. You actively revie
 
 For tickets with Manual QA enabled, LoopTroop prepares a checklist while you manually control the app and accept/reject/skip/create new tickets from the items.
 
-Every gate can also be skipped, and every skip takes an optional reason: a single interview question, the rest of the interview, an approval with known coverage gaps, a Manual QA round, finishing without merging, cancelling. The reason is kept with the ticket and listed in the Full Log, so a decision made weeks ago still explains itself. Nothing is blocked for lack of one.
-
 Read more: [Ticket Flow](https://www.looptroop.ovh/docs/ticket-flow)
 
 

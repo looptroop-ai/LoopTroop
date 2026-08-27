@@ -43,7 +43,7 @@ export function SkipReasonField({
       <textarea
         id={fieldId}
         value={value}
-        onChange={(event) => onChange(event.target.value.slice(0, SKIP_REASON_MAX_LENGTH))}
+        onChange={(event) => { onChange(event.target.value.slice(0, SKIP_REASON_MAX_LENGTH)) }}
         disabled={disabled}
         autoFocus={autoFocus}
         placeholder={placeholder}

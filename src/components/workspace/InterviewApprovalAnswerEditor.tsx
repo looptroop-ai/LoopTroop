@@ -110,12 +110,12 @@ export function InterviewApprovalAnswerEditor({
                           <SkipReasonField
                             label="Why skip this"
                             value={draft.skip_reason ?? ''}
-                            onChange={(value) => onAnswerChange(question.id, {
+                            onChange={(value) => { onAnswerChange(question.id, {
                               skipped: true,
                               selected_option_ids: [],
                               free_text: '',
                               skip_reason: value,
-                            })}
+                            }) }}
                             disabled={disabled}
                             placeholder="Optional. The model answering this question gets to read it."
                             help="Saved with the interview, and given to the model that fills this answer in."

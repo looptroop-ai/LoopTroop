@@ -768,7 +768,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
                     <SkipReasonField
                       label="Waiver reason"
                       value={result.waiverReason ?? ''}
-                      onChange={(value) => updateResult(item.id, { waiverReason: value })}
+                      onChange={(value) => { updateResult(item.id, { waiverReason: value }) }}
                       disabled={!editable}
                     />
                   )}

@@ -183,7 +183,7 @@ export function AnswerEditor({
                     <SkipReasonField
                       label="Why skip this"
                       value={batchSkipReasons[question.id] ?? ''}
-                      onChange={(value) => onSkipReasonChange(question.id, value)}
+                      onChange={(value) => { onSkipReasonChange(question.id, value) }}
                       disabled={isBusy}
                       placeholder="Optional. The model answering this question gets to read it."
                       help="Saved with the interview, and given to the model that fills this answer in."

@@ -218,7 +218,7 @@ describe('FullLogView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
 
     expect(await screen.findByText('$0.02')).toBeInTheDocument()
-    expect(screen.getByLabelText('AI details').parentElement).toHaveClass('sticky', 'top-0')
+    expect(screen.getByLabelText('AI details').closest('.sticky')).toHaveClass('sticky', 'top-0')
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/ai-details?scope=lifecycle'),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -293,8 +293,10 @@ describe('FullLogView', () => {
 
     expect(await screen.findByText('Answered in the ticket description.')).toBeInTheDocument()
     expect(screen.getByText(/1 action · 2 items skipped · 1 with a reason · 1 without/)).toBeInTheDocument()
-    // The bulk summary row is the count, not a line of its own.
-    expect(screen.queryByText('Shipping before the demo.')).not.toBeInTheDocument()
+    // The bulk reason is stored on the summary row and nowhere else, so the
+    // panel has to render that row or the reason is invisible everywhere.
+    expect(screen.getByText('Shipping before the demo.')).toBeInTheDocument()
+    expect(screen.getByText('2 items')).toBeInTheDocument()
     expect(screen.getByText('No reason given')).toBeInTheDocument()
 
     fetchSpy.mockRestore()

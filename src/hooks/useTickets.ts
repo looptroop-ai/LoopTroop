@@ -148,6 +148,8 @@ export interface Ticket {
   totalBeads: number | null
   percentComplete: number | null
   errorMessage: string | null
+  /** Why the operator canceled. Survives deleting the ticket's artifacts. */
+  cancelReason?: string | null
   errorSeenSignature?: string | null
   needsInputSeenSignature?: string | null
   implementationTiming: {
@@ -507,6 +509,7 @@ export function useUpdateTicket() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.id] })
     },
   })
 }
@@ -529,6 +532,7 @@ export function useTicketAction() {
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.id] })
     },
   })
 }
@@ -551,6 +555,7 @@ export function useCancelTicket() {
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.id] })
     },
   })
 }
@@ -701,6 +706,7 @@ export function useSubmitBatch() {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })
       queryClient.invalidateQueries({ queryKey: ['interview', variables.ticketId] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.ticketId] })
     },
   })
 }
@@ -712,6 +718,7 @@ export function useEditInterviewAnswer() {
       editInterviewAnswer(ticketId, questionId, answer),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['interview', variables.ticketId] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.ticketId] })
     },
   })
 }
@@ -739,6 +746,7 @@ export function useSkipInterview() {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })
       queryClient.invalidateQueries({ queryKey: ['interview', variables.ticketId] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', variables.ticketId] })
     },
   })
 }

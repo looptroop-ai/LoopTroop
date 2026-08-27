@@ -394,6 +394,7 @@ export function useBatchSubmit(ticketId: string) {
       setSseBatch(null)
     } catch (err) {
       console.error('Failed to submit interview batch:', err)
+      throw err
     }
   }, [submitBatchMutation, batchSelectedOptions, batchSkipReasons, skippedQuestions, ticketId])
 
@@ -453,7 +454,11 @@ export function useBatchSubmit(ticketId: string) {
         .catch(() => setAutosaveState('error'))
       setSseBatch(null)
     } catch (err) {
+      // Rethrown so the dialog can stay open with the reason still in it. A
+      // swallowed failure closed the dialog, cleared the reason, and left the
+      // ticket exactly where it was.
       console.error('Failed to skip remaining interview questions:', err)
+      throw err
     }
   }, [skipInterviewMutation, batchSelectedOptions, batchSkipReasons, skippedQuestions, saveUiState, ticketId])
 

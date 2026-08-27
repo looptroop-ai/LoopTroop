@@ -44,23 +44,29 @@ function CountsLine({ counts }: { counts: SkipEventCounts }) {
   )
 }
 
-function SkipLine({ event }: { event: SkipEvent }) {
+function SkipLine({ event, itemCount }: { event: SkipEvent; itemCount?: number }) {
   const label = describeSkipSurface(event.surface)
   return (
     <div
       className={cn(
         'flex items-baseline gap-2 whitespace-nowrap',
-        event.superseded && 'opacity-50',
+        (event.superseded || event.resolves) && 'opacity-50',
+        event.isActionSummary && 'font-medium',
       )}
       style={{ lineHeight: `${LINE_HEIGHT_REM}rem` }}
       title={event.reason ?? undefined}
     >
       <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      {event.isActionSummary && itemCount !== undefined ? (
+        <span className="shrink-0 font-mono text-[11px] text-foreground">{itemCount} item{itemCount === 1 ? '' : 's'}</span>
+      ) : null}
       {event.itemId ? <span className="shrink-0 font-mono text-[11px] text-foreground">{event.itemId}</span> : null}
       <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-        {event.reason ?? <span className="italic">No reason given</span>}
+        {event.resolves
+          ? <span className="italic">Answered after all</span>
+          : event.reason ?? <span className="italic">No reason given</span>}
       </span>
-      {event.superseded ? (
+      {event.superseded && !event.resolves ? (
         <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">superseded</span>
       ) : null}
     </div>
@@ -98,7 +104,16 @@ export function SkipSummary({ skips, isLoading, isError, isFetching, onRetry }: 
   }
 
   // Newest first: the last decision is the one most likely to be under review.
-  const events = [...skips.events].reverse().filter((event) => !event.isActionSummary)
+  // The action-summary row is kept, not filtered out — it carries the bulk
+  // reason, which is stored nowhere else, and it is the only signal that forty
+  // adjacent lines were one decision rather than forty.
+  const events = [...skips.events].reverse()
+  const itemsByAction = new Map<string, number>()
+  for (const event of skips.events) {
+    if (event.isActionSummary || event.resolves) continue
+    const key = event.parentActionId ?? event.actionId
+    itemsByAction.set(key, (itemsByAction.get(key) ?? 0) + 1)
+  }
 
   return (
     <Shell>
@@ -117,7 +132,11 @@ export function SkipSummary({ skips, isLoading, isError, isFetching, onRetry }: 
           style={{ maxHeight: `${MAX_VISIBLE_LINES * LINE_HEIGHT_REM}rem` }}
         >
           {events.map((event) => (
-            <SkipLine key={`${event.receiptId}:${event.itemId ?? ''}`} event={event} />
+            <SkipLine
+              key={`${event.receiptId}:${event.itemId ?? ''}`}
+              event={event}
+              itemCount={event.isActionSummary ? itemsByAction.get(event.actionId) : undefined}
+            />
           ))}
         </div>
       )}

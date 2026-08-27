@@ -47,6 +47,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isSkipConfirmOpen, setIsSkipConfirmOpen] = useState(false)
   const [skipAllReason, setSkipAllReason] = useState('')
+  const [skipAllError, setSkipAllError] = useState<string | null>(null)
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const {
@@ -160,7 +161,15 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   }, [handleSubmitBatch, currentBatch, currentBatchKey, batchAnswers])
 
   const onConfirmSkipAll = useCallback(async () => {
-    await handleConfirmSkipAll(currentBatch, currentBatchKey, batchAnswers, skipAllReason)
+    setSkipAllError(null)
+    try {
+      await handleConfirmSkipAll(currentBatch, currentBatchKey, batchAnswers, skipAllReason)
+    } catch (err) {
+      // Keep the dialog and the typed reason. Closing on failure loses what the
+      // user wrote and hides that nothing happened.
+      setSkipAllError(err instanceof Error ? err.message : 'Failed to skip the remaining questions')
+      return
+    }
     setIsSkipConfirmOpen(false)
     setSkipAllReason('')
   }, [handleConfirmSkipAll, currentBatch, currentBatchKey, batchAnswers, skipAllReason])
@@ -250,7 +259,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">
-      <Dialog open={isSkipConfirmOpen} onOpenChange={setIsSkipConfirmOpen}>
+      <Dialog open={isSkipConfirmOpen} onOpenChange={(open) => { setIsSkipConfirmOpen(open); if (!open) setSkipAllError(null) }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Skip Remaining Interview Questions</DialogTitle>
@@ -269,6 +278,9 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             placeholder="Optional. Applies to every question you have not already given a reason for."
             help="Questions you gave your own reason for keep it."
           />
+          {skipAllError && (
+            <p role="alert" className="text-xs text-destructive">{skipAllError}</p>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setIsSkipConfirmOpen(false)} disabled={isBusy}>
               Keep Interview

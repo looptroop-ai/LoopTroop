@@ -169,7 +169,7 @@ export function AnswerEditor({
                 {isSkipped ? (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
-                      <p className="text-[11px] italic text-muted-foreground">This question will be skipped — the AI will decide the best approach.</p>
+                      <p className="text-[11px] italic text-muted-foreground">This question will be skipped. A model answers it later, reading whatever you write below.</p>
                       <Button
                         variant="ghost"
                         size="sm"

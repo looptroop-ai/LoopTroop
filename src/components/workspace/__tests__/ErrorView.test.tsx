@@ -53,7 +53,7 @@ describe('ErrorView', () => {
   beforeEach(() => {
     logSectionMock.mockClear()
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false })
-    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })
   })
 
   it.each([
@@ -139,7 +139,7 @@ describe('ErrorView', () => {
 
   it('requires confirmation before canceling a blocked ticket', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
     const ticket = makeLiveCodingErrorTicket()
 
     renderWithProviders(<ErrorView ticket={ticket} />)

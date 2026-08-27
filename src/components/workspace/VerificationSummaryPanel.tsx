@@ -15,7 +15,7 @@ import { SkipReasonField } from './SkipReasonField'
 interface VerificationSummaryPanelProps {
   ticket: Ticket
   onMerge: () => void
-  onCloseUnmerged: (reason?: string) => void
+  onCloseUnmerged: (reason?: string) => Promise<void> | void
   isPending: boolean
 }
 
@@ -48,6 +48,21 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
   const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState(false)
   const [closeReason, setCloseReason] = useState('')
+  const [closeError, setCloseError] = useState<string | null>(null)
+
+  // Only a successful close clears the dialog. Ending a ticket is not something
+  // to do optimistically, and a swallowed failure looked identical to success.
+  const confirmClose = async () => {
+    setCloseError(null)
+    try {
+      await onCloseUnmerged(closeReason.trim() || undefined)
+    } catch (err) {
+      setCloseError(err instanceof Error ? err.message : 'Failed to finish without merging')
+      return
+    }
+    setIsCloseConfirmOpen(false)
+    setCloseReason('')
+  }
   const targetPhases = useMemo(() => getArtifactTargetPhases('WAITING_PR_REVIEW'), [])
 
   const integrationReport = useMemo(() => {
@@ -82,7 +97,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
 
   return (
     <div className="border-b border-border shrink-0" data-testid="verification-summary-panel">
-      <Dialog open={isCloseConfirmOpen} onOpenChange={setIsCloseConfirmOpen}>
+      <Dialog open={isCloseConfirmOpen} onOpenChange={(open) => { setIsCloseConfirmOpen(open); if (!open) setCloseError(null) }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Finish Without Merging?</DialogTitle>
@@ -98,6 +113,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
             disabled={isPending}
             help="Saved with the merge report. It is the only record of why this branch stopped."
           />
+          {closeError && <p role="alert" className="text-xs text-destructive">{closeError}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setIsCloseConfirmOpen(false)} disabled={isPending}>
               Keep Reviewing
@@ -106,11 +122,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
               variant="destructive"
               size="sm"
               disabled={isPending}
-              onClick={() => {
-                onCloseUnmerged(closeReason.trim() || undefined)
-                setIsCloseConfirmOpen(false)
-                setCloseReason('')
-              }}
+              onClick={() => { void confirmClose() }}
             >
               Finish Without Merge
             </Button>
@@ -129,7 +141,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setIsCloseConfirmOpen(true)}
+              onClick={() => { setIsCloseConfirmOpen(true) }}
               disabled={isPending}
               className="text-xs"
             >

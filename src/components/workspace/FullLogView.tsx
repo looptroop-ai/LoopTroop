@@ -790,28 +790,34 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
           <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
-            {isSkipsOpen ? (
-              <div id={skipsPanelId} className="sticky top-0 z-20 bg-muted">
-                <SkipSummary
-                  skips={skips.data}
-                  isLoading={skips.isLoading}
-                  isError={skips.isError}
-                  isFetching={skips.isFetching}
-                  onRetry={() => void skips.refetch()}
-                />
-              </div>
-            ) : null}
-            {showAiDetails && isAiDetailsOpen ? (
-              <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
-                <AiDetailsSummary
-                  details={aiDetails.data}
-                  isLoading={aiDetails.isLoading}
-                  isError={aiDetails.isError}
-                  isFetching={aiDetails.isFetching}
-                  modelId={aiDetailsModelId}
-                  scope="lifecycle"
-                  onRetry={() => void aiDetails.refetch()}
-                />
+            {/* One sticky container for both panels: two siblings each claiming
+                `top-0` overlapped whenever the user opened them together. */}
+            {isSkipsOpen || (showAiDetails && isAiDetailsOpen) ? (
+              <div className="sticky top-0 z-20 bg-muted">
+                {isSkipsOpen ? (
+                  <div id={skipsPanelId}>
+                    <SkipSummary
+                      skips={skips.data}
+                      isLoading={skips.isLoading}
+                      isError={skips.isError}
+                      isFetching={skips.isFetching}
+                      onRetry={() => void skips.refetch()}
+                    />
+                  </div>
+                ) : null}
+                {showAiDetails && isAiDetailsOpen ? (
+                  <div id={aiDetailsPanelId}>
+                    <AiDetailsSummary
+                      details={aiDetails.data}
+                      isLoading={aiDetails.isLoading}
+                      isError={aiDetails.isError}
+                      isFetching={aiDetails.isFetching}
+                      modelId={aiDetailsModelId}
+                      scope="lifecycle"
+                      onRetry={() => void aiDetails.refetch()}
+                    />
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {historicalLogs.isFetchingOlder || isNavigatingToTop ? <LoadingRemainingLogsLine /> : null}

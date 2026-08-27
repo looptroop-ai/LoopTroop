@@ -348,6 +348,7 @@ export function PrdApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticket.id] })
       clearTicketArtifactsCache(ticket.id)
       setIsEditMode(false)
       setEditTab('structured')

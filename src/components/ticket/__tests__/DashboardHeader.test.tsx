@@ -94,7 +94,7 @@ describe('DashboardHeader', () => {
     })
     mockUseProfile.mockReturnValue({ data: null })
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false })
-    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })
     mockUseUpdateTicket.mockReturnValue({ mutateAsync: vi.fn() })
   })
 
@@ -392,7 +392,7 @@ describe('DashboardHeader', () => {
 
   it('requires confirmation before canceling a DRAFT ticket', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
     const ticket = makeTicket({ status: 'DRAFT', availableActions: ['cancel'] })
 
@@ -435,7 +435,7 @@ describe('DashboardHeader', () => {
 
   it('calls cancelTicket with deleteContent=false and deleteLog=false by default', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
     const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
 
@@ -456,7 +456,7 @@ describe('DashboardHeader', () => {
 
   it('passes deleteContent=true when the checkbox is checked before confirming', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
     const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
 
@@ -478,7 +478,7 @@ describe('DashboardHeader', () => {
 
   it('passes deleteLog=true when only the log checkbox is checked', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
     const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
 
@@ -500,7 +500,7 @@ describe('DashboardHeader', () => {
 
   it('passes deleteTicket=true and checks disabled state when delete ticket checkbox is checked', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
 
     const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
 

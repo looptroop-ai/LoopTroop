@@ -151,7 +151,7 @@ export function ActiveWorkspace({ ticket, selectedPhase, selectedErrorOccurrence
         content = <CodingView ticket={ticket} />
         break
       case 'canceled':
-        content = <CanceledView />
+        content = <CanceledView ticket={ticket} />
         break
       case 'council':
       default:

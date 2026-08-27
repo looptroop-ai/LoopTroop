@@ -1160,7 +1160,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   }, [detailTab, scheduleScrollToBottom]) // wait, we also need to trigger on new logs
 
   const logCtx = useLogs()
-  const { mutate: performAction, isPending } = useTicketAction()
+  const { mutate: performAction, mutateAsync: performActionAsync, isPending } = useTicketAction()
   const { data: fetchedBeads = [] } = useQuery({
     queryKey: ['ticket-beads', ticket.id],
     queryFn: () => fetchTicketBeads(ticket.id),
@@ -1376,11 +1376,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         <VerificationSummaryPanel
           ticket={ticket}
           onMerge={() => performAction({ id: ticket.id, action: 'merge' })}
-          onCloseUnmerged={(reason) => performAction({
+          onCloseUnmerged={(reason) => performActionAsync({
             id: ticket.id,
             action: 'close_unmerged',
             payload: { kind: 'close_reason', reason },
-          })}
+          }).then(() => undefined)}
           isPending={isPending}
         />
       )}

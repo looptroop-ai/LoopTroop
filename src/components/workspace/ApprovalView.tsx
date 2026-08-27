@@ -365,6 +365,7 @@ function BeadsApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
+      queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticket.id] })
       clearTicketArtifactsCache(ticket.id)
       setIsEditMode(false)
       setEditTab('structured')

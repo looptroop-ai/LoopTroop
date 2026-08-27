@@ -1,6 +1,18 @@
 import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
+
+/**
+ * Every skip reason on every surface, validated once.
+ *
+ * Empty and whitespace-only reasons are normalized to `null` at the storage
+ * boundary rather than rejected here — a person clearing the box is saying "no
+ * reason", not making a mistake.
+ */
+export const skipReasonSchema = z.string()
+  .max(SKIP_REASON_MAX_LENGTH, `Reason must be ${SKIP_REASON_MAX_LENGTH.toLocaleString('en-US')} characters or fewer`)
+
 
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
@@ -21,7 +33,18 @@ export const cancelTicketSchema = z.object({
   deleteContent: z.boolean().default(false),
   deleteLog: z.boolean().default(false),
   deleteTicket: z.boolean().default(false),
-})
+  /**
+   * Why the ticket was canceled. Stored on the ticket row, not as a phase
+   * artifact: `deleteContent` removes every phase artifact for the ticket, so a
+   * receipt would be erased by the same action that wrote it.
+   */
+  reason: skipReasonSchema.optional(),
+}).strict()
+
+export const closeUnmergedSchema = z.object({
+  /** Why the work is being finished without merging. Lands on `merge_report`. */
+  reason: skipReasonSchema.optional(),
+}).strict()
 
 export const retryTicketSchema = z.object({
   note: z.string()
@@ -41,15 +64,32 @@ export const upsertUiStateSchema = z.object({
   actionId: z.string().min(1).max(120),
 })
 
-export const interviewAnswerPayloadSchema = z.object({
+const interviewAnswerFieldsSchema = {
   answers: z.record(z.string(), z.string()).default({}),
   selectedOptions: z.record(z.string(), z.array(z.string())).optional().default({}),
-})
+  /** Keyed by question id. Validated against the questions the batch actually skips. */
+  skipReasons: z.record(z.string().min(1), skipReasonSchema).optional().default({}),
+}
+
+/**
+ * `/answer-batch` and `/skip` used to share one schema, which is exactly how a
+ * field added for one route gets silently ignored on the other. They are
+ * separate now, and both are strict.
+ */
+export const interviewBatchAnswerPayloadSchema = z.object(interviewAnswerFieldsSchema).strict()
+
+export const interviewSkipAllPayloadSchema = z.object({
+  ...interviewAnswerFieldsSchema,
+  /** One reason for the whole action. Never overwrites a per-question reason. */
+  bulkSkipReason: skipReasonSchema.optional(),
+}).strict()
 
 export const editAnswerSchema = z.object({
   questionId: z.string().min(1),
   answer: z.string(),
-})
+  /** Only meaningful when the edit clears the answer, which is a skip. */
+  skipReason: skipReasonSchema.nullable().optional(),
+}).strict()
 
 export const interviewApprovalAnswerSchema = z.object({
   questions: z.array(z.object({
@@ -58,6 +98,12 @@ export const interviewApprovalAnswerSchema = z.object({
       skipped: z.boolean(),
       selected_option_ids: z.array(z.string()).default([]),
       free_text: z.string(),
+      /**
+       * Omitted means "leave whatever is stored alone"; explicit `null` clears
+       * it. An editor that sends nothing must not silently wipe a reason, and
+       * one that answers the question must be able to.
+       */
+      skip_reason: skipReasonSchema.nullable().optional(),
     }),
   })).min(1),
 })
@@ -214,6 +260,12 @@ export const structuredExecutionSetupPlanSaveSchema = z.object({
 
 export const approvalRequestSchema = z.object({
   expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  /**
+   * Why the operator approved despite known coverage gaps.
+   *
+   * Optional, and only offered by the UI when there are gaps to acknowledge.
+   */
+  gapAcknowledgementReason: skipReasonSchema.optional(),
 }).strict()
 
 export const regenerateExecutionSetupPlanSchema = z.object({

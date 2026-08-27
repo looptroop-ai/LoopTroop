@@ -101,7 +101,7 @@ const interviewContent = makeInterviewYaml({
       selected_option_ids: [],
       free_text: 'Require strict output validation and exact retry handling.',
       answered_by: 'user',
-      answered_at: TEST.timestamp,
+      answered_at: TEST.timestamp, skip_reason: null,
     },
   })],
   summary: {

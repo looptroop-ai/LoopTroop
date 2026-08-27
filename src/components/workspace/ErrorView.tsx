@@ -331,7 +331,7 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
     setRetryNoteError(null)
     setRetryNoteSubmitting(true)
     performAction(
-      { id: ticket.id, action: 'retry', note: retryNote },
+      { id: ticket.id, action: 'retry', payload: { kind: 'retry_note', note: retryNote } },
       {
         onSuccess: () => {
           setRetryNoteSubmitting(false)

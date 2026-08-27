@@ -53,7 +53,7 @@ describe('ErrorView', () => {
   beforeEach(() => {
     logSectionMock.mockClear()
     mockUseTicketAction.mockReturnValue({ mutate: vi.fn(), isPending: false })
-    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false })
   })
 
   it.each([
@@ -139,7 +139,7 @@ describe('ErrorView', () => {
 
   it('requires confirmation before canceling a blocked ticket', () => {
     const cancelMutate = vi.fn()
-    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, isPending: false })
+    mockUseCancelTicket.mockReturnValue({ mutate: cancelMutate, mutateAsync: cancelMutate, isPending: false })
     const ticket = makeLiveCodingErrorTicket()
 
     renderWithProviders(<ErrorView ticket={ticket} />)
@@ -151,7 +151,7 @@ describe('ErrorView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Ticket' }))
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
-      options: { deleteContent: false, deleteLog: false, deleteTicket: false },
+      options: { deleteContent: false, deleteLog: false, deleteTicket: false, reason: '' },
     })
   })
 
@@ -434,7 +434,7 @@ describe('ErrorView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add note and retry' }))
 
     expect(mutate).toHaveBeenCalledWith(
-      { id: ticket.id, action: 'retry', note: exactNote },
+      { id: ticket.id, action: 'retry', payload: { kind: 'retry_note', note: exactNote } },
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     )
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

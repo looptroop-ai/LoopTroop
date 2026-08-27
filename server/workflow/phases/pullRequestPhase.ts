@@ -131,6 +131,8 @@ export interface MergeCompletionReport {
   localBaseHead: string | null
   remoteBaseHead: string | null
   remoteBranchDeleteWarning: string | null
+  /** Why the operator finished without merging. Null for a merge, and for a close with no reason given. */
+  closeReason: string | null
   message: string
 }
 
@@ -1198,6 +1200,8 @@ export function completeMergedPullRequest(input: {
       localBaseHead: null,
       remoteBaseHead: remoteVerification.remoteBaseHead,
       remoteBranchDeleteWarning: remoteBranchDelete.warning,
+      // A merge is not a skip, so there is nothing here to explain.
+      closeReason: null,
       message: `Pull request merged into origin/${input.baseBranch}. Local checkout was not modified.`,
     }
 
@@ -1247,6 +1251,12 @@ export function completeCloseUnmerged(input: {
   headBranch: string
   candidateCommitSha: string | null
   prReport: PullRequestReport | null
+  /**
+   * Passed in rather than assigned to the returned report by the caller: the
+   * artifact is persisted inside this function, so mutating the return value
+   * would leave the stored record without the reason.
+   */
+  reason?: string | null
 }): MergeCompletionReport {
   const report: MergeCompletionReport = {
     status: 'passed',
@@ -1262,6 +1272,7 @@ export function completeCloseUnmerged(input: {
     localBaseHead: null,
     remoteBaseHead: null,
     remoteBranchDeleteWarning: null,
+    closeReason: input.reason?.trim() || null,
     message: 'Ticket finished without merging the pull request. The pull request and remote branch were left untouched.',
   }
 

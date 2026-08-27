@@ -56,10 +56,13 @@ import {
   emitRoutePhaseLog,
   getProfileDefaults,
   getTicketParam,
+  readJsonBody,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
-import { cancelTicketSchema, retryTicketSchema } from './schemas'
+import { cancelTicketSchema, closeUnmergedSchema, retryTicketSchema } from './schemas'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
+import { normalizeSkipReason } from '@shared/skipReceipt'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -343,16 +346,22 @@ export async function handleCancelTicket(c: Context) {
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
 
-  let deleteContent = false
-  let deleteLog = false
-  let deleteTicket = false
-  const body = await c.req.json().catch(() => ({}))
-  const cancelOptions = cancelTicketSchema.safeParse(body)
-  if (cancelOptions.success) {
-    deleteContent = cancelOptions.data.deleteContent
-    deleteLog = cancelOptions.data.deleteLog
-    deleteTicket = cancelOptions.data.deleteTicket
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Cancel request body must be valid JSON' }, 400)
   }
+  const cancelOptions = cancelTicketSchema.safeParse(rawBody.body)
+  // Rejecting rather than falling back to defaults. The old behaviour cancelled
+  // the ticket anyway, which meant an oversized or malformed reason was dropped
+  // while the destructive part of the request went ahead regardless.
+  if (!cancelOptions.success) {
+    return c.json({ error: 'Invalid cancel payload', details: cancelOptions.error.flatten() }, 400)
+  }
+  const { deleteContent, deleteLog, deleteTicket } = cancelOptions.data
+  const cancelReason = normalizeSkipReason(cancelOptions.data.reason)
+  // Snapshotted before anything fires: `CANCEL` moves the ticket to CANCELED, so
+  // reading the phase afterwards would attribute the skip to the wrong status.
+  const statusBeforeCancel = ticket.status
 
   try {
     if (isDisplayOnlyMockTicket(ticket)) {
@@ -375,6 +384,27 @@ export async function handleCancelTicket(c: Context) {
         clearContextCache(ticketId)
         emitRoutePhaseLog(ticketId, ticket.status, 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
         deleteStoredTicket(ticketId)
+      }
+    }
+    if (!deleteTicket && cancelReason) {
+      // The column, not a phase artifact: `deleteContent` wipes every phase
+      // artifact for the ticket, which is exactly the option most likely to be
+      // chosen alongside a cancel. `deleteTicket` leaves nothing at all, and
+      // there is no point pretending otherwise.
+      patchTicket(ticketId, { cancelReason })
+    }
+    if (!deleteTicket) {
+      const receipts = writeSkipReceipts({
+        ticketId,
+        surface: 'cancel_ticket',
+        itemType: 'ticket',
+        phase: statusBeforeCancel,
+        ticketStatusBefore: statusBeforeCancel,
+        actionId: deriveSkipActionId('cancel_ticket', [ticketId, statusBeforeCancel, cancelReason]),
+        items: [{ itemId: null, reason: cancelReason }],
+      })
+      for (const line of formatSkipReceiptLogLines(receipts)) {
+        emitRoutePhaseLog(ticketId, statusBeforeCancel, 'info', line)
       }
     }
     if (deleteTicket) {
@@ -467,7 +497,7 @@ export function handleMergeTicket(c: Context) {
   return respondWithState(c, ticketId, 'Merge complete')
 }
 
-export function handleCloseUnmergedTicket(c: Context) {
+export async function handleCloseUnmergedTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -477,6 +507,17 @@ export function handleCloseUnmergedTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for pull request review' }, 409)
   }
 
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Close request body must be valid JSON' }, 400)
+  }
+  const parsed = closeUnmergedSchema.safeParse(rawBody.body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid close payload', details: parsed.error.flatten() }, 400)
+  }
+  const closeReason = normalizeSkipReason(parsed.data.reason)
+  const statusBeforeClose = ticket.status
+
   try {
     const report = completeCloseUnmerged({
       ticketId,
@@ -484,6 +525,7 @@ export function handleCloseUnmergedTicket(c: Context) {
       headBranch: ticket.branchName?.trim() || ticket.externalId,
       candidateCommitSha: ticket.runtime.candidateCommitSha,
       prReport: readPullRequestReport(ticketId),
+      reason: closeReason,
     })
 
     ensureActorForTicket(ticketId)
@@ -492,6 +534,18 @@ export function handleCloseUnmergedTicket(c: Context) {
       prNumber: report.prNumber,
       prUrl: report.prUrl,
     })
+    const closeReceipts = writeSkipReceipts({
+      ticketId,
+      surface: 'close_unmerged',
+      itemType: 'ticket',
+      phase: 'WAITING_PR_REVIEW',
+      ticketStatusBefore: statusBeforeClose,
+      actionId: deriveSkipActionId('close_unmerged', [ticketId, closeReason]),
+      items: [{ itemId: null, reason: closeReason }],
+    })
+    for (const line of formatSkipReceiptLogLines(closeReceipts)) {
+      emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'info', line)
+    }
     sendTicketEvent(ticketId, { type: 'CLOSE_UNMERGED_COMPLETE' })
   } catch (err) {
     console.error(`[tickets] Failed to close ticket ${ticketId} without merge:`, err)

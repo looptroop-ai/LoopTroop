@@ -2,8 +2,14 @@ import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Ban } from 'lucide-react'
+import type { Ticket } from '@/hooks/useTickets'
 
-export function CanceledView() {
+export function CanceledView({ ticket }: { ticket?: Ticket }) {
+  const reason = ticket?.cancelReason?.trim()
+  // The artifacts and logs are optional casualties of the cancel dialog, so the
+  // copy cannot promise they are all still there.
+  const retained = ticket?.runtime?.artifactRoot ? 'Generated logs and artifacts are shown below when they were kept.' : ''
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="p-4 shrink-0">
@@ -21,8 +27,14 @@ export function CanceledView() {
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              This ticket execution was canceled. No further AI operations will occur, but all generated logs and artifacts remain accessible below.
+              This ticket execution was canceled. No further AI operations will occur. {retained}
             </p>
+            {reason ? (
+              <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Why it was canceled</div>
+                <p className="mt-1 whitespace-pre-wrap text-xs text-foreground/90">{reason}</p>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       </div>

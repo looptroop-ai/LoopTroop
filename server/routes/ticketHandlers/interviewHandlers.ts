@@ -21,7 +21,9 @@ import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
   buildInterviewQuestionViews,
   INTERVIEW_SESSION_ARTIFACT,
+  isBatchAnswerSkipped,
   parseInterviewSessionSnapshot,
+  resolveSkippedQuestionIdsForSkipAll,
   serializeInterviewSessionSnapshot,
   updateInterviewAnswer,
 } from '../../phases/interview/sessionState'
@@ -38,19 +40,106 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
 import {
+  deriveSkipActionId,
+  formatSkipReceiptLogLines,
+  writeSkipReceipts,
+  type SkipReceiptItemInput,
+} from '../../workflow/skipReceipts'
+import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
   getTicketParam,
   preparePlanningRestart,
+  readJsonBody,
   rejectDisplayOnlyMockTicket,
   respondWithState,
 } from './routeUtils'
 import {
   editAnswerSchema,
-  interviewAnswerPayloadSchema,
   interviewApprovalAnswerSchema,
+  interviewBatchAnswerPayloadSchema,
+  interviewSkipAllPayloadSchema,
   rawInterviewSaveSchema,
 } from './schemas'
+
+/**
+ * A reason only means something attached to a skip.
+ *
+ * Accepting one for a question the person answered would put a reason into the
+ * audit trail explaining a decision that was never made, and there is no later
+ * point at which that could be noticed.
+ */
+function findReasonsForAnsweredQuestions(
+  skipReasons: Record<string, string>,
+  skippedQuestionIds: Set<string>,
+): string[] {
+  return Object.keys(skipReasons).filter((questionId) => !skippedQuestionIds.has(questionId))
+}
+
+/**
+ * Records what an approval-time edit changed about skipping.
+ *
+ * Both the structured editor and the raw YAML tab land here, because both can
+ * flip an answer to skipped and both can rewrite a reason. It records only what
+ * actually changed: re-saving a document untouched is not a decision, and would
+ * otherwise stamp a receipt on every question that happened to be skipped
+ * already.
+ */
+function recordInterviewApprovalSkips(input: {
+  ticketId: string
+  ticketStatusBefore: string
+  before: InterviewDocument | null
+  after: InterviewDocument
+}): void {
+  const beforeById = new Map((input.before?.questions ?? []).map((question) => [question.id, question.answer]))
+  const items: SkipReceiptItemInput[] = input.after.questions.flatMap((question) => {
+    const previous = beforeById.get(question.id)
+
+    // An answer that used to be skipped and no longer is. Recording this is what
+    // stops the trail reporting a decision the operator has since reversed.
+    if (!question.answer.skipped) {
+      return previous?.skipped
+        ? [{ itemId: question.id, reason: null, resolves: true }]
+        : []
+    }
+
+    const newlySkipped = !previous?.skipped
+    const reasonChanged = previous?.skip_reason !== question.answer.skip_reason
+    if (!newlySkipped && !reasonChanged) return []
+    return [{ itemId: question.id, reason: question.answer.skip_reason }]
+  })
+  if (items.length === 0) return
+
+  try {
+    recordApprovalSkipReceipts(input, items)
+  } catch (err) {
+    // The document is already saved and the restart may already have fired.
+    // Failing here would report a save failure for a save that succeeded, and
+    // the retry would run the whole planning restart a second time.
+    console.error(`[tickets] Failed to record approval skip receipts for ${input.ticketId}:`, err)
+  }
+}
+
+function recordApprovalSkipReceipts(
+  input: { ticketId: string; ticketStatusBefore: string },
+  items: SkipReceiptItemInput[],
+): void {
+  const receipts = writeSkipReceipts({
+    ticketId: input.ticketId,
+    surface: 'interview_approval_mark_skipped',
+    itemType: 'interview_question',
+    phase: 'WAITING_INTERVIEW_APPROVAL',
+    ticketStatusBefore: input.ticketStatusBefore,
+    actionId: deriveSkipActionId('interview_approval_mark_skipped', [
+      input.ticketId,
+      ...items.flatMap((item) => [item.itemId, item.reason, item.resolves === true ? 'resolved' : 'skipped']),
+    ]),
+    items,
+  })
+  for (const line of formatSkipReceiptLogLines(receipts)) {
+    emitRoutePhaseLog(input.ticketId, 'WAITING_INTERVIEW_APPROVAL', 'info', line)
+  }
+}
 
 function buildInterviewPayload(ticketId: string): {
   winnerId: string | null
@@ -141,15 +230,41 @@ export async function handleSkipTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    const parsed = interviewAnswerPayloadSchema.safeParse(body)
-    if (!parsed.success) {
-      return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
-    }
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Skip request body must be valid JSON' }, 400)
+  }
+  const parsed = interviewSkipAllPayloadSchema.safeParse(rawBody.body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
+  }
 
+  const skipAllSession = parseInterviewSessionSnapshot(
+    getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)?.content,
+  )
+  if (!skipAllSession) {
+    return c.json({ error: 'No interview session found' }, 404)
+  }
+  const skipAllSkippedIds = resolveSkippedQuestionIdsForSkipAll(
+    skipAllSession,
+    parsed.data.answers,
+    parsed.data.selectedOptions,
+  )
+  const answeredWithReasons = findReasonsForAnsweredQuestions(parsed.data.skipReasons, skipAllSkippedIds)
+  if (answeredWithReasons.length > 0) {
+    return c.json({
+      error: 'A skip reason was sent for a question that is not being skipped',
+      questionIds: answeredWithReasons,
+    }, 400)
+  }
+
+  try {
     ensureActorForTicket(ticketId)
-    skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers)
+    skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers, {
+      selectedOptions: parsed.data.selectedOptions,
+      skipReasons: parsed.data.skipReasons,
+      bulkReason: parsed.data.bulkSkipReason ?? null,
+    })
 
     try {
       await abortTicketSessions(ticketId)
@@ -176,16 +291,37 @@ export async function handleAnswerBatch(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    const parsed = interviewAnswerPayloadSchema.safeParse(body)
-    if (!parsed.success) {
-      return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
-    }
+  const rawBody = await readJsonBody(c)
+  if (!rawBody.ok) {
+    return c.json({ error: 'Answer batch request body must be valid JSON' }, 400)
+  }
+  const parsed = interviewBatchAnswerPayloadSchema.safeParse(rawBody.body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
+  }
 
-    // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
-    const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
-    const session = parseInterviewSessionSnapshot(sessionArt?.content)
+  // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
+  const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
+  const session = parseInterviewSessionSnapshot(sessionArt?.content)
+
+  const batchSkippedIds = new Set(
+    (session?.currentBatch?.questions ?? [])
+      .filter((question) => isBatchAnswerSkipped(
+        question,
+        parsed.data.answers[question.id] ?? '',
+        parsed.data.selectedOptions[question.id] ?? [],
+      ))
+      .map((question) => question.id),
+  )
+  const batchAnsweredWithReasons = findReasonsForAnsweredQuestions(parsed.data.skipReasons, batchSkippedIds)
+  if (batchAnsweredWithReasons.length > 0) {
+    return c.json({
+      error: 'A skip reason was sent for a question that is not being skipped',
+      questionIds: batchAnsweredWithReasons,
+    }, 400)
+  }
+
+  try {
     const isCoverageBatch = session?.currentBatch?.source === 'coverage'
     const needsAsyncProcessing = !isMockOpenCodeMode() && !isCoverageBatch
 
@@ -210,7 +346,7 @@ export async function handleAnswerBatch(c: Context) {
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions),
+        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions, parsed.data.skipReasons),
         timeoutPromise,
       ])
         .finally(() => {
@@ -241,7 +377,7 @@ export async function handleAnswerBatch(c: Context) {
     }
 
     // SYNC path: mock mode or coverage batches (fast, no AI call)
-    const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions)
+    const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
       sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })
@@ -288,18 +424,53 @@ export async function handleEditAnswer(c: Context) {
       return c.json({ error: 'No interview session found' }, 404)
     }
 
-    const { questionId, answer } = parsed.data
-    if (!session.answers[questionId]) {
+    const { questionId, answer, skipReason } = parsed.data
+    const previous = session.answers[questionId]
+    if (!previous) {
       return c.json({ error: `No existing answer for question ${questionId}` }, 404)
     }
 
-    const updated = updateInterviewAnswer(session, questionId, answer)
+    const updated = updateInterviewAnswer(session, questionId, answer, skipReason)
     upsertLatestPhaseArtifact(
       ticketId,
       INTERVIEW_SESSION_ARTIFACT,
       'WAITING_INTERVIEW_ANSWERS',
       serializeInterviewSessionSnapshot(updated),
     )
+
+    // Clearing an answer here is a real skip, and answering a skipped one
+    // reverses a real skip. Neither used to reach the trail at all.
+    const nextAnswer = updated.answers[questionId]
+    const nowSkipped = nextAnswer?.skipped === true
+    if (nowSkipped !== previous.skipped || (nowSkipped && nextAnswer?.skipReason !== previous.skipReason)) {
+      try {
+      const receipts = writeSkipReceipts({
+        ticketId,
+        surface: 'interview_question',
+        itemType: 'interview_question',
+        phase: 'WAITING_INTERVIEW_ANSWERS',
+        ticketStatusBefore: ticket.status,
+        actionId: deriveSkipActionId('interview_question_edit', [
+          ticketId,
+          questionId,
+          nowSkipped ? 'skipped' : 'resolved',
+          nextAnswer?.skipReason ?? null,
+        ]),
+        items: [{
+          itemId: questionId,
+          reason: nowSkipped ? nextAnswer?.skipReason ?? null : null,
+          resolves: !nowSkipped,
+        }],
+      })
+      for (const line of formatSkipReceiptLogLines(receipts)) {
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+      }
+      } catch (err) {
+        // The edited answer is already persisted; the trail is not worth
+        // failing the edit over.
+        console.error(`[tickets] Failed to record the edit-answer skip for ${ticketId}:`, err)
+      }
+    }
 
     const questions = buildInterviewQuestionViews(updated)
     return c.json({ success: true, questions })
@@ -327,9 +498,11 @@ export async function handlePutInterviewAnswers(c: Context) {
 
   let beforeRaw: string | null = null
   let beforeItemCount: number | null = null
+  let beforeDocument: InterviewDocument | null = null
   try {
     const before = readInterviewDocument(ticketId)
     beforeRaw = before.raw
+    beforeDocument = before.document
     beforeItemCount = before.document.questions.length
   } catch {
     beforeRaw = null
@@ -372,6 +545,12 @@ export async function handlePutInterviewAnswers(c: Context) {
       restart,
       invalidation: result.invalidation,
     })
+    recordInterviewApprovalSkips({
+      ticketId,
+      ticketStatusBefore: ticket.status,
+      before: beforeDocument,
+      after: result.document,
+    })
     return c.json({
       success: true,
       ...buildInterviewPayload(ticketId),
@@ -403,9 +582,11 @@ export async function handlePutInterview(c: Context) {
 
   let beforeRaw: string | null = null
   let beforeItemCount: number | null = null
+  let beforeDocument: InterviewDocument | null = null
   try {
     const before = readInterviewDocument(ticketId)
     beforeRaw = before.raw
+    beforeDocument = before.document
     beforeItemCount = before.document.questions.length
   } catch {
     beforeRaw = null
@@ -447,6 +628,12 @@ export async function handlePutInterview(c: Context) {
       afterItemCount: result.document.questions.length,
       restart,
       invalidation: result.invalidation,
+    })
+    recordInterviewApprovalSkips({
+      ticketId,
+      ticketStatusBefore: ticket.status,
+      before: beforeDocument,
+      after: result.document,
     })
     return c.json({
       success: true,

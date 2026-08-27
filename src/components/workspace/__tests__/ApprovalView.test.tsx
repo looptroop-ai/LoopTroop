@@ -129,7 +129,7 @@ function buildInterviewDocument(answer: string): InterviewDocument {
           selected_option_ids: [],
           free_text: answer,
           answered_by: 'user',
-          answered_at: '2026-03-17T10:05:00.000Z',
+          answered_at: '2026-03-17T10:05:00.000Z', skip_reason: null,
         },
       },
     ],
@@ -201,7 +201,7 @@ function buildSkippedInterviewPayload() {
       selected_option_ids: [],
       free_text: '',
       answered_by: 'ai_skip',
-      answered_at: '',
+      answered_at: '', skip_reason: null,
     },
   }]
 
@@ -371,6 +371,7 @@ describe('Interview approval UI', () => {
       expect(submittedBody?.questions[0]).toEqual({
         id: 'Q01',
         answer: {
+          skip_reason: null,
           skipped: true,
           selected_option_ids: [],
           free_text: '',

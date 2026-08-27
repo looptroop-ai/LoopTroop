@@ -111,11 +111,31 @@ describe('VerificationSummaryPanel', () => {
     expect(onMerge).toHaveBeenCalledOnce()
   })
 
-  it('calls onCloseUnmerged when Finish Without Merge is clicked', () => {
+  it('confirms before finishing without merge, and carries the reason through', () => {
     const onCloseUnmerged = vi.fn()
     renderPanel({}, { onMerge: vi.fn(), onCloseUnmerged, isPending: false })
+
+    // One click no longer ends the ticket. It opens the confirmation.
     fireEvent.click(screen.getByText('Finish Without Merge'))
-    expect(onCloseUnmerged).toHaveBeenCalledOnce()
+    expect(onCloseUnmerged).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: /finish without merging/i })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/why finish without merging/i), {
+      target: { value: 'Superseded by a different branch.' },
+    })
+    fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+
+    expect(onCloseUnmerged).toHaveBeenCalledWith('Superseded by a different branch.')
+  })
+
+  it('finishes without merge with no reason when none is given', () => {
+    const onCloseUnmerged = vi.fn()
+    renderPanel({}, { onMerge: vi.fn(), onCloseUnmerged, isPending: false })
+
+    fireEvent.click(screen.getByText('Finish Without Merge'))
+    fireEvent.click(screen.getAllByText('Finish Without Merge')[1]!)
+
+    expect(onCloseUnmerged).toHaveBeenCalledWith(undefined)
   })
 
   it('disables buttons when isPending is true', () => {

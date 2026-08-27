@@ -60,6 +60,11 @@ function normalizePersistedAnswerDrafts(
         ? answerDraft.selected_option_ids.filter((item): item is string => typeof item === 'string')
         : [],
       free_text: !isSkipped && typeof answerDraft.free_text === 'string' ? answerDraft.free_text : '',
+      // Persisted drafts are rebuilt into a fixed shape, so a reason not named
+      // here would be dropped on every reload.
+      skip_reason: isSkipped && typeof answerDraft.skip_reason === 'string' && answerDraft.skip_reason.trim()
+        ? answerDraft.skip_reason
+        : null,
     }
   }
 
@@ -214,10 +219,11 @@ export function InterviewApprovalPane({
                       skipped: question.answer.skipped,
                       selected_option_ids: question.answer.selected_option_ids,
                       free_text: question.answer.free_text,
+                      skip_reason: question.answer.skip_reason,
                     }
                     return answer.skipped
-                      ? { ...answer, selected_option_ids: [], free_text: '' }
-                      : answer
+                      ? { ...answer, selected_option_ids: [], free_text: '', skip_reason: answer.skip_reason ?? null }
+                      : { ...answer, skip_reason: null }
                   })(),
                 })),
               }

@@ -154,10 +154,29 @@ export function recordPreparedBatch(
   return next
 }
 
+/**
+ * Whether a submitted batch answer counts as a skip.
+ *
+ * Exported because the route has to answer the same question before the batch is
+ * committed, to reject a reason attached to something the person actually
+ * answered. Two copies of this rule would disagree the first time either moved.
+ */
+export function isBatchAnswerSkipped(
+  question: Pick<InterviewSessionQuestion, 'answerType'>,
+  rawAnswer: string,
+  selectedIds: string[],
+): boolean {
+  const isChoiceQuestion = question.answerType === 'single_choice' || question.answerType === 'multiple_choice'
+  const hasSelection = selectedIds.length > 0
+  const hasText = rawAnswer.trim().length > 0
+  return isChoiceQuestion ? (!hasSelection && !hasText) : !hasText
+}
+
 export function recordBatchAnswers(
   snapshot: InterviewSessionSnapshot,
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
+  skipReasons: Record<string, string> = {},
 ): InterviewSessionSnapshot {
   const next = cloneSnapshot(snapshot)
   const currentBatch = next.currentBatch
@@ -167,16 +186,18 @@ export function recordBatchAnswers(
   for (const question of currentBatch.questions) {
     const rawAnswer = batchAnswers[question.id] ?? ''
     const selectedIds = selectedOptions[question.id] ?? []
-    const isChoiceQuestion = question.answerType === 'single_choice' || question.answerType === 'multiple_choice'
-    const hasSelection = selectedIds.length > 0
-    const hasText = rawAnswer.trim().length > 0
-    const skipped = isChoiceQuestion ? (!hasSelection && !hasText) : !hasText
+    const skipped = isBatchAnswerSkipped(question, rawAnswer, selectedIds)
+    const skipReason = skipped ? (skipReasons[question.id] ?? '').trim() : ''
     next.answers[question.id] = {
       answer: rawAnswer,
       skipped,
       answeredAt: skipped ? null : submittedAt,
+      // A skip is a decision with a time. Recording it separately is what stops
+      // "skipped at" and "answered at" collapsing into the same empty string.
+      skippedAt: skipped ? submittedAt : null,
       batchNumber: currentBatch.batchNumber,
       ...(selectedIds.length > 0 ? { selectedOptionIds: selectedIds } : {}),
+      ...(skipReason ? { skipReason } : {}),
     }
   }
 

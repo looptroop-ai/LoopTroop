@@ -15,7 +15,7 @@ const skippedInterviewYaml = makeInterviewYaml({
       prompt: 'Which downstream phases are out of scope for this pass?',
       answer: {
         skipped: false, selected_option_ids: [], free_text: 'PRD approval and coverage stay out of scope.',
-        answered_by: 'user', answered_at: TEST.timestamp,
+        answered_by: 'user', answered_at: TEST.timestamp, skip_reason: null,
       },
     }),
   ],
@@ -29,7 +29,7 @@ const structuredInterviewYaml = makeInterviewYaml({
       prompt: 'Which workflow guardrails are mandatory?',
       answer: {
         skipped: false, selected_option_ids: [], free_text: 'Keep the council flow intact.',
-        answered_by: 'user', answered_at: TEST.timestamp,
+        answered_by: 'user', answered_at: TEST.timestamp, skip_reason: null,
       },
     }),
     makeInterviewQuestion({

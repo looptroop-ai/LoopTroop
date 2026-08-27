@@ -1429,7 +1429,11 @@ export async function skipManualQa(input: {
   persistManualQaPhaseArtifact(input.ticketId, 'manual_qa_skip_receipt', {
     actionId: operationActionId,
     version: input.version,
-    reason: input.reason ?? '',
+    // `null`, not `''`. "No reason given" and "an empty reason" are the same
+    // fact, and the shared skip trail stores that fact one way. The canonical
+    // `skip-receipt.yaml` and `events.jsonl` keep their existing shape — they
+    // are the crash-recovery contract, not an audit surface.
+    reason: input.reason?.trim() || null,
     createdAt: now,
   }, operationActionId)
   persistSummaryArtifact(input.ticketId, summary)

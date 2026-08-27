@@ -81,6 +81,7 @@ function initializeProjectSqlite(sqlite: Database) {
       total_beads INTEGER,
       percent_complete REAL,
       error_message TEXT,
+      cancel_reason TEXT,
       manual_qa_override INTEGER,
       locked_main_implementer TEXT,
       locked_main_implementer_variant TEXT,
@@ -258,6 +259,7 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'tickets', 'locked_max_beads_coverage_passes', 'INTEGER')
   ensureColumn(sqlite, 'tickets', 'locked_structured_retry_count', 'INTEGER')
   ensureColumn(sqlite, 'tickets', 'manual_qa_override', 'INTEGER')
+  ensureColumn(sqlite, 'tickets', 'cancel_reason', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'locked_manual_qa_enabled', 'INTEGER')
   ensureColumn(sqlite, 'tickets', 'locked_manual_qa_source', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'locked_git_hook_policy', 'TEXT')

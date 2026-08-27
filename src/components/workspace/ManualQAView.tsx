@@ -34,6 +34,7 @@ import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel } from '@/lib/manualQaSetting'
 import { buildCanonicalManualQaDraft, buildDefaultManualQaImprovementContext, composeManualQaImprovementPreview, validateManualQaItem, validateManualQaMergeGroups } from '@/lib/manualQaDraft'
 import { AutosaveStatus } from './AutosaveStatus'
+import { SkipReasonField } from './SkipReasonField'
 
 interface ManualQAViewProps {
   ticket: Ticket
@@ -763,7 +764,14 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
 
                   {result.status === 'pending' && <p className="text-xs text-muted-foreground">Not reviewed yet. Select Pass if it works, Fail if it does not, Waive to skip this check, or Improvement to create follow-up work.</p>}
                   {result.status === 'fail' && <div><label className="text-xs font-medium">Observed behavior <span className="text-destructive">*</span></label><textarea disabled={!editable} value={result.observation ?? ''} onChange={(event) => updateResult(item.id, { observation: event.target.value })} className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="What happened, and how did it differ from the expected result?" /><div className="mt-3"><p className="text-xs font-medium">Merge with other QA items <span className="font-normal text-muted-foreground">(optional)</span></p><p className="mt-1 text-xs text-muted-foreground">Select related items that should create one fix bead. Every selected item must be marked Fail before Submit.</p><div className="mt-2 flex flex-wrap gap-2">{items.filter((candidate) => candidate.id !== item.id).map((candidate) => { const candidateIndex = items.findIndex((entry) => entry.id === candidate.id); const selected = (result.mergeWithItemIds ?? []).includes(candidate.id); return <button key={candidate.id} type="button" data-selected={selected} disabled={!editable} onClick={() => toggleMergeItem(item.id, candidate.id)} className="rounded-md border border-input px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors data-[selected=true]:border-red-500 data-[selected=true]:bg-red-500/10 data-[selected=true]:text-foreground disabled:opacity-70">{candidateIndex + 1}. {candidate.title || candidate.behavior}</button> })}</div></div></div>}
-                  {result.status === 'waive' && <div><label className="text-xs font-medium">Waiver reason <span className="font-normal text-muted-foreground">(optional)</span></label><textarea disabled={!editable} value={result.waiverReason ?? ''} onChange={(event) => updateResult(item.id, { waiverReason: event.target.value })} className="mt-1 min-h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" /></div>}
+                  {result.status === 'waive' && (
+                    <SkipReasonField
+                      label="Waiver reason"
+                      value={result.waiverReason ?? ''}
+                      onChange={(value) => { updateResult(item.id, { waiverReason: value }) }}
+                      disabled={!editable}
+                    />
+                  )}
                   {result.status === 'pass' && <div><label className="text-xs font-medium">Notes <span className="font-normal text-muted-foreground">(optional)</span></label><textarea disabled={!editable} value={result.note ?? ''} onChange={(event) => updateResult(item.id, { note: event.target.value })} className="mt-1 min-h-14 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" /></div>}
                   {result.status === 'improvement' && preview && (
                     <div className="space-y-3 rounded-md border border-blue-500/30 bg-blue-500/5 p-3">
@@ -849,7 +857,11 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
       <Dialog open={skipOpen} onOpenChange={setSkipOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Skip Manual QA?</DialogTitle><DialogDescription>Your entered results, notes, links, and files will be saved in the archived draft and cannot be edited later. No fix bead or improvement ticket will be created, and the workflow will continue to integration.</DialogDescription></DialogHeader>
-          <div><label className="text-sm font-medium">Reason <span className="font-normal text-muted-foreground">(optional)</span></label><textarea value={skipReason} onChange={(event) => setSkipReason(event.target.value)} className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" /></div>
+          <SkipReasonField
+            value={skipReason}
+            onChange={setSkipReason}
+            help="Saved with the ticket. Nobody is blocked if you leave it empty."
+          />
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setSkipOpen(false)}>Cancel</Button><Button variant="destructive" onClick={handleSkip} disabled={skip.isPending || saveState === 'conflict' || evidenceMutationInProgress}>{skip.isPending ? <LoadingText text="Skipping" /> : 'Skip and integrate'}</Button></div>
         </DialogContent>
       </Dialog>

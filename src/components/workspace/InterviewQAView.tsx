@@ -12,6 +12,7 @@ import { QuestionList } from './QuestionList'
 import { AnswerEditor } from './AnswerEditor'
 import { useBatchSubmit, getBatchKey } from '@/hooks/useBatchSubmit'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
+import { SkipReasonField } from './SkipReasonField'
 
 interface InterviewQAViewProps {
   ticket: Ticket
@@ -45,12 +46,15 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isSkipConfirmOpen, setIsSkipConfirmOpen] = useState(false)
+  const [skipAllReason, setSkipAllReason] = useState('')
+  const [skipAllError, setSkipAllError] = useState<string | null>(null)
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const {
     draftAnswers,
     skippedQuestions,
     batchSelectedOptions,
+    batchSkipReasons,
     sseBatch,
     processingError,
     submittedBatchKey,
@@ -63,6 +67,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
     handleOptionToggle,
     handleSkipQuestion,
     handleUnskipQuestion,
+    handleSkipReasonChange,
     handleSubmitBatch,
     handleConfirmSkipAll,
   } = useBatchSubmit(ticket.id)
@@ -124,6 +129,11 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
     [currentBatchKey, batchSelectedOptions],
   )
 
+  const batchCurrentSkipReasons = useMemo(
+    () => (currentBatchKey ? batchSkipReasons[currentBatchKey] ?? {} : {}),
+    [currentBatchKey, batchSkipReasons],
+  )
+
   const onBatchAnswer = useCallback((questionId: string, value: string) => {
     handleBatchAnswer(currentBatchKey, questionId, value)
   }, [currentBatchKey, handleBatchAnswer])
@@ -142,14 +152,27 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
     handleUnskipQuestion(currentBatchKey, questionId)
   }, [currentBatchKey, handleUnskipQuestion])
 
+  const onSkipReasonChange = useCallback((questionId: string, reason: string) => {
+    handleSkipReasonChange(currentBatchKey, questionId, reason)
+  }, [currentBatchKey, handleSkipReasonChange])
+
   const onSubmitBatch = useCallback(async () => {
     await handleSubmitBatch(currentBatch, currentBatchKey, batchAnswers)
   }, [handleSubmitBatch, currentBatch, currentBatchKey, batchAnswers])
 
   const onConfirmSkipAll = useCallback(async () => {
-    await handleConfirmSkipAll(currentBatch, batchAnswers)
+    setSkipAllError(null)
+    try {
+      await handleConfirmSkipAll(currentBatch, currentBatchKey, batchAnswers, skipAllReason)
+    } catch (err) {
+      // Keep the dialog and the typed reason. Closing on failure loses what the
+      // user wrote and hides that nothing happened.
+      setSkipAllError(err instanceof Error ? err.message : 'Failed to skip the remaining questions')
+      return
+    }
     setIsSkipConfirmOpen(false)
-  }, [handleConfirmSkipAll, currentBatch, batchAnswers])
+    setSkipAllReason('')
+  }, [handleConfirmSkipAll, currentBatch, currentBatchKey, batchAnswers, skipAllReason])
 
   const handleStartEdit = useCallback((questionId: string, currentAnswer: string) => {
     setEditingQuestionId(questionId)
@@ -236,16 +259,28 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">
-      <Dialog open={isSkipConfirmOpen} onOpenChange={setIsSkipConfirmOpen}>
+      <Dialog open={isSkipConfirmOpen} onOpenChange={(open) => { setIsSkipConfirmOpen(open); if (!open) setSkipAllError(null) }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Skip Remaining Interview Questions</DialogTitle>
             <DialogDescription>
               This keeps the answers you already submitted, preserves anything currently typed in this batch,
               marks every other unanswered interview question as skipped, and moves the ticket to Interview Approval.
-              Don't worry, the skipped questions will be answered by AI models at the beginning of the PRD phase.
+              The skipped questions are answered by AI models at the start of the PRD phase — and those models
+              get to read whatever you write below.
             </DialogDescription>
           </DialogHeader>
+          <SkipReasonField
+            label="Why skip the rest"
+            value={skipAllReason}
+            onChange={setSkipAllReason}
+            disabled={isBusy}
+            placeholder="Optional. Applies to every question you have not already given a reason for."
+            help="Questions you gave your own reason for keep it."
+          />
+          {skipAllError && (
+            <p role="alert" className="text-xs text-destructive">{skipAllError}</p>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setIsSkipConfirmOpen(false)} disabled={isBusy}>
               Keep Interview
@@ -285,6 +320,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             batchAnswers={batchAnswers}
             batchSkipped={batchSkipped}
             batchSelectedOptions={batchCurrentSelectedOptions}
+            batchSkipReasons={batchCurrentSkipReasons}
             isBusy={isBusy}
             isSubmitting={isSubmitting}
             autosaveState={autosaveState}
@@ -294,6 +330,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
             onOptionToggle={onOptionToggle}
             onSkipQuestion={onSkipQuestion}
             onUnskipQuestion={onUnskipQuestion}
+            onSkipReasonChange={onSkipReasonChange}
             onSubmitBatch={onSubmitBatch}
             onShowSkipConfirm={() => setIsSkipConfirmOpen(true)}
             questionRefs={questionRefs}

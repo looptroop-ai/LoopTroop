@@ -71,8 +71,13 @@ function AnswerBlock({ question, hideAiAnswerBadge }: { question: InterviewDocum
 
   if (answerSummary.skipped && !isAiAnswer) {
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
-        This question was skipped and left for downstream drafting to interpret.
+      <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
+        <div>This question was skipped and left for downstream drafting to interpret.</div>
+        {question.answer.skip_reason ? (
+          <div className="whitespace-pre-wrap">
+            <span className="font-medium">Why it was skipped:</span> {question.answer.skip_reason}
+          </div>
+        ) : null}
       </div>
     )
   }

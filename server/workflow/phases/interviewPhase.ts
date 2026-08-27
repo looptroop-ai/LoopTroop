@@ -12,6 +12,7 @@ import {
   buildInterviewQuestionViews,
   buildPersistedBatch,
   completeInterviewBySkippingRemaining,
+  resolveSkippedQuestionIdsForSkipAll,
   countCoverageFollowUpQuestions,
   createInterviewSessionSnapshot,
   INTERVIEW_QA_SESSION_ARTIFACT,
@@ -39,6 +40,12 @@ import {
   buildInterviewUiRefinementDiffArtifactFromChanges,
 } from '@shared/refinementDiffArtifacts'
 import { calculateFollowUpLimit } from '../../phases/interview/followUpBudget'
+import {
+  deleteSkipReceiptsForAction,
+  deriveSkipActionId,
+  formatSkipReceiptLogLines,
+  writeSkipReceipts,
+} from '../skipReceipts'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { persistUiRefinementDiffArtifact } from '../refinementDiffArtifacts'
@@ -162,9 +169,77 @@ export function buildFormattedBatchAnswers(
   return result
 }
 
+/**
+ * Records what a committed interview action skipped.
+ *
+ * Called at the commit point rather than on click: a reason typed against a
+ * question the person then answered must never become history, and a skip that
+ * was never submitted is not a decision.
+ */
+function recordInterviewSkipReceipts(input: {
+  ticketId: string
+  externalId: string
+  ticketStatusBefore: string
+  surface: 'interview_question' | 'interview_all'
+  snapshot: InterviewSessionSnapshot
+  questionIds: string[]
+  /** Passed in: `recordBatchAnswers` clears `currentBatch` as it commits. */
+  batchNumber: number | null
+  bulkReason?: string | null
+}): string | null {
+  const skipped = input.questionIds
+    .map((questionId) => ({ questionId, answer: input.snapshot.answers[questionId] }))
+    .filter((entry) => entry.answer?.skipped === true)
+  if (skipped.length === 0) return null
+
+  const items = skipped.map((entry) => ({
+    itemId: entry.questionId,
+    reason: entry.answer?.skipReason ?? null,
+  }))
+  const actionId = deriveSkipActionId(input.surface, [
+    input.ticketId,
+    input.batchNumber,
+    ...items.flatMap((item) => [item.itemId, item.reason]),
+    input.bulkReason ?? null,
+  ])
+
+  const receipts = writeSkipReceipts({
+    ticketId: input.ticketId,
+    surface: input.surface,
+    itemType: 'interview_question',
+    phase: 'WAITING_INTERVIEW_ANSWERS',
+    ticketStatusBefore: input.ticketStatusBefore,
+    actionId,
+    items,
+    // Only the bulk action gets a summary row. Skipping three questions inside a
+    // batch you then submit is three decisions, not a fourth one about the batch.
+    summary: input.surface === 'interview_all'
+      ? { itemType: 'interview_batch', reason: input.bulkReason ?? null }
+      : null,
+  })
+
+  for (const line of formatSkipReceiptLogLines(receipts)) {
+    emitPhaseLog(input.ticketId, input.externalId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+  }
+  return actionId
+}
+
+/**
+ * The skip receipts a batch wrote, per ticket, until that batch is durable.
+ *
+ * `processInterviewBatchAsync` restores the previous snapshot when the AI call
+ * fails, which un-does the skips. The receipts have to go with them.
+ */
+const pendingBatchSkipActions = new Map<string, string>()
+
 export function skipAllInterviewQuestionsToApproval(
   ticketId: string,
   batchAnswers: Record<string, string>,
+  options: {
+    selectedOptions?: Record<string, string[]>
+    skipReasons?: Record<string, string>
+    bulkReason?: string | null
+  } = {},
 ): { snapshot: InterviewSessionSnapshot; canonicalInterview: string } {
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot) {
@@ -182,12 +257,35 @@ export function skipAllInterviewQuestionsToApproval(
     throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
   }
 
-  const finalizedSnapshot = completeInterviewBySkippingRemaining(snapshot, batchAnswers)
+  // Exactly the questions *this* action skips. Passing every finalized question
+  // would re-record a question skipped in an earlier batch under the bulk
+  // surface, superseding its original receipt with a decision the user did not
+  // make here.
+  const skippedByThisAction = resolveSkippedQuestionIdsForSkipAll(
+    snapshot,
+    batchAnswers,
+    options.selectedOptions ?? {},
+  )
+  const finalizedSnapshot = completeInterviewBySkippingRemaining(snapshot, batchAnswers, {
+    selectedOptions: options.selectedOptions,
+    skipReasons: options.skipReasons,
+    bulkReason: options.bulkReason,
+  })
   const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
   const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
 
   safeAtomicWrite(interviewPath, canonicalInterview)
   persistInterviewSession(ticketId, finalizedSnapshot)
+  recordInterviewSkipReceipts({
+    ticketId,
+    externalId,
+    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+    surface: 'interview_all',
+    snapshot: finalizedSnapshot,
+    questionIds: [...skippedByThisAction],
+    batchNumber: snapshot.currentBatch?.batchNumber ?? null,
+    bulkReason: options.bulkReason ?? null,
+  })
   interviewQASessions.delete(ticketId)
 
   const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot)
@@ -1109,7 +1207,15 @@ export async function handleInterviewQABatch(
   ticketId: string,
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
+  skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
+  // Cleared before anything can throw. A stale entry from a previously committed
+  // batch would otherwise be read by the revert path below and used to delete
+  // that batch's receipts — append-only records, for work that was never
+  // reverted. A duplicate or late submission reaches the throw below and is
+  // exactly the case that triggers it.
+  pendingBatchSkipActions.delete(ticketId)
+
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
     throw new Error('No active interview batch for this ticket')
@@ -1118,7 +1224,22 @@ export async function handleInterviewQABatch(
   const ticket = getTicketByRef(ticketId)
   const externalId = ticket?.externalId ?? ticketId
   const currentBatch = snapshot.currentBatch
-  const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions)
+  const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions, skipReasons)
+
+  // The batch is committed the moment its answers land in the snapshot, so this
+  // is where the skips become history — including the implicit ones, where the
+  // person submitted a question blank rather than clicking Skip.
+  const batchSkipActionId = recordInterviewSkipReceipts({
+    ticketId,
+    externalId,
+    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+    surface: 'interview_question',
+    snapshot: answeredSnapshot,
+    questionIds: currentBatch.questions.map((question) => question.id),
+    batchNumber: currentBatch.batchNumber,
+  })
+  if (batchSkipActionId) pendingBatchSkipActions.set(ticketId, batchSkipActionId)
+  else pendingBatchSkipActions.delete(ticketId)
 
   if (isMockOpenCodeMode()) {
     if (currentBatch.source === 'prom4' && currentBatch.batchNumber === 1) {
@@ -1359,14 +1480,21 @@ export function processInterviewBatchAsync(
   batchAnswers: Record<string, string>,
   originalSnapshot: InterviewSessionSnapshot,
   selectedOptions: Record<string, string[]> = {},
+  skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions)
+  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons)
     .catch((err) => {
       // Revert to original snapshot so the user can retry the submission
       try {
         persistInterviewSession(ticketId, originalSnapshot)
+        // The skips in that snapshot are gone, so their receipts describe a
+        // decision the ticket no longer carries.
+        const revertedActionId = pendingBatchSkipActions.get(ticketId)
+        if (revertedActionId) deleteSkipReceiptsForAction(ticketId, revertedActionId)
       } catch (revertErr) {
         console.error(`[runner] Failed to revert interview snapshot for ${ticketId}:`, revertErr)
+      } finally {
+        pendingBatchSkipActions.delete(ticketId)
       }
       throw err
     })

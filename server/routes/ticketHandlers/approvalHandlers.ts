@@ -2,8 +2,10 @@ import type { Context } from 'hono'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import {
   findProjectExecutionBandConflict,
+  getLatestPhaseArtifact,
   getTicketByRef,
   getTicketPaths,
+  upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { approveInterviewDocument } from '../../phases/interview/finalDocument'
 import {
@@ -28,6 +30,8 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
+import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
+import { normalizeSkipReason } from '@shared/skipReceipt'
 import {
   buildExecutionBandConflictMessage,
   buildRouteStatePayload,
@@ -76,15 +80,16 @@ export async function handleApproveTicket(c: Context) {
     return c.json({ error: 'Invalid approval payload', details: parsed.error.flatten() }, 400)
   }
   const expectedContentSha256 = parsed.data.expectedContentSha256
+  const gapAcknowledgementReason = parsed.data.gapAcknowledgementReason
 
   if (ticket.status === 'WAITING_INTERVIEW_APPROVAL') {
-    return approveInterviewForRoute(c, ticketId, expectedContentSha256)
+    return approveInterviewForRoute(c, ticketId, expectedContentSha256, gapAcknowledgementReason)
   }
   if (ticket.status === 'WAITING_PRD_APPROVAL') {
-    return approvePrdForRoute(c, ticketId, expectedContentSha256)
+    return approvePrdForRoute(c, ticketId, expectedContentSha256, gapAcknowledgementReason)
   }
   if (ticket.status === 'WAITING_BEADS_APPROVAL') {
-    return approveBeadsForRoute(c, ticketId, expectedContentSha256)
+    return approveBeadsForRoute(c, ticketId, expectedContentSha256, gapAcknowledgementReason)
   }
   if (ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL') {
     return approveExecutionSetupPlanForRoute(c, ticketId, expectedContentSha256)
@@ -281,16 +286,72 @@ export async function handlePutPrd(c: Context) {
   }
 }
 
+/**
+ * Records why the operator approved despite known coverage gaps.
+ *
+ * The reason goes onto the existing `approval_receipt` — which is the domain
+ * record of the approval, and where anyone reading the approval will look — and
+ * into the append-only skip trail. Read-modify-write on the receipt rather than
+ * a new parameter through four document modules: `upsertLatestPhaseArtifact`
+ * updates the row the approval just wrote, so there is exactly one receipt
+ * either way.
+ */
+function recordGapAcknowledgement(input: {
+  ticketId: string
+  phase: string
+  ticketStatusBefore: string
+  artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan'
+  reason: string | undefined
+}): void {
+  const reason = normalizeSkipReason(input.reason)
+  if (!reason) return
+
+  const receipt = getLatestPhaseArtifact(input.ticketId, 'approval_receipt', input.phase)
+  if (receipt) {
+    try {
+      const parsed = JSON.parse(receipt.content) as Record<string, unknown>
+      upsertLatestPhaseArtifact(input.ticketId, 'approval_receipt', input.phase, JSON.stringify({
+        ...parsed,
+        gap_acknowledgement: { reason },
+      }))
+    } catch {
+      // A receipt this build cannot parse is not worth failing an approval over;
+      // the skip trail below still records the reason.
+    }
+  }
+
+  // The approval is already persisted by the time this runs, and the APPROVE
+  // event has not been sent yet. Letting a receipt write throw would return 500
+  // and strand the ticket: approved on disk, still sitting in the approval
+  // state. Recording why something happened must never undo it.
+  try {
+    const receipts = writeSkipReceipts({
+      ticketId: input.ticketId,
+      surface: 'approval_with_gaps',
+      itemType: 'approval',
+      phase: input.phase,
+      ticketStatusBefore: input.ticketStatusBefore,
+      actionId: deriveSkipActionId('approval_with_gaps', [input.ticketId, input.phase, input.artifactType, reason]),
+      items: [{ itemId: input.artifactType, reason }],
+    })
+    for (const line of formatSkipReceiptLogLines(receipts)) {
+      emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
+    }
+  } catch (err) {
+    console.error(`[tickets] Failed to record the gap acknowledgement for ${input.ticketId}:`, err)
+  }
+}
+
 export async function handleApproveInterview(c: Context) {
   const ticketId = getTicketParam(c)
   const parsed = await parseApprovalRequest(c)
   if (!parsed.success) {
     return c.json({ error: 'Invalid approval payload', details: parsed.error.flatten() }, 400)
   }
-  return approveInterviewForRoute(c, ticketId, parsed.data.expectedContentSha256)
+  return approveInterviewForRoute(c, ticketId, parsed.data.expectedContentSha256, parsed.data.gapAcknowledgementReason)
 }
 
-function approveInterviewForRoute(c: Context, ticketId: string, expectedContentSha256: string) {
+function approveInterviewForRoute(c: Context, ticketId: string, expectedContentSha256: string, gapAcknowledgementReason?: string) {
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
@@ -305,6 +366,13 @@ function approveInterviewForRoute(c: Context, ticketId: string, expectedContentS
 
     const phase = 'WAITING_INTERVIEW_APPROVAL'
     emitRoutePhaseLog(ticketId, phase, 'info', 'Interview approved by user.')
+    recordGapAcknowledgement({
+      ticketId,
+      phase,
+      ticketStatusBefore: ticket.status,
+      artifactType: 'interview',
+      reason: gapAcknowledgementReason,
+    })
 
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
@@ -325,10 +393,10 @@ export async function handleApprovePrd(c: Context) {
   if (!parsed.success) {
     return c.json({ error: 'Invalid approval payload', details: parsed.error.flatten() }, 400)
   }
-  return approvePrdForRoute(c, ticketId, parsed.data.expectedContentSha256)
+  return approvePrdForRoute(c, ticketId, parsed.data.expectedContentSha256, parsed.data.gapAcknowledgementReason)
 }
 
-function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256: string) {
+function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256: string, gapAcknowledgementReason?: string) {
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
@@ -346,6 +414,13 @@ function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256:
 
     const phase = 'WAITING_PRD_APPROVAL'
     emitRoutePhaseLog(ticketId, phase, 'info', 'PRD approved by user.')
+    recordGapAcknowledgement({
+      ticketId,
+      phase,
+      ticketStatusBefore: ticket.status,
+      artifactType: 'prd',
+      reason: gapAcknowledgementReason,
+    })
 
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
@@ -366,10 +441,10 @@ export async function handleApproveBeads(c: Context) {
   if (!parsed.success) {
     return c.json({ error: 'Invalid approval payload', details: parsed.error.flatten() }, 400)
   }
-  return approveBeadsForRoute(c, ticketId, parsed.data.expectedContentSha256)
+  return approveBeadsForRoute(c, ticketId, parsed.data.expectedContentSha256, parsed.data.gapAcknowledgementReason)
 }
 
-function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha256: string) {
+function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha256: string, gapAcknowledgementReason?: string) {
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   const mockResponse = rejectDisplayOnlyMockTicket(c, ticket)
@@ -392,6 +467,13 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
 
     const phase = 'WAITING_BEADS_APPROVAL'
     emitRoutePhaseLog(ticketId, phase, 'info', 'Beads approved by user.')
+    recordGapAcknowledgement({
+      ticketId,
+      phase,
+      ticketStatusBefore: ticket.status,
+      artifactType: 'beads',
+      reason: gapAcknowledgementReason,
+    })
 
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {

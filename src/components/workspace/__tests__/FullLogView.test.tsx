@@ -218,11 +218,87 @@ describe('FullLogView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'AI details' }))
 
     expect(await screen.findByText('$0.02')).toBeInTheDocument()
-    expect(screen.getByLabelText('AI details').parentElement).toHaveClass('sticky', 'top-0')
+    expect(screen.getByLabelText('AI details').closest('.sticky')).toHaveClass('sticky', 'top-0')
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('/ai-details?scope=lifecycle'),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
+    fetchSpy.mockRestore()
+  })
+
+
+  it('loads the skips panel only after it is opened, and counts a bulk action once', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/skips')) {
+        return createJsonResponse({
+          ticketId: TEST.ticketId,
+          events: [
+            {
+              receiptId: 'skip-parent',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: null,
+              itemType: 'interview_batch',
+              isActionSummary: true,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: 'Shipping before the demo.',
+              supersedes: null,
+              superseded: false,
+            },
+            {
+              receiptId: 'skip-q01',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: 'Q01',
+              itemType: 'interview_question',
+              isActionSummary: false,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: 'Answered in the ticket description.',
+              supersedes: null,
+              superseded: false,
+            },
+            {
+              receiptId: 'skip-q02',
+              actionId: 'bulk',
+              parentActionId: null,
+              surface: 'interview_all',
+              itemId: 'Q02',
+              itemType: 'interview_question',
+              isActionSummary: false,
+              phase: 'WAITING_INTERVIEW_ANSWERS',
+              phaseAttempt: 1,
+              skippedAt: '2026-08-27T10:00:00.000Z',
+              reason: null,
+              supersedes: null,
+              superseded: false,
+            },
+          ],
+          counts: { actions: 1, items: 2, itemsWithReason: 1, itemsWithoutReason: 1 },
+        })
+      }
+      return createJsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+    })
+
+    renderWithTooltipProvider(<FullLogView ticket={makeTicket()} />)
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes('/skips'))).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skips' }))
+
+    expect(await screen.findByText('Answered in the ticket description.')).toBeInTheDocument()
+    expect(screen.getByText(/1 action · 2 items skipped · 1 with a reason · 1 without/)).toBeInTheDocument()
+    // The bulk reason is stored on the summary row and nowhere else, so the
+    // panel has to render that row or the reason is invisible everywhere.
+    expect(screen.getByText('Shipping before the demo.')).toBeInTheDocument()
+    expect(screen.getByText('2 items')).toBeInTheDocument()
+    expect(screen.getByText('No reason given')).toBeInTheDocument()
+
     fetchSpy.mockRestore()
   })
 

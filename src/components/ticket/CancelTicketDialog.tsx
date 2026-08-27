@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useCancelTicket } from '@/hooks/useTickets'
+import { SkipReasonField } from '@/components/workspace/SkipReasonField'
 
 interface CancelTicketDialogProps {
   ticketId: string
@@ -10,16 +11,41 @@ interface CancelTicketDialogProps {
 }
 
 export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicketDialogProps) {
-  const { mutate: cancelTicket, isPending } = useCancelTicket()
+  const { mutateAsync: cancelTicket, isPending } = useCancelTicket()
   const [deleteContent, setDeleteContent] = useState(false)
   const [deleteLog, setDeleteLog] = useState(false)
   const [deleteTicket, setDeleteTicket] = useState(false)
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState<string | null>(null)
 
   const close = () => {
     onOpenChange(false)
     setDeleteContent(false)
     setDeleteLog(false)
     setDeleteTicket(false)
+    setReason('')
+    setError(null)
+  }
+
+  // Only a successful cancel closes the dialog. Firing and closing threw away
+  // whatever the user typed and hid the fact that the ticket was still running.
+  const confirm = async () => {
+    setError(null)
+    try {
+      await cancelTicket({
+        id: ticketId,
+        options: {
+          deleteContent: deleteTicket || deleteContent,
+          deleteLog: deleteTicket || deleteLog,
+          deleteTicket,
+          ...(deleteTicket ? {} : { reason }),
+        },
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to cancel the ticket')
+      return
+    }
+    close()
   }
 
   return (
@@ -81,6 +107,18 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             </span>
           </label>
         </div>
+        <div className="mt-4">
+          <SkipReasonField
+            label="Why cancel"
+            value={reason}
+            onChange={setReason}
+            disabled={isPending || deleteTicket}
+            help={deleteTicket
+              ? 'Deleting the ticket removes everything, including this.'
+              : 'Kept on the ticket even if you delete its artifacts.'}
+          />
+        </div>
+        {error && <p role="alert" className="mt-3 text-xs text-destructive">{error}</p>}
         <div className="flex justify-end gap-2.5 mt-4">
           <Button variant="outline" size="sm" onClick={close} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
             Keep Ticket
@@ -89,10 +127,7 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             variant="destructive"
             size="sm"
             disabled={isPending}
-            onClick={() => {
-              cancelTicket({ id: ticketId, options: { deleteContent: deleteTicket || deleteContent, deleteLog: deleteTicket || deleteLog, deleteTicket } })
-              close()
-            }}
+            onClick={() => { void confirm() }}
             className="rounded-lg bg-rose-500 text-white hover:bg-rose-600 active:scale-[0.98] shadow-xs font-mono text-xs font-semibold transition-all"
           >
             {deleteTicket ? 'Yes, Delete Ticket' : 'Yes, Cancel Ticket'}

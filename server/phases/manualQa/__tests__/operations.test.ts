@@ -29,6 +29,7 @@ import {
 import type { ManualQaChecklist, ManualQaDraft, ManualQaSummary } from '../types'
 import { readJsonl, writeJsonl } from '../../../io/jsonl'
 import type { Bead } from '../../beads/types'
+import { listSkipEvents } from '../../../workflow/skipReceipts'
 
 const repoManager = createTestRepoManager('manual-qa-operations-')
 
@@ -375,6 +376,28 @@ describe('Manual QA submission recovery and integrity', () => {
       modelCapability: { imageEvidenceMode: 'references_only' },
     })
     expect(skipEvent).toHaveBeenCalledWith({ type: 'MANUAL_QA_SKIPPED' })
+  })
+
+
+  it('stores no reason as null and reads the skip back through the shared audit trail', async () => {
+    const setup = prepareFixture()
+    await skipManualQa({
+      ticketId: setup.ticket.id,
+      version: 1,
+      draft: setup.draft,
+      guard: { ...setup.guard, actionId: 'skip-no-reason', operationType: 'skip' },
+      sendEvent: vi.fn(),
+    })
+
+    const artifact = getLatestPhaseArtifact(setup.ticket.id, 'manual_qa_skip_receipt', 'WAITING_MANUAL_QA')
+    expect(JSON.parse(artifact!.content).reason).toBeNull()
+
+    // Manual QA already writes five records for one skip. The shared read API is
+    // an adapter over those, not a sixth record.
+    const events = listSkipEvents(setup.ticket.id)
+    const roundSkip = events.find((event) => event.surface === 'manual_qa')
+    expect(roundSkip).toMatchObject({ itemType: 'manual_qa_round', reason: null })
+    expect(events.filter((event) => event.surface === 'manual_qa')).toHaveLength(1)
   })
 
   it.each([

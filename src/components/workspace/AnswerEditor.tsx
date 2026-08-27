@@ -6,6 +6,7 @@ import { LoadingText } from '@/components/ui/LoadingText'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ChoiceAnswerInput } from './ChoiceAnswerInput'
 import { AutosaveStatus, type AutosaveStatusState } from './AutosaveStatus'
+import { SkipReasonField } from './SkipReasonField'
 
 function priorityBadgeVariant(priority: string): 'destructive' | 'default' | 'secondary' | 'outline' {
   switch (priority) {
@@ -41,6 +42,7 @@ export interface AnswerEditorProps {
   batchAnswers: Record<string, string>
   batchSkipped: Set<string>
   batchSelectedOptions: Record<string, string[]>
+  batchSkipReasons: Record<string, string>
   isBusy: boolean
   isSubmitting: boolean
   autosaveState: AutosaveStatusState
@@ -50,6 +52,7 @@ export interface AnswerEditorProps {
   onOptionToggle: (questionId: string, optionId: string) => void
   onSkipQuestion: (questionId: string) => void
   onUnskipQuestion: (questionId: string) => void
+  onSkipReasonChange: (questionId: string, reason: string) => void
   onSubmitBatch: () => void
   onShowSkipConfirm: () => void
   questionRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>
@@ -68,6 +71,7 @@ export function AnswerEditor({
   batchAnswers,
   batchSkipped,
   batchSelectedOptions,
+  batchSkipReasons,
   isBusy,
   isSubmitting,
   autosaveState,
@@ -77,6 +81,7 @@ export function AnswerEditor({
   onOptionToggle,
   onSkipQuestion,
   onUnskipQuestion,
+  onSkipReasonChange,
   onSubmitBatch,
   onShowSkipConfirm,
   questionRefs,
@@ -162,17 +167,27 @@ export function AnswerEditor({
                   <p className="text-[10px] text-muted-foreground italic">{question.rationale}</p>
                 )}
                 {isSkipped ? (
-                  <div className="flex items-center gap-2">
-                    <p className="text-[11px] italic text-muted-foreground">This question will be skipped — the AI will decide the best approach.</p>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-[10px] px-2"
-                      onClick={() => onUnskipQuestion(question.id)}
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[11px] italic text-muted-foreground">This question will be skipped. A model answers it later, reading whatever you write below.</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px] px-2"
+                        onClick={() => onUnskipQuestion(question.id)}
+                        disabled={isBusy}
+                      >
+                        Undo Skip
+                      </Button>
+                    </div>
+                    <SkipReasonField
+                      label="Why skip this"
+                      value={batchSkipReasons[question.id] ?? ''}
+                      onChange={(value) => { onSkipReasonChange(question.id, value) }}
                       disabled={isBusy}
-                    >
-                      Undo Skip
-                    </Button>
+                      placeholder="Optional. The model answering this question gets to read it."
+                      help="Saved with the interview, and given to the model that fills this answer in."
+                    />
                   </div>
                 ) : isChoiceQ && question.options && question.options.length > 0 ? (
                   <>

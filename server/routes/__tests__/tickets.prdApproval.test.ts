@@ -26,6 +26,7 @@ import { filesRouter } from '../files'
 import { buildInterviewDocument, buildPrdDocument } from '../../test/factories'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { contentSha256 } from '../../lib/contentHash'
+import { listSkipEvents } from '../../workflow/skipReceipts'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -658,5 +659,47 @@ describe('ticketRouter PRD approval routes', () => {
       expectedContentSha256,
       currentContentSha256: contentSha256(prdRaw),
     })
+  })
+
+  it('records why the PRD was approved with known coverage gaps', async () => {
+    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedContentSha256: contentSha256(prdRaw),
+        gapAcknowledgementReason: 'The remaining gap is tracked in a follow-up ticket.',
+      }),
+    })
+
+    expect(response.status).toBe(200)
+
+    const receipt = getLatestPhaseArtifact(ticket.id, 'approval_receipt', 'WAITING_PRD_APPROVAL')
+    expect(JSON.parse(receipt!.content).gap_acknowledgement).toEqual({
+      reason: 'The remaining gap is tracked in a follow-up ticket.',
+    })
+
+    const events = listSkipEvents(ticket.id)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      surface: 'approval_with_gaps',
+      itemId: 'prd',
+      reason: 'The remaining gap is tracked in a follow-up ticket.',
+    })
+  })
+
+  it('leaves the approval receipt alone when no gap reason was given', async () => {
+    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
+      method: 'POST',
+      ...approvalPayload(prdRaw),
+    })
+
+    expect(response.status).toBe(200)
+    const receipt = getLatestPhaseArtifact(ticket.id, 'approval_receipt', 'WAITING_PRD_APPROVAL')
+    expect(JSON.parse(receipt!.content).gap_acknowledgement).toBeUndefined()
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
   })
 })

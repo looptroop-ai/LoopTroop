@@ -15,13 +15,14 @@ import {
   normalizeVoteScorecardOutput,
   updateInterviewDocumentAnswers,
 } from '../index'
-import { normalizeResolvedInterviewDocumentOutput } from '../interviewDocument'
-import { TEST } from '../../test/factories'
+import { buildInterviewDocumentYaml, normalizeResolvedInterviewDocumentOutput } from '../interviewDocument'
+import { buildInterviewDocument, TEST } from '../../test/factories'
 import type {
   CoverageResultEnvelope,
   InterviewTurnOutput,
   StructuredOutputSuccess,
 } from '../types'
+import type { InterviewDocument } from '@shared/interviewArtifact'
 
 const TICKET_ID = TEST.externalId
 
@@ -5226,6 +5227,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: '',
       answered_by: 'ai_skip',
       answered_at: '2026-03-25T18:20:00.000Z',
+      skip_reason: null,
     })
     expect(result.value.summary.final_free_form_answer).toBe('')
     expect(result.repairWarnings).toContain('Accepted empty final_free_form answer as an explicit no-additions response for AI-filled question QFF1.')
@@ -5619,6 +5621,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: 'Introduce a deterministic, risk-first planning checkpoint.',
       answered_by: 'ai_skip',
       answered_at: '2026-04-30T15:29:01Z',
+      skip_reason: null,
     })
     expect(result.value.questions[1]?.prompt).toBe('Who should consume the strategy?')
     expect(result.value.questions[1]?.answer).toEqual({
@@ -5627,6 +5630,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: '',
       answered_by: 'user',
       answered_at: '2026-03-25T18:19:00.000Z',
+      skip_reason: null,
     })
   })
 
@@ -5759,5 +5763,43 @@ describe.concurrent('structured output normalization', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toBeTruthy()
+  })
+
+  it('promotes an AI-skipped answer to a user skip when a reason is added', () => {
+    const canonical = buildInterviewDocument('TEST-1', 'draft')
+    const aiSkipped: InterviewDocument = {
+      ...canonical,
+      questions: canonical.questions.map((question, index) => (index === 0
+        ? {
+          ...question,
+          answer: {
+            skipped: true,
+            selected_option_ids: [],
+            free_text: '',
+            answered_by: 'ai_skip' as const,
+            answered_at: '',
+            skip_reason: null,
+          },
+        }
+        : question)),
+    }
+
+    const updated = updateInterviewDocumentAnswers(aiSkipped, [{
+      id: aiSkipped.questions[0]!.id,
+      answer: { skipped: true, selected_option_ids: [], free_text: '', skip_reason: 'Answered in the ticket.' },
+    }], '2026-08-27T12:00:00.000Z')
+
+    // Only a user_skip may carry a reason, so writing one onto an ai_skip
+    // placeholder would store a field the next load strips straight back out.
+    const answer = updated.questions[0]!.answer
+    expect(answer.answered_by).toBe('user_skip')
+    expect(answer.skip_reason).toBe('Answered in the ticket.')
+    expect(answer.answered_at).toBe('2026-08-27T12:00:00.000Z')
+
+    // And it survives a round trip through the normalizer.
+    const reloaded = normalizeInterviewDocumentOutput(buildInterviewDocumentYaml(updated), { ticketId: 'TEST-1' })
+    expect(reloaded.ok).toBe(true)
+    if (!reloaded.ok) return
+    expect(reloaded.value.questions[0]?.answer.skip_reason).toBe('Answered in the ticket.')
   })
 })

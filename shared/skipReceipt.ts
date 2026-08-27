@@ -86,6 +86,14 @@ export interface SkipReceipt {
    * and a count of "skips" has no honest answer.
    */
   is_action_summary: boolean
+  /**
+   * True when this row records an item that stopped being skipped.
+   *
+   * Answering a question that was skipped changes the domain artifact, and the
+   * trail has to say so or it keeps reporting a decision that was reversed.
+   * A resolution carries no reason: there is nothing left to explain.
+   */
+  resolves: boolean
   phase: string
   phase_attempt: number | null
   ticket_status_before: string
@@ -111,8 +119,13 @@ export interface SkipEvent {
   itemId: string | null
   itemType: SkipItemType
   isActionSummary: boolean
+  resolves: boolean
   phase: string
   phaseAttempt: number | null
+  /** Ticket status at the moment the action fired, recorded for audit. */
+  ticketStatusBefore: string
+  /** True when a prompt reading this reason will see a shortened copy. */
+  truncatedForPrompt: boolean
   skippedAt: string
   reason: string | null
   supersedes: string | null
@@ -141,7 +154,7 @@ export const SKIP_SURFACE_LABELS: Record<SkipSurface, string> = {
 }
 
 export function describeSkipSurface(surface: SkipSurface): string {
-  return SKIP_SURFACE_LABELS[surface] ?? surface
+  return SKIP_SURFACE_LABELS[surface]
 }
 
 /**
@@ -175,6 +188,9 @@ export function countSkipEvents(events: SkipEvent[]): SkipEventCounts {
   let items = 0
   let itemsWithReason = 0
   for (const event of events) {
+    // A resolution records an item that stopped being skipped. Counting it as a
+    // skip would make undoing one look like performing another.
+    if (event.resolves) continue
     actions.add(event.parentActionId ?? event.actionId)
     if (event.isActionSummary) continue
     items += 1

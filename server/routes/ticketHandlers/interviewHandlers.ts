@@ -39,7 +39,12 @@ import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
-import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
+import {
+  deriveSkipActionId,
+  formatSkipReceiptLogLines,
+  writeSkipReceipts,
+  type SkipReceiptItemInput,
+} from '../../workflow/skipReceipts'
 import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
@@ -86,9 +91,17 @@ function recordInterviewApprovalSkips(input: {
   after: InterviewDocument
 }): void {
   const beforeById = new Map((input.before?.questions ?? []).map((question) => [question.id, question.answer]))
-  const items = input.after.questions.flatMap((question) => {
-    if (!question.answer.skipped) return []
+  const items: SkipReceiptItemInput[] = input.after.questions.flatMap((question) => {
     const previous = beforeById.get(question.id)
+
+    // An answer that used to be skipped and no longer is. Recording this is what
+    // stops the trail reporting a decision the operator has since reversed.
+    if (!question.answer.skipped) {
+      return previous?.skipped
+        ? [{ itemId: question.id, reason: null, resolves: true }]
+        : []
+    }
+
     const newlySkipped = !previous?.skipped
     const reasonChanged = previous?.skip_reason !== question.answer.skip_reason
     if (!newlySkipped && !reasonChanged) return []
@@ -104,7 +117,7 @@ function recordInterviewApprovalSkips(input: {
     ticketStatusBefore: input.ticketStatusBefore,
     actionId: deriveSkipActionId('interview_approval_mark_skipped', [
       input.ticketId,
-      ...items.flatMap((item) => [item.itemId, item.reason]),
+      ...items.flatMap((item) => [item.itemId, item.reason, item.resolves === true ? 'resolved' : 'skipped']),
     ]),
     items,
   })
@@ -390,18 +403,47 @@ export async function handleEditAnswer(c: Context) {
       return c.json({ error: 'No interview session found' }, 404)
     }
 
-    const { questionId, answer } = parsed.data
-    if (!session.answers[questionId]) {
+    const { questionId, answer, skipReason } = parsed.data
+    const previous = session.answers[questionId]
+    if (!previous) {
       return c.json({ error: `No existing answer for question ${questionId}` }, 404)
     }
 
-    const updated = updateInterviewAnswer(session, questionId, answer)
+    const updated = updateInterviewAnswer(session, questionId, answer, skipReason)
     upsertLatestPhaseArtifact(
       ticketId,
       INTERVIEW_SESSION_ARTIFACT,
       'WAITING_INTERVIEW_ANSWERS',
       serializeInterviewSessionSnapshot(updated),
     )
+
+    // Clearing an answer here is a real skip, and answering a skipped one
+    // reverses a real skip. Neither used to reach the trail at all.
+    const nextAnswer = updated.answers[questionId]
+    const nowSkipped = nextAnswer?.skipped === true
+    if (nowSkipped !== previous.skipped || (nowSkipped && nextAnswer?.skipReason !== previous.skipReason)) {
+      const receipts = writeSkipReceipts({
+        ticketId,
+        surface: 'interview_question',
+        itemType: 'interview_question',
+        phase: 'WAITING_INTERVIEW_ANSWERS',
+        ticketStatusBefore: ticket.status,
+        actionId: deriveSkipActionId('interview_question_edit', [
+          ticketId,
+          questionId,
+          nowSkipped ? 'skipped' : 'resolved',
+          nextAnswer?.skipReason ?? null,
+        ]),
+        items: [{
+          itemId: questionId,
+          reason: nowSkipped ? nextAnswer?.skipReason ?? null : null,
+          resolves: !nowSkipped,
+        }],
+      })
+      for (const line of formatSkipReceiptLogLines(receipts)) {
+        emitRoutePhaseLog(ticketId, 'WAITING_INTERVIEW_ANSWERS', 'info', line)
+      }
+    }
 
     const questions = buildInterviewQuestionViews(updated)
     return c.json({ success: true, questions })

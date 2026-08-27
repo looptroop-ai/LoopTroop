@@ -24,6 +24,7 @@ import { buildInterviewDocument } from '../../test/factories'
 import type { InterviewDocument } from '@shared/interviewArtifact'
 import { contentSha256 } from '../../lib/contentHash'
 import { listSkipEvents } from '../../workflow/skipReceipts'
+import { countSkipEvents } from '@shared/skipReceipt'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -621,5 +622,39 @@ describe('ticketRouter interview approval routes', () => {
       itemId: 'Q01',
       reason: 'Decided outside the interview.',
     })
+  })
+
+  it('records a resolution when a skipped answer is answered after all', async () => {
+    const { app, ticket } = setupApprovalTicket()
+
+    const save = (skipped: boolean, reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        questions: [
+          {
+            id: 'Q01',
+            answer: skipped
+              ? { skipped: true, selected_option_ids: [], free_text: '', skip_reason: reason }
+              : { skipped: false, selected_option_ids: [], free_text: 'Answered after all.', skip_reason: null },
+          },
+          {
+            id: 'FINAL',
+            answer: { skipped: false, selected_option_ids: [], free_text: 'Keep retries observable.' },
+          },
+        ],
+      }),
+    })
+
+    expect((await save(true, 'Out of scope.')).status).toBe(200)
+    expect((await save(false, null)).status).toBe(200)
+
+    const events = listSkipEvents(ticket.id)
+    expect(events).toHaveLength(2)
+    // The original skip is no longer the current state, and the trail says so
+    // instead of continuing to report a decision that was reversed.
+    expect(events[0]).toMatchObject({ itemId: 'Q01', reason: 'Out of scope.', superseded: true })
+    expect(events[1]).toMatchObject({ itemId: 'Q01', resolves: true, reason: null })
+    expect(countSkipEvents(events)).toMatchObject({ items: 1 })
   })
 })

@@ -25,6 +25,7 @@ export {
 import type {
   InterviewSessionSnapshot,
 } from '@shared/interviewSession'
+import { normalizeSkipReason } from '@shared/skipReceipt'
 import { isBatchAnswerSkipped, recordBatchAnswers } from './batchManagement'
 import { cloneSnapshot, nowIso } from './interviewUtils'
 
@@ -135,6 +136,7 @@ export function updateInterviewAnswer(
   snapshot: InterviewSessionSnapshot,
   questionId: string,
   newAnswer: string,
+  skipReason?: string | null,
 ): InterviewSessionSnapshot {
   const next = cloneSnapshot(snapshot)
   const existing = next.answers[questionId]
@@ -145,16 +147,21 @@ export function updateInterviewAnswer(
   const trimmed = newAnswer.trim()
   const skipped = trimmed.length === 0
   const now = nowIso()
+  // Clearing an answer is a skip, and it takes a reason like any other. An
+  // explicit reason replaces what was there; omitting one keeps the reason the
+  // question already carried, because the skip it explained has not changed.
+  // Answering the question drops the reason entirely.
+  const nextSkipReason = skipped
+    ? (skipReason === undefined ? existing.skipReason ?? null : normalizeSkipReason(skipReason))
+    : null
+
   next.answers[questionId] = {
     answer: newAnswer,
     skipped,
     answeredAt: skipped ? null : now,
-    // Editing an answer back to empty is a fresh skip, and a reason left over
-    // from the old one no longer describes anything. Answering it drops the
-    // reason entirely.
     skippedAt: skipped ? now : null,
     batchNumber: existing.batchNumber,
-    ...(skipped && existing.skipReason ? { skipReason: existing.skipReason } : {}),
+    ...(nextSkipReason ? { skipReason: nextSkipReason } : {}),
   }
   next.updatedAt = now
   return next

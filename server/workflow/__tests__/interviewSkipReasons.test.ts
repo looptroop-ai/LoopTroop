@@ -173,15 +173,22 @@ describe('interview skip reasons', () => {
     // The answered question gains no reason key at all.
     expect(interviewYaml.match(/skip_reason:/g)?.length).toBe(3)
 
+    // Q02 was skipped in an earlier batch. Skip All did not skip it, so it must
+    // not appear under the bulk surface — re-recording it there would supersede
+    // its original receipt with a decision the user did not make here.
     const events = listSkipEvents(ticket.id)
     expect(countSkipEvents(events)).toEqual({
       actions: 1,
-      items: 3,
-      itemsWithReason: 3,
+      items: 2,
+      itemsWithReason: 2,
       itemsWithoutReason: 0,
     })
+    expect(events.map((event) => event.itemId)).toEqual([null, 'Q03', 'Q04'])
     expect(events.find((event) => event.isActionSummary)?.reason).toBe('Shipping before the demo.')
     expect(events.find((event) => event.itemId === 'Q03')?.reason).toBe('Out of scope for this ticket.')
+    // Children point at the action that produced them.
+    expect(events.find((event) => event.itemId === 'Q03')?.parentActionId)
+      .toBe(events.find((event) => event.isActionSummary)?.actionId)
   })
 
   it('records the same Skip All once when it is replayed', () => {

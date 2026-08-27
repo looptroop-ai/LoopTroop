@@ -13,8 +13,6 @@ import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
 export const skipReasonSchema = z.string()
   .max(SKIP_REASON_MAX_LENGTH, `Reason must be ${SKIP_REASON_MAX_LENGTH.toLocaleString('en-US')} characters or fewer`)
 
-/** Idempotency key for one user action, so a retried request writes one receipt. */
-export const skipActionIdSchema = z.string().min(1).max(120)
 
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
@@ -89,7 +87,9 @@ export const interviewSkipAllPayloadSchema = z.object({
 export const editAnswerSchema = z.object({
   questionId: z.string().min(1),
   answer: z.string(),
-})
+  /** Only meaningful when the edit clears the answer, which is a skip. */
+  skipReason: skipReasonSchema.nullable().optional(),
+}).strict()
 
 export const interviewApprovalAnswerSchema = z.object({
   questions: z.array(z.object({

@@ -276,6 +276,56 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
     expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 
+
+  it('keeps receipts when only the logs are deleted', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteLog: true, reason: 'Wrong branch.' }),
+    })
+
+    expect(response.status).toBe(200)
+    // deleteLog is a log redaction, not an artifact deletion. Both the column
+    // and the receipt survive it.
+    expect(getTicketByRef(ticket.id)?.cancelReason).toBe('Wrong branch.')
+    expect(listSkipEvents(ticket.id)).toHaveLength(1)
+    expect(existsSync(getTicketExecutionLogPath(repoDir, ticket.externalId))).toBe(false)
+  })
+
+  it('leaves no skip trail at all when the ticket itself is deleted', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteTicket: true, reason: 'Created by mistake.' }),
+    })
+
+    expect(response.status).toBe(200)
+    // Nothing survives deleting the ticket, and the dialog does not pretend
+    // otherwise — it disables the reason field entirely.
+    expect(getTicketByRef(ticket.id)).toBeUndefined()
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+  })
+
+  it('normalizes a whitespace-only cancel reason to null', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: '   \n  ' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(getTicketByRef(ticket.id)?.cancelReason ?? null).toBeNull()
+  })
+
   it('returns 404 when the ticket does not exist', async () => {
     const response = await app.request('/api/tickets/nonexistent-id/cancel', {
       method: 'POST',

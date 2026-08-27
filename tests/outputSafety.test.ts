@@ -8,10 +8,18 @@ describe('output safety helpers', () => {
     )
   })
 
+  it('keeps multiline metadata inside one Markdown table row', () => {
+    expect(escapeMarkdownTableCell('first line\r\nsecond line\nthird line')).toBe(
+      'first line second line third line',
+    )
+  })
+
   it('recognises only the selected install channel without compiling it as a regex', () => {
     const report = 'PASS install check: homebrew package detected\nPASS scoop is available'
 
     expect(doctorReportsInstallChannel(report, 'homebrew')).toBe(true)
     expect(doctorReportsInstallChannel(report, 'scoop')).toBe(false)
+    expect(doctorReportsInstallChannel('uninstall homebrew', 'homebrew')).toBe(false)
+    expect(doctorReportsInstallChannel('reinstall scoop', 'scoop')).toBe(false)
   })
 })

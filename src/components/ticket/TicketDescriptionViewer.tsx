@@ -213,13 +213,18 @@ function getSafeHref(rawTarget: string): string | null {
     // URI encoding is the final, context-specific boundary before this value
     // reaches an href. React also escapes attributes, but encoding here keeps
     // text copied from the description DOM from being reinterpreted as markup.
-    if (!LINK_SCHEME_PATTERN.test(href)) return encodeURI(href)
+    if (!LINK_SCHEME_PATTERN.test(href)) return encodeHrefPreservingEscapes(href)
 
     const url = new URL(href)
-    return SAFE_LINK_PROTOCOLS.has(url.protocol) ? encodeURI(href) : null
+    return SAFE_LINK_PROTOCOLS.has(url.protocol) ? encodeHrefPreservingEscapes(href) : null
   } catch {
     return null
   }
+}
+
+/** URI-encodes unsafe characters without changing an existing valid `%XX` escape. */
+function encodeHrefPreservingEscapes(value: string): string {
+  return encodeURI(value).replace(/%25([0-9A-Fa-f]{2})/g, '%$1')
 }
 
 function stripUnsafeHrefChars(value: string): string {

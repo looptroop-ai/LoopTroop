@@ -79,4 +79,17 @@ describe('TicketDescriptionViewer', () => {
       'https://example.com/path?q=%22value%22',
     )
   })
+
+  it('preserves existing percent escapes in validated link targets', () => {
+    render(
+      <TicketDescriptionViewer
+        description={'[encoded path](https://example.com/already%20encoded%2Fpath?q=%E2%9C%93)'}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: 'encoded path' })).toHaveAttribute(
+      'href',
+      'https://example.com/already%20encoded%2Fpath?q=%E2%9C%93',
+    )
+  })
 })

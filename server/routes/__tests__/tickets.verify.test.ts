@@ -14,6 +14,7 @@ import {
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { ticketRouter } from '../tickets'
+import { listSkipEvents } from '../../workflow/skipReceipts'
 
 const {
   readPullRequestReportMock,
@@ -162,11 +163,11 @@ describe('ticketRouter PR review routes', () => {
         message: 'Pull request merged into origin/main. Local checkout was not modified.',
       }
     })
-    completeCloseUnmergedMock.mockImplementation((input: { ticketId: string }) => {
+    completeCloseUnmergedMock.mockImplementation((input: { ticketId: string; reason?: string | null }) => {
       insertPhaseArtifact(input.ticketId, {
         phase: 'WAITING_PR_REVIEW',
         artifactType: 'merge_report',
-        content: JSON.stringify({ disposition: 'closed_unmerged' }),
+        content: JSON.stringify({ disposition: 'closed_unmerged', closeReason: input.reason ?? null }),
       })
       return {
         status: 'passed',
@@ -182,6 +183,7 @@ describe('ticketRouter PR review routes', () => {
         localBaseHead: null,
         remoteBaseHead: null,
         remoteBranchDeleteWarning: null,
+        closeReason: input.reason ?? null,
         message: 'Ticket finished without merging the pull request. The pull request and remote branch were left untouched.',
       }
     })
@@ -266,5 +268,46 @@ describe('ticketRouter PR review routes', () => {
     expect(artifact).toBeDefined()
     const report = JSON.parse(artifact!.content) as { disposition?: string }
     expect(report.disposition).toBe('closed_unmerged')
+  })
+
+  it('records why the branch was finished without merging', async () => {
+    const { ticket } = createWaitingPrReviewTicket()
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Superseded by a smaller change on another branch.' }),
+    })
+
+    expect(response.status).toBe(200)
+
+    const artifact = getLatestPhaseArtifact(ticket.id, 'merge_report', 'WAITING_PR_REVIEW')
+    const report = JSON.parse(artifact!.content) as { closeReason?: string | null }
+    expect(report.closeReason).toBe('Superseded by a smaller change on another branch.')
+
+    const events = listSkipEvents(ticket.id)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      surface: 'close_unmerged',
+      phase: 'WAITING_PR_REVIEW',
+      reason: 'Superseded by a smaller change on another branch.',
+    })
+  })
+
+  it('rejects an unknown field on the close request', async () => {
+    const { ticket } = createWaitingPrReviewTicket()
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/close-unmerged`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // A close reason is not a retry note and must not be accepted as one.
+      body: JSON.stringify({ note: 'Superseded.' }),
+    })
+
+    expect(response.status).toBe(400)
   })
 })

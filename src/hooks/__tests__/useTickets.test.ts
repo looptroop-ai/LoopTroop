@@ -44,7 +44,7 @@ describe('useTicketAction', () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     const note = '  Keep the existing work.\nTry the focused fix next.  '
 
-    await ticketAction('ticket-1', 'retry', note)
+    await ticketAction('ticket-1', 'retry', { kind: 'retry_note', note })
 
     expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/ticket-1/retry', {
       method: 'POST',
@@ -62,5 +62,24 @@ describe('useTicketAction', () => {
     await ticketAction('ticket-1', 'retry')
 
     expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/ticket-1/retry', { method: 'POST' })
+  })
+
+  it('sends a close reason as a reason, never as a retry note', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      message: 'Finished without merge',
+      ticketId: 'ticket-1',
+      state: 'CLEANING_UP',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    await ticketAction('ticket-1', 'close_unmerged', {
+      kind: 'close_reason',
+      reason: 'Superseded by a different branch.',
+    })
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/ticket-1/close-unmerged', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Superseded by a different branch.' }),
+    })
   })
 })

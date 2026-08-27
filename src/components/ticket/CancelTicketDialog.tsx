@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useCancelTicket } from '@/hooks/useTickets'
+import { SkipReasonField } from '@/components/workspace/SkipReasonField'
 
 interface CancelTicketDialogProps {
   ticketId: string
@@ -14,12 +15,14 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
   const [deleteContent, setDeleteContent] = useState(false)
   const [deleteLog, setDeleteLog] = useState(false)
   const [deleteTicket, setDeleteTicket] = useState(false)
+  const [reason, setReason] = useState('')
 
   const close = () => {
     onOpenChange(false)
     setDeleteContent(false)
     setDeleteLog(false)
     setDeleteTicket(false)
+    setReason('')
   }
 
   return (
@@ -81,6 +84,17 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             </span>
           </label>
         </div>
+        <div className="mt-4">
+          <SkipReasonField
+            label="Why cancel"
+            value={reason}
+            onChange={setReason}
+            disabled={isPending || deleteTicket}
+            help={deleteTicket
+              ? 'Deleting the ticket removes everything, including this.'
+              : 'Kept on the ticket even if you delete its artifacts.'}
+          />
+        </div>
         <div className="flex justify-end gap-2.5 mt-4">
           <Button variant="outline" size="sm" onClick={close} className="rounded-lg border-border/70 bg-muted/40 text-muted-foreground hover:bg-muted/70 hover:text-foreground active:scale-[0.98] font-mono text-xs font-medium transition-all">
             Keep Ticket
@@ -90,7 +104,15 @@ export function CancelTicketDialog({ ticketId, open, onOpenChange }: CancelTicke
             size="sm"
             disabled={isPending}
             onClick={() => {
-              cancelTicket({ id: ticketId, options: { deleteContent: deleteTicket || deleteContent, deleteLog: deleteTicket || deleteLog, deleteTicket } })
+              cancelTicket({
+                id: ticketId,
+                options: {
+                  deleteContent: deleteTicket || deleteContent,
+                  deleteLog: deleteTicket || deleteLog,
+                  deleteTicket,
+                  ...(deleteTicket ? {} : { reason }),
+                },
+              })
               close()
             }}
             className="rounded-lg bg-rose-500 text-white hover:bg-rose-600 active:scale-[0.98] shadow-xs font-mono text-xs font-semibold transition-all"

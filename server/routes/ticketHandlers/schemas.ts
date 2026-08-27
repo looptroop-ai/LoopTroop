@@ -35,7 +35,18 @@ export const cancelTicketSchema = z.object({
   deleteContent: z.boolean().default(false),
   deleteLog: z.boolean().default(false),
   deleteTicket: z.boolean().default(false),
-})
+  /**
+   * Why the ticket was canceled. Stored on the ticket row, not as a phase
+   * artifact: `deleteContent` removes every phase artifact for the ticket, so a
+   * receipt would be erased by the same action that wrote it.
+   */
+  reason: skipReasonSchema.optional(),
+}).strict()
+
+export const closeUnmergedSchema = z.object({
+  /** Why the work is being finished without merging. Lands on `merge_report`. */
+  reason: skipReasonSchema.optional(),
+}).strict()
 
 export const retryTicketSchema = z.object({
   note: z.string()

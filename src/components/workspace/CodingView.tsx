@@ -1376,7 +1376,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         <VerificationSummaryPanel
           ticket={ticket}
           onMerge={() => performAction({ id: ticket.id, action: 'merge' })}
-          onCloseUnmerged={() => performAction({ id: ticket.id, action: 'close_unmerged' })}
+          onCloseUnmerged={(reason) => performAction({
+            id: ticket.id,
+            action: 'close_unmerged',
+            payload: { kind: 'close_reason', reason },
+          })}
           isPending={isPending}
         />
       )}

@@ -411,7 +411,7 @@ describe('DashboardHeader', () => {
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
-      options: { deleteContent: false, deleteLog: false, deleteTicket: false },
+      options: { deleteContent: false, deleteLog: false, deleteTicket: false, reason: '' },
     })
   })
 
@@ -450,7 +450,7 @@ describe('DashboardHeader', () => {
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
-      options: { deleteContent: false, deleteLog: false, deleteTicket: false },
+      options: { deleteContent: false, deleteLog: false, deleteTicket: false, reason: '' },
     })
   })
 
@@ -472,7 +472,7 @@ describe('DashboardHeader', () => {
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
-      options: { deleteContent: true, deleteLog: false, deleteTicket: false },
+      options: { deleteContent: true, deleteLog: false, deleteTicket: false, reason: '' },
     })
   })
 
@@ -494,7 +494,7 @@ describe('DashboardHeader', () => {
 
     expect(cancelMutate).toHaveBeenCalledWith({
       id: ticket.id,
-      options: { deleteContent: false, deleteLog: true, deleteTicket: false },
+      options: { deleteContent: false, deleteLog: true, deleteTicket: false, reason: '' },
     })
   })
 

@@ -11,6 +11,7 @@ import { createTicket, DISPLAY_ONLY_MOCK_BRANCH_NAME, getTicketByRef, patchTicke
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../../storage/paths'
+import { listSkipEvents } from '../../workflow/skipReceipts'
 
 vi.mock('../../workflow/runner', () => ({
   cancelTicket: vi.fn(),
@@ -218,6 +219,61 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
     expect(existsSync(logPath)).toBe(false)
     expect(existsSync(debugLogPath)).toBe(false)
     expect(existsSync(aiLogPath)).toBe(false)
+  })
+
+
+  it('keeps the cancel reason on the ticket row and in the skip trail', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Requirements changed before implementation started.' }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(getTicketByRef(ticket.id)?.cancelReason).toBe('Requirements changed before implementation started.')
+
+    const events = listSkipEvents(ticket.id)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      surface: 'cancel_ticket',
+      itemType: 'ticket',
+      phase: 'DRAFTING_PRD',
+      reason: 'Requirements changed before implementation started.',
+    })
+  })
+
+  it('keeps the reason on the ticket row when the artifacts are deleted with it', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteContent: true, reason: 'Abandoned in favour of a smaller change.' }),
+    })
+
+    expect(response.status).toBe(200)
+    // The column survives. The receipt does not, and the dialog promises exactly that.
+    expect(getTicketByRef(ticket.id)?.cancelReason).toBe('Abandoned in favour of a smaller change.')
+    expect(listSkipEvents(ticket.id)).toHaveLength(0)
+  })
+
+  it('rejects a malformed cancel payload instead of cancelling with defaults', async () => {
+    const repoDir = repoManager.createRepo()
+    const { ticket } = createCancelableTicket(repoDir)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'x'.repeat(20_001) }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(getTicketByRef(ticket.id)?.status).toBe('DRAFTING_PRD')
+    expect(sendTicketEvent).not.toHaveBeenCalled()
   })
 
   it('returns 404 when the ticket does not exist', async () => {

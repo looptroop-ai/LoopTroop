@@ -301,21 +301,42 @@ function getTicketActionPath(id: string, action: WorkflowAction): string {
   }
 }
 
+/**
+ * What an action carries beyond the action itself.
+ *
+ * Discriminated rather than a bare `note`, because the two payloads mean
+ * opposite things: a retry note is forwarded to the agent as an instruction, and
+ * a close reason is recorded for people and never reaches a model. A single
+ * positional string would let one be sent where the other was meant, with no
+ * type error and no runtime failure — just a reason quietly handed to an agent.
+ */
+export type TicketActionPayload =
+  | { kind: 'retry_note'; note: string }
+  | { kind: 'close_reason'; reason?: string }
+
 export type TicketActionVariables =
-  | { id: string; action: WorkflowAction; note?: undefined }
-  | { id: string; action: 'retry'; note: string }
+  | { id: string; action: WorkflowAction; payload?: undefined }
+  | { id: string; action: 'retry'; payload: { kind: 'retry_note'; note: string } }
+  | { id: string; action: 'close_unmerged'; payload: { kind: 'close_reason'; reason?: string } }
+
+function buildTicketActionBody(payload: TicketActionPayload | undefined): string | undefined {
+  if (!payload) return undefined
+  if (payload.kind === 'retry_note') return JSON.stringify({ note: payload.note })
+  return JSON.stringify(payload.reason ? { reason: payload.reason } : {})
+}
 
 export async function ticketAction(
   id: string,
   action: WorkflowAction,
-  note?: string,
+  payload?: TicketActionPayload,
 ): Promise<TicketActionResponse> {
+  const body = buildTicketActionBody(payload)
   const res = await fetch(getTicketActionPath(id, action), {
     method: 'POST',
-    ...(note !== undefined
+    ...(body !== undefined
       ? {
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ note }),
+          body,
         }
       : {}),
   })
@@ -329,6 +350,7 @@ interface CancelTicketOptions {
   deleteContent?: boolean
   deleteLog?: boolean
   deleteTicket?: boolean
+  reason?: string
 }
 
 async function cancelTicket(id: string, options: CancelTicketOptions = {}): Promise<TicketActionResponse> {
@@ -339,6 +361,7 @@ async function cancelTicket(id: string, options: CancelTicketOptions = {}): Prom
       deleteContent: options.deleteContent ?? false,
       deleteLog: options.deleteLog ?? false,
       deleteTicket: options.deleteTicket ?? false,
+      ...(options.reason?.trim() ? { reason: options.reason.trim() } : {}),
     }),
   })
   if (!res.ok) {
@@ -491,8 +514,8 @@ export function useUpdateTicket() {
 export function useTicketAction() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, action, note }: TicketActionVariables) =>
-      ticketAction(id, action, note),
+    mutationFn: ({ id, action, payload }: TicketActionVariables) =>
+      ticketAction(id, action, payload),
     onSuccess: (result, variables) => {
       if (result.ticket) {
         mergeTicketInCache<Ticket>(queryClient, result.ticket)

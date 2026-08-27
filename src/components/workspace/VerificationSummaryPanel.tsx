@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { GitBranch, GitCommitHorizontal, CheckCircle2, XCircle, FlaskConical, Blocks, AlertTriangle, ExternalLink, GitPullRequest } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { LoadingText } from '@/components/ui/LoadingText'
@@ -9,11 +9,13 @@ import type { Ticket } from '@/hooks/useTickets'
 import { cn } from '@/lib/utils'
 import { getSafeGitHubPullRequestUrl } from '@/lib/githubUrls'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { SkipReasonField } from './SkipReasonField'
 
 interface VerificationSummaryPanelProps {
   ticket: Ticket
   onMerge: () => void
-  onCloseUnmerged: () => void
+  onCloseUnmerged: (reason?: string) => void
   isPending: boolean
 }
 
@@ -44,6 +46,8 @@ function shortSha(sha: string | null | undefined): string {
 export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isPending }: VerificationSummaryPanelProps) {
   const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
+  const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState(false)
+  const [closeReason, setCloseReason] = useState('')
   const targetPhases = useMemo(() => getArtifactTargetPhases('WAITING_PR_REVIEW'), [])
 
   const integrationReport = useMemo(() => {
@@ -78,6 +82,42 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
 
   return (
     <div className="border-b border-border shrink-0" data-testid="verification-summary-panel">
+      <Dialog open={isCloseConfirmOpen} onOpenChange={setIsCloseConfirmOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Finish Without Merging?</DialogTitle>
+            <DialogDescription>
+              The pull request and the remote branch are left exactly as they are. The ticket moves to
+              cleanup and stops here, and nothing about this work reaches {baseBranch}.
+            </DialogDescription>
+          </DialogHeader>
+          <SkipReasonField
+            label="Why finish without merging"
+            value={closeReason}
+            onChange={setCloseReason}
+            disabled={isPending}
+            help="Saved with the merge report. It is the only record of why this branch stopped."
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setIsCloseConfirmOpen(false)} disabled={isPending}>
+              Keep Reviewing
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={isPending}
+              onClick={() => {
+                onCloseUnmerged(closeReason.trim() || undefined)
+                setIsCloseConfirmOpen(false)
+                setCloseReason('')
+              }}
+            >
+              Finish Without Merge
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Header */}
       <div className="px-4 py-3 bg-amber-50/60 dark:bg-amber-950/20">
         <div className="flex items-center justify-between gap-3">
@@ -89,7 +129,7 @@ export function VerificationSummaryPanel({ ticket, onMerge, onCloseUnmerged, isP
             <Button
               variant="outline"
               size="sm"
-              onClick={onCloseUnmerged}
+              onClick={() => setIsCloseConfirmOpen(true)}
               disabled={isPending}
               className="text-xs"
             >

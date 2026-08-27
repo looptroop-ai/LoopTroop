@@ -240,13 +240,13 @@ const WORKFLOW_PHASE_DETAILS = {
     steps: [
       'Question batch: The workspace shows the current set of pending questions, including type, context, and prior answered or skipped state.',
       'Answering Questions And Autosave: You can answer questions in any order. Free-text questions accept open-ended responses; choice-based questions present the available options. Draft changes autosave while you work, and the visible Autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time.',
-      'Skipping: You can skip a question, or unskip it later and answer it. Skipped questions stay visible in the interview history.',
+      'Skipping: You can skip a question, or unskip it later and answer it. A skipped question takes an optional reason, which is saved with the interview and given to the model that later fills the answer in. Undoing the skip discards the reason, because it no longer explains anything. Skipped questions stay visible in the interview history along with whatever reason you gave.',
       'Batch submission: Submitting writes the latest answers and skip decisions into the interview session and canonical artifact. The model may inspect a small repository area read-only when it needs to prepare the next batch, but your product decisions remain authoritative.',
       'Follow-up rounds: If coverage finds real gaps later, the workflow returns here with new targeted questions instead of repeating the whole interview.',
-      'Skip All: You can skip every remaining unanswered question at once. LoopTroop writes a synthetic clean coverage record for audit history and sends the ticket directly to interview approval. Skipped questions are answered by AI models at the start of PRD drafting.',
+      'Skip All: You can skip every remaining unanswered question at once, with one optional reason for the whole action. That reason applies only to questions you have not already explained individually, and never to answers you submitted in an earlier batch. LoopTroop writes a synthetic clean coverage record for audit history and sends the ticket directly to interview approval. Skipped questions are answered by AI models at the start of PRD drafting.',
     ],
     outputs: [
-      'Saved user answers and skip decisions in the interview session snapshot.',
+      'Saved user answers, skip decisions, and skip reasons in the interview session snapshot.',
       'An updated canonical interview artifact.',
       'A question history spanning both the original and follow-up rounds.',
     ],
@@ -260,7 +260,8 @@ const WORKFLOW_PHASE_DETAILS = {
       'This is a user-input phase. The workflow is intentionally paused while you answer.',
       'The phase may repeat during the initial interview and again during coverage follow-ups.',
       'AI context available: Ticket Details plus the live interview session state. Read-only repository checks can confirm technical facts, but they do not replace stakeholder decisions.',
-      'Specific answers usually lead to better PRDs than broad or heavily skipped ones.',
+      'Specific answers usually lead to better PRDs than broad or heavily skipped ones. A short reason on a skip is the next best thing, because the model that fills the answer in gets to read it.',
+      'Each committed skip is recorded with who skipped it, when, and the reason at that moment. The Skips panel in the Full Log shows the whole trail.',
     ],
   },
   VERIFYING_INTERVIEW_COVERAGE: {
@@ -301,7 +302,7 @@ const WORKFLOW_PHASE_DETAILS = {
     overview: 'The interview is ready for review. Nothing moves forward until you approve it. You can inspect the structured view or raw YAML. Draft edits autosave with a visible last-save status, but they do not update the authoritative interview artifact until you explicitly Save.',
     steps: [
       'Review modes: You can switch between a structured question-and-answer view and the raw YAML.',
-      'Editing Answers And Draft Autosave: You can adjust any answer text, change skip decisions, or modify the raw YAML directly. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time.',
+      'Editing Answers And Draft Autosave: You can adjust any answer text, change skip decisions, or modify the raw YAML directly. Marking an answer skipped takes an optional reason, and answering the question clears it. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time.',
       'Save: Draft autosave does not update the authoritative interview. Explicit Save writes the new interview, records a user-edit receipt, and refreshes caches. If you save a post-approval edit before PRE_FLIGHT_CHECK, LoopTroop archives the current approved version and restarts downstream planning from the edited interview.',
       'Approve: Approval locks the current interview as the source of truth for PRD drafting. The request includes the content hash you reviewed, so stale tabs cannot approve an older version.',
       'Edit window: After PRE_FLIGHT_CHECK begins, interview edits are no longer accepted because execution planning is already locked.',
@@ -311,6 +312,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'User-edited replacement content when you save changes.',
       'Persisted draft state for in-progress review edits.',
       'Approval and user-edit receipts with content hashes.',
+      'A skip receipt for every answer this edit newly skipped, and for every skip reason it changed.',
       'Archived prior interview versions and downstream planning attempts when a post-approval edit restarts planning.',
     ],
     transitions: [
@@ -321,7 +323,8 @@ const WORKFLOW_PHASE_DETAILS = {
       'This is the human approval gate before PRD drafting begins.',
       'The content-hash check protects against approving a stale tab.',
       'No AI work runs just because this screen is open.',
-      'Skipped questions deserve extra attention because PRD drafting will otherwise fill them with AI-generated answers.',
+      'Skipped questions deserve extra attention because PRD drafting will otherwise fill them with AI-generated answers. A reason on the skip is what the filling model has to work from.',
+      'Re-saving a document you did not change records nothing. Only a newly skipped answer or an edited reason counts as a decision.',
     ],
     equivalents: [
       'This is the approval gate for the Interview phase. The same pattern repeats later for the PRD and beads approval screens.',
@@ -456,7 +459,7 @@ const WORKFLOW_PHASE_DETAILS = {
     steps: [
       'Review modes: You can switch between a structured PRD view and the raw YAML.',
       'Full Answers context: When Part 1 produced a Full Answers artifact, the approval header shows a read-only view of the completed interview answers that shaped the winning PRD.',
-      'Coverage warnings and extra fixes: If the pass cap was hit before the PRD became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run one targeted AI fix at a time.',
+      'Coverage warnings and extra fixes: If the pass cap was hit before the PRD became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run one targeted AI fix at a time. Approving with gaps takes an optional reason, which is stored on the approval receipt and in the skip trail. It is the only record of why those gaps were accepted.',
       'Editing And Draft Autosave: You can edit any section of the PRD. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time. Draft autosave does not update the authoritative PRD; explicit Save applies the draft and records a user-edit receipt. If you save a post-approval edit before PRE_FLIGHT_CHECK, LoopTroop archives the current approved PRD and restarts downstream planning from the edited version.',
       'Approval decision: Approval locks the current PRD as the specification for beads drafting. The request includes the content hash you reviewed, so stale tabs cannot approve an older version.',
       'Edit window: After PRE_FLIGHT_CHECK begins, PRD edits are no longer accepted because execution planning is already locked.',
@@ -467,6 +470,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Persisted draft state for in-progress review edits.',
       'Read-only Full Answers context when PRD drafting produced it.',
       'Approval and user-edit receipts with content hashes, plus optional extra-fix coverage history.',
+      'A gap acknowledgement on the approval receipt, and a matching skip receipt, when you approve with known gaps and give a reason.',
       'Archived prior PRD versions and downstream beads attempts when a post-approval edit restarts planning.',
     ],
     transitions: [
@@ -478,6 +482,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'The content-hash check protects against approving a stale tab.',
       'No AI work runs just because this screen is open. AI sees this context only when you click Fix gaps with AI.',
       'The Full Answers view is reference context, not a second editable artifact.',
+      'The gap reason is about the gaps in front of you now. It is not carried over from a previous coverage run.',
       'Editing the PRD after downstream planning has started intentionally archives that later planning and restarts it from the edited PRD.',
     ],
     equivalents: [
@@ -635,7 +640,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Execution plan review: LoopTroop shows each bead\'s description, acceptance criteria, dependency chain, file targets, planned test commands or no-command explanation, and execution ordering.',
       'Dependency view: The plan makes the dependency chain visible so you can check that the execution order makes sense before coding begins.',
       'Editing And Draft Autosave: You can review the plan in structured form or edit the raw representation before approving. Draft changes autosave between view switches and reloads. The visible Draft autosave on indicator reports pending, saving, saved, conflict, or failure state plus the last server-acknowledged save time. Draft autosave does not update the authoritative beads artifact; explicit Save applies the draft and records a user-edit receipt.',
-      'Coverage warnings and extra fixes: If the pass cap was hit before the plan became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run a targeted AI fix that revises the semantic blueprint and rechecks coverage.',
+      'Coverage warnings and extra fixes: If the pass cap was hit before the plan became fully clean, the approval screen shows the unresolved gaps. You can edit manually, approve with gaps, or run a targeted AI fix that revises the semantic blueprint and rechecks coverage. Approving with gaps takes an optional reason, which is stored on the approval receipt and in the skip trail.',
       'Approval decision: Approval locks the execution plan the coding loop will consume bead by bead. The request includes the content hash you reviewed, so stale tabs cannot approve an older version.',
       'Expansion refresh: If an extra fix changes the semantic blueprint, LoopTroop reruns expansion before it refreshes the approval artifact and hash.',
     ],
@@ -644,6 +649,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'User-edited replacement content when you save changes.',
       'Persisted draft state for in-progress review edits.',
       'Approval and user-edit receipts with content hashes, plus optional extra-fix coverage history.',
+      'A gap acknowledgement on the approval receipt, and a matching skip receipt, when you approve with known gaps and give a reason.',
       'The authoritative bead set consumed by pre-flight checks and the coding loop.',
     ],
     transitions: [
@@ -656,6 +662,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'No AI work runs just because this screen is open. AI sees this context only when you click Fix gaps with AI.',
       'Dependency mistakes are expensive here because they affect the order the coding loop will follow.',
       'Clear acceptance criteria matter because the coding loop uses them to decide whether a bead is done.',
+      'Approving with gaps here is the last chance to say why in writing. Nothing downstream asks again.',
     ],
     equivalents: [
       'This is the approval gate for the beads phase. Interview and PRD use the same pattern earlier in the workflow.',
@@ -896,7 +903,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Workspace Drift Gate: Before Submit or Skip, LoopTroop compares project files with the saved QA baseline. Audited application-created drift must be explicitly included in a checkpoint or discarded before the action can continue.',
       'QA-Fix Planning: When any check fails, one locked main implementer prompt receives the failed merge groups and focused ticket, PRD, bead, final-test, checklist, evidence-reference, and diff context. At least one successful read-only repository inspection tool call is required so the resulting normal-quality beads can identify newly relevant files.',
       'Submission Journal: Final submission stages immutable results and the operation journal, generates and strictly validates one complete QA-fix bead candidate per failed merge group, then writes canonical `fix-beads.yaml` before creating any child ticket or bead. Only after the candidate is persisted does LoopTroop create configured Improvement tickets, append normal-shape `qa-fix` beads, write receipts and summary, and transition. Retry resumes the same action without duplicating work.',
-      'Waiver and Skip Paths: Required waivers are recorded in a `waived_through` outcome. Skip warns that no QA-fix bead or improvement ticket will be created, then archives every entered result, note, merge-group choice, improvement draft, and evidence reference as read-only even when normal Submit validation is incomplete.',
+      'Waiver and Skip Paths: Required waivers are recorded in a `waived_through` outcome, each with its own optional waiver reason. Skip warns that no QA-fix bead or improvement ticket will be created, takes an optional reason for the whole round, then archives every entered result, note, merge-group choice, improvement draft, and evidence reference as read-only even when normal Submit validation is incomplete.',
       'Loop Outcome: Passing, waived-through, or skipped rounds advance to integration. Any explicit Fail creates AI-planned, application-owned QA-fix work, archives the current round attempts, and returns the ticket to Coding. Successful fixes then get fresh final tests and a new checklist version.',
     ],
     outputs: [
@@ -904,6 +911,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Secure evidence metadata and disk-only files, with copied provenance for any created improvement tickets or QA-fix work.',
       'A validated canonical `fix-beads.yaml` candidate artifact for failed checks, followed by normal pending `qa-fix` bead records whose lifecycle fields and identifiers are assigned by LoopTroop.',
       'A final outcome of `passed`, `waived_through`, `skipped`, or `created_fixes`, including created fix-bead and improvement-ticket ids.',
+      'A skip reason on the round summary when the round was skipped, and a waiver reason on each waived item. Both are readable through the ticket-wide Skips panel in the Full Log.',
     ],
     transitions: [
       'Pass Or Optional-Pending Completion → Preparing Final Commit: With no failures and no required waivers, submission records `passed` and advances to integration.',
@@ -917,6 +925,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'LoopTroop never starts, stops, previews, or otherwise controls the user\'s application.',
       'PRD coverage is advisory and collapsed by default. Improvement context and both description and provenance previews are also opt-in disclosures.',
       'Retry notes for normal bead failures stay separate from typed Manual QA origin data.',
+      'A waiver reason explains one check. A skip reason explains the whole round. They are recorded separately and never merged.',
       'The status title is version-free. The version selector appears only when more than one checklist-backed round exists, and historical rounds remain selectable read-only after the ticket loops back to Coding or moves forward.',
       'The phase log is collapsed by default and follows the selected checklist-backed version, including submission, AI and tool, child-creation, completion, and error milestones. When expanded, its height can be adjusted manually.',
     ],
@@ -990,12 +999,12 @@ const WORKFLOW_PHASE_DETAILS = {
       'Diff Review Modes: The bead-commits modal defaults to Net Diff for the actual base-to-candidate PR review surface, while By Bead preserves cumulative implementation activity and By File groups repeated bead touches.',
       'Manual Review: You inspect the draft PR and the local result. There is no time limit. LoopTroop waits for your decision.',
       'Merge Path: Choosing Merge PR & Finish marks the PR ready if needed and merges it into the base branch on GitHub. Once GitHub reports the PR merged, LoopTroop verifies that the remote base branch contains the candidate commit and leaves your local checkout untouched.',
-      'Finish Without Merge Path: Choosing Finish Without Merge preserves the PR and the remote ticket branch exactly as they are, then proceeds directly to cleanup and terminal completion.',
+      'Finish Without Merge Path: Choosing Finish Without Merge asks you to confirm, and takes an optional reason for stopping here. The PR and the remote ticket branch are preserved exactly as they are, then the ticket proceeds to cleanup and terminal completion. The reason is stored on the merge report and is the only record of why this branch stopped.',
       'External Merge Detection: If the PR is merged manually in GitHub while this phase is open, LoopTroop detects that during polling, skips a second remote merge call, verifies the remote base branch, and continues automatically.',
     ],
     outputs: [
       'A stable draft-PR review gate that exposes final PR metadata, test results, integration summary, ignored-file audit, and the net candidate diff.',
-      'A merge report artifact recording whether the ticket finished as merged or closed unmerged.',
+      'A merge report artifact recording whether the ticket finished as merged or closed unmerged, including the reason when you finished without merging.',
       'An explicit human decision before cleanup and terminal completion.',
     ],
     transitions: [
@@ -1007,6 +1016,7 @@ const WORKFLOW_PHASE_DETAILS = {
       'Context available: PR metadata, final test report, integration summary, and merge controls. No AI prompt context is assembled in this review gate.',
       'This is the final human quality gate in the GitHub endgame.',
       'Finishing without merge does not require deleting the PR or the remote branch.',
+      'Finishing without merge is a decision worth explaining. Nothing later in the ticket asks why the branch stopped.',
       'Internal merge, fetch, push, and cleanup commands appear in `SYS > CMD` as final summaries so the review gate stays auditable without noisy progress chatter.',
     ],
   },
@@ -1252,7 +1262,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_INTERVIEW_ANSWERS',
     label: 'Interviewing',
-    description: 'Answer the interview questions that will shape the PRD. Draft answers autosave with visible state and last-save time. Non-final submissions can load another batch, and coverage may send the ticket back here with focused follow-up questions.',
+    description: 'Answer the interview questions that will shape the PRD, or skip them with an optional reason the answering model gets to read. Draft answers autosave with visible state and last-save time. Non-final submissions can load another batch, and coverage may send the ticket back here with focused follow-up questions.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_ANSWERS,
     kanbanPhase: 'needs_input',
     groupId: 'interview',
@@ -1277,7 +1287,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_INTERVIEW_APPROVAL',
     label: 'Approving Interview',
-    description: 'Review and approve the final interview before PRD drafting starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approval then locks this interview as the source of truth for PRD drafting.',
+    description: 'Review and approve the final interview before PRD drafting starts, including any answers you want to skip and why. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approval then locks this interview as the source of truth for PRD drafting.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_INTERVIEW_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'interview',
@@ -1339,7 +1349,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_PRD_APPROVAL',
     label: 'Approving Specs',
-    description: 'Review and approve the PRD before implementation planning starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Coverage warnings and the read-only Full Answers context stay available while you decide.',
+    description: 'Review and approve the PRD before implementation planning starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Coverage warnings and the read-only Full Answers context stay available while you decide, and approving with known gaps takes an optional reason.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PRD_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'prd',
@@ -1414,7 +1424,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_BEADS_APPROVAL',
     label: 'Approving Blueprint',
-    description: 'Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. This is the last planning checkpoint before automated code changes begin.',
+    description: 'Review and approve the execution-ready bead plan before coding starts. Draft edits autosave with visible state and last-save time, but explicit Save is required to update the authoritative artifact. Approving with known coverage gaps takes an optional reason, and this is the last planning checkpoint before automated code changes begin.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_BEADS_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'beads',
@@ -1522,7 +1532,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_MANUAL_QA',
     label: 'Manual QA',
-    description: 'Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit finishes the round, and failed checks create QA-fix work. Improvements and evidence stay attached to the versioned checklist history.',
+    description: 'Run the app yourself, work through the checklist, and record results in the autosaved Manual QA workspace. Submit finishes the round, and failed checks create QA-fix work. Waiving a check or skipping the round takes an optional reason, and improvements and evidence stay attached to the versioned checklist history.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_MANUAL_QA,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
@@ -1559,7 +1569,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
   {
     id: 'WAITING_PR_REVIEW',
     label: 'Reviewing Pull Request',
-    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. This is the last human gate before cleanup and terminal completion.',
+    description: 'Review the draft pull request, final diff, ignored-file audit, and test results before you merge or finish without merging. Finishing without merging asks for confirmation and takes an optional reason. This is the last human gate before cleanup and terminal completion.',
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',

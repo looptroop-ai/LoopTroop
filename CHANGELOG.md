@@ -9,6 +9,31 @@ Unreleased changes appear first and represent commits that have not yet been inc
 
 > Changes merged since the last versioned release that have not yet shipped in a tagged version.
 
+### Summary
+- Every user action that skips something now takes an optional reason: an interview question, all remaining questions at once, an answer marked skipped at approval, an approval with known coverage gaps, a Manual QA round, finishing without merging, and cancelling a ticket.
+- The model that fills in skipped interview answers can now read why they were skipped, instead of guessing blind. No other model sees those reasons.
+- A `Skips` panel in the Full Log shows the whole trail for a ticket: what was skipped, when, by which action, and what the reason said at the time.
+- Finishing a ticket without merging now asks for confirmation instead of ending the ticket on one click.
+- A cancelled ticket keeps its reason even when its artifacts are deleted with it.
+
+### Added
+- Every skip surface now takes an optional reason. Interview questions can be skipped individually with their own reason, or all at once with a single reason for the action. An answer marked skipped at the interview approval screen takes one, as does approving a PRD or bead plan with unresolved coverage gaps, skipping a Manual QA round, finishing a ticket without merging, and cancelling. Reasons are always optional; nothing is blocked for lack of one, and no screen nags about a skip that has none.
+- Skip reasons are stored twice, on purpose. The current reason lives on the artifact the surface owns — the answer in `interview.yaml`, the Manual QA summary, the merge report, the ticket's own `cancel_reason` column — which is what the interface reads back. An append-only receipt records the history separately: who skipped what, when, from which surface, and what the reason said at that moment. The two are never inverted, so editing a reason at approval does not rewrite what was recorded during the interview.
+- A `Skips` toggle in the Full Log, next to AI details, listing every skip on the ticket with its surface, item, and reason. It spans every phase and every retried attempt, because a receipt from an archived attempt is still a decision somebody made. The counts read as actions and items, so skipping forty questions in one click is one action and forty items rather than forty-one skips. Eight lines are shown at a time and the rest scroll, so the panel cannot push the log off the screen.
+- `GET /api/tickets/:id/skips` returns the same trail, optionally filtered by phase or surface.
+- Skipping an interview question now records the moment it happened. It previously recorded nothing, which made a deliberate human skip indistinguishable from an unanswered placeholder.
+
+### Changed
+- PROM10a, which invents answers for skipped interview questions, now receives the reasons as a separate read-only section of its prompt. They are not part of the interview artifact it is asked to reproduce, so there is no field for it to write one back into, and reasons are stripped from the artifact everywhere else — PRD drafting, PRD voting, interview coverage and every downstream prompt see the interview without them. Reasons are shortened to 500 characters where a prompt reads them, because forty skipped questions at the full storage limit is a great deal of prompt spent on notes.
+- Finishing a ticket without merging now opens a confirmation carrying the optional reason, rather than ending the ticket on a single click.
+- The Manual QA waiver box and the skip reason box are now the same component, so both cap at the same length and behave the same way. A waiver still explains one check and a skip still explains the whole round; they are recorded separately and never merged.
+- Interview answers now distinguish a person's skip from an automatic AI fill. Both were previously recorded as `ai_skip`, which is why a skip reason had nowhere to display.
+- Cancelling a ticket with a malformed request is now refused. It previously fell back to defaults and cancelled anyway, which meant an oversized reason was dropped while the destructive part of the request went ahead regardless.
+- Skipping the rest of the interview no longer treats a choice question you answered by picking an option as unanswered. The dialog promises to preserve what is in the batch, and it now does.
+
+### Fixed
+- Fixed a skip reason surviving a change of mind. Undoing a skip, typing an answer, or picking an option now discards the reason, so it cannot re-attach itself to a later skip made for an entirely different reason.
+
 ## 0.5.9 (2026-08-26)
 
 

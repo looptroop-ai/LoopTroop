@@ -21,7 +21,9 @@ import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
   buildInterviewQuestionViews,
   INTERVIEW_SESSION_ARTIFACT,
+  isBatchAnswerSkipped,
   parseInterviewSessionSnapshot,
+  resolveSkippedQuestionIdsForSkipAll,
   serializeInterviewSessionSnapshot,
   updateInterviewAnswer,
 } from '../../phases/interview/sessionState'
@@ -47,10 +49,25 @@ import {
 } from './routeUtils'
 import {
   editAnswerSchema,
-  interviewAnswerPayloadSchema,
   interviewApprovalAnswerSchema,
+  interviewBatchAnswerPayloadSchema,
+  interviewSkipAllPayloadSchema,
   rawInterviewSaveSchema,
 } from './schemas'
+
+/**
+ * A reason only means something attached to a skip.
+ *
+ * Accepting one for a question the person answered would put a reason into the
+ * audit trail explaining a decision that was never made, and there is no later
+ * point at which that could be noticed.
+ */
+function findReasonsForAnsweredQuestions(
+  skipReasons: Record<string, string>,
+  skippedQuestionIds: Set<string>,
+): string[] {
+  return Object.keys(skipReasons).filter((questionId) => !skippedQuestionIds.has(questionId))
+}
 
 function buildInterviewPayload(ticketId: string): {
   winnerId: string | null
@@ -141,15 +158,38 @@ export async function handleSkipTicket(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    const parsed = interviewAnswerPayloadSchema.safeParse(body)
-    if (!parsed.success) {
-      return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
-    }
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = interviewSkipAllPayloadSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
+  }
 
+  const skipAllSession = parseInterviewSessionSnapshot(
+    getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)?.content,
+  )
+  if (!skipAllSession) {
+    return c.json({ error: 'No interview session found' }, 404)
+  }
+  const skipAllSkippedIds = resolveSkippedQuestionIdsForSkipAll(
+    skipAllSession,
+    parsed.data.answers,
+    parsed.data.selectedOptions,
+  )
+  const answeredWithReasons = findReasonsForAnsweredQuestions(parsed.data.skipReasons, skipAllSkippedIds)
+  if (answeredWithReasons.length > 0) {
+    return c.json({
+      error: 'A skip reason was sent for a question that is not being skipped',
+      questionIds: answeredWithReasons,
+    }, 400)
+  }
+
+  try {
     ensureActorForTicket(ticketId)
-    skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers)
+    skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers, {
+      selectedOptions: parsed.data.selectedOptions,
+      skipReasons: parsed.data.skipReasons,
+      bulkReason: parsed.data.bulkSkipReason ?? null,
+    })
 
     try {
       await abortTicketSessions(ticketId)
@@ -176,16 +216,34 @@ export async function handleAnswerBatch(c: Context) {
     return c.json({ error: 'Ticket is not waiting for interview answers' }, 409)
   }
 
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    const parsed = interviewAnswerPayloadSchema.safeParse(body)
-    if (!parsed.success) {
-      return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
-    }
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = interviewBatchAnswerPayloadSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid answers payload', details: parsed.error.flatten() }, 400)
+  }
 
-    // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
-    const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
-    const session = parseInterviewSessionSnapshot(sessionArt?.content)
+  // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
+  const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
+  const session = parseInterviewSessionSnapshot(sessionArt?.content)
+
+  const batchSkippedIds = new Set(
+    (session?.currentBatch?.questions ?? [])
+      .filter((question) => isBatchAnswerSkipped(
+        question,
+        parsed.data.answers[question.id] ?? '',
+        parsed.data.selectedOptions[question.id] ?? [],
+      ))
+      .map((question) => question.id),
+  )
+  const batchAnsweredWithReasons = findReasonsForAnsweredQuestions(parsed.data.skipReasons, batchSkippedIds)
+  if (batchAnsweredWithReasons.length > 0) {
+    return c.json({
+      error: 'A skip reason was sent for a question that is not being skipped',
+      questionIds: batchAnsweredWithReasons,
+    }, 400)
+  }
+
+  try {
     const isCoverageBatch = session?.currentBatch?.source === 'coverage'
     const needsAsyncProcessing = !isMockOpenCodeMode() && !isCoverageBatch
 
@@ -210,7 +268,7 @@ export async function handleAnswerBatch(c: Context) {
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions),
+        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions, parsed.data.skipReasons),
         timeoutPromise,
       ])
         .finally(() => {
@@ -241,7 +299,7 @@ export async function handleAnswerBatch(c: Context) {
     }
 
     // SYNC path: mock mode or coverage batches (fast, no AI call)
-    const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions)
+    const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
       sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })

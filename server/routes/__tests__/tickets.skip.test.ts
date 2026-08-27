@@ -177,4 +177,139 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
     expect(coverageArtifact).toBeDefined()
     expect(coverageArtifact?.content).toContain('"hasGaps":false')
   })
+
+  it('refuses a skip reason attached to a question the person answered', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({
+      folderPath: repoDir,
+      name: 'LoopTroop',
+      shortname: 'LOOP',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Skip route reasons',
+      description: 'A reason only means something attached to a skip.',
+    })
+
+    const init = initializeTicket({
+      projectFolder: repoDir,
+      externalId: ticket.externalId,
+    })
+
+    patchTicket(ticket.id, {
+      status: 'WAITING_INTERVIEW_ANSWERS',
+      branchName: init.branchName,
+    })
+
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [
+        { id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' },
+        { id: 'Q02', phase: 'Structure', question: 'Which constraints are fixed?' },
+      ],
+      maxInitialQuestions: 2,
+    })
+    const currentBatch = buildPersistedBatch({
+      questions: [
+        { id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' },
+        { id: 'Q02', phase: 'Structure', question: 'Which constraints are fixed?' },
+      ],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'Both questions at once.',
+      batchNumber: 1,
+    }, 'prom4', base)
+
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, currentBatch)),
+    )
+
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        answers: { Q01: 'Answered right here.' },
+        skipReasons: { Q01: 'A reason for something that is not being skipped.' },
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    const payload = await response.json() as { questionIds?: string[] }
+    expect(payload.questionIds).toEqual(['Q01'])
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
+  })
+
+  it('carries per-question and bulk reasons into the canonical interview', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({
+      folderPath: repoDir,
+      name: 'LoopTroop',
+      shortname: 'LOOP',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Skip route bulk reason',
+      description: 'The bulk reason fills gaps only.',
+    })
+
+    const init = initializeTicket({
+      projectFolder: repoDir,
+      externalId: ticket.externalId,
+    })
+
+    patchTicket(ticket.id, {
+      status: 'WAITING_INTERVIEW_ANSWERS',
+      branchName: init.branchName,
+    })
+
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [
+        { id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' },
+        { id: 'Q02', phase: 'Structure', question: 'Which constraints are fixed?' },
+      ],
+      maxInitialQuestions: 2,
+    })
+    const currentBatch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' }],
+      progress: { current: 1, total: 2 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'First question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, currentBatch)),
+    )
+
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        answers: { Q01: '' },
+        skipReasons: { Q01: 'Answered in the ticket description.' },
+        bulkSkipReason: 'Shipping before the demo.',
+      }),
+    })
+
+    expect(response.status).toBe(200)
+
+    const interviewYaml = readFileSync(getTicketPaths(ticket.id)!.ticketDir + '/interview.yaml', 'utf-8')
+    expect(interviewYaml).toContain('skip_reason: Answered in the ticket description.')
+    expect(interviewYaml).toContain('skip_reason: Shipping before the demo.')
+  })
 })

@@ -380,6 +380,7 @@ export function buildInterviewQuestionViews(
       status,
       answer: answer ? answer.answer : null,
       ...(answer?.selectedOptionIds && answer.selectedOptionIds.length > 0 ? { selectedOptionIds: answer.selectedOptionIds } : {}),
+      ...(status === 'skipped' && answer?.skipReason ? { skipReason: answer.skipReason } : {}),
     }
   })
 }

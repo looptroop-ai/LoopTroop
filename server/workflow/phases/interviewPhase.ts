@@ -39,6 +39,7 @@ import {
   buildInterviewUiRefinementDiffArtifactFromChanges,
 } from '@shared/refinementDiffArtifacts'
 import { calculateFollowUpLimit } from '../../phases/interview/followUpBudget'
+import { deriveSkipActionId, writeSkipReceipts } from '../skipReceipts'
 import { raceWithCancel, throwIfCancelled } from '../../lib/abort'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { persistUiRefinementDiffArtifact } from '../refinementDiffArtifacts'
@@ -162,9 +163,63 @@ export function buildFormattedBatchAnswers(
   return result
 }
 
+/**
+ * Records what a committed interview action skipped.
+ *
+ * Called at the commit point rather than on click: a reason typed against a
+ * question the person then answered must never become history, and a skip that
+ * was never submitted is not a decision.
+ */
+function recordInterviewSkipReceipts(input: {
+  ticketId: string
+  ticketStatusBefore: string
+  surface: 'interview_question' | 'interview_all'
+  snapshot: InterviewSessionSnapshot
+  questionIds: string[]
+  /** Passed in: `recordBatchAnswers` clears `currentBatch` as it commits. */
+  batchNumber: number | null
+  bulkReason?: string | null
+}): void {
+  const skipped = input.questionIds
+    .map((questionId) => ({ questionId, answer: input.snapshot.answers[questionId] }))
+    .filter((entry) => entry.answer?.skipped === true)
+  if (skipped.length === 0) return
+
+  const items = skipped.map((entry) => ({
+    itemId: entry.questionId,
+    reason: entry.answer?.skipReason ?? null,
+  }))
+  const actionId = deriveSkipActionId(input.surface, [
+    input.ticketId,
+    input.batchNumber,
+    ...items.flatMap((item) => [item.itemId, item.reason]),
+    input.bulkReason ?? null,
+  ])
+
+  writeSkipReceipts({
+    ticketId: input.ticketId,
+    surface: input.surface,
+    itemType: 'interview_question',
+    phase: 'WAITING_INTERVIEW_ANSWERS',
+    ticketStatusBefore: input.ticketStatusBefore,
+    actionId,
+    items,
+    // Only the bulk action gets a summary row. Skipping three questions inside a
+    // batch you then submit is three decisions, not a fourth one about the batch.
+    summary: input.surface === 'interview_all'
+      ? { itemType: 'interview_batch', reason: input.bulkReason ?? null }
+      : null,
+  })
+}
+
 export function skipAllInterviewQuestionsToApproval(
   ticketId: string,
   batchAnswers: Record<string, string>,
+  options: {
+    selectedOptions?: Record<string, string[]>
+    skipReasons?: Record<string, string>
+    bulkReason?: string | null
+  } = {},
 ): { snapshot: InterviewSessionSnapshot; canonicalInterview: string } {
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot) {
@@ -182,12 +237,25 @@ export function skipAllInterviewQuestionsToApproval(
     throw new Error(`Ticket workspace not initialized: missing ticket paths for ${externalId}`)
   }
 
-  const finalizedSnapshot = completeInterviewBySkippingRemaining(snapshot, batchAnswers)
+  const finalizedSnapshot = completeInterviewBySkippingRemaining(snapshot, batchAnswers, {
+    selectedOptions: options.selectedOptions,
+    skipReasons: options.skipReasons,
+    bulkReason: options.bulkReason,
+  })
   const canonicalInterview = buildCanonicalInterviewYaml(externalId, finalizedSnapshot)
   const interviewPath = resolve(paths.ticketDir, 'interview.yaml')
 
   safeAtomicWrite(interviewPath, canonicalInterview)
   persistInterviewSession(ticketId, finalizedSnapshot)
+  recordInterviewSkipReceipts({
+    ticketId,
+    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+    surface: 'interview_all',
+    snapshot: finalizedSnapshot,
+    questionIds: finalizedSnapshot.questions.map((question) => question.id),
+    batchNumber: snapshot.currentBatch?.batchNumber ?? null,
+    bulkReason: options.bulkReason ?? null,
+  })
   interviewQASessions.delete(ticketId)
 
   const userAnswers = buildInterviewAnswerSummary(finalizedSnapshot)
@@ -1109,6 +1177,7 @@ export async function handleInterviewQABatch(
   ticketId: string,
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
+  skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
@@ -1118,7 +1187,19 @@ export async function handleInterviewQABatch(
   const ticket = getTicketByRef(ticketId)
   const externalId = ticket?.externalId ?? ticketId
   const currentBatch = snapshot.currentBatch
-  const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions)
+  const answeredSnapshot = recordBatchAnswers(snapshot, batchAnswers, selectedOptions, skipReasons)
+
+  // The batch is committed the moment its answers land in the snapshot, so this
+  // is where the skips become history — including the implicit ones, where the
+  // person submitted a question blank rather than clicking Skip.
+  recordInterviewSkipReceipts({
+    ticketId,
+    ticketStatusBefore: ticket?.status ?? 'WAITING_INTERVIEW_ANSWERS',
+    surface: 'interview_question',
+    snapshot: answeredSnapshot,
+    questionIds: currentBatch.questions.map((question) => question.id),
+    batchNumber: currentBatch.batchNumber,
+  })
 
   if (isMockOpenCodeMode()) {
     if (currentBatch.source === 'prom4' && currentBatch.batchNumber === 1) {
@@ -1359,8 +1440,9 @@ export function processInterviewBatchAsync(
   batchAnswers: Record<string, string>,
   originalSnapshot: InterviewSessionSnapshot,
   selectedOptions: Record<string, string[]> = {},
+  skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions)
+  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons)
     .catch((err) => {
       // Revert to original snapshot so the user can retry the submission
       try {

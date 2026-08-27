@@ -118,7 +118,16 @@ export function QuestionList({
                     ) : (
                       <>
                         {question.status === 'skipped'
-                          ? <p className="text-[11px] italic text-muted-foreground">Skipped</p>
+                          ? (
+                            <div className="space-y-1">
+                              <p className="text-[11px] italic text-muted-foreground">Skipped</p>
+                              {question.skipReason && (
+                                <p className="text-[11px] whitespace-pre-wrap text-muted-foreground">
+                                  <span className="font-medium">Why you skipped it:</span> {question.skipReason}
+                                </p>
+                              )}
+                            </div>
+                          )
                           : (
                             <div className="space-y-1">
                               {question.selectedOptionIds && question.selectedOptionIds.length > 0 && (

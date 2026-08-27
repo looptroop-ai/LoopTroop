@@ -7,8 +7,8 @@ import { createJsonResponse, renderWithProviders as sharedRenderWithProviders } 
 import { INTERVIEW_BATCH_EVENT } from '@/lib/interviewBatchEvents'
 import { InterviewQAView } from '../InterviewQAView'
 
-let submittedBody: { answers?: Record<string, string>; selectedOptions?: Record<string, string[]> } | null = null
-let skippedBody: { answers?: Record<string, string> } | null = null
+let submittedBody: { answers?: Record<string, string>; selectedOptions?: Record<string, string[]>; skipReasons?: Record<string, string> } | null = null
+let skippedBody: { answers?: Record<string, string>; skipReasons?: Record<string, string>; bulkSkipReason?: string } | null = null
 let savedUiState: { scope?: string; data?: unknown } | null = null
 let preSeededDrafts: { draftAnswers: Record<string, Record<string, string>>; skippedQuestions: Record<string, string[]>; selectedOptions?: Record<string, Record<string, string[]>> } | null = null
 let interviewData: InterviewSessionView = {
@@ -282,6 +282,7 @@ describe('InterviewQAView', () => {
         QF01: 'Exercise retries against a flaky upstream fake.',
       },
       selectedOptions: {},
+      skipReasons: {},
     })
   })
 
@@ -299,7 +300,7 @@ describe('InterviewQAView', () => {
 
     expect(screen.getByRole('heading', { name: /skip remaining interview questions/i })).toBeInTheDocument()
     expect(screen.getByText(/preserves anything currently typed in this batch/i)).toBeInTheDocument()
-    expect(screen.getByText(/the skipped questions will be answered by AI models at the beginning of the PRD phase/i)).toBeInTheDocument()
+    expect(screen.getByText(/answered by AI models at the start of the PRD phase/i)).toBeInTheDocument()
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /skip to approval/i }))
@@ -309,6 +310,8 @@ describe('InterviewQAView', () => {
       answers: {
         QF01: 'Exercise retries against a flaky upstream fake.',
       },
+      selectedOptions: {},
+      skipReasons: {},
     })
   })
 
@@ -436,7 +439,7 @@ describe('InterviewQAView', () => {
         await Promise.resolve()
       })
 
-      expect(submittedBody).toEqual({ answers: { QF01: 'Pre-filled answer' }, selectedOptions: {} })
+      expect(submittedBody).toEqual({ answers: { QF01: 'Pre-filled answer' }, selectedOptions: {}, skipReasons: {} })
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(350)
@@ -476,6 +479,7 @@ describe('InterviewQAView', () => {
         Q03: 'Retry twice before falling back.',
       },
       selectedOptions: {},
+      skipReasons: {},
     })
   })
 
@@ -503,6 +507,7 @@ describe('InterviewQAView', () => {
         Q03: 'Retry twice before falling back.',
       },
       selectedOptions: {},
+      skipReasons: {},
     })
   })
 
@@ -550,5 +555,65 @@ describe('InterviewQAView', () => {
     await waitFor(() => {
       expect(screen.getByText('What deployment target is in scope?')).toBeInTheDocument()
     })
+  })
+
+  it('sends a per-question reason for a skipped question and drops it when the skip is undone', async () => {
+    renderWithProviders(<InterviewQAView ticket={makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('How will retries be tested?')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getAllByRole('button', { name: /skip question/i })[0]!)
+
+    const reasonBox = await screen.findByLabelText(/why skip this/i)
+    fireEvent.change(reasonBox, { target: { value: 'Already decided in the design doc.' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    })
+
+    expect(submittedBody?.skipReasons).toEqual({ QF01: 'Already decided in the design doc.' })
+  })
+
+  it('discards a reason once the question is un-skipped', async () => {
+    renderWithProviders(<InterviewQAView ticket={makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('How will retries be tested?')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getAllByRole('button', { name: /skip question/i })[0]!)
+    fireEvent.change(await screen.findByLabelText(/why skip this/i), {
+      target: { value: 'A reason that stops applying.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /undo skip/i }))
+
+    fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Answered after all.' } })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /submit/i }))
+    })
+
+    expect(submittedBody?.skipReasons).toEqual({})
+  })
+
+  it('sends the bulk reason with Skip All', async () => {
+    renderWithProviders(<InterviewQAView ticket={makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('How will retries be tested?')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /skip all questions/i }))
+    fireEvent.change(await screen.findByLabelText(/why skip the rest/i), {
+      target: { value: 'Shipping before the demo.' },
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /skip to approval/i }))
+    })
+
+    expect(skippedBody?.bulkSkipReason).toBe('Shipping before the demo.')
   })
 })

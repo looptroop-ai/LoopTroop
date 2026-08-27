@@ -93,6 +93,8 @@ export interface InterviewQuestionView extends InterviewSessionQuestion {
   status: InterviewQuestionStatus
   answer: string | null
   selectedOptionIds?: string[]
+  /** Present only on a question the person skipped and explained. */
+  skipReason?: string
 }
 
 export interface InterviewSessionView {

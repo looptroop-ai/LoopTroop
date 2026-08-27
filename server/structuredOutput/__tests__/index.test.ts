@@ -5629,6 +5629,7 @@ describe.concurrent('structured output normalization', () => {
       free_text: '',
       answered_by: 'user',
       answered_at: '2026-03-25T18:19:00.000Z',
+      skip_reason: null,
     })
   })
 

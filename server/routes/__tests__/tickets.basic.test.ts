@@ -287,6 +287,7 @@ describe('ticketRouter basic ticket routes', () => {
       ticket.id,
       { Q01: 'Keep the route behavior unchanged.' },
       { Q01: ['preserve'] },
+      {},
     )
     expect(ensureActorForTicket).toHaveBeenCalledWith(ticket.id)
     expect(sendTicketEvent).toHaveBeenCalledWith(ticket.id, {

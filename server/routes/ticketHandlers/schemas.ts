@@ -55,10 +55,25 @@ export const upsertUiStateSchema = z.object({
   actionId: z.string().min(1).max(120),
 })
 
-export const interviewAnswerPayloadSchema = z.object({
+const interviewAnswerFieldsSchema = {
   answers: z.record(z.string(), z.string()).default({}),
   selectedOptions: z.record(z.string(), z.array(z.string())).optional().default({}),
-})
+  /** Keyed by question id. Validated against the questions the batch actually skips. */
+  skipReasons: z.record(z.string().min(1), skipReasonSchema).optional().default({}),
+}
+
+/**
+ * `/answer-batch` and `/skip` used to share one schema, which is exactly how a
+ * field added for one route gets silently ignored on the other. They are
+ * separate now, and both are strict.
+ */
+export const interviewBatchAnswerPayloadSchema = z.object(interviewAnswerFieldsSchema).strict()
+
+export const interviewSkipAllPayloadSchema = z.object({
+  ...interviewAnswerFieldsSchema,
+  /** One reason for the whole action. Never overwrites a per-question reason. */
+  bulkSkipReason: skipReasonSchema.optional(),
+}).strict()
 
 export const editAnswerSchema = z.object({
   questionId: z.string().min(1),

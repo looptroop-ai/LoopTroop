@@ -7,6 +7,7 @@ export {
   buildPersistedBatch,
   recordPreparedBatch,
   recordBatchAnswers,
+  isBatchAnswerSkipped,
   clearInterviewSessionBatch,
   buildCoverageFollowUpBatch,
 } from './batchManagement'
@@ -24,7 +25,7 @@ export {
 import type {
   InterviewSessionSnapshot,
 } from '@shared/interviewSession'
-import { recordBatchAnswers } from './batchManagement'
+import { isBatchAnswerSkipped, recordBatchAnswers } from './batchManagement'
 import { cloneSnapshot, nowIso } from './interviewUtils'
 
 export const INTERVIEW_SESSION_ARTIFACT = 'interview_session'
@@ -34,26 +35,86 @@ export const INTERVIEW_CURRENT_BATCH_ARTIFACT = 'interview_current_batch'
 export const INTERVIEW_BATCH_HISTORY_ARTIFACT = 'interview_batch_history'
 export const INTERVIEW_COVERAGE_FOLLOWUPS_ARTIFACT = 'interview_coverage_followups'
 
+export interface SkipRemainingOptions {
+  selectedOptions?: Record<string, string[]>
+  /** Per-question reasons for the batch on screen. These always win. */
+  skipReasons?: Record<string, string>
+  /**
+   * One reason for the whole action, used only where no per-question reason was
+   * given. It must never overwrite a reason the person typed against a specific
+   * question, and it must never reach a question answered in an earlier batch.
+   */
+  bulkReason?: string | null
+}
+
 export function completeInterviewBySkippingRemaining(
   snapshot: InterviewSessionSnapshot,
   batchAnswers: Record<string, string>,
+  options: SkipRemainingOptions = {},
 ): InterviewSessionSnapshot {
   const currentBatchNumber = snapshot.currentBatch?.batchNumber ?? null
   const answeredSnapshot = snapshot.currentBatch
-    ? recordBatchAnswers(snapshot, batchAnswers)
+    ? recordBatchAnswers(snapshot, batchAnswers, options.selectedOptions ?? {}, options.skipReasons ?? {})
     : cloneSnapshot(snapshot)
 
+  const bulkReason = options.bulkReason?.trim() ?? ''
+  const skippedAt = nowIso()
+
   for (const question of answeredSnapshot.questions) {
-    if (answeredSnapshot.answers[question.id]) continue
+    const existing = answeredSnapshot.answers[question.id]
+    if (existing) {
+      // Prior batches are already committed and are not part of this action.
+      // Only a question this action itself skipped, and left without a reason of
+      // its own, falls back to the bulk reason.
+      if (
+        bulkReason
+        && existing.skipped
+        && !existing.skipReason
+        && existing.batchNumber === currentBatchNumber
+      ) {
+        existing.skipReason = bulkReason
+      }
+      continue
+    }
     answeredSnapshot.answers[question.id] = {
       answer: '',
       skipped: true,
       answeredAt: null,
+      skippedAt,
       batchNumber: currentBatchNumber,
+      ...(bulkReason ? { skipReason: bulkReason } : {}),
     }
   }
 
   return markInterviewSessionComplete(answeredSnapshot)
+}
+
+/**
+ * The question ids this action would leave skipped.
+ *
+ * The route needs this before anything is committed, so it can reject a reason
+ * attached to a question the person actually answered.
+ */
+export function resolveSkippedQuestionIdsForSkipAll(
+  snapshot: InterviewSessionSnapshot,
+  batchAnswers: Record<string, string>,
+  selectedOptions: Record<string, string[]> = {},
+): Set<string> {
+  const batchQuestionIds = new Set(snapshot.currentBatch?.questions.map((question) => question.id) ?? [])
+  const skipped = new Set<string>()
+
+  for (const question of snapshot.currentBatch?.questions ?? []) {
+    if (isBatchAnswerSkipped(question, batchAnswers[question.id] ?? '', selectedOptions[question.id] ?? [])) {
+      skipped.add(question.id)
+    }
+  }
+  for (const question of snapshot.questions) {
+    if (batchQuestionIds.has(question.id)) continue
+    const existing = snapshot.answers[question.id]
+    if (!existing) skipped.add(question.id)
+  }
+
+  return skipped
 }
 
 export function markInterviewSessionComplete(
@@ -82,13 +143,20 @@ export function updateInterviewAnswer(
   }
 
   const trimmed = newAnswer.trim()
+  const skipped = trimmed.length === 0
+  const now = nowIso()
   next.answers[questionId] = {
     answer: newAnswer,
-    skipped: trimmed.length === 0,
-    answeredAt: trimmed.length === 0 ? null : nowIso(),
+    skipped,
+    answeredAt: skipped ? null : now,
+    // Editing an answer back to empty is a fresh skip, and a reason left over
+    // from the old one no longer describes anything. Answering it drops the
+    // reason entirely.
+    skippedAt: skipped ? now : null,
     batchNumber: existing.batchNumber,
+    ...(skipped && existing.skipReason ? { skipReason: existing.skipReason } : {}),
   }
-  next.updatedAt = nowIso()
+  next.updatedAt = now
   return next
 }
 

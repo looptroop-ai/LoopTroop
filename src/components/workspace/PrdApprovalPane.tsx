@@ -188,6 +188,10 @@ export function PrdApprovalPane({
   const [isFixingCoverageGaps, setIsFixingCoverageGaps] = useState(false)
   const [isCascadeWarningOpen, setIsCascadeWarningOpen] = useState(false)
   const [isFullAnswersOpen, setIsFullAnswersOpen] = useState(false)
+  // Deliberately not persisted with the approval draft: an acknowledgement is
+  // about the gaps in front of you right now, and a stale one from a previous
+  // coverage run would be the wrong explanation attached to a new approval.
+  const [gapReason, setGapReason] = useState('')
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
   const containerRef = useRef<HTMLDivElement>(null)
@@ -330,7 +334,10 @@ export function PrdApprovalPane({
       const response = await fetch(`/api/tickets/${ticket.id}/approve-prd`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
+        body: JSON.stringify({
+          expectedContentSha256: currentContentSha256,
+          ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
+        }),
       })
       const payload = await response.json() as { error?: string; details?: string }
       if (!response.ok) {
@@ -583,6 +590,9 @@ export function PrdApprovalPane({
               onFixGaps={handleFixCoverageGaps}
               isFixing={isFixingCoverageGaps}
               fixError={coverageFixError}
+              gapReason={gapReason}
+              onGapReasonChange={setGapReason}
+              gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
           {isLoading || isPreparingStructuredPrd ? (

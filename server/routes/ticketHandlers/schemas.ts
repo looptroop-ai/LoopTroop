@@ -87,6 +87,12 @@ export const interviewApprovalAnswerSchema = z.object({
       skipped: z.boolean(),
       selected_option_ids: z.array(z.string()).default([]),
       free_text: z.string(),
+      /**
+       * Omitted means "leave whatever is stored alone"; explicit `null` clears
+       * it. An editor that sends nothing must not silently wipe a reason, and
+       * one that answers the question must be able to.
+       */
+      skip_reason: skipReasonSchema.nullable().optional(),
     }),
   })).min(1),
 })
@@ -243,6 +249,12 @@ export const structuredExecutionSetupPlanSaveSchema = z.object({
 
 export const approvalRequestSchema = z.object({
   expectedContentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  /**
+   * Why the operator approved despite known coverage gaps.
+   *
+   * Optional, and only offered by the UI when there are gaps to acknowledge.
+   */
+  gapAcknowledgementReason: skipReasonSchema.optional(),
 }).strict()
 
 export const regenerateExecutionSetupPlanSchema = z.object({

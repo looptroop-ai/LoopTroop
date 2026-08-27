@@ -23,6 +23,7 @@ import { ticketRouter } from '../tickets'
 import { buildInterviewDocument } from '../../test/factories'
 import type { InterviewDocument } from '@shared/interviewArtifact'
 import { contentSha256 } from '../../lib/contentHash'
+import { listSkipEvents } from '../../workflow/skipReceipts'
 
 vi.mock('../../machines/persistence', async () => {
   const storage = await import('../../storage/tickets')
@@ -526,6 +527,99 @@ describe('ticketRouter interview approval routes', () => {
       artifactType: 'interview',
       expectedContentSha256,
       currentContentSha256: contentSha256(raw),
+    })
+  })
+
+  it('records a reason when an answer is marked skipped at approval, and again only when it changes', async () => {
+    const { app, ticket, paths } = setupApprovalTicket()
+
+    const markSkipped = (reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        questions: [
+          {
+            id: 'Q01',
+            answer: {
+              skipped: true,
+              selected_option_ids: [],
+              free_text: '',
+              skip_reason: reason,
+            },
+          },
+          {
+            id: 'FINAL',
+            answer: {
+              skipped: false,
+              selected_option_ids: [],
+              free_text: 'Keep retries observable and reviewable.',
+            },
+          },
+        ],
+      }),
+    })
+
+    expect((await markSkipped('Answered in the ticket description.')).status).toBe(200)
+
+    const savedRaw = readFileSync(`${paths.ticketDir}/interview.yaml`, 'utf-8')
+    expect(savedRaw).toContain('answered_by: user_skip')
+    expect(savedRaw).toContain('skip_reason: Answered in the ticket description.')
+
+    const afterFirst = listSkipEvents(ticket.id)
+    expect(afterFirst).toHaveLength(1)
+    expect(afterFirst[0]).toMatchObject({
+      surface: 'interview_approval_mark_skipped',
+      itemId: 'Q01',
+      reason: 'Answered in the ticket description.',
+    })
+
+    // Saving the same thing again is not a new decision.
+    expect((await markSkipped('Answered in the ticket description.')).status).toBe(200)
+    expect(listSkipEvents(ticket.id)).toHaveLength(1)
+
+    // Editing the reason is.
+    expect((await markSkipped('Actually, it is out of scope.')).status).toBe(200)
+    const afterEdit = listSkipEvents(ticket.id)
+    expect(afterEdit).toHaveLength(2)
+    expect(afterEdit[0]?.superseded).toBe(true)
+    expect(afterEdit[1]?.reason).toBe('Actually, it is out of scope.')
+  })
+
+  it('records a skip introduced through the raw YAML tab', async () => {
+    const { app, ticket, document } = setupApprovalTicket()
+
+    const skippedDocument: InterviewDocument = {
+      ...document,
+      questions: document.questions.map((question) => (
+        question.id === 'Q01'
+          ? {
+            ...question,
+            answer: {
+              skipped: true,
+              selected_option_ids: [],
+              free_text: '',
+              answered_by: 'user_skip' as const,
+              answered_at: '2026-01-01T00:00:00.000Z',
+              skip_reason: 'Decided outside the interview.',
+            },
+          }
+          : question
+      )),
+    }
+
+    const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: buildInterviewDocumentYaml(skippedDocument) }),
+    })
+
+    expect(response.status).toBe(200)
+    const events = listSkipEvents(ticket.id)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      surface: 'interview_approval_mark_skipped',
+      itemId: 'Q01',
+      reason: 'Decided outside the interview.',
     })
   })
 })

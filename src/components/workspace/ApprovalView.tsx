@@ -201,6 +201,10 @@ function BeadsApprovalPane({
   const [jsonlDraft, setJsonlDraft] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
+  // Deliberately not persisted with the approval draft: an acknowledgement is
+  // about the gaps in front of you right now, and a stale one from a previous
+  // coverage run would be the wrong explanation attached to a new approval.
+  const [gapReason, setGapReason] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
   const [approveError, setApproveError] = useState<string | null>(null)
   const [coverageFixError, setCoverageFixError] = useState<string | null>(null)
@@ -347,7 +351,10 @@ function BeadsApprovalPane({
       const response = await fetch(`/api/tickets/${ticket.id}/approve-beads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
+        body: JSON.stringify({
+          expectedContentSha256: currentContentSha256,
+          ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
+        }),
       })
       const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
       if (!response.ok) {
@@ -366,7 +373,7 @@ function BeadsApprovalPane({
     } finally {
       setIsApproving(false)
     }
-  }, [currentContentSha256, ticket.id, queryClient])
+  }, [currentContentSha256, gapReason, ticket.id, queryClient])
 
   const handleFixCoverageGaps = useCallback(async () => {
     setIsFixingCoverageGaps(true)
@@ -538,6 +545,9 @@ function BeadsApprovalPane({
               onFixGaps={handleFixCoverageGaps}
               isFixing={isFixingCoverageGaps}
               fixError={coverageFixError}
+              gapReason={gapReason}
+              onGapReasonChange={setGapReason}
+              gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
           {isLoading ? (

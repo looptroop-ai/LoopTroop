@@ -39,6 +39,7 @@ import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
 import { getErrorMessage } from '@shared/typeGuards'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
+import { deriveSkipActionId, writeSkipReceipts } from '../../workflow/skipReceipts'
 import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
@@ -67,6 +68,46 @@ function findReasonsForAnsweredQuestions(
   skippedQuestionIds: Set<string>,
 ): string[] {
   return Object.keys(skipReasons).filter((questionId) => !skippedQuestionIds.has(questionId))
+}
+
+/**
+ * Records what an approval-time edit changed about skipping.
+ *
+ * Both the structured editor and the raw YAML tab land here, because both can
+ * flip an answer to skipped and both can rewrite a reason. It records only what
+ * actually changed: re-saving a document untouched is not a decision, and would
+ * otherwise stamp a receipt on every question that happened to be skipped
+ * already.
+ */
+function recordInterviewApprovalSkips(input: {
+  ticketId: string
+  ticketStatusBefore: string
+  before: InterviewDocument | null
+  after: InterviewDocument
+}): void {
+  const beforeById = new Map((input.before?.questions ?? []).map((question) => [question.id, question.answer]))
+  const items = input.after.questions.flatMap((question) => {
+    if (!question.answer.skipped) return []
+    const previous = beforeById.get(question.id)
+    const newlySkipped = !previous?.skipped
+    const reasonChanged = previous?.skip_reason !== question.answer.skip_reason
+    if (!newlySkipped && !reasonChanged) return []
+    return [{ itemId: question.id, reason: question.answer.skip_reason }]
+  })
+  if (items.length === 0) return
+
+  writeSkipReceipts({
+    ticketId: input.ticketId,
+    surface: 'interview_approval_mark_skipped',
+    itemType: 'interview_question',
+    phase: 'WAITING_INTERVIEW_APPROVAL',
+    ticketStatusBefore: input.ticketStatusBefore,
+    actionId: deriveSkipActionId('interview_approval_mark_skipped', [
+      input.ticketId,
+      ...items.flatMap((item) => [item.itemId, item.reason]),
+    ]),
+    items,
+  })
 }
 
 function buildInterviewPayload(ticketId: string): {
@@ -385,9 +426,11 @@ export async function handlePutInterviewAnswers(c: Context) {
 
   let beforeRaw: string | null = null
   let beforeItemCount: number | null = null
+  let beforeDocument: InterviewDocument | null = null
   try {
     const before = readInterviewDocument(ticketId)
     beforeRaw = before.raw
+    beforeDocument = before.document
     beforeItemCount = before.document.questions.length
   } catch {
     beforeRaw = null
@@ -430,6 +473,12 @@ export async function handlePutInterviewAnswers(c: Context) {
       restart,
       invalidation: result.invalidation,
     })
+    recordInterviewApprovalSkips({
+      ticketId,
+      ticketStatusBefore: ticket.status,
+      before: beforeDocument,
+      after: result.document,
+    })
     return c.json({
       success: true,
       ...buildInterviewPayload(ticketId),
@@ -461,9 +510,11 @@ export async function handlePutInterview(c: Context) {
 
   let beforeRaw: string | null = null
   let beforeItemCount: number | null = null
+  let beforeDocument: InterviewDocument | null = null
   try {
     const before = readInterviewDocument(ticketId)
     beforeRaw = before.raw
+    beforeDocument = before.document
     beforeItemCount = before.document.questions.length
   } catch {
     beforeRaw = null
@@ -505,6 +556,12 @@ export async function handlePutInterview(c: Context) {
       afterItemCount: result.document.questions.length,
       restart,
       invalidation: result.invalidation,
+    })
+    recordInterviewApprovalSkips({
+      ticketId,
+      ticketStatusBefore: ticket.status,
+      before: beforeDocument,
+      after: result.document,
     })
     return c.json({
       success: true,

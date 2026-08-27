@@ -1192,14 +1192,21 @@ export function updateInterviewDocumentAnswers(
       const freeText = update.answer.free_text
       const skipped = update.answer.skipped || (freeText.trim().length === 0 && selectedOptionIds.length === 0)
 
-      // An edit that skips an answer is a person skipping it, so it is a
-      // `user_skip` — and the reason has to survive the round trip, or the
-      // approval editor would silently discard whatever was just typed.
+      // The reason has to survive the round trip, or the approval editor would
+      // silently discard whatever was just typed. Omitting the field means
+      // "leave it alone"; an explicit null clears it.
       const skipReason = skipped
         ? (update.answer.skip_reason === undefined
           ? question.answer.skip_reason
           : normalizeSkipReason(update.answer.skip_reason))
         : null
+
+      // An edit that skips an answer is a person skipping it. An answer that was
+      // *already* skipped keeps whoever it was attributed to: re-saving the
+      // document unchanged must not rewrite history into a decision nobody made.
+      const answeredBy = skipped
+        ? (question.answer.skipped ? question.answer.answered_by : 'user_skip')
+        : 'user'
 
       return {
         ...question,
@@ -1207,8 +1214,8 @@ export function updateInterviewDocumentAnswers(
           skipped,
           selected_option_ids: skipped ? [] : selectedOptionIds,
           free_text: skipped ? '' : freeText,
-          answered_by: skipped ? 'user_skip' : 'user',
-          answered_at: answeredAt,
+          answered_by: answeredBy,
+          answered_at: skipped && question.answer.skipped ? question.answer.answered_at : answeredAt,
           skip_reason: skipReason,
         },
       }

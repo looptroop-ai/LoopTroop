@@ -5,6 +5,7 @@ import { CollapsibleSection } from './ArtifactContentViewer'
 import type { InterviewDocument } from '@shared/interviewArtifact'
 import type { InterviewAnswerUpdate } from '@shared/interviewArtifact'
 import { groupInterviewDocumentQuestions } from '@/lib/interviewDocument'
+import { SkipReasonField } from './SkipReasonField'
 
 interface InterviewApprovalAnswerEditorProps {
   document: InterviewDocument
@@ -105,6 +106,21 @@ export function InterviewApprovalAnswerEditor({
                     {draft.skipped ? (
                       <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">
                         <div>This answer is currently marked as skipped.</div>
+                        <div className="mt-3">
+                          <SkipReasonField
+                            label="Why skip this"
+                            value={draft.skip_reason ?? ''}
+                            onChange={(value) => onAnswerChange(question.id, {
+                              skipped: true,
+                              selected_option_ids: [],
+                              free_text: '',
+                              skip_reason: value,
+                            })}
+                            disabled={disabled}
+                            placeholder="Optional. The model answering this question gets to read it."
+                            help="Saved with the interview, and given to the model that fills this answer in."
+                          />
+                        </div>
                         <Button
                           type="button"
                           variant="outline"
@@ -115,6 +131,8 @@ export function InterviewApprovalAnswerEditor({
                             skipped: false,
                             selected_option_ids: draft.selected_option_ids,
                             free_text: draft.free_text,
+                            // Answering it means the reason no longer describes anything.
+                            skip_reason: null,
                           })}
                         >
                           Answer This Question
@@ -141,12 +159,14 @@ export function InterviewApprovalAnswerEditor({
                               skipped: false,
                               selected_option_ids: selectedOptionIds,
                               free_text: draft.free_text,
+                              skip_reason: null,
                             })
                           }}
                           onTextChange={(value) => onAnswerChange(question.id, {
                             skipped: false,
                             selected_option_ids: draft.selected_option_ids,
                             free_text: value,
+                            skip_reason: null,
                           })}
                         />
                         <div className="flex justify-end">
@@ -159,6 +179,7 @@ export function InterviewApprovalAnswerEditor({
                               skipped: true,
                               selected_option_ids: [],
                               free_text: '',
+                              skip_reason: draft.skip_reason ?? null,
                             })}
                           >
                             Mark As Skipped
@@ -174,6 +195,7 @@ export function InterviewApprovalAnswerEditor({
                             skipped: false,
                             selected_option_ids: [],
                             free_text: event.target.value,
+                            skip_reason: null,
                           })}
                           rows={4}
                           className="min-h-[120px] w-full rounded-lg border border-input bg-background px-3 py-2 text-sm leading-6 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -189,6 +211,7 @@ export function InterviewApprovalAnswerEditor({
                               skipped: true,
                               selected_option_ids: [],
                               free_text: '',
+                              skip_reason: draft.skip_reason ?? null,
                             })}
                           >
                             Mark As Skipped

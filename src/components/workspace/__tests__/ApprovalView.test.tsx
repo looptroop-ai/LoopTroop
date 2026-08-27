@@ -371,6 +371,7 @@ describe('Interview approval UI', () => {
       expect(submittedBody?.questions[0]).toEqual({
         id: 'Q01',
         answer: {
+          skip_reason: null,
           skipped: true,
           selected_option_ids: [],
           free_text: '',

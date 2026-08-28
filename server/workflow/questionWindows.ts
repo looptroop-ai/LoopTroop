@@ -616,6 +616,15 @@ function buildQuestionContext(
   record: QuestionRequestRecord,
   resolution: Exclude<QuestionResolution, 'replied'>,
   quorumImpact: string | null,
+  /**
+   * Everything the same expiry took down, captured before any of it was.
+   *
+   * Read live it shrinks as the batch is refused one by one, so the first
+   * receipt named two siblings and the last named none — the reader most in
+   * need of the context getting the least of it. The caller snapshots the set
+   * once and passes it in.
+   */
+  siblingIds?: string[],
 ): SkipQuestionContext {
   const now = Date.now()
   const elapsedWallMs = Math.max(0, now - record.receivedAt)
@@ -638,9 +647,8 @@ function buildQuestionContext(
     stopped_by: timer.stoppedBy,
     elapsed_wall_ms: elapsedWallMs,
     elapsed_active_ms: Math.max(0, elapsedWallMs - creditedWaitMs),
-    sibling_request_ids: pendingRequests(timer)
-      .filter((other) => other.requestId !== record.requestId)
-      .map((other) => other.requestId),
+    sibling_request_ids: (siblingIds ?? pendingRequests(timer).map((other) => other.requestId))
+      .filter((requestId) => requestId !== record.requestId),
     expiry_reason: resolution,
     quorum_impact: quorumImpact ?? describeQuorumImpact(record),
   }
@@ -661,6 +669,8 @@ function writeQuestionReceipt(input: {
   resolution: Exclude<QuestionResolution, 'replied'>
   reason: string | null
   quorumImpact?: string | null
+  /** The batch this refusal belonged to, snapshotted before any of it resolved. */
+  siblingIds?: string[]
 }): void {
   const { timer, record, actor, resolution } = input
   const context = getTicketContext(record.ticketId)
@@ -679,7 +689,13 @@ function writeQuestionReceipt(input: {
       ticketStatusBefore: context.localTicket.status,
       actionId,
       skippedBy: actor,
-      questionContext: buildQuestionContext(timer, record, resolution, input.quorumImpact ?? null),
+      questionContext: buildQuestionContext(
+        timer,
+        record,
+        resolution,
+        input.quorumImpact ?? null,
+        input.siblingIds,
+      ),
       allowArchivedPhaseAttempt: actor !== 'user',
       summary: { itemType: 'opencode_question_request', reason: input.reason },
       items: record.questions.map((_question, index) => ({
@@ -723,6 +739,7 @@ async function rejectRecord(
   actor: SkipActor,
   resolution: Exclude<QuestionResolution, 'replied'>,
   reason: string | null,
+  siblingIds?: string[],
 ): Promise<void> {
   const context = getTicketContext(record.ticketId)
   const failure = context
@@ -738,6 +755,7 @@ async function rejectRecord(
     actor,
     resolution,
     reason: failure ? [reason, `Could not tell OpenCode: ${failure}`].filter(Boolean).join(' — ') : reason,
+    ...(siblingIds ? { siblingIds } : {}),
   })
   broadcaster.broadcast(record.ticketId, 'needs_input', {
     type: 'opencode_question_resolved',
@@ -760,11 +778,22 @@ async function rejectRecord(
  */
 async function expireTimer(timer: QuestionTimer): Promise<void> {
   if (timer.stoppedAt !== null) return
+  // Every claim is taken before the first `await`, so nothing else can take one
+  // part-way through the batch, and the sibling list is the same on every
+  // receipt rather than shrinking as the batch is worked through.
   const doomed = pendingRequests(timer)
     .map((record) => claim(timer, requestKey(record.sessionId, record.requestId)))
     .filter((record): record is QuestionRequestRecord => record !== null)
+  const siblingIds = doomed.map((record) => record.requestId)
   for (const record of doomed) {
-    await rejectRecord(timer, record, 'timeout', 'window_elapsed', 'The wait ran out before anyone answered.')
+    await rejectRecord(
+      timer,
+      record,
+      'timeout',
+      'window_elapsed',
+      'The wait ran out before anyone answered.',
+      siblingIds,
+    )
   }
 }
 
@@ -937,8 +966,9 @@ export async function clearTicketWindows(
     const doomed = pendingRequests(timer)
       .map((record) => claim(timer, requestKey(record.sessionId, record.requestId)))
       .filter((record): record is QuestionRequestRecord => record !== null)
+    const siblingIds = doomed.map((record) => record.requestId)
     for (const record of doomed) {
-      await rejectRecord(timer, record, 'system', resolution, reason)
+      await rejectRecord(timer, record, 'system', resolution, reason, siblingIds)
     }
   }
   timersByTicket.delete(ticketId)
@@ -988,7 +1018,13 @@ export function getPendingQuestionSummary(ticketId: string): PendingQuestionSumm
     questionCount: state.requests.reduce((total, request) => total + request.questionCount, 0),
     deadlineAt: state.timer?.deadlineAt ?? null,
     stoppedAt: state.timer?.stoppedAt ?? null,
-    requestIds: state.requests.map((request) => request.requestId).sort(),
+    // Sorted by code unit, not by locale. These ids are opaque handles and this
+    // list is compared for equality to decide whether the board's card changed,
+    // so the ordering has to be the same on every machine that computes it —
+    // which is the one thing `localeCompare` does not promise.
+    requestIds: state.requests
+      .map((request) => request.requestId)
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
   }
 }
 

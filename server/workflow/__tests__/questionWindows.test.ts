@@ -280,8 +280,13 @@ describe('question windows', () => {
     const summaries = events.filter((event) => event.isActionSummary)
     expect(summaries).toHaveLength(2)
     expect(summaries.every((event) => event.questionContext?.expiry_reason === 'window_elapsed')).toBe(true)
-    // Each receipt names the others the same expiry covered.
-    expect(summaries.some((event) => (event.questionContext?.sibling_request_ids.length ?? 0) > 0)).toBe(true)
+    // Each receipt names the others the same expiry covered — including the one
+    // refused last, which read live would have found the batch already gone and
+    // reported that it went down alone.
+    expect(summaries.map((event) => event.questionContext?.sibling_request_ids).sort()).toEqual([
+      ['req_a'],
+      ['req_b'],
+    ])
   })
 
   it('never expires a stopped clock, however far the fake clock runs', async () => {

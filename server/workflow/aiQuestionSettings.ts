@@ -35,8 +35,8 @@ export function resolveAiQuestionSettings(ticketId: string | undefined): AiQuest
   if (!ticketId) return fallback
 
   const context = getTicketContext(ticketId)
-  const ticket = context?.localTicket
-  if (!ticket) return fallback
+  if (!context?.localTicket) return fallback
+  const ticket = context.localTicket
 
   if (ticket.startedAt !== null) {
     return {
@@ -49,12 +49,12 @@ export function resolveAiQuestionSettings(ticketId: string | undefined): AiQuest
   return {
     // `??` rather than `||`: `false` is a real override, not an absent one.
     enabled: ticket.aiQuestionsOverride
-      ?? context?.localProject.aiQuestionsOverride
+      ?? context.localProject.aiQuestionsOverride
       ?? profile?.aiQuestionsEnabled
       ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
     windowMs: clampAiQuestionWindowMs(
       ticket.aiQuestionWindowOverride
-        ?? context?.localProject.aiQuestionWindowOverride
+        ?? context.localProject.aiQuestionWindowOverride
         ?? profile?.aiQuestionWindow
         ?? PROFILE_DEFAULTS.aiQuestionWindow,
     ),

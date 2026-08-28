@@ -55,8 +55,12 @@ export function getNeedsInputSignature(ticket: NeedsInputTicketSnapshot): string
   const pendingRequestCount = pending?.requestCount ?? 0
   const phase = resolveKanbanPhase(ticket.status, { hasPendingQuestion: pendingRequestCount > 0 })
   if (phase !== 'needs_input') return null
+  // Sorted by code unit, not by locale: this string is compared for equality
+  // against one the browser stored earlier, so the ordering has to be identical
+  // every time it is computed — which is the one thing `localeCompare` does not
+  // promise. The server sorts the same way before sending them.
   const questionToken = pending?.requestIds?.length
-    ? [...pending.requestIds].sort().join(',')
+    ? [...pending.requestIds].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)).join(',')
     : String(pendingRequestCount)
   return `${ticket.status}|${ticket.updatedAt}|${questionToken}`
 }

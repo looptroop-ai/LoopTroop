@@ -44,6 +44,28 @@ export function openQuestionWait(ticketRef: string, startedAtMs: number): void {
   }
 }
 
+/**
+ * Local ticket ids that still have a wait open in this project.
+ *
+ * A wait is opened by the process that saw the question and closed by the
+ * process that saw it resolved. When those are not the same process — a daemon
+ * restart lands in the middle of one — nothing in the new process knows the row
+ * is there, and an interval left open reads as "waiting up to now" for the rest
+ * of the ticket's life, quietly subtracting all of it from active duration.
+ * Startup uses this to find them and close the ones nothing is waiting on.
+ */
+export function listOpenQuestionWaitTicketIds(projectDb: ProjectDb): number[] {
+  try {
+    return projectDb.select({ ticketId: questionWaits.ticketId })
+      .from(questionWaits)
+      .where(isNull(questionWaits.endedAt))
+      .all()
+      .map((row) => row.ticketId)
+  } catch {
+    return []
+  }
+}
+
 /** Closes whatever wait this ticket has open. Idempotent. */
 export function closeQuestionWait(ticketRef: string, endedAtMs: number): void {
   if (!Number.isFinite(endedAtMs)) return

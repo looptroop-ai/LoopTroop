@@ -49,6 +49,36 @@ function isAnswered(answer: string[] | undefined): boolean {
 }
 
 /**
+ * Whether this browser had the panel collapsed for this ticket.
+ *
+ * Kept per browser rather than on the ticket's UI-state channel: collapsing is a
+ * viewing preference, not a property of the ticket, and it should not follow the
+ * operator onto a second screen or reach anyone else looking at the same ticket.
+ * Every read and write is guarded — a private window or blocked site data throws
+ * on access rather than returning empty.
+ */
+function collapseStorageKey(ticketId: string): string {
+  return `ai-questions-collapsed-${ticketId}`
+}
+
+function readCollapsed(ticketId: string): boolean {
+  try {
+    return window.localStorage.getItem(collapseStorageKey(ticketId)) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeCollapsed(ticketId: string, collapsed: boolean): void {
+  try {
+    if (collapsed) window.localStorage.setItem(collapseStorageKey(ticketId), '1')
+    else window.localStorage.removeItem(collapseStorageKey(ticketId))
+  } catch {
+    // A preference that cannot be remembered is not worth failing a render for.
+  }
+}
+
+/**
  * The questions a model is waiting on, at the top of the ticket.
  *
  * A panel that pushes the workspace down rather than an overlay: the old
@@ -71,7 +101,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
 
   const requests = getTicketRequests(ticketId)
   const timer = getTimer(ticketId)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(ticketId))
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const [questionIndex, setQuestionIndex] = useState(0)
   const [answers, setAnswers] = useState<Record<string, string[]>>({})
@@ -177,7 +207,10 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
         <button
           type="button"
           className="flex items-center gap-1.5 text-sm font-medium text-sky-900 dark:text-sky-100"
-          onClick={() => setCollapsed((value) => !value)}
+          onClick={() => setCollapsed((value) => {
+            writeCollapsed(ticketId, !value)
+            return !value
+          })}
           aria-expanded={!collapsed}
           aria-controls="pending-questions-body"
         >

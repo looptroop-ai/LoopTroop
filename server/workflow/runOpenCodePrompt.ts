@@ -664,6 +664,18 @@ export async function runOpenCodeSessionPrompt({
   const questionsPermitted = (questionsAllowed ?? ticketAllowsAiQuestions(sessionOwnership?.ticketId))
     && phaseMayAskQuestions(sessionOwnership?.phase)
   const permission = resolveOpenCodePermissions(toolPolicy, questionsPermitted)
+  /**
+   * Watchdog for a stream that goes quiet *after the model has finished*.
+   *
+   * Snapshotted once and never disarmed on suspend, which is safe rather than
+   * lucky: the adapter only arms it after a `step=finish` carrying `stop` or
+   * `end_turn` (`subscribeToEvents`). A model blocked on the question tool has
+   * not finished its turn — the step is still open, waiting on a tool result —
+   * so the watchdog is not running during a wait and cannot cut one short. If
+   * that activation condition is ever widened to other finish reasons, this
+   * becomes a static clock ticking through a human wait and has to be re-armed
+   * from the budget like the deadline timer above.
+   */
   const stepFinishSafetyMs = promptTimeoutMs === undefined || promptTimeoutMs <= 0
     ? undefined
     : Math.min(Math.max(promptTimeoutMs / 10, PROMPT_MIN_TIMEOUT_MS), PROMPT_MAX_TIMEOUT_MS)

@@ -16,7 +16,8 @@ import {
 import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
-import { reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
+import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
+import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 
 export function recoverTicketRuntimeArtifacts() {
@@ -157,6 +158,16 @@ export async function reconcileOpenCodeQuestions(
         .map((row) => [row.id, row.externalId] as const),
     )
 
+    // Open waits can belong to a ticket with no sessions left at all, so the
+    // sweep below cannot rely on the session-derived map.
+    const allTicketExternalIds = new Map(
+      context.projectDb
+        .select({ id: tickets.id, externalId: tickets.externalId })
+        .from(tickets)
+        .all()
+        .map((row) => [row.id, row.externalId] as const),
+    )
+
     const owners = sessionRows.flatMap((row) => {
       const externalId = row.ticketId === null ? undefined : externalIds.get(row.ticketId)
       if (!externalId) return []
@@ -180,6 +191,22 @@ export async function reconcileOpenCodeQuestions(
       rejected += result.rejected
     } catch (err) {
       console.warn(`[startup] Failed to reconcile AI questions for ${project.name}:`, err)
+    }
+
+    // A wait is opened by the process that saw the question and closed by the
+    // one that saw it resolved. When a restart falls between the two, the row
+    // stays open and reads as "still waiting" forever — subtracting the ticket's
+    // entire remaining life from its active duration and from the ETA samples.
+    // Anything the reconcile above did not put back on a clock is over, so it is
+    // closed here. Closing at now rather than guessing an end during the
+    // downtime: the daemon was not working either, and an open row is far worse
+    // than a slightly long one.
+    for (const localTicketId of listOpenQuestionWaitTicketIds(context.projectDb)) {
+      const externalId = externalIds.get(localTicketId) ?? allTicketExternalIds.get(localTicketId)
+      if (!externalId) continue
+      const ticketRef = buildTicketRef(project.id, externalId)
+      if (getPendingQuestionSummary(ticketRef)) continue
+      closeQuestionWait(ticketRef, Date.now())
     }
   }
 

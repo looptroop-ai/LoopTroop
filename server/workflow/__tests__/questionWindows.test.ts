@@ -23,6 +23,7 @@ import {
   stopTicketTimers,
 } from '../questionWindows'
 import { getTicketContext } from '../../storage/ticketQueries'
+import { closeQuestionWait } from '../../storage/questionWaits'
 import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
@@ -458,6 +459,25 @@ describe('question windows', () => {
     const closed = context.projectDb.select().from(questionWaits).all()
     expect(closed).toHaveLength(1)
     expect(Date.parse(closed[0]!.endedAt!)).toBeGreaterThanOrEqual(Date.parse(closed[0]!.startedAt))
+  })
+
+  it('closes a wait the previous process left open', () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    const context = getTicketContext(ticket.id)!
+    expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).toBeNull()
+
+    // The daemon goes away mid-wait: live state is gone, the open row is not.
+    resetAllQuestionWindows()
+    resetAllWorkBudgets()
+
+    // Nothing is waiting on this ticket any more, so the interval is over.
+    // Left open it reads as "still waiting, up to now" for the rest of the
+    // ticket's life, subtracting all of it from active duration and from the
+    // samples the ETA is trained on.
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    closeQuestionWait(ticket.id, Date.now())
+    expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).not.toBeNull()
   })
 
   it('keeps one interval for two overlapping questions, not two', () => {

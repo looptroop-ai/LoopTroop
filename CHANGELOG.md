@@ -63,6 +63,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a second question in the same step being ignored by the browser. Clocks are now identified individually, so a step that asks, is answered, and asks again shows the new countdown and can still be stopped — previously the page kept showing the clock that had already gone.
 - Fixed the board not re-alerting when one question was answered and another arrived in its place. The count was identical and the ticket's status had not changed, so nothing looked different.
 - Fixed a skip reason typed for one model's question following you to another model's tab.
+- Fixed a wait left open by a daemon that stopped mid-question never closing, which would have counted the rest of the ticket's life as time spent waiting on you. Startup now closes any wait nothing is still waiting on.
+- The AI questions panel now remembers whether you collapsed it, per ticket and per browser.
+- A refusal OpenCode will not accept, and a failure to expire a question, are now written to the log instead of being swallowed silently.
 - Fixed answering or skipping a question leaving the ticket's clocks stopped forever. The question was told to OpenCode but never closed out here, so the step never resumed, the question stayed on screen, and a skip left no receipt.
 - Fixed a restart in a project with two active tickets refusing the wrong ticket's question. Questions are read per project but were reconciled per ticket, so every ticket's turn saw its siblings' questions as ownerless. Tickets whose sessions had all been abandoned were skipped entirely, leaving their questions hanging in OpenCode with no trail.
 - Fixed being unable to type a multi-word answer. Every keystroke was trimmed, so a space vanished as soon as it was typed and the next word ran into the last one. Free text that happened to match one of the offered options was also silently dropped.

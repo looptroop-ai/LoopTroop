@@ -380,7 +380,14 @@ function arm(timer: QuestionTimer): void {
     // Everything inside is caught: an uncaught throw here would take the daemon
     // down and leave the question pending forever, which is the exact failure
     // this module exists to prevent.
-    void expireTimer(timer).catch(() => {})
+    void expireTimer(timer).catch((error: unknown) => {
+      // Caught so an uncaught throw cannot take the daemon down, but not
+      // silenced: an expiry that fails is the one failure mode that recreates
+      // the hang this module exists to prevent, and it must be findable.
+      console.warn(
+        `[questions] Expiry failed for ${timer.ticketId} ${timer.timerKey}: ${getErrorMessage(error)}`,
+      )
+    })
   }, remaining)
   // A timer whose deadline already passed must not keep the daemon alive.
   timer.handle.unref?.()
@@ -757,7 +764,14 @@ async function rejectRecord(
     : 'Ticket is no longer available'
 
   if (failure) {
-    await getOpenCodeAdapter().abortSession(record.sessionId).catch(() => false)
+    // OpenCode would not take the refusal. Abandoning the session is what stops
+    // the model waiting on an answer that will never come; if even that fails
+    // there is nothing further to try, so it is recorded rather than retried.
+    const aborted = await getOpenCodeAdapter().abortSession(record.sessionId).catch(() => false)
+    console.warn(
+      `[questions] Could not refuse ${record.requestId} on ${record.ticketId}: ${failure}`
+      + ` (session abort ${aborted ? 'succeeded' : 'failed'})`,
+    )
   }
   writeQuestionReceipt({
     timer,

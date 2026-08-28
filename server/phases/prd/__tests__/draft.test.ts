@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { OpenCodeAdapter } from '../../../opencode/adapter'
-import { OPENCODE_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { SILENT_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
 import type {
   HealthStatus,
   Message,
@@ -882,7 +882,7 @@ describe.concurrent('draftPRD', () => {
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
     expect(adapter.messages.get('mock-session-1')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
     expect(adapter.messages.get('mock-session-2')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
+    expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
   })
 
   it('keeps full answers structured retries inside the same session while starting PRD drafting in a fresh one', async () => {
@@ -927,7 +927,7 @@ describe.concurrent('draftPRD', () => {
     expect(fullAnswerRetryMessages[0]?.content).toContain('Stop immediately after the final approval block')
     expect(fullAnswerRetryMessages[0]?.content).not.toContain('Do not change `follow_up_rounds`, `summary`, or approval fields.')
     expect(adapter.messages.get('mock-session-2')?.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(false)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
   })
 
   it('restarts full answers in a fresh session when the model leaves skipped questions unanswered', async () => {

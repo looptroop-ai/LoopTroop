@@ -63,6 +63,7 @@ import {
 import { cancelTicketSchema, closeUnmergedSchema, retryTicketSchema } from './schemas'
 import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
 import { normalizeSkipReason } from '@shared/skipReceipt'
+import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -83,6 +84,10 @@ function rollbackTicketStartToDraft(ticketId: string): void {
     lockedStructuredRetryCount: null,
     lockedManualQaEnabled: null,
     lockedManualQaSource: null,
+    lockedAiQuestionsEnabled: null,
+    lockedAiQuestionsSource: null,
+    lockedAiQuestionWindow: null,
+    lockedAiQuestionWindowSource: null,
     lockedGitHookPolicy: null,
     lockedGitHookPolicySource: null,
   })
@@ -233,6 +238,18 @@ export async function handleStartTicket(c: Context) {
     : ticketContext.localProject.manualQaOverride !== null
       ? { enabled: ticketContext.localProject.manualQaOverride, source: 'project' as const }
       : { enabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled, source: 'profile' as const }
+  // The two AI question settings cascade separately: a ticket can shorten the window
+  // while still inheriting whether questions are allowed at all.
+  const aiQuestionsResolution = ticketContext.localTicket.aiQuestionsOverride !== null
+    ? { enabled: ticketContext.localTicket.aiQuestionsOverride, source: 'ticket' as const }
+    : ticketContext.localProject.aiQuestionsOverride !== null
+      ? { enabled: ticketContext.localProject.aiQuestionsOverride, source: 'project' as const }
+      : { enabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled, source: 'profile' as const }
+  const aiQuestionWindowResolution = ticketContext.localTicket.aiQuestionWindowOverride !== null
+    ? { windowMs: ticketContext.localTicket.aiQuestionWindowOverride, source: 'ticket' as const }
+    : ticketContext.localProject.aiQuestionWindowOverride !== null
+      ? { windowMs: ticketContext.localProject.aiQuestionWindowOverride, source: 'project' as const }
+      : { windowMs: profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow, source: 'profile' as const }
   const gitHookPolicyResolution = isGitHookPolicy(ticketContext.localProject.gitHookPolicy)
     ? { policy: ticketContext.localProject.gitHookPolicy, source: 'project' as const }
     : {
@@ -275,6 +292,10 @@ export async function handleStartTicket(c: Context) {
       lockedStructuredRetryCount,
       lockedManualQaEnabled: manualQaResolution.enabled,
       lockedManualQaSource: manualQaResolution.source,
+      lockedAiQuestionsEnabled: aiQuestionsResolution.enabled,
+      lockedAiQuestionsSource: aiQuestionsResolution.source,
+      lockedAiQuestionWindow: clampAiQuestionWindowMs(aiQuestionWindowResolution.windowMs),
+      lockedAiQuestionWindowSource: aiQuestionWindowResolution.source,
       lockedGitHookPolicy: gitHookPolicyResolution.policy,
       lockedGitHookPolicySource: gitHookPolicyResolution.source,
     })
@@ -288,6 +309,10 @@ export async function handleStartTicket(c: Context) {
       startedAt,
       manualQaEnabled: manualQaResolution.enabled,
       manualQaSource: manualQaResolution.source,
+      aiQuestionsEnabled: aiQuestionsResolution.enabled,
+      aiQuestionsSource: aiQuestionsResolution.source,
+      aiQuestionWindow: clampAiQuestionWindowMs(aiQuestionWindowResolution.windowMs),
+      aiQuestionWindowSource: aiQuestionWindowResolution.source,
       gitHookPolicy: gitHookPolicyResolution.policy,
       gitHookPolicySource: gitHookPolicyResolution.source,
     })
@@ -321,6 +346,10 @@ export async function handleStartTicket(c: Context) {
       lockedStructuredRetryCount,
       lockedManualQaEnabled: manualQaResolution.enabled,
       lockedManualQaSource: manualQaResolution.source,
+      lockedAiQuestionsEnabled: aiQuestionsResolution.enabled,
+      lockedAiQuestionsSource: aiQuestionsResolution.source,
+      lockedAiQuestionWindow: clampAiQuestionWindowMs(aiQuestionWindowResolution.windowMs),
+      lockedAiQuestionWindowSource: aiQuestionWindowResolution.source,
     })
   } catch (err) {
     rollbackTicketStartToDraft(ticketId)

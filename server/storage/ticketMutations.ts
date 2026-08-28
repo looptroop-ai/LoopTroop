@@ -26,6 +26,11 @@ import type {
   TicketErrorResolutionStatus,
 } from './ticketQueries'
 import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import {
+  AI_QUESTION_WINDOW_DEFAULT_MS,
+  AI_QUESTION_WINDOW_MAX_MS,
+  AI_QUESTION_WINDOW_MIN_MS,
+} from '@shared/aiQuestions'
 import { syncTicketRuntimeProjection } from './ticketRuntimeProjection'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
@@ -69,6 +74,8 @@ const CreateTicketInputSchema = z.object({
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
+  aiQuestionsOverride: z.boolean().nullable().optional(),
+  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
 }).strict()
 
 function truncateLoggedValue(value: string, maxLength = 200): string {
@@ -288,21 +295,31 @@ function assertLockedModelConfigurationMutable(
   }
 }
 
-function assertLockedManualQaConfigurationMutable(
-  ticket: LocalTicketRow,
-  patch: Partial<Omit<LocalTicketRow, 'id' | 'projectId' | 'externalId' | 'createdAt'>>,
-) {
-  const updatesLock = 'lockedManualQaEnabled' in patch || 'lockedManualQaSource' in patch
-  if (!updatesLock || ticket.startedAt === null || patch.startedAt === null) return
+type LocalTicketPatch = Partial<Omit<LocalTicketRow, 'id' | 'projectId' | 'externalId' | 'createdAt'>>
 
-  const nextEnabled = 'lockedManualQaEnabled' in patch
-    ? patch.lockedManualQaEnabled ?? null
-    : ticket.lockedManualQaEnabled
-  const nextSource = 'lockedManualQaSource' in patch
-    ? patch.lockedManualQaSource ?? null
-    : ticket.lockedManualQaSource
-  if (nextEnabled !== ticket.lockedManualQaEnabled || nextSource !== ticket.lockedManualQaSource) {
-    throw new Error(`Ticket Manual QA configuration is immutable after start: ${ticket.externalId}`)
+const LOCKED_MANUAL_QA_FIELDS = ['lockedManualQaEnabled', 'lockedManualQaSource'] as const
+const LOCKED_AI_QUESTION_FIELDS = [
+  'lockedAiQuestionsEnabled',
+  'lockedAiQuestionsSource',
+  'lockedAiQuestionWindow',
+  'lockedAiQuestionWindowSource',
+] as const
+
+// A locked column is the frozen copy of a cascade: whatever the run started with is
+// what it keeps, so rewriting one after start is refused rather than silently applied.
+function assertLockedConfigurationMutable(
+  ticket: LocalTicketRow,
+  patch: LocalTicketPatch,
+  fields: readonly (keyof LocalTicketPatch)[],
+  label: string,
+) {
+  if (ticket.startedAt === null || patch.startedAt === null) return
+
+  for (const field of fields) {
+    if (!(field in patch)) continue
+    if ((patch[field] ?? null) !== (ticket[field] ?? null)) {
+      throw new Error(`Ticket ${label} configuration is immutable after start: ${ticket.externalId}`)
+    }
   }
 }
 
@@ -371,6 +388,8 @@ export function createTicket(input: {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
 }): PublicTicket {
   const parsedInput = CreateTicketInputSchema.safeParse(input)
   if (!parsedInput.success) {
@@ -400,6 +419,8 @@ export function createTicket(input: {
       description: validatedInput.description ?? null,
       priority: validatedInput.priority ?? 3,
       manualQaOverride: validatedInput.manualQaOverride ?? null,
+      aiQuestionsOverride: validatedInput.aiQuestionsOverride ?? null,
+      aiQuestionWindowOverride: validatedInput.aiQuestionWindowOverride ?? null,
       status: 'DRAFT',
     })
     .returning()
@@ -514,11 +535,14 @@ export function createManualQaImprovementTicket(input: {
   return materializeTicketFiles(created)
 }
 
-export function updateTicket(ticketRef: string, patch: Partial<Pick<LocalTicketRow, 'title' | 'description' | 'priority' | 'manualQaOverride'>>): PublicTicket | undefined {
+export function updateTicket(ticketRef: string, patch: Partial<Pick<LocalTicketRow, 'title' | 'description' | 'priority' | 'manualQaOverride' | 'aiQuestionsOverride' | 'aiQuestionWindowOverride'>>): PublicTicket | undefined {
   const context = getTicketContext(ticketRef)
   if (!context) return undefined
   if ('manualQaOverride' in patch && context.localTicket.status !== 'DRAFT') {
     throw new Error('Manual QA override can only be changed while the ticket is in DRAFT status.')
+  }
+  if (('aiQuestionsOverride' in patch || 'aiQuestionWindowOverride' in patch) && context.localTicket.status !== 'DRAFT') {
+    throw new Error('AI question overrides can only be changed while the ticket is in DRAFT status.')
   }
   context.projectDb.update(tickets)
     .set({ ...patch, updatedAt: new Date().toISOString() })
@@ -548,8 +572,18 @@ export function patchTicket(
   ) {
     throw new Error('Manual QA override can only be changed while the ticket is in DRAFT status.')
   }
+  if (
+    context.localTicket.status !== 'DRAFT'
+    && (
+      ('aiQuestionsOverride' in patch && patch.aiQuestionsOverride !== context.localTicket.aiQuestionsOverride)
+      || ('aiQuestionWindowOverride' in patch && patch.aiQuestionWindowOverride !== context.localTicket.aiQuestionWindowOverride)
+    )
+  ) {
+    throw new Error('AI question overrides can only be changed while the ticket is in DRAFT status.')
+  }
   assertLockedModelConfigurationMutable(context.localTicket, patch)
-  assertLockedManualQaConfigurationMutable(context.localTicket, patch)
+  assertLockedConfigurationMutable(context.localTicket, patch, LOCKED_MANUAL_QA_FIELDS, 'Manual QA')
+  assertLockedConfigurationMutable(context.localTicket, patch, LOCKED_AI_QUESTION_FIELDS, 'AI question')
   assertLockedGitHookConfigurationMutable(context.localTicket, patch)
   const statusChanged = typeof patch.status === 'string' && patch.status !== previousStatus
 
@@ -602,6 +636,10 @@ export function lockTicketStartConfiguration(
     lockedStructuredRetryCount: number
     lockedManualQaEnabled?: boolean
     lockedManualQaSource?: 'profile' | 'project' | 'ticket'
+    lockedAiQuestionsEnabled?: boolean
+    lockedAiQuestionsSource?: 'profile' | 'project' | 'ticket'
+    lockedAiQuestionWindow?: number
+    lockedAiQuestionWindowSource?: 'profile' | 'project' | 'ticket'
     lockedGitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
     lockedGitHookPolicySource?: 'profile' | 'project'
   },
@@ -629,10 +667,16 @@ export function lockTicketStartConfiguration(
     lockedCouncilMembers: lockedCouncilMembersRaw,
     lockedCouncilMemberVariants: lockedCouncilMemberVariantsRaw,
   })
-  assertLockedManualQaConfigurationMutable(context.localTicket, {
+  assertLockedConfigurationMutable(context.localTicket, {
     lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
     lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
-  })
+  }, LOCKED_MANUAL_QA_FIELDS, 'Manual QA')
+  assertLockedConfigurationMutable(context.localTicket, {
+    lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
+    lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
+    lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
+    lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
+  }, LOCKED_AI_QUESTION_FIELDS, 'AI question')
   assertLockedGitHookConfigurationMutable(context.localTicket, {
     lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
@@ -659,6 +703,10 @@ export function lockTicketStartConfiguration(
       lockedStructuredRetryCount: input.lockedStructuredRetryCount,
       lockedManualQaEnabled: input.lockedManualQaEnabled ?? false,
       lockedManualQaSource: input.lockedManualQaSource ?? 'profile',
+      lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? false,
+      lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
+      lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
+      lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
       lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
       lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
       startedAt: meta.startedAt ?? input.startedAt,

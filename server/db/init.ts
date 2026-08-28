@@ -196,6 +196,8 @@ export function initializeDatabase() {
   ensureColumn('profiles', 'tool_input_max_chars', `INTEGER DEFAULT ${PROFILE_DEFAULTS.toolInputMaxChars}`)
   ensureColumn('profiles', 'tool_output_max_chars', `INTEGER DEFAULT ${PROFILE_DEFAULTS.toolOutputMaxChars}`)
   ensureColumn('profiles', 'tool_error_max_chars', `INTEGER DEFAULT ${PROFILE_DEFAULTS.toolErrorMaxChars}`)
+  ensureColumn('profiles', 'ai_questions_enabled', `INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.aiQuestionsEnabled ? 1 : 0}`)
+  ensureColumn('profiles', 'ai_question_window', `INTEGER DEFAULT ${PROFILE_DEFAULTS.aiQuestionWindow}`)
 
   sqlite.exec(`
     UPDATE profiles

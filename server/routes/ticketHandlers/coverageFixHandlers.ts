@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { z } from 'zod'
-import type { TicketContext } from '../../machines/types'
+import { normalizeSettingSource, type TicketContext } from '../../machines/types'
 import {
   getTicketByRef,
   type PublicTicket,
@@ -56,6 +56,10 @@ function buildMachineContextFromTicket(ticket: PublicTicket): TicketContext {
       || ticket.lockedManualQaSource === 'ticket'
       ? ticket.lockedManualQaSource
       : null,
+    lockedAiQuestionsEnabled: ticket.lockedAiQuestionsEnabled,
+    lockedAiQuestionsSource: normalizeSettingSource(ticket.lockedAiQuestionsSource),
+    lockedAiQuestionWindow: ticket.lockedAiQuestionWindow,
+    lockedAiQuestionWindowSource: normalizeSettingSource(ticket.lockedAiQuestionWindowSource),
     pendingExecutionSetupPlanRequestArtifactId: null,
     previousStatus: ticket.previousStatus,
     error: ticket.errorMessage,

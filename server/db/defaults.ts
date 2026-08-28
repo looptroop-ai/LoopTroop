@@ -1,9 +1,12 @@
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
+import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
 
 export const PROFILE_DEFAULTS = {
   gitHookPolicy: 'validate_advisory',
   ignoreMode: 'local',
   manualQaEnabled: true,
+  aiQuestionsEnabled: true,
+  aiQuestionWindow: AI_QUESTION_WINDOW_DEFAULT_MS,
   minCouncilQuorum: 2,
   perIterationTimeout: 1200000,
   executionSetupTimeout: 1200000,

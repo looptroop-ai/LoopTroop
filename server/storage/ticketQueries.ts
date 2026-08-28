@@ -32,6 +32,7 @@ import {
 import type { QaOrigin } from '../phases/beads/types'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
+import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -151,6 +152,11 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
   lockedManualQaSource: 'ticket' | 'project' | 'profile' | null
   effectiveManualQaEnabled: boolean
   effectiveManualQaSource: 'ticket' | 'project' | 'profile'
+  effectiveAiQuestionsEnabled: boolean
+  effectiveAiQuestionsSource: 'ticket' | 'project' | 'profile'
+  /** Milliseconds the question waits before it refuses itself. */
+  effectiveAiQuestionWindow: number
+  effectiveAiQuestionWindowSource: 'ticket' | 'project' | 'profile'
   lockedGitHookPolicy: GitHookPolicy | null
   lockedGitHookPolicySource: 'project' | 'profile' | null
   effectiveGitHookPolicy: GitHookPolicy
@@ -824,6 +830,33 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
       : project?.manualQaOverride !== null && project?.manualQaOverride !== undefined
         ? { enabled: project.manualQaOverride, source: 'project' as const }
         : { enabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled, source: 'profile' as const }
+  // A started ticket reads what it froze. The locked columns are NULL on runs that began
+  // before this setting existed, and those resolve to "may not ask": a run already in
+  // flight must not silently gain the ability to stop and wait for a person.
+  const aiQuestionsResolution: { enabled: boolean; source: 'ticket' | 'project' | 'profile' } = ticket.startedAt !== null
+    ? {
+        enabled: ticket.lockedAiQuestionsEnabled === true,
+        source: ticket.lockedAiQuestionsSource === 'ticket' || ticket.lockedAiQuestionsSource === 'project'
+          ? ticket.lockedAiQuestionsSource
+          : 'profile',
+      }
+    : ticket.aiQuestionsOverride !== null
+      ? { enabled: ticket.aiQuestionsOverride, source: 'ticket' as const }
+      : project?.aiQuestionsOverride !== null && project?.aiQuestionsOverride !== undefined
+        ? { enabled: project.aiQuestionsOverride, source: 'project' as const }
+        : { enabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled, source: 'profile' as const }
+  const aiQuestionWindowResolution: { windowMs: number; source: 'ticket' | 'project' | 'profile' } = ticket.startedAt !== null
+    ? {
+        windowMs: clampAiQuestionWindowMs(ticket.lockedAiQuestionWindow),
+        source: ticket.lockedAiQuestionWindowSource === 'ticket' || ticket.lockedAiQuestionWindowSource === 'project'
+          ? ticket.lockedAiQuestionWindowSource
+          : 'profile',
+      }
+    : ticket.aiQuestionWindowOverride !== null
+      ? { windowMs: clampAiQuestionWindowMs(ticket.aiQuestionWindowOverride), source: 'ticket' as const }
+      : project?.aiQuestionWindowOverride !== null && project?.aiQuestionWindowOverride !== undefined
+        ? { windowMs: clampAiQuestionWindowMs(project.aiQuestionWindowOverride), source: 'project' as const }
+        : { windowMs: clampAiQuestionWindowMs(profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow), source: 'profile' as const }
   const gitHookPolicyResolution: { policy: GitHookPolicy; source: 'project' | 'profile' } = ticket.startedAt !== null
     ? {
         policy: isGitHookPolicy(ticket.lockedGitHookPolicy)
@@ -854,6 +887,10 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
       : null,
     effectiveManualQaEnabled: manualQaResolution.enabled,
     effectiveManualQaSource: manualQaResolution.source,
+    effectiveAiQuestionsEnabled: aiQuestionsResolution.enabled,
+    effectiveAiQuestionsSource: aiQuestionsResolution.source,
+    effectiveAiQuestionWindow: aiQuestionWindowResolution.windowMs,
+    effectiveAiQuestionWindowSource: aiQuestionWindowResolution.source,
     lockedGitHookPolicy: isGitHookPolicy(ticket.lockedGitHookPolicy) ? ticket.lockedGitHookPolicy : null,
     lockedGitHookPolicySource: ticket.lockedGitHookPolicySource === 'project'
       || ticket.lockedGitHookPolicySource === 'profile'

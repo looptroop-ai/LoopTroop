@@ -50,6 +50,7 @@ import {
 } from '../../opencode/blockedErrorDiagnostics'
 import { persistUiArtifactCompanionArtifact } from '../artifactCompanions'
 import { getErrorMessage } from '@shared/typeGuards'
+import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 
 // ── Cached tool log limits from profile ──────────────────────────────────────
 
@@ -1724,6 +1725,39 @@ export function resolveExecutionRuntimeSettings(context: TicketContext): {
     opencodeRetryLimit,
     opencodeRetryDelayMs,
     opencodeSteps,
+  }
+}
+
+/**
+ * Whether this run may stop and ask, and how long the question waits.
+ *
+ * A started ticket reads only the columns frozen at its start, so editing the profile
+ * at 3 a.m. cannot change what an overnight run does mid-flight. A started ticket with
+ * nothing locked began before the setting existed, and may not ask at all.
+ */
+export function resolveAiQuestionSettings(ticketId: string): { enabled: boolean; windowMs: number } {
+  const storedContext = getStoredTicketContext(ticketId)
+  const ticket = storedContext?.localTicket
+
+  if (ticket && ticket.startedAt !== null) {
+    return {
+      enabled: ticket.lockedAiQuestionsEnabled === true,
+      windowMs: clampAiQuestionWindowMs(ticket.lockedAiQuestionWindow),
+    }
+  }
+
+  const profile = appDb.select().from(profiles).get()
+  return {
+    enabled: ticket?.aiQuestionsOverride
+      ?? storedContext?.localProject.aiQuestionsOverride
+      ?? profile?.aiQuestionsEnabled
+      ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
+    windowMs: clampAiQuestionWindowMs(
+      ticket?.aiQuestionWindowOverride
+        ?? storedContext?.localProject.aiQuestionWindowOverride
+        ?? profile?.aiQuestionWindow
+        ?? PROFILE_DEFAULTS.aiQuestionWindow,
+    ),
   }
 }
 

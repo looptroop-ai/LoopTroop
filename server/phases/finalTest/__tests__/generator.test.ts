@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
 import { OPENCODE_EXECUTION_ALLOW_ALL_PERMISSIONS } from '../../../opencode/permissions'
-import { OPENCODE_DEFAULT_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { SILENT_DEFAULT_PERMISSIONS } from '../../../opencode/toolPolicy'
 import { patchTicket } from '../../../storage/tickets'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../../test/integration'
 import { generateFinalTests } from '../generator'
@@ -124,8 +124,8 @@ describe('generateFinalTests', () => {
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DEFAULT_PERMISSIONS)
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(OPENCODE_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
   })
 
   it('restarts final test generation in a fresh session after an empty response', async () => {

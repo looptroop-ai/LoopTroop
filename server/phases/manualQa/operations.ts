@@ -21,7 +21,7 @@ import {
   resolvePhaseAttempt,
 } from '../../storage/tickets'
 import { manualQaOperations } from '../../db/schema'
-import type { TicketEvent } from '../../machines/types'
+import { normalizeSettingSource, type TicketEvent } from '../../machines/types'
 import type { Bead, QaOriginEvidenceRef } from '../beads/types'
 import { captureFinalTestDirtyFiles } from '../finalTest/fileEffectsAudit'
 import { fetchProviderCatalog, flattenCatalogModels } from '../../opencode/providerCatalog'
@@ -1122,6 +1122,10 @@ export async function submitManualQa(input: {
           lockedStructuredRetryCount: ticket.lockedStructuredRetryCount,
           lockedManualQaEnabled: ticket.lockedManualQaEnabled,
           lockedManualQaSource: ticket.lockedManualQaSource,
+          lockedAiQuestionsEnabled: ticket.lockedAiQuestionsEnabled,
+          lockedAiQuestionsSource: normalizeSettingSource(ticket.lockedAiQuestionsSource),
+          lockedAiQuestionWindow: ticket.lockedAiQuestionWindow,
+          lockedAiQuestionWindowSource: normalizeSettingSource(ticket.lockedAiQuestionWindowSource),
           pendingExecutionSetupPlanRequestArtifactId: null,
           previousStatus: ticket.previousStatus,
           error: null,

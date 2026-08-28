@@ -8,6 +8,8 @@ export const profiles = sqliteTable('profiles', {
   councilMembers: text('council_members'), // JSON array of model IDs
   councilMemberVariants: text('council_member_variants'), // JSON map: { "provider/model": "variant" }
   manualQaEnabled: integer('manual_qa_enabled', { mode: 'boolean' }).notNull().default(PROFILE_DEFAULTS.manualQaEnabled),
+  aiQuestionsEnabled: integer('ai_questions_enabled', { mode: 'boolean' }).notNull().default(PROFILE_DEFAULTS.aiQuestionsEnabled),
+  aiQuestionWindow: integer('ai_question_window').default(PROFILE_DEFAULTS.aiQuestionWindow),
   gitHookPolicy: text('git_hook_policy').notNull().default(PROFILE_DEFAULTS.gitHookPolicy),
   ignoreMode: text('ignore_mode').notNull().default(PROFILE_DEFAULTS.ignoreMode),
   minCouncilQuorum: integer('min_council_quorum').default(PROFILE_DEFAULTS.minCouncilQuorum),
@@ -54,6 +56,8 @@ export const projects = sqliteTable('projects', {
   profileId: integer('profile_id'),
   councilMembers: text('council_members'), // JSON array, nullable override
   manualQaOverride: integer('manual_qa_override', { mode: 'boolean' }),
+  aiQuestionsOverride: integer('ai_questions_override', { mode: 'boolean' }),
+  aiQuestionWindowOverride: integer('ai_question_window_override'),
   gitHookPolicy: text('git_hook_policy'),
   maxIterations: integer('max_iterations'),
   perIterationTimeout: integer('per_iteration_timeout'),
@@ -87,6 +91,8 @@ export const tickets = sqliteTable('tickets', {
   // exactly the one that would wipe its own reason.
   cancelReason: text('cancel_reason'),
   manualQaOverride: integer('manual_qa_override', { mode: 'boolean' }),
+  aiQuestionsOverride: integer('ai_questions_override', { mode: 'boolean' }),
+  aiQuestionWindowOverride: integer('ai_question_window_override'),
   lockedMainImplementer: text('locked_main_implementer'),
   lockedMainImplementerVariant: text('locked_main_implementer_variant'),
   lockedCouncilMembers: text('locked_council_members'), // JSON array of model IDs, frozen at start
@@ -99,6 +105,10 @@ export const tickets = sqliteTable('tickets', {
   lockedStructuredRetryCount: integer('locked_structured_retry_count'),
   lockedManualQaEnabled: integer('locked_manual_qa_enabled', { mode: 'boolean' }),
   lockedManualQaSource: text('locked_manual_qa_source'),
+  lockedAiQuestionsEnabled: integer('locked_ai_questions_enabled', { mode: 'boolean' }),
+  lockedAiQuestionsSource: text('locked_ai_questions_source'),
+  lockedAiQuestionWindow: integer('locked_ai_question_window'),
+  lockedAiQuestionWindowSource: text('locked_ai_question_window_source'),
   lockedGitHookPolicy: text('locked_git_hook_policy'),
   lockedGitHookPolicySource: text('locked_git_hook_policy_source'),
   workflowRevision: integer('workflow_revision').notNull().default(0),

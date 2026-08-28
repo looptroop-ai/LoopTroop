@@ -6,6 +6,8 @@ export interface CreateTicketOptions {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
 }
 
 export function createTicket(options: CreateTicketOptions) {

@@ -38,6 +38,8 @@ import {
   WorkflowDeadlineTimeoutError,
 } from '../lib/deadlineErrors'
 import { recordAiTurnMetricFromPrompt } from '../storage/aiTurnMetrics'
+import type { WorkBudget } from './workBudget'
+import { phaseMayAskQuestions } from '@shared/aiQuestions'
 
 export interface OpenCodeRunCallbacks {
   onSessionCreated?: (session: Session) => void
@@ -91,12 +93,28 @@ export interface OpenCodeRunOptions extends OpenCodeRunCallbacks {
    * higher-level attempt. When omitted, timeoutMs starts a fresh deadline.
    */
   timeoutDeadline?: number
+  /**
+   * The governing work budget, when the caller owns one.
+   *
+   * Takes precedence over `timeoutDeadline`/`timeoutMs` because its deadline
+   * moves: time spent waiting on a human answer to an OpenCode question is
+   * credited back rather than charged to the model's working time.
+   */
+  workBudget?: WorkBudget
   timeoutKind?: PromptTimeoutKind
   deadlineScope?: DeadlineScope
   model?: string
   agent?: string
   variant?: string
   toolPolicy?: OpenCodeToolPolicy
+  /**
+   * Whether this prompt may stop and ask a person, per the ticket's setting.
+   *
+   * Omitted means no. Every phase resolves this from the value locked at ticket
+   * start; a call site that forgets fails closed rather than quietly gaining the
+   * ability to block an unattended run. The interview is denied regardless.
+   */
+  questionsAllowed?: boolean
   sessionOwnership?: OpenCodeSessionOwnership
   skipSessionValidation?: boolean
   erroredSessionPolicy?: OpenCodeErroredSessionPolicy
@@ -374,12 +392,14 @@ export async function runOpenCodePrompt({
   signal,
   timeoutMs,
   timeoutDeadline,
+  workBudget,
   timeoutKind,
   deadlineScope,
   model,
   agent,
   variant,
   toolPolicy,
+  questionsAllowed,
   sessionOwnership,
   erroredSessionPolicy,
   opencodeRetryPolicy,
@@ -390,7 +410,9 @@ export async function runOpenCodePrompt({
 }: OpenCodeRunOptions & { projectPath: string }): Promise<OpenCodeRunResult> {
   const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
   const sessionCreateOptions = resolveSessionCreateOptions()
-  const resolvedTimeoutDeadline = timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
+  const resolvedTimeoutDeadline = workBudget
+    ? workBudget.deadlineAt()
+    : timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
   const acquisitionDeadline = createTimeoutSignal(signal, getRemainingTimeoutMs(resolvedTimeoutDeadline))
   let session: Session | undefined
   let preservedForContinuation = false
@@ -467,6 +489,7 @@ export async function runOpenCodePrompt({
       agent,
       variant,
       toolPolicy,
+      questionsAllowed,
       sessionOwnership,
       skipSessionValidation: true,
       erroredSessionPolicy,
@@ -474,7 +497,7 @@ export async function runOpenCodePrompt({
       onPromptDispatched,
       onStreamEvent,
       onPromptCompleted,
-      timeoutDeadline: resolvedTimeoutDeadline,
+      ...(workBudget ? { workBudget } : { timeoutDeadline: resolvedTimeoutDeadline }),
     })
     if (sessionManager && !sessionOwnership?.keepActive) {
       await sessionManager.completeSession(session.id)
@@ -515,6 +538,7 @@ export async function runOpenCodeSessionPrompt({
   agent,
   variant,
   toolPolicy,
+  questionsAllowed,
   sessionOwnership,
   skipSessionValidation,
   erroredSessionPolicy,
@@ -524,12 +548,20 @@ export async function runOpenCodeSessionPrompt({
   onStreamError,
   onPromptCompleted,
   timeoutDeadline,
+  workBudget,
 }: OpenCodeRunOptions & { session: Session }): Promise<OpenCodeRunResult> {
-  const resolvedTimeoutDeadline = timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
+  const staticTimeoutDeadline = timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
+  // The budget's deadline moves when a question wait is credited back, so it is
+  // read on demand rather than snapshotted.
+  const readDeadline = (): number | undefined => workBudget ? workBudget.deadlineAt() : staticTimeoutDeadline
+  const readRemaining = (): number | undefined => workBudget
+    ? workBudget.remainingMs()
+    : getRemainingTimeoutMs(staticTimeoutDeadline)
+  const resolvedTimeoutDeadline = readDeadline()
   let resolvedSession = session
   const sessionManager = sessionOwnership ? new SessionManager(adapter) : null
   if (sessionOwnership && !skipSessionValidation) {
-    const validationDeadline = createTimeoutSignal(signal, getRemainingTimeoutMs(resolvedTimeoutDeadline))
+    const validationDeadline = createTimeoutSignal(signal, readRemaining())
     let reconnected: Session | null
     try {
       reconnected = await sessionManager!.validateAndReconnect(sessionOwnership.ticketId, sessionOwnership.phase, {
@@ -554,7 +586,7 @@ export async function runOpenCodeSessionPrompt({
   }
 
   let response = ''
-  const promptTimeoutMs = getRemainingTimeoutMs(resolvedTimeoutDeadline)
+  const promptTimeoutMs = readRemaining()
   const deadlineController = promptTimeoutMs === undefined ? undefined : new AbortController()
   const retryController = new AbortController()
   const combinedSignal = signal
@@ -565,6 +597,30 @@ export async function runOpenCodeSessionPrompt({
       ? AbortSignal.any([deadlineController.signal, retryController.signal])
       : retryController.signal
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * Arms — or disarms — the abort timer from the budget's current remaining time.
+   *
+   * While a question wait holds the budget the timer is cleared outright rather
+   * than re-armed: a timer set from the frozen remaining time would still fire
+   * mid-wait, which is exactly what Stop timer promises will not happen.
+   */
+  const armDeadlineTimer = () => {
+    if (!deadlineController) return
+    if (deadlineTimer) {
+      clearTimeout(deadlineTimer)
+      deadlineTimer = undefined
+    }
+    if (deadlineController.signal.aborted) return
+    if (workBudget?.suspended()) return
+    const remaining = readRemaining()
+    if (remaining === undefined) return
+    if (remaining <= 0) {
+      deadlineController.abort()
+      return
+    }
+    deadlineTimer = setTimeout(() => deadlineController.abort(), remaining)
+  }
+  const unsubscribeBudget = workBudget?.onChange(armDeadlineTimer)
   let openCodeRetryTimer: ReturnType<typeof setTimeout> | undefined
   let openCodeRetryError: Error | null = null
   let continuableRetryCount = 0
@@ -572,7 +628,12 @@ export async function runOpenCodeSessionPrompt({
   let latestContinuableRetryAttempt: number | undefined
   const resolvedRetryPolicy = resolveOpenCodeRetryPolicy(opencodeRetryPolicy)
   const parsedModel = model ? parseModelRef(model) : undefined
-  const permission = resolveOpenCodePermissions(toolPolicy)
+  // Denied at this boundary rather than at each call site: every direct caller
+  // passes through here, so resolving one level up would leave every retry and
+  // same-session continuation unguarded. The interview is excluded by phase
+  // because interview drafting shares `council/drafter.ts` with PRD and beads.
+  const questionsPermitted = questionsAllowed === true && phaseMayAskQuestions(sessionOwnership?.phase)
+  const permission = resolveOpenCodePermissions(toolPolicy, questionsPermitted)
   const stepFinishSafetyMs = promptTimeoutMs === undefined || promptTimeoutMs <= 0
     ? undefined
     : Math.min(Math.max(promptTimeoutMs / 10, PROMPT_MIN_TIMEOUT_MS), PROMPT_MAX_TIMEOUT_MS)
@@ -666,13 +727,7 @@ export async function runOpenCodeSessionPrompt({
       ...(variant ? { variant } : {}),
     })
 
-    if (deadlineController) {
-      if (promptTimeoutMs !== undefined && promptTimeoutMs <= 0) {
-        deadlineController.abort()
-      } else {
-        deadlineTimer = setTimeout(() => deadlineController.abort(), promptTimeoutMs)
-      }
-    }
+    armDeadlineTimer()
     if (deadlineController?.signal.aborted) {
       throw buildDeadlineTimeoutError(deadlineScope, timeoutMs, sessionOwnership)
     }
@@ -757,6 +812,7 @@ export async function runOpenCodeSessionPrompt({
     onStreamError?.(thrownError)
     throw thrownError
   } finally {
+    unsubscribeBudget?.()
     if (deadlineTimer) {
       clearTimeout(deadlineTimer)
     }

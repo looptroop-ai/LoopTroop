@@ -1,6 +1,6 @@
 import { createActor } from 'xstate'
 import { ticketMachine } from './ticketMachine'
-import { STATUS_TO_PHASE, TERMINAL_STATES, type ManualQaConfigurationSource, type TicketContext } from './types'
+import { STATUS_TO_PHASE, TERMINAL_STATES, normalizeSettingSource, type ManualQaConfigurationSource, type SettingSource, type TicketContext } from './types'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { attachWorkflowRunner } from '../workflow/runner'
 import { broadcaster } from '../sse/broadcaster'
@@ -41,14 +41,14 @@ type TicketActorInput = {
   lockedStructuredRetryCount?: number | null
   lockedManualQaEnabled?: boolean | null
   lockedManualQaSource?: ManualQaConfigurationSource | null
+  lockedAiQuestionsEnabled?: boolean | null
+  lockedAiQuestionsSource?: SettingSource | null
+  lockedAiQuestionWindow?: number | null
+  lockedAiQuestionWindowSource?: SettingSource | null
 }
 
 function isKnownWorkflowState(status: string): boolean {
   return Object.prototype.hasOwnProperty.call(STATUS_TO_PHASE, status)
-}
-
-function normalizeManualQaSource(value: string | null | undefined): ManualQaConfigurationSource | null {
-  return value === 'profile' || value === 'project' || value === 'ticket' ? value : null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,6 +94,10 @@ function buildMachineContext(
     lockedStructuredRetryCount: input.lockedStructuredRetryCount ?? null,
     lockedManualQaEnabled: input.lockedManualQaEnabled ?? null,
     lockedManualQaSource: input.lockedManualQaSource ?? null,
+    lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? null,
+    lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? null,
+    lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? null,
+    lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? null,
     pendingExecutionSetupPlanRequestArtifactId: null,
     previousStatus: options.previousStatus ?? null,
     error: options.error ?? null,
@@ -167,6 +171,10 @@ function reconcileSnapshotForTicket(
   context.lockedStructuredRetryCount = input.lockedStructuredRetryCount ?? null
   context.lockedManualQaEnabled = input.lockedManualQaEnabled ?? null
   context.lockedManualQaSource = input.lockedManualQaSource ?? null
+  context.lockedAiQuestionsEnabled = input.lockedAiQuestionsEnabled ?? null
+  context.lockedAiQuestionsSource = input.lockedAiQuestionsSource ?? null
+  context.lockedAiQuestionWindow = input.lockedAiQuestionWindow ?? null
+  context.lockedAiQuestionWindowSource = input.lockedAiQuestionWindowSource ?? null
   if (
     typeof context.pendingExecutionSetupPlanRequestArtifactId !== 'number'
     || !Number.isFinite(context.pendingExecutionSetupPlanRequestArtifactId)
@@ -370,7 +378,11 @@ export function ensureActorForTicket(ticketRef: string | number) {
     lockedMaxBeadsCoveragePasses: ticket.localTicket.lockedMaxBeadsCoveragePasses ?? null,
     lockedStructuredRetryCount: ticket.localTicket.lockedStructuredRetryCount ?? null,
     lockedManualQaEnabled: ticket.localTicket.lockedManualQaEnabled ?? null,
-    lockedManualQaSource: normalizeManualQaSource(ticket.localTicket.lockedManualQaSource),
+    lockedManualQaSource: normalizeSettingSource(ticket.localTicket.lockedManualQaSource),
+    lockedAiQuestionsEnabled: ticket.localTicket.lockedAiQuestionsEnabled ?? null,
+    lockedAiQuestionsSource: normalizeSettingSource(ticket.localTicket.lockedAiQuestionsSource),
+    lockedAiQuestionWindow: ticket.localTicket.lockedAiQuestionWindow ?? null,
+    lockedAiQuestionWindowSource: normalizeSettingSource(ticket.localTicket.lockedAiQuestionWindowSource),
   }
 
   if (ticket.localTicket.xstateSnapshot) {
@@ -523,6 +535,10 @@ export function createTicketActor(
       lockedStructuredRetryCount: input.lockedStructuredRetryCount ?? null,
       lockedManualQaEnabled: input.lockedManualQaEnabled ?? null,
       lockedManualQaSource: input.lockedManualQaSource ?? null,
+      lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? null,
+      lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? null,
+      lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? null,
+      lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? null,
     },
   })
 
@@ -561,6 +577,10 @@ function hydrateTicketActor(
       lockedStructuredRetryCount: input.lockedStructuredRetryCount ?? null,
       lockedManualQaEnabled: input.lockedManualQaEnabled ?? null,
       lockedManualQaSource: input.lockedManualQaSource ?? null,
+      lockedAiQuestionsEnabled: input.lockedAiQuestionsEnabled ?? null,
+      lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? null,
+      lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? null,
+      lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? null,
     },
   })
 
@@ -598,7 +618,11 @@ export function hydrateAllTickets() {
       lockedMaxBeadsCoveragePasses: ticket.lockedMaxBeadsCoveragePasses ?? null,
       lockedStructuredRetryCount: ticket.lockedStructuredRetryCount ?? null,
       lockedManualQaEnabled: ticket.lockedManualQaEnabled ?? null,
-      lockedManualQaSource: normalizeManualQaSource(ticket.lockedManualQaSource),
+      lockedManualQaSource: normalizeSettingSource(ticket.lockedManualQaSource),
+      lockedAiQuestionsEnabled: ticket.lockedAiQuestionsEnabled ?? null,
+      lockedAiQuestionsSource: normalizeSettingSource(ticket.lockedAiQuestionsSource),
+      lockedAiQuestionWindow: ticket.lockedAiQuestionWindow ?? null,
+      lockedAiQuestionWindowSource: normalizeSettingSource(ticket.lockedAiQuestionWindowSource),
     }
 
     try {
@@ -704,7 +728,11 @@ export function revertTicketToApprovalStatus(
     lockedMaxBeadsCoveragePasses: ticket.localTicket.lockedMaxBeadsCoveragePasses ?? null,
     lockedStructuredRetryCount: ticket.localTicket.lockedStructuredRetryCount ?? null,
     lockedManualQaEnabled: ticket.localTicket.lockedManualQaEnabled ?? null,
-    lockedManualQaSource: normalizeManualQaSource(ticket.localTicket.lockedManualQaSource),
+    lockedManualQaSource: normalizeSettingSource(ticket.localTicket.lockedManualQaSource),
+    lockedAiQuestionsEnabled: ticket.localTicket.lockedAiQuestionsEnabled ?? null,
+    lockedAiQuestionsSource: normalizeSettingSource(ticket.localTicket.lockedAiQuestionsSource),
+    lockedAiQuestionWindow: ticket.localTicket.lockedAiQuestionWindow ?? null,
+    lockedAiQuestionWindowSource: normalizeSettingSource(ticket.localTicket.lockedAiQuestionWindowSource),
   }, {
     skipFirstPersist: false,
     skipInitialWorkflowRun: options?.skipInitialWorkflowRun,

@@ -21,6 +21,21 @@ import {
   stopTicketTimers,
 } from '../questionWindows'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
+import { MockOpenCodeAdapter } from '../../opencode/adapter'
+
+const adapter = new MockOpenCodeAdapter()
+// The window machinery reaches for the process-wide adapter, so the mock is
+// installed for the whole file rather than threaded through every call.
+vi.mock('../../opencode/factory', () => ({
+  getOpenCodeAdapter: () => adapter,
+  isMockOpenCodeMode: () => true,
+  resetOpenCodeAdapter: () => undefined,
+}))
+
+/** Lets the expiry's async reject chain settle after the fake clock fires it. */
+async function settle() {
+  for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
+}
 
 const repoManager = createFixtureRepoManager({
   templatePrefix: 'looptroop-question-windows-',
@@ -66,6 +81,8 @@ describe('question windows', () => {
     sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
     resetAllQuestionWindows()
     resetAllWorkBudgets()
+    adapter.questionRejections = []
+    adapter.failRejectQuestion = false
   })
 
   afterEach(() => {
@@ -236,6 +253,66 @@ describe('question windows', () => {
     expect(events.every((event) => event.skippedBy === 'system')).toBe(true)
     const summary = events.find((event) => event.isActionSummary)
     expect(summary?.questionContext?.expiry_reason).toBe('ticket_canceled')
+  })
+
+  it('refuses every request on the clock when the wait runs out', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b', memberId: 'openai/gpt' })
+
+    await vi.advanceTimersByTimeAsync(300_001)
+    await settle()
+
+    // One clock for both, so both go down together.
+    expect(adapter.questionRejections.map((entry) => entry.requestId).sort()).toEqual(['req_a', 'req_b'])
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+
+    const events = listSkipEvents(ticket.id).filter((event) => event.surface === 'opencode_question')
+    expect(events.every((event) => event.skippedBy === 'timeout')).toBe(true)
+    const summaries = events.filter((event) => event.isActionSummary)
+    expect(summaries).toHaveLength(2)
+    expect(summaries.every((event) => event.questionContext?.expiry_reason === 'window_elapsed')).toBe(true)
+    // Each receipt names the others the same expiry covered.
+    expect(summaries.some((event) => (event.questionContext?.sibling_request_ids.length ?? 0) > 0)).toBe(true)
+  })
+
+  it('never expires a stopped clock, however far the fake clock runs', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    stopTicketTimers(ticket.id)
+
+    await vi.advanceTimersByTimeAsync(3_600_000)
+    await settle()
+
+    expect(adapter.questionRejections).toHaveLength(0)
+    expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+  })
+
+  it('closes the request out locally when OpenCode will not take the rejection', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    adapter.failRejectQuestion = true
+
+    await vi.advanceTimersByTimeAsync(300_001)
+    // The rejection retries with a backoff before giving up, and those delays
+    // are on the same fake clock.
+    await vi.advanceTimersByTimeAsync(10_000)
+    await settle()
+
+    // An expiry that cannot reject would recreate the hang this exists to
+    // prevent, so the record is resolved and the failure recorded either way.
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+    const summary = listSkipEvents(ticket.id)
+      .find((event) => event.surface === 'opencode_question' && event.isActionSummary)
+    expect(summary?.reason).toMatch(/Could not tell OpenCode/)
   })
 
   it('clamps a window outside the configurable range', () => {

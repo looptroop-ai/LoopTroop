@@ -845,6 +845,11 @@ export async function executeBead(
         maxAttempts: maxIterations > 0 ? maxIterations : null,
       })
     } finally {
+      // Every iteration registers its budget in the ticket's ledger, and the
+      // ledger holds it until it is released. Without this a long-lived daemon
+      // accumulates one dead budget per bead iteration, each still listening for
+      // suspend and resume notifications it can no longer act on.
+      budget.release()
       if (contextWipeSessionId && sessionManager) {
         await sessionManager.abandonSession(contextWipeSessionId)
         clearSessionContinuation(contextWipeSessionId)

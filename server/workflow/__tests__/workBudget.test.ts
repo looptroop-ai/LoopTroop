@@ -126,4 +126,27 @@ describe('workBudget', () => {
     vi.advanceTimersByTime(10_000)
     expect(budget.remainingMs()).toBe(50_000)
   })
+
+  it('stops tracking a ticket once every budget on it is released', () => {
+    // The ledger holds a strong reference to each budget until it is released,
+    // and a coding run creates one per bead iteration. Left unreleased they
+    // accumulate for the daemon's lifetime, every one of them still being
+    // notified on each suspend and resume it can no longer act on.
+    const budgets = Array.from({ length: 25 }, () => (
+      createWorkBudget({ ticketId: 'T-1', totalMs: 60_000, scope: 'bead_iteration' })
+    ))
+    const listeners = budgets.map((budget) => {
+      const listener = vi.fn()
+      budget.onChange(listener)
+      return listener
+    })
+
+    for (const budget of budgets) budget.release()
+    suspendTicketWork('T-1')
+
+    expect(listeners.every((listener) => listener.mock.calls.length === 0)).toBe(true)
+    // The suspension that arrived after the last release still stands on its
+    // own — releasing a budget is not the same as ending a wait.
+    expect(isTicketWorkSuspended('T-1')).toBe(true)
+  })
 })

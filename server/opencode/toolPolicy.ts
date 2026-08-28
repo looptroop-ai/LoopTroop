@@ -147,6 +147,25 @@ export function resolveOpenCodePermissions(
   return resolved
 }
 
+/**
+ * Whether the rules on this prompt deny a permission outright.
+ *
+ * Used where a permission is *asked for* rather than resolved silently. Auto
+ * approval exists to keep an unattended run moving, not to override the policy
+ * the run was given, so a denied permission has to be refused even there. The
+ * specific rule wins over `*`, so an explicit allow is not overturned by a
+ * blanket deny.
+ */
+export function isPermissionDeniedByRules(
+  rules: ReadonlyArray<OpenCodePermissionRule> | undefined,
+  permission: string | undefined,
+): boolean {
+  if (!rules || !permission) return false
+  const specific = rules.find((rule) => rule.permission === permission)
+  if (specific) return specific.action === 'deny'
+  return rules.some((rule) => rule.permission === '*' && rule.action === 'deny')
+}
+
 /** True when this policy would let a prompt ask, given the ticket's setting. */
 export function toolPolicyMayAskQuestions(toolPolicy: OpenCodeToolPolicy = 'default'): boolean {
   return !SILENT_TOOL_POLICIES.has(toolPolicy)

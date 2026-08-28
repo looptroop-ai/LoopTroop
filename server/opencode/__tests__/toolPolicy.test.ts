@@ -3,6 +3,7 @@ import type { OpenCodePermissionRule } from '../types'
 import {
   OPENCODE_DISABLED_PERMISSIONS,
   OPENCODE_READ_ONLY_PERMISSIONS,
+  isPermissionDeniedByRules,
   resolveOpenCodePermissions,
   toolPolicyMayAskQuestions,
   type OpenCodeToolPolicy,
@@ -54,6 +55,26 @@ describe('resolveOpenCodePermissions', () => {
     const resolved = (resolveOpenCodePermissions('disabled') as OpenCodePermissionRule[])
       .filter((rule) => rule.permission !== 'question')
     expect(resolved).toEqual(base)
+  })
+
+  it('reports what the rules deny, so auto-approval cannot overturn them', () => {
+    const silent = resolveOpenCodePermissions('default') as OpenCodePermissionRule[]
+    const asking = resolveOpenCodePermissions('default', true) as OpenCodePermissionRule[]
+    expect(isPermissionDeniedByRules(silent, 'question')).toBe(true)
+    expect(isPermissionDeniedByRules(asking, 'question')).toBe(false)
+  })
+
+  it('lets a specific allow beat a blanket deny', () => {
+    // `disabled` is `'*': false` plus per-tool rules. A tool it allows must not
+    // be reported as denied just because the wildcard says everything is.
+    const rules: OpenCodePermissionRule[] = [
+      { permission: '*', pattern: '*', action: 'deny' },
+      { permission: 'read', pattern: '*', action: 'allow' },
+    ]
+    expect(isPermissionDeniedByRules(rules, 'read')).toBe(false)
+    expect(isPermissionDeniedByRules(rules, 'bash')).toBe(true)
+    expect(isPermissionDeniedByRules(undefined, 'bash')).toBe(false)
+    expect(isPermissionDeniedByRules(rules, undefined)).toBe(false)
   })
 
   it('returns the same frozen array for repeated calls', () => {

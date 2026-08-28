@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { KanbanColumn } from './KanbanColumn'
-import { useTickets } from '@/hooks/useTickets'
+import { useTickets, type Ticket } from '@/hooks/useTickets'
 import { useProjects } from '@/hooks/useProjects'
 import { useUI } from '@/context/useUI'
-import { STATUS_TO_PHASE, WORKFLOW_GROUPS, WORKFLOW_PHASES, WORKFLOW_PHASE_MAP } from '@/lib/workflowMeta'
+import { WORKFLOW_GROUPS, WORKFLOW_PHASES, WORKFLOW_PHASE_MAP } from '@/lib/workflowMeta'
+import { resolveKanbanPhase } from '@shared/kanbanPhase'
 import type { WorkflowGroupMeta, WorkflowPhaseMeta } from '@shared/workflowMeta'
 import type { TriagePreset, ErrorStateFilter } from '@/context/uiContextDef'
 import { Badge } from '@/components/ui/badge'
@@ -40,7 +41,7 @@ const columns: KanbanColumnConfig[] = [
     id: 'needs_input',
     title: 'Needs Input',
     description: 'Waiting for user',
-    tooltip: 'Tickets paused because LoopTroop needs a human action before it can continue, such as interview answers, artifact approval, execution setup approval, PR review, or a retry/cancel decision after an error.',
+    tooltip: 'Tickets waiting on you before LoopTroop can continue, such as interview answers, artifact approval, execution setup approval, PR review, or a retry/cancel decision after an error. A ticket also sits here while a model has stopped mid-step to ask you a question, even though its status has not changed.',
   },
   {
     id: 'in_progress',
@@ -55,6 +56,14 @@ const columns: KanbanColumnConfig[] = [
     tooltip: 'Terminal tickets that no longer advance automatically. This includes completed work and canceled work, with the ticket history and generated artifacts kept available for review.',
   },
 ]
+
+/**
+ * The board only ever sees the polled DTO — the live question feed reaches the
+ * ticket view, not here — so the ticket list is what decides the column.
+ */
+function hasPendingQuestion(ticket: Ticket): boolean {
+  return (ticket.pendingQuestions?.requestCount ?? 0) > 0
+}
 
 const PRIORITY_LABELS: Record<number, string> = {
   1: 'Very High',
@@ -256,7 +265,7 @@ export function KanbanBoard() {
       const threshold = selectedStuckDays * 24 * 60 * 60 * 1000
       const now = Date.now()
       result = result.filter(t => {
-        const phase = STATUS_TO_PHASE[t.status] ?? 'todo'
+        const phase = resolveKanbanPhase(t.status, { hasPendingQuestion: hasPendingQuestion(t) })
         if (phase === 'in_progress' || phase === 'needs_input') {
           return (now - new Date(t.updatedAt).getTime()) > threshold
         }
@@ -282,7 +291,7 @@ export function KanbanBoard() {
 
   const ticketsByPhase = useMemo(() => columns.map(col => ({
     ...col,
-    tickets: filteredTickets.filter(t => (STATUS_TO_PHASE[t.status] ?? 'todo') === col.id),
+    tickets: filteredTickets.filter(t => resolveKanbanPhase(t.status, { hasPendingQuestion: hasPendingQuestion(t) }) === col.id),
   })), [filteredTickets])
 
   const hasLoadedTickets = Array.isArray(tickets)

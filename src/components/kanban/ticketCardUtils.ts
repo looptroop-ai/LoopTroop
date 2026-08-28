@@ -1,4 +1,5 @@
-import { STATUS_ORDER, STATUS_TO_PHASE } from '@/lib/workflowMeta'
+import { STATUS_ORDER } from '@/lib/workflowMeta'
+import { resolveKanbanPhase } from '@shared/kanbanPhase'
 
 export function getStatusColor(status: string): string {
   if (status === 'BLOCKED_ERROR') {
@@ -38,7 +39,11 @@ export function formatRelativeDateChip(dateStr: string): string {
 
 export function getStatusProgress(status: string): number | null {
   if (status === 'BLOCKED_ERROR') return null
-  if (STATUS_TO_PHASE[status] === 'todo' || STATUS_TO_PHASE[status] === 'done') return null
+  // Status-only on purpose: a pending question moves the card's column, not how
+  // far through the workflow it is, and the phases skipped here are the two a
+  // question can never apply to.
+  const phase = resolveKanbanPhase(status)
+  if (phase === 'todo' || phase === 'done') return null
   const idx = STATUS_ORDER.indexOf(status)
   if (idx === -1) return null
   return Math.round(((idx + 1) / STATUS_ORDER.length) * 100)

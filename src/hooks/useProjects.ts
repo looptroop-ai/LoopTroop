@@ -24,6 +24,9 @@ interface Project {
   minCouncilQuorum: number | null
   interviewQuestions: number | null
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  /** Milliseconds, or null to inherit the profile's wait. */
+  aiQuestionWindowOverride?: number | null
   ignoreMode: IgnoreMode
   ticketCounter: number
   createdAt: string
@@ -41,6 +44,8 @@ interface ExistingProjectPreview {
   activeTicketCount: number
   gitHookPolicy?: GitHookPolicy | null
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
   ignoreMode?: IgnoreMode
 }
 
@@ -61,6 +66,8 @@ interface CreateProjectInput {
   executionSetupTimeout?: number
   gitHookPolicy?: GitHookPolicy | null
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
   existingStateAction?: ExistingStateAction
   ignoreMode?: IgnoreMode
 }
@@ -134,7 +141,12 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
   }
 }
 
-async function updateProject(id: number, input: Partial<Pick<Project, 'name' | 'icon' | 'color' | 'executionSetupTimeout' | 'gitHookPolicy' | 'manualQaOverride'>>): Promise<Project> {
+type UpdateProjectInput = Partial<Pick<
+  Project,
+  'name' | 'icon' | 'color' | 'executionSetupTimeout' | 'gitHookPolicy' | 'manualQaOverride' | 'aiQuestionsOverride' | 'aiQuestionWindowOverride'
+>>
+
+async function updateProject(id: number, input: UpdateProjectInput): Promise<Project> {
   const res = await fetch(`/api/projects/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -191,7 +203,7 @@ export function useDeleteProject() {
 export function useUpdateProject() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...input }: { id: number } & Partial<Pick<Project, 'name' | 'icon' | 'color' | 'executionSetupTimeout' | 'gitHookPolicy' | 'manualQaOverride'>>) =>
+    mutationFn: ({ id, ...input }: { id: number } & UpdateProjectInput) =>
       updateProject(id, input),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] })

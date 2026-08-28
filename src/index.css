@@ -148,6 +148,34 @@ input[type='search']::-webkit-search-results-decoration {
   animation: lt-needs-input-pulse-keyframe 2.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* A model stopped to ask. Sky, not rose — a question is not a failure. */
+@keyframes lt-question-pulse-keyframe {
+  0%, 100% {
+    border-color: rgba(14, 165, 233, 0.5);
+    background-color: rgba(14, 165, 233, 0.06);
+    box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.2);
+  }
+  50% {
+    border-color: rgba(14, 165, 233, 0.9);
+    background-color: rgba(14, 165, 233, 0.12);
+    box-shadow: 0 0 12px -2px rgba(14, 165, 233, 0.28);
+  }
+}
+
+.lt-question-pulse {
+  animation: lt-question-pulse-keyframe 2.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* The strip that announces a question waiting on a ticket you are not viewing. */
+@keyframes lt-slide-in-top-keyframe {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+.lt-slide-in-top {
+  animation: lt-slide-in-top-keyframe 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 @keyframes lt-error-pulse-keyframe {
   0%, 100% {
     border-color: rgba(239, 68, 68, 0.5);
@@ -221,6 +249,8 @@ input[type='search']::-webkit-search-results-decoration {
 
 @media (prefers-reduced-motion: reduce) {
   .lt-needs-input-pulse,
+  .lt-question-pulse,
+  .lt-slide-in-top,
   .lt-error-pulse,
   .animate-pencil-write,
   .animate-hourglass-flip,

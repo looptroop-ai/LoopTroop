@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -118,7 +118,8 @@ describe('TicketForm', () => {
     expect(advancedButton.parentElement).toHaveClass('border-2')
     fireEvent.click(advancedButton)
     expect(screen.getByText('Manual QA checkpoint')).toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
+    const manualQa = within(screen.getByRole('radiogroup', { name: 'Manual QA setting' }))
+    expect(manualQa.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
     expect(screen.queryByText('Git hook policy')).not.toBeInTheDocument()

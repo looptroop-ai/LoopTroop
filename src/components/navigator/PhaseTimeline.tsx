@@ -5,7 +5,8 @@ import { StatusIndicator } from './StatusIndicator'
 import { EtaRange } from './EtaRange'
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { STATUS_DESCRIPTIONS, STATUS_TO_PHASE, getStatusUserLabel } from '@/lib/workflowMeta'
+import { STATUS_DESCRIPTIONS, getStatusUserLabel } from '@/lib/workflowMeta'
+import { resolveKanbanPhase } from '@shared/kanbanPhase'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 import type { Ticket } from '@/hooks/useTickets'
 
@@ -29,6 +30,7 @@ function getPhaseIndicatorStatus(
   reviewCutoffStatus?: string,
   previousStatus?: string,
   visitedStatuses: string[] = [],
+  hasPendingQuestion = false,
 ): PhaseIndicatorStatus {
   if (currentStatus === 'BLOCKED_ERROR') {
     if (phaseId === 'BLOCKED_ERROR') return 'error'
@@ -76,7 +78,9 @@ function getPhaseIndicatorStatus(
 
   if (currentStatus === 'COMPLETED' && phaseId === 'COMPLETED') return 'completed-final'
   if (phaseId === currentStatus) {
-    return STATUS_TO_PHASE[currentStatus] === 'needs_input' ? 'waiting' : 'active'
+    // A model that stopped to ask reads as waiting, not running, even though the
+    // status still says the step is in flight.
+    return resolveKanbanPhase(currentStatus, { hasPendingQuestion }) === 'needs_input' ? 'waiting' : 'active'
   }
 
   if (visitedStatuses.includes(phaseId)) return 'completed'
@@ -95,8 +99,9 @@ function getGroupStatus(
   reviewCutoffStatus?: string,
   previousStatus?: string,
   visitedStatuses: string[] = [],
+  hasPendingQuestion = false,
 ): PhaseIndicatorStatus {
-  const statuses = group.phases.map(p => getPhaseIndicatorStatus(p.id, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, visitedStatuses))
+  const statuses = group.phases.map(p => getPhaseIndicatorStatus(p.id, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, visitedStatuses, hasPendingQuestion))
 
   if (group.id === 'todo' && currentStatus === 'DRAFT') {
     return 'pending'
@@ -183,6 +188,7 @@ export function PhaseTimeline({
     }))
     .filter((group) => group.phases.length > 0), [groups, visiblePhases])
   const phaseOrder = useMemo(() => visiblePhases.map((phase) => phase.id), [visiblePhases])
+  const hasPendingQuestion = (ticket?.pendingQuestions?.requestCount ?? 0) > 0
   const defaultExpandedGroupIndexes = useMemo(() => {
     const indexes = new Set<number>()
     const activeGroupIndex = phaseGroups.findIndex(group => group.phases.some((phase) => phase.id === currentTimelineStatus))
@@ -217,7 +223,7 @@ export function PhaseTimeline({
     <ScrollArea className="h-full">
       <div className="p-2 space-y-1">
         {phaseGroups.map((group, gi) => {
-          const groupStatus = getGroupStatus(group, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, ticket?.visitedStatuses ?? [])
+          const groupStatus = getGroupStatus(group, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, ticket?.visitedStatuses ?? [], hasPendingQuestion)
           const isExpanded = expandedGroups.has(gi)
 
           return (
@@ -247,7 +253,7 @@ export function PhaseTimeline({
               {isExpanded && (
                 <div className="ml-3 space-y-0.5 mt-0.5">
                   {group.phases.map(phase => {
-                    const indicatorStatus = getPhaseIndicatorStatus(phase.id, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, ticket?.visitedStatuses ?? [])
+                    const indicatorStatus = getPhaseIndicatorStatus(phase.id, currentStatus, phaseOrder, reviewCutoffStatus, previousStatus, ticket?.visitedStatuses ?? [], hasPendingQuestion)
                     const isSelected = selectedPhase === phase.id
                     const isPast = indicatorStatus === 'completed'
                     const isFuture = indicatorStatus === 'pending'

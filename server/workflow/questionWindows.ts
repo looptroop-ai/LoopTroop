@@ -30,6 +30,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import {
   buildAiQuestionTimerKey,
   clampAiQuestionWindowMs,
+  isCouncilQuorumPhase,
   type AiQuestionTimerState,
 } from '@shared/aiQuestions'
 import type { SkipActor, SkipQuestionContext } from '@shared/skipReceipt'
@@ -412,6 +413,20 @@ function finish(timer: QuestionTimer, record: QuestionRequestRecord): void {
   broadcastTimer(timer)
 }
 
+/**
+ * What a refusal here might cost the round.
+ *
+ * Evidence, not machinery: the existing below-quorum check already routes to
+ * `BLOCKED_ERROR`. Recording it on the receipt is what lets someone reading a
+ * blocked council round later see that a question went unanswered inside it,
+ * instead of finding only a quorum failure with no cause attached.
+ */
+function describeQuorumImpact(record: QuestionRequestRecord, resolution: QuestionResolution): string | null {
+  if (resolution === 'replied' || !isCouncilQuorumPhase(record.phase)) return null
+  const who = record.memberId ?? 'a council member'
+  return `${who} was refused mid-round in ${record.phase}; its contribution may be missing from the quorum count.`
+}
+
 function buildQuestionContext(
   timer: QuestionTimer,
   record: QuestionRequestRecord,
@@ -441,7 +456,7 @@ function buildQuestionContext(
       .filter((other) => other.requestId !== record.requestId)
       .map((other) => other.requestId),
     expiry_reason: resolution === 'replied' ? 'user_skipped' : resolution,
-    quorum_impact: quorumImpact,
+    quorum_impact: quorumImpact ?? describeQuorumImpact(record, resolution),
   }
 }
 

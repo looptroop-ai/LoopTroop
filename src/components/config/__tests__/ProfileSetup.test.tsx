@@ -304,7 +304,16 @@ describe('ProfileSetup', () => {
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'Run' })).toHaveAttribute('data-state', 'checked')
     const docsLinks = screen.getAllByRole('link', { name: /Open documentation for / })
-    expect(docsLinks).toHaveLength(22)
+    expect(docsLinks).toHaveLength(24)
+
+    expect(screen.getByRole('link', { name: 'Open documentation for AI Questions' })).toHaveAttribute(
+      'href',
+      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#ai-questions`,
+    )
+    expect(screen.getByRole('link', { name: 'Open documentation for AI Question Wait' })).toHaveAttribute(
+      'href',
+      `${__LOOPTROOP_DOCS_ORIGIN__}/configuration#ai-question-wait`,
+    )
 
     expect(screen.getByRole('link', { name: 'Open documentation for Manual QA checkpoint' })).toHaveAttribute(
       'href',
@@ -391,6 +400,37 @@ describe('ProfileSetup', () => {
       }),
       expect.anything(),
     ))
+  })
+
+  it('persists the AI question defaults the whole cascade starts from', async () => {
+    await renderProfileSetup()
+
+    expect(screen.getByRole('radio', { name: 'On' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('AI Question Wait')).toHaveValue(300)
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Off' }))
+    fireEvent.change(screen.getByLabelText('AI Question Wait minutes'), { target: { value: '10' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(updateProfileMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aiQuestionsEnabled: false,
+        aiQuestionWindow: 600_000,
+      }),
+      expect.anything(),
+    ))
+  })
+
+  it('refuses an AI question wait outside the range the server accepts', async () => {
+    await renderProfileSetup()
+
+    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '59' } })
+    expect(screen.getByText('Minimum is 60')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText('AI Question Wait'), { target: { value: '3601' } })
+    expect(screen.getByText('Maximum is 3600')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('keeps seconds and editable duration parts synchronized for every duration field', async () => {

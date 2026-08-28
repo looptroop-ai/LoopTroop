@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
 import { AIQuestionContext } from '@/context/aiQuestionContextDef'
 import { UIProvider } from '@/context/UIContext'
+import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import { makeTicket } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { TicketCard } from '../TicketCard'
 
 function renderCard(ticket: ReturnType<typeof makeTicket>) {
   return renderWithProviders(
-    <AIQuestionContext.Provider value={{ getPendingCount: () => 0, openQueue: () => undefined }}>
+    <AIQuestionContext.Provider value={createAiQuestionContextStub()}>
       <UIProvider>
         <TicketCard
           ticket={ticket}

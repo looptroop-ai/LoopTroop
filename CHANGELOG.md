@@ -16,6 +16,10 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Finishing a ticket without merging now asks for confirmation instead of ending the ticket on one click.
 - A cancelled ticket keeps its reason even when its artifacts are deleted with it.
 - The installation documentation now shows how downloads change over time, with source, date range, interval, metric and chart controls.
+- A model that stops to ask you something no longer freezes the app or stalls the run. The question opens at the top of the ticket, waits five minutes by default, and then refuses itself so the run carries on. If you engage with it, the clock stops and it waits for you.
+- Two new settings decide whether a model may stop a run to ask you a question, and how long that question waits. Both can be set for the whole configuration, for one project, or for one ticket.
+- Waiting for you no longer costs a step its working time. A step can now take its full timeout plus however long it spent waiting on an answer.
+- Any step can ask, not just the five it happened to be allowed in. The interview is excluded, because it asks its own questions, and so are the steps that only reformat text.
 - Browser launching, release checks and rendered third-party text now keep externally controlled values out of command shells and executable markup.
 
 ### Added
@@ -25,12 +29,24 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - `GET /api/tickets/:id/skips` returns the same trail, optionally filtered by phase or surface.
 - Skipping an interview question now records the moment it happened. It previously recorded nothing, which made a deliberate human skip indistinguishable from an unanswered placeholder.
 - Undoing a skip is recorded too. Answering a question you had skipped, or clearing an answer during the interview, both update the trail instead of leaving the old decision standing as though it were still current.
+- Questions now open in a panel at the top of the ticket, which pushes the workspace down instead of covering it. When several models ask at once, each gets a tab; the countdown appears once, in the panel header, because there is one clock for the whole step. A question on a ticket you are not looking at slides a bar down from the top naming it.
+- A bounded wait. When it runs out the question refuses itself and the run continues on the model's own judgment, which is what the tool already does when a person declines. LoopTroop never invents an answer on your behalf.
+- Switching between questions, switching model tabs, typing an answer, or pressing Stop timer all do the same thing: the countdown stops, for good. The ticket then waits in Needs Input until you answer or skip.
+- The countdown belongs to the step, not to each model. Stopping it in one model's tab stops it everywhere, and another model arriving while it is still running puts it back to the full wait.
+- The clock lives on the server. Close the tab, come back two minutes later, and two minutes are gone; reopening the page does not restart it, and nobody watching does not pause it.
+- A ticket with a question waiting moves into Needs Input on the board and pulses in its own colour, distinct from the red used for failures. Its underlying status does not change.
+- Skipping a question takes an optional reason, in the same box every other skip uses, and it appears in the ticket's Skips panel.
+- The Skips panel now says who did the skipping. A question that ran out its wait is filed against the clock with the wait length and the time elapsed, never under your name.
+- AI questions and AI question wait, on the Configuration screen, the project form, and a ticket's Advanced section. The two cascade independently, so a ticket can set its own wait while taking the on-off choice from its project. The wait runs from one minute to an hour and defaults to five. Waiting does not use up the step's working time. A ticket that has already started shows both values read-only, with the level they came from.
 - Added download history to the installation documentation. The chart records public npm, Docker Hub and GitHub release counters every hour, can show new downloads or cumulative totals, and separates installer-script fetches from the sources included in the download total. History begins when tracking is enabled; the chart does not fill earlier periods with estimates or npm-only data.
 
 ### Security
 - Closed the two critical and seven high code-scanning findings. Windows opens sign-in links through the URL protocol handler without `cmd.exe`; the published install smoke accepts only the stable and `rc.N` version formats the release tooling can produce; channel checks no longer compile command-line values as regular expressions or mistake uninstall output for an installed channel; ticket links receive URI encoding after protocol validation without changing existing percent escapes; release-note markers and multiline third-party notice cells use context-specific handling; node-manager smoke paths come from fixed manager mappings; and test fixtures no longer use predictable paths under `/tmp`.
 
 ### Changed
+- Whether a model may stop and ask is now a setting rather than an accident of which tool policy a prompt happened to use. It ships enabled, so an existing install gains the behaviour on upgrade; turn it off in Configuration, per project, or per ticket. Tickets already running when you upgrade keep their old behaviour and never ask.
+- A question wait no longer counts against the step it interrupts. Every phase timeout exists to catch a stuck model, and a model blocked on a question is waiting on a person, not stuck. This is what makes Stop timer honest: without it, stopping the clock would only have moved where the run died.
+- The full-screen question popup is gone. It covered the logs, the phase timeline and the artifacts you would want to read before answering.
 - PROM10a, which invents answers for skipped interview questions, now receives the reasons as a separate read-only section of its prompt. They are not part of the interview artifact it is asked to reproduce, so there is no field for it to write one back into, and reasons are stripped from the artifact everywhere else — PRD drafting, PRD voting, interview coverage and every downstream prompt see the interview without them. Reasons are shortened to 500 characters where a prompt reads them, because forty skipped questions at the full storage limit is a great deal of prompt spent on notes.
 - Finishing a ticket without merging now opens a confirmation carrying the optional reason, rather than ending the ticket on a single click. That dialog, the cancel dialog, and the Skip All dialog all wait for the request to succeed before closing: on failure they stay open, keep what you typed, and show what went wrong.
 - The Manual QA waiver box and the skip reason box are now the same component, so both cap at the same length and behave the same way. A waiver still explains one check and a skip still explains the whole round; they are recorded separately and never merged.
@@ -39,6 +55,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Skipping the rest of the interview no longer treats a choice question you answered by picking an option as unanswered. The dialog promises to preserve what is in the batch, and it now does.
 
 ### Fixed
+- Fixed an unanswered AI question ending the run as a bare `Timeout`, with nothing in the record naming the question that caused it.
+- Fixed a question left pending when the daemon restarted never being resolvable again. Sessions survive a restart, so a question whose session came back is re-armed with a fresh wait, and one whose session did not is refused and recorded.
 - Fixed a skip reason surviving a change of mind. Undoing a skip, typing an answer, or picking an option now discards the reason, so it cannot re-attach itself to a later skip made for an entirely different reason.
 - Fixed a cancellation reason being stored and then impossible to read. It is now shown on the canceled ticket, which matters most in the case it was built for: cancelling with the artifacts deleted, where the column is all that survives.
 - Fixed the reason given for skipping all remaining interview questions never appearing anywhere. It is stored against the action rather than any single question, and the panel was hiding exactly that row.

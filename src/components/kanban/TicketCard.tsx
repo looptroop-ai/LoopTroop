@@ -6,7 +6,8 @@ import { cn } from '@/lib/utils'
 import { Loader2, AlertTriangle, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Minus, HelpCircle } from 'lucide-react'
 import { useUI } from '@/context/useUI'
 import { useAIQuestions } from '@/context/useAIQuestions'
-import { STATUS_DESCRIPTIONS, STATUS_TO_PHASE, getStatusUserLabel } from '@/lib/workflowMeta'
+import { STATUS_DESCRIPTIONS, getStatusUserLabel } from '@/lib/workflowMeta'
+import { resolveKanbanPhase } from '@shared/kanbanPhase'
 import {
   clearErrorTicketSeen,
   getErrorTicketSignature,
@@ -47,6 +48,12 @@ interface TicketCardProps {
     errorMessage?: string | null
     errorSeenSignature?: string | null
     needsInputSeenSignature?: string | null
+    pendingQuestions?: {
+      requestCount: number
+      questionCount: number
+      deadlineAt: string | null
+      stoppedAt: string | null
+    } | null
     completionDisposition?: 'merged' | 'closed_unmerged' | null
     runtime?: {
       currentBead?: number | null
@@ -148,7 +155,11 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const { getPendingCount } = useAIQuestions()
   const isError = ticket.status === 'BLOCKED_ERROR'
   const isTerminal = ticket.status === 'COMPLETED' || ticket.status === 'CANCELED'
-  const kanbanPhase = STATUS_TO_PHASE[ticket.status] ?? 'todo'
+  // The DTO decides, so the card and the column it sits in never disagree — the
+  // live feed only reaches the ticket view, and an SSE frame refreshes the list
+  // anyway.
+  const hasPendingAIQuestion = (ticket.pendingQuestions?.requestCount ?? 0) > 0
+  const kanbanPhase = resolveKanbanPhase(ticket.status, { hasPendingQuestion: hasPendingAIQuestion })
   const isInProgress = !isTerminal && kanbanPhase === 'in_progress'
   const workflowRingProgress = getWorkflowRingProgress(ticket.status)
   const beadCompletionProgress = getBeadCompletionProgress(ticket.status, {
@@ -164,11 +175,13 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   })
   const errorSignature = getErrorTicketSignature(ticket)
   const needsInputSignature = getNeedsInputSignature(ticket)
-  // Yellow needs-input flashing is suppressed while an unseen red error is showing.
-  const isNeedsInput = !isError && STATUS_TO_PHASE[ticket.status] === 'needs_input'
+  const isNeedsInput = !isError && kanbanPhase === 'needs_input'
+  // The status's own wait, ignoring any question — this is what keeps amber.
+  const isStatusNeedsInput = !isError && resolveKanbanPhase(ticket.status) === 'needs_input'
   const needsInputFlashing = isNeedsInput && !!needsInputSignature
-  const pendingAIQuestions = getPendingCount(ticket.id)
-  const hasPendingAIQuestion = pendingAIQuestions > 0
+  // Questions, not models: "4 questions waiting" is what a person is answering.
+  // The live count leads the polled list by a beat, so it wins when it has one.
+  const pendingAIQuestions = getPendingCount(ticket.id) || ticket.pendingQuestions?.questionCount || 0
   const attentionColor = projectColor ?? '#1594a6'
 
   // Track "seen" state for BLOCKED_ERROR — stop flashing after first open
@@ -176,8 +189,9 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
     readErrorTicketSeen(ticket.id, errorSignature, ticket.errorSeenSignature),
   )
 
-  // Track "seen" state for NEEDS_INPUT (yellow) — stop flashing after first open,
-  // revert to the static project color even if the required action was not performed.
+  // Track "seen" state for needs-input waits, questions included — stop flashing
+  // after first open, and revert to the static project color even if the required
+  // action was not performed.
   const [needsInputSeen, setNeedsInputSeen] = useState(() =>
     readNeedsInputSeen(ticket.id, needsInputSignature, ticket.needsInputSeenSignature),
   )
@@ -209,10 +223,24 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   }
 
   const errorFlashing = isError && !errorSeen
-  const needsInputYellowFlashing = needsInputFlashing && !needsInputSeen && !errorFlashing
+  // Red beats amber beats sky: a failure outranks a wait, and a wait the status
+  // itself declares outranks a question raised mid-step.
+  const needsInputUnseen = needsInputFlashing && !needsInputSeen && !errorFlashing
+  const needsInputYellowFlashing = needsInputUnseen && isStatusNeedsInput
+  const questionFlashing = needsInputUnseen && !isStatusNeedsInput
   const statusProgressPercent = beadCompletionProgress?.percent ?? workflowRingProgress?.percent ?? null
-  const hasUnseenAttention = errorFlashing || needsInputYellowFlashing
+  const hasUnseenAttention = errorFlashing || needsInputYellowFlashing || questionFlashing
   const isBlockedError = ticket.status === 'BLOCKED_ERROR'
+  // The pulse says "this one is waiting on you" in colour alone, so the label
+  // says it in words, and says which kind of wait it is. A question outranks a
+  // status wait here even though amber outranks sky visually: it is the more
+  // specific thing to act on, and in practice a paused status has no model
+  // running to ask.
+  const waitLabel = pendingAIQuestions > 0
+    ? `${pendingAIQuestions} question${pendingAIQuestions === 1 ? '' : 's'} waiting for your answer`
+    : isStatusNeedsInput
+      ? 'waiting for your input'
+      : null
   const badgeProgressStyle = statusProgressPercent !== null && !hasUnseenAttention && !isBlockedError ? {
     background: `linear-gradient(90deg, color-mix(in srgb, var(--color-brand-500) 16%, transparent) 0%, color-mix(in srgb, var(--color-brand-500) 16%, transparent) ${statusProgressPercent}%, color-mix(in srgb, var(--color-muted) 60%, transparent) ${statusProgressPercent}%, color-mix(in srgb, var(--color-muted) 60%, transparent) 100%)`,
     borderColor: `color-mix(in srgb, var(--color-brand-500) 28%, var(--color-border))`,
@@ -222,7 +250,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
     <Card
       className="group relative min-w-0 max-w-full cursor-pointer overflow-hidden p-3.5 transition-all duration-200 rounded-xl border border-border/70 bg-card hover:bg-accent/40 hover:shadow-md hover:border-border hover:-translate-y-0.5 active:scale-[0.99]"
       onClick={handleClick}
-      aria-label={`Open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}`}
+      aria-label={`Open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}${waitLabel ? `, ${waitLabel}` : ''}`}
     >
       {/* Top Project Tag Badge */}
       <div className="flex items-center justify-between gap-2 border-b border-border/40 pb-2 mb-2">
@@ -253,7 +281,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
         <div className="flex shrink-0 items-center gap-1.5 ml-2">
           <PriorityArrows priority={ticket.priority} />
           {isInProgress && <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-500" />}
-          {hasPendingAIQuestion && <HelpCircle className="h-3.5 w-3.5" style={{ color: attentionColor }} />}
+          {pendingAIQuestions > 0 && <HelpCircle className="h-3.5 w-3.5" style={{ color: attentionColor }} />}
           {isError && <AlertTriangle className="h-3.5 w-3.5 text-destructive animate-wobble-throb" />}
         </div>
       </div>
@@ -268,6 +296,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
                   getStatusColor(ticket.status),
                   errorFlashing && 'lt-error-pulse border-rose-500/80 bg-rose-500/25 text-rose-700 dark:text-rose-200 shadow-sm',
                   needsInputYellowFlashing && 'lt-needs-input-pulse border-amber-500/90 bg-amber-500/25 text-amber-800 dark:text-amber-200 shadow-sm',
+                  questionFlashing && 'lt-question-pulse border-sky-500/90 bg-sky-500/20 text-sky-800 dark:text-sky-200 shadow-sm',
                 )}
                 style={badgeProgressStyle}
               >
@@ -275,6 +304,12 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
                   <span className="relative flex h-2.5 w-2.5 shrink-0">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-90" />
                     <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500 shadow-xs" />
+                  </span>
+                )}
+                {questionFlashing && (
+                  <span className="relative flex h-2.5 w-2.5 shrink-0">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-90" />
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-sky-500 shadow-xs" />
                   </span>
                 )}
                 {errorFlashing && (
@@ -296,7 +331,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
               {ticket.completionDisposition === 'merged' ? 'Merged' : 'Unmerged'}
             </Badge>
           )}
-          {hasPendingAIQuestion && (
+          {pendingAIQuestions > 0 && (
             <Badge variant="outline" className="shrink-0 text-[10px] font-mono px-2 py-0.5" style={{ borderColor: attentionColor, color: attentionColor }}>
               AI question {pendingAIQuestions}
             </Badge>

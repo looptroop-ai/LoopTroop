@@ -27,6 +27,9 @@ interface Profile {
   toolOutputMaxChars: number
   toolErrorMaxChars: number
   manualQaEnabled: boolean
+  aiQuestionsEnabled: boolean
+  /** Milliseconds a mid-run question waits for an answer. */
+  aiQuestionWindow: number
   gitHookPolicy: GitHookPolicy
   ignoreMode: IgnoreMode
   createdAt: string
@@ -56,6 +59,8 @@ interface CreateProfileInput {
   toolOutputMaxChars?: number
   toolErrorMaxChars?: number
   manualQaEnabled?: boolean
+  aiQuestionsEnabled?: boolean
+  aiQuestionWindow?: number
   gitHookPolicy?: GitHookPolicy
   ignoreMode?: IgnoreMode
 }

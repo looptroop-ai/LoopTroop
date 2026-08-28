@@ -22,6 +22,8 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { TicketDescriptionViewer } from './TicketDescriptionViewer'
 import { TicketExternalId } from './TicketExternalId'
 import { CancelTicketDialog } from './CancelTicketDialog'
+import { describeSettingSource } from '@/lib/aiQuestionSetting'
+import { formatAiQuestionWindow } from '@shared/aiQuestions'
 
 interface DashboardHeaderProps {
   ticket: Ticket
@@ -608,6 +610,33 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                     {ticket.effectiveManualQaEnabled === true ? 'Enabled' : 'Disabled'}
                   </Badge>
                 </div>
+                {/* Frozen once the ticket starts, so the source is worth naming. */}
+                {typeof ticket.effectiveAiQuestionsEnabled === 'boolean' && (
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span>AI questions</span>
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium">
+                        {ticket.effectiveAiQuestionsEnabled ? 'On' : 'Off'}
+                      </Badge>
+                      {ticket.effectiveAiQuestionsSource && (
+                        <span className="text-muted-foreground">from {describeSettingSource(ticket.effectiveAiQuestionsSource)}</span>
+                      )}
+                    </span>
+                  </div>
+                )}
+                {typeof ticket.effectiveAiQuestionWindow === 'number' && (
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span>AI question wait</span>
+                    <span className="flex items-center gap-1.5">
+                      <Badge variant="outline" className="h-5 px-2 text-[10px] font-medium">
+                        {formatAiQuestionWindow(ticket.effectiveAiQuestionWindow)}
+                      </Badge>
+                      {ticket.effectiveAiQuestionWindowSource && (
+                        <span className="text-muted-foreground">from {describeSettingSource(ticket.effectiveAiQuestionWindowSource)}</span>
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
             {ticket.branchName && (

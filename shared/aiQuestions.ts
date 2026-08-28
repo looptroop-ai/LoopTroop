@@ -35,6 +35,31 @@ export function phaseMayAskQuestions(phase: string | null | undefined): boolean 
   return !INTERVIEW_QUESTION_PHASES.has(phase)
 }
 
+/**
+ * The steps where several models work in parallel and a quorum is counted.
+ *
+ * A refused question here costs more than a worse answer: the member may return
+ * nothing at all, and if enough of them do the round drops below quorum and the
+ * ticket blocks. The existing quorum check already routes that to
+ * `BLOCKED_ERROR` — this list exists so the receipt can say the refusal
+ * happened somewhere it could matter, rather than leaving a reader to work out
+ * why a council round failed twenty minutes later.
+ */
+export const COUNCIL_QUORUM_PHASES: ReadonlySet<string> = new Set([
+  'COUNCIL_DELIBERATING',
+  'COUNCIL_VOTING_INTERVIEW',
+  'COUNCIL_VOTING_PRD',
+  'COUNCIL_VOTING_BEADS',
+  'DRAFTING_PRD',
+  'DRAFTING_BEADS',
+  'REFINING_PRD',
+  'REFINING_BEADS',
+])
+
+export function isCouncilQuorumPhase(phase: string | null | undefined): boolean {
+  return Boolean(phase) && COUNCIL_QUORUM_PHASES.has(phase as string)
+}
+
 /** Where a setting in force came from, once the cascade has been resolved. */
 export type SettingSource = 'profile' | 'project' | 'ticket'
 

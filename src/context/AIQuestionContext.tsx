@@ -1,69 +1,42 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { HelpCircle, Minus, X } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { HelpCircle, X } from 'lucide-react'
 import { QUESTION_RECOVERY_INTERVAL_MS } from '@/lib/constants'
+import { queryClient } from '@/lib/queryClient'
 import { cn } from '@/lib/utils'
 import type { Ticket } from '@/hooks/useTickets'
-import { AIQuestionContext, type AIQuestionContextValue } from './aiQuestionContextDef'
+import { useUI } from '@/context/useUI'
+import type { AiQuestionTimerState } from '@shared/aiQuestions'
 import { getErrorMessage } from '@shared/typeGuards'
+import {
+  AIQuestionContext,
+  type AIQuestionContextValue,
+  type AiQuestionInfo,
+  type AiQuestionRequest,
+} from './aiQuestionContextDef'
 
-interface AIQuestionOption {
-  label: string
-  description?: string
-}
-
-interface AIQuestionInfo {
-  question: string
-  header: string
-  options: AIQuestionOption[]
-  multiple?: boolean
-  custom?: boolean
-}
-
-interface AIQuestionPayload {
-  type: 'opencode_question' | 'opencode_question_resolved'
+interface AiQuestionPayload {
+  type: 'opencode_question' | 'opencode_question_resolved' | 'opencode_question_updated'
   action?: 'asked' | 'replied' | 'rejected'
   ticketId: string
   ticketExternalId?: string
   ticketTitle?: string
   status?: string
   phase?: string
+  phaseAttempt?: number
   modelId?: string
   sessionId?: string
-  requestId: string
-  questions?: AIQuestionInfo[]
-  questionCount?: number
+  requestId?: string
+  questions?: AiQuestionInfo[]
+  timer?: AiQuestionTimerState
+  requests?: Array<Record<string, unknown>>
   timestamp?: string
-}
-
-interface AIQuestionRequestState extends Required<Pick<AIQuestionPayload, 'ticketId' | 'requestId'>> {
-  ticketExternalId: string
-  ticketTitle: string
-  status: string
-  phase: string
-  modelId?: string
-  sessionId?: string
-  questions: AIQuestionInfo[]
-  answers: Record<number, string[]>
-  receivedAt: string
-  submitting: boolean
-  error?: string
-}
-
-interface AIQuestionQueueItem {
-  request: AIQuestionRequestState
-  question: AIQuestionInfo
-  questionIndex: number
-  queueIndex: number
-  queueTotal: number
 }
 
 function isTerminalStatus(status: string) {
   return status === 'COMPLETED' || status === 'CANCELED'
 }
 
-function normalizeQuestion(question: AIQuestionInfo): AIQuestionInfo {
+function normalizeQuestion(question: AiQuestionInfo): AiQuestionInfo {
   return {
     question: question.question || question.header || 'AI question',
     header: question.header || 'AI question',
@@ -73,237 +46,216 @@ function normalizeQuestion(question: AIQuestionInfo): AIQuestionInfo {
   }
 }
 
-function parseQuestionPayload(data: Record<string, unknown>): AIQuestionPayload | null {
-  if (data.type !== 'opencode_question' && data.type !== 'opencode_question_resolved') return null
-  if (typeof data.ticketId !== 'string' || typeof data.requestId !== 'string') return null
+function parseTimer(value: unknown): AiQuestionTimerState | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (typeof record.timerKey !== 'string' || typeof record.deadlineAt !== 'string') return null
+  return {
+    timerKey: record.timerKey,
+    windowMs: typeof record.windowMs === 'number' ? record.windowMs : 0,
+    armedAt: typeof record.armedAt === 'string' ? record.armedAt : record.deadlineAt,
+    deadlineAt: record.deadlineAt,
+    stoppedAt: typeof record.stoppedAt === 'string' ? record.stoppedAt : null,
+    stoppedBy: typeof record.stoppedBy === 'string' ? record.stoppedBy : null,
+    resetCount: typeof record.resetCount === 'number' ? record.resetCount : 0,
+    revision: typeof record.revision === 'number' ? record.revision : 0,
+    serverNow: typeof record.serverNow === 'string' ? record.serverNow : new Date().toISOString(),
+  }
+}
+
+function parseQuestionPayload(data: Record<string, unknown>): AiQuestionPayload | null {
+  const type = data.type
+  if (type !== 'opencode_question' && type !== 'opencode_question_resolved' && type !== 'opencode_question_updated') {
+    return null
+  }
+  if (typeof data.ticketId !== 'string') return null
   const questions = Array.isArray(data.questions)
     ? data.questions
-        .filter((question): question is AIQuestionInfo => Boolean(question) && typeof question === 'object')
+        .filter((question): question is AiQuestionInfo => Boolean(question) && typeof question === 'object')
         .map(normalizeQuestion)
     : undefined
+  const timer = parseTimer(data.timer)
   return {
-    type: data.type,
+    type,
     action: data.action === 'replied' || data.action === 'rejected' || data.action === 'asked' ? data.action : undefined,
     ticketId: data.ticketId,
-    requestId: data.requestId,
+    ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
     ...(typeof data.ticketExternalId === 'string' ? { ticketExternalId: data.ticketExternalId } : {}),
     ...(typeof data.ticketTitle === 'string' ? { ticketTitle: data.ticketTitle } : {}),
     ...(typeof data.status === 'string' ? { status: data.status } : {}),
     ...(typeof data.phase === 'string' ? { phase: data.phase } : {}),
+    ...(typeof data.phaseAttempt === 'number' ? { phaseAttempt: data.phaseAttempt } : {}),
     ...(typeof data.modelId === 'string' ? { modelId: data.modelId } : {}),
     ...(typeof data.sessionId === 'string' ? { sessionId: data.sessionId } : {}),
     ...(questions ? { questions } : {}),
-    ...(typeof data.questionCount === 'number' ? { questionCount: data.questionCount } : {}),
+    ...(timer ? { timer } : {}),
+    ...(Array.isArray(data.requests) ? { requests: data.requests as Array<Record<string, unknown>> } : {}),
     ...(typeof data.timestamp === 'string' ? { timestamp: data.timestamp } : {}),
   }
 }
 
-function QuestionAnswerForm({
-  item,
-  disabled,
-  onAnswer,
-  onReject,
-}: {
-  item: AIQuestionQueueItem
-  disabled: boolean
-  onAnswer: (answers: string[]) => void
-  onReject: () => void
-}) {
-  const questionKey = `${item.request.requestId}:${item.questionIndex}`
-  const [selected, setSelected] = useState<string[]>([])
-  const [custom, setCustom] = useState('')
-  const allowsCustom = item.question.custom !== false
-  const isMultiple = item.question.multiple === true
-
-  const answers = [...selected, custom.trim()].filter(Boolean)
-  const canSubmit = answers.length > 0
-
-  const toggleOption = (label: string) => {
-    setSelected((current) => {
-      if (!isMultiple) return current.includes(label) ? [] : [label]
-      return current.includes(label)
-        ? current.filter((candidate) => candidate !== label)
-        : [...current, label]
-    })
-  }
-
-  return (
-    <form
-      className="space-y-4"
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (canSubmit && !disabled) onAnswer(answers)
-      }}
-    >
-      {item.question.options.length > 0 && (
-        <div className="space-y-2">
-          {item.question.options.map((option) => {
-            const isChecked = selected.includes(option.label)
-            return (
-              <label
-                key={option.label}
-                className={cn(
-                  'flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 text-sm transition-colors',
-                  isChecked && 'border-primary bg-accent',
-                )}
-              >
-                <input
-                  type={isMultiple ? 'checkbox' : 'radio'}
-                  name={questionKey}
-                  className="mt-1"
-                  checked={isChecked}
-                  disabled={disabled}
-                  onChange={() => toggleOption(option.label)}
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium text-foreground">{option.label}</span>
-                  {option.description && <span className="block text-xs leading-5 text-muted-foreground">{option.description}</span>}
-                </span>
-              </label>
-            )
-          })}
-        </div>
-      )}
-
-      {allowsCustom && (
-        <label className="block space-y-1 text-sm">
-          <span className="font-medium text-foreground">{item.question.options.length > 0 ? 'Notes' : 'Answer'}</span>
-          <textarea
-            value={custom}
-            disabled={disabled}
-            onChange={(event) => setCustom(event.target.value)}
-            className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
-          />
-        </label>
-      )}
-
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={onReject}>
-          Cannot answer
-        </Button>
-        <Button type="submit" size="sm" disabled={disabled || !canSubmit}>
-          Send answer
-        </Button>
-      </div>
-    </form>
-  )
-}
-
-function AIQuestionPopup({
-  item,
-  onMinimize,
-  onAnswer,
-  onReject,
-}: {
-  item: AIQuestionQueueItem
-  onMinimize: () => void
-  onAnswer: (answers: string[]) => void
-  onReject: () => void
-}) {
-  const sessionLabel = item.request.sessionId ? item.request.sessionId.slice(0, 10) : null
-  return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 p-4">
-      <section className="w-full max-w-xl rounded-lg border border-border bg-background p-5 shadow-xl">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="secondary" className="gap-1.5 text-xs">
-                <HelpCircle className="h-3 w-3" />
-                AI question
-              </Badge>
-              <Badge variant="outline" className="text-xs">
-                {item.queueIndex + 1} of {item.queueTotal}
-              </Badge>
-            </div>
-            <h2 className="text-base font-semibold leading-6 text-foreground">{item.question.header}</h2>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={onMinimize}
-              aria-label="Minimize AI question"
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-3 grid gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground sm:grid-cols-2">
-          <div><span className="font-medium text-foreground">Ticket:</span> {item.request.ticketExternalId} · {item.request.ticketTitle}</div>
-          <div><span className="font-medium text-foreground">Status:</span> {item.request.status}</div>
-          <div><span className="font-medium text-foreground">Model:</span> {item.request.modelId ?? 'OpenCode'}</div>
-          <div><span className="font-medium text-foreground">Session:</span> {sessionLabel ?? 'unknown'}</div>
-        </div>
-
-        <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-foreground">{item.question.question}</p>
-        {item.request.error && (
-          <p className="mt-3 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {item.request.error}
-          </p>
-        )}
-        <div className="mt-4">
-          <QuestionAnswerForm
-            key={`${item.request.requestId}:${item.questionIndex}`}
-            item={item}
-            disabled={item.request.submitting}
-            onAnswer={onAnswer}
-            onReject={onReject}
-          />
-        </div>
-      </section>
-    </div>
-  )
+function requestKey(sessionId: string, requestId: string): string {
+  return `${sessionId}:${requestId}`
 }
 
 export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; children: ReactNode }) {
-  const [requests, setRequests] = useState<Record<string, AIQuestionRequestState>>({})
-  const [isMinimized, setIsMinimized] = useState(false)
+  const { state: uiState } = useUI()
+  const selectedTicketId = uiState.selectedTicketId
+  const [requests, setRequests] = useState<Record<string, AiQuestionRequest>>({})
+  const [timers, setTimers] = useState<Record<string, AiQuestionTimerState>>({})
+  const [dismissedTickets, setDismissedTickets] = useState<Set<string>>(new Set())
+  /**
+   * How far this browser's clock is ahead of the server's.
+   *
+   * The deadline is the server's, always. Correcting for skew once means the
+   * countdown a viewer sees matches the one that will actually fire, on a
+   * machine whose clock is minutes out.
+   */
+  const clockOffsetRef = useRef(0)
+  /** Tickets whose stop has already been posted, so typing does not re-post. */
+  const stoppedTicketsRef = useRef(new Set<string>())
+
   const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
   const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalStatus(ticket.status)), [tickets])
   const activeTicketIds = useMemo(() => new Set(activeTickets.map((ticket) => ticket.id)), [activeTickets])
   const activeTicketKey = useMemo(() => activeTickets.map((ticket) => ticket.id).sort().join('|'), [activeTickets])
 
-  const removeRequest = useCallback((requestId: string) => {
+  const noteServerClock = useCallback((timer: AiQuestionTimerState | null | undefined) => {
+    if (!timer?.serverNow) return
+    const serverNow = Date.parse(timer.serverNow)
+    if (Number.isNaN(serverNow)) return
+    clockOffsetRef.current = Date.now() - serverNow
+  }, [])
+
+  const applyTimer = useCallback((ticketId: string, timer: AiQuestionTimerState | null) => {
+    noteServerClock(timer)
+    setTimers((current) => {
+      if (!timer) {
+        if (!current[ticketId]) return current
+        const next = { ...current }
+        delete next[ticketId]
+        return next
+      }
+      // A late frame must never undo a newer one. The server bumps `revision`
+      // on every transition precisely so an out-of-order delivery is detectable.
+      if ((current[ticketId]?.revision ?? -1) > timer.revision) return current
+      return { ...current, [ticketId]: timer }
+    })
+    if (timer?.stoppedAt) stoppedTicketsRef.current.add(ticketId)
+  }, [noteServerClock])
+
+  const removeRequest = useCallback((sessionId: string, requestId: string) => {
     setRequests((current) => {
-      if (!current[requestId]) return current
+      const key = requestKey(sessionId, requestId)
+      if (!current[key]) return current
       const next = { ...current }
-      delete next[requestId]
+      delete next[key]
       return next
     })
   }, [])
 
-  const ingestPayload = useCallback((payload: AIQuestionPayload) => {
-    if (payload.type === 'opencode_question_resolved') {
-      removeRequest(payload.requestId)
-      return
-    }
-    if (!payload.questions || payload.questions.length === 0) return
-    const questions = payload.questions
+  const upsertRequest = useCallback((payload: AiQuestionPayload) => {
+    if (!payload.requestId || !payload.sessionId || !payload.questions?.length) return
+    const { requestId, sessionId, questions } = payload
     const ticket = ticketsById.get(payload.ticketId)
     setRequests((current) => {
-      if (current[payload.requestId]) return current
+      const key = requestKey(sessionId, requestId)
+      // Never clobber a draft the operator is part-way through typing.
+      if (current[key]) return current
       return {
         ...current,
-        [payload.requestId]: {
+        [key]: {
           ticketId: payload.ticketId,
           ticketExternalId: payload.ticketExternalId ?? ticket?.externalId ?? payload.ticketId,
           ticketTitle: payload.ticketTitle ?? ticket?.title ?? 'Ticket',
           status: payload.status ?? ticket?.status ?? payload.phase ?? 'UNKNOWN',
           phase: payload.phase ?? payload.status ?? ticket?.status ?? 'UNKNOWN',
+          ...(typeof payload.phaseAttempt === 'number' ? { phaseAttempt: payload.phaseAttempt } : {}),
           ...(payload.modelId ? { modelId: payload.modelId } : {}),
-          ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
-          requestId: payload.requestId,
+          sessionId,
+          requestId,
           questions: questions.map(normalizeQuestion),
-          answers: {},
           receivedAt: payload.timestamp ?? new Date().toISOString(),
           submitting: false,
         },
       }
     })
-    setIsMinimized(false)
-  }, [removeRequest, ticketsById])
+  }, [ticketsById])
 
+  const ingestPayload = useCallback((payload: AiQuestionPayload) => {
+    if (payload.type === 'opencode_question_resolved') {
+      if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
+      return
+    }
+    if (payload.type === 'opencode_question_updated') {
+      applyTimer(payload.ticketId, payload.timer ?? null)
+      // The update carries the full pending set for the step, so it is also the
+      // signal that a request this client never saw arrive is now outstanding.
+      for (const raw of payload.requests ?? []) {
+        const parsed = parseQuestionPayload({ ...raw, type: 'opencode_question', ticketId: payload.ticketId })
+        if (parsed) upsertRequest(parsed)
+      }
+      return
+    }
+    upsertRequest(payload)
+    if (payload.timer) applyTimer(payload.ticketId, payload.timer)
+    // Without this the card never moves into Needs Input, however live the panel is.
+    void queryClient.invalidateQueries({ queryKey: ['tickets'] })
+  }, [applyTimer, removeRequest, upsertRequest])
+
+  const ingestSseEvent = useCallback((data: Record<string, unknown>) => {
+    const payload = parseQuestionPayload(data)
+    if (payload) ingestPayload(payload)
+  }, [ingestPayload])
+
+  const applyTicketSnapshot = useCallback((
+    ticketId: string,
+    rawQuestions: Array<Record<string, unknown>>,
+    timer: AiQuestionTimerState | null,
+  ) => {
+    const live = new Set<string>()
+    for (const raw of rawQuestions) {
+      const payload = parseQuestionPayload(raw)
+      if (!payload?.sessionId || !payload.requestId) continue
+      live.add(requestKey(payload.sessionId, payload.requestId))
+      upsertRequest(payload)
+    }
+    // A successful fetch is authoritative for this ticket: anything it does not
+    // list was resolved elsewhere, and leaving it on screen would show a
+    // question nobody can answer. A *failed* fetch prunes nothing.
+    setRequests((current) => {
+      const stale = Object.keys(current).filter((key) => current[key]?.ticketId === ticketId && !live.has(key))
+      if (stale.length === 0) return current
+      const next = { ...current }
+      for (const key of stale) delete next[key]
+      return next
+    })
+    applyTimer(ticketId, timer)
+  }, [applyTimer, upsertRequest])
+
+  const refreshTicket = useCallback((ticketId: string) => {
+    void (async () => {
+      try {
+        const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions`)
+        if (!res.ok) return
+        const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
+        applyTicketSnapshot(ticketId, Array.isArray(body.questions) ? body.questions : [], parseTimer(body.timer))
+      } catch {
+        // Best-effort; the aggregate poll is the backstop.
+      }
+    })()
+  }, [applyTicketSnapshot])
+
+  /**
+   * The aggregate poll.
+   *
+   * SSE is per-ticket and capped at a handful of connections, so the provider
+   * cannot subscribe to every ticket at once. The open ticket gets real-time
+   * updates forwarded from its dashboard stream; every *other* ticket is
+   * discovered here. Latency only affects how quickly the slide-in bar appears
+   * — the countdown it leads to is the server's, so it is right on arrival
+   * however late the discovery was.
+   */
   useEffect(() => {
     let cancelled = false
 
@@ -312,14 +264,26 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       try {
         const res = await fetch('/api/opencode/questions')
         if (!res.ok) return
-        const body = await res.json() as { questions?: Array<Record<string, unknown>> }
+        const body = await res.json() as {
+          questions?: Array<Record<string, unknown>>
+          timers?: Record<string, unknown>
+        }
         if (cancelled || !Array.isArray(body.questions)) return
+
+        const byTicket = new Map<string, Array<Record<string, unknown>>>()
         for (const raw of body.questions) {
-          const payload = parseQuestionPayload(raw)
-          if (payload && activeTicketIds.has(payload.ticketId)) ingestPayload(payload)
+          const ticketId = typeof raw.ticketId === 'string' ? raw.ticketId : null
+          if (!ticketId || !activeTicketIds.has(ticketId)) continue
+          const bucket = byTicket.get(ticketId) ?? []
+          bucket.push(raw)
+          byTicket.set(ticketId, bucket)
+        }
+        for (const ticketId of activeTicketIds) {
+          applyTicketSnapshot(ticketId, byTicket.get(ticketId) ?? [], parseTimer(body.timers?.[ticketId]))
         }
       } catch {
-        // Best-effort recovery; the next aggregate poll can still pick up pending requests.
+        // Leave what is already known standing; an unreachable server is not
+        // evidence that a question went away.
       }
     }
 
@@ -329,136 +293,212 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       cancelled = true
       clearInterval(interval)
     }
-  }, [activeTicketIds, activeTicketKey, ingestPayload])
+  }, [activeTicketIds, activeTicketKey, applyTicketSnapshot])
 
-  const queue = useMemo<AIQuestionQueueItem[]>(() => {
-    const items = Object.values(requests)
-      .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
-      .flatMap((request) => request.questions
-        .map((question, questionIndex) => ({ request, question, questionIndex }))
-        .filter((item) => !request.answers[item.questionIndex]))
-    return items.map((item, queueIndex) => ({ ...item, queueIndex, queueTotal: items.length }))
-  }, [requests])
+  const ticketRequests = useCallback((ticketId: string) => Object.values(requests)
+    .filter((request) => request.ticketId === ticketId)
+    .sort((left, right) => Date.parse(left.receivedAt) - Date.parse(right.receivedAt)), [requests])
 
-  const activeItem = queue[0] ?? null
+  const getPendingCount = useCallback((ticketId: string) => ticketRequests(ticketId)
+    .reduce((total, request) => total + request.questions.length, 0), [ticketRequests])
 
-  const answerActiveQuestion = useCallback((answers: string[]) => {
-    if (!activeItem) return
-    const request = requests[activeItem.request.requestId]
+  const getRequestCount = useCallback((ticketId: string) => ticketRequests(ticketId).length, [ticketRequests])
+
+  const getTimer = useCallback((ticketId: string) => timers[ticketId] ?? null, [timers])
+
+  const getRemainingMs = useCallback((ticketId: string) => {
+    const timer = timers[ticketId]
+    if (!timer || timer.stoppedAt) return null
+    const deadline = Date.parse(timer.deadlineAt)
+    if (Number.isNaN(deadline)) return null
+    return Math.max(0, deadline + clockOffsetRef.current - Date.now())
+  }, [timers])
+
+  const setSubmitting = useCallback((sessionId: string, requestId: string, submitting: boolean, error?: string) => {
+    setRequests((current) => {
+      const key = requestKey(sessionId, requestId)
+      const existing = current[key]
+      if (!existing) return current
+      return { ...current, [key]: { ...existing, submitting, ...(error ? { error } : { error: undefined }) } }
+    })
+  }, [])
+
+  const stopTimer = useCallback((ticketId: string) => {
+    if (stoppedTicketsRef.current.has(ticketId)) return
+    // Marked before the request lands so a burst of keystrokes posts once.
+    stoppedTicketsRef.current.add(ticketId)
+    void (async () => {
+      try {
+        const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/opencode/question-timer/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+        if (!res.ok) {
+          stoppedTicketsRef.current.delete(ticketId)
+          return
+        }
+        const body = await res.json() as { timer?: unknown }
+        const timer = parseTimer(body.timer)
+        if (timer) applyTimer(ticketId, timer)
+      } catch {
+        stoppedTicketsRef.current.delete(ticketId)
+      }
+    })()
+  }, [applyTimer])
+
+  const submitToRoute = useCallback((
+    ticketId: string,
+    requestId: string,
+    path: string,
+    body: unknown,
+    failureMessage: string,
+  ) => {
+    const request = Object.values(requests).find((candidate) => (
+      candidate.ticketId === ticketId && candidate.requestId === requestId
+    ))
     if (!request) return
-    const nextAnswers = {
-      ...request.answers,
-      [activeItem.questionIndex]: answers,
-    }
-    const complete = request.questions.every((_, index) => Array.isArray(nextAnswers[index]) && nextAnswers[index]!.length > 0)
-
-    if (!complete) {
-      setRequests((current) => ({
-        ...current,
-        [request.requestId]: { ...request, answers: nextAnswers, error: undefined },
-      }))
-      return
-    }
-
-    setRequests((current) => ({
-      ...current,
-      [request.requestId]: { ...request, answers: nextAnswers, submitting: true, error: undefined },
-    }))
-
-    void fetch(`/api/tickets/${request.ticketId}/opencode/questions/${request.requestId}/reply`, {
+    setSubmitting(request.sessionId, requestId, true)
+    void fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: request.questions.map((_, index) => nextAnswers[index] ?? []) }),
+      body: JSON.stringify(body),
     }).then(async (res) => {
       if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string; details?: string }
-        throw new Error(body.details ?? body.error ?? 'Failed to answer question')
+        const detail = await res.json().catch(() => ({})) as { error?: string; details?: string }
+        throw new Error(detail.details ?? detail.error ?? failureMessage)
       }
-      removeRequest(request.requestId)
+      removeRequest(request.sessionId, requestId)
+      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
     }).catch((error: unknown) => {
-      setRequests((current) => {
-        const latest = current[request.requestId]
-        if (!latest) return current
-        return {
-          ...current,
-          [request.requestId]: {
-            ...latest,
-            submitting: false,
-            error: getErrorMessage(error),
-          },
-        }
-      })
+      setSubmitting(request.sessionId, requestId, false, getErrorMessage(error))
     })
-  }, [activeItem, removeRequest, requests])
+  }, [removeRequest, requests, setSubmitting])
 
-  const rejectActiveQuestion = useCallback(() => {
-    if (!activeItem) return
-    const request = requests[activeItem.request.requestId]
-    if (!request) return
-    setRequests((current) => ({
-      ...current,
-      [request.requestId]: { ...request, submitting: true, error: undefined },
-    }))
-    void fetch(`/api/tickets/${request.ticketId}/opencode/questions/${request.requestId}/reject`, {
-      method: 'POST',
-    }).then(async (res) => {
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: string; details?: string }
-        throw new Error(body.details ?? body.error ?? 'Failed to reject question')
-      }
-      removeRequest(request.requestId)
-    }).catch((error: unknown) => {
-      setRequests((current) => {
-        const latest = current[request.requestId]
-        if (!latest) return current
-        return {
-          ...current,
-          [request.requestId]: {
-            ...latest,
-            submitting: false,
-            error: getErrorMessage(error),
-          },
-        }
-      })
-    })
-  }, [activeItem, removeRequest, requests])
+  const answerRequest = useCallback((ticketId: string, requestId: string, answers: string[][]) => {
+    submitToRoute(
+      ticketId,
+      requestId,
+      `/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions/${encodeURIComponent(requestId)}/reply`,
+      { answers },
+      'Could not send that answer',
+    )
+  }, [submitToRoute])
 
-  const getPendingCount = useCallback((ticketId: string) => {
-    return Object.values(requests)
-      .filter((request) => request.ticketId === ticketId)
-      .reduce((count, request) => count + request.questions.filter((_, index) => !request.answers[index]).length, 0)
-  }, [requests])
+  const skipRequest = useCallback((ticketId: string, requestId: string, reason: string | null) => {
+    submitToRoute(
+      ticketId,
+      requestId,
+      `/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions/${encodeURIComponent(requestId)}/reject`,
+      reason ? { reason } : {},
+      'Could not skip that question',
+    )
+  }, [submitToRoute])
 
   const value = useMemo<AIQuestionContextValue>(() => ({
     getPendingCount,
-    openQueue: () => setIsMinimized(false),
-  }), [getPendingCount])
+    getRequestCount,
+    getTicketRequests: ticketRequests,
+    getTimer,
+    getRemainingMs,
+    answerRequest,
+    skipRequest,
+    stopTimer,
+    ingestSseEvent,
+    refreshTicket,
+  }), [
+    answerRequest,
+    getPendingCount,
+    getRemainingMs,
+    getRequestCount,
+    getTimer,
+    ingestSseEvent,
+    refreshTicket,
+    skipRequest,
+    stopTimer,
+    ticketRequests,
+  ])
+
+  const waitingTickets = useMemo(() => {
+    const seen = new Map<string, AiQuestionRequest>()
+    for (const request of Object.values(requests)) {
+      if (!seen.has(request.ticketId)) seen.set(request.ticketId, request)
+    }
+    return [...seen.values()].filter((request) => !dismissedTickets.has(request.ticketId))
+  }, [dismissedTickets, requests])
 
   return (
     <AIQuestionContext.Provider value={value}>
       {children}
-      {activeItem && !isMinimized && (
-        <AIQuestionPopup
-          item={activeItem}
-          onMinimize={() => setIsMinimized(true)}
-          onAnswer={answerActiveQuestion}
-          onReject={rejectActiveQuestion}
-        />
-      )}
-      {activeItem && isMinimized && (
-        <button
-          type="button"
-          className="fixed bottom-4 right-4 z-[90] flex max-w-xs items-center gap-3 rounded-lg border border-border bg-background px-4 py-3 text-left text-sm shadow-xl hover:bg-accent"
-          onClick={() => setIsMinimized(false)}
-        >
-          <HelpCircle className="h-5 w-5 text-primary" />
-          <span className="min-w-0">
-            <span className="block font-medium text-foreground">AI question waiting</span>
-            <span className="block truncate text-xs text-muted-foreground">{activeItem.request.ticketExternalId} · {activeItem.queueTotal} pending</span>
-          </span>
-          <X className="h-4 w-4 text-muted-foreground" />
-        </button>
-      )}
+      <AiQuestionSlideInBar
+        waiting={waitingTickets}
+        selectedTicketId={selectedTicketId}
+        onDismiss={(ticketId) => setDismissedTickets((current) => new Set(current).add(ticketId))}
+      />
     </AIQuestionContext.Provider>
+  )
+}
+
+/**
+ * The strip that slides down when a question is waiting somewhere you cannot see.
+ *
+ * A bar, not an overlay: it occupies its own row at the top and blocks nothing
+ * beneath it. The ticket dashboard is `fixed inset-0 z-[60]` and Configuration
+ * is a modal route, so without this a question on another ticket would simply be
+ * invisible until you happened to navigate back to the board.
+ *
+ * It only ever names tickets other than the one on screen — the ticket you are
+ * looking at already has the panel — and it is dismissible for the session.
+ */
+function AiQuestionSlideInBar({
+  waiting,
+  selectedTicketId,
+  onDismiss,
+}: {
+  waiting: AiQuestionRequest[]
+  selectedTicketId: string | null
+  onDismiss: (ticketId: string) => void
+}) {
+  const { dispatch } = useUI()
+  // The ticket on screen already shows the panel; naming it here would be noise.
+  const elsewhere = waiting.filter((request) => request.ticketId !== selectedTicketId)
+  const first = elsewhere[0]
+
+  if (!first) return null
+
+  const others = elsewhere.length - 1
+  const label = others > 0
+    ? `${first.ticketExternalId} and ${others} other ticket${others === 1 ? '' : 's'} are waiting on a question`
+    : `${first.ticketExternalId} is waiting on a question`
+
+  return (
+    <div
+      className={cn(
+        'fixed inset-x-0 top-0 z-[70] flex items-center gap-3 border-b border-sky-200 bg-sky-50/95 px-4 py-2',
+        'shadow-sm backdrop-blur lt-slide-in-top',
+        'dark:border-sky-900/60 dark:bg-sky-950/90',
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-sky-900 hover:underline dark:text-sky-100"
+        onClick={() => {
+          dispatch({ type: 'SELECT_TICKET', ticketId: first.ticketId, externalId: first.ticketExternalId })
+        }}
+      >
+        <HelpCircle className="h-4 w-4 shrink-0" aria-hidden />
+        <span className="truncate">{label}</span>
+      </button>
+      <button
+        type="button"
+        className="rounded p-1 text-sky-900/70 hover:bg-sky-100 hover:text-sky-900 dark:text-sky-200/70 dark:hover:bg-sky-900/50 dark:hover:text-sky-100"
+        onClick={() => onDismiss(first.ticketId)}
+        aria-label={`Dismiss the notice for ${first.ticketExternalId}`}
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
   )
 }

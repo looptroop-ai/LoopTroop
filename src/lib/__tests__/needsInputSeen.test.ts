@@ -12,19 +12,43 @@ const baseSnapshot = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 }
 
+interface PendingQuestions {
+  requestCount: number
+  questionCount: number
+  deadlineAt: string | null
+  stoppedAt: string | null
+}
+
+function makePendingQuestions(overrides: Partial<PendingQuestions> = {}): PendingQuestions {
+  return { requestCount: 1, questionCount: 2, deadlineAt: null, stoppedAt: null, ...overrides }
+}
+
+const oneRequest = makePendingQuestions()
+
 describe('getNeedsInputSignature', () => {
-  it('returns a status|updatedAt signature for needs_input statuses', () => {
-    expect(getNeedsInputSignature(baseSnapshot)).toBe('WAITING_PRD_APPROVAL|2026-01-01T00:00:00.000Z')
+  it('returns a status|updatedAt|requests signature for needs_input statuses', () => {
+    expect(getNeedsInputSignature(baseSnapshot)).toBe('WAITING_PRD_APPROVAL|2026-01-01T00:00:00.000Z|0')
   })
 
   it('returns null for BLOCKED_ERROR (red error owns that status)', () => {
     expect(getNeedsInputSignature({ ...baseSnapshot, status: 'BLOCKED_ERROR' })).toBeNull()
+    expect(getNeedsInputSignature({ ...baseSnapshot, status: 'BLOCKED_ERROR', pendingQuestions: oneRequest })).toBeNull()
   })
 
   it('returns null for non-needs-input statuses', () => {
     expect(getNeedsInputSignature({ ...baseSnapshot, status: 'DRAFT' })).toBeNull()
     expect(getNeedsInputSignature({ ...baseSnapshot, status: 'CODING' })).toBeNull()
     expect(getNeedsInputSignature({ ...baseSnapshot, status: 'COMPLETED' })).toBeNull()
+  })
+
+  it('signs a pending question on a working ticket, which has no needs_input status', () => {
+    expect(getNeedsInputSignature({ ...baseSnapshot, status: 'CODING', pendingQuestions: oneRequest }))
+      .toBe('CODING|2026-01-01T00:00:00.000Z|1')
+  })
+
+  it('does not sign a question on a todo or done ticket, which has no live model', () => {
+    expect(getNeedsInputSignature({ ...baseSnapshot, status: 'DRAFT', pendingQuestions: oneRequest })).toBeNull()
+    expect(getNeedsInputSignature({ ...baseSnapshot, status: 'COMPLETED', pendingQuestions: oneRequest })).toBeNull()
   })
 
   it('produces a different signature when the wait reason changes (different status)', () => {
@@ -37,6 +61,38 @@ describe('getNeedsInputSignature', () => {
     const first = getNeedsInputSignature(baseSnapshot)
     const reentered = getNeedsInputSignature({ ...baseSnapshot, updatedAt: '2026-01-02T00:00:00.000Z' })
     expect(first).not.toBe(reentered)
+  })
+
+  it('produces a different signature when the blocker changes kind', () => {
+    // Same wait, same timestamp — a model has interrupted it with a question.
+    const interviewWait = getNeedsInputSignature({ ...baseSnapshot, status: 'WAITING_INTERVIEW_ANSWERS' })
+    const alsoAsked = getNeedsInputSignature({
+      ...baseSnapshot,
+      status: 'WAITING_INTERVIEW_ANSWERS',
+      pendingQuestions: oneRequest,
+    })
+    expect(interviewWait).not.toBe(alsoAsked)
+  })
+
+  it('holds steady when only the shared countdown moves', () => {
+    // Every model joining the step resets the deadline; that is not a new question.
+    const asked = getNeedsInputSignature({ ...baseSnapshot, status: 'CODING', pendingQuestions: oneRequest })
+    const clockReset = getNeedsInputSignature({
+      ...baseSnapshot,
+      status: 'CODING',
+      pendingQuestions: makePendingQuestions({ deadlineAt: '2026-01-01T00:05:00.000Z' }),
+    })
+    expect(asked).toBe(clockReset)
+  })
+
+  it('re-signs when another model joins the same step', () => {
+    const one = getNeedsInputSignature({ ...baseSnapshot, status: 'CODING', pendingQuestions: oneRequest })
+    const two = getNeedsInputSignature({
+      ...baseSnapshot,
+      status: 'CODING',
+      pendingQuestions: makePendingQuestions({ requestCount: 2, questionCount: 4 }),
+    })
+    expect(one).not.toBe(two)
   })
 })
 

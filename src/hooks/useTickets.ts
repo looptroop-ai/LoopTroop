@@ -13,6 +13,7 @@ import {
   rememberTicketUiStateRevision,
 } from '@/lib/ticketUiStateRevision'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
+import type { SettingSource } from '@shared/aiQuestions'
 
 async function parseErrorBody(res: Response, fallback: string): Promise<string> {
   let message = fallback
@@ -152,6 +153,17 @@ export interface Ticket {
   cancelReason?: string | null
   errorSeenSignature?: string | null
   needsInputSeenSignature?: string | null
+  /**
+   * A model waiting on an answer, or null when none is. The two counts disagree
+   * on purpose: a council of three asking two things each is 3 requests and
+   * 6 questions. Surfaces that speak to a person count questions.
+   */
+  pendingQuestions?: {
+    requestCount: number
+    questionCount: number
+    deadlineAt: string | null
+    stoppedAt: string | null
+  } | null
   implementationTiming: {
     activeDurationMs: number
     startedAt: string | null
@@ -182,6 +194,13 @@ export interface Ticket {
   effectiveManualQaSource?: 'ticket' | 'project' | 'profile'
   lockedManualQaEnabled?: boolean | null
   lockedManualQaSource?: 'ticket' | 'project' | 'profile' | null
+  aiQuestionsOverride?: boolean | null
+  /** Milliseconds, or null to inherit. */
+  aiQuestionWindowOverride?: number | null
+  effectiveAiQuestionsEnabled?: boolean
+  effectiveAiQuestionsSource?: SettingSource
+  effectiveAiQuestionWindow?: number
+  effectiveAiQuestionWindowSource?: SettingSource
   workflowRevision?: number
   visitedStatuses?: string[]
   manualQa?: {
@@ -222,6 +241,8 @@ interface CreateTicketInput {
   description?: string
   priority?: number
   manualQaOverride?: boolean | null
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
 }
 
 interface TicketActionResponse {
@@ -280,7 +301,12 @@ async function createTicket(input: CreateTicketInput): Promise<Ticket> {
   return res.json()
 }
 
-async function updateTicket(id: string, input: Partial<Pick<Ticket, 'title' | 'description' | 'priority' | 'manualQaOverride'>>): Promise<Ticket> {
+type UpdateTicketInput = Partial<Pick<
+  Ticket,
+  'title' | 'description' | 'priority' | 'manualQaOverride' | 'aiQuestionsOverride' | 'aiQuestionWindowOverride'
+>>
+
+async function updateTicket(id: string, input: UpdateTicketInput): Promise<Ticket> {
   const res = await fetch(`/api/tickets/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -504,7 +530,7 @@ export function useCreateTicket() {
 export function useUpdateTicket() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...input }: { id: string } & Partial<Pick<Ticket, 'title' | 'description' | 'priority' | 'manualQaOverride'>>) =>
+    mutationFn: ({ id, ...input }: { id: string } & UpdateTicketInput) =>
       updateTicket(id, input),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tickets'] })

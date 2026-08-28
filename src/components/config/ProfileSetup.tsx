@@ -45,6 +45,8 @@ import { NumericField } from './profileNumericUtils'
 import { ConfigurationDocsLink } from './ConfigurationDocsLink'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
+import { TriStateSetting } from '@/components/settings/TriStateSetting'
+import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
 import { DEFAULT_IGNORE_MODE } from '@/lib/ignoreMode'
@@ -87,6 +89,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     toolOutputMaxChars: profile?.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
     toolErrorMaxChars: profile?.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
     manualQaEnabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
+    aiQuestionsEnabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
+    aiQuestionWindow: profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
     gitHookPolicy: profile?.gitHookPolicy ?? 'validate_advisory',
     ignoreMode: profile?.ignoreMode ?? DEFAULT_IGNORE_MODE,
   })
@@ -144,6 +148,8 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       toolOutputMaxChars: profile.toolOutputMaxChars ?? PROFILE_DEFAULTS.toolOutputMaxChars,
       toolErrorMaxChars: profile.toolErrorMaxChars ?? PROFILE_DEFAULTS.toolErrorMaxChars,
       manualQaEnabled: profile.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
+      aiQuestionsEnabled: profile.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
+      aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
       gitHookPolicy: profile.gitHookPolicy ?? 'validate_advisory',
       ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })
@@ -151,6 +157,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       perIterationTimeout: profile.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout,
       executionSetupTimeout: profile.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout,
       councilResponseTimeout: profile.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout,
+      aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
       maxIterations: profile.maxIterations ?? PROFILE_DEFAULTS.maxIterations,
       minCouncilQuorum: profile.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum,
       interviewQuestions: profile.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions,
@@ -486,6 +493,42 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
           </div>
           <div className="mt-3">
             <NumericField fieldKey="structuredRetryCount" rawNumeric={rawNumeric} onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))} hint="Retries after invalid structured output (0–5)." />
+          </div>
+
+          <Separator />
+
+          {/* ── AI Questions ── */}
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">AI Questions</div>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <label className="text-sm font-medium">AI Questions</label>
+                <ConfigurationDocsLink
+                  docsPath="/configuration#ai-questions"
+                  label="AI Questions"
+                  description="Choose whether a model may stop a step to ask you a question. Open the AI questions documentation."
+                />
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Let a model stop a step to ask you a question. Projects and tickets can set their own answer.
+              </p>
+            </div>
+            <TriStateSetting
+              idPrefix="profile-ai-questions"
+              groupLabel="AI questions setting"
+              options={AI_QUESTIONS_OPTIONS}
+              value={formData.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled}
+              onChange={(value) => updateField('aiQuestionsEnabled', value === true)}
+              compact
+            />
+          </div>
+          <div className="mt-3">
+            <NumericField
+              fieldKey="aiQuestionWindow"
+              rawNumeric={rawNumeric}
+              onChange={(k, v) => setRawNumeric(prev => ({ ...prev, [k]: v }))}
+              hint={`How long a question waits for you before the run carries on (60–3600s). ${AI_QUESTION_WAIT_HINT}`}
+            />
           </div>
 
           <Separator />

@@ -442,30 +442,41 @@ describe('question windows', () => {
     expect(adapter.questionRejections.map((entry) => entry.requestId)).toEqual(['req_a'])
   })
 
-  it('records the wait so it is not billed as working time', () => {
+  it('opens the wait when the question arrives, not when it is answered', () => {
     const ticket = makeTicket()
     ask(ticket.id)
-    markRequestReplied(ticket.id, 'ses_a', 'req_a')
 
     const context = getTicketContext(ticket.id)!
-    const rows = context.projectDb.select().from(questionWaits).all()
-    expect(rows).toHaveLength(1)
-    expect(Date.parse(rows[0]!.endedAt)).toBeGreaterThanOrEqual(Date.parse(rows[0]!.startedAt))
+    // Recorded while it is still happening. Written only on resolution, a
+    // question open right now would read as coding time until someone answered
+    // it, and a restart mid-wait would lose everything before the restart.
+    const open = context.projectDb.select().from(questionWaits).all()
+    expect(open).toHaveLength(1)
+    expect(open[0]?.endedAt).toBeNull()
+
+    markRequestReplied(ticket.id, 'ses_a', 'req_a')
+    const closed = context.projectDb.select().from(questionWaits).all()
+    expect(closed).toHaveLength(1)
+    expect(Date.parse(closed[0]!.endedAt!)).toBeGreaterThanOrEqual(Date.parse(closed[0]!.startedAt))
   })
 
-  it('banks one interval for two overlapping questions, not two', () => {
+  it('keeps one interval for two overlapping questions, not two', () => {
     const ticket = makeTicket()
     ask(ticket.id)
     ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b' })
 
-    markRequestReplied(ticket.id, 'ses_a', 'req_a')
     const context = getTicketContext(ticket.id)!
-    // Still waiting on the second, so nothing is banked yet.
-    expect(context.projectDb.select().from(questionWaits).all()).toHaveLength(0)
+    // Two overlapping waits are one stretch of wall time. A row each would
+    // subtract the same minutes twice from the ticket's active duration.
+    expect(context.projectDb.select().from(questionWaits).all()).toHaveLength(1)
+
+    markRequestReplied(ticket.id, 'ses_a', 'req_a')
+    // Still waiting on the second, so the interval stays open.
+    expect(context.projectDb.select().from(questionWaits).all()[0]?.endedAt).toBeNull()
 
     markRequestReplied(ticket.id, 'ses_b', 'req_b')
-    // Two overlapping waits are one stretch of wall time. Banking each in full
-    // would subtract the same minutes twice from the ticket's active duration.
-    expect(context.projectDb.select().from(questionWaits).all()).toHaveLength(1)
+    const rows = context.projectDb.select().from(questionWaits).all()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.endedAt).not.toBeNull()
   })
 })

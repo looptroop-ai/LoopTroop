@@ -35,7 +35,7 @@ import {
 import type { SkipActor, SkipQuestionContext } from '@shared/skipReceipt'
 import { deriveSkipActionId, writeSkipReceipts } from './skipReceipts'
 import { getTicketWaitingMs, resumeTicketWork, suspendTicketWork } from './workBudget'
-import { recordQuestionWait } from '../storage/questionWaits'
+import { closeQuestionWait, openQuestionWait } from '../storage/questionWaits'
 
 /** Attempts to tell OpenCode a question is refused before giving up on it. */
 const REJECT_ATTEMPTS = 3
@@ -76,6 +76,9 @@ interface QuestionRequestRecord {
 
 let claimSequence = 0
 
+/** Monotonic across every clock this process arms. See `generation` above. */
+let timerGeneration = 0
+
 /**
  * How long a resolved request is remembered.
  *
@@ -90,6 +93,8 @@ interface QuestionTimer {
   phase: string
   phaseAttempt: number
   timerKey: string
+  /** Distinguishes this clock from the next one the same step arms. */
+  generation: number
   windowMs: number
   armedAt: number
   deadlineAt: number
@@ -126,14 +131,17 @@ function ticketHasPendingRequests(ticketId: string): boolean {
 }
 
 function openWaitInterval(ticketId: string): void {
-  if (!waitStartedAt.has(ticketId)) waitStartedAt.set(ticketId, Date.now())
+  if (waitStartedAt.has(ticketId)) return
+  const startedAt = Date.now()
+  waitStartedAt.set(ticketId, startedAt)
+  // Written now rather than on resolution, so the wait counts while it is
+  // happening and survives a restart that lands in the middle of it.
+  openQuestionWait(ticketId, startedAt)
 }
 
 function closeWaitInterval(ticketId: string): void {
-  const startedAt = waitStartedAt.get(ticketId)
-  if (startedAt === undefined) return
   waitStartedAt.delete(ticketId)
-  recordQuestionWait(ticketId, startedAt, Date.now())
+  closeQuestionWait(ticketId, Date.now())
 }
 
 function requestKey(sessionId: string, requestId: string): string {
@@ -178,6 +186,7 @@ function pendingRequests(timer: QuestionTimer): QuestionRequestRecord[] {
 export function toTimerState(timer: QuestionTimer): AiQuestionTimerState {
   return {
     timerKey: timer.timerKey,
+    generation: timer.generation,
     windowMs: timer.windowMs,
     armedAt: new Date(timer.armedAt).toISOString(),
     deadlineAt: new Date(timer.deadlineAt).toISOString(),
@@ -422,6 +431,7 @@ export function armOrResetTimer(input: {
     phase: input.phase,
     phaseAttempt: input.phaseAttempt,
     timerKey,
+    generation: (timerGeneration += 1),
     windowMs,
     armedAt: input.restore?.armedAt ?? now,
     deadlineAt: input.restore?.deadlineAt ?? now + windowMs,
@@ -972,6 +982,23 @@ export async function clearTicketWindows(
     }
   }
   timersByTicket.delete(ticketId)
+  forgetTicketMemory(ticketId)
+}
+
+/**
+ * Drops the per-ticket bookkeeping that outlives the timers themselves.
+ *
+ * Tombstones expire on their own and the wait interval closes on resolution, but
+ * `answeredByStep` only ever grows — one entry per (ticket, step, attempt,
+ * member) for the life of the process. Cleared with the windows, which is the
+ * one place that already knows a ticket is finished with.
+ */
+function forgetTicketMemory(ticketId: string): void {
+  resolvedRecently.delete(ticketId)
+  waitStartedAt.delete(ticketId)
+  for (const key of [...answeredByStep.keys()]) {
+    if (key.startsWith(`${ticketId}|`)) answeredByStep.delete(key)
+  }
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
@@ -1063,6 +1090,17 @@ export interface RestartSessionOwner {
   memberId: string | null
   phase: string
   phaseAttempt: number
+  /**
+   * Whether the session came back.
+   *
+   * Dead sessions are listed too, and deliberately. `reconcileOpenCodeSessions`
+   * runs first and marks everything that failed to reconnect as abandoned, so by
+   * the time questions are reconciled the *most* interesting requests — the ones
+   * nothing will ever answer — are exactly the ones whose owner is no longer
+   * active. Dropping them from the map would leave them anonymous, and an
+   * anonymous refusal is one nobody can explain later.
+   */
+  active: boolean
 }
 
 export async function reconcilePendingQuestionsAfterRestart(input: {
@@ -1091,7 +1129,7 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
 
   for (const request of pending) {
     const owner = owners.get(request.sessionID)
-    if (owner) {
+    if (owner?.active) {
       // The artifact is authoritative: a stopped clock stays stopped, and one
       // whose deadline passed while the daemon was down fires immediately
       // instead of buying itself another full window.
@@ -1113,17 +1151,70 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
     // No live session owns it, so nothing will ever answer it. Refuse it and
     // leave a receipt: an orphan question that vanishes without a trail is how
     // a blocked round becomes unexplainable weeks later.
-    await refuseOrphanedRequest(request.id, input.projectRoot)
+    const failure = await rejectWithRetries(request.id, input.projectRoot)
+    if (owner) writeOrphanReceipt(owner, request, failure)
     rejected += 1
   }
   return { reattached, rejected }
 }
 
-async function refuseOrphanedRequest(requestId: string, projectRoot: string): Promise<void> {
+/**
+ * Files the refusal of a question whose session never came back.
+ *
+ * There is no live record to hang it on — the timer and its requests died with
+ * the process — so the receipt is written straight from what the adapter and the
+ * session row still know. Filed under `system`, because a daemon restart is not
+ * a person's decision.
+ */
+function writeOrphanReceipt(
+  owner: RestartSessionOwner,
+  request: { id: string; questions: OpenCodeQuestionInfo[] },
+  failure: string | null,
+): void {
+  const context = getTicketContext(owner.ticketId)
+  if (!context) return
+  const reason = failure
+    ? `The daemon restarted and this session did not come back — Could not tell OpenCode: ${failure}`
+    : 'The daemon restarted and this session did not come back.'
   try {
-    await getOpenCodeAdapter().rejectQuestion(requestId, projectRoot)
+    writeSkipReceipts({
+      ticketId: owner.ticketId,
+      surface: 'opencode_question',
+      itemType: 'opencode_question',
+      phase: owner.phase,
+      phaseAttempt: owner.phaseAttempt,
+      ticketStatusBefore: context.localTicket.status,
+      actionId: deriveSkipActionId('opencode-question', [owner.sessionId, request.id, 'daemon_restart']),
+      skippedBy: 'system',
+      allowArchivedPhaseAttempt: true,
+      questionContext: {
+        request_id: request.id,
+        session_id: owner.sessionId,
+        member_id: owner.memberId,
+        question_count: request.questions.length,
+        window_ms: 0,
+        armed_at: null,
+        deadline_at: null,
+        reset_count: 0,
+        stopped_at: null,
+        stopped_by: null,
+        elapsed_wall_ms: 0,
+        elapsed_active_ms: 0,
+        sibling_request_ids: [],
+        expiry_reason: 'daemon_restart',
+        quorum_impact: isCouncilQuorumPhase(owner.phase)
+          ? `${owner.memberId ?? 'a council member'} was refused mid-round in ${owner.phase} after a daemon restart; its contribution may be missing from the quorum count.`
+          : null,
+      },
+      summary: { itemType: 'opencode_question_request', reason },
+      items: request.questions.map((_question, index) => ({
+        itemId: `${request.id}:${index}`,
+        reason,
+      })),
+    })
   } catch {
-    // Nothing is listening for it either way.
+    // The rejection has already reached OpenCode; a lost audit row is not a
+    // reason to leave the rest of the restart unreconciled.
   }
 }
 

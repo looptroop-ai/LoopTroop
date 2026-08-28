@@ -191,6 +191,7 @@ describe('AIQuestionProvider', () => {
     const question = buildQuestion(ticket.id)
     const first = {
       timerKey: 'CODING:1',
+      generation: 1,
       windowMs: 300_000,
       armedAt: TEST.timestamp,
       deadlineAt: new Date(Date.parse(TEST.timestamp) + 300_000).toISOString(),
@@ -212,7 +213,7 @@ describe('AIQuestionProvider', () => {
             ticketId,
             // A different step, so a different clock — and revisions restart at
             // 1 for it, below the 4 the previous clock had reached.
-            timer: { ...first, timerKey: 'VERIFYING:1', revision: 1, stoppedAt: null },
+            timer: { ...first, timerKey: 'VERIFYING:1', generation: 9, revision: 1, stoppedAt: null },
             requests: [],
           })}>next-step</button>
         </>
@@ -237,11 +238,64 @@ describe('AIQuestionProvider', () => {
     await waitFor(() => expect(calls()).toHaveLength(2))
   })
 
+  it('accepts a second clock on the same step, which reuses the timer key', async () => {
+    const ticket = makeTicket()
+    const question = buildQuestion(ticket.id)
+    const first = {
+      timerKey: 'CODING:1',
+      generation: 4,
+      windowMs: 300_000,
+      armedAt: TEST.timestamp,
+      deadlineAt: new Date(Date.parse(TEST.timestamp) + 300_000).toISOString(),
+      stoppedAt: null,
+      stoppedBy: null,
+      resetCount: 0,
+      revision: 5,
+      serverNow: TEST.timestamp,
+    }
+    stubAggregate({ questions: [question], timers: { [ticket.id]: first } })
+
+    function Step({ ticketId }: { ticketId: string }) {
+      const { getTimer, stopTimer, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>gen:{getTimer(ticketId)?.generation ?? 'none'}</div>
+          <button onClick={() => stopTimer(ticketId)}>stop</button>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_updated',
+            ticketId,
+            // The step asked, was answered, and asked again. Same phase and same
+            // attempt, so the same timerKey — but a different clock, whose
+            // revision starts over below the one the first clock reached.
+            timer: { ...first, generation: 5, revision: 1 },
+            requests: [],
+          })}>ask-again</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Step ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('gen:4')).toBeInTheDocument())
+    const calls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url]) => String(url).includes('question-timer/stop'))
+
+    fireEvent.click(screen.getByText('stop'))
+    await waitFor(() => expect(calls()).toHaveLength(1))
+
+    fireEvent.click(screen.getByText('ask-again'))
+    // Keyed on timerKey alone, the browser kept showing the clock that had
+    // already gone and refused to stop the new one.
+    await waitFor(() => expect(screen.getByText('gen:5')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('stop'))
+    await waitFor(() => expect(calls()).toHaveLength(2))
+  })
+
   it('does not discard a new clock as stale because the old one outranked it', async () => {
     const ticket = makeTicket()
     const question = buildQuestion(ticket.id)
     const old = {
       timerKey: 'CODING:1',
+      generation: 1,
       windowMs: 300_000,
       armedAt: TEST.timestamp,
       deadlineAt: new Date(Date.parse(TEST.timestamp) + 60_000).toISOString(),
@@ -261,7 +315,7 @@ describe('AIQuestionProvider', () => {
           <button onClick={() => ingestSseEvent({
             type: 'opencode_question_updated',
             ticketId,
-            timer: { ...old, timerKey: 'VERIFYING:1', revision: 1 },
+            timer: { ...old, timerKey: 'VERIFYING:1', generation: 9, revision: 1 },
             requests: [],
           })}>advance</button>
         </>

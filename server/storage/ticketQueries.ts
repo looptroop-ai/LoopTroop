@@ -207,6 +207,15 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
     questionCount: number
     deadlineAt: string | null
     stoppedAt: string | null
+    /**
+     * Which requests are open, sorted.
+     *
+     * The board keys its "new wait" signal on this rather than on the count,
+     * because one question being answered and replaced by another leaves the
+     * count untouched — and a ticket's `updatedAt` does not move when a question
+     * arrives either, since its status never changes.
+     */
+    requestIds: string[]
   } | null
   implementationTiming: TicketImplementationTiming
   completionDisposition: 'merged' | 'closed_unmerged' | null
@@ -975,6 +984,7 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
       questionCount: pendingQuestionSummary.questionCount,
       deadlineAt: pendingQuestionSummary.deadlineAt,
       stoppedAt: pendingQuestionSummary.stoppedAt,
+      requestIds: pendingQuestionSummary.requestIds,
     },
     implementationTiming,
     completionDisposition,

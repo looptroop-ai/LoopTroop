@@ -70,8 +70,16 @@ export interface SkipQuestionContext {
   member_id: string | null
   question_count: number
   window_ms: number
-  armed_at: string
-  deadline_at: string
+  /**
+   * Null when there was no clock to record.
+   *
+   * A question orphaned by a daemon restart is refused without one: the timer
+   * died with the process that armed it, and inventing a plausible-looking pair
+   * of timestamps would make the trail read as though a wait had been measured
+   * when none was.
+   */
+  armed_at: string | null
+  deadline_at: string | null
   /** How many times another model arriving pushed the shared clock back to full. */
   reset_count: number
   stopped_at: string | null

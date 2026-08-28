@@ -36,6 +36,7 @@ function makeRequest(overrides: Partial<AiQuestionRequest> = {}): AiQuestionRequ
 function makeTimer(overrides: Partial<AiQuestionTimerState> = {}): AiQuestionTimerState {
   return {
     timerKey: 'CODING:1',
+    generation: 1,
     windowMs: 300_000,
     armedAt: '2026-01-01T00:00:00.000Z',
     deadlineAt: '2026-01-01T00:05:00.000Z',

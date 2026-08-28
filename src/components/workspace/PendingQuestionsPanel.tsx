@@ -122,6 +122,9 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
     setActiveRequestId(requestId)
     setQuestionIndex(0)
     setSkipping(false)
+    // A reason written for one model's question must not follow you to another
+    // model's tab and end up filed against a question it was never about.
+    setSkipReason('')
   }
 
   const moveQuestion = (delta: number) => {
@@ -302,7 +305,9 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
                   onChange={(value) => { engage(); setSkipReason(value) }}
                   disabled={active.submitting}
                   label="Skip reason"
-                  help="Kept in the ticket's skip trail. The model is not told."
+                  help={active.questions.length > 1
+                    ? `Skipping refuses all ${active.questions.length} questions in this request — OpenCode takes one verdict for the batch. Kept in the ticket's skip trail; the model is not told.`
+                    : "Kept in the ticket's skip trail. The model is not told."}
                   autoFocus
                 />
               </div>
@@ -321,7 +326,7 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
                     disabled={active.submitting}
                     onClick={() => skipRequest(ticketId, active.requestId, skipReason.trim() || null)}
                   >
-                    Skip this question
+                    {active.questions.length > 1 ? 'Skip all questions' : 'Skip this question'}
                   </Button>
                 </>
               ) : (

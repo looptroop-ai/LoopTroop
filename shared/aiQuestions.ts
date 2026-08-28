@@ -73,6 +73,15 @@ export type SettingSource = 'profile' | 'project' | 'ticket'
 export interface AiQuestionTimerState {
   /** `<phase>:<attempt>` — the status the countdown belongs to. */
   timerKey: string
+  /**
+   * Which clock this is, across every clock the server has ever armed.
+   *
+   * `timerKey` is not enough on its own: a step can ask, be answered, and ask
+   * again, and the second clock carries the same key while `revision` starts
+   * over at 1. A client comparing revisions within a key would then read the new
+   * countdown as a stale frame and keep showing one that has already gone.
+   */
+  generation: number
   windowMs: number
   armedAt: string
   deadlineAt: string
@@ -81,7 +90,7 @@ export interface AiQuestionTimerState {
   stoppedBy: string | null
   /** How many times a new model asking pushed the clock back to full. */
   resetCount: number
-  /** Bumped on every transition, so a late SSE frame cannot undo a newer one. */
+  /** Bumped on every transition within one generation, so a late SSE frame cannot undo a newer one. */
   revision: number
   /** The server's clock at the moment this was built. */
   serverNow: string

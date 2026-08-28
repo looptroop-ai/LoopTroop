@@ -22,7 +22,7 @@ interface NeedsInputTicketSnapshot {
   id: string
   status: string
   updatedAt: string
-  pendingQuestions?: { requestCount: number } | null
+  pendingQuestions?: { requestCount: number; requestIds?: string[] } | null
 }
 
 function getNeedsInputSeenStorageKey(ticketId: string): string {
@@ -37,23 +37,28 @@ function getNeedsInputSeenStorageKey(ticketId: string): string {
  * Reason tokens = `updatedAt` plus the number of models asking. WAITING_*
  * states are paused, so `updatedAt` only advances when the wait reason
  * genuinely changes (e.g. PRD approval → beads approval) or on re-entry, which
- * is exactly when we want to re-flash. The question token is a count rather
- * than the request ids, which the DTO does not expose — the count moves
- * whenever the set of open requests does, which is the same signal for this
- * purpose. It deliberately is *not* `deadlineAt`: every model that joins the
+ * is exactly when we want to re-flash. The question token is the sorted request
+ * ids rather than their count: one question being answered and another arriving
+ * leaves the count identical, and `updatedAt` does not move either, so a count
+ * would have said nothing changed when the thing being waited on had been
+ * replaced outright. It deliberately is *not* `deadlineAt`: every model that joins the
  * step resets the shared clock, and keying on that would re-alert the card on
  * every reset rather than on a genuinely new question.
  *
- * The count is always in the signature, so a wait that changes kind — an
- * interview wait that a model then interrupts with a question — reads as a new
- * wait instead of inheriting the old acknowledgment.
+ * The question token is always in the signature, so a wait that changes kind —
+ * an interview wait that a model then interrupts with a question — reads as a
+ * new wait instead of inheriting the old acknowledgment.
  */
 export function getNeedsInputSignature(ticket: NeedsInputTicketSnapshot): string | null {
   if (ticket.status === 'BLOCKED_ERROR') return null
-  const pendingRequestCount = ticket.pendingQuestions?.requestCount ?? 0
+  const pending = ticket.pendingQuestions
+  const pendingRequestCount = pending?.requestCount ?? 0
   const phase = resolveKanbanPhase(ticket.status, { hasPendingQuestion: pendingRequestCount > 0 })
   if (phase !== 'needs_input') return null
-  return `${ticket.status}|${ticket.updatedAt}|${pendingRequestCount}`
+  const questionToken = pending?.requestIds?.length
+    ? [...pending.requestIds].sort().join(',')
+    : String(pendingRequestCount)
+  return `${ticket.status}|${ticket.updatedAt}|${questionToken}`
 }
 
 export function readNeedsInputSeen(

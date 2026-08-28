@@ -52,6 +52,7 @@ function parseTimer(value: unknown): AiQuestionTimerState | null {
   if (typeof record.timerKey !== 'string' || typeof record.deadlineAt !== 'string') return null
   return {
     timerKey: record.timerKey,
+    generation: typeof record.generation === 'number' ? record.generation : 0,
     windowMs: typeof record.windowMs === 'number' ? record.windowMs : 0,
     armedAt: typeof record.armedAt === 'string' ? record.armedAt : record.deadlineAt,
     deadlineAt: record.deadlineAt,
@@ -115,10 +116,11 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   /**
    * Clocks whose stop has already been posted, so typing does not re-post.
    *
-   * Keyed by ticket *and* timer, not by ticket. A step's clock is a generation:
-   * once CODING's question was stopped, keying on the ticket alone made the next
-   * step's brand-new clock look already-stopped, and the browser never sent Stop
-   * for it at all.
+   * Keyed by the clock's `generation`, not by the ticket and not by `timerKey`.
+   * Once a question on CODING was stopped, keying on the ticket made every later
+   * clock look already-stopped and the browser never sent Stop again; keying on
+   * `timerKey` fixed that only until the *same* step asked a second time, which
+   * reuses the key.
    */
   const stoppedTimersRef = useRef(new Set<string>())
 
@@ -146,15 +148,21 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       const existing = current[ticketId]
       // A late frame must never undo a newer one. The server bumps `revision`
       // on every transition precisely so an out-of-order delivery is detectable
-      // — but only within one clock. Revisions restart at 1 for each new timer,
-      // so comparing across `timerKey` boundaries discarded a fresh countdown as
-      // stale whenever the previous one had got past revision 1.
-      if (existing && existing.timerKey === timer.timerKey && existing.revision > timer.revision) {
+      // — but only within one clock, and revisions restart at 1 for each new
+      // one. `timerKey` cannot separate them either: a step that asks, is
+      // answered, and asks again arms a second clock under the same key, so a
+      // key-scoped comparison would read the new countdown as a stale frame and
+      // keep showing one that has already gone. `generation` is what actually
+      // identifies the clock.
+      if (existing && (
+        existing.generation > timer.generation
+        || (existing.generation === timer.generation && existing.revision > timer.revision)
+      )) {
         return current
       }
       return { ...current, [ticketId]: timer }
     })
-    if (timer?.stoppedAt) stoppedTimersRef.current.add(`${ticketId}:${timer.timerKey}`)
+    if (timer?.stoppedAt) stoppedTimersRef.current.add(`${ticketId}:${timer.generation}`)
   }, [noteServerClock])
 
   const removeRequest = useCallback((sessionId: string, requestId: string) => {
@@ -356,8 +364,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   }, [])
 
   const stopTimer = useCallback((ticketId: string) => {
-    const timerKey = timers[ticketId]?.timerKey ?? 'unknown'
-    const stopKey = `${ticketId}:${timerKey}`
+    const stopKey = `${ticketId}:${timers[ticketId]?.generation ?? 'unknown'}`
     if (stoppedTimersRef.current.has(stopKey)) return
     // Marked before the request lands so a burst of keystrokes posts once.
     stoppedTimersRef.current.add(stopKey)

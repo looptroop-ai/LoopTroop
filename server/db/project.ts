@@ -216,7 +216,7 @@ function initializeProjectSqlite(sqlite: Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
       started_at TEXT NOT NULL,
-      ended_at TEXT NOT NULL
+      ended_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS ticket_ai_turn_metrics (

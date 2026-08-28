@@ -7,29 +7,55 @@
  * question does not change the ticket's status and so leaves no trace in
  * `ticket_status_history`. Both exist for different questions: "how much time
  * does this step have left" and "how much of that hour was actually work".
+ *
+ * A wait is written when it *starts*, not when it finishes. Assembling the row
+ * on resolution meant a question open right now counted as coding until somebody
+ * answered it, and a daemon restart mid-wait lost everything before the restart.
  */
 
-import { and, eq, gt, lt } from 'drizzle-orm'
+import { and, eq, isNull, lt, or, gt } from 'drizzle-orm'
 import { questionWaits } from '../db/schema'
 import type { ProjectContext } from './projects'
 import { getTicketContext } from './ticketQueries'
 
 type ProjectDb = ProjectContext['projectDb']
 
-/** Records one closed wait. Best-effort: reporting must never block a run. */
-export function recordQuestionWait(ticketRef: string, startedAtMs: number, endedAtMs: number): void {
-  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs)) return
-  if (endedAtMs <= startedAtMs) return
+/** Opens a wait. Best-effort: reporting must never block a run. */
+export function openQuestionWait(ticketRef: string, startedAtMs: number): void {
+  if (!Number.isFinite(startedAtMs)) return
   try {
     const context = getTicketContext(ticketRef)
     if (!context) return
+    // An interval already open means a question is still outstanding and this
+    // one joined it. Overlapping waits are one stretch of wall time; opening a
+    // second row would subtract the same minutes twice.
+    const open = context.projectDb.select({ id: questionWaits.id })
+      .from(questionWaits)
+      .where(and(eq(questionWaits.ticketId, context.localTicketId), isNull(questionWaits.endedAt)))
+      .get()
+    if (open) return
     context.projectDb.insert(questionWaits).values({
       ticketId: context.localTicketId,
       startedAt: new Date(startedAtMs).toISOString(),
-      endedAt: new Date(endedAtMs).toISOString(),
+      endedAt: null,
     }).run()
   } catch {
     // A lost row costs accuracy in a duration, never correctness in a run.
+  }
+}
+
+/** Closes whatever wait this ticket has open. Idempotent. */
+export function closeQuestionWait(ticketRef: string, endedAtMs: number): void {
+  if (!Number.isFinite(endedAtMs)) return
+  try {
+    const context = getTicketContext(ticketRef)
+    if (!context) return
+    context.projectDb.update(questionWaits)
+      .set({ endedAt: new Date(endedAtMs).toISOString() })
+      .where(and(eq(questionWaits.ticketId, context.localTicketId), isNull(questionWaits.endedAt)))
+      .run()
+  } catch {
+    // Same trade as opening it.
   }
 }
 
@@ -38,7 +64,9 @@ export function recordQuestionWait(ticketRef: string, startedAtMs: number, ended
  *
  * Intervals are clipped to the window and summed. They cannot overlap each other
  * — one is opened when a ticket's first question arrives and closed when its
- * last is resolved — so a plain sum is right and no merge is needed.
+ * last is resolved — so a plain sum is right and no merge is needed. A row still
+ * open is treated as running up to now, so the wait counts while it happens
+ * rather than appearing all at once when it ends.
  */
 export function questionWaitOverlapMs(
   projectDb: ProjectDb,
@@ -56,14 +84,15 @@ export function questionWaitOverlapMs(
       .where(and(
         eq(questionWaits.ticketId, localTicketId),
         lt(questionWaits.startedAt, new Date(to).toISOString()),
-        gt(questionWaits.endedAt, new Date(from).toISOString()),
+        or(isNull(questionWaits.endedAt), gt(questionWaits.endedAt, new Date(from).toISOString())),
       ))
       .all()
 
+    const now = Date.now()
     let total = 0
     for (const row of rows) {
       const startedAt = Date.parse(row.startedAt)
-      const endedAt = Date.parse(row.endedAt)
+      const endedAt = row.endedAt === null ? now : Date.parse(row.endedAt)
       if (Number.isNaN(startedAt) || Number.isNaN(endedAt)) continue
       total += Math.max(0, Math.min(endedAt, to) - Math.max(startedAt, from))
     }

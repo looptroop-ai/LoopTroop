@@ -218,7 +218,16 @@ export const questionWaits = sqliteTable('question_waits', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   startedAt: text('started_at').notNull(),
-  endedAt: text('ended_at').notNull(),
+  /**
+   * Null while the ticket is still waiting.
+   *
+   * The row is written when the wait *starts* rather than assembled once it
+   * ends. That is what makes a wait in progress count as waiting — otherwise a
+   * question open right now reads as coding time until somebody answers it —
+   * and what lets one survive a daemon restart, which previously dropped
+   * everything before the restart on the floor. Null reads as "up to now".
+   */
+  endedAt: text('ended_at'),
 })
 
 export const beadExecutionMetrics = sqliteTable('bead_execution_metrics', {

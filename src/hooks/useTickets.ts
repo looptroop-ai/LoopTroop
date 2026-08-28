@@ -160,6 +160,7 @@ export interface Ticket {
    */
   pendingQuestions?: {
     requestCount: number
+    requestIds?: string[]
     questionCount: number
     deadlineAt: string | null
     stoppedAt: string | null

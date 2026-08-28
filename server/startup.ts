@@ -128,6 +128,11 @@ export async function reconcileOpenCodeQuestions(
     const context = getProjectContextById(project.id)
     if (!context) continue
 
+    // Every session, not only the reconnected ones. `reconcileOpenCodeSessions`
+    // has already marked the failures abandoned, so filtering to `active` here
+    // would hide exactly the questions that most need attention — the ones whose
+    // session is gone and which nothing will ever answer. They are refused, but
+    // they can only be *recorded* if we still know which ticket they belonged to.
     const sessionRows = context.projectDb
       .select({
         sessionId: opencodeSessions.sessionId,
@@ -135,9 +140,9 @@ export async function reconcileOpenCodeQuestions(
         memberId: opencodeSessions.memberId,
         phase: opencodeSessions.phase,
         phaseAttempt: opencodeSessions.phaseAttempt,
+        state: opencodeSessions.state,
       })
       .from(opencodeSessions)
-      .where(eq(opencodeSessions.state, 'active'))
       .all()
 
     const externalIds = new Map(
@@ -161,6 +166,7 @@ export async function reconcileOpenCodeQuestions(
         memberId: row.memberId ?? null,
         phase: row.phase,
         phaseAttempt: row.phaseAttempt ?? 1,
+        active: row.state === 'active',
       }]
     })
 

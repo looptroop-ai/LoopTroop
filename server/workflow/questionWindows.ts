@@ -799,6 +799,17 @@ async function rejectRecord(
  *
  * Every request on this timer is refused, because there is one clock for all of
  * them, and each gets its own receipt naming the others it went down with.
+ *
+ * Nothing here stops the model asking again straight away, and that is a known,
+ * accepted gap rather than an oversight. Because a wait does not consume the
+ * step's budget, a model that loops — ask, be refused, ask again — burns
+ * wall-clock time without ever advancing the phase timeout, and can hold a
+ * ticket in Needs Input indefinitely. It takes a model that keeps asking after
+ * being told no, and the failure is visible on the board rather than silent, so
+ * it was left rather than bounded: any bound stops offering questions part-way
+ * through a step, which is a behaviour change in its own right. If it ever needs
+ * closing, the two candidates are refusing to offer after N expiries in one
+ * step, or capping the total wait a single step may bank.
  */
 async function expireTimer(timer: QuestionTimer): Promise<void> {
   if (timer.stoppedAt !== null) return

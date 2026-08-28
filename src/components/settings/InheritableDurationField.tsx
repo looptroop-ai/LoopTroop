@@ -105,7 +105,18 @@ export function InheritableDurationField({
                 disabled={disabled}
                 // Switching to Custom starts from what already applies, so the
                 // override does not silently change the wait as it is created.
-                onClick={() => emit(mode.inherit ? null : clampToRange(inheritedMs, minMs, maxMs))}
+                //
+                // The text is set here as well as emitted. The effect below
+                // syncs it from `value`, but skips when `value` already matches
+                // what this component last emitted — which is exactly the case
+                // after this click. Leaving it to the effect left the box empty
+                // and complaining "enter a number of minutes" while a perfectly
+                // good override was already saved.
+                onClick={() => {
+                  const next = mode.inherit ? null : clampToRange(inheritedMs, minMs, maxMs)
+                  setRawMinutes(next === null ? '' : toMinutesText(next))
+                  emit(next)
+                }}
                 className={cn(
                   'rounded px-2.5 py-1 text-xs transition-colors',
                   selected

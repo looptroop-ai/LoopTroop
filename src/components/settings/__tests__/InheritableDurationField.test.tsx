@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_QUESTION_WINDOW_MAX_MS,
@@ -42,6 +43,35 @@ describe('InheritableDurationField', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
     expect(onChange).toHaveBeenCalledWith(300_000)
+  })
+
+  it('shows the value it just started the override at', () => {
+    // A controlled owner, which is how every real caller uses this. Asserting
+    // only that `onChange` fired missed the whole defect: the box stayed empty
+    // and reported "enter a number of minutes" while a valid override was
+    // already saved, because the resync effect skips a value this component
+    // emitted itself.
+    function Controlled() {
+      const [value, setValue] = useState<number | null>(null)
+      return (
+        <InheritableDurationField
+          label="AI question wait"
+          idPrefix="test-wait"
+          value={value}
+          onChange={setValue}
+          inheritedMs={300_000}
+          minMs={AI_QUESTION_WINDOW_MIN_MS}
+          maxMs={AI_QUESTION_WINDOW_MAX_MS}
+          formatValue={formatAiQuestionWindow}
+        />
+      )
+    }
+    render(<Controlled />)
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Set a custom ai question wait' }))
+
+    expect(screen.getByLabelText('AI question wait')).toHaveValue(5)
+    expect(screen.queryByText(/Enter a number of minutes/)).not.toBeInTheDocument()
   })
 
   it('emits milliseconds for an in-range edit', () => {

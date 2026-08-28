@@ -65,6 +65,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a skip reason typed for one model's question following you to another model's tab.
 - Fixed a wait left open by a daemon that stopped mid-question never closing, which would have counted the rest of the ticket's life as time spent waiting on you. Startup now closes any wait nothing is still waiting on.
 - The AI questions panel now remembers whether you collapsed it, per ticket and per browser.
+- Fixed switching a duration setting from Inherit to Custom showing an empty box that asked for a number of minutes, while the override it had just created was already saved and valid.
 - A refusal OpenCode will not accept, and a failure to expire a question, are now written to the log instead of being swallowed silently.
 - Fixed answering or skipping a question leaving the ticket's clocks stopped forever. The question was told to OpenCode but never closed out here, so the step never resumed, the question stayed on screen, and a skip left no receipt.
 - Fixed a restart in a project with two active tickets refusing the wrong ticket's question. Questions are read per project but were reconciled per ticket, so every ticket's turn saw its siblings' questions as ownerless. Tickets whose sessions had all been abandoned were skipped entirely, leaving their questions hanging in OpenCode with no trail.

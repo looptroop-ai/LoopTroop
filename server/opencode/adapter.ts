@@ -324,7 +324,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
             if (!result.data) throw new Error('OpenCode did not confirm the permission reply')
           } catch (error) {
             permissionReplyFailure = new Error(
-              `Failed to answer OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
+              // Names the reply that failed rather than assuming approval: this
+              // path now rejects too, and "failed to auto-approve" would be a
+              // misleading thing to read in a log about a denied permission.
+              `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
             )
             sdkPromptAbortController.abort(permissionReplyFailure)
             await this.abortSession(sessionId).catch(() => false)

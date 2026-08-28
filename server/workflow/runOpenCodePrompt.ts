@@ -40,6 +40,7 @@ import {
 import { recordAiTurnMetricFromPrompt } from '../storage/aiTurnMetrics'
 import type { WorkBudget } from './workBudget'
 import { phaseMayAskQuestions } from '@shared/aiQuestions'
+import { ticketAllowsAiQuestions } from './aiQuestionSettings'
 
 export interface OpenCodeRunCallbacks {
   onSessionCreated?: (session: Session) => void
@@ -108,11 +109,11 @@ export interface OpenCodeRunOptions extends OpenCodeRunCallbacks {
   variant?: string
   toolPolicy?: OpenCodeToolPolicy
   /**
-   * Whether this prompt may stop and ask a person, per the ticket's setting.
+   * Force-deny asking, regardless of what the ticket's setting says.
    *
-   * Omitted means no. Every phase resolves this from the value locked at ticket
-   * start; a call site that forgets fails closed rather than quietly gaining the
-   * ability to block an unattended run. The interview is denied regardless.
+   * Omitted means "use the ticket's setting", which is resolved here rather
+   * than passed down. Set `false` for a prompt that must never stop whatever
+   * the operator configured — a diagnostic probe, say.
    */
   questionsAllowed?: boolean
   sessionOwnership?: OpenCodeSessionOwnership
@@ -628,11 +629,19 @@ export async function runOpenCodeSessionPrompt({
   let latestContinuableRetryAttempt: number | undefined
   const resolvedRetryPolicy = resolveOpenCodeRetryPolicy(opencodeRetryPolicy)
   const parsedModel = model ? parseModelRef(model) : undefined
-  // Denied at this boundary rather than at each call site: every direct caller
+  // Resolved at this boundary rather than at each call site: every direct caller
   // passes through here, so resolving one level up would leave every retry and
-  // same-session continuation unguarded. The interview is excluded by phase
-  // because interview drafting shares `council/drafter.ts` with PRD and beads.
-  const questionsPermitted = questionsAllowed === true && phaseMayAskQuestions(sessionOwnership?.phase)
+  // same-session continuation unguarded, and threading a flag through nine
+  // signatures would fail silently the first time someone added a tenth.
+  //
+  // Three denials are structural and beat the setting: a prompt with no ticket
+  // (the preflight probe, ad-hoc calls) has nobody to ask; the interview
+  // produces its own questions, and is excluded by phase because interview
+  // drafting shares `council/drafter.ts` with PRD and beads; and a `disabled`
+  // policy means the step only reformats text it was handed
+  // (`resolveOpenCodePermissions` enforces that one).
+  const questionsPermitted = (questionsAllowed ?? ticketAllowsAiQuestions(sessionOwnership?.ticketId))
+    && phaseMayAskQuestions(sessionOwnership?.phase)
   const permission = resolveOpenCodePermissions(toolPolicy, questionsPermitted)
   const stepFinishSafetyMs = promptTimeoutMs === undefined || promptTimeoutMs <= 0
     ? undefined

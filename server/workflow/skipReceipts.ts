@@ -28,11 +28,14 @@ import {
   SKIP_REASON_LOG_MAX_LENGTH,
   SKIP_REASON_MAX_LENGTH,
   SKIP_REASON_PROMPT_MAX_LENGTH,
+  SKIP_ACTORS,
   SKIP_RECEIPT_SCHEMA_VERSION,
   SKIP_SURFACES,
   truncateSkipReason,
+  type SkipActor,
   type SkipEvent,
   type SkipItemType,
+  type SkipQuestionContext,
   type SkipReceipt,
   type SkipSurface,
 } from '@shared/skipReceipt'
@@ -69,7 +72,27 @@ const skipItemTypeSchema = z.enum([
   'manual_qa_round',
   'manual_qa_item',
   'ticket',
+  'opencode_question_request',
+  'opencode_question',
 ])
+
+const skipQuestionContextSchema = z.object({
+  request_id: z.string().min(1),
+  session_id: z.string().min(1),
+  member_id: z.string().min(1).nullable(),
+  question_count: z.number().int().nonnegative(),
+  window_ms: z.number().int().nonnegative(),
+  armed_at: z.string().min(1),
+  deadline_at: z.string().min(1),
+  reset_count: z.number().int().nonnegative(),
+  stopped_at: z.string().min(1).nullable(),
+  stopped_by: z.string().min(1).nullable(),
+  elapsed_wall_ms: z.number().int().nonnegative(),
+  elapsed_active_ms: z.number().int().nonnegative(),
+  sibling_request_ids: z.array(z.string().min(1)),
+  expiry_reason: z.enum(['window_elapsed', 'user_skipped', 'ticket_canceled', 'session_lost', 'daemon_restart']),
+  quorum_impact: z.string().min(1).nullable(),
+})
 
 /**
  * Versioned discriminated union.
@@ -78,16 +101,33 @@ const skipItemTypeSchema = z.enum([
  * an older build already wrote into the database. Parsing at the read boundary
  * is the only thing that protects a stored record.
  */
+const V1_SURFACES = SKIP_SURFACES.filter((surface) => surface !== 'opencode_question')
+
 export const skipReceiptSchema = z.discriminatedUnion('schema_version', [
+  /**
+   * Frozen. This is what is already in people's databases.
+   *
+   * Its surface and item-type lists are pinned to what v1 could actually write.
+   * Widening the shared enums inside this branch would let a v1 row claim a
+   * surface that did not exist when it was written, which is exactly the drift
+   * versioning is here to prevent.
+   */
   z.object({
     schema_version: z.literal(1),
     artifact: z.literal('skip_receipt'),
     receipt_id: z.string().min(1),
     action_id: z.string().min(1),
     parent_action_id: z.string().min(1).nullable(),
-    surface: z.enum(SKIP_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
+    surface: z.enum(V1_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
     item_id: z.string().min(1).nullable(),
-    item_type: skipItemTypeSchema,
+    item_type: z.enum([
+      'interview_question',
+      'interview_batch',
+      'approval',
+      'manual_qa_round',
+      'manual_qa_item',
+      'ticket',
+    ]),
     is_action_summary: z.boolean(),
     phase: z.string().min(1),
     phase_attempt: z.number().int().positive().nullable(),
@@ -101,6 +141,35 @@ export const skipReceiptSchema = z.discriminatedUnion('schema_version', [
     /** True when this row records an item that stopped being skipped. */
     resolves: z.boolean().default(false),
   }),
+  /**
+   * v2 adds the actor and the question context.
+   *
+   * `skipped_by` was a literal because a person was the only thing that could
+   * skip. A question that ran out its wait was refused by nobody, and filing
+   * that under a person's name would be a lie the trail cannot walk back.
+   */
+  z.object({
+    schema_version: z.literal(2),
+    artifact: z.literal('skip_receipt'),
+    receipt_id: z.string().min(1),
+    action_id: z.string().min(1),
+    parent_action_id: z.string().min(1).nullable(),
+    surface: z.enum(SKIP_SURFACES as unknown as [SkipSurface, ...SkipSurface[]]),
+    item_id: z.string().min(1).nullable(),
+    item_type: skipItemTypeSchema,
+    is_action_summary: z.boolean(),
+    phase: z.string().min(1),
+    phase_attempt: z.number().int().positive().nullable(),
+    ticket_status_before: z.string().min(1),
+    skipped_by: z.enum(SKIP_ACTORS as unknown as [SkipActor, ...SkipActor[]]),
+    actor_ref: z.string().min(1).nullable(),
+    skipped_at: z.string().min(1),
+    reason: z.string().max(SKIP_REASON_MAX_LENGTH).nullable(),
+    truncated_for_prompt: z.boolean(),
+    supersedes: z.string().min(1).nullable(),
+    resolves: z.boolean().default(false),
+    question_context: skipQuestionContextSchema.nullable().default(null),
+  }),
 ])
 
 export interface SkipReceiptItemInput {
@@ -109,6 +178,11 @@ export interface SkipReceiptItemInput {
   supersedes?: string | null
   /** Set for an item that is no longer skipped. Carries no reason. */
   resolves?: boolean
+}
+
+/** Sanitises whatever a caller claims about who acted. */
+function normalizeSkipActor(actor: SkipActor | undefined): SkipActor {
+  return actor && SKIP_ACTORS.includes(actor) ? actor : 'user'
 }
 
 export interface WriteSkipReceiptsInput {
@@ -128,6 +202,24 @@ export interface WriteSkipReceiptsInput {
     reason: string | null
   } | null
   skippedAt?: string
+  /**
+   * Who decided. Defaults to `user`.
+   *
+   * Routes must never pass this through from a request body: a client claiming
+   * `timeout` would be forging a machine decision into the audit trail.
+   */
+  skippedBy?: SkipActor
+  /** Recorded on every row of an `opencode_question` action. */
+  questionContext?: SkipQuestionContext | null
+  /**
+   * Write against a phase attempt that is no longer the current one.
+   *
+   * A question timer can fire in the instant a phase attempt is archived. The
+   * rejection has already reached OpenCode by then, so refusing the receipt
+   * would lose the only record of a side effect that really happened. Only
+   * machine actors get this: a person's skip always belongs to the live attempt.
+   */
+  allowArchivedPhaseAttempt?: boolean
 }
 
 function buildReceiptId(actionId: string, itemId: string | null): string {
@@ -198,11 +290,14 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   if (input.items.length === 0 && !input.summary) return []
   if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
 
-  assertCurrentEditablePhaseAttempt({
-    ticketId: input.ticketId,
-    phase: input.phase,
-    requestedPhaseAttempt: input.phaseAttempt,
-  })
+  const skippedBy = normalizeSkipActor(input.skippedBy)
+  if (!(input.allowArchivedPhaseAttempt === true && skippedBy !== 'user')) {
+    assertCurrentEditablePhaseAttempt({
+      ticketId: input.ticketId,
+      phase: input.phase,
+      requestedPhaseAttempt: input.phaseAttempt,
+    })
+  }
   const phaseAttempt = resolvePhaseAttempt(input.ticketId, input.phase, input.phaseAttempt)
   const skippedAt = input.skippedAt ?? new Date().toISOString()
   const artifactType = buildSkipReceiptArtifactType(input.surface)
@@ -216,11 +311,12 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
     phase: input.phase,
     phase_attempt: phaseAttempt,
     ticket_status_before: input.ticketStatusBefore,
-    skipped_by: 'user',
+    skipped_by: skippedBy,
     // Deliberately null. `ensureActorForTicket` is a state-machine singleton,
     // not a human identity; the slot exists for when multi-operator does.
     actor_ref: null,
     skipped_at: skippedAt,
+    question_context: input.questionContext ?? null,
   } as const
 
   /**
@@ -364,9 +460,13 @@ function toSkipEvent(receipt: SkipReceipt): SkipEvent {
     ticketStatusBefore: receipt.ticket_status_before,
     truncatedForPrompt: receipt.truncated_for_prompt,
     skippedAt: receipt.skipped_at,
+    // A v1 row has no actor field. It was written when a person was the only
+    // thing that could skip, so `user` is what it meant, not a guess.
+    skippedBy: receipt.skipped_by ?? 'user',
     reason: receipt.reason,
     supersedes: receipt.supersedes,
     superseded: false,
+    ...(receipt.question_context ? { questionContext: receipt.question_context } : {}),
   }
 }
 
@@ -420,6 +520,7 @@ function adaptManualQaArtifact(row: {
       ticketStatusBefore: row.phase,
       truncatedForPrompt: false,
       skippedAt: typeof record.createdAt === 'string' ? record.createdAt : '',
+      skippedBy: 'user',
       reason: normalizeSkipReason(typeof record.reason === 'string' ? record.reason : null),
       supersedes: null,
       superseded: false,
@@ -452,6 +553,7 @@ function adaptManualQaArtifact(row: {
       phase: row.phase,
       phaseAttempt: row.phaseAttempt,
       skippedAt: completedAt,
+      skippedBy: 'user' as const,
       reason: normalizeSkipReason(typeof waived.reason === 'string' ? waived.reason : null),
       supersedes: null,
       superseded: false,

@@ -10,6 +10,7 @@ import {
   type OpenCodePromptCompletedEvent,
   type OpenCodePromptDispatchEvent,
 } from '../../workflow/runOpenCodePrompt'
+import { createWorkBudget } from '../../workflow/workBudget'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { throwIfAborted } from '../../council/types'
 import { throwIfCancelled } from '../../lib/abort'
@@ -103,10 +104,6 @@ async function resolveContextParts(input: ContextPartsInput): Promise<PromptPart
     return await input()
   }
   return input
-}
-
-function getRemainingTimeoutMs(deadlineAt: number | undefined): number | undefined {
-  return deadlineAt === undefined ? undefined : Math.max(0, deadlineAt - Date.now())
 }
 
 function buildContinuationPrompt(
@@ -466,7 +463,14 @@ export async function executeBead(
     let latestMessages: Message[] = []
     let iterationInitialInput = ''
     let iterationOutput = ''
-    const deadlineAt = timeout > 0 ? Date.now() + timeout : undefined
+    // One budget per bead iteration. The private remaining-time helper this
+    // replaced could not see a question wait, so an iteration blocked on one
+    // used to burn its whole per-iteration window waiting for a person.
+    const budget = createWorkBudget({
+      ...(callbacks?.ticketId ? { ticketId: callbacks.ticketId } : {}),
+      ...(timeout > 0 ? { totalMs: timeout } : {}),
+      scope: 'bead_iteration',
+    })
 
     try {
       let sessionId = ''
@@ -492,7 +496,7 @@ export async function executeBead(
         projectPath,
         parts: beadPrompt,
         signal,
-        timeoutMs: getRemainingTimeoutMs(deadlineAt),
+        workBudget: budget,
         deadlineScope: 'workflow',
         model: callbacks?.model,
         variant: callbacks?.variant,
@@ -587,8 +591,7 @@ export async function executeBead(
           iterationErrors.push(incompleteSummary)
         }
 
-        const remainingMs = getRemainingTimeoutMs(deadlineAt)
-        if (remainingMs !== undefined && remainingMs <= 0) {
+        if (budget.expired()) {
           throw new WorkflowDeadlineTimeoutError({
             phase: 'CODING',
             beadId: bead.id,
@@ -616,7 +619,7 @@ export async function executeBead(
               session: runResult.session,
               parts: retryParts,
               signal,
-              timeoutMs: remainingMs,
+              workBudget: budget,
               deadlineScope: 'workflow',
               model: callbacks?.model,
               sessionOwnership: codingSessionOwnership,
@@ -664,7 +667,7 @@ export async function executeBead(
           session: runResult.session,
           parts: buildContinuationPrompt(bead.id, result.errors, lastOutput),
           signal,
-          timeoutMs: remainingMs,
+          workBudget: budget,
           deadlineScope: 'workflow',
           model: callbacks?.model,
           variant: callbacks?.variant,

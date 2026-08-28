@@ -17,6 +17,7 @@ import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { VOTING_RUBRIC, getVotingRubricForPhase } from './types'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
+import { createWorkBudget } from '../workflow/workBudget'
 import { buildStructuredRetryPrompt, normalizeVoteScorecardOutput } from '../structuredOutput'
 import { buildStructuredOutputMetadata } from '../structuredOutput/metadata'
 import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnostics'
@@ -142,7 +143,14 @@ export async function conductVoting(
   }, {})
   const finalizedMembers = new Set<string>()
   const voterDetailMap = new Map<string, VoterDetail>()
-  const deadlineAt = timeoutMs && timeoutMs > 0 ? Date.now() + timeoutMs : null
+  // One budget for the round. Same reason as the drafter: this timer is its own
+  // `Promise.race`, invisible to the prompt timer, so a voter blocked on a
+  // question would otherwise lose the round while waiting for an answer.
+  const budget = createWorkBudget({
+    ...(sessionOwnership?.ticketId ? { ticketId: sessionOwnership.ticketId } : {}),
+    ...(timeoutMs && timeoutMs > 0 ? { totalMs: timeoutMs } : {}),
+    scope: 'council_member',
+  })
   let deadlineReached = false
 
   function buildStructuredOutputMeta(
@@ -252,10 +260,7 @@ export async function conductVoting(
       const retryDiagnostics: NonNullable<DraftStructuredOutputMeta['retryDiagnostics']> = []
 
       while (true) {
-        const remainingTimeoutMs = deadlineAt === null
-          ? undefined
-          : deadlineAt - Date.now()
-        if (deadlineAt !== null && (remainingTimeoutMs ?? 0) <= 0) {
+        if (budget.expired()) {
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -264,7 +269,7 @@ export async function conductVoting(
           projectPath,
           parts: promptParts,
           signal,
-          timeoutMs: remainingTimeoutMs,
+          workBudget: budget,
           timeoutKind: 'ai_response',
           model: voter.modelId,
           variant: voter.variant,
@@ -411,14 +416,25 @@ export async function conductVoting(
       return voterVotes
     })()
 
-    const deadlinePromise = deadlineAt === null
+    // Cleared while suspended and re-armed on resume, so a question wait moves
+    // the round's deadline instead of expiring the voter waiting on the answer.
+    let unsubscribeBudget: (() => void) | undefined
+    const deadlinePromise = budget.totalMs === undefined
       ? null
       : new Promise<never>((_, reject) => {
-        const remainingMs = Math.max(0, deadlineAt - Date.now())
-        timeoutHandle = setTimeout(() => {
-          void markTimedOut()
-          reject(new Error(PHASE_DEADLINE_ERROR))
-        }, remainingMs)
+        const armRoundTimer = () => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle)
+            timeoutHandle = undefined
+          }
+          if (closed || budget.suspended()) return
+          timeoutHandle = setTimeout(() => {
+            void markTimedOut()
+            reject(new Error(PHASE_DEADLINE_ERROR))
+          }, Math.max(0, budget.remainingMs() ?? 0))
+        }
+        unsubscribeBudget = budget.onChange(armRoundTimer)
+        armRoundTimer()
       })
 
     try {
@@ -447,6 +463,7 @@ export async function conductVoting(
       rawAttempts)
       return []
     } finally {
+      unsubscribeBudget?.()
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
       }
@@ -454,6 +471,7 @@ export async function conductVoting(
   })
 
   const settled = await Promise.allSettled(promises)
+  budget.release()
   if (signal?.aborted) {
     throw new CancelledError()
   }

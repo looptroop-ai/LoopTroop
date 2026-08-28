@@ -12,6 +12,7 @@ import type {
   ExecutionSetupReport,
 } from './types'
 import { renderCommandSpec } from '@shared/commandSpec'
+import { createWorkBudget, type WorkBudget } from '../../workflow/workBudget'
 
 type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 
@@ -21,6 +22,14 @@ const MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS = 2
 export interface ExecutionSetupAttemptTiming {
   timeoutMs: number
   timeoutDeadline?: number
+  /**
+   * The attempt's work budget.
+   *
+   * Carried alongside `timeoutDeadline` rather than replacing it because the
+   * deadline is also reported to the operator as a fixed time. The budget is
+   * what the clocks read: it moves when a question wait is credited back.
+   */
+  budget?: WorkBudget
 }
 
 interface ExecutionSetupAttemptStartMetadata extends ExecutionSetupAttemptTiming {
@@ -287,9 +296,15 @@ export async function executeExecutionSetupWithRetries(
   ) {
     attempt += 1
     throwIfAborted(signal)
+    const attemptBudget = createWorkBudget({
+      ...(options.ticketId ? { ticketId: options.ticketId } : {}),
+      ...(options.timeoutMs > 0 ? { totalMs: options.timeoutMs } : {}),
+      scope: 'execution_setup',
+    })
     const timing: ExecutionSetupAttemptTiming = {
       timeoutMs: options.timeoutMs,
       ...(options.timeoutMs > 0 ? { timeoutDeadline: Date.now() + options.timeoutMs } : {}),
+      budget: attemptBudget,
     }
     await callbacks.onAttemptStart?.(attempt, {
       ...timing,
@@ -315,6 +330,7 @@ export async function executeExecutionSetupWithRetries(
         variant: options.variant,
         timeoutMs: options.timeoutMs,
         timeoutDeadline: timing.timeoutDeadline,
+        budget: attemptBudget,
         structuredRetryCount: options.structuredRetryCount,
         phaseAttempt: attempt,
         manualContinuation: hasManualContinuationBudget

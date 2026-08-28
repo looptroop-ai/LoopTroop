@@ -22,6 +22,13 @@ export class MockOpenCodeAdapter implements OpenCodeAdapter {
   public mockQuestions: OpenCodeQuestionRequest[] = []
   public questionReplies: Array<{ requestId: string; answers: OpenCodeQuestionAnswer[]; projectPath?: string }> = []
   public questionRejections: Array<{ requestId: string; projectPath?: string }> = []
+  /**
+   * Makes `rejectQuestion` throw.
+   *
+   * An expiry that cannot reject recreates the hang this feature exists to
+   * prevent, so the fallback has to be testable.
+   */
+  public failRejectQuestion = false
   public sessionCreateCalls: Array<{
     projectPath: string
     options?: OpenCodeSessionCreateOptions
@@ -179,6 +186,9 @@ export class MockOpenCodeAdapter implements OpenCodeAdapter {
   }
 
   async rejectQuestion(requestId: string, projectPath?: string): Promise<void> {
+    if (this.failRejectQuestion) {
+      throw new Error(`Mock adapter refused to reject question ${requestId}`)
+    }
     this.questionRejections.push({ requestId, ...(projectPath ? { projectPath } : {}) })
     this.mockQuestions = this.mockQuestions.filter((question) => question.id !== requestId)
   }

@@ -1,10 +1,11 @@
 import { and, eq, isNull } from 'drizzle-orm'
-import { opencodeSessions } from '../db/schema'
+import { opencodeSessions, tickets } from '../db/schema'
 import type { OpenCodeAdapter } from './adapter'
 import type { OpenCodeSessionCreateOptions, Session } from './types'
 import { getOpenCodeAdapter } from './factory'
 import { getProjectContextById, listProjects } from '../storage/projects'
-import { getTicketByRef, getTicketContext } from '../storage/tickets'
+import { buildTicketRef, getTicketByRef, getTicketContext } from '../storage/tickets'
+import { emitOpenCodeSessionEnded } from './sessionEvents'
 import { createOpenCodeSessionWithRetry } from './sessionCreation'
 import {
   getPendingSessionContinuationForTicketPhase,
@@ -34,10 +35,20 @@ function findSessionRecord(sessionId: string) {
       .where(eq(opencodeSessions.sessionId, sessionId))
       .get()
     if (record) {
-      return { projectDb: context.projectDb, record }
+      return { projectDb: context.projectDb, record, projectId: project.id }
     }
   }
   return null
+}
+
+/** The composite ref for a session's ticket, or undefined if it owned none. */
+function resolveSessionTicketRef(found: NonNullable<ReturnType<typeof findSessionRecord>>): string | undefined {
+  if (found.record.ticketId == null) return undefined
+  const owner = found.projectDb.select({ externalId: tickets.externalId })
+    .from(tickets)
+    .where(eq(tickets.id, found.record.ticketId))
+    .get()
+  return owner ? buildTicketRef(found.projectId, owner.externalId) : undefined
 }
 
 export function listOpenCodeSessionsForTicket(ticketId: string, states: string[] = ['active']): OpenCodeSessionRecord[] {
@@ -149,6 +160,14 @@ export class SessionManager {
       .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
       .where(eq(opencodeSessions.sessionId, sessionId))
       .run()
+    // A question window that outlives its session would later reject a request
+    // OpenCode no longer has, and its suspended work budget would hold the next
+    // run's clocks still.
+    emitOpenCodeSessionEnded({
+      sessionId,
+      ticketId: resolveSessionTicketRef(found),
+      reason: 'abandoned',
+    })
   }
 
   getActiveSession(ticketId: string, phase: string, memberId?: string) {
@@ -329,6 +348,7 @@ export async function abortTicketSessions(ticketId: string): Promise<void> {
           .set({ state: 'abandoned', updatedAt: new Date().toISOString() })
           .where(eq(opencodeSessions.id, session.id))
           .run()
+        emitOpenCodeSessionEnded({ sessionId: session.sessionId, ticketId, reason: 'aborted' })
       }
     }),
   )

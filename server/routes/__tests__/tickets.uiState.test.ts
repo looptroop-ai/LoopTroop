@@ -171,6 +171,8 @@ describe('ticketRouter UI state revisions', () => {
     const response = await app.request('/api/opencode/questions')
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ questions: [] })
+    // `timers` is keyed by ticket, and is empty for the same reason `questions`
+    // is: the countdown only exists while a question does.
+    expect(await response.json()).toEqual({ questions: [], timers: {} })
   })
 })

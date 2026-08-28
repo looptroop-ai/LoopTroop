@@ -22,6 +22,7 @@ import type { StructuredOutputMetadata } from '../../structuredOutput/types'
 import { parseExecutionSetupResult } from './parser'
 import type { ExecutionSetupGenerationResult } from './types'
 import { getErrorMessage } from '@shared/typeGuards'
+import type { WorkBudget } from '../../workflow/workBudget'
 
 const EXECUTION_SETUP_SCHEMA_REMINDER = [
   'Return exactly one <EXECUTION_SETUP_RESULT>...</EXECUTION_SETUP_RESULT> block and nothing else.',
@@ -74,9 +75,9 @@ function errorMessage(error: unknown): string {
 
 function normalizeExecutionSetupPromptError(
   error: unknown,
-  timeoutDeadline: number | undefined,
+  expired: boolean,
 ): unknown {
-  return timeoutDeadline !== undefined && Date.now() >= timeoutDeadline
+  return expired
     ? new Error('Execution setup timed out before workspace preparation completed.', { cause: error })
     : error
 }
@@ -137,6 +138,7 @@ export async function generateExecutionSetup(
     variant?: string
     timeoutMs?: number
     timeoutDeadline?: number
+    budget?: WorkBudget
     structuredRetryCount?: number
     phaseAttempt?: number
     manualContinuation?: boolean
@@ -153,6 +155,11 @@ export async function generateExecutionSetup(
   const timeoutMs = callbacks?.timeoutMs ?? COUNCIL_RESPONSE_TIMEOUT_MS
   const timeoutDeadline = callbacks?.timeoutDeadline
     ?? (timeoutMs > 0 ? Date.now() + timeoutMs : undefined)
+  // The budget knows about question waits; the bare deadline does not. Prefer it
+  // wherever "has this attempt run out" is being asked.
+  const setupExpired = (): boolean => callbacks?.budget
+    ? callbacks.budget.expired()
+    : timeoutDeadline !== undefined && Date.now() >= timeoutDeadline
   let sessionId = ''
   let activeSessionId: string | null = null
   let activeSession: Session | null = null
@@ -164,8 +171,7 @@ export async function generateExecutionSetup(
     projectPath,
     parts: promptParts,
     signal,
-    timeoutMs,
-    timeoutDeadline,
+    ...(callbacks?.budget ? { workBudget: callbacks.budget } : { timeoutMs, timeoutDeadline }),
     timeoutKind: 'execution_setup',
     model: callbacks?.model,
     variant: callbacks?.variant,
@@ -205,10 +211,10 @@ export async function generateExecutionSetup(
     result = await runMainSetupPrompt()
   } catch (error) {
     throwIfCancelled(error, signal)
-    if (timeoutDeadline !== undefined && Date.now() >= timeoutDeadline) {
+    if (setupExpired()) {
       return buildPromptFailureGeneration(
         activeSession,
-        normalizeExecutionSetupPromptError(error, timeoutDeadline),
+        normalizeExecutionSetupPromptError(error, setupExpired()),
         [],
         [],
         initialInput,
@@ -225,10 +231,10 @@ export async function generateExecutionSetup(
       result = await runMainSetupPrompt()
     } catch (retryError) {
       throwIfCancelled(retryError, signal)
-      if (timeoutDeadline !== undefined && Date.now() >= timeoutDeadline) {
+      if (setupExpired()) {
         return buildPromptFailureGeneration(
           activeSession,
-          normalizeExecutionSetupPromptError(retryError, timeoutDeadline),
+          normalizeExecutionSetupPromptError(retryError, setupExpired()),
           [],
           [],
           initialInput,
@@ -314,8 +320,7 @@ export async function generateExecutionSetup(
           session: result.session,
           parts: [{ type: 'text', content: EXECUTION_SETUP_PROGRESS_CONTINUATION_PROMPT }],
           signal,
-          timeoutMs,
-          timeoutDeadline,
+          ...(callbacks?.budget ? { workBudget: callbacks.budget } : { timeoutMs, timeoutDeadline }),
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           erroredSessionPolicy: 'discard_errored_session_output',
@@ -348,7 +353,7 @@ export async function generateExecutionSetup(
         }
         return buildPromptFailureGeneration(
           activeSession,
-          normalizeExecutionSetupPromptError(error, timeoutDeadline),
+          normalizeExecutionSetupPromptError(error, setupExpired()),
           retryDiagnostics,
           rawAttempts,
           initialInput,
@@ -379,8 +384,7 @@ export async function generateExecutionSetup(
           session: result.session,
           parts: retryParts,
           signal,
-          timeoutMs,
-          timeoutDeadline,
+          ...(callbacks?.budget ? { workBudget: callbacks.budget } : { timeoutMs, timeoutDeadline }),
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           erroredSessionPolicy: 'discard_errored_session_output',
@@ -410,8 +414,7 @@ export async function generateExecutionSetup(
           projectPath,
           parts: promptParts,
           signal,
-          timeoutMs,
-          timeoutDeadline,
+          ...(callbacks?.budget ? { workBudget: callbacks.budget } : { timeoutMs, timeoutDeadline }),
           timeoutKind: 'execution_setup',
           model: callbacks?.model,
           variant: callbacks?.variant,
@@ -457,7 +460,7 @@ export async function generateExecutionSetup(
       }
       return buildPromptFailureGeneration(
         activeSession,
-        normalizeExecutionSetupPromptError(error, timeoutDeadline),
+        normalizeExecutionSetupPromptError(error, setupExpired()),
         retryDiagnostics,
         rawAttempts,
         initialInput,

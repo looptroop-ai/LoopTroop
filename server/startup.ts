@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { initializeDatabase } from './db/init'
 import { startWalCheckpoint } from './db/index'
 import { createIndexes } from './db/indexes'
@@ -16,6 +16,8 @@ import {
 import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
+import { reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
+import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
@@ -100,6 +102,58 @@ export async function reconcileOpenCodeSessions(
   return { reconnected, abandoned, preserved }
 }
 
+/**
+ * Puts a clock back on every question the previous process left waiting.
+ *
+ * Sessions survive a restart, so a question can too — and a reconnected session
+ * whose question has no timer is a permanent hang, the exact thing this feature
+ * exists to prevent. Runs *after* session reconciliation, which has already
+ * decided what came back: a request whose session reconnected is re-armed, and
+ * one whose session did not is refused, because nothing will ever answer it.
+ *
+ * Enumerated from the adapter rather than from any active-session-filtered
+ * helper, which would hide the requests that most need attention.
+ */
+export async function reconcileOpenCodeQuestions(
+  attachedProjects = listProjects(),
+): Promise<{ reattached: number; rejected: number }> {
+  let reattached = 0
+  let rejected = 0
+
+  for (const project of attachedProjects) {
+    const context = getProjectContextById(project.id)
+    if (!context) continue
+    const ticketRows = context.projectDb
+      .select({ id: tickets.id, externalId: tickets.externalId })
+      .from(tickets)
+      .where(inArray(tickets.id, context.projectDb
+        .select({ ticketId: opencodeSessions.ticketId })
+        .from(opencodeSessions)
+        .where(eq(opencodeSessions.state, 'active'))
+        .all()
+        .map((row) => row.ticketId)
+        .filter((id): id is number => id !== null)))
+      .all()
+
+    for (const row of ticketRows) {
+      const ticketId = buildTicketRef(project.id, row.externalId)
+      try {
+        const result = await reconcilePendingQuestionsAfterRestart({
+          ticketId,
+          projectRoot: project.folderPath,
+          windowMs: resolveAiQuestionSettings(ticketId).windowMs,
+        })
+        reattached += result.reattached
+        rejected += result.rejected
+      } catch (err) {
+        console.warn(`[startup] Failed to reconcile AI questions for ${ticketId}:`, err)
+      }
+    }
+  }
+
+  return { reattached, rejected }
+}
+
 export async function startupSequence(): Promise<void> {
   console.log('[startup] Step 1: Initialize database')
   initializeDatabase()
@@ -162,6 +216,14 @@ export async function startupSequence(): Promise<void> {
     console.log(`[startup] Reconnected ${reconnected} OpenCode sessions, preserved ${preserved} unverified sessions, cleaned up ${abandoned} stale entries`)
   } catch (err) {
     console.warn(`[startup] OpenCode session reconnection failed: ${getErrorMessage(err)}`)
+  }
+
+  console.log('[startup] Step 7: Re-arming AI questions left waiting')
+  try {
+    const { reattached, rejected } = await reconcileOpenCodeQuestions(attachedProjects)
+    console.log(`[startup] Re-armed ${reattached} AI questions, refused ${rejected} whose session did not come back`)
+  } catch (err) {
+    console.warn(`[startup] AI question reconciliation failed: ${getErrorMessage(err)}`)
   }
 
   console.log('[startup] Startup complete')

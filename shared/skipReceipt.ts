@@ -23,6 +23,7 @@ export type SkipSurface =
   | 'manual_qa_item'
   | 'close_unmerged'
   | 'cancel_ticket'
+  | 'opencode_question'
 
 export type SkipItemType =
   | 'interview_question'
@@ -31,8 +32,61 @@ export type SkipItemType =
   | 'manual_qa_round'
   | 'manual_qa_item'
   | 'ticket'
+  | 'opencode_question_request'
+  | 'opencode_question'
 
-export const SKIP_RECEIPT_SCHEMA_VERSION = 1
+/**
+ * Who decided.
+ *
+ * Until AI questions there was only one answer, and the field was a literal.
+ * A question that ran out its wait was refused by nobody, and filing that under
+ * a person's name would be a lie the trail cannot walk back.
+ *
+ *  - `user` — a person pressed Skip.
+ *  - `timeout` — the wait ran out and the question refused itself.
+ *  - `system` — LoopTroop refused it for a reason of its own: the daemon
+ *    restarted and could not re-attach the request, or the ticket was cancelled.
+ */
+export type SkipActor = 'user' | 'timeout' | 'system'
+
+export const SKIP_ACTORS: readonly SkipActor[] = ['user', 'timeout', 'system']
+
+export const SKIP_ACTOR_LABELS: Record<SkipActor, string> = {
+  user: 'You',
+  timeout: 'The wait ran out',
+  system: 'LoopTroop',
+}
+
+/**
+ * What was on screen, and what the clock was doing, when a question was refused.
+ *
+ * Recorded on the receipt because the request itself is gone the moment
+ * OpenCode is told: the artifact holds current state, the receipt holds history,
+ * and after a rejection there is no current state left to read.
+ */
+export interface SkipQuestionContext {
+  request_id: string
+  session_id: string
+  member_id: string | null
+  question_count: number
+  window_ms: number
+  armed_at: string
+  deadline_at: string
+  /** How many times another model arriving pushed the shared clock back to full. */
+  reset_count: number
+  stopped_at: string | null
+  stopped_by: string | null
+  elapsed_wall_ms: number
+  /** Wall time minus what the wait credited back. What the model actually spent. */
+  elapsed_active_ms: number
+  /** The other requests the same expiry covered. One clock, many requests. */
+  sibling_request_ids: string[]
+  expiry_reason: 'window_elapsed' | 'user_skipped' | 'ticket_canceled' | 'session_lost' | 'daemon_restart'
+  /** Set when the refusal cost a council round its quorum. */
+  quorum_impact: string | null
+}
+
+export const SKIP_RECEIPT_SCHEMA_VERSION = 2
 
 export const SKIP_RECEIPT_ARTIFACT_PREFIX = 'skip_receipt:'
 
@@ -59,6 +113,7 @@ export const SKIP_SURFACES: readonly SkipSurface[] = [
   'manual_qa_item',
   'close_unmerged',
   'cancel_ticket',
+  'opencode_question',
 ]
 
 export function isSkipSurface(value: unknown): value is SkipSurface {
@@ -97,7 +152,7 @@ export interface SkipReceipt {
   phase: string
   phase_attempt: number | null
   ticket_status_before: string
-  skipped_by: 'user'
+  skipped_by: SkipActor
   /**
    * Deliberately null today. `ensureActorForTicket` is a state-machine
    * singleton, not a human identity; the slot exists for when multi-operator
@@ -108,6 +163,8 @@ export interface SkipReceipt {
   reason: string | null
   truncated_for_prompt: boolean
   supersedes: string | null
+  /** Present only on `opencode_question` rows. */
+  question_context?: SkipQuestionContext | null
 }
 
 /** The camelCase read view the audit surfaces and the client work with. */
@@ -127,10 +184,19 @@ export interface SkipEvent {
   /** True when a prompt reading this reason will see a shortened copy. */
   truncatedForPrompt: boolean
   skippedAt: string
+  /**
+   * Who decided.
+   *
+   * Rows written before this field existed report `user`, which is what they
+   * meant: a person was the only actor there was.
+   */
+  skippedBy: SkipActor
   reason: string | null
   supersedes: string | null
   /** True once a later event on the same item replaced this one. */
   superseded: boolean
+  /** Present only on `opencode_question` rows. */
+  questionContext?: SkipQuestionContext | null
 }
 
 export interface SkipEventCounts {
@@ -151,6 +217,7 @@ export const SKIP_SURFACE_LABELS: Record<SkipSurface, string> = {
   manual_qa_item: 'Manual QA check',
   close_unmerged: 'Finished without merging',
   cancel_ticket: 'Ticket canceled',
+  opencode_question: 'AI question',
 }
 
 export function describeSkipSurface(surface: SkipSurface): string {

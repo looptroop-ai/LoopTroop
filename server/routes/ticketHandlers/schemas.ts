@@ -281,7 +281,21 @@ export const regenerateExecutionSetupPlanSchema = z.object({
 
 export const opencodeQuestionReplySchema = z.object({
   answers: z.array(z.array(z.string())),
-})
+}).strict()
+
+/**
+ * Skipping a question takes an optional reason, like every other skip surface.
+ *
+ * `skippedBy` is deliberately absent: a client claiming `timeout` would be
+ * forging a machine decision into the audit trail. This route always writes
+ * `user`, because a person pressed the button.
+ */
+export const opencodeQuestionSkipSchema = z.object({
+  reason: skipReasonSchema.optional(),
+}).strict()
+
+/** Stopping the countdown carries nothing. It is a fact, not a request. */
+export const opencodeQuestionTimerStopSchema = z.object({}).strict()
 
 export const devEventSchema = z.object({
   type: z.enum([

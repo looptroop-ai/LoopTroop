@@ -33,6 +33,7 @@ import type { QaOrigin } from '../phases/beads/types'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
+import { getPendingQuestionSummary } from '../workflow/questionWindows'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -182,6 +183,20 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
   hasPastErrors: boolean
   errorSeenSignature: string | null
   needsInputSeenSignature: string | null
+  /**
+   * A model waiting on an answer, or null when none is.
+   *
+   * Both counts are named because they answer different questions and disagree:
+   * a council of three asking two things each is 3 requests and 6 questions.
+   * One `deadlineAt` rather than an earliest-of, because the countdown belongs
+   * to the step and every request in it shares one.
+   */
+  pendingQuestions: {
+    requestCount: number
+    questionCount: number
+    deadlineAt: string | null
+    stoppedAt: string | null
+  } | null
   implementationTiming: TicketImplementationTiming
   completionDisposition: 'merged' | 'closed_unmerged' | null
   cleanup: {
@@ -779,6 +794,10 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const reviewCutoffStatus = readReviewCutoffStatus(ticket, previousStatus, errorOccurrences)
   const errorSeenSignature = projectContext ? readErrorSeenSignature(projectContext, ticket.id) : null
   const needsInputSeenSignature = projectContext ? readNeedsInputSeenSignature(projectContext, ticket.id) : null
+  // Live in-process state, merged in here rather than written to
+  // `.ticket/runtime/state.yaml`: that file is read by the agent inside the
+  // worktree, and where the operator's attention is owed is none of its business.
+  const pendingQuestionSummary = getPendingQuestionSummary(buildTicketRef(projectId, ticket.externalId))
   const continuationCandidate = resolveTicketContinuationCandidateFromRows(
     projectContext,
     projectId,
@@ -914,6 +933,12 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     hasPastErrors: errorOccurrences.some((occurrence) => occurrence.resolvedAt !== null),
     errorSeenSignature,
     needsInputSeenSignature,
+    pendingQuestions: pendingQuestionSummary === null ? null : {
+      requestCount: pendingQuestionSummary.requestCount,
+      questionCount: pendingQuestionSummary.questionCount,
+      deadlineAt: pendingQuestionSummary.deadlineAt,
+      stoppedAt: pendingQuestionSummary.stoppedAt,
+    },
     implementationTiming,
     completionDisposition,
     cleanup,

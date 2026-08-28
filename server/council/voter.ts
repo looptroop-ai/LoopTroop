@@ -67,7 +67,11 @@ export function buildVotePresentationOrder(
 ): PresentedDraft[] {
   const shuffled = drafts
     .filter(draft => draft.outcome === 'completed' && draft.content)
-    .map(draft => ({ draftId: draft.memberId, content: draft.content }))
+    .map(draft => ({
+      draftId: draft.memberId,
+      content: draft.content,
+      steeredByOperator: draft.steeredByOperator === true,
+    }))
   const nextRandom = createSeededRandom(seed)
 
   for (let index = shuffled.length - 1; index > 0; index--) {
@@ -79,7 +83,12 @@ export function buildVotePresentationOrder(
 
   return shuffled.map((draft, index) => ({
     draftId: draft.draftId,
-    content: `Draft ${index + 1}:\n${draft.content}`,
+    // The note names no model, so anonymity holds. Without it a voter reads a
+    // draft that followed an instruction it never saw as simply wrong, and the
+    // one draft with the most information in it is the one most likely to lose.
+    content: draft.steeredByOperator
+      ? `Draft ${index + 1}:\n[Note: while writing this draft its author asked the operator a question and was given an answer. The other drafts were written without it. Judge this draft on its merits; do not mark it down merely for differing from the others.]\n${draft.content}`
+      : `Draft ${index + 1}:\n${draft.content}`,
   }))
 }
 

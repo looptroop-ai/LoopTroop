@@ -111,8 +111,12 @@ export async function reconcileOpenCodeSessions(
  * decided what came back: a request whose session reconnected is re-armed, and
  * one whose session did not is refused, because nothing will ever answer it.
  *
- * Enumerated from the adapter rather than from any active-session-filtered
- * helper, which would hide the requests that most need attention.
+ * Enumerated once per *project*, because that is the scope OpenCode answers in.
+ * Walking ticket by ticket meant each pass saw the whole project's pending
+ * requests but only one ticket's sessions, so a sibling ticket's live question
+ * looked ownerless and was rejected — and a ticket whose sessions had all been
+ * abandoned was never visited at all, leaving its questions hanging in OpenCode
+ * with no trail. One ownership map over the project fixes both.
  */
 export async function reconcileOpenCodeQuestions(
   attachedProjects = listProjects(),
@@ -123,31 +127,53 @@ export async function reconcileOpenCodeQuestions(
   for (const project of attachedProjects) {
     const context = getProjectContextById(project.id)
     if (!context) continue
-    const ticketRows = context.projectDb
-      .select({ id: tickets.id, externalId: tickets.externalId })
-      .from(tickets)
-      .where(inArray(tickets.id, context.projectDb
-        .select({ ticketId: opencodeSessions.ticketId })
-        .from(opencodeSessions)
-        .where(eq(opencodeSessions.state, 'active'))
-        .all()
-        .map((row) => row.ticketId)
-        .filter((id): id is number => id !== null)))
+
+    const sessionRows = context.projectDb
+      .select({
+        sessionId: opencodeSessions.sessionId,
+        ticketId: opencodeSessions.ticketId,
+        memberId: opencodeSessions.memberId,
+        phase: opencodeSessions.phase,
+        phaseAttempt: opencodeSessions.phaseAttempt,
+      })
+      .from(opencodeSessions)
+      .where(eq(opencodeSessions.state, 'active'))
       .all()
 
-    for (const row of ticketRows) {
-      const ticketId = buildTicketRef(project.id, row.externalId)
-      try {
-        const result = await reconcilePendingQuestionsAfterRestart({
-          ticketId,
-          projectRoot: project.folderPath,
-          windowMs: resolveAiQuestionSettings(ticketId).windowMs,
-        })
-        reattached += result.reattached
-        rejected += result.rejected
-      } catch (err) {
-        console.warn(`[startup] Failed to reconcile AI questions for ${ticketId}:`, err)
-      }
+    const externalIds = new Map(
+      context.projectDb
+        .select({ id: tickets.id, externalId: tickets.externalId })
+        .from(tickets)
+        .where(inArray(
+          tickets.id,
+          sessionRows.map((row) => row.ticketId).filter((id): id is number => id !== null),
+        ))
+        .all()
+        .map((row) => [row.id, row.externalId] as const),
+    )
+
+    const owners = sessionRows.flatMap((row) => {
+      const externalId = row.ticketId === null ? undefined : externalIds.get(row.ticketId)
+      if (!externalId) return []
+      return [{
+        sessionId: row.sessionId,
+        ticketId: buildTicketRef(project.id, externalId),
+        memberId: row.memberId ?? null,
+        phase: row.phase,
+        phaseAttempt: row.phaseAttempt ?? 1,
+      }]
+    })
+
+    try {
+      const result = await reconcilePendingQuestionsAfterRestart({
+        projectRoot: project.folderPath,
+        owners,
+        windowMsFor: (ticketId) => resolveAiQuestionSettings(ticketId).windowMs,
+      })
+      reattached += result.reattached
+      rejected += result.rejected
+    } catch (err) {
+      console.warn(`[startup] Failed to reconcile AI questions for ${project.name}:`, err)
     }
   }
 

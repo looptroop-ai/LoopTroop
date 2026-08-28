@@ -3,6 +3,9 @@ import type { OpenCodePermissionRule } from '../types'
 import {
   OPENCODE_DISABLED_PERMISSIONS,
   OPENCODE_READ_ONLY_PERMISSIONS,
+  SILENT_DEFAULT_PERMISSIONS,
+  SILENT_DISABLED_PERMISSIONS,
+  SILENT_READ_ONLY_PERMISSIONS,
   isPermissionDeniedByRules,
   resolveOpenCodePermissions,
   toolPolicyMayAskQuestions,
@@ -62,6 +65,19 @@ describe('resolveOpenCodePermissions', () => {
     const asking = resolveOpenCodePermissions('default', true) as OpenCodePermissionRule[]
     expect(isPermissionDeniedByRules(silent, 'question')).toBe(true)
     expect(isPermissionDeniedByRules(asking, 'question')).toBe(false)
+  })
+
+  it('reports a policy override rather than the base table it overrides', () => {
+    // `doom_loop` and `external_directory` are allowed outright by the base
+    // allow-all table and then denied by the stricter policies. Reading the
+    // *first* matching rule returned the base allow, so auto-approval would have
+    // said yes to a tool the policy had turned off — the same hole `question`
+    // had, on the only two permissions where the tables actually collide.
+    for (const permission of ['doom_loop', 'external_directory']) {
+      expect(isPermissionDeniedByRules(SILENT_DISABLED_PERMISSIONS, permission)).toBe(true)
+      expect(isPermissionDeniedByRules(SILENT_READ_ONLY_PERMISSIONS, permission)).toBe(true)
+      expect(isPermissionDeniedByRules(SILENT_DEFAULT_PERMISSIONS, permission)).toBe(false)
+    }
   })
 
   it('lets a specific allow beat a blanket deny', () => {

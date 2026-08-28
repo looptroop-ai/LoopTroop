@@ -212,6 +212,13 @@ function initializeProjectSqlite(sqlite: Database) {
       cost_usd REAL
     );
 
+    CREATE TABLE IF NOT EXISTS question_waits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      ended_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS ticket_ai_turn_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,

@@ -204,6 +204,23 @@ export const ticketErrorOccurrences = sqliteTable('ticket_error_occurrences', {
 // One row per completed bead. Powers deterministic throughput/ETA forecasting and is the
 // forward-compatible foundation for the future Cost Management feature (token/cost columns are
 // reserved but intentionally left unset by the ETA feature).
+/**
+ * One row per stretch a ticket spent waiting on a person to answer a question.
+ *
+ * A question stops the model mid-status, so nothing in `ticket_status_history`
+ * records it — the ticket sits in CODING the whole time. Without these rows a
+ * five-minute wait is billed as five minutes of coding, which inflates the
+ * ticket's active duration and, worse, poisons the bead samples the ETA is
+ * trained on. Opened when the first question on a ticket arrives and closed when
+ * the last one is resolved, so overlapping waits are one interval, not two.
+ */
+export const questionWaits = sqliteTable('question_waits', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
+  startedAt: text('started_at').notNull(),
+  endedAt: text('ended_at').notNull(),
+})
+
 export const beadExecutionMetrics = sqliteTable('bead_execution_metrics', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),

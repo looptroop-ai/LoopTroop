@@ -512,7 +512,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                       </button>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-sm space-y-1.5 p-3 text-left text-xs leading-relaxed">
-                      <p>Time actively spent running the originally planned beads. Time while the ticket was blocked and waiting for a retry or continue action is not included.</p>
+                      <p>Time actively spent running the originally planned beads. Time while the ticket was blocked and waiting for a retry or continue action is not included, and neither is time spent waiting for you to answer a question.</p>
                       <div className="border-t border-border/60 pt-1.5">
                         <p><span className="font-medium">Bead execution started:</span> {new Date(ticket.implementationTiming.startedAt).toLocaleString()}</p>
                         <p><span className="font-medium">Last planned bead finished:</span> {ticket.implementationTiming.lastPlannedBeadFinishedAt ? new Date(ticket.implementationTiming.lastPlannedBeadFinishedAt).toLocaleString() : 'N/A'}</p>
@@ -521,6 +521,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                         <p><span className="font-medium">Workspace preparation:</span> {ticket.implementationTiming.workspacePreparationStartedAt ? formatDuration(ticket.implementationTiming.workspacePreparationDurationMs) : 'N/A'}</p>
                         <p><span className="font-medium">Final testing:</span> {ticket.implementationTiming.finalTestingStartedAt ? formatDuration(ticket.implementationTiming.finalTestingDurationMs) : 'N/A'}</p>
                         <p><span className="font-medium">Manual QA fix beads:</span> {ticket.implementationTiming.manualQaFixStartedAt ? formatDuration(ticket.implementationTiming.manualQaFixDurationMs) : 'N/A'}</p>
+                        {ticket.implementationTiming.questionWaitingMs > 0 && (
+                          <p><span className="font-medium">Waiting on your answers:</span> {formatDuration(ticket.implementationTiming.questionWaitingMs)}</p>
+                        )}
                         <p className="text-muted-foreground">Including these stages, implementation delivery time is {formatDuration(
                           ticket.implementationTiming.activeDurationMs
                           + ticket.implementationTiming.workspacePreparationDurationMs

@@ -112,8 +112,15 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * machine whose clock is minutes out.
    */
   const clockOffsetRef = useRef(0)
-  /** Tickets whose stop has already been posted, so typing does not re-post. */
-  const stoppedTicketsRef = useRef(new Set<string>())
+  /**
+   * Clocks whose stop has already been posted, so typing does not re-post.
+   *
+   * Keyed by ticket *and* timer, not by ticket. A step's clock is a generation:
+   * once CODING's question was stopped, keying on the ticket alone made the next
+   * step's brand-new clock look already-stopped, and the browser never sent Stop
+   * for it at all.
+   */
+  const stoppedTimersRef = useRef(new Set<string>())
 
   const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
   const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalStatus(ticket.status)), [tickets])
@@ -136,12 +143,18 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
         delete next[ticketId]
         return next
       }
+      const existing = current[ticketId]
       // A late frame must never undo a newer one. The server bumps `revision`
-      // on every transition precisely so an out-of-order delivery is detectable.
-      if ((current[ticketId]?.revision ?? -1) > timer.revision) return current
+      // on every transition precisely so an out-of-order delivery is detectable
+      // — but only within one clock. Revisions restart at 1 for each new timer,
+      // so comparing across `timerKey` boundaries discarded a fresh countdown as
+      // stale whenever the previous one had got past revision 1.
+      if (existing && existing.timerKey === timer.timerKey && existing.revision > timer.revision) {
+        return current
+      }
       return { ...current, [ticketId]: timer }
     })
-    if (timer?.stoppedAt) stoppedTicketsRef.current.add(ticketId)
+    if (timer?.stoppedAt) stoppedTimersRef.current.add(`${ticketId}:${timer.timerKey}`)
   }, [noteServerClock])
 
   const removeRequest = useCallback((sessionId: string, requestId: string) => {
@@ -185,10 +198,17 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const ingestPayload = useCallback((payload: AiQuestionPayload) => {
     if (payload.type === 'opencode_question_resolved') {
       if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
+      // The card has to leave Needs Input too. Without this a question refused
+      // by its own timer, or answered in another tab, left the board showing a
+      // ticket waiting on input that nothing was waiting on.
+      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
       return
     }
     if (payload.type === 'opencode_question_updated') {
       applyTimer(payload.ticketId, payload.timer ?? null)
+      // Carries the step's whole pending set, so it is also how this client
+      // learns a request went away — which moves the card.
+      void queryClient.invalidateQueries({ queryKey: ['tickets'] })
       // The update carries the full pending set for the step, so it is also the
       // signal that a request this client never saw arrive is now outstanding.
       // Its rows use the server's own vocabulary (`memberId`) and omit the
@@ -336,9 +356,11 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   }, [])
 
   const stopTimer = useCallback((ticketId: string) => {
-    if (stoppedTicketsRef.current.has(ticketId)) return
+    const timerKey = timers[ticketId]?.timerKey ?? 'unknown'
+    const stopKey = `${ticketId}:${timerKey}`
+    if (stoppedTimersRef.current.has(stopKey)) return
     // Marked before the request lands so a burst of keystrokes posts once.
-    stoppedTicketsRef.current.add(ticketId)
+    stoppedTimersRef.current.add(stopKey)
     void (async () => {
       try {
         const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/opencode/question-timer/stop`, {
@@ -347,17 +369,17 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           body: '{}',
         })
         if (!res.ok) {
-          stoppedTicketsRef.current.delete(ticketId)
+          stoppedTimersRef.current.delete(stopKey)
           return
         }
         const body = await res.json() as { timer?: unknown }
         const timer = parseTimer(body.timer)
         if (timer) applyTimer(ticketId, timer)
       } catch {
-        stoppedTicketsRef.current.delete(ticketId)
+        stoppedTimersRef.current.delete(stopKey)
       }
     })()
-  }, [applyTimer])
+  }, [applyTimer, timers])
 
   const submitToRoute = useCallback((
     ticketId: string,
@@ -454,13 +476,13 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
 /**
  * The strip that slides down when a question is waiting somewhere you cannot see.
  *
- * A bar, not an overlay: it occupies its own row at the top and blocks nothing
- * beneath it. The ticket dashboard is `fixed inset-0 z-[60]` and Configuration
- * is a modal route, so without this a question on another ticket would simply be
- * invisible until you happened to navigate back to the board.
+ * Fixed to the top rather than a row in the layout, and that is a compromise
+ * worth naming: the ticket dashboard is `fixed inset-0 z-[60]` and Configuration
+ * is a modal route, so a bar in normal flow would be painted over by exactly the
+ * screens you need it on. The cost is that it covers the app header while it is
+ * up. It is dismissible for the session, and only ever names tickets other than
+ * the one on screen — the ticket you are looking at already has the panel.
  *
- * It only ever names tickets other than the one on screen — the ticket you are
- * looking at already has the panel — and it is dismissible for the session.
  */
 function AiQuestionSlideInBar({
   waiting,

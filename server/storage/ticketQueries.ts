@@ -33,6 +33,7 @@ import type { QaOrigin } from '../phases/beads/types'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
+import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
 
 type LocalTicketRow = typeof tickets.$inferSelect
@@ -123,7 +124,10 @@ export interface TicketErrorOccurrence {
 }
 
 export interface TicketImplementationTiming {
-  /** Total time the ticket spent on originally planned beads; pauses and Manual QA fix beads are excluded. */
+  /**
+   * Total time the ticket spent on originally planned beads; pauses, Manual QA
+   * fix beads and time spent waiting on an answer to an AI question are excluded.
+   */
   activeDurationMs: number
   /** First time the ticket entered bead execution. */
   startedAt: string | null
@@ -141,6 +145,13 @@ export interface TicketImplementationTiming {
   finalTestingDurationMs: number
   /** First time automated final testing began. */
   finalTestingStartedAt: string | null
+  /**
+   * Time inside the timed phases spent waiting on a person to answer a question.
+   *
+   * Already removed from the durations above, and reported on its own so a long
+   * ticket can say which part of it was the machine and which part was us.
+   */
+  questionWaitingMs: number
 }
 
 /** Full public projection of a ticket row, enriched with runtime data, error history, and available actions. */
@@ -585,6 +596,7 @@ function readImplementationTiming(
     workspacePreparationStartedAt: null,
     finalTestingDurationMs: 0,
     finalTestingStartedAt: null,
+    questionWaitingMs: 0,
   }
   if (!projectContext) return empty
 
@@ -600,11 +612,25 @@ function readImplementationTiming(
   let activeDurationMs = 0
   let workspacePreparationDurationMs = 0
   let finalTestingDurationMs = 0
+  let questionWaitingMs = 0
   let startedAt: string | null = null
   let workspacePreparationStartedAt: string | null = null
   let finalTestingStartedAt: string | null = null
   const codingIntervals: Array<{ startedAt: number; endedAt: number }> = []
   const now = Date.now()
+
+  /**
+   * The stretch of this window the ticket spent waiting on a person.
+   *
+   * A question does not change the ticket's status, so the status walk below
+   * counts the whole wait as work. Every timing this function reports is meant
+   * to say how long the *machine* took, so the wait comes back out of each of
+   * them — and is reported separately, because "it took an hour, forty minutes
+   * of which was waiting for you" is the honest version.
+   */
+  const waitWithin = (from: number, to: number): number => (
+    questionWaitOverlapMs(projectContext.projectDb, ticket.id, from, to)
+  )
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]
@@ -616,14 +642,20 @@ function readImplementationTiming(
     const durationMs = Math.max(0, endedMs - startedMs)
 
     if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.coding) {
-      activeDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      activeDurationMs += Math.max(0, durationMs - waited)
       startedAt ??= row.changedAt
       codingIntervals.push({ startedAt: startedMs, endedAt: endedMs })
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.workspacePreparation) {
-      workspacePreparationDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      workspacePreparationDurationMs += Math.max(0, durationMs - waited)
       workspacePreparationStartedAt ??= row.changedAt
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.finalTesting) {
-      finalTestingDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      finalTestingDurationMs += Math.max(0, durationMs - waited)
       finalTestingStartedAt ??= row.changedAt
     }
   }
@@ -643,9 +675,13 @@ function readImplementationTiming(
     const beadEndedAt = parseTimestamp(bead.completedAt)
       ?? parseTimestamp(bead.updatedAt)
       ?? (ticket.status === IMPLEMENTATION_TIMING_STATUSES.coding ? now : beadStartedAt)
-    return total + codingIntervals.reduce((duration, interval) => (
-      duration + Math.max(0, Math.min(interval.endedAt, beadEndedAt) - Math.max(interval.startedAt, beadStartedAt))
-    ), 0)
+    return total + codingIntervals.reduce((duration, interval) => {
+      const from = Math.max(interval.startedAt, beadStartedAt)
+      const to = Math.min(interval.endedAt, beadEndedAt)
+      // Net of waiting, like `activeDurationMs` above — this is subtracted from
+      // it, so counting the wait here but not there would double-remove it.
+      return duration + Math.max(0, (to - from) - waitWithin(from, to))
+    }, 0)
   }, 0)
 
   return {
@@ -658,6 +694,7 @@ function readImplementationTiming(
     workspacePreparationStartedAt,
     finalTestingDurationMs,
     finalTestingStartedAt,
+    questionWaitingMs,
   }
 }
 

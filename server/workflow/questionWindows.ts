@@ -21,10 +21,9 @@
 
 import type { OpenCodeQuestionInfo, OpenCodeQuestionTool } from '../opencode/types'
 import { getOpenCodeAdapter } from '../opencode/factory'
-import { listOpenCodeSessionsForTicket } from '../opencode/sessionManager'
 import { onOpenCodeSessionEnded } from '../opencode/sessionEvents'
 import { getTicketContext } from '../storage/ticketQueries'
-import { upsertLatestPhaseArtifact } from '../storage/ticketArtifacts'
+import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../storage/ticketArtifacts'
 import { broadcaster } from '../sse/broadcaster'
 import { getErrorMessage } from '@shared/typeGuards'
 import {
@@ -35,7 +34,8 @@ import {
 } from '@shared/aiQuestions'
 import type { SkipActor, SkipQuestionContext } from '@shared/skipReceipt'
 import { deriveSkipActionId, writeSkipReceipts } from './skipReceipts'
-import { resumeTicketWork, suspendTicketWork } from './workBudget'
+import { getTicketWaitingMs, resumeTicketWork, suspendTicketWork } from './workBudget'
+import { recordQuestionWait } from '../storage/questionWaits'
 
 /** Attempts to tell OpenCode a question is refused before giving up on it. */
 const REJECT_ATTEMPTS = 3
@@ -65,10 +65,25 @@ interface QuestionRequestRecord {
   questions: OpenCodeQuestionInfo[]
   tool: OpenCodeQuestionTool | undefined
   receivedAt: number
+  /** Ticket wait credit at attach, so the receipt can say what the step spent. */
+  waitingAtAttach: number
   state: RequestState
+  /** Who holds the claim while `resolving`. Only they may complete it. */
+  claimToken: string | null
   /** Bumped on every transition so a late frame cannot undo a newer one. */
   revision: number
 }
+
+let claimSequence = 0
+
+/**
+ * How long a resolved request is remembered.
+ *
+ * Long enough that a duplicate `asked` arriving after the answer cannot open a
+ * second window for a question OpenCode has already been told about — which
+ * would suspend the ticket's clocks again with nothing left to resolve it.
+ */
+const RESOLVED_TOMBSTONE_TTL_MS = 15 * 60_000
 
 interface QuestionTimer {
   ticketId: string
@@ -89,8 +104,60 @@ interface QuestionTimer {
 /** ticketId → timerKey → timer. */
 const timersByTicket = new Map<string, Map<string, QuestionTimer>>()
 
+/** ticketId → requestKey → when it resolved. Guards against a replayed `asked`. */
+const resolvedRecently = new Map<string, Map<string, number>>()
+
+/**
+ * ticketId → when this ticket's current wait began.
+ *
+ * Opened when the ticket goes from nothing pending to something, closed when the
+ * last request resolves, so two overlapping questions record one interval rather
+ * than two that double-count the same minutes.
+ */
+const waitStartedAt = new Map<string, number>()
+
+function ticketHasPendingRequests(ticketId: string): boolean {
+  const timers = timersByTicket.get(ticketId)
+  if (!timers) return false
+  for (const timer of timers.values()) {
+    if (pendingRequests(timer).length > 0) return true
+  }
+  return false
+}
+
+function openWaitInterval(ticketId: string): void {
+  if (!waitStartedAt.has(ticketId)) waitStartedAt.set(ticketId, Date.now())
+}
+
+function closeWaitInterval(ticketId: string): void {
+  const startedAt = waitStartedAt.get(ticketId)
+  if (startedAt === undefined) return
+  waitStartedAt.delete(ticketId)
+  recordQuestionWait(ticketId, startedAt, Date.now())
+}
+
 function requestKey(sessionId: string, requestId: string): string {
   return `${sessionId}:${requestId}`
+}
+
+function rememberResolved(ticketId: string, key: string): void {
+  let tombstones = resolvedRecently.get(ticketId)
+  if (!tombstones) {
+    tombstones = new Map()
+    resolvedRecently.set(ticketId, tombstones)
+  }
+  tombstones.set(key, Date.now())
+}
+
+function wasResolvedRecently(ticketId: string, key: string): boolean {
+  const tombstones = resolvedRecently.get(ticketId)
+  if (!tombstones) return false
+  const cutoff = Date.now() - RESOLVED_TOMBSTONE_TTL_MS
+  for (const [candidate, at] of tombstones) {
+    if (at < cutoff) tombstones.delete(candidate)
+  }
+  if (tombstones.size === 0) resolvedRecently.delete(ticketId)
+  return (tombstones.get(key) ?? 0) >= cutoff
 }
 
 function ticketTimers(ticketId: string): Map<string, QuestionTimer> {
@@ -180,6 +247,68 @@ function persistTimer(timer: QuestionTimer): void {
   }
 }
 
+/** A window rebuilt from its artifact, as the previous process left it. */
+export interface RestoredTimerState {
+  windowMs: number
+  armedAt: number
+  deadlineAt: number
+  stoppedAt: number | null
+  stoppedBy: SkipActor | null
+  resetCount: number
+  revision: number
+  receivedAt?: number
+}
+
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value !== 'string') return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function parseActor(value: unknown): SkipActor | null {
+  return value === 'user' || value === 'timeout' || value === 'system' ? value : null
+}
+
+/**
+ * Reads back the window a stopped daemon left behind.
+ *
+ * Returns null for anything it cannot fully trust — a missing artifact, an
+ * unparseable one, a deadline that is not a date. The caller then starts a fresh
+ * window, which is the safe direction: a question with a new clock is bounded,
+ * and a question with a clock rebuilt from nonsense might not be.
+ */
+export function readTimerArtifact(
+  ticketId: string,
+  phase: string,
+  phaseAttempt: number,
+): RestoredTimerState | null {
+  const timerKey = buildAiQuestionTimerKey(phase, phaseAttempt)
+  try {
+    const artifact = getLatestPhaseArtifact(
+      ticketId,
+      `${QUESTION_TIMER_ARTIFACT_PREFIX}${timerKey}`,
+      phase,
+      phaseAttempt,
+    )
+    if (!artifact?.content) return null
+    const parsed = JSON.parse(artifact.content) as Record<string, unknown>
+    const armedAt = parseTimestamp(parsed.armedAt)
+    const deadlineAt = parseTimestamp(parsed.deadlineAt)
+    if (armedAt === null || deadlineAt === null) return null
+    return {
+      windowMs: typeof parsed.windowMs === 'number' ? parsed.windowMs : deadlineAt - armedAt,
+      armedAt,
+      deadlineAt,
+      stoppedAt: parseTimestamp(parsed.stoppedAt),
+      stoppedBy: parseActor(parsed.stoppedBy),
+      resetCount: typeof parsed.resetCount === 'number' ? parsed.resetCount : 0,
+      revision: typeof parsed.revision === 'number' ? parsed.revision : 0,
+    }
+  } catch {
+    return null
+  }
+}
+
 function persistRequest(record: QuestionRequestRecord, timerKey: string): void {
   try {
     upsertLatestPhaseArtifact(
@@ -262,15 +391,16 @@ export function armOrResetTimer(input: {
   phase: string
   phaseAttempt: number
   windowMs: number
+  restore?: RestoredTimerState | undefined
 }): QuestionTimer {
   const timerKey = buildAiQuestionTimerKey(input.phase, input.phaseAttempt)
   const timers = ticketTimers(input.ticketId)
   const existing = timers.get(timerKey)
-  const windowMs = clampAiQuestionWindowMs(input.windowMs)
+  const windowMs = clampAiQuestionWindowMs(input.restore?.windowMs ?? input.windowMs)
   const now = Date.now()
 
   if (existing) {
-    if (existing.stoppedAt === null) {
+    if (existing.stoppedAt === null && !input.restore) {
       existing.windowMs = windowMs
       existing.armedAt = now
       existing.deadlineAt = now + windowMs
@@ -281,18 +411,24 @@ export function armOrResetTimer(input: {
     return existing
   }
 
+  // A restored window keeps the clock the previous process was running. The
+  // artifact is authoritative: a timer someone stopped stays stopped, one still
+  // inside its window keeps the time it has left, and one whose deadline passed
+  // while the daemon was down fires as soon as it is armed. Handing back a fresh
+  // full window instead would quietly undo a Stop, and let a restart loop
+  // postpone an expiry indefinitely.
   const timer: QuestionTimer = {
     ticketId: input.ticketId,
     phase: input.phase,
     phaseAttempt: input.phaseAttempt,
     timerKey,
     windowMs,
-    armedAt: now,
-    deadlineAt: now + windowMs,
-    stoppedAt: null,
-    stoppedBy: null,
-    resetCount: 0,
-    revision: 1,
+    armedAt: input.restore?.armedAt ?? now,
+    deadlineAt: input.restore?.deadlineAt ?? now + windowMs,
+    stoppedAt: input.restore?.stoppedAt ?? null,
+    stoppedBy: input.restore?.stoppedBy ?? null,
+    resetCount: input.restore?.resetCount ?? 0,
+    revision: (input.restore?.revision ?? 0) + 1,
     handle: null,
     requests: new Map(),
   }
@@ -319,10 +455,22 @@ export function attachRequest(input: {
   windowMs: number
   questions: OpenCodeQuestionInfo[]
   tool?: OpenCodeQuestionTool | undefined
+  /** Restores a window rebuilt from its artifact instead of starting a new one. */
+  restore?: RestoredTimerState | undefined
 }): boolean {
-  const timer = armOrResetTimer(input)
   const key = requestKey(input.sessionId, input.requestId)
-  if (timer.requests.has(key)) return false
+
+  // Identity is settled before the timer is touched. A duplicate or replayed
+  // `asked` is not new activity, and treating it as such would push the deadline
+  // out by another full window — repeat that and the bounded wait is unbounded.
+  const timerKey = buildAiQuestionTimerKey(input.phase, input.phaseAttempt)
+  const existing = timersByTicket.get(input.ticketId)?.get(timerKey)
+  if (existing?.requests.has(key)) return false
+  // Same for one that arrives after its own answer: OpenCode has been told, and
+  // a second window would suspend the ticket's clocks with nothing to lift it.
+  if (wasResolvedRecently(input.ticketId, key)) return false
+
+  const timer = armOrResetTimer(input)
 
   const record: QuestionRequestRecord = {
     ticketId: input.ticketId,
@@ -333,10 +481,13 @@ export function attachRequest(input: {
     phaseAttempt: input.phaseAttempt,
     questions: input.questions,
     tool: input.tool,
-    receivedAt: Date.now(),
+    receivedAt: input.restore?.receivedAt ?? Date.now(),
+    waitingAtAttach: getTicketWaitingMs(input.ticketId),
     state: 'pending',
+    claimToken: null,
     revision: 1,
   }
+  openWaitInterval(input.ticketId)
   timer.requests.set(key, record)
   suspendTicketWork(input.ticketId)
   persistRequest(record, timer.timerKey)
@@ -373,13 +524,40 @@ export function stopTicketTimers(ticketId: string, actor: SkipActor = 'user'): A
   return stopped
 }
 
-/** Claims a request for exactly one resolver. Losers get false, never an error. */
-function claim(timer: QuestionTimer, key: string): QuestionRequestRecord | null {
+/**
+ * Takes a request for exactly one resolver. Losers get null, never an error.
+ *
+ * Claiming and completing are two steps because a route has to call OpenCode in
+ * between: it claims so expiry cannot send a second verdict for the same
+ * question, awaits the reply, then completes the claim it still holds. Passing
+ * the token back is what proves it is still the owner — without it a late stream
+ * echo could resolve a request another caller is part-way through, and the first
+ * cut of this module simply re-claimed, found the request no longer `pending`,
+ * and silently never finished it at all.
+ */
+function claim(timer: QuestionTimer, key: string, token?: string): QuestionRequestRecord | null {
   const record = timer.requests.get(key)
-  if (!record || record.state !== 'pending') return null
+  if (!record) return null
+  if (token !== undefined) {
+    if (record.state !== 'resolving' || record.claimToken !== token) return null
+    return record
+  }
+  if (record.state !== 'pending') return null
   record.state = 'resolving'
+  record.claimToken = null
   record.revision += 1
   return record
+}
+
+/** Claims a request and hands back the token its owner completes it with. */
+function claimWithToken(timer: QuestionTimer, key: string): string | null {
+  const record = timer.requests.get(key)
+  if (!record || record.state !== 'pending') return null
+  claimSequence += 1
+  record.state = 'resolving'
+  record.claimToken = `clm_${claimSequence}`
+  record.revision += 1
+  return record.claimToken
 }
 
 function findTimerFor(ticketId: string, sessionId: string, requestId: string): {
@@ -397,9 +575,12 @@ function findTimerFor(ticketId: string, sessionId: string, requestId: string): {
 
 function finish(timer: QuestionTimer, record: QuestionRequestRecord): void {
   record.state = 'resolved'
+  record.claimToken = null
   record.revision += 1
   persistRequest(record, timer.timerKey)
-  timer.requests.delete(requestKey(record.sessionId, record.requestId))
+  const key = requestKey(record.sessionId, record.requestId)
+  timer.requests.delete(key)
+  rememberResolved(record.ticketId, key)
   // The model can go back to working. One resume per attach, so a step with two
   // questions outstanding stays suspended until the second is dealt with.
   resumeTicketWork(record.ticketId)
@@ -409,6 +590,9 @@ function finish(timer: QuestionTimer, record: QuestionRequestRecord): void {
     timersByTicket.get(timer.ticketId)?.delete(timer.timerKey)
     if (timersByTicket.get(timer.ticketId)?.size === 0) timersByTicket.delete(timer.ticketId)
   }
+  // Closed only once nothing on the ticket is still waiting, so two overlapping
+  // questions bank one stretch of wall time rather than each banking all of it.
+  if (!ticketHasPendingRequests(record.ticketId)) closeWaitInterval(record.ticketId)
   persistTimer(timer)
   broadcastTimer(timer)
 }
@@ -421,8 +605,8 @@ function finish(timer: QuestionTimer, record: QuestionRequestRecord): void {
  * blocked council round later see that a question went unanswered inside it,
  * instead of finding only a quorum failure with no cause attached.
  */
-function describeQuorumImpact(record: QuestionRequestRecord, resolution: QuestionResolution): string | null {
-  if (resolution === 'replied' || !isCouncilQuorumPhase(record.phase)) return null
+function describeQuorumImpact(record: QuestionRequestRecord): string | null {
+  if (!isCouncilQuorumPhase(record.phase)) return null
   const who = record.memberId ?? 'a council member'
   return `${who} was refused mid-round in ${record.phase}; its contribution may be missing from the quorum count.`
 }
@@ -430,15 +614,17 @@ function describeQuorumImpact(record: QuestionRequestRecord, resolution: Questio
 function buildQuestionContext(
   timer: QuestionTimer,
   record: QuestionRequestRecord,
-  resolution: QuestionResolution,
+  resolution: Exclude<QuestionResolution, 'replied'>,
   quorumImpact: string | null,
 ): SkipQuestionContext {
   const now = Date.now()
   const elapsedWallMs = Math.max(0, now - record.receivedAt)
-  // Wall time minus what the wait credited back is what the model actually
+  // Wall time minus the wait the budget credited back is what the step actually
   // spent. For a question that ran its full window that is zero, and saying so
-  // is the point: the wait cost the step nothing.
-  const stoppedFor = timer.stoppedAt === null ? 0 : Math.max(0, now - timer.stoppedAt)
+  // is the point: the wait cost the step nothing. Read from the ledger rather
+  // than inferred from `stoppedAt`, which measures how long the *clock* ran and
+  // so reported a whole unattended window as active work.
+  const creditedWaitMs = Math.max(0, getTicketWaitingMs(record.ticketId) - record.waitingAtAttach)
   return {
     request_id: record.requestId,
     session_id: record.sessionId,
@@ -451,12 +637,12 @@ function buildQuestionContext(
     stopped_at: timer.stoppedAt === null ? null : new Date(timer.stoppedAt).toISOString(),
     stopped_by: timer.stoppedBy,
     elapsed_wall_ms: elapsedWallMs,
-    elapsed_active_ms: Math.max(0, elapsedWallMs - stoppedFor),
+    elapsed_active_ms: Math.max(0, elapsedWallMs - creditedWaitMs),
     sibling_request_ids: pendingRequests(timer)
       .filter((other) => other.requestId !== record.requestId)
       .map((other) => other.requestId),
-    expiry_reason: resolution === 'replied' ? 'user_skipped' : resolution,
-    quorum_impact: quorumImpact ?? describeQuorumImpact(record, resolution),
+    expiry_reason: resolution,
+    quorum_impact: quorumImpact ?? describeQuorumImpact(record),
   }
 }
 
@@ -471,7 +657,8 @@ function writeQuestionReceipt(input: {
   timer: QuestionTimer
   record: QuestionRequestRecord
   actor: SkipActor
-  resolution: QuestionResolution
+  /** Never `replied`: an answer is not a skip, and has no receipt to write. */
+  resolution: Exclude<QuestionResolution, 'replied'>
   reason: string | null
   quorumImpact?: string | null
 }): void {
@@ -534,7 +721,7 @@ async function rejectRecord(
   timer: QuestionTimer,
   record: QuestionRequestRecord,
   actor: SkipActor,
-  resolution: QuestionResolution,
+  resolution: Exclude<QuestionResolution, 'replied'>,
   reason: string | null,
 ): Promise<void> {
   const context = getTicketContext(record.ticketId)
@@ -583,14 +770,58 @@ async function expireTimer(timer: QuestionTimer): Promise<void> {
 
 // ── Resolution entry points ──────────────────────────────────────────────────
 
-/** A person answered. Clears the request without a receipt: nothing was skipped. */
-export function markRequestReplied(ticketId: string, sessionId: string, requestId: string): boolean {
+/**
+ * A person answered. Clears the request without a receipt: nothing was skipped.
+ *
+ * `claimToken` is the token from `claimRequestForReply`, which the route takes
+ * before calling OpenCode. Omitting it claims here instead, for callers that
+ * resolve a request without a round trip to defend against.
+ */
+export function markRequestReplied(
+  ticketId: string,
+  sessionId: string,
+  requestId: string,
+  claimToken?: string,
+): boolean {
   const found = findTimerFor(ticketId, sessionId, requestId)
   if (!found) return false
-  const record = claim(found.timer, found.key)
+  const record = claim(found.timer, found.key, claimToken)
   if (!record) return false
+  rememberAnswered(record)
   finish(found.timer, record)
   return true
+}
+
+/**
+ * Which models in a step were given a human answer.
+ *
+ * A council member that asked and got an answer drafts with steering the others
+ * never saw, and is then judged by voters who did not see it either — so a draft
+ * that followed the operator's instruction looks like the odd one out and gets
+ * marked down for it. The vote is told, without being told *which* model it was.
+ */
+const answeredByStep = new Map<string, Set<string>>()
+
+function stepKey(ticketId: string, phase: string, phaseAttempt: number): string {
+  return `${ticketId}|${phase}|${phaseAttempt}`
+}
+
+function rememberAnswered(record: QuestionRequestRecord): void {
+  if (!record.memberId) return
+  const key = stepKey(record.ticketId, record.phase, record.phaseAttempt)
+  const members = answeredByStep.get(key) ?? new Set<string>()
+  members.add(record.memberId)
+  answeredByStep.set(key, members)
+}
+
+export function wasMemberAnswered(
+  ticketId: string | undefined,
+  phase: string | undefined,
+  phaseAttempt: number,
+  memberId: string,
+): boolean {
+  if (!ticketId || !phase) return false
+  return answeredByStep.get(stepKey(ticketId, phase, phaseAttempt))?.has(memberId) ?? false
 }
 
 /** A person pressed Skip. The reason is optional and goes on the receipt. */
@@ -599,10 +830,11 @@ export function markRequestSkipped(
   sessionId: string,
   requestId: string,
   reason: string | null,
+  claimToken?: string,
 ): boolean {
   const found = findTimerFor(ticketId, sessionId, requestId)
   if (!found) return false
-  const record = claim(found.timer, found.key)
+  const record = claim(found.timer, found.key, claimToken)
   if (!record) return false
   writeQuestionReceipt({
     timer: found.timer,
@@ -632,21 +864,57 @@ export function markRequestRejectedExternally(ticketId: string, sessionId: strin
   return true
 }
 
-/** Claims a request so a route can call OpenCode without racing the timer. */
-export function claimRequestForReply(ticketId: string, sessionId: string, requestId: string): boolean {
+/**
+ * Claims a request so a route can call OpenCode without racing the timer.
+ *
+ * Returns the token to complete the claim with, or null when someone else got
+ * there first. A request with no window at all (reconciled away, or never
+ * tracked) returns the sentinel token: there is no clock to race, and refusing
+ * would block an answer OpenCode would still accept.
+ */
+export const UNTRACKED_CLAIM_TOKEN = 'untracked'
+
+export function claimRequestForReply(
+  ticketId: string,
+  sessionId: string,
+  requestId: string,
+): string | null {
   const found = findTimerFor(ticketId, sessionId, requestId)
-  if (!found) return true
-  return claim(found.timer, found.key) !== null
+  if (!found) return UNTRACKED_CLAIM_TOKEN
+  return claimWithToken(found.timer, found.key)
 }
 
-/** Hands a claim back when the call the claim was taken for failed. */
-export function releaseRequestClaim(ticketId: string, sessionId: string, requestId: string): void {
+/**
+ * Hands a claim back when the call the claim was taken for failed.
+ *
+ * The deadline may have passed while the claim was held — expiry looked at this
+ * request, saw `resolving`, and left it alone. Returning it to `pending` under a
+ * timer that has already fired would leave a question with no clock on it, which
+ * is the unbounded wait this module exists to prevent. So the timer is either
+ * re-armed or run right now. A *stopped* timer is the exception: stopping is a
+ * promise that the run waits for a person, and that promise outlives a failed
+ * send.
+ */
+export function releaseRequestClaim(
+  ticketId: string,
+  sessionId: string,
+  requestId: string,
+  claimToken?: string,
+): void {
   const found = findTimerFor(ticketId, sessionId, requestId)
-  const record = found?.timer.requests.get(found.key)
-  if (record && record.state === 'resolving') {
-    record.state = 'pending'
-    record.revision += 1
+  if (!found) return
+  const record = found.timer.requests.get(found.key)
+  if (!record || record.state !== 'resolving') return
+  if (claimToken !== undefined && record.claimToken !== claimToken) return
+  record.state = 'pending'
+  record.claimToken = null
+  record.revision += 1
+  if (found.timer.stoppedAt !== null) return
+  if (found.timer.deadlineAt <= Date.now()) {
+    void expireTimer(found.timer).catch(() => {})
+    return
   }
+  arm(found.timer)
 }
 
 /**
@@ -753,10 +1021,20 @@ export function reconcileAgainstPending(ticketId: string, liveRequestIds: Set<st
  * session did not is refused under the `system` actor, because nothing will ever
  * answer it.
  */
-export async function reconcilePendingQuestionsAfterRestart(input: {
+export interface RestartSessionOwner {
+  sessionId: string
   ticketId: string
+  memberId: string | null
+  phase: string
+  phaseAttempt: number
+}
+
+export async function reconcilePendingQuestionsAfterRestart(input: {
   projectRoot: string
-  windowMs: number
+  /** Every active session in the project, whichever ticket owns it. */
+  owners: RestartSessionOwner[]
+  /** Per-ticket window, for a request whose artifact could not be rebuilt. */
+  windowMsFor: (ticketId: string) => number
 }): Promise<{ reattached: number; rejected: number }> {
   const adapter = getOpenCodeAdapter()
   let pending: Awaited<ReturnType<typeof adapter.listPendingQuestions>>
@@ -767,39 +1045,50 @@ export async function reconcilePendingQuestionsAfterRestart(input: {
   }
   if (pending.length === 0) return { reattached: 0, rejected: 0 }
 
-  const active = new Map(
-    listOpenCodeSessionsForTicket(input.ticketId, ['active']).map((session) => [session.sessionId, session]),
-  )
+  // Keyed by session, across the whole project. `listPendingQuestions` is
+  // project-scoped, so reconciling one ticket at a time meant every request
+  // belonging to a *sibling* ticket looked ownerless — and got rejected. Two
+  // active tickets in one project were enough to kill one of them on restart.
+  const owners = new Map(input.owners.map((owner) => [owner.sessionId, owner]))
   let reattached = 0
   let rejected = 0
 
   for (const request of pending) {
-    const session = active.get(request.sessionID)
-    if (session) {
-      // The wait starts again from full. The old deadline belonged to a process
-      // that is gone, and holding someone to a clock they could not see run
-      // would be worse than being generous once.
+    const owner = owners.get(request.sessionID)
+    if (owner) {
+      // The artifact is authoritative: a stopped clock stays stopped, and one
+      // whose deadline passed while the daemon was down fires immediately
+      // instead of buying itself another full window.
+      const restore = readTimerArtifact(owner.ticketId, owner.phase, owner.phaseAttempt)
       if (attachRequest({
-        ticketId: input.ticketId,
+        ticketId: owner.ticketId,
         sessionId: request.sessionID,
         requestId: request.id,
-        memberId: session.memberId ?? null,
-        phase: session.phase,
-        phaseAttempt: session.phaseAttempt ?? 1,
-        windowMs: input.windowMs,
+        memberId: owner.memberId,
+        phase: owner.phase,
+        phaseAttempt: owner.phaseAttempt,
+        windowMs: input.windowMsFor(owner.ticketId),
         questions: request.questions,
         tool: request.tool,
+        ...(restore ? { restore } : {}),
       })) reattached += 1
       continue
     }
-    try {
-      await adapter.rejectQuestion(request.id, input.projectRoot)
-    } catch {
-      // Nothing is listening for it either way.
-    }
+    // No live session owns it, so nothing will ever answer it. Refuse it and
+    // leave a receipt: an orphan question that vanishes without a trail is how
+    // a blocked round becomes unexplainable weeks later.
+    await refuseOrphanedRequest(request.id, input.projectRoot)
     rejected += 1
   }
   return { reattached, rejected }
+}
+
+async function refuseOrphanedRequest(requestId: string, projectRoot: string): Promise<void> {
+  try {
+    await getOpenCodeAdapter().rejectQuestion(requestId, projectRoot)
+  } catch {
+    // Nothing is listening for it either way.
+  }
 }
 
 /**
@@ -840,4 +1129,7 @@ export function resetAllQuestionWindows(): void {
     for (const timer of timers.values()) disarm(timer)
   }
   timersByTicket.clear()
+  resolvedRecently.clear()
+  waitStartedAt.clear()
+  answeredByStep.clear()
 }

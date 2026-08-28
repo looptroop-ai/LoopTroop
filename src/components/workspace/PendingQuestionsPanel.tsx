@@ -187,14 +187,21 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
           {requests.reduce((total, request) => total + request.questions.length, 0)} waiting
         </Badge>
 
-        <div className="ml-auto flex items-center gap-2" aria-live="polite">
+        {/* Not a live region. A countdown inside one is read out every second —
+            "four fifty-nine, four fifty-eight" — which buries the thing a
+            screen-reader user actually needs to hear. The announcements live in
+            the status line below, which changes only when the state does. */}
+        <div className="ml-auto flex items-center gap-2">
           {remainingMs === null ? (
             <span className="text-xs text-sky-900/80 dark:text-sky-200/80">
               {timer ? 'Waiting for you' : 'No time limit running'}
             </span>
           ) : (
             <>
-              <span className="tabular-nums text-sm font-medium text-sky-900 dark:text-sky-100">
+              <span
+                className="tabular-nums text-sm font-medium text-sky-900 dark:text-sky-100"
+                aria-label={`${formatRemaining(remainingMs)} left to answer`}
+              >
                 {formatRemaining(remainingMs)}
               </span>
               <Button type="button" size="sm" variant="outline" className="gap-1.5" onClick={engage}>
@@ -336,7 +343,10 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
             </div>
 
             {timer && (
-              <p className="mt-2 text-[11px] text-muted-foreground">
+              // The one live region on the panel. It says what the clock is
+              // doing, not what it currently reads, so it fires on arrival and
+              // on stop rather than once a second.
+              <p className="mt-2 text-[11px] text-muted-foreground" role="status" aria-live="polite">
                 {timer.stoppedAt
                   ? 'The countdown is stopped. This step waits until you answer or skip.'
                   : `Unanswered after ${formatAiQuestionWindow(timer.windowMs)}, the question is refused and the run carries on.`}
@@ -355,6 +365,13 @@ export function PendingQuestionsPanel({ ticketId }: { ticketId: string }) {
  * Options are keyed by index rather than by label because a model can repeat a
  * label across a batch, and the submitted answer is the selected labels *plus*
  * the free text — not free text replacing the selection.
+ *
+ * The free text is held here rather than derived back out of `value`. Deriving
+ * it meant round-tripping every keystroke through a trim, which deleted the
+ * space the moment you typed one and made multi-word answers impossible to
+ * enter; it also misread free text that happened to match an option label as a
+ * selection. Local state keeps what was typed exactly as it was typed, and the
+ * trim happens once, on the way out.
  */
 function QuestionAnswerInput({
   question,
@@ -372,9 +389,16 @@ function QuestionAnswerInput({
   const fieldId = useId()
   const multiple = question.multiple === true
   const allowsCustom = question.custom !== false
-  const optionLabels = new Set(question.options.map((option) => option.label))
+  const optionLabels = useMemo(
+    () => new Set(question.options.map((option) => option.label)),
+    [question.options],
+  )
   const selected = value.filter((entry) => optionLabels.has(entry))
-  const custom = value.find((entry) => !optionLabels.has(entry)) ?? ''
+  // Seeded once. The component is remounted per question by its `key`, so a
+  // draft restored from `value` is picked up on mount and never fought over.
+  const [custom, setCustom] = useState(
+    () => value.find((entry) => !optionLabels.has(entry)) ?? '',
+  )
 
   const emit = (nextSelected: string[], nextCustom: string) => {
     onChange([...nextSelected, nextCustom.trim()].filter(Boolean))
@@ -447,7 +471,10 @@ function QuestionAnswerInput({
             value={custom}
             disabled={disabled}
             onFocus={onEngage}
-            onChange={(event) => emit(selected, event.target.value)}
+            onChange={(event) => {
+              setCustom(event.target.value)
+              emit(selected, event.target.value)
+            }}
             rows={2}
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
           />

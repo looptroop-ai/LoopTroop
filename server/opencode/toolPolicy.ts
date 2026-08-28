@@ -155,13 +155,19 @@ export function resolveOpenCodePermissions(
  * the run was given, so a denied permission has to be refused even there. The
  * specific rule wins over `*`, so an explicit allow is not overturned by a
  * blanket deny.
+ *
+ * Read from the end, because that is how the array is built: the base allow-all
+ * table first, then the policy's overrides. Taking the *first* match meant
+ * `doom_loop` and `external_directory` — the two the base table names outright —
+ * always reported the base allow, so a policy that denies them read as allowing
+ * them. That is the same hole auto-approval had for `question`.
  */
 export function isPermissionDeniedByRules(
   rules: ReadonlyArray<OpenCodePermissionRule> | undefined,
   permission: string | undefined,
 ): boolean {
   if (!rules || !permission) return false
-  const specific = rules.find((rule) => rule.permission === permission)
+  const specific = rules.findLast((rule) => rule.permission === permission)
   if (specific) return specific.action === 'deny'
   return rules.some((rule) => rule.permission === '*' && rule.action === 'deny')
 }

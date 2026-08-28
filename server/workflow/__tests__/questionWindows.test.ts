@@ -16,10 +16,14 @@ import {
   getTicketQuestionState,
   markRequestReplied,
   markRequestSkipped,
+  readTimerArtifact,
   reconcileAgainstPending,
+  releaseRequestClaim,
   resetAllQuestionWindows,
   stopTicketTimers,
 } from '../questionWindows'
+import { getTicketContext } from '../../storage/ticketQueries'
+import { questionWaits } from '../../db/schema'
 import type { OpenCodeQuestionInfo } from '../../opencode/types'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
 
@@ -198,10 +202,11 @@ describe('question windows', () => {
   it('lets exactly one resolver claim a request', () => {
     const ticket = makeTicket()
     ask(ticket.id)
-    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toBe(true)
+    // The winner gets the token it later completes the claim with.
+    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toEqual(expect.any(String))
     // The loser of an answer-versus-expiry race must do nothing at all rather
     // than send a second verdict for a question that already has one.
-    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toBe(false)
+    expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toBeNull()
   })
 
   it('writes a summary row and one child per unanswered question when skipped', () => {
@@ -319,5 +324,143 @@ describe('question windows', () => {
     const ticket = makeTicket()
     const timer = armOrResetTimer({ ticketId: ticket.id, phase: 'CODING', phaseAttempt: 1, windowMs: 5 })
     expect(timer.windowMs).toBe(60_000)
+  })
+
+  it('does not push the deadline out when the same asked event arrives twice', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    const first = getTicketQuestionState(ticket.id).timer!
+
+    vi.advanceTimersByTime(240_000)
+    expect(ask(ticket.id)).toBe(false)
+    const second = getTicketQuestionState(ticket.id).timer!
+
+    // A replayed frame is not new activity. Treating it as one would buy the
+    // question another full window, and a stream that repeats would never expire.
+    expect(second.deadlineAt).toBe(first.deadlineAt)
+    expect(second.resetCount).toBe(0)
+  })
+
+  it('ignores an asked event that arrives after its own answer', () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    markRequestReplied(ticket.id, 'ses_a', 'req_a')
+
+    // OpenCode has already been told. A second window here would suspend the
+    // ticket's clocks with nothing left that could ever lift the suspension.
+    expect(ask(ticket.id)).toBe(false)
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+  })
+
+  it('expires a request released back past its own deadline', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+
+    // The shape of a near-deadline answer: claimed just in time, so expiry saw
+    // `resolving` and left it alone — then the send failed.
+    const token = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
+    await vi.advanceTimersByTimeAsync(300_001)
+    expect(adapter.questionRejections).toHaveLength(0)
+
+    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', token ?? undefined)
+    await settle()
+
+    // Without the deadline re-check the request would go back to pending under a
+    // timer that had already fired: a bounded wait turned unbounded.
+    expect(adapter.questionRejections.map((entry) => entry.requestId)).toEqual(['req_a'])
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+  })
+
+  it('does not expire a released claim while the clock is stopped', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    stopTicketTimers(ticket.id)
+
+    const token = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
+    await vi.advanceTimersByTimeAsync(3_600_000)
+    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', token ?? undefined)
+    await settle()
+
+    // Stop is a promise that the run waits for a person. A failed send does not
+    // withdraw it.
+    expect(adapter.questionRejections).toHaveLength(0)
+    expect(getPendingQuestionSummary(ticket.id)?.requestCount).toBe(1)
+  })
+
+  it('rebuilds a stopped clock from its artifact instead of restarting it', async () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    stopTicketTimers(ticket.id)
+    const stoppedAt = getTicketQuestionState(ticket.id).timer?.stoppedAt
+
+    // The daemon goes away and comes back: live state gone, artifacts intact.
+    resetAllQuestionWindows()
+    resetAllWorkBudgets()
+    const restored = readTimerArtifact(ticket.id, 'CODING', 1)
+    expect(restored?.stoppedAt).not.toBeNull()
+
+    ask(ticket.id, { restore: restored ?? undefined })
+    const timer = getTicketQuestionState(ticket.id).timer!
+    // A question someone deliberately parked must not start counting down again
+    // because the daemon restarted overnight.
+    expect(timer.stoppedAt).toBe(stoppedAt)
+    await settle()
+    expect(adapter.questionRejections).toHaveLength(0)
+  })
+
+  it('expires immediately when the deadline passed while the daemon was down', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const ticket = makeTicket()
+    ask(ticket.id)
+    const restored = readTimerArtifact(ticket.id, 'CODING', 1)
+
+    resetAllQuestionWindows()
+    resetAllWorkBudgets()
+    // Longer than the window: the wait was already over before we came back.
+    vi.setSystemTime(new Date('2026-01-01T02:00:00.000Z'))
+
+    ask(ticket.id, { restore: restored ?? undefined })
+    await vi.advanceTimersByTimeAsync(1)
+    await settle()
+
+    // Handing it a fresh full window instead would let a restart loop postpone
+    // the expiry for as long as the restarts kept coming.
+    expect(adapter.questionRejections.map((entry) => entry.requestId)).toEqual(['req_a'])
+  })
+
+  it('records the wait so it is not billed as working time', () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    markRequestReplied(ticket.id, 'ses_a', 'req_a')
+
+    const context = getTicketContext(ticket.id)!
+    const rows = context.projectDb.select().from(questionWaits).all()
+    expect(rows).toHaveLength(1)
+    expect(Date.parse(rows[0]!.endedAt)).toBeGreaterThanOrEqual(Date.parse(rows[0]!.startedAt))
+  })
+
+  it('banks one interval for two overlapping questions, not two', () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b' })
+
+    markRequestReplied(ticket.id, 'ses_a', 'req_a')
+    const context = getTicketContext(ticket.id)!
+    // Still waiting on the second, so nothing is banked yet.
+    expect(context.projectDb.select().from(questionWaits).all()).toHaveLength(0)
+
+    markRequestReplied(ticket.id, 'ses_b', 'req_b')
+    // Two overlapping waits are one stretch of wall time. Banking each in full
+    // would subtract the same minutes twice from the ticket's active duration.
+    expect(context.projectDb.select().from(questionWaits).all()).toHaveLength(1)
   })
 })

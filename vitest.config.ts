@@ -156,6 +156,14 @@ const serverIntegrationTests = [
   'tests/installer.test.ts',
   // Rebuilds the OpenCode adapter singleton, which siblings share and mock.
   'tests/opencodeRuntimeConfig.test.ts',
+  // Same reason, arrived at the hard way. `questionWindows.ts` is imported by
+  // `workflow/phases/helpers.ts`, so any phase test loads it — and with
+  // `isolate: false` whichever file loads it *first* is the one whose factory
+  // mock it binds. This file then asserted on a `MockOpenCodeAdapter` the
+  // rejections never reached, which read as "expiry did not fire" on every CI
+  // runner and passed locally, where more workers kept the files apart. Every
+  // other test that mocks the factory is already in this list.
+  'server/workflow/__tests__/questionWindows.test.ts',
 
   // Below: integration-grade work that had been filed into `server-pure`, the
   // bucket documented as "no DB, no global state". They drive the real database

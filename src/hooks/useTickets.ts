@@ -174,6 +174,7 @@ export interface Ticket {
     workspacePreparationStartedAt: string | null
     finalTestingDurationMs: number
     finalTestingStartedAt: string | null
+    questionWaitingMs: number
   }
   errorOccurrences?: TicketErrorOccurrence[]
   activeErrorOccurrenceId?: string | null

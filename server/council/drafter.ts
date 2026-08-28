@@ -14,6 +14,7 @@ import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
 import { createWorkBudget } from '../workflow/workBudget'
+import { wasMemberAnswered } from '../workflow/questionWindows'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
 import { PHASE_DEADLINE_ERROR, isAbortError, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
@@ -320,11 +321,19 @@ export async function generateDrafts(
         })
       }
 
+      const steeredByOperator = wasMemberAnswered(
+        runtimeOptions?.ticketId,
+        runtimeOptions?.phase,
+        runtimeOptions?.phaseAttempt ?? 1,
+        member.modelId,
+      )
+
       const draft: DraftResult = {
         memberId: member.modelId,
         outcome: 'completed',
         duration: Date.now() - startTime,
         content,
+        ...(steeredByOperator ? { steeredByOperator } : {}),
         questionCount: validation?.questionCount,
         draftMetrics: validation?.draftMetrics,
         structuredOutput: buildStructuredOutput(),

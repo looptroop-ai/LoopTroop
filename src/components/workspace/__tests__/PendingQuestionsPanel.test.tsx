@@ -206,4 +206,63 @@ describe('PendingQuestionsPanel', () => {
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument()
     expect(document.querySelector('img')).toBeNull()
   })
+
+  it('lets a multi-word answer be typed, spaces and all', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest({
+        questions: [{ header: 'Port', question: 'Which port?', options: [], custom: true }],
+      })],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    const field = screen.getByRole('textbox')
+    // Typed a word at a time, the way a person does. The value was previously
+    // round-tripped through a trim on every keystroke, so the space was deleted
+    // the instant it was typed and the next word ran into the last one.
+    fireEvent.change(field, { target: { value: 'use ' } })
+    expect(field).toHaveValue('use ')
+    fireEvent.change(field, { target: { value: 'use the ' } })
+    fireEvent.change(field, { target: { value: 'use the default port' } })
+    expect(field).toHaveValue('use the default port')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['use the default port']])
+  })
+
+  it('keeps free text that happens to match an option label', () => {
+    const answerRequest = vi.fn()
+    renderPanel({
+      getTicketRequests: () => [makeRequest()],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+      answerRequest,
+    })
+
+    fireEvent.click(screen.getByRole('radio', { name: /SQLite/ }))
+    // Deriving the free text as "whatever is not an option label" classified
+    // this as a selection and dropped it out of the box as you typed.
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Postgres' } })
+    expect(screen.getByRole('textbox')).toHaveValue('Postgres')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    expect(answerRequest).toHaveBeenCalledWith(TICKET_ID, 'req_a', [['SQLite', 'Postgres']])
+  })
+
+  it('does not read the countdown out once a second', () => {
+    renderPanel({
+      getTicketRequests: () => [makeRequest()],
+      getTimer: () => makeTimer(),
+      getRemainingMs: () => 240_000,
+    })
+
+    // The number changes every second. Inside a live region a screen reader
+    // announces every tick, which buries everything else the panel says.
+    const countdown = screen.getByText('4:00')
+    expect(countdown.closest('[aria-live]')).toBeNull()
+    // What *is* announced is the state, which changes only when it changes.
+    expect(screen.getByRole('status')).toHaveTextContent(/the question is refused/i)
+  })
 })

@@ -185,4 +185,95 @@ describe('AIQuestionProvider', () => {
     await vi.waitFor(() => expect(screen.getByText('remaining:300000')).toBeInTheDocument())
     vi.useRealTimers()
   })
+
+  it('sends Stop again for the next step’s clock on the same ticket', async () => {
+    const ticket = makeTicket()
+    const question = buildQuestion(ticket.id)
+    const first = {
+      timerKey: 'CODING:1',
+      windowMs: 300_000,
+      armedAt: TEST.timestamp,
+      deadlineAt: new Date(Date.parse(TEST.timestamp) + 300_000).toISOString(),
+      stoppedAt: null,
+      stoppedBy: null,
+      resetCount: 0,
+      revision: 4,
+      serverNow: TEST.timestamp,
+    }
+    stubAggregate({ questions: [question], timers: { [ticket.id]: first } })
+
+    function Stopper({ ticketId }: { ticketId: string }) {
+      const { stopTimer, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <button onClick={() => stopTimer(ticketId)}>stop</button>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_updated',
+            ticketId,
+            // A different step, so a different clock — and revisions restart at
+            // 1 for it, below the 4 the previous clock had reached.
+            timer: { ...first, timerKey: 'VERIFYING:1', revision: 1, stoppedAt: null },
+            requests: [],
+          })}>next-step</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Stopper ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('stop')).toBeInTheDocument())
+    const calls = () => (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([url]) => String(url).includes('question-timer/stop'))
+
+    fireEvent.click(screen.getByText('stop'))
+    await waitFor(() => expect(calls()).toHaveLength(1))
+    fireEvent.click(screen.getByText('stop'))
+    expect(calls()).toHaveLength(1)
+
+    fireEvent.click(screen.getByText('next-step'))
+    fireEvent.click(screen.getByText('stop'))
+    // Keyed on the ticket alone, the browser remembered "already stopped" and
+    // never sent Stop for the next step's clock at all — so that question would
+    // expire under someone who was sitting there answering it.
+    await waitFor(() => expect(calls()).toHaveLength(2))
+  })
+
+  it('does not discard a new clock as stale because the old one outranked it', async () => {
+    const ticket = makeTicket()
+    const question = buildQuestion(ticket.id)
+    const old = {
+      timerKey: 'CODING:1',
+      windowMs: 300_000,
+      armedAt: TEST.timestamp,
+      deadlineAt: new Date(Date.parse(TEST.timestamp) + 60_000).toISOString(),
+      stoppedAt: null,
+      stoppedBy: null,
+      resetCount: 0,
+      revision: 6,
+      serverNow: TEST.timestamp,
+    }
+    stubAggregate({ questions: [question], timers: { [ticket.id]: old } })
+
+    function Timer({ ticketId }: { ticketId: string }) {
+      const { getTimer, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>key:{getTimer(ticketId)?.timerKey ?? 'none'}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_updated',
+            ticketId,
+            timer: { ...old, timerKey: 'VERIFYING:1', revision: 1 },
+            requests: [],
+          })}>advance</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Timer ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('key:CODING:1')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('advance'))
+    // Revisions are per clock. Comparing them across clocks threw away the new
+    // countdown and left the browser showing one that had already gone.
+    await waitFor(() => expect(screen.getByText('key:VERIFYING:1')).toBeInTheDocument())
+  })
 })

@@ -38,7 +38,7 @@ import {
   WorkflowDeadlineTimeoutError,
 } from '../lib/deadlineErrors'
 import { recordAiTurnMetricFromPrompt } from '../storage/aiTurnMetrics'
-import type { WorkBudget } from './workBudget'
+import { createWorkBudget, type WorkBudget } from './workBudget'
 import { phaseMayAskQuestions } from '@shared/aiQuestions'
 import { ticketAllowsAiQuestions } from './aiQuestionSettings'
 
@@ -549,9 +549,30 @@ export async function runOpenCodeSessionPrompt({
   onStreamError,
   onPromptCompleted,
   timeoutDeadline,
-  workBudget,
+  workBudget: callerBudget,
 }: OpenCodeRunOptions & { session: Session }): Promise<OpenCodeRunResult> {
   const staticTimeoutDeadline = timeoutDeadline ?? getTimeoutDeadline(timeoutMs)
+  /**
+   * Every prompt with a ticket and a deadline gets a suspension-aware clock.
+   *
+   * A prompt that may ask but counts down through the wait is the original bug
+   * wearing a different hat: the model stops for a person, the phase timeout
+   * runs out anyway, and the step dies as a bare `Timeout` with nothing naming
+   * the question. Most callers own a budget already; the ones that do not —
+   * verification, final test, the setup plan, the pull request, beads, manual QA,
+   * the council refiner — would otherwise be exactly those steps. Wrapping the
+   * static deadline here means the guarantee holds everywhere without a call
+   * site having to remember it, which is the same reason permission is resolved
+   * at this boundary rather than threaded through.
+   */
+  const implicitBudget = !callerBudget && sessionOwnership && staticTimeoutDeadline !== undefined
+    ? createWorkBudget({
+      ticketId: sessionOwnership.ticketId,
+      totalMs: Math.max(0, staticTimeoutDeadline - Date.now()),
+      scope: 'prompt',
+    })
+    : undefined
+  const workBudget = callerBudget ?? implicitBudget
   // The budget's deadline moves when a question wait is credited back, so it is
   // read on demand rather than snapshotted.
   const readDeadline = (): number | undefined => workBudget ? workBudget.deadlineAt() : staticTimeoutDeadline
@@ -822,6 +843,10 @@ export async function runOpenCodeSessionPrompt({
     throw thrownError
   } finally {
     unsubscribeBudget?.()
+    // Only the one this call created. A caller's budget outlives this prompt —
+    // `prd/draft.ts` runs two sessions under one — and releasing it here would
+    // drop the deadline its second half is still counting against.
+    implicitBudget?.release()
     if (deadlineTimer) {
       clearTimeout(deadlineTimer)
     }

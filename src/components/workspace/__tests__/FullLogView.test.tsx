@@ -127,6 +127,7 @@ function makeTicket(overrides: Omit<Partial<Ticket>, 'runtime'> & { runtime?: Om
       workspacePreparationStartedAt: null,
       finalTestingDurationMs: 0,
       finalTestingStartedAt: null,
+      questionWaitingMs: 0,
     },
     ...overrides,
     runtime: {

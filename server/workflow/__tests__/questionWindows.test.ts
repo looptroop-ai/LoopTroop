@@ -202,7 +202,7 @@ describe('question windows', () => {
   it('lets exactly one resolver claim a request', () => {
     const ticket = makeTicket()
     ask(ticket.id)
-    // The winner gets the token it later completes the claim with.
+    // The winner gets the id it later completes the claim with.
     expect(claimRequestForReply(ticket.id, 'ses_a', 'req_a')).toEqual(expect.any(String))
     // The loser of an answer-versus-expiry race must do nothing at all rather
     // than send a second verdict for a question that already has one.
@@ -368,11 +368,11 @@ describe('question windows', () => {
 
     // The shape of a near-deadline answer: claimed just in time, so expiry saw
     // `resolving` and left it alone — then the send failed.
-    const token = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
+    const claimId = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
     await vi.advanceTimersByTimeAsync(300_001)
     expect(adapter.questionRejections).toHaveLength(0)
 
-    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', token ?? undefined)
+    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', claimId ?? undefined)
     await settle()
 
     // Without the deadline re-check the request would go back to pending under a
@@ -389,9 +389,9 @@ describe('question windows', () => {
     ask(ticket.id)
     stopTicketTimers(ticket.id)
 
-    const token = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
+    const claimId = claimRequestForReply(ticket.id, 'ses_a', 'req_a')
     await vi.advanceTimersByTimeAsync(3_600_000)
-    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', token ?? undefined)
+    releaseRequestClaim(ticket.id, 'ses_a', 'req_a', claimId ?? undefined)
     await settle()
 
     // Stop is a promise that the run waits for a person. A failed send does not

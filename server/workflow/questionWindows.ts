@@ -69,7 +69,7 @@ interface QuestionRequestRecord {
   waitingAtAttach: number
   state: RequestState
   /** Who holds the claim while `resolving`. Only they may complete it. */
-  claimToken: string | null
+  claimId: string | null
   /** Bumped on every transition so a late frame cannot undo a newer one. */
   revision: number
 }
@@ -484,7 +484,7 @@ export function attachRequest(input: {
     receivedAt: input.restore?.receivedAt ?? Date.now(),
     waitingAtAttach: getTicketWaitingMs(input.ticketId),
     state: 'pending',
-    claimToken: null,
+    claimId: null,
     revision: 1,
   }
   openWaitInterval(input.ticketId)
@@ -530,34 +530,34 @@ export function stopTicketTimers(ticketId: string, actor: SkipActor = 'user'): A
  * Claiming and completing are two steps because a route has to call OpenCode in
  * between: it claims so expiry cannot send a second verdict for the same
  * question, awaits the reply, then completes the claim it still holds. Passing
- * the token back is what proves it is still the owner — without it a late stream
+ * the id back is what proves it is still the owner — without it a late stream
  * echo could resolve a request another caller is part-way through, and the first
  * cut of this module simply re-claimed, found the request no longer `pending`,
  * and silently never finished it at all.
  */
-function claim(timer: QuestionTimer, key: string, token?: string): QuestionRequestRecord | null {
+function claim(timer: QuestionTimer, key: string, claimId?: string): QuestionRequestRecord | null {
   const record = timer.requests.get(key)
   if (!record) return null
-  if (token !== undefined) {
-    if (record.state !== 'resolving' || record.claimToken !== token) return null
+  if (claimId !== undefined) {
+    if (record.state !== 'resolving' || record.claimId !== claimId) return null
     return record
   }
   if (record.state !== 'pending') return null
   record.state = 'resolving'
-  record.claimToken = null
+  record.claimId = null
   record.revision += 1
   return record
 }
 
-/** Claims a request and hands back the token its owner completes it with. */
-function claimWithToken(timer: QuestionTimer, key: string): string | null {
+/** Claims a request and hands back the id its owner completes it with. */
+function claimAndIssueId(timer: QuestionTimer, key: string): string | null {
   const record = timer.requests.get(key)
   if (!record || record.state !== 'pending') return null
   claimSequence += 1
   record.state = 'resolving'
-  record.claimToken = `clm_${claimSequence}`
+  record.claimId = `clm_${claimSequence}`
   record.revision += 1
-  return record.claimToken
+  return record.claimId
 }
 
 function findTimerFor(ticketId: string, sessionId: string, requestId: string): {
@@ -575,7 +575,7 @@ function findTimerFor(ticketId: string, sessionId: string, requestId: string): {
 
 function finish(timer: QuestionTimer, record: QuestionRequestRecord): void {
   record.state = 'resolved'
-  record.claimToken = null
+  record.claimId = null
   record.revision += 1
   persistRequest(record, timer.timerKey)
   const key = requestKey(record.sessionId, record.requestId)
@@ -802,7 +802,7 @@ async function expireTimer(timer: QuestionTimer): Promise<void> {
 /**
  * A person answered. Clears the request without a receipt: nothing was skipped.
  *
- * `claimToken` is the token from `claimRequestForReply`, which the route takes
+ * `claimId` is the id from `claimRequestForReply`, which the route takes
  * before calling OpenCode. Omitting it claims here instead, for callers that
  * resolve a request without a round trip to defend against.
  */
@@ -810,11 +810,11 @@ export function markRequestReplied(
   ticketId: string,
   sessionId: string,
   requestId: string,
-  claimToken?: string,
+  claimId?: string,
 ): boolean {
   const found = findTimerFor(ticketId, sessionId, requestId)
   if (!found) return false
-  const record = claim(found.timer, found.key, claimToken)
+  const record = claim(found.timer, found.key, claimId)
   if (!record) return false
   rememberAnswered(record)
   finish(found.timer, record)
@@ -859,11 +859,11 @@ export function markRequestSkipped(
   sessionId: string,
   requestId: string,
   reason: string | null,
-  claimToken?: string,
+  claimId?: string,
 ): boolean {
   const found = findTimerFor(ticketId, sessionId, requestId)
   if (!found) return false
-  const record = claim(found.timer, found.key, claimToken)
+  const record = claim(found.timer, found.key, claimId)
   if (!record) return false
   writeQuestionReceipt({
     timer: found.timer,
@@ -896,12 +896,12 @@ export function markRequestRejectedExternally(ticketId: string, sessionId: strin
 /**
  * Claims a request so a route can call OpenCode without racing the timer.
  *
- * Returns the token to complete the claim with, or null when someone else got
+ * Returns the id to complete the claim with, or null when someone else got
  * there first. A request with no window at all (reconciled away, or never
- * tracked) returns the sentinel token: there is no clock to race, and refusing
+ * tracked) returns the sentinel id: there is no clock to race, and refusing
  * would block an answer OpenCode would still accept.
  */
-export const UNTRACKED_CLAIM_TOKEN = 'untracked'
+export const UNTRACKED_CLAIM_ID = 'untracked'
 
 export function claimRequestForReply(
   ticketId: string,
@@ -909,8 +909,8 @@ export function claimRequestForReply(
   requestId: string,
 ): string | null {
   const found = findTimerFor(ticketId, sessionId, requestId)
-  if (!found) return UNTRACKED_CLAIM_TOKEN
-  return claimWithToken(found.timer, found.key)
+  if (!found) return UNTRACKED_CLAIM_ID
+  return claimAndIssueId(found.timer, found.key)
 }
 
 /**
@@ -928,15 +928,15 @@ export function releaseRequestClaim(
   ticketId: string,
   sessionId: string,
   requestId: string,
-  claimToken?: string,
+  claimId?: string,
 ): void {
   const found = findTimerFor(ticketId, sessionId, requestId)
   if (!found) return
   const record = found.timer.requests.get(found.key)
   if (!record || record.state !== 'resolving') return
-  if (claimToken !== undefined && record.claimToken !== claimToken) return
+  if (claimId !== undefined && record.claimId !== claimId) return
   record.state = 'pending'
-  record.claimToken = null
+  record.claimId = null
   record.revision += 1
   if (found.timer.stoppedAt !== null) return
   if (found.timer.deadlineAt <= Date.now()) {

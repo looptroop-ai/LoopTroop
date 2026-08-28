@@ -229,17 +229,17 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
 
   // Claim before calling OpenCode. Expiry, cancellation and this answer all race
   // for the same request, and whoever loses must do nothing at all rather than
-  // send a second verdict for a question that already has one. The token is what
+  // send a second verdict for a question that already has one. The id is what
   // completes the claim afterwards — resolving it by claiming a second time
   // could never succeed, because the request is no longer pending.
-  const claimToken = claimRequestForReply(ticketId, question.sessionId, requestId)
-  if (!claimToken) {
+  const claimId = claimRequestForReply(ticketId, question.sessionId, requestId)
+  if (!claimId) {
     return c.json({ error: 'That question was already resolved' }, 409)
   }
 
   try {
     await getOpenCodeAdapter().replyQuestion(requestId, parsed.data.answers, ticketContext.projectRoot)
-    markRequestReplied(ticketId, question.sessionId, requestId, claimToken)
+    markRequestReplied(ticketId, question.sessionId, requestId, claimId)
     emitOpenCodeQuestionLog(ticketId, question.phase, '[QUESTION] AI question answered.', {
       requestId,
       sessionId: question.sessionId,
@@ -257,7 +257,7 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
     })
     return c.json({ success: true })
   } catch (err) {
-    releaseRequestClaim(ticketId, question.sessionId, requestId, claimToken)
+    releaseRequestClaim(ticketId, question.sessionId, requestId, claimId)
     const message = getErrorMessage(err)
     emitOpenCodeQuestionLog(ticketId, question.phase, `[ERROR] Failed to answer OpenCode question: ${message}`, {
       requestId,
@@ -288,8 +288,8 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
   const question = await findPendingOpenCodeQuestionForTicket(ticketId, requestId)
   if (!question) return c.json({ error: 'OpenCode question request not found for ticket' }, 404)
 
-  const claimToken = claimRequestForReply(ticketId, question.sessionId, requestId)
-  if (!claimToken) {
+  const claimId = claimRequestForReply(ticketId, question.sessionId, requestId)
+  if (!claimId) {
     return c.json({ error: 'That question was already resolved' }, 409)
   }
 
@@ -297,7 +297,7 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
     await getOpenCodeAdapter().rejectQuestion(requestId, ticketContext.projectRoot)
     // Written after the rejection lands, so the trail never records a decision
     // OpenCode was never told about.
-    markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimToken)
+    markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimId)
     const receiptLine = reason ? ` Reason: ${reason}` : ''
     emitOpenCodeQuestionLog(ticketId, question.phase, `[QUESTION] AI question skipped.${receiptLine}`, {
       requestId,
@@ -317,7 +317,7 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
     })
     return c.json({ success: true })
   } catch (err) {
-    releaseRequestClaim(ticketId, question.sessionId, requestId, claimToken)
+    releaseRequestClaim(ticketId, question.sessionId, requestId, claimId)
     const message = getErrorMessage(err)
     emitOpenCodeQuestionLog(ticketId, question.phase, `[ERROR] Failed to skip OpenCode question: ${message}`, {
       requestId,

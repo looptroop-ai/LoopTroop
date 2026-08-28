@@ -184,6 +184,15 @@ const serverIntegrationTests = [
   // stalls only itself, and the 20s/30s budgets are the ones written for
   // exactly this workload. Anything new that opens the database or shells out
   // to git belongs here too, however pure its unit under test looks.
+  // Both spawn real child processes, and `hookValidation` does it with
+  // `spawnSync` — which blocks the whole worker, so with `isolate: false` every
+  // file queued behind it stalls too. On Windows, where there is no fork() to
+  // lean on, that is enough to push unrelated files past the 15s budget: the two
+  // of them timed out together on one run of a SHA whose sibling run passed.
+  // Same reason as the group below, found the same way.
+  'server/lib/__tests__/commandExecutor.test.ts',
+  'server/phases/executionSetup/__tests__/hookValidation.test.ts',
+
   'server/db/__tests__/sqliteContract.test.ts',
   'server/machines/__tests__/persistence.test.ts',
   'server/phases/executionSetup/__tests__/workspaceInputs.test.ts',

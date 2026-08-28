@@ -64,6 +64,8 @@ import { cancelTicketSchema, closeUnmergedSchema, retryTicketSchema } from './sc
 import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from '../../workflow/skipReceipts'
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
+import { clearTicketWindows } from '../../workflow/questionWindows'
+import { clearTicketWorkBudget } from '../../workflow/workBudget'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -407,7 +409,15 @@ export async function handleCancelTicket(c: Context) {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'CANCEL' })
       cancelTicket(ticketId)
+      // Before the sessions go, so the receipts say the ticket was cancelled
+      // rather than that a session vanished. Tearing the sessions down first
+      // would file every outstanding question under `session_lost`, which is
+      // true but tells a later reader nothing about why.
+      await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
       await abortTicketSessions(ticketId)
+      // A suspension surviving the cancel would hold the clocks of whatever
+      // runs next on this ticket.
+      clearTicketWorkBudget(ticketId)
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)

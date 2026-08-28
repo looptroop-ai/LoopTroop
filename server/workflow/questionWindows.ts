@@ -676,20 +676,6 @@ export async function clearTicketWindows(
   timersByTicket.delete(ticketId)
 }
 
-/** Synchronous teardown for paths that cannot await. Leaves OpenCode untold. */
-export function forgetTicketWindows(ticketId: string): void {
-  const timers = timersByTicket.get(ticketId)
-  if (!timers) return
-  for (const timer of timers.values()) {
-    disarm(timer)
-    for (const record of pendingRequests(timer)) {
-      record.state = 'resolved'
-      resumeTicketWork(record.ticketId)
-    }
-  }
-  timersByTicket.delete(ticketId)
-}
-
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export interface TicketQuestionState {
@@ -738,16 +724,6 @@ export function getPendingQuestionSummary(ticketId: string): PendingQuestionSumm
   }
 }
 
-/** Every ticket with a question outstanding, for the ticket-list projection. */
-export function getAllPendingQuestionSummaries(): Map<string, PendingQuestionSummary> {
-  const summaries = new Map<string, PendingQuestionSummary>()
-  for (const ticketId of timersByTicket.keys()) {
-    const summary = getPendingQuestionSummary(ticketId)
-    if (summary) summaries.set(ticketId, summary)
-  }
-  return summaries
-}
-
 /**
  * Drops records for questions OpenCode no longer has.
  *
@@ -766,18 +742,6 @@ export function reconcileAgainstPending(ticketId: string, liveRequestIds: Set<st
       finish(timer, record)
     }
   }
-}
-
-/** True while a session still has a question outstanding. */
-export function sessionHasPendingQuestion(ticketId: string, sessionId: string): boolean {
-  const timers = timersByTicket.get(ticketId)
-  if (!timers) return false
-  for (const timer of timers.values()) {
-    for (const record of pendingRequests(timer)) {
-      if (record.sessionId === sessionId) return true
-    }
-  }
-  return false
 }
 
 /**

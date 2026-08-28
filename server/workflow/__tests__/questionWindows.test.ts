@@ -11,6 +11,7 @@ import {
   armOrResetTimer,
   attachRequest,
   claimRequestForReply,
+  clearTicketWindows,
   getPendingQuestionSummary,
   getTicketQuestionState,
   markRequestReplied,
@@ -216,6 +217,25 @@ describe('question windows', () => {
     reconcileAgainstPending(ticket.id, new Set(['req_b']))
     const state = getTicketQuestionState(ticket.id)
     expect(state.requests.map((request) => request.requestId)).toEqual(['req_b'])
+  })
+
+  it('refuses everything under the system actor when the ticket is canceled', async () => {
+    const ticket = makeTicket()
+    ask(ticket.id)
+    ask(ticket.id, { sessionId: 'ses_b', requestId: 'req_b' })
+
+    await clearTicketWindows(ticket.id, 'ticket_canceled', 'The ticket was canceled while the question was open.')
+
+    expect(getPendingQuestionSummary(ticket.id)).toBeNull()
+    // The suspension has to lift too, or it would hold the clocks of whatever
+    // runs next on this ticket.
+    expect(isTicketWorkSuspended(ticket.id)).toBe(false)
+
+    const events = listSkipEvents(ticket.id).filter((event) => event.surface === 'opencode_question')
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.every((event) => event.skippedBy === 'system')).toBe(true)
+    const summary = events.find((event) => event.isActionSummary)
+    expect(summary?.questionContext?.expiry_reason).toBe('ticket_canceled')
   })
 
   it('clamps a window outside the configurable range', () => {

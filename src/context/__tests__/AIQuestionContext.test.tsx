@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIQuestionProvider } from '../AIQuestionContext'
 import { UIProvider } from '../UIContext'
@@ -103,6 +103,53 @@ describe('AIQuestionProvider', () => {
     renderProvider([ticket], <div>board</div>)
 
     expect(await screen.findByText(`${TEST.externalId} is waiting on a question`)).toBeInTheDocument()
+  })
+
+  it('keeps the model name when a request arrives on the timer-update path', async () => {
+    const ticket = makeTicket({ status: 'CODING' })
+    // The aggregate poll finds nothing; the request is only ever seen inside a
+    // timer update, whose rows use the server's `memberId` rather than `modelId`.
+    stubAggregate({ questions: [], timers: {} })
+
+    function Model({ ticketId }: { ticketId: string }) {
+      const { getTicketRequests, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => ingestSseEvent({
+              type: 'opencode_question_updated',
+              ticketId,
+              ticketExternalId: TEST.externalId,
+              ticketTitle: 'A ticket',
+              status: 'CODING',
+              requests: [{
+                ticketId,
+                sessionId: 'ses_a',
+                requestId: 'req_a',
+                memberId: TEST.model,
+                phase: 'CODING',
+                phaseAttempt: 1,
+                questions: [{ header: 'H', question: 'Which?', options: [] }],
+                questionCount: 1,
+                receivedAt: TEST.timestamp,
+                timerKey: 'CODING:1',
+              }],
+            })}
+          >
+            ingest
+          </button>
+          <div>model:{getTicketRequests(ticketId)[0]?.modelId ?? 'none'}</div>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Model ticketId={ticket.id} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'ingest' }))
+
+    // `upsertRequest` never overwrites an existing row, so a name missed here
+    // would stay missing for the life of the request.
+    await waitFor(() => expect(screen.getByText(`model:${TEST.model}`)).toBeInTheDocument())
   })
 
   it('corrects the countdown for a browser clock that is wrong', async () => {

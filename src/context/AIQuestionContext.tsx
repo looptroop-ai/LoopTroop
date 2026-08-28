@@ -191,8 +191,20 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       applyTimer(payload.ticketId, payload.timer ?? null)
       // The update carries the full pending set for the step, so it is also the
       // signal that a request this client never saw arrive is now outstanding.
+      // Its rows use the server's own vocabulary (`memberId`) and omit the
+      // ticket fields that sit on the envelope, so both are mapped across —
+      // `upsertRequest` never overwrites an existing row, which would otherwise
+      // leave the first arrival permanently unlabelled.
       for (const raw of payload.requests ?? []) {
-        const parsed = parseQuestionPayload({ ...raw, type: 'opencode_question', ticketId: payload.ticketId })
+        const parsed = parseQuestionPayload({
+          ...raw,
+          type: 'opencode_question',
+          ticketId: payload.ticketId,
+          ...(typeof raw.memberId === 'string' ? { modelId: raw.memberId } : {}),
+          ...(payload.ticketExternalId ? { ticketExternalId: payload.ticketExternalId } : {}),
+          ...(payload.ticketTitle ? { ticketTitle: payload.ticketTitle } : {}),
+          ...(payload.status ? { status: payload.status } : {}),
+        })
         if (parsed) upsertRequest(parsed)
       }
       return

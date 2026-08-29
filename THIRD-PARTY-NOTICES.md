@@ -60,8 +60,8 @@ frontend packages inlined into the client bundle.
 | `@radix-ui/react-use-layout-effect` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-use-size` | 1.1.4 | MIT | Copyright (c) 2022 WorkOS |
 | `@radix-ui/react-visually-hidden` | 1.2.11 | MIT | Copyright (c) 2022 WorkOS |
-| `@tanstack/query-core` | 5.101.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
-| `@tanstack/react-query` | 5.101.4 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/query-core` | 5.102.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
+| `@tanstack/react-query` | 5.102.0 | MIT | Copyright (c) 2021-present Tanner Linsley |
 | `argparse` | 2.0.1 | Python-2.0 | Copyright (c) 1991 - 1995, Stichting Mathematisch Centrum Amsterdam, |
 | `aria-hidden` | 1.2.6 | MIT | Copyright (c) 2017 Anton Korzunov |
 | `class-variance-authority` | 0.7.1 | Apache-2.0 | Copyright 2022 Joe Bell |
@@ -268,7 +268,7 @@ SOFTWARE.
 
 ### MIT
 
-Applies to: `@tanstack/query-core@5.101.4`, `@tanstack/react-query@5.101.4`
+Applies to: `@tanstack/query-core@5.102.0`, `@tanstack/react-query@5.102.0`
 
 ```text
 MIT License

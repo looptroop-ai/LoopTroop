@@ -390,7 +390,7 @@ function arm(timer: QuestionTimer): void {
     })
   }, remaining)
   // A timer whose deadline already passed must not keep the daemon alive.
-  timer.handle.unref?.()
+  timer.handle.unref()
 }
 
 /**

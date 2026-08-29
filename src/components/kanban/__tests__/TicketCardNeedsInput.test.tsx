@@ -32,7 +32,12 @@ function renderCard(ticket: Ticket, aiQuestions: AIQuestionContextValue = create
 
 function cardFor(ticket: Ticket) {
   // The label carries a trailing clause naming the wait, so match its start.
-  return screen.getByLabelText(new RegExp(`^Open ticket ${ticket.externalId}(,|$)`)) as HTMLElement
+  // A plain prefix test rather than a built regex: the id would otherwise need
+  // escaping to stay a literal match.
+  const prefix = `Open ticket ${ticket.externalId}`
+  return screen.getByLabelText(
+    (content) => content === prefix || content.startsWith(`${prefix},`),
+  ) as HTMLElement
 }
 
 describe('TicketCard — ack-aware Needs Input flashing', () => {

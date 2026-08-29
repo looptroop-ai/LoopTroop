@@ -8,7 +8,7 @@
  * explain it.
  */
 
-import { WORKFLOW_PHASE_MAP, type KanbanPhase } from './workflowMeta'
+import { getWorkflowPhaseMeta, type KanbanPhase } from './workflowMeta'
 
 export interface KanbanPhaseInput {
   /** True while a model is waiting on an answer to an AI question. */
@@ -28,7 +28,7 @@ export interface KanbanPhaseInput {
  * approval stays there, and a done or todo ticket has no live model to ask.
  */
 export function resolveKanbanPhase(status: string, input: KanbanPhaseInput = {}): KanbanPhase {
-  const base = WORKFLOW_PHASE_MAP[status]?.kanbanPhase ?? 'todo'
+  const base = getWorkflowPhaseMeta(status)?.kanbanPhase ?? 'todo'
   if (input.hasPendingQuestion && base === 'in_progress') return 'needs_input'
   return base
 }

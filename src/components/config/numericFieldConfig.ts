@@ -1,4 +1,5 @@
 import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
 import { MAX_TIMEOUT_SECONDS } from '@/lib/constants'
 
 interface NumericFieldConfig {
@@ -35,6 +36,16 @@ export const numericFields = {
     max: MAX_TIMEOUT_SECONDS,
     label: 'AI Response Timeout',
     docsPath: '/configuration#ai-response-timeout',
+    unit: 'seconds',
+    fromStore: (v: number) => String(Math.round(v / 1000)),
+    toStore: (v: number) => v * 1000,
+  },
+  aiQuestionWindow: {
+    // Bounds come from the shared contract so the field and the server agree.
+    min: AI_QUESTION_WINDOW_MIN_MS / 1000,
+    max: AI_QUESTION_WINDOW_MAX_MS / 1000,
+    label: 'AI Question Wait',
+    docsPath: '/configuration#ai-question-wait',
     unit: 'seconds',
     fromStore: (v: number) => String(Math.round(v / 1000)),
     toStore: (v: number) => v * 1000,
@@ -176,6 +187,7 @@ export function buildInitialRawNumeric(data: Record<string, unknown>): Record<st
     perIterationTimeout: numericFields.perIterationTimeout.fromStore((data.perIterationTimeout ?? PROFILE_DEFAULTS.perIterationTimeout) as number),
     executionSetupTimeout: numericFields.executionSetupTimeout.fromStore((data.executionSetupTimeout ?? PROFILE_DEFAULTS.executionSetupTimeout) as number),
     councilResponseTimeout: numericFields.councilResponseTimeout.fromStore((data.councilResponseTimeout ?? PROFILE_DEFAULTS.councilResponseTimeout) as number),
+    aiQuestionWindow: numericFields.aiQuestionWindow.fromStore((data.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow) as number),
     maxIterations: String(data.maxIterations ?? PROFILE_DEFAULTS.maxIterations),
     minCouncilQuorum: String(data.minCouncilQuorum ?? PROFILE_DEFAULTS.minCouncilQuorum),
     interviewQuestions: String(data.interviewQuestions ?? PROFILE_DEFAULTS.interviewQuestions),

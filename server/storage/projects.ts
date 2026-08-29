@@ -42,6 +42,8 @@ export interface ExistingProjectMetadata {
   color: string | null
   gitHookPolicy: LocalProjectRow['gitHookPolicy']
   manualQaOverride: LocalProjectRow['manualQaOverride']
+  aiQuestionsOverride: LocalProjectRow['aiQuestionsOverride']
+  aiQuestionWindowOverride: LocalProjectRow['aiQuestionWindowOverride']
   ignoreMode: LocalProjectRow['ignoreMode']
   ticketCounter: number
   ticketCount: number
@@ -79,6 +81,9 @@ interface ProjectAttachmentInput {
   profileId?: number
   councilMembers?: string
   manualQaOverride?: boolean
+  // No profile fallback at project level: undefined means "inherit", not "default".
+  aiQuestionsOverride?: boolean | null
+  aiQuestionWindowOverride?: number | null
   gitHookPolicy?: GitHookPolicy
   maxIterations?: number
   perIterationTimeout?: number
@@ -236,6 +241,8 @@ function ensureLocalProject(projectRoot: string, input?: ProjectAttachmentInput)
       profileId: input.profileId ?? null,
       councilMembers: input.councilMembers ?? null,
       manualQaOverride: input.manualQaOverride,
+      aiQuestionsOverride: input.aiQuestionsOverride ?? null,
+      aiQuestionWindowOverride: input.aiQuestionWindowOverride ?? null,
       gitHookPolicy: input.gitHookPolicy,
       maxIterations: input.maxIterations ?? null,
       perIterationTimeout: input.perIterationTimeout ?? null,
@@ -310,6 +317,12 @@ export function attachExistingProject(input: Partial<ProjectAttachmentInput> & {
     manualQaOverride: requested.manualQaOverride === undefined
       ? (localProject.manualQaOverride ?? configuredDefaults.manualQaOverride)
       : requested.manualQaOverride,
+    aiQuestionsOverride: requested.aiQuestionsOverride === undefined
+      ? localProject.aiQuestionsOverride
+      : requested.aiQuestionsOverride,
+    aiQuestionWindowOverride: requested.aiQuestionWindowOverride === undefined
+      ? localProject.aiQuestionWindowOverride
+      : requested.aiQuestionWindowOverride,
     gitHookPolicy: requested.gitHookPolicy === undefined
       ? (isGitHookPolicy(localProject.gitHookPolicy) ? localProject.gitHookPolicy : configuredDefaults.gitHookPolicy)
       : requested.gitHookPolicy,
@@ -387,7 +400,7 @@ export function getProjectContextById(id: number): ProjectContext | undefined {
   return { attached, projectRoot, projectDb: db, project }
 }
 
-export function updateProject(id: number, patch: Partial<Pick<LocalProjectRow, 'name' | 'icon' | 'color' | 'councilMembers' | 'manualQaOverride' | 'gitHookPolicy' | 'maxIterations' | 'perIterationTimeout' | 'executionSetupTimeout' | 'councilResponseTimeout' | 'minCouncilQuorum' | 'interviewQuestions'>>): PublicProject | undefined {
+export function updateProject(id: number, patch: Partial<Pick<LocalProjectRow, 'name' | 'icon' | 'color' | 'councilMembers' | 'manualQaOverride' | 'aiQuestionsOverride' | 'aiQuestionWindowOverride' | 'gitHookPolicy' | 'maxIterations' | 'perIterationTimeout' | 'executionSetupTimeout' | 'councilResponseTimeout' | 'minCouncilQuorum' | 'interviewQuestions'>>): PublicProject | undefined {
   const context = getProjectContextById(id)
   if (!context) return undefined
   if (patch.name !== undefined) {
@@ -479,6 +492,8 @@ export function getExistingProjectMetadata(projectRootOrFolder: string): Existin
     color: project.color ?? null,
     gitHookPolicy: project.gitHookPolicy,
     manualQaOverride: project.manualQaOverride,
+    aiQuestionsOverride: project.aiQuestionsOverride,
+    aiQuestionWindowOverride: project.aiQuestionWindowOverride,
     ignoreMode: project.ignoreMode,
     ticketCounter: project.ticketCounter ?? 0,
     ticketCount,
@@ -663,6 +678,12 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
   const manualQaOverride = input.manualQaOverride === undefined
     ? (project.manualQaOverride ?? configuredDefaults.manualQaOverride)
     : input.manualQaOverride
+  const aiQuestionsOverride = input.aiQuestionsOverride === undefined
+    ? project.aiQuestionsOverride
+    : input.aiQuestionsOverride
+  const aiQuestionWindowOverride = input.aiQuestionWindowOverride === undefined
+    ? project.aiQuestionWindowOverride
+    : input.aiQuestionWindowOverride
   const gitHookPolicy = input.gitHookPolicy === undefined
     ? (isGitHookPolicy(project.gitHookPolicy) ? project.gitHookPolicy : configuredDefaults.gitHookPolicy)
     : input.gitHookPolicy
@@ -686,7 +707,8 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
     projectDb.sqlite.prepare(`
       UPDATE projects
       SET name = ?, icon = ?, color = ?, folder_path = ?,
-          manual_qa_override = ?, git_hook_policy = ?, ignore_mode = ?, ticket_counter = 0,
+          manual_qa_override = ?, ai_questions_override = ?, ai_question_window_override = ?,
+          git_hook_policy = ?, ignore_mode = ?, ticket_counter = 0,
           updated_at = ?
       WHERE id = ?
     `).run(
@@ -695,6 +717,8 @@ export async function clearExistingProjectTickets(input: ProjectAttachmentInput)
       input.color ?? project.color,
       projectRoot,
       Number(manualQaOverride),
+      aiQuestionsOverride === null || aiQuestionsOverride === undefined ? null : Number(aiQuestionsOverride),
+      aiQuestionWindowOverride ?? null,
       gitHookPolicy,
       ignoreMode,
       new Date().toISOString(),

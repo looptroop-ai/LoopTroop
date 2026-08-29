@@ -1,6 +1,7 @@
 import { and, desc, eq, ne, type SQL } from 'drizzle-orm'
 import { beadExecutionMetrics, ticketStatusHistory } from '../db/schema'
 import { getTicketContext } from './ticketQueries'
+import { questionWaitOverlapMs } from './questionWaits'
 import type { ProjectContext } from './projects'
 import type { Bead } from '../phases/beads/types'
 import type { BeadSample } from '../workflow/eta/computeEta'
@@ -59,6 +60,12 @@ function wallClockMinusWaitingMs(
     const overlap = Math.min(to, windowEnd) - Math.max(from, windowStart)
     if (overlap > 0) waiting += overlap
   }
+
+  // A question wait happens *inside* CODING, so the status walk above cannot see
+  // it — the ticket never left the status. Left in, every minute spent waiting
+  // on a person would be trained into the ETA as a minute of model throughput,
+  // and the forecast would drift further out the more questions a project asks.
+  waiting += questionWaitOverlapMs(projectDb, ticketId, windowStart, windowEnd)
 
   return Math.max(0, wallClock - waiting)
 }

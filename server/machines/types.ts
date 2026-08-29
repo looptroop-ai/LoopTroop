@@ -1,6 +1,14 @@
 import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 
-export type ManualQaConfigurationSource = 'profile' | 'project' | 'ticket'
+/** Which level of the profile → project → ticket cascade a locked setting came from. */
+export type SettingSource = 'profile' | 'project' | 'ticket'
+
+export type ManualQaConfigurationSource = SettingSource
+
+/** Source columns are plain text, so anything unrecognised reads as "not locked". */
+export function normalizeSettingSource(value: string | null | undefined): SettingSource | null {
+  return value === 'profile' || value === 'project' || value === 'ticket' ? value : null
+}
 
 export interface TicketContext {
   ticketId: string
@@ -20,6 +28,10 @@ export interface TicketContext {
   lockedStructuredRetryCount: number | null
   lockedManualQaEnabled: boolean | null
   lockedManualQaSource: ManualQaConfigurationSource | null
+  lockedAiQuestionsEnabled: boolean | null
+  lockedAiQuestionsSource: SettingSource | null
+  lockedAiQuestionWindow: number | null
+  lockedAiQuestionWindowSource: SettingSource | null
   pendingExecutionSetupPlanRequestArtifactId: number | null
   previousStatus: string | null
   error: string | null
@@ -53,6 +65,10 @@ export type TicketEvent =
       lockedStructuredRetryCount?: number | null
       lockedManualQaEnabled?: boolean | null
       lockedManualQaSource?: ManualQaConfigurationSource | null
+      lockedAiQuestionsEnabled?: boolean | null
+      lockedAiQuestionsSource?: SettingSource | null
+      lockedAiQuestionWindow?: number | null
+      lockedAiQuestionWindowSource?: SettingSource | null
     }
   | { type: 'INIT_FAILED'; message: string; codes?: string[] }
   | { type: 'QUESTIONS_READY'; result: Record<string, unknown> }

@@ -303,7 +303,7 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ stuckDays: 1 })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-20`)).toBeInTheDocument()
+    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-20, waiting for your input`)).toBeInTheDocument()
     expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-21`)).toBeInTheDocument()
     expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-22`)).not.toBeInTheDocument()
     expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-23`)).not.toBeInTheDocument()
@@ -311,6 +311,29 @@ describe('KanbanBoard', () => {
     expect(within(screen.getByText('Needs Input').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('Done').parentElement as HTMLElement).getByText('0')).toBeInTheDocument()
+  })
+
+  it('moves a working ticket with a pending question into Needs Input', () => {
+    mockBoardData([
+      makeTicket({
+        id: `1:${TEST.shortname}-24`,
+        externalId: `${TEST.shortname}-24`,
+        title: 'Asked a question',
+        status: 'CODING',
+        pendingQuestions: { requestCount: 1, questionCount: 2, deadlineAt: null, stoppedAt: null },
+      }),
+      makeTicket({
+        id: `1:${TEST.shortname}-25`,
+        externalId: `${TEST.shortname}-25`,
+        title: 'Working quietly',
+        status: 'CODING',
+      }),
+    ], [makeProject()])
+
+    renderWithProviders(<KanbanBoard />)
+
+    expect(within(screen.getByText('Needs Input').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
+    expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
   })
 
   it('filters tickets by selected workflow status', () => {

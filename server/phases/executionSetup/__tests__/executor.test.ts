@@ -13,7 +13,7 @@ vi.mock('../generator', () => ({
   generateExecutionSetup: generateExecutionSetupMock,
 }))
 
-import { executeExecutionSetupWithRetries } from '../executor'
+import { executeExecutionSetupWithRetries, type ExecutionSetupAttemptTiming } from '../executor'
 
 function buildGeneration(attempt: number): GenerateExecutionSetupResult {
   return {
@@ -317,9 +317,11 @@ describe('executeExecutionSetupWithRetries', () => {
   })
 
   it('starts a fresh execution setup deadline for every genuine retry attempt', async () => {
-    const now = vi.spyOn(Date, 'now')
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(5_000)
+    // Fake timers rather than a call-counted `Date.now` spy: the attempt now
+    // also builds a work budget, and any future reader of the clock would shift
+    // a `mockReturnValueOnce` sequence and break a test about deadlines.
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
     generateExecutionSetupMock
       .mockResolvedValueOnce(buildGeneration(1))
       .mockResolvedValueOnce(buildGeneration(2))
@@ -338,6 +340,7 @@ describe('executeExecutionSetupWithRetries', () => {
       {
         evaluateGeneration: async ({ attempt, timing }) => {
           observedDeadlines.push(timing.timeoutDeadline)
+          vi.setSystemTime(5_000)
           return buildBackendValidationFailureReport(attempt)
         },
       },
@@ -360,7 +363,7 @@ describe('executeExecutionSetupWithRetries', () => {
       expect.objectContaining({ timeoutDeadline: 65_000 }),
     )
     expect(observedDeadlines).toEqual([61_000, 65_000])
-    now.mockRestore()
+    vi.useRealTimers()
   })
 
   it('leaves the aggregate attempt deadline disabled when setup timeout is zero', async () => {
@@ -388,8 +391,11 @@ describe('executeExecutionSetupWithRetries', () => {
       expect.not.objectContaining({ timeoutDeadline: expect.any(Number) }),
     )
     expect(evaluateGeneration).toHaveBeenCalledWith(expect.objectContaining({
-      timing: { timeoutMs: 0 },
+      timing: expect.objectContaining({ timeoutMs: 0 }),
     }))
+    const [{ timing }] = evaluateGeneration.mock.calls[0] as [{ timing: ExecutionSetupAttemptTiming }]
+    expect(timing.timeoutDeadline).toBeUndefined()
+    expect(timing.budget?.remainingMs()).toBeUndefined()
   })
 
   it('uses bounded extra attempts when provisioning evidence has only one strategy after the base budget', async () => {

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
 
 /**
  * Every skip reason on every surface, validated once.
@@ -20,6 +21,8 @@ export const createTicketSchema = z.object({
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
+  aiQuestionsOverride: z.boolean().nullable().optional(),
+  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
 }).strict()
 
 export const updateTicketSchema = z.object({
@@ -27,6 +30,8 @@ export const updateTicketSchema = z.object({
   description: z.string().max(50000).optional(),
   priority: z.number().int().min(1).max(5).optional(),
   manualQaOverride: z.boolean().nullable().optional(),
+  aiQuestionsOverride: z.boolean().nullable().optional(),
+  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
 }).strict()
 
 export const cancelTicketSchema = z.object({
@@ -276,7 +281,21 @@ export const regenerateExecutionSetupPlanSchema = z.object({
 
 export const opencodeQuestionReplySchema = z.object({
   answers: z.array(z.array(z.string())),
-})
+}).strict()
+
+/**
+ * Skipping a question takes an optional reason, like every other skip surface.
+ *
+ * `skippedBy` is deliberately absent: a client claiming `timeout` would be
+ * forging a machine decision into the audit trail. This route always writes
+ * `user`, because a person pressed the button.
+ */
+export const opencodeQuestionSkipSchema = z.object({
+  reason: skipReasonSchema.optional(),
+}).strict()
+
+/** Stopping the countdown carries nothing. It is a fact, not a request. */
+export const opencodeQuestionTimerStopSchema = z.object({}).strict()
 
 export const devEventSchema = z.object({
   type: z.enum([

@@ -15,6 +15,11 @@ import { PROJECT_GIT_CHECK_DEBOUNCE_MS, SECONDS_PER_HOUR, SECONDS_PER_DAY } from
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 import type { ManualQaOverride } from '@/lib/manualQaSetting'
+import { TriStateSetting } from '@/components/settings/TriStateSetting'
+import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import type { AiQuestionsOverride, AiQuestionWindowOverride } from '@/lib/aiQuestionSetting'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
 import { useProfile } from '@/hooks/useProfile'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { ExistingProjectActionDialog } from './ExistingProjectActionDialog'
@@ -79,6 +84,13 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [color, setColor] = useState(project?.color ?? '#3b82f6')
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(
     project?.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
+  )
+  // Both AI question settings inherit by default, and cascade independently.
+  const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(
+    project?.aiQuestionsOverride ?? null,
+  )
+  const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(
+    project?.aiQuestionWindowOverride ?? null,
   )
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
     normalizeGitHookPolicySetting(project?.gitHookPolicy)
@@ -148,6 +160,12 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
             if (data.existingProject.manualQaOverride !== undefined) {
               setManualQaOverride(data.existingProject.manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled)
             }
+            if (data.existingProject.aiQuestionsOverride !== undefined) {
+              setAiQuestionsOverride(data.existingProject.aiQuestionsOverride)
+            }
+            if (data.existingProject.aiQuestionWindowOverride !== undefined) {
+              setAiQuestionWindowOverride(data.existingProject.aiQuestionWindowOverride)
+            }
             if (data.existingProject.gitHookPolicy !== undefined) {
               setGitHookPolicy(
                 normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
@@ -207,6 +225,8 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
         gitHookPolicy,
         ignoreMode,
         manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
+        aiQuestionsOverride,
+        aiQuestionWindowOverride,
         ...(restoreMode ? { existingStateAction } : {}),
       },
       {
@@ -236,6 +256,8 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
           color,
           gitHookPolicy,
           manualQaOverride: manualQaOverride ?? profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
+          aiQuestionsOverride,
+          aiQuestionWindowOverride,
         },
         {
           onSuccess: () => {
@@ -420,6 +442,43 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                     onChange={(value) => setManualQaOverride(value ?? false)}
                     inheritedEnabled={profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled}
                     compact
+                  />
+                </div>
+                <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium">AI questions</label>
+                      <ConfigurationDocsLink
+                        docsPath="/configuration#ai-questions"
+                        label="project AI questions"
+                        description="Choose whether a model may stop a step to ask you a question in this project. Open the AI questions documentation."
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose whether a model may stop a step to ask you a question. Tickets can set their own answer.
+                    </p>
+                  </div>
+                  <TriStateSetting
+                    idPrefix="project-ai-questions"
+                    groupLabel="AI questions setting"
+                    options={AI_QUESTIONS_INHERITABLE_OPTIONS}
+                    value={aiQuestionsOverride}
+                    onChange={setAiQuestionsOverride}
+                    compact
+                  />
+                </div>
+                <div className="border-t border-border pt-3">
+                  <InheritableDurationField
+                    label="AI question wait"
+                    idPrefix="project-ai-question-wait"
+                    value={aiQuestionWindowOverride}
+                    onChange={setAiQuestionWindowOverride}
+                    inheritedMs={profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow}
+                    inheritedSourceLabel="Configuration"
+                    minMs={AI_QUESTION_WINDOW_MIN_MS}
+                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
+                    formatValue={formatAiQuestionWindow}
+                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
                   />
                 </div>
                 <div className="flex flex-wrap items-start justify-between gap-3 border-t border-border pt-3">

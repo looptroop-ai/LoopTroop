@@ -13,6 +13,8 @@ import { CancelledError } from './types'
 import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
+import { createWorkBudget } from '../workflow/workBudget'
+import { wasMemberAnswered } from '../workflow/questionWindows'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
 import { PHASE_DEADLINE_ERROR, isAbortError, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
@@ -103,7 +105,15 @@ export async function generateDrafts(
 ): Promise<DraftGenerationResult> {
   const results = new Map<string, DraftResult>()
   const finalizedMembers = new Set<string>()
-  const deadlineAt = timeout > 0 ? Date.now() + timeout : null
+  // One budget for the round, shared by every member. It is a budget rather than
+  // a bare deadline so a question wait can hold it: the round's own
+  // `Promise.race` timer never saw the prompt timer, so without this a member
+  // blocked on a question would still lose its round to a timeout.
+  const budget = createWorkBudget({
+    ...(runtimeOptions?.ticketId ? { ticketId: runtimeOptions.ticketId } : {}),
+    ...(timeout > 0 ? { totalMs: timeout } : {}),
+    scope: 'council_member',
+  })
   let deadlineReached = false
 
   function recordResult(draft: DraftResult, sessionId?: string): boolean {
@@ -175,10 +185,7 @@ export async function generateDrafts(
       const maxStructuredRetries = normalizeStructuredRetryCount(runtimeOptions?.maxStructuredRetries)
 
       while (true) {
-        const remainingTimeoutMs = deadlineAt === null
-          ? undefined
-          : deadlineAt - Date.now()
-        if (deadlineAt !== null && (remainingTimeoutMs ?? 0) <= 0) {
+        if (budget.expired()) {
           throw new Error(PHASE_DEADLINE_ERROR)
         }
 
@@ -187,7 +194,7 @@ export async function generateDrafts(
           projectPath,
           parts: promptParts,
           signal,
-          timeoutMs: remainingTimeoutMs,
+          workBudget: budget,
           timeoutKind: 'ai_response',
           model: member.modelId,
           variant: member.variant,
@@ -314,11 +321,19 @@ export async function generateDrafts(
         })
       }
 
+      const steeredByOperator = wasMemberAnswered(
+        runtimeOptions?.ticketId,
+        runtimeOptions?.phase,
+        runtimeOptions?.phaseAttempt ?? 1,
+        member.modelId,
+      )
+
       const draft: DraftResult = {
         memberId: member.modelId,
         outcome: 'completed',
         duration: Date.now() - startTime,
         content,
+        ...(steeredByOperator ? { steeredByOperator } : {}),
         questionCount: validation?.questionCount,
         draftMetrics: validation?.draftMetrics,
         structuredOutput: buildStructuredOutput(),
@@ -334,14 +349,27 @@ export async function generateDrafts(
       return draft
     })()
 
-    const deadlinePromise = deadlineAt === null
+    // Re-armed from the budget rather than set once, so a question wait moves it
+    // instead of expiring the member who is waiting for the answer. Cleared
+    // outright while suspended: a timer re-set from the frozen remaining time
+    // would still fire mid-wait.
+    let unsubscribeBudget: (() => void) | undefined
+    const deadlinePromise = budget.totalMs === undefined
       ? null
       : new Promise<never>((_, reject) => {
-        const remainingMs = Math.max(0, deadlineAt - Date.now())
-        timeoutHandle = setTimeout(() => {
-          void markTimedOut()
-          reject(new Error(PHASE_DEADLINE_ERROR))
-        }, remainingMs)
+        const armRoundTimer = () => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle)
+            timeoutHandle = undefined
+          }
+          if (closed || budget.suspended()) return
+          timeoutHandle = setTimeout(() => {
+            void markTimedOut()
+            reject(new Error(PHASE_DEADLINE_ERROR))
+          }, Math.max(0, budget.remainingMs() ?? 0))
+        }
+        unsubscribeBudget = budget.onChange(armRoundTimer)
+        armRoundTimer()
       })
 
     try {
@@ -403,6 +431,7 @@ export async function generateDrafts(
       recordResult(draft, sessionId)
       return draft
     } finally {
+      unsubscribeBudget?.()
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
       }
@@ -410,6 +439,7 @@ export async function generateDrafts(
   })
 
   const settled = await Promise.allSettled(promises)
+  budget.release()
   if (signal?.aborted) {
     throw new CancelledError()
   }

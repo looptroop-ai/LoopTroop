@@ -75,6 +75,10 @@ export function makeTicketContext(
     ...overrides,
     lockedManualQaEnabled: overrides.lockedManualQaEnabled ?? null,
     lockedManualQaSource: overrides.lockedManualQaSource ?? null,
+    lockedAiQuestionsEnabled: overrides.lockedAiQuestionsEnabled ?? null,
+    lockedAiQuestionsSource: overrides.lockedAiQuestionsSource ?? null,
+    lockedAiQuestionWindow: overrides.lockedAiQuestionWindow ?? null,
+    lockedAiQuestionWindowSource: overrides.lockedAiQuestionWindowSource ?? null,
   }
 }
 

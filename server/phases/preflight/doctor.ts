@@ -117,7 +117,9 @@ async function runExecutionCapabilityProbe(
           {
             model: parseModelRef(modelId),
             variant: preFlightContext.lockedMainImplementerVariant ?? undefined,
-            permission: resolveOpenCodePermissions(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy),
+            // The capability probe is a diagnostic, not a workflow step: it
+            // checks that the model answers at all. It must never stop to ask.
+            permission: resolveOpenCodePermissions(PROM_EXECUTION_CAPABILITY_PROBE.toolPolicy, false),
             autoApprovePermissions: true,
             onEvent: handleStreamEvent,
           },

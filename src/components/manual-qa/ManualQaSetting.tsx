@@ -1,7 +1,6 @@
 import { PROFILE_DEFAULTS } from '@server/db/defaults'
-import { cn } from '@/lib/utils'
 import type { ManualQaOverride } from '@/lib/manualQaSetting'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { TriStateSetting, type TriStateOption } from '@/components/settings/TriStateSetting'
 
 interface ManualQaSettingProps {
   value: ManualQaOverride
@@ -12,7 +11,9 @@ interface ManualQaSettingProps {
   compact?: boolean
 }
 
-const OPTIONS: Array<{ value: boolean; label: string; tooltip: string }> = [
+// No inherit button: every surface writes an explicit choice, and a stored
+// `null` resolves to whatever is inherited rather than showing as unset.
+const OPTIONS: readonly TriStateOption[] = [
   {
     value: true,
     label: 'Enabled',
@@ -33,48 +34,21 @@ export function ManualQaSetting({
   inheritedEnabled,
   compact = false,
 }: ManualQaSettingProps) {
-  const selectedValue = value ?? inheritedEnabled ?? PROFILE_DEFAULTS.manualQaEnabled
-
   return (
-    <div>
-      <div className="inline-flex rounded-md border border-input bg-muted/30 p-0.5" role="radiogroup" aria-label="Manual QA setting">
-        {OPTIONS.map((option) => {
-          const selected = option.value === selectedValue
-          return (
-            <Tooltip key={option.label}>
-              <TooltipTrigger asChild>
-                <button
-                  id={`${idPrefix}-${option.label.toLowerCase()}`}
-                  type="button"
-                  role="radio"
-                  aria-label={option.label}
-                  aria-checked={selected}
-                  data-state={selected ? 'checked' : 'unchecked'}
-                  disabled={disabled}
-                  onClick={() => onChange(option.value)}
-                  className={cn(
-                    'rounded px-2.5 py-1 text-xs transition-colors',
-                    selected
-                      ? 'bg-primary font-semibold text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:bg-background hover:text-foreground',
-                    disabled && 'cursor-not-allowed opacity-60',
-                  )}
-                >
-                  {option.label}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-sm text-xs leading-relaxed">
-                {option.tooltip}
-              </TooltipContent>
-            </Tooltip>
-          )
-        })}
-      </div>
-      {!compact && value === null && typeof inheritedEnabled === 'boolean' && (
+    <TriStateSetting
+      value={value}
+      onChange={onChange}
+      options={OPTIONS}
+      groupLabel="Manual QA setting"
+      idPrefix={idPrefix}
+      fallbackValue={inheritedEnabled ?? PROFILE_DEFAULTS.manualQaEnabled}
+      disabled={disabled}
+      compact={compact}
+      footer={value === null && typeof inheritedEnabled === 'boolean' && (
         <p className="mt-1 text-xs text-muted-foreground">
           Current default: <span className="font-medium text-foreground">{inheritedEnabled ? 'Enabled' : 'Disabled'}</span>. Choose an option to set this explicitly.
         </p>
       )}
-    </div>
+    />
   )
 }

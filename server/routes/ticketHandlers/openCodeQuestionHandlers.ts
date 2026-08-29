@@ -15,7 +15,24 @@ import {
   getRequiredRouteParam,
   getTicketParam,
 } from './routeUtils'
-import { opencodeQuestionReplySchema } from './schemas'
+import {
+  opencodeQuestionReplySchema,
+  opencodeQuestionSkipSchema,
+  opencodeQuestionTimerStopSchema,
+} from './schemas'
+import { normalizeSkipReason } from '@shared/skipReceipt'
+import type { AiQuestionTimerState } from '@shared/aiQuestions'
+import {
+  attachRequest,
+  claimRequestForReply,
+  getTicketQuestionState,
+  markRequestReplied,
+  markRequestSkipped,
+  reconcileAgainstPending,
+  releaseRequestClaim,
+  stopTicketTimers,
+} from '../../workflow/questionWindows'
+import { resolveAiQuestionSettings } from '../../workflow/phases/helpers'
 
 function emitOpenCodeQuestionLog(
   ticketId: string,
@@ -84,38 +101,69 @@ function emitOpenCodeQuestionLog(
   )
 }
 
+/**
+ * What is outstanding for a ticket, reconciled against OpenCode.
+ *
+ * The window store is the live record and the adapter is the authority. A poll
+ * that succeeds is allowed to prune: anything OpenCode no longer lists was
+ * resolved somewhere this process could not see, and showing it would leave a
+ * question on screen that nobody can answer. A poll that *fails* prunes nothing
+ * — an unreachable server is not evidence that a question went away.
+ */
 async function getTicketPendingOpenCodeQuestions(ticketId: string) {
   const ticketContext = getTicketContext(ticketId)
   if (!ticketContext) return null
 
   const sessions = listOpenCodeSessionsForTicket(ticketId, ['active'])
-  if (sessions.length === 0) return []
   const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]))
-  const adapter = getOpenCodeAdapter()
-  const pending = await adapter.listPendingQuestions(ticketContext.projectRoot)
 
-  return pending
-    .filter((request) => sessionsById.has(request.sessionID))
-    .map((request) => {
+  try {
+    const pending = await getOpenCodeAdapter().listPendingQuestions(ticketContext.projectRoot)
+    const live = pending.filter((request) => sessionsById.has(request.sessionID))
+    reconcileAgainstPending(ticketId, new Set(live.map((request) => request.id)))
+
+    // Anything OpenCode has that no window covers arrived while this process was
+    // not listening — a restart, or a stream frame that never landed. Arm it now
+    // rather than leaving a question with no clock on it.
+    const known = new Set(getTicketQuestionState(ticketId).requests.map((request) => request.requestId))
+    for (const request of live) {
+      if (known.has(request.id)) continue
       const session = sessionsById.get(request.sessionID)
-      return {
-        type: 'opencode_question' as const,
-        action: 'asked' as const,
+      attachRequest({
         ticketId,
-        ticketExternalId: ticketContext.externalId,
-        ticketTitle: ticketContext.localTicket.title,
-        status: ticketContext.localTicket.status,
-        phase: session?.phase ?? ticketContext.localTicket.status,
-        phaseAttempt: session?.phaseAttempt ?? undefined,
-        modelId: session?.memberId ?? undefined,
         sessionId: request.sessionID,
         requestId: request.id,
+        memberId: session?.memberId ?? null,
+        phase: session?.phase ?? ticketContext.localTicket.status,
+        phaseAttempt: session?.phaseAttempt ?? 1,
+        windowMs: resolveAiQuestionSettings(ticketId).windowMs,
         questions: request.questions,
-        questionCount: request.questions.length,
         tool: request.tool,
-        timestamp: new Date().toISOString(),
-      }
-    })
+      })
+    }
+  } catch {
+    // Fall through to whatever the window store already knows.
+  }
+
+  const state = getTicketQuestionState(ticketId)
+  return state.requests.map((request) => ({
+    type: 'opencode_question' as const,
+    action: 'asked' as const,
+    ticketId,
+    ticketExternalId: ticketContext.externalId,
+    ticketTitle: ticketContext.localTicket.title,
+    status: ticketContext.localTicket.status,
+    phase: request.phase,
+    phaseAttempt: request.phaseAttempt,
+    modelId: request.memberId ?? undefined,
+    sessionId: request.sessionId,
+    requestId: request.requestId,
+    questions: request.questions,
+    questionCount: request.questionCount,
+    tool: request.tool,
+    timerKey: request.timerKey,
+    timestamp: request.receivedAt,
+  }))
 }
 
 async function findPendingOpenCodeQuestionForTicket(ticketId: string, requestId: string) {
@@ -131,7 +179,7 @@ export async function handleListOpenCodeQuestions(c: Context) {
   try {
     const questions = await getTicketPendingOpenCodeQuestions(ticketId)
     if (!questions) return c.json({ error: 'Ticket not found' }, 404)
-    return c.json({ questions })
+    return c.json({ questions, timer: getTicketQuestionState(ticketId).timer })
   } catch (err) {
     const message = getErrorMessage(err)
     emitRoutePhaseLog(ticketId, getTicketByRef(ticketId)?.status ?? 'UNKNOWN', 'error', `Failed to list OpenCode questions: ${message}`)
@@ -141,12 +189,17 @@ export async function handleListOpenCodeQuestions(c: Context) {
 
 export async function handleListAllOpenCodeQuestions(c: Context) {
   const questions: NonNullable<Awaited<ReturnType<typeof getTicketPendingOpenCodeQuestions>>> = []
+  const timers: Record<string, AiQuestionTimerState> = {}
   const errors: Array<{ ticketId: string; message: string }> = []
 
   for (const ticket of listNonTerminalTickets()) {
     try {
       const ticketQuestions = await getTicketPendingOpenCodeQuestions(ticket.id)
-      if (ticketQuestions?.length) questions.push(...ticketQuestions)
+      if (ticketQuestions?.length) {
+        questions.push(...ticketQuestions)
+        const timer = getTicketQuestionState(ticket.id).timer
+        if (timer) timers[ticket.id] = timer
+      }
     } catch (err) {
       errors.push({ ticketId: ticket.id, message: getErrorMessage(err) })
     }
@@ -154,6 +207,7 @@ export async function handleListAllOpenCodeQuestions(c: Context) {
 
   return c.json({
     questions,
+    timers,
     ...(errors.length > 0 ? { errors } : {}),
   })
 }
@@ -173,8 +227,19 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
   const question = await findPendingOpenCodeQuestionForTicket(ticketId, requestId)
   if (!question) return c.json({ error: 'OpenCode question request not found for ticket' }, 404)
 
+  // Claim before calling OpenCode. Expiry, cancellation and this answer all race
+  // for the same request, and whoever loses must do nothing at all rather than
+  // send a second verdict for a question that already has one. The id is what
+  // completes the claim afterwards — resolving it by claiming a second time
+  // could never succeed, because the request is no longer pending.
+  const claimId = claimRequestForReply(ticketId, question.sessionId, requestId)
+  if (!claimId) {
+    return c.json({ error: 'That question was already resolved' }, 409)
+  }
+
   try {
     await getOpenCodeAdapter().replyQuestion(requestId, parsed.data.answers, ticketContext.projectRoot)
+    markRequestReplied(ticketId, question.sessionId, requestId, claimId)
     emitOpenCodeQuestionLog(ticketId, question.phase, '[QUESTION] AI question answered.', {
       requestId,
       sessionId: question.sessionId,
@@ -192,6 +257,7 @@ export async function handleReplyOpenCodeQuestion(c: Context) {
     })
     return c.json({ success: true })
   } catch (err) {
+    releaseRequestClaim(ticketId, question.sessionId, requestId, claimId)
     const message = getErrorMessage(err)
     emitOpenCodeQuestionLog(ticketId, question.phase, `[ERROR] Failed to answer OpenCode question: ${message}`, {
       requestId,
@@ -212,12 +278,28 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
   const ticketContext = getTicketContext(ticketId)
   if (!ticketContext) return c.json({ error: 'Ticket not found' }, 404)
 
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = opencodeQuestionSkipSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid question skip payload', details: parsed.error.flatten() }, 400)
+  }
+  const reason = normalizeSkipReason(parsed.data.reason ?? null)
+
   const question = await findPendingOpenCodeQuestionForTicket(ticketId, requestId)
   if (!question) return c.json({ error: 'OpenCode question request not found for ticket' }, 404)
 
+  const claimId = claimRequestForReply(ticketId, question.sessionId, requestId)
+  if (!claimId) {
+    return c.json({ error: 'That question was already resolved' }, 409)
+  }
+
   try {
     await getOpenCodeAdapter().rejectQuestion(requestId, ticketContext.projectRoot)
-    emitOpenCodeQuestionLog(ticketId, question.phase, '[QUESTION] AI question rejected.', {
+    // Written after the rejection lands, so the trail never records a decision
+    // OpenCode was never told about.
+    markRequestSkipped(ticketId, question.sessionId, requestId, reason, claimId)
+    const receiptLine = reason ? ` Reason: ${reason}` : ''
+    emitOpenCodeQuestionLog(ticketId, question.phase, `[QUESTION] AI question skipped.${receiptLine}`, {
       requestId,
       sessionId: question.sessionId,
       modelId: question.modelId,
@@ -230,12 +312,14 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
       ticketId,
       requestId,
       sessionId: question.sessionId,
+      resolution: 'user_skipped',
       timestamp: new Date().toISOString(),
     })
     return c.json({ success: true })
   } catch (err) {
+    releaseRequestClaim(ticketId, question.sessionId, requestId, claimId)
     const message = getErrorMessage(err)
-    emitOpenCodeQuestionLog(ticketId, question.phase, `[ERROR] Failed to reject OpenCode question: ${message}`, {
+    emitOpenCodeQuestionLog(ticketId, question.phase, `[ERROR] Failed to skip OpenCode question: ${message}`, {
       requestId,
       sessionId: question.sessionId,
       modelId: question.modelId,
@@ -244,6 +328,32 @@ export async function handleRejectOpenCodeQuestion(c: Context) {
       type: 'error',
       action: 'reject_failed',
     })
-    return c.json({ error: 'Failed to reject OpenCode question', details: message }, 500)
+    return c.json({ error: 'Failed to skip OpenCode question', details: message }, 500)
   }
+}
+
+/**
+ * A person is dealing with this, so the clock stops.
+ *
+ * Every way of engaging arrives here — switching model tabs, moving between
+ * questions, focusing an answer field, pressing Stop timer. The client fires it
+ * once and remembers it did; a second call returns the same state rather than an
+ * error, because a keystroke is not a failure.
+ *
+ * There is no matching resume. Stopping is a statement that a human has this,
+ * and the ways out of it are answering and skipping.
+ */
+export async function handleStopOpenCodeQuestionTimer(c: Context) {
+  const ticketId = getTicketParam(c)
+  const ticketContext = getTicketContext(ticketId)
+  if (!ticketContext) return c.json({ error: 'Ticket not found' }, 404)
+
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = opencodeQuestionTimerStopSchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid stop payload', details: parsed.error.flatten() }, 400)
+  }
+
+  const timers = stopTicketTimers(ticketId, 'user')
+  return c.json({ success: true, timers, timer: getTicketQuestionState(ticketId).timer })
 }

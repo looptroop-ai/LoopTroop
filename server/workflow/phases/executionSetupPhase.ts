@@ -73,6 +73,12 @@ const SETUP_PROBE_TIMEOUT_MS = 30_000
 function getRemainingExecutionSetupAttemptMs(
   timing: ExecutionSetupAttemptTiming,
 ): number | undefined {
+  // The budget is the honest number: it excludes time the attempt spent waiting
+  // on a person to answer a question.
+  if (timing.budget) {
+    const remaining = timing.budget.remainingMs()
+    return remaining === undefined ? undefined : Math.max(0, remaining)
+  }
   if (timing.timeoutDeadline === undefined) return undefined
   return Math.max(0, timing.timeoutDeadline - Date.now())
 }
@@ -450,7 +456,9 @@ async function generateExecutionSetupRetryNote(input: {
     parts: [{ type: 'text', content: prompt }],
     signal: input.signal,
     timeoutMs: Math.min(60_000, remainingMs ?? 60_000),
-    timeoutDeadline: input.timing.timeoutDeadline,
+    ...(input.timing.budget
+      ? { workBudget: input.timing.budget }
+      : { timeoutDeadline: input.timing.timeoutDeadline }),
     timeoutKind: 'execution_setup',
     model: input.model,
     variant: input.variant,

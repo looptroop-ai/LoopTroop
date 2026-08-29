@@ -8,6 +8,8 @@ import { DashboardHeader } from './DashboardHeader'
 import { NavigatorPanel } from './NavigatorPanel'
 import { ActiveWorkspace } from './ActiveWorkspace'
 import { WorkspacePhaseSummary } from './WorkspacePhaseSummary'
+import { PendingQuestionsPanel } from '@/components/workspace/PendingQuestionsPanel'
+import { useAIQuestions } from '@/context/useAIQuestions'
 import { ResizeHandle } from './ResizeHandle'
 import { Menu, RefreshCw, X } from 'lucide-react'
 import { clearErrorTicketSeen, getErrorTicketSignature, markErrorTicketSeen } from '@/lib/errorTicketSeen'
@@ -49,6 +51,7 @@ function SSELogConnector({
   onConnectionStateChange?: (state: SSEConnectionState) => void
 }) {
   const logCtx = useLogs()
+  const { ingestSseEvent } = useAIQuestions()
 
   const handleEvent = useCallback((event: { type: string; data: Record<string, unknown> }) => {
     if (event.type === 'state_change') {
@@ -148,9 +151,15 @@ function SSELogConnector({
     }
 
     if (
-      event.type === 'needs_input' &&
-      (event.data.type === 'opencode_question' || event.data.type === 'opencode_question_resolved')
+      event.type === 'needs_input'
+      && (event.data.type === 'opencode_question'
+        || event.data.type === 'opencode_question_resolved'
+        || event.data.type === 'opencode_question_updated')
     ) {
+      // The ticket on screen is the only one with a live stream, so this is
+      // where a question becomes visible immediately rather than on the next
+      // aggregate poll. Forwarded, not logged: the panel is the surface.
+      ingestSseEvent(event.data)
       return
     }
 
@@ -168,7 +177,7 @@ function SSELogConnector({
         },
       )
     }
-  }, [currentStatus, logCtx, onStateChange])
+  }, [currentStatus, ingestSseEvent, logCtx, onStateChange])
 
   const { connectionState } = useSSE({ ticketId, onEvent: handleEvent })
 
@@ -736,6 +745,10 @@ export function TicketDashboard() {
             </div>
             {/* Active Workspace */}
             <div className="flex flex-col flex-1 overflow-hidden">
+              {/* Above the full-log branch on purpose: a question must stay
+                  reachable while the log is open, which is exactly when a long
+                  run is being watched. */}
+              <PendingQuestionsPanel ticketId={ticketId} />
               {!isFullLogOpen && (
                 <WorkspacePhaseSummary
                   key={renderTicket.id}

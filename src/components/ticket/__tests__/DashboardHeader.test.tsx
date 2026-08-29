@@ -206,6 +206,7 @@ describe('DashboardHeader', () => {
         workspacePreparationStartedAt: '2026-01-01T08:48:00.000Z',
         finalTestingDurationMs: 8 * 60_000,
         finalTestingStartedAt: '2026-01-01T11:00:00.000Z',
+        questionWaitingMs: 0,
       },
     })
 
@@ -242,6 +243,7 @@ describe('DashboardHeader', () => {
         workspacePreparationStartedAt: null,
         finalTestingDurationMs: 0,
         finalTestingStartedAt: null,
+        questionWaitingMs: 0,
       },
     })
 

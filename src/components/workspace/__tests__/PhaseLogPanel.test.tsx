@@ -127,6 +127,7 @@ function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> 
       workspacePreparationStartedAt: null,
       finalTestingDurationMs: 0,
       finalTestingStartedAt: null,
+      questionWaitingMs: 0,
     },
     runtime: {
       ...defaultRuntime,

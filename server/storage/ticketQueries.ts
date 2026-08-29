@@ -32,6 +32,9 @@ import {
 import type { QaOrigin } from '../phases/beads/types'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
+import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
+import { questionWaitOverlapMs } from './questionWaits'
+import { getPendingQuestionSummary } from '../workflow/questionWindows'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -121,7 +124,10 @@ export interface TicketErrorOccurrence {
 }
 
 export interface TicketImplementationTiming {
-  /** Total time the ticket spent on originally planned beads; pauses and Manual QA fix beads are excluded. */
+  /**
+   * Total time the ticket spent on originally planned beads; pauses, Manual QA
+   * fix beads and time spent waiting on an answer to an AI question are excluded.
+   */
   activeDurationMs: number
   /** First time the ticket entered bead execution. */
   startedAt: string | null
@@ -139,6 +145,13 @@ export interface TicketImplementationTiming {
   finalTestingDurationMs: number
   /** First time automated final testing began. */
   finalTestingStartedAt: string | null
+  /**
+   * Time inside the timed phases spent waiting on a person to answer a question.
+   *
+   * Already removed from the durations above, and reported on its own so a long
+   * ticket can say which part of it was the machine and which part was us.
+   */
+  questionWaitingMs: number
 }
 
 /** Full public projection of a ticket row, enriched with runtime data, error history, and available actions. */
@@ -151,6 +164,11 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
   lockedManualQaSource: 'ticket' | 'project' | 'profile' | null
   effectiveManualQaEnabled: boolean
   effectiveManualQaSource: 'ticket' | 'project' | 'profile'
+  effectiveAiQuestionsEnabled: boolean
+  effectiveAiQuestionsSource: 'ticket' | 'project' | 'profile'
+  /** Milliseconds the question waits before it refuses itself. */
+  effectiveAiQuestionWindow: number
+  effectiveAiQuestionWindowSource: 'ticket' | 'project' | 'profile'
   lockedGitHookPolicy: GitHookPolicy | null
   lockedGitHookPolicySource: 'project' | 'profile' | null
   effectiveGitHookPolicy: GitHookPolicy
@@ -176,6 +194,29 @@ export interface PublicTicket extends Omit<LocalTicketRow, 'id' | 'lockedCouncil
   hasPastErrors: boolean
   errorSeenSignature: string | null
   needsInputSeenSignature: string | null
+  /**
+   * A model waiting on an answer, or null when none is.
+   *
+   * Both counts are named because they answer different questions and disagree:
+   * a council of three asking two things each is 3 requests and 6 questions.
+   * One `deadlineAt` rather than an earliest-of, because the countdown belongs
+   * to the step and every request in it shares one.
+   */
+  pendingQuestions: {
+    requestCount: number
+    questionCount: number
+    deadlineAt: string | null
+    stoppedAt: string | null
+    /**
+     * Which requests are open, sorted.
+     *
+     * The board keys its "new wait" signal on this rather than on the count,
+     * because one question being answered and replaced by another leaves the
+     * count untouched — and a ticket's `updatedAt` does not move when a question
+     * arrives either, since its status never changes.
+     */
+    requestIds: string[]
+  } | null
   implementationTiming: TicketImplementationTiming
   completionDisposition: 'merged' | 'closed_unmerged' | null
   cleanup: {
@@ -564,6 +605,7 @@ function readImplementationTiming(
     workspacePreparationStartedAt: null,
     finalTestingDurationMs: 0,
     finalTestingStartedAt: null,
+    questionWaitingMs: 0,
   }
   if (!projectContext) return empty
 
@@ -579,11 +621,25 @@ function readImplementationTiming(
   let activeDurationMs = 0
   let workspacePreparationDurationMs = 0
   let finalTestingDurationMs = 0
+  let questionWaitingMs = 0
   let startedAt: string | null = null
   let workspacePreparationStartedAt: string | null = null
   let finalTestingStartedAt: string | null = null
   const codingIntervals: Array<{ startedAt: number; endedAt: number }> = []
   const now = Date.now()
+
+  /**
+   * The stretch of this window the ticket spent waiting on a person.
+   *
+   * A question does not change the ticket's status, so the status walk below
+   * counts the whole wait as work. Every timing this function reports is meant
+   * to say how long the *machine* took, so the wait comes back out of each of
+   * them — and is reported separately, because "it took an hour, forty minutes
+   * of which was waiting for you" is the honest version.
+   */
+  const waitWithin = (from: number, to: number): number => (
+    questionWaitOverlapMs(projectContext.projectDb, ticket.id, from, to)
+  )
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index]
@@ -595,14 +651,20 @@ function readImplementationTiming(
     const durationMs = Math.max(0, endedMs - startedMs)
 
     if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.coding) {
-      activeDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      activeDurationMs += Math.max(0, durationMs - waited)
       startedAt ??= row.changedAt
       codingIntervals.push({ startedAt: startedMs, endedAt: endedMs })
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.workspacePreparation) {
-      workspacePreparationDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      workspacePreparationDurationMs += Math.max(0, durationMs - waited)
       workspacePreparationStartedAt ??= row.changedAt
     } else if (row.newStatus === IMPLEMENTATION_TIMING_STATUSES.finalTesting) {
-      finalTestingDurationMs += durationMs
+      const waited = waitWithin(startedMs, endedMs)
+      questionWaitingMs += waited
+      finalTestingDurationMs += Math.max(0, durationMs - waited)
       finalTestingStartedAt ??= row.changedAt
     }
   }
@@ -622,9 +684,13 @@ function readImplementationTiming(
     const beadEndedAt = parseTimestamp(bead.completedAt)
       ?? parseTimestamp(bead.updatedAt)
       ?? (ticket.status === IMPLEMENTATION_TIMING_STATUSES.coding ? now : beadStartedAt)
-    return total + codingIntervals.reduce((duration, interval) => (
-      duration + Math.max(0, Math.min(interval.endedAt, beadEndedAt) - Math.max(interval.startedAt, beadStartedAt))
-    ), 0)
+    return total + codingIntervals.reduce((duration, interval) => {
+      const from = Math.max(interval.startedAt, beadStartedAt)
+      const to = Math.min(interval.endedAt, beadEndedAt)
+      // Net of waiting, like `activeDurationMs` above — this is subtracted from
+      // it, so counting the wait here but not there would double-remove it.
+      return duration + Math.max(0, (to - from) - waitWithin(from, to))
+    }, 0)
   }, 0)
 
   return {
@@ -637,6 +703,7 @@ function readImplementationTiming(
     workspacePreparationStartedAt,
     finalTestingDurationMs,
     finalTestingStartedAt,
+    questionWaitingMs,
   }
 }
 
@@ -773,6 +840,10 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
   const reviewCutoffStatus = readReviewCutoffStatus(ticket, previousStatus, errorOccurrences)
   const errorSeenSignature = projectContext ? readErrorSeenSignature(projectContext, ticket.id) : null
   const needsInputSeenSignature = projectContext ? readNeedsInputSeenSignature(projectContext, ticket.id) : null
+  // Live in-process state, merged in here rather than written to
+  // `.ticket/runtime/state.yaml`: that file is read by the agent inside the
+  // worktree, and where the operator's attention is owed is none of its business.
+  const pendingQuestionSummary = getPendingQuestionSummary(buildTicketRef(projectId, ticket.externalId))
   const continuationCandidate = resolveTicketContinuationCandidateFromRows(
     projectContext,
     projectId,
@@ -824,6 +895,33 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
       : project?.manualQaOverride !== null && project?.manualQaOverride !== undefined
         ? { enabled: project.manualQaOverride, source: 'project' as const }
         : { enabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled, source: 'profile' as const }
+  // A started ticket reads what it froze. The locked columns are NULL on runs that began
+  // before this setting existed, and those resolve to "may not ask": a run already in
+  // flight must not silently gain the ability to stop and wait for a person.
+  const aiQuestionsResolution: { enabled: boolean; source: 'ticket' | 'project' | 'profile' } = ticket.startedAt !== null
+    ? {
+        enabled: ticket.lockedAiQuestionsEnabled === true,
+        source: ticket.lockedAiQuestionsSource === 'ticket' || ticket.lockedAiQuestionsSource === 'project'
+          ? ticket.lockedAiQuestionsSource
+          : 'profile',
+      }
+    : ticket.aiQuestionsOverride !== null
+      ? { enabled: ticket.aiQuestionsOverride, source: 'ticket' as const }
+      : project?.aiQuestionsOverride !== null && project?.aiQuestionsOverride !== undefined
+        ? { enabled: project.aiQuestionsOverride, source: 'project' as const }
+        : { enabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled, source: 'profile' as const }
+  const aiQuestionWindowResolution: { windowMs: number; source: 'ticket' | 'project' | 'profile' } = ticket.startedAt !== null
+    ? {
+        windowMs: clampAiQuestionWindowMs(ticket.lockedAiQuestionWindow),
+        source: ticket.lockedAiQuestionWindowSource === 'ticket' || ticket.lockedAiQuestionWindowSource === 'project'
+          ? ticket.lockedAiQuestionWindowSource
+          : 'profile',
+      }
+    : ticket.aiQuestionWindowOverride !== null
+      ? { windowMs: clampAiQuestionWindowMs(ticket.aiQuestionWindowOverride), source: 'ticket' as const }
+      : project?.aiQuestionWindowOverride !== null && project?.aiQuestionWindowOverride !== undefined
+        ? { windowMs: clampAiQuestionWindowMs(project.aiQuestionWindowOverride), source: 'project' as const }
+        : { windowMs: clampAiQuestionWindowMs(profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow), source: 'profile' as const }
   const gitHookPolicyResolution: { policy: GitHookPolicy; source: 'project' | 'profile' } = ticket.startedAt !== null
     ? {
         policy: isGitHookPolicy(ticket.lockedGitHookPolicy)
@@ -854,6 +952,10 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
       : null,
     effectiveManualQaEnabled: manualQaResolution.enabled,
     effectiveManualQaSource: manualQaResolution.source,
+    effectiveAiQuestionsEnabled: aiQuestionsResolution.enabled,
+    effectiveAiQuestionsSource: aiQuestionsResolution.source,
+    effectiveAiQuestionWindow: aiQuestionWindowResolution.windowMs,
+    effectiveAiQuestionWindowSource: aiQuestionWindowResolution.source,
     lockedGitHookPolicy: isGitHookPolicy(ticket.lockedGitHookPolicy) ? ticket.lockedGitHookPolicy : null,
     lockedGitHookPolicySource: ticket.lockedGitHookPolicySource === 'project'
       || ticket.lockedGitHookPolicySource === 'profile'
@@ -877,6 +979,13 @@ export function toPublicTicket(projectId: number, ticket: LocalTicketRow): Publi
     hasPastErrors: errorOccurrences.some((occurrence) => occurrence.resolvedAt !== null),
     errorSeenSignature,
     needsInputSeenSignature,
+    pendingQuestions: pendingQuestionSummary === null ? null : {
+      requestCount: pendingQuestionSummary.requestCount,
+      questionCount: pendingQuestionSummary.questionCount,
+      deadlineAt: pendingQuestionSummary.deadlineAt,
+      stoppedAt: pendingQuestionSummary.stoppedAt,
+      requestIds: pendingQuestionSummary.requestIds,
+    },
     implementationTiming,
     completionDisposition,
     cleanup,

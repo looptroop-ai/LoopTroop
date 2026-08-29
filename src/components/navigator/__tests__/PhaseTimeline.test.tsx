@@ -249,6 +249,22 @@ describe('PhaseTimeline', () => {
     expect(onSelect).toHaveBeenCalledWith('CODING')
   })
 
+  it('shows the running phase as waiting while a model has a question open', () => {
+    const ticket = makeTicket({
+      status: 'CODING',
+      pendingQuestions: { requestCount: 1, questionCount: 2, deadlineAt: null, stoppedAt: null },
+    })
+    renderWithProviders(<PhaseTimeline currentStatus="CODING" ticket={ticket} />)
+
+    expect(screen.getByText('Implementation').closest('button')).toHaveClass('text-amber-600')
+  })
+
+  it('shows the running phase as active when nothing is waiting on you', () => {
+    renderWithProviders(<PhaseTimeline currentStatus="CODING" ticket={makeTicket({ status: 'CODING' })} />)
+
+    expect(screen.getByText('Implementation').closest('button')).toHaveClass('text-primary')
+  })
+
   it('renders footer content after the final phase group', () => {
     renderWithProviders(
       <PhaseTimeline

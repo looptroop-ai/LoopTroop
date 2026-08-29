@@ -17,6 +17,7 @@ import { SessionManager } from '../../opencode/sessionManager'
 import { buildPromptFromTemplate, PROM10a, PROM10b, PROM11, PROM12 } from '../../prompts/index'
 import type { OpenCodePromptDispatchEvent } from '../../workflow/runOpenCodePrompt'
 import { formatPromptText, runOpenCodePrompt, runOpenCodeSessionPrompt } from '../../workflow/runOpenCodePrompt'
+import { createWorkBudget, type WorkBudget } from '../../workflow/workBudget'
 import { buildStructuredRetryPrompt, normalizeInterviewDocumentOutput } from '../../structuredOutput'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { SKIP_REASON_PROMPT_MAX_LENGTH, truncateSkipReason } from '@shared/skipReceipt'
@@ -404,7 +405,8 @@ async function executeStructuredStep(
     phaseAttempt?: number
     timeoutMs: number
     activeSession?: Session
-    deadlineAt: number | null
+    /** The phase-attempt budget. Spans both PROM10a and PROM10b. */
+    budget: WorkBudget
     toolPolicy: OpenCodeToolPolicy
     maxStructuredRetries?: number
     validateStep: (content: string) => StepValidationResult
@@ -461,10 +463,7 @@ async function executeStructuredStep(
   while (true) {
     if (options.signal?.aborted) throw new CancelledError()
 
-    const remainingTimeoutMs = options.deadlineAt === null
-      ? options.timeoutMs
-      : Math.max(1, options.deadlineAt - Date.now())
-    if (options.deadlineAt !== null && remainingTimeoutMs <= 0) {
+    if (options.budget.expired()) {
       throw new Error(PHASE_DEADLINE_ERROR)
     }
 
@@ -474,7 +473,7 @@ async function executeStructuredStep(
           session,
           parts: promptParts,
           signal: options.signal,
-          timeoutMs: remainingTimeoutMs,
+          workBudget: options.budget,
           timeoutKind: 'ai_response',
           model: member.modelId,
           variant: member.variant,
@@ -500,7 +499,7 @@ async function executeStructuredStep(
           projectPath,
           parts: promptParts,
           signal: options.signal,
-          timeoutMs: remainingTimeoutMs,
+          workBudget: options.budget,
           timeoutKind: 'ai_response',
           model: member.modelId,
           variant: member.variant,
@@ -661,7 +660,14 @@ export async function draftPRD(
     throw new Error('Canonical interview artifact is required before PRD drafting')
   }
 
-  const deadlineAt = options.draftTimeoutMs > 0 ? Date.now() + options.draftTimeoutMs : null
+  // One budget for the whole phase attempt. PROM10a's session is completed and
+  // PROM10b runs in a fresh one, so a session-keyed clock could not span them —
+  // and a question asked in the first step has to credit the second.
+  const budget = createWorkBudget({
+    ...(options.ticketId ? { ticketId: options.ticketId } : {}),
+    ...(options.draftTimeoutMs > 0 ? { totalMs: options.draftTimeoutMs } : {}),
+    scope: 'phase_attempt',
+  })
   let deadlineReached = false
   const canonicalInterviewResult = normalizeInterviewDocumentOutput(canonicalInterview, {
     ticketId: options.ticketExternalId ?? options.ticketId ?? '',
@@ -831,7 +837,7 @@ export async function draftPRD(
           phaseAttempt: options.phaseAttempt,
           timeoutMs: options.draftTimeoutMs,
           activeSession: currentSession,
-          deadlineAt,
+          budget,
           toolPolicy: PROM10a.toolPolicy,
           maxStructuredRetries: options.maxStructuredRetries,
           validateStep: (content) => {
@@ -957,7 +963,7 @@ export async function draftPRD(
         phaseAttempt: options.phaseAttempt,
         timeoutMs: options.draftTimeoutMs,
         activeSession: currentSession,
-        deadlineAt,
+        budget,
         toolPolicy: PROM10b.toolPolicy,
         maxStructuredRetries: options.maxStructuredRetries,
         validateStep: (content) => {
@@ -1045,6 +1051,7 @@ export async function draftPRD(
     }
   }))
 
+  budget.release()
   const fullAnswers = results.map((result) => result.fullAnswers)
   const drafts = results.map((result) => result.prd)
 

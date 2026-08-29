@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MockOpenCodeAdapter } from '../../../opencode/adapter'
-import { OPENCODE_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
+import { SILENT_READ_ONLY_PERMISSIONS } from '../../../opencode/toolPolicy'
 import { startInterviewSession, submitBatchToSession } from '../qa'
 import { buildPersistedBatch, createInterviewSessionSnapshot, recordBatchAnswers, recordPreparedBatch } from '../sessionState'
 import { TEST } from '../../../test/factories'
@@ -129,8 +129,8 @@ describe.concurrent('PROM4 interview session parsing', () => {
 
     const messages = adapter.messages.get('mock-session-1') ?? []
     expect(messages.some((message) => typeof message.content === 'string' && message.content.includes('Structured Output Retry'))).toBe(true)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
+    expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
   })
 
   it('restarts the initial PROM4 session after an empty response', async () => {

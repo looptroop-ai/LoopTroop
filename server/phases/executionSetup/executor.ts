@@ -12,6 +12,7 @@ import type {
   ExecutionSetupReport,
 } from './types'
 import { renderCommandSpec } from '@shared/commandSpec'
+import { createWorkBudget, type WorkBudget } from '../../workflow/workBudget'
 
 type ContextPartsInput = PromptPart[] | (() => Promise<PromptPart[]>)
 
@@ -21,6 +22,14 @@ const MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS = 2
 export interface ExecutionSetupAttemptTiming {
   timeoutMs: number
   timeoutDeadline?: number
+  /**
+   * The attempt's work budget.
+   *
+   * Carried alongside `timeoutDeadline` rather than replacing it because the
+   * deadline is also reported to the operator as a fixed time. The budget is
+   * what the clocks read: it moves when a question wait is credited back.
+   */
+  budget?: WorkBudget
 }
 
 interface ExecutionSetupAttemptStartMetadata extends ExecutionSetupAttemptTiming {
@@ -281,185 +290,202 @@ export async function executeExecutionSetupWithRetries(
     ? attemptsUsedAtStart + (options.additionalManualIterations ?? 0)
     : options.maxIterations
 
-  while (
-    (!hasManualContinuationBudget && iterationLimit <= 0)
-    || attempt < iterationLimit + extraToolingPersistenceAttemptsUsed
-  ) {
-    attempt += 1
-    throwIfAborted(signal)
-    const timing: ExecutionSetupAttemptTiming = {
-      timeoutMs: options.timeoutMs,
-      ...(options.timeoutMs > 0 ? { timeoutDeadline: Date.now() + options.timeoutMs } : {}),
-    }
-    await callbacks.onAttemptStart?.(attempt, {
-      ...timing,
-      baseMaxIterations: options.maxIterations,
-      isManualContinuationAttempt: hasManualContinuationBudget
-        && attempt > attemptsUsedAtStart
-        && attempt <= iterationLimit,
-      isExtraToolingPersistenceAttempt: iterationLimit > 0 && attempt > iterationLimit,
-      extraToolingPersistenceAttempt: iterationLimit > 0
-        ? Math.max(0, attempt - iterationLimit)
-        : 0,
-      maxExtraToolingPersistenceAttempts: MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS,
-    })
-
-    const generation = await generateExecutionSetup(
-      adapter,
-      await resolveContextParts(contextParts),
-      projectPath,
-      signal,
-      {
-        ticketId: options.ticketId,
-        model: options.model,
-        variant: options.variant,
+  // Each attempt registers its budget in the ticket's ledger, which holds it
+  // until it is released — and two of the exits from this loop are `return`s
+  // from part-way through an attempt. Collected here so every way out releases
+  // them, rather than leaving a dead budget per setup attempt behind.
+  const attemptBudgets: WorkBudget[] = []
+  try {
+    while (
+      (!hasManualContinuationBudget && iterationLimit <= 0)
+      || attempt < iterationLimit + extraToolingPersistenceAttemptsUsed
+    ) {
+      attempt += 1
+      throwIfAborted(signal)
+      const attemptBudget = createWorkBudget({
+        ...(options.ticketId ? { ticketId: options.ticketId } : {}),
+        ...(options.timeoutMs > 0 ? { totalMs: options.timeoutMs } : {}),
+        scope: 'execution_setup',
+      })
+      attemptBudgets.push(attemptBudget)
+      const timing: ExecutionSetupAttemptTiming = {
         timeoutMs: options.timeoutMs,
-        timeoutDeadline: timing.timeoutDeadline,
-        structuredRetryCount: options.structuredRetryCount,
-        phaseAttempt: attempt,
-        manualContinuation: hasManualContinuationBudget
+        ...(options.timeoutMs > 0 ? { timeoutDeadline: Date.now() + options.timeoutMs } : {}),
+        budget: attemptBudget,
+      }
+      await callbacks.onAttemptStart?.(attempt, {
+        ...timing,
+        baseMaxIterations: options.maxIterations,
+        isManualContinuationAttempt: hasManualContinuationBudget
           && attempt > attemptsUsedAtStart
           && attempt <= iterationLimit,
-        onSessionCreated: (sessionId) => {
-          callbacks.onSessionCreated?.(sessionId, attempt)
-        },
-        onOpenCodeStreamEvent: ({ sessionId, event }) => {
-          callbacks.onOpenCodeStreamEvent?.({ sessionId, attempt, event })
-        },
-        onPromptDispatched: ({ sessionId, event }) => {
-          callbacks.onPromptDispatched?.({ sessionId, attempt, event })
-        },
-        onPromptCompleted: ({ stage, event }) => {
-          callbacks.onPromptCompleted?.({ attempt, stage, event })
-        },
-        onStructuredRetryStart: ({ sessionId, retryAttempt }) => {
-          callbacks.onStructuredRetryStart?.({ attempt, sessionId, retryAttempt })
-        },
-      },
-    )
-    throwIfAborted(signal)
-
-    const report = await callbacks.evaluateGeneration({ attempt, generation, timing })
-    const toolingFailureSignature = buildToolingFailureSignature(report)
-    const repeatedToolingFailure = toolingFailureSignature !== null
-      && toolingFailureSignatures[toolingFailureSignatures.length - 1] === toolingFailureSignature
-      && hasTerminalToolingFailureEvidence(report)
-    if (toolingFailureSignature) {
-      toolingFailureSignatures.push(toolingFailureSignature)
-    }
-    const finalReport = repeatedToolingFailure
-      ? withRepeatedToolingFailureError(report)
-      : report
-    const attemptEntry = buildAttemptHistoryEntry(attempt, finalReport)
-    attemptHistory.push(attemptEntry)
-    await callbacks.onAttemptComplete?.({ attempt, report: finalReport, generation })
-
-    if (finalReport.ready) {
-      return withRetryMetadata(finalReport, {
-        attempt,
-        maxIterations: options.maxIterations,
-        attemptHistory,
-        retryNotes: [...notes],
+        isExtraToolingPersistenceAttempt: iterationLimit > 0 && attempt > iterationLimit,
+        extraToolingPersistenceAttempt: iterationLimit > 0
+          ? Math.max(0, attempt - iterationLimit)
+          : 0,
+        maxExtraToolingPersistenceAttempts: MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS,
       })
-    }
 
-    await callbacks.onRetryAnalysisStart?.({
-      attempt,
-      report: finalReport,
-      generation,
-    })
+      const generation = await generateExecutionSetup(
+        adapter,
+        await resolveContextParts(contextParts),
+        projectPath,
+        signal,
+        {
+          ticketId: options.ticketId,
+          model: options.model,
+          variant: options.variant,
+          timeoutMs: options.timeoutMs,
+          timeoutDeadline: timing.timeoutDeadline,
+          budget: attemptBudget,
+          structuredRetryCount: options.structuredRetryCount,
+          phaseAttempt: attempt,
+          manualContinuation: hasManualContinuationBudget
+            && attempt > attemptsUsedAtStart
+            && attempt <= iterationLimit,
+          onSessionCreated: (sessionId) => {
+            callbacks.onSessionCreated?.(sessionId, attempt)
+          },
+          onOpenCodeStreamEvent: ({ sessionId, event }) => {
+            callbacks.onOpenCodeStreamEvent?.({ sessionId, attempt, event })
+          },
+          onPromptDispatched: ({ sessionId, event }) => {
+            callbacks.onPromptDispatched?.({ sessionId, attempt, event })
+          },
+          onPromptCompleted: ({ stage, event }) => {
+            callbacks.onPromptCompleted?.({ attempt, stage, event })
+          },
+          onStructuredRetryStart: ({ sessionId, retryAttempt }) => {
+            callbacks.onStructuredRetryStart?.({ attempt, sessionId, retryAttempt })
+          },
+        },
+      )
+      throwIfAborted(signal)
 
-    let note: string | null | undefined
-    const useDeterministicRetryNote = hasDeterministicRetryEvidence(finalReport, generation)
-      && !needsToolingPersistenceRetry(finalReport)
-    if (!useDeterministicRetryNote) {
-      try {
-        note = await callbacks.generateRetryNote?.({
-          attempt,
-          report: finalReport,
-          generation,
-          notes: [...notes],
-          timing,
-        })
-      } catch {
-        note = null
+      const report = await callbacks.evaluateGeneration({ attempt, generation, timing })
+      const toolingFailureSignature = buildToolingFailureSignature(report)
+      const repeatedToolingFailure = toolingFailureSignature !== null
+        && toolingFailureSignatures[toolingFailureSignatures.length - 1] === toolingFailureSignature
+        && hasTerminalToolingFailureEvidence(report)
+      if (toolingFailureSignature) {
+        toolingFailureSignatures.push(toolingFailureSignature)
       }
-    }
+      const finalReport = repeatedToolingFailure
+        ? withRepeatedToolingFailureError(report)
+        : report
+      const attemptEntry = buildAttemptHistoryEntry(attempt, finalReport)
+      attemptHistory.push(attemptEntry)
+      await callbacks.onAttemptComplete?.({ attempt, report: finalReport, generation })
 
-    const resolvedNote = withToolingPersistenceGuidance(note?.trim() || buildDeterministicExecutionSetupRetryNote({
-      attempt,
-      report: finalReport,
-      generation,
-    }), finalReport)
-    notes.push(resolvedNote)
-    attemptEntry.noteAppended = resolvedNote
+      if (finalReport.ready) {
+        return withRetryMetadata(finalReport, {
+          attempt,
+          maxIterations: options.maxIterations,
+          attemptHistory,
+          retryNotes: [...notes],
+        })
+      }
 
-    const withinBaseBudget = (!hasManualContinuationBudget && iterationLimit <= 0)
-      || attempt < iterationLimit
-    const canUseExtraToolingPersistenceAttempt = options.maxIterations > 0
-      && (options.additionalManualIterations ?? 0) <= 0
-      && !withinBaseBudget
-      && needsToolingPersistenceRetry(finalReport)
-      && extraToolingPersistenceAttemptsUsed < MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS
-    const hasImmediateNoSafePathBlocker = hasNoSafePathToolingEvidence(finalReport)
-    const canRetry = !repeatedToolingFailure
-      && !hasImmediateNoSafePathBlocker
-      && (withinBaseBudget || canUseExtraToolingPersistenceAttempt)
-    await callbacks.onFailedAttempt?.({
-      attempt,
-      report: finalReport,
-      generation,
-      note: resolvedNote,
-      notes: [...notes],
-      canRetry,
-    })
-
-    if (!canRetry) {
-      await callbacks.onRetriesExhausted?.({
+      await callbacks.onRetryAnalysisStart?.({
         attempt,
-        maxIterations: options.maxIterations,
         report: finalReport,
-        notes: [...notes],
-        reason: repeatedToolingFailure
-          ? 'repeated_tooling_failure'
-          : hasImmediateNoSafePathBlocker
-            ? 'not_provisionable'
-            : 'exhausted',
+        generation,
       })
-      return withRetryMetadata(finalReport, {
+
+      let note: string | null | undefined
+      const useDeterministicRetryNote = hasDeterministicRetryEvidence(finalReport, generation)
+        && !needsToolingPersistenceRetry(finalReport)
+      if (!useDeterministicRetryNote) {
+        try {
+          note = await callbacks.generateRetryNote?.({
+            attempt,
+            report: finalReport,
+            generation,
+            notes: [...notes],
+            timing,
+          })
+        } catch {
+          note = null
+        }
+      }
+
+      const resolvedNote = withToolingPersistenceGuidance(note?.trim() || buildDeterministicExecutionSetupRetryNote({
         attempt,
-        maxIterations: options.maxIterations,
-        attemptHistory,
-        retryNotes: [...notes],
+        report: finalReport,
+        generation,
+      }), finalReport)
+      notes.push(resolvedNote)
+      attemptEntry.noteAppended = resolvedNote
+
+      const withinBaseBudget = (!hasManualContinuationBudget && iterationLimit <= 0)
+        || attempt < iterationLimit
+      const canUseExtraToolingPersistenceAttempt = options.maxIterations > 0
+        && (options.additionalManualIterations ?? 0) <= 0
+        && !withinBaseBudget
+        && needsToolingPersistenceRetry(finalReport)
+        && extraToolingPersistenceAttemptsUsed < MAX_EXTRA_TOOLING_PERSISTENCE_ATTEMPTS
+      const hasImmediateNoSafePathBlocker = hasNoSafePathToolingEvidence(finalReport)
+      const canRetry = !repeatedToolingFailure
+        && !hasImmediateNoSafePathBlocker
+        && (withinBaseBudget || canUseExtraToolingPersistenceAttempt)
+      await callbacks.onFailedAttempt?.({
+        attempt,
+        report: finalReport,
+        generation,
+        note: resolvedNote,
+        notes: [...notes],
+        canRetry,
+      })
+
+      if (!canRetry) {
+        await callbacks.onRetriesExhausted?.({
+          attempt,
+          maxIterations: options.maxIterations,
+          report: finalReport,
+          notes: [...notes],
+          reason: repeatedToolingFailure
+            ? 'repeated_tooling_failure'
+            : hasImmediateNoSafePathBlocker
+              ? 'not_provisionable'
+              : 'exhausted',
+        })
+        return withRetryMetadata(finalReport, {
+          attempt,
+          maxIterations: options.maxIterations,
+          attemptHistory,
+          retryNotes: [...notes],
+        })
+      }
+
+      if (canUseExtraToolingPersistenceAttempt) {
+        extraToolingPersistenceAttemptsUsed += 1
+      }
+
+      await callbacks.beforeRetry?.({
+        attempt,
+        nextAttempt: attempt + 1,
+        report: finalReport,
+        generation,
+        note: resolvedNote,
+        notes: [...notes],
       })
     }
 
-    if (canUseExtraToolingPersistenceAttempt) {
-      extraToolingPersistenceAttemptsUsed += 1
-    }
-
-    await callbacks.beforeRetry?.({
+    return {
+      status: 'failed',
+      ready: false,
+      checkedAt: new Date().toISOString(),
+      preparedBy: options.model,
+      profile: null,
+      checks: null,
+      modelOutput: '',
+      errors: ['Execution setup retry loop terminated unexpectedly'],
       attempt,
-      nextAttempt: attempt + 1,
-      report: finalReport,
-      generation,
-      note: resolvedNote,
-      notes: [...notes],
-    })
-  }
-
-  return {
-    status: 'failed',
-    ready: false,
-    checkedAt: new Date().toISOString(),
-    preparedBy: options.model,
-    profile: null,
-    checks: null,
-    modelOutput: '',
-    errors: ['Execution setup retry loop terminated unexpectedly'],
-    attempt,
-    maxIterations: options.maxIterations,
-    attemptHistory,
-    retryNotes: notes,
+      maxIterations: options.maxIterations,
+      attemptHistory,
+      retryNotes: notes,
+    }
+  } finally {
+    for (const attemptBudget of attemptBudgets) attemptBudget.release()
   }
 }

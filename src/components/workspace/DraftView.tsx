@@ -18,6 +18,17 @@ import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
+import { TriStateSetting } from '@/components/settings/TriStateSetting'
+import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import {
+  describeSettingSource,
+  resolveAiQuestionsSettingLabel,
+  resolveAiQuestionWindowLabel,
+  type AiQuestionsOverride,
+  type AiQuestionWindowOverride,
+} from '@/lib/aiQuestionSetting'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'Very High', 2: 'High', 3: 'Normal', 4: 'Low', 5: 'Very Low' }
 const PRIORITY_COLORS: Record<number, string> = {
@@ -101,6 +112,9 @@ export function DraftView({ ticket }: DraftViewProps) {
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(ticket.manualQaOverride ?? null)
   const [manualQaError, setManualQaError] = useState<string | null>(null)
+  const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(ticket.aiQuestionsOverride ?? null)
+  const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(ticket.aiQuestionWindowOverride ?? null)
+  const [aiQuestionError, setAiQuestionError] = useState<string | null>(null)
   const project = projects.find(p => p.id === ticket.projectId)
   const mainImplementer = typeof profile?.mainImplementer === 'string'
     ? profile.mainImplementer.trim()
@@ -123,6 +137,17 @@ export function DraftView({ ticket }: DraftViewProps) {
     project?.manualQaOverride ?? null,
     profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   )
+  // What applies while this ticket inherits, so each row can name its source.
+  const inheritedAiQuestions = resolveAiQuestionsSettingLabel(
+    null,
+    project?.aiQuestionsOverride,
+    profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
+  )
+  const inheritedAiQuestionWindow = resolveAiQuestionWindowLabel(
+    null,
+    project?.aiQuestionWindowOverride,
+    profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
+  )
 
   // Sync draft from prop — use useEffect to avoid setting state during render
   // which can cause issues with React StrictMode double-rendering.
@@ -142,6 +167,14 @@ export function DraftView({ ticket }: DraftViewProps) {
   useEffect(() => {
     setManualQaOverride(ticket.manualQaOverride ?? null)
   }, [ticket.manualQaOverride])
+
+  useEffect(() => {
+    setAiQuestionsOverride(ticket.aiQuestionsOverride ?? null)
+  }, [ticket.aiQuestionsOverride])
+
+  useEffect(() => {
+    setAiQuestionWindowOverride(ticket.aiQuestionWindowOverride ?? null)
+  }, [ticket.aiQuestionWindowOverride])
 
   const handleStart = () => {
     setIsStartAttemptActive(true)
@@ -203,6 +236,30 @@ export function DraftView({ ticket }: DraftViewProps) {
     } catch (error) {
       setManualQaOverride(previous)
       setManualQaError(error instanceof Error ? error.message : 'Failed to update Manual QA setting.')
+    }
+  }
+
+  const handleAiQuestionsChange = async (value: AiQuestionsOverride) => {
+    const previous = aiQuestionsOverride
+    setAiQuestionsOverride(value)
+    setAiQuestionError(null)
+    try {
+      await updateTicket({ id: ticket.id, aiQuestionsOverride: value })
+    } catch (error) {
+      setAiQuestionsOverride(previous)
+      setAiQuestionError(error instanceof Error ? error.message : 'Failed to update the AI questions setting.')
+    }
+  }
+
+  const handleAiQuestionWindowChange = async (value: AiQuestionWindowOverride) => {
+    const previous = aiQuestionWindowOverride
+    setAiQuestionWindowOverride(value)
+    setAiQuestionError(null)
+    try {
+      await updateTicket({ id: ticket.id, aiQuestionWindowOverride: value })
+    } catch (error) {
+      setAiQuestionWindowOverride(previous)
+      setAiQuestionError(error instanceof Error ? error.message : 'Failed to update the AI question wait.')
     }
   }
 
@@ -324,6 +381,46 @@ export function DraftView({ ticket }: DraftViewProps) {
                   />
                 </div>
                 {manualQaError && <p role="alert" className="mt-2 text-xs text-destructive">{manualQaError}</p>}
+
+                <div className="flex items-start justify-between gap-2 border-t border-border pt-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <h4 className="text-xs font-medium">AI questions</h4>
+                    <ConfigurationDocsLink
+                      docsPath="/configuration#ai-questions"
+                      label="ticket AI questions"
+                      description="Choose whether a model may stop a step to ask you a question in this ticket. Open the AI questions documentation."
+                    />
+                  </div>
+                  <TriStateSetting
+                    idPrefix="draft-ai-questions"
+                    groupLabel="AI questions setting"
+                    options={AI_QUESTIONS_INHERITABLE_OPTIONS}
+                    value={aiQuestionsOverride}
+                    onChange={(value) => { void handleAiQuestionsChange(value) }}
+                    disabled={isSavingDescription}
+                    footer={aiQuestionsOverride === null && (
+                      <p className="mt-1 text-right text-xs text-muted-foreground">
+                        Inherits <span className="font-medium text-foreground">{inheritedAiQuestions.enabled ? 'On' : 'Off'}</span> from {describeSettingSource(inheritedAiQuestions.source)}.
+                      </p>
+                    )}
+                  />
+                </div>
+                <div className="border-t border-border pt-3">
+                  <InheritableDurationField
+                    label="AI question wait"
+                    idPrefix="draft-ai-question-wait"
+                    value={aiQuestionWindowOverride}
+                    onChange={(value) => { void handleAiQuestionWindowChange(value) }}
+                    inheritedMs={inheritedAiQuestionWindow.windowMs}
+                    inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
+                    minMs={AI_QUESTION_WINDOW_MIN_MS}
+                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
+                    formatValue={formatAiQuestionWindow}
+                    disabled={isSavingDescription}
+                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
+                  />
+                </div>
+                {aiQuestionError && <p role="alert" className="mt-2 text-xs text-destructive">{aiQuestionError}</p>}
               </div>
             )}
           </div>

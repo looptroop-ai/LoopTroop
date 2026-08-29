@@ -22,10 +22,10 @@ import type {
 } from '../../opencode/types'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import {
-  OPENCODE_DEFAULT_PERMISSIONS,
-  OPENCODE_DISABLED_PERMISSIONS,
-  OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS,
-  OPENCODE_READ_ONLY_PERMISSIONS,
+  SILENT_DEFAULT_PERMISSIONS,
+  SILENT_DISABLED_PERMISSIONS,
+  SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS,
+  SILENT_READ_ONLY_PERMISSIONS,
 } from '../../opencode/toolPolicy'
 import {
   runOpenCodePrompt,
@@ -355,13 +355,13 @@ describe('runOpenCodePrompt', () => {
       'ses-1',
       [{ type: 'text', content: 'Prompt body' }],
       undefined,
-      { permission: OPENCODE_DEFAULT_PERMISSIONS },
+      { permission: SILENT_DEFAULT_PERMISSIONS },
     )).resolves.toBe('assistant response')
 
     expect(updateCalls[0]?.[0]).toMatchObject({
       sessionID: 'ses-1',
       directory: '/tmp/project',
-      permission: OPENCODE_DEFAULT_PERMISSIONS,
+      permission: SILENT_DEFAULT_PERMISSIONS,
     })
     expect(promptCalls[0]?.[0]).not.toHaveProperty('tools')
   })
@@ -405,7 +405,7 @@ describe('runOpenCodePrompt', () => {
       [{ type: 'text', content: 'Prompt body' }],
       undefined,
       {
-        permission: OPENCODE_DEFAULT_PERMISSIONS,
+        permission: SILENT_DEFAULT_PERMISSIONS,
         autoApprovePermissions: true,
       },
     )).resolves.toBe('assistant response')
@@ -455,7 +455,7 @@ describe('runOpenCodePrompt', () => {
       [{ type: 'text', content: 'Prompt body' }],
       undefined,
       {
-        permission: OPENCODE_DEFAULT_PERMISSIONS,
+        permission: SILENT_DEFAULT_PERMISSIONS,
         autoApprovePermissions: true,
       },
     )).rejects.toThrow(
@@ -1219,7 +1219,7 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DISABLED_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DISABLED_PERMISSIONS)
   })
 
   it('sends the default no-web permission policy with unattended safeguards', async () => {
@@ -1233,7 +1233,7 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DEFAULT_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DEFAULT_PERMISSIONS)
     expect(adapter.promptCalls[0]?.options?.permission).toEqual(expect.arrayContaining([
       { permission: 'external_directory', pattern: '*', action: 'allow' },
       { permission: 'doom_loop', pattern: '*', action: 'allow' },
@@ -1254,7 +1254,7 @@ describe('runOpenCodePrompt', () => {
     })
 
     expect(adapter.promptCalls).toHaveLength(1)
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_EXECUTION_SETUP_ONLINE_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_EXECUTION_SETUP_ONLINE_PERMISSIONS)
   })
 
   it('propagates the initial PROM1 interview draft prompt to callers', async () => {
@@ -1303,7 +1303,7 @@ describe('runOpenCodePrompt', () => {
     expect(dispatchedEntries[0]!.event.promptText).toContain('## System Role')
     expect(dispatchedEntries[0]!.event.promptText).toContain('Build a ticket dashboard.')
     expect(dispatchedEntries[0]!.event.promptText).toContain('max_initial_questions: 3')
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_READ_ONLY_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_READ_ONLY_PERMISSIONS)
   })
 
   it('returns snapshot content when stream done arrives before SDK prompt resolves', async () => {

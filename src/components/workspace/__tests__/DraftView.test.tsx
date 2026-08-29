@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { act } from '@testing-library/react'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeTicket, TEST } from '@/test/factories'
 import { createJsonResponse, createTestQueryClient, renderWithProviders as sharedRenderWithProviders } from '@/test/renderHelpers'
@@ -119,7 +119,7 @@ describe('DraftView', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows only Manual QA inside the collapsed Advanced section for ordinary Draft tickets', async () => {
+  it('shows the ticket settings inside the collapsed Advanced section for ordinary Draft tickets', async () => {
     const ordinaryTicket = makeTicket({ availableActions: ['start', 'cancel'] })
     renderWithProviders(<DraftView ticket={ordinaryTicket} />)
 
@@ -132,7 +132,8 @@ describe('DraftView', () => {
     fireEvent.click(advancedButton)
     expect(advancedButton).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('Manual QA checkpoint')).toBeInTheDocument()
-    expect(screen.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
+    const manualQa = within(screen.getByRole('radiogroup', { name: 'Manual QA setting' }))
+    expect(manualQa.queryByRole('radio', { name: 'Inherit' })).not.toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.queryByText(/Effective setting:/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open documentation for ticket Manual QA checkpoint' })).toHaveAttribute(

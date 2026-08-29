@@ -10,6 +10,7 @@ import {
   type OpenCodePromptCompletedEvent,
   type OpenCodePromptDispatchEvent,
 } from '../../workflow/runOpenCodePrompt'
+import { createWorkBudget, type WorkBudget } from '../../workflow/workBudget'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { throwIfAborted } from '../../council/types'
 import { throwIfCancelled } from '../../lib/abort'
@@ -103,10 +104,6 @@ async function resolveContextParts(input: ContextPartsInput): Promise<PromptPart
     return await input()
   }
   return input
-}
-
-function getRemainingTimeoutMs(deadlineAt: number | undefined): number | undefined {
-  return deadlineAt === undefined ? undefined : Math.max(0, deadlineAt - Date.now())
 }
 
 function buildContinuationPrompt(
@@ -454,228 +451,91 @@ export async function executeBead(
     }))
   }
 
-  while (maxAttemptIteration == null || iteration <= maxAttemptIteration) {
-    lastAttemptIteration = iteration
-    currentIterationOpenCodeDiagnostics.current = null
-    throwIfAborted(signal)
-    let activeSessionId: string | null = null
-    let activeSession: Session | null = null
-    const iterationErrors: string[] = []
-    const iterationErrorCodes = new Set<string>()
-    let contextWipeReason: ContextWipeReason = 'failure'
-    let latestMessages: Message[] = []
-    let iterationInitialInput = ''
-    let iterationOutput = ''
-    const deadlineAt = timeout > 0 ? Date.now() + timeout : undefined
-
-    try {
-      let sessionId = ''
-      const resolvedContextParts = await resolveContextParts(contextParts)
-      const promptContent = buildPromptFromTemplate(
-        PROM_CODING,
-        resolvedContextParts.filter((part) => part.type !== 'file'),
-      )
-      iterationInitialInput = promptContent
-      const beadPrompt: PromptPart[] = [
-        {
-          type: 'text',
-          content: promptContent,
-        },
-        // Keep SDK file parts out of the rendered text template and forward
-        // them intact. Manual QA image evidence relies on the OpenCode file
-        // part contract; provider/context failures must surface normally.
-        ...resolvedContextParts.filter((part) => part.type === 'file'),
-      ]
-
-      const runBeadPrompt = () => runOpenCodePrompt({
-        adapter,
-        projectPath,
-        parts: beadPrompt,
-        signal,
-        timeoutMs: getRemainingTimeoutMs(deadlineAt),
-        deadlineScope: 'workflow',
-        model: callbacks?.model,
-        variant: callbacks?.variant,
-        opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
-        erroredSessionPolicy: 'discard_errored_session_output',
-        toolPolicy: PROM_CODING.toolPolicy,
-        ...(callbacks?.ticketId
-          ? {
-              sessionOwnership: {
-                ticketId: callbacks.ticketId,
-                phase: 'CODING',
-                memberId: callbacks.model,
-                beadId: bead.id,
-                iteration,
-                keepActive: true,
-              },
-            }
-          : {}),
-        onSessionCreated: (session) => {
-          sessionId = session.id
-          activeSessionId = session.id
-          activeSession = session
-          callbacks?.onSessionCreated?.(session.id, iteration)
-        },
-        onStreamEvent: (event) => {
-          if (!sessionId) return
-          rememberOpenCodeStreamDiagnostics(sessionId, event)
-          callbacks?.onOpenCodeStreamEvent?.({
-            sessionId,
-            iteration,
-            event,
-          })
-        },
-        onPromptDispatched: (event) => {
-          callbacks?.onPromptDispatched?.({
-            sessionId: event.session.id,
-            iteration,
-            event,
-          })
-        },
-        onPromptCompleted: (event) => {
-          rememberPromptCompletedDiagnostics(event)
-          callbacks?.onPromptCompleted?.({
-            iteration,
-            stage: 'coding_main',
-            event,
-          })
-        },
+  // Every iteration registers its budget in the ticket's ledger, which holds it
+  // until it is released. Collected so one `finally` covers every way out —
+  // the success `return` from inside the loop, a cancellation thrown out of it,
+  // and the retry path that falls through to the bottom. A `finally` placed on
+  // any inner block covers only the path that block is on: the first attempt at
+  // this sat on the context-wipe handler, which the success return never
+  // reaches, so completed beads went on leaking exactly as before.
+  const iterationBudgets: WorkBudget[] = []
+  try {
+    while (maxAttemptIteration == null || iteration <= maxAttemptIteration) {
+      lastAttemptIteration = iteration
+      currentIterationOpenCodeDiagnostics.current = null
+      throwIfAborted(signal)
+      let activeSessionId: string | null = null
+      let activeSession: Session | null = null
+      const iterationErrors: string[] = []
+      const iterationErrorCodes = new Set<string>()
+      let contextWipeReason: ContextWipeReason = 'failure'
+      let latestMessages: Message[] = []
+      let iterationInitialInput = ''
+      let iterationOutput = ''
+      // One budget per bead iteration. The private remaining-time helper this
+      // replaced could not see a question wait, so an iteration blocked on one
+      // used to burn its whole per-iteration window waiting for a person.
+      const budget = createWorkBudget({
+        ...(callbacks?.ticketId ? { ticketId: callbacks.ticketId } : {}),
+        ...(timeout > 0 ? { totalMs: timeout } : {}),
+        scope: 'bead_iteration',
       })
+      iterationBudgets.push(budget)
 
-      let runResult = await runBeadPrompt()
-      let structuredRetryAttempts = 0
-      const codingSessionOwnership = callbacks?.ticketId
-        ? {
-            ticketId: callbacks.ticketId,
-            phase: 'CODING',
-            memberId: callbacks.model,
-            beadId: bead.id,
-            iteration,
-            keepActive: true,
-          }
-        : undefined
+      try {
+        let sessionId = ''
+        const resolvedContextParts = await resolveContextParts(contextParts)
+        const promptContent = buildPromptFromTemplate(
+          PROM_CODING,
+          resolvedContextParts.filter((part) => part.type !== 'file'),
+        )
+        iterationInitialInput = promptContent
+        const beadPrompt: PromptPart[] = [
+          {
+            type: 'text',
+            content: promptContent,
+          },
+          // Keep SDK file parts out of the rendered text template and forward
+          // them intact. Manual QA image evidence relies on the OpenCode file
+          // part contract; provider/context failures must surface normally.
+          ...resolvedContextParts.filter((part) => part.type === 'file'),
+        ]
 
-      while (true) {
-        throwIfAborted(signal)
-        activeSessionId = runResult.session.id
-        activeSession = runResult.session
-        lastOutput = runResult.response
-        iterationOutput = runResult.response
-        latestMessages = runResult.messages
-
-        const result = parseCompletionMarker(lastOutput)
-        if (result.complete && result.gatesValid) {
-          recordRawAttempt({
-            iteration,
-            status: 'accepted',
-            initialInput: iterationInitialInput,
-            rawResponse: iterationOutput,
-            sessionId: activeSessionId,
-          })
-          if (activeSessionId && sessionManager) {
-            await sessionManager.completeSession(activeSessionId)
-            clearOpenCodePromptDispatchCount(activeSessionId)
-            activeSessionId = null
-          }
-          activeSession = null
-          return { beadId: bead.id, success: true, iteration, output: lastOutput, errors: [], rawAttempts }
-        }
-
-        const incompleteSummary = result.errors.join(', ') || 'Incomplete'
-        if (!iterationErrors.includes(incompleteSummary)) {
-          iterationErrors.push(incompleteSummary)
-        }
-
-        const remainingMs = getRemainingTimeoutMs(deadlineAt)
-        if (remainingMs !== undefined && remainingMs <= 0) {
-          throw new WorkflowDeadlineTimeoutError({
-            phase: 'CODING',
-            beadId: bead.id,
-            iteration,
-            timeoutMs: timeout,
-          })
-        }
-
-        if (shouldUseStructuredRetry(result)) {
-          if (structuredRetryAttempts >= structuredRetryCount) {
-            iterationErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
-            executorErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
-            throw new Error(`Completion marker failed validation after ${structuredRetryCount} structured retry attempt(s): ${result.errors.join('; ') || 'Completion marker missing or invalid.'}`)
-          }
-          structuredRetryAttempts += 1
-          const retryDecision = getStructuredRetryDecision(lastOutput, runResult.responseMeta)
-          if (retryDecision.reuseSession) {
-            const retryParts = buildStructuredRetryPrompt([], {
-              validationError: result.errors.join('; ') || 'Completion marker missing or invalid.',
-              rawResponse: lastOutput,
-              schemaReminder: BEAD_STATUS_SCHEMA_REMINDER,
-            })
-            runResult = await runOpenCodeSessionPrompt({
-              adapter,
-              session: runResult.session,
-              parts: retryParts,
-              signal,
-              timeoutMs: remainingMs,
-              deadlineScope: 'workflow',
-              model: callbacks?.model,
-              sessionOwnership: codingSessionOwnership,
-              opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
-              erroredSessionPolicy: 'discard_errored_session_output',
-              onStreamEvent: (event) => {
-                rememberOpenCodeStreamDiagnostics(runResult.session.id, event)
-                callbacks?.onOpenCodeStreamEvent?.({
-                  sessionId: runResult.session.id,
-                  iteration,
-                  event,
-                })
-              },
-              onPromptDispatched: (event) => {
-                callbacks?.onPromptDispatched?.({
-                  sessionId: event.session.id,
-                  iteration,
-                  event,
-                })
-              },
-              onPromptCompleted: (event) => {
-                rememberPromptCompletedDiagnostics(event)
-                callbacks?.onPromptCompleted?.({
-                  iteration,
-                  stage: 'coding_structured_retry',
-                  event,
-                })
-              },
-            })
-            continue
-          }
-
-          if (activeSessionId && sessionManager) {
-            await sessionManager.abandonSession(activeSessionId)
-            clearOpenCodePromptDispatchCount(activeSessionId)
-            activeSessionId = null
-          }
-          activeSession = null
-          runResult = await runBeadPrompt()
-          continue
-        }
-
-        runResult = await runOpenCodeSessionPrompt({
+        const runBeadPrompt = () => runOpenCodePrompt({
           adapter,
-          session: runResult.session,
-          parts: buildContinuationPrompt(bead.id, result.errors, lastOutput),
+          projectPath,
+          parts: beadPrompt,
           signal,
-          timeoutMs: remainingMs,
+          workBudget: budget,
           deadlineScope: 'workflow',
           model: callbacks?.model,
           variant: callbacks?.variant,
-          sessionOwnership: codingSessionOwnership,
           opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
           erroredSessionPolicy: 'discard_errored_session_output',
           toolPolicy: PROM_CODING.toolPolicy,
+          ...(callbacks?.ticketId
+            ? {
+                sessionOwnership: {
+                  ticketId: callbacks.ticketId,
+                  phase: 'CODING',
+                  memberId: callbacks.model,
+                  beadId: bead.id,
+                  iteration,
+                  keepActive: true,
+                },
+              }
+            : {}),
+          onSessionCreated: (session) => {
+            sessionId = session.id
+            activeSessionId = session.id
+            activeSession = session
+            callbacks?.onSessionCreated?.(session.id, iteration)
+          },
           onStreamEvent: (event) => {
-            rememberOpenCodeStreamDiagnostics(runResult.session.id, event)
+            if (!sessionId) return
+            rememberOpenCodeStreamDiagnostics(sessionId, event)
             callbacks?.onOpenCodeStreamEvent?.({
-              sessionId: runResult.session.id,
+              sessionId,
               iteration,
               event,
             })
@@ -691,183 +551,336 @@ export async function executeBead(
             rememberPromptCompletedDiagnostics(event)
             callbacks?.onPromptCompleted?.({
               iteration,
-              stage: 'coding_continue',
+              stage: 'coding_main',
               event,
             })
           },
         })
-      }
-    } catch (err) {
-      throwIfCancelled(err, signal)
-      const workflowDeadlineTimedOut = isWorkflowDeadlineTimeoutError(err)
-      if (workflowDeadlineTimedOut) {
-        contextWipeReason = 'iteration_timeout'
-        iterationErrorCodes.add(BEAD_ITERATION_TIMEOUT)
-        executorErrorCodes.add(BEAD_ITERATION_TIMEOUT)
-        iterationErrors.push('Coding iteration timed out before the completion marker was accepted.')
-      } else {
-        rememberOpenCodeDiagnostics(buildOpenCodeBlockedErrorDiagnostics({
-          error: err,
-          modelId: callbacks?.model,
-          sessionId: activeSessionId ?? undefined,
-          fallbackMessage: err instanceof Error ? err.message : undefined,
-        }))
-      }
-      if (
-        !workflowDeadlineTimedOut
-        && activeSessionId
-        && callbacks?.ticketId
-        && shouldPreserveSessionForContinuation({
-          error: err,
-          sessionId: activeSessionId,
-          modelId: callbacks.model,
-          sessionOwnership: {
-            ticketId: callbacks.ticketId,
-            phase: 'CODING',
-            memberId: callbacks.model,
-            beadId: bead.id,
-            iteration,
-            keepActive: true,
-          },
-          signal,
-        })
-      ) {
-        const continuableError = err instanceof Error ? err : new Error(String(err))
-        const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
-          error: continuableError,
-          modelId: callbacks.model,
-          sessionId: activeSessionId,
-          fallbackMessage: continuableError.message,
-        })
-        if (diagnosticResult.diagnostics?.kind === 'timeout') {
-          callbacks.onContinuableTimeoutPreserved?.({
-            beadId: bead.id,
-            sessionId: activeSessionId,
-            iteration,
-            message: `OpenCode/provider timeout for session ${activeSessionId}; preserving session for Continue.`,
-          })
-        }
-        throw attachContinuationDiagnostics(continuableError, {
-          error: continuableError,
-          sessionId: activeSessionId,
-          modelId: callbacks.model,
-        })
-      }
-      const msg = err instanceof Error ? err.message : 'Unknown error'
-      iterationErrors.push(msg)
-    }
 
-    if (iterationErrors.length === 0) {
-      iterationErrors.push('Incomplete')
-    }
+        let runResult = await runBeadPrompt()
+        let structuredRetryAttempts = 0
+        const codingSessionOwnership = callbacks?.ticketId
+          ? {
+              ticketId: callbacks.ticketId,
+              phase: 'CODING',
+              memberId: callbacks.model,
+              beadId: bead.id,
+              iteration,
+              keepActive: true,
+            }
+          : undefined
 
-    const formattedIterationErrors = iterationErrors.map((msg) => `Iteration ${iteration}: ${msg}`)
-    errors.push(...formattedIterationErrors)
-    const contextWipeSession = activeSession
-    const contextWipeSessionId = activeSessionId
-    const openCodeDiagnosticsForAttempt = currentIterationOpenCodeDiagnostics.current as OpenCodeBlockedErrorDiagnosticsResult | null
-    const attemptFailureStatus = classifyFailedRawAttempt(contextWipeReason, formattedIterationErrors)
-    recordRawAttempt({
-      iteration,
-      status: attemptFailureStatus,
-      initialInput: iterationInitialInput,
-      rawResponse: iterationOutput,
-      errors: formattedIterationErrors,
-      validationError: attemptFailureStatus === 'rejected' ? formattedIterationErrors.join('\n') : undefined,
-      failureClass: openCodeDiagnosticsForAttempt?.diagnostics?.kind ?? attemptFailureStatus,
-      sessionId: contextWipeSessionId,
-      diagnostics: openCodeDiagnosticsForAttempt?.diagnostics ?? null,
-      errorCodes: mergeErrorCodes(
-        [...iterationErrorCodes],
-        openCodeDiagnosticsForAttempt?.errorCodes ?? [],
-      ),
-    })
+        while (true) {
+          throwIfAborted(signal)
+          activeSessionId = runResult.session.id
+          activeSession = runResult.session
+          lastOutput = runResult.response
+          iterationOutput = runResult.response
+          latestMessages = runResult.messages
 
-    activeSession = null
-    activeSessionId = null
+          const result = parseCompletionMarker(lastOutput)
+          if (result.complete && result.gatesValid) {
+            recordRawAttempt({
+              iteration,
+              status: 'accepted',
+              initialInput: iterationInitialInput,
+              rawResponse: iterationOutput,
+              sessionId: activeSessionId,
+            })
+            if (activeSessionId && sessionManager) {
+              await sessionManager.completeSession(activeSessionId)
+              clearOpenCodePromptDispatchCount(activeSessionId)
+              activeSessionId = null
+            }
+            activeSession = null
+            return { beadId: bead.id, success: true, iteration, output: lastOutput, errors: [], rawAttempts }
+          }
 
-    const recentFailureExcerpts = extractRecentFailureExcerpts(latestMessages)
-    let note = ''
-    try {
-      if (contextWipeSession) {
-        note = await generateContextWipeNote(
-          adapter,
-          contextWipeSession,
-          bead,
-          formattedIterationErrors,
-          lastOutput,
-          recentFailureExcerpts,
-          signal,
-          {
+          const incompleteSummary = result.errors.join(', ') || 'Incomplete'
+          if (!iterationErrors.includes(incompleteSummary)) {
+            iterationErrors.push(incompleteSummary)
+          }
+
+          if (budget.expired()) {
+            throw new WorkflowDeadlineTimeoutError({
+              phase: 'CODING',
+              beadId: bead.id,
+              iteration,
+              timeoutMs: timeout,
+            })
+          }
+
+          if (shouldUseStructuredRetry(result)) {
+            if (structuredRetryAttempts >= structuredRetryCount) {
+              iterationErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
+              executorErrorCodes.add(BEAD_AGENT_RESPONSE_INVALID)
+              throw new Error(`Completion marker failed validation after ${structuredRetryCount} structured retry attempt(s): ${result.errors.join('; ') || 'Completion marker missing or invalid.'}`)
+            }
+            structuredRetryAttempts += 1
+            const retryDecision = getStructuredRetryDecision(lastOutput, runResult.responseMeta)
+            if (retryDecision.reuseSession) {
+              const retryParts = buildStructuredRetryPrompt([], {
+                validationError: result.errors.join('; ') || 'Completion marker missing or invalid.',
+                rawResponse: lastOutput,
+                schemaReminder: BEAD_STATUS_SCHEMA_REMINDER,
+              })
+              runResult = await runOpenCodeSessionPrompt({
+                adapter,
+                session: runResult.session,
+                parts: retryParts,
+                signal,
+                workBudget: budget,
+                deadlineScope: 'workflow',
+                model: callbacks?.model,
+                sessionOwnership: codingSessionOwnership,
+                opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
+                erroredSessionPolicy: 'discard_errored_session_output',
+                onStreamEvent: (event) => {
+                  rememberOpenCodeStreamDiagnostics(runResult.session.id, event)
+                  callbacks?.onOpenCodeStreamEvent?.({
+                    sessionId: runResult.session.id,
+                    iteration,
+                    event,
+                  })
+                },
+                onPromptDispatched: (event) => {
+                  callbacks?.onPromptDispatched?.({
+                    sessionId: event.session.id,
+                    iteration,
+                    event,
+                  })
+                },
+                onPromptCompleted: (event) => {
+                  rememberPromptCompletedDiagnostics(event)
+                  callbacks?.onPromptCompleted?.({
+                    iteration,
+                    stage: 'coding_structured_retry',
+                    event,
+                  })
+                },
+              })
+              continue
+            }
+
+            if (activeSessionId && sessionManager) {
+              await sessionManager.abandonSession(activeSessionId)
+              clearOpenCodePromptDispatchCount(activeSessionId)
+              activeSessionId = null
+            }
+            activeSession = null
+            runResult = await runBeadPrompt()
+            continue
+          }
+
+          runResult = await runOpenCodeSessionPrompt({
+            adapter,
+            session: runResult.session,
+            parts: buildContinuationPrompt(bead.id, result.errors, lastOutput),
+            signal,
+            workBudget: budget,
+            deadlineScope: 'workflow',
             model: callbacks?.model,
             variant: callbacks?.variant,
-            iteration,
-            onOpenCodeStreamEvent: ({ sessionId, event }) => {
-              rememberOpenCodeStreamDiagnostics(sessionId, event)
-              callbacks?.onOpenCodeStreamEvent?.({ sessionId, iteration, event })
+            sessionOwnership: codingSessionOwnership,
+            opencodeRetryPolicy: callbacks?.opencodeRetryPolicy,
+            erroredSessionPolicy: 'discard_errored_session_output',
+            toolPolicy: PROM_CODING.toolPolicy,
+            onStreamEvent: (event) => {
+              rememberOpenCodeStreamDiagnostics(runResult.session.id, event)
+              callbacks?.onOpenCodeStreamEvent?.({
+                sessionId: runResult.session.id,
+                iteration,
+                event,
+              })
             },
-            onPromptDispatched: callbacks?.onPromptDispatched,
-            onPromptCompleted: (entry) => {
-              rememberPromptCompletedDiagnostics(entry.event)
-              callbacks?.onPromptCompleted?.(entry)
+            onPromptDispatched: (event) => {
+              callbacks?.onPromptDispatched?.({
+                sessionId: event.session.id,
+                iteration,
+                event,
+              })
             },
-          },
-        )
+            onPromptCompleted: (event) => {
+              rememberPromptCompletedDiagnostics(event)
+              callbacks?.onPromptCompleted?.({
+                iteration,
+                stage: 'coding_continue',
+                event,
+              })
+            },
+          })
+        }
+      } catch (err) {
+        throwIfCancelled(err, signal)
+        const workflowDeadlineTimedOut = isWorkflowDeadlineTimeoutError(err)
+        if (workflowDeadlineTimedOut) {
+          contextWipeReason = 'iteration_timeout'
+          iterationErrorCodes.add(BEAD_ITERATION_TIMEOUT)
+          executorErrorCodes.add(BEAD_ITERATION_TIMEOUT)
+          iterationErrors.push('Coding iteration timed out before the completion marker was accepted.')
+        } else {
+          rememberOpenCodeDiagnostics(buildOpenCodeBlockedErrorDiagnostics({
+            error: err,
+            modelId: callbacks?.model,
+            sessionId: activeSessionId ?? undefined,
+            fallbackMessage: err instanceof Error ? err.message : undefined,
+          }))
+        }
+        if (
+          !workflowDeadlineTimedOut
+          && activeSessionId
+          && callbacks?.ticketId
+          && shouldPreserveSessionForContinuation({
+            error: err,
+            sessionId: activeSessionId,
+            modelId: callbacks.model,
+            sessionOwnership: {
+              ticketId: callbacks.ticketId,
+              phase: 'CODING',
+              memberId: callbacks.model,
+              beadId: bead.id,
+              iteration,
+              keepActive: true,
+            },
+            signal,
+          })
+        ) {
+          const continuableError = err instanceof Error ? err : new Error(String(err))
+          const diagnosticResult = buildOpenCodeBlockedErrorDiagnostics({
+            error: continuableError,
+            modelId: callbacks.model,
+            sessionId: activeSessionId,
+            fallbackMessage: continuableError.message,
+          })
+          if (diagnosticResult.diagnostics?.kind === 'timeout') {
+            callbacks.onContinuableTimeoutPreserved?.({
+              beadId: bead.id,
+              sessionId: activeSessionId,
+              iteration,
+              message: `OpenCode/provider timeout for session ${activeSessionId}; preserving session for Continue.`,
+            })
+          }
+          throw attachContinuationDiagnostics(continuableError, {
+            error: continuableError,
+            sessionId: activeSessionId,
+            modelId: callbacks.model,
+          })
+        }
+        const msg = err instanceof Error ? err.message : 'Unknown error'
+        iterationErrors.push(msg)
       }
-    } catch {
-      // Best effort only; deterministic fallback note below keeps the retry durable.
-    }
 
-    const effectiveNote = note || buildFallbackContextWipeNote({
-      iteration,
-      errors: formattedIterationErrors,
-      recentFailureExcerpts,
-      lastOutput,
-    })
+      if (iterationErrors.length === 0) {
+        iterationErrors.push('Incomplete')
+      }
 
-    bead.failedIterationNotes.push({
-      timestamp: new Date().toISOString(),
-      iteration,
-      content: stripAnsiSequences(effectiveNote),
-    })
-    const attempt = iteration - startingIteration + 1
-    try {
-      await callbacks?.onContextWipe?.({
-        beadId: bead.id,
-        failedIterationNotes: [...bead.failedIterationNotes],
+      const formattedIterationErrors = iterationErrors.map((msg) => `Iteration ${iteration}: ${msg}`)
+      errors.push(...formattedIterationErrors)
+      const contextWipeSession = activeSession
+      const contextWipeSessionId = activeSessionId
+      const openCodeDiagnosticsForAttempt = currentIterationOpenCodeDiagnostics.current as OpenCodeBlockedErrorDiagnosticsResult | null
+      const attemptFailureStatus = classifyFailedRawAttempt(contextWipeReason, formattedIterationErrors)
+      recordRawAttempt({
         iteration,
-        reason: contextWipeReason,
-        attempt,
-        nextAttempt: attempt + 1,
-        maxAttempts: maxIterations > 0 ? maxIterations : null,
+        status: attemptFailureStatus,
+        initialInput: iterationInitialInput,
+        rawResponse: iterationOutput,
+        errors: formattedIterationErrors,
+        validationError: attemptFailureStatus === 'rejected' ? formattedIterationErrors.join('\n') : undefined,
+        failureClass: openCodeDiagnosticsForAttempt?.diagnostics?.kind ?? attemptFailureStatus,
+        sessionId: contextWipeSessionId,
+        diagnostics: openCodeDiagnosticsForAttempt?.diagnostics ?? null,
+        errorCodes: mergeErrorCodes(
+          [...iterationErrorCodes],
+          openCodeDiagnosticsForAttempt?.errorCodes ?? [],
+        ),
       })
-    } finally {
-      if (contextWipeSessionId && sessionManager) {
-        await sessionManager.abandonSession(contextWipeSessionId)
-        clearSessionContinuation(contextWipeSessionId)
-        clearOpenCodePromptDispatchCount(contextWipeSessionId)
+
+      activeSession = null
+      activeSessionId = null
+
+      const recentFailureExcerpts = extractRecentFailureExcerpts(latestMessages)
+      let note = ''
+      try {
+        if (contextWipeSession) {
+          note = await generateContextWipeNote(
+            adapter,
+            contextWipeSession,
+            bead,
+            formattedIterationErrors,
+            lastOutput,
+            recentFailureExcerpts,
+            signal,
+            {
+              model: callbacks?.model,
+              variant: callbacks?.variant,
+              iteration,
+              onOpenCodeStreamEvent: ({ sessionId, event }) => {
+                rememberOpenCodeStreamDiagnostics(sessionId, event)
+                callbacks?.onOpenCodeStreamEvent?.({ sessionId, iteration, event })
+              },
+              onPromptDispatched: callbacks?.onPromptDispatched,
+              onPromptCompleted: (entry) => {
+                rememberPromptCompletedDiagnostics(entry.event)
+                callbacks?.onPromptCompleted?.(entry)
+              },
+            },
+          )
+        }
+      } catch {
+        // Best effort only; deterministic fallback note below keeps the retry durable.
       }
+
+      const effectiveNote = note || buildFallbackContextWipeNote({
+        iteration,
+        errors: formattedIterationErrors,
+        recentFailureExcerpts,
+        lastOutput,
+      })
+
+      bead.failedIterationNotes.push({
+        timestamp: new Date().toISOString(),
+        iteration,
+        content: stripAnsiSequences(effectiveNote),
+      })
+      const attempt = iteration - startingIteration + 1
+      try {
+        await callbacks?.onContextWipe?.({
+          beadId: bead.id,
+          failedIterationNotes: [...bead.failedIterationNotes],
+          iteration,
+          reason: contextWipeReason,
+          attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts: maxIterations > 0 ? maxIterations : null,
+        })
+      } finally {
+        if (contextWipeSessionId && sessionManager) {
+          await sessionManager.abandonSession(contextWipeSessionId)
+          clearSessionContinuation(contextWipeSessionId)
+          clearOpenCodePromptDispatchCount(contextWipeSessionId)
+        }
+      }
+      throwIfAborted(signal)
+
+      if (maxAttemptIteration !== null && iteration >= maxAttemptIteration) {
+        break
+      }
+      iteration++
     }
-    throwIfAborted(signal)
 
-    if (maxAttemptIteration !== null && iteration >= maxAttemptIteration) {
-      break
+    if (maxAttemptIteration !== null && lastAttemptIteration >= maxAttemptIteration) {
+      errors.push(`Reached the configured per-bead retry budget at iteration ${lastAttemptIteration}.`)
     }
-    iteration++
-  }
 
-  if (maxAttemptIteration !== null && lastAttemptIteration >= maxAttemptIteration) {
-    errors.push(`Reached the configured per-bead retry budget at iteration ${lastAttemptIteration}.`)
-  }
-
-  const baseErrorCodes = maxAttemptIteration !== null && lastAttemptIteration >= maxAttemptIteration
-    ? [BEAD_RETRY_BUDGET_EXHAUSTED]
-    : []
-  const openCodeDiagnostics = latestOpenCodeDiagnostics.current
-  const errorCodes = mergeErrorCodes(
-    mergeErrorCodes(baseErrorCodes, [...executorErrorCodes]),
-    openCodeDiagnostics?.errorCodes ?? [],
-  )
+    const baseErrorCodes = maxAttemptIteration !== null && lastAttemptIteration >= maxAttemptIteration
+      ? [BEAD_RETRY_BUDGET_EXHAUSTED]
+      : []
+    const openCodeDiagnostics = latestOpenCodeDiagnostics.current
+    const errorCodes = mergeErrorCodes(
+      mergeErrorCodes(baseErrorCodes, [...executorErrorCodes]),
+      openCodeDiagnostics?.errorCodes ?? [],
+    )
 
   return {
     beadId: bead.id,
@@ -878,5 +891,8 @@ export async function executeBead(
     rawAttempts,
     ...(errorCodes.length > 0 ? { errorCodes } : {}),
     ...(openCodeDiagnostics?.diagnostics ? { diagnostics: openCodeDiagnostics.diagnostics } : {}),
+  }
+  } finally {
+    for (const iterationBudget of iterationBudgets) iterationBudget.release()
   }
 }

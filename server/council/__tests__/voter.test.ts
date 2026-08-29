@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
-import { OPENCODE_DISABLED_PERMISSIONS } from '../../opencode/toolPolicy'
+import { SILENT_DISABLED_PERMISSIONS } from '../../opencode/toolPolicy'
 import type { CouncilMember, DraftResult } from '../types'
 import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../types'
 import { conductVoting } from '../voter'
@@ -132,7 +132,7 @@ describe('conductVoting', () => {
     expect(result.votes).toHaveLength(2)
     expect(result.voterDetails[0]?.rawResponse).toBe(retryRawResponse)
     expect(result.voterDetails[0]?.normalizedResponse).toBeUndefined()
-    expect(adapter.promptCalls[0]?.options?.permission).toEqual(OPENCODE_DISABLED_PERMISSIONS)
-    expect(adapter.promptCalls[1]?.options?.permission).toEqual(OPENCODE_DISABLED_PERMISSIONS)
+    expect(adapter.promptCalls[0]?.options?.permission).toEqual(SILENT_DISABLED_PERMISSIONS)
+    expect(adapter.promptCalls[1]?.options?.permission).toEqual(SILENT_DISABLED_PERMISSIONS)
   })
 })

@@ -21,6 +21,7 @@ import type {
   ToolMessagePart,
 } from './types'
 import { parseModelRef } from './types'
+import { isPermissionDeniedByRules } from './toolPolicy'
 import type { TicketState } from './contextBuilder'
 import { resolve } from 'path'
 import { relative, sep } from 'path'
@@ -308,16 +309,25 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
           && !handledPermissionIds.has(event.permissionId)
         ) {
           handledPermissionIds.add(event.permissionId)
+          // Auto-approval is for keeping an unattended run moving, not for
+          // overriding the policy it was given. A permission the rules deny is
+          // rejected here even so: `question` is denied whenever the operator
+          // has asking turned off, and blanket-approving an ask for it would
+          // quietly hand the model back the thing the setting took away.
+          const deniedByPolicy = isPermissionDeniedByRules(promptOptions.permission, event.permission)
           try {
             const result = await this.client.permission.reply({
               requestID: event.permissionId,
               ...(directory ? { directory } : {}),
-              reply: 'always',
+              reply: deniedByPolicy ? 'reject' : 'always',
             }, this.requestOptions(this.withSdkOperationTimeout(promptSignal)))
             if (!result.data) throw new Error('OpenCode did not confirm the permission reply')
           } catch (error) {
             permissionReplyFailure = new Error(
-              `Failed to auto-approve OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
+              // Names the reply that failed rather than assuming approval: this
+              // path now rejects too, and "failed to auto-approve" would be a
+              // misleading thing to read in a log about a denied permission.
+              `Failed to ${deniedByPolicy ? 'reject' : 'auto-approve'} OpenCode permission ${event.permission ?? event.permissionId}: ${getErrorMessage(error)}`,
             )
             sdkPromptAbortController.abort(permissionReplyFailure)
             await this.abortSession(sessionId).catch(() => false)

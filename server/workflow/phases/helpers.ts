@@ -50,6 +50,14 @@ import {
 } from '../../opencode/blockedErrorDiagnostics'
 import { persistUiArtifactCompanionArtifact } from '../artifactCompanions'
 import { getErrorMessage } from '@shared/typeGuards'
+export { resolveAiQuestionSettings } from '../aiQuestionSettings'
+import { resolveAiQuestionSettings } from '../aiQuestionSettings'
+import { resolvePhaseAttempt } from '../../storage/ticketPhaseAttempts'
+import {
+  attachRequest,
+  markRequestRejectedExternally,
+  markRequestReplied,
+} from '../questionWindows'
 
 // ── Cached tool log limits from profile ──────────────────────────────────────
 
@@ -1080,6 +1088,26 @@ export function emitOpenCodeStreamEvent(
         streaming: false,
       },
     )
+    // The stream is the only place a question announces itself, so this is
+    // where the countdown starts. Everything else — the panel, the card, the
+    // phase timeout suspension — hangs off the window this opens.
+    if (event.action === 'asked') {
+      attachRequest({
+        ticketId,
+        sessionId,
+        requestId: event.requestId,
+        memberId: memberId || null,
+        phase,
+        phaseAttempt: resolvePhaseAttempt(ticketId, phase),
+        windowMs: resolveAiQuestionSettings(ticketId).windowMs,
+        questions: event.questions ?? [],
+        tool: event.tool,
+      })
+    } else if (event.action === 'replied') {
+      markRequestReplied(ticketId, sessionId, event.requestId)
+    } else {
+      markRequestRejectedExternally(ticketId, sessionId, event.requestId)
+    }
     broadcaster.broadcast(ticketId, 'needs_input', buildQuestionSsePayload({
       ticketId,
       ticketExternalId,

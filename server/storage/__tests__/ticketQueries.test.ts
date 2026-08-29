@@ -4,7 +4,7 @@ import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from 
 import { writeJsonl } from '../../io/jsonl'
 import { getTicketByRef, getTicketContext } from '../tickets'
 import { resolveReviewCutoffStatus } from '../ticketQueries'
-import { ticketStatusHistory, tickets } from '../../db/schema'
+import { questionWaits, ticketStatusHistory, tickets } from '../../db/schema'
 
 const runtimeRepoManager = createTestRepoManager('ticket-runtime-qa-origin-')
 
@@ -165,6 +165,38 @@ describe('runtime Manual QA bead origin projection', () => {
       workspacePreparationStartedAt: '2026-07-20T10:00:00.000Z',
       finalTestingDurationMs: 16 * 60_000,
       finalTestingStartedAt: '2026-07-20T11:42:00.000Z',
+      // Nobody was asked anything in this run, so none of the durations above
+      // had time taken back out of them.
+      questionWaitingMs: 0,
     })
+  })
+
+  it('bills a question wait to waiting time rather than to coding', () => {
+    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Question wait timing' })
+    const context = getTicketContext(setup.ticket.id)
+    if (!context) throw new Error('Expected ticket context')
+
+    context.projectDb.insert(ticketStatusHistory).values([
+      { ticketId: context.localTicketId, newStatus: 'CODING', changedAt: '2026-07-20T10:00:00.000Z' },
+      { ticketId: context.localTicketId, newStatus: 'COMPLETED', changedAt: '2026-07-20T11:00:00.000Z' },
+    ]).run()
+    context.projectDb.update(tickets)
+      .set({ status: 'COMPLETED' })
+      .where(eq(tickets.id, context.localTicketId))
+      .run()
+    // Ten of those sixty minutes were spent waiting on a person.
+    context.projectDb.insert(questionWaits).values({
+      ticketId: context.localTicketId,
+      startedAt: '2026-07-20T10:20:00.000Z',
+      endedAt: '2026-07-20T10:30:00.000Z',
+    }).run()
+
+    const timing = getTicketByRef(setup.ticket.id)?.implementationTiming
+    // A question does not change the ticket's status, so nothing in the status
+    // history records the wait — it was billed as coding, which inflated the
+    // ticket's active duration and trained the ETA on throughput the model
+    // never actually achieved.
+    expect(timing?.questionWaitingMs).toBe(10 * 60_000)
+    expect(timing?.activeDurationMs).toBe(50 * 60_000)
   })
 })

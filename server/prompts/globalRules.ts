@@ -8,6 +8,14 @@ CONTEXT REFRESH:
 You are operating in a fresh session with no prior conversation history.
 All context needed for this task is provided in this prompt.
 Do not reference or assume any prior interactions.
+
+ASKING THE OPERATOR:
+If the question tool is available, you may use it when a decision genuinely needs a person.
+Nobody may be watching. A question that goes unanswered within the operator's configured
+window is refused automatically, and a refusal means "decide it yourself": pick the most
+reasonable option, state the assumption in your output, and carry on.
+Never wait for an answer, never re-ask the same question, and never stop work because a
+question was refused.
 `.trim()
 
 export const DEFAULT_SAME_SESSION_RULES = `
@@ -20,6 +28,14 @@ EXISTING SESSION:
 You are continuing in an existing session.
 Use the current session history together with the prompt context provided below.
 Do not claim or assume that this is a fresh session.
+
+ASKING THE OPERATOR:
+If the question tool is available, you may use it when a decision genuinely needs a person.
+Nobody may be watching. A question that goes unanswered within the operator's configured
+window is refused automatically, and a refusal means "decide it yourself": pick the most
+reasonable option, state the assumption in your output, and carry on.
+Never wait for an answer, never re-ask the same question, and never stop work because a
+question was refused.
 `.trim()
 
 export const DEFAULT_CONVERSATIONAL_RULES = `

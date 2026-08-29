@@ -14,6 +14,17 @@ import { TicketDescriptionTabs, type TicketDescriptionMode } from './TicketDescr
 import { PROFILE_DEFAULTS } from '@server/db/defaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
+import { TriStateSetting } from '@/components/settings/TriStateSetting'
+import { InheritableDurationField } from '@/components/settings/InheritableDurationField'
+import { AI_QUESTIONS_INHERITABLE_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
+import {
+  describeSettingSource,
+  resolveAiQuestionsSettingLabel,
+  resolveAiQuestionWindowLabel,
+  type AiQuestionsOverride,
+  type AiQuestionWindowOverride,
+} from '@/lib/aiQuestionSetting'
+import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
 import { useProfile } from '@/hooks/useProfile'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 import { useToast } from '@/components/shared/useToast'
@@ -37,6 +48,8 @@ export function TicketForm({ onClose }: TicketFormProps) {
   const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false)
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [manualQaOverride, setManualQaOverride] = useState<ManualQaOverride>(null)
+  const [aiQuestionsOverride, setAiQuestionsOverride] = useState<AiQuestionsOverride>(null)
+  const [aiQuestionWindowOverride, setAiQuestionWindowOverride] = useState<AiQuestionWindowOverride>(null)
 
   const selectedProject = projects.find(p => p.id === projectId) ?? projects[0]
   const effectiveProjectId = selectedProject?.id ?? ''
@@ -45,12 +58,25 @@ export function TicketForm({ onClose }: TicketFormProps) {
     selectedProject?.manualQaOverride ?? null,
     profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
   )
+  // What applies while this ticket inherits, so the row can name it.
+  const inheritedAiQuestions = resolveAiQuestionsSettingLabel(
+    null,
+    selectedProject?.aiQuestionsOverride,
+    profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
+  )
+  const inheritedAiQuestionWindow = resolveAiQuestionWindowLabel(
+    null,
+    selectedProject?.aiQuestionWindowOverride,
+    profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
+  )
   const createInput = () => ({
     projectId: effectiveProjectId as number,
     title,
     description: description || undefined,
     priority,
     manualQaOverride: effectiveManualQa.enabled,
+    aiQuestionsOverride,
+    aiQuestionWindowOverride,
   })
 
   const handleCreateAndStart = async () => {
@@ -282,6 +308,42 @@ export function TicketForm({ onClose }: TicketFormProps) {
                     onChange={setManualQaOverride}
                     inheritedEnabled={effectiveManualQa.enabled}
                     compact
+                  />
+                </div>
+                <div className="flex items-start justify-between gap-2 border-t border-border pt-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <label className="text-xs font-medium">AI questions</label>
+                    <ConfigurationDocsLink
+                      docsPath="/configuration#ai-questions"
+                      label="ticket AI questions"
+                      description="Choose whether a model may stop a step to ask you a question in this ticket. Open the AI questions documentation."
+                    />
+                  </div>
+                  <TriStateSetting
+                    idPrefix="ticket-ai-questions"
+                    groupLabel="AI questions setting"
+                    options={AI_QUESTIONS_INHERITABLE_OPTIONS}
+                    value={aiQuestionsOverride}
+                    onChange={setAiQuestionsOverride}
+                    footer={aiQuestionsOverride === null && (
+                      <p className="mt-1 text-right text-xs text-muted-foreground">
+                        Inherits <span className="font-medium text-foreground">{inheritedAiQuestions.enabled ? 'On' : 'Off'}</span> from {describeSettingSource(inheritedAiQuestions.source)}.
+                      </p>
+                    )}
+                  />
+                </div>
+                <div className="border-t border-border pt-3">
+                  <InheritableDurationField
+                    label="AI question wait"
+                    idPrefix="ticket-ai-question-wait"
+                    value={aiQuestionWindowOverride}
+                    onChange={setAiQuestionWindowOverride}
+                    inheritedMs={inheritedAiQuestionWindow.windowMs}
+                    inheritedSourceLabel={describeSettingSource(inheritedAiQuestionWindow.source)}
+                    minMs={AI_QUESTION_WINDOW_MIN_MS}
+                    maxMs={AI_QUESTION_WINDOW_MAX_MS}
+                    formatValue={formatAiQuestionWindow}
+                    hint={`How long a question waits before the run carries on. ${AI_QUESTION_WAIT_HINT}`}
                   />
                 </div>
               </div>

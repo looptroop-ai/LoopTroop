@@ -69,6 +69,15 @@ export interface DraftResult {
   normalizedResponse?: string
   rawAttempts?: RawAttempt[]
   skippedReason?: string
+  /**
+   * This member asked the operator something and got an answer.
+   *
+   * It therefore drafted against instructions none of the other members saw, and
+   * will be judged by voters who did not see them either. Carried through to the
+   * vote so a draft that *followed* the operator is not marked down for
+   * disagreeing with drafts written without that steering.
+   */
+  steeredByOperator?: boolean
 }
 
 export interface DraftProgressEvent {

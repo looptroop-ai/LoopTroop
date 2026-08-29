@@ -73,6 +73,7 @@ export function makeTicket(overrides: TicketOverrides = {}): Ticket {
       workspacePreparationStartedAt: null,
       finalTestingDurationMs: 0,
       finalTestingStartedAt: null,
+      questionWaitingMs: 0,
     },
     errorOccurrences: [],
     activeErrorOccurrenceId: null,

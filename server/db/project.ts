@@ -54,6 +54,8 @@ function initializeProjectSqlite(sqlite: Database) {
       profile_id INTEGER,
       council_members TEXT,
       manual_qa_override INTEGER,
+      ai_questions_override INTEGER,
+      ai_question_window_override INTEGER,
       git_hook_policy TEXT,
       max_iterations INTEGER,
       per_iteration_timeout INTEGER,
@@ -83,6 +85,8 @@ function initializeProjectSqlite(sqlite: Database) {
       error_message TEXT,
       cancel_reason TEXT,
       manual_qa_override INTEGER,
+      ai_questions_override INTEGER,
+      ai_question_window_override INTEGER,
       locked_main_implementer TEXT,
       locked_main_implementer_variant TEXT,
       locked_council_members TEXT,
@@ -95,6 +99,10 @@ function initializeProjectSqlite(sqlite: Database) {
       locked_structured_retry_count INTEGER,
       locked_manual_qa_enabled INTEGER,
       locked_manual_qa_source TEXT,
+      locked_ai_questions_enabled INTEGER,
+      locked_ai_questions_source TEXT,
+      locked_ai_question_window INTEGER,
+      locked_ai_question_window_source TEXT,
       locked_git_hook_policy TEXT,
       locked_git_hook_policy_source TEXT,
       workflow_revision INTEGER NOT NULL DEFAULT 0,
@@ -204,6 +212,13 @@ function initializeProjectSqlite(sqlite: Database) {
       cost_usd REAL
     );
 
+    CREATE TABLE IF NOT EXISTS question_waits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      ended_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS ticket_ai_turn_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -262,6 +277,12 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'tickets', 'cancel_reason', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'locked_manual_qa_enabled', 'INTEGER')
   ensureColumn(sqlite, 'tickets', 'locked_manual_qa_source', 'TEXT')
+  ensureColumn(sqlite, 'tickets', 'ai_questions_override', 'INTEGER')
+  ensureColumn(sqlite, 'tickets', 'ai_question_window_override', 'INTEGER')
+  ensureColumn(sqlite, 'tickets', 'locked_ai_questions_enabled', 'INTEGER')
+  ensureColumn(sqlite, 'tickets', 'locked_ai_questions_source', 'TEXT')
+  ensureColumn(sqlite, 'tickets', 'locked_ai_question_window', 'INTEGER')
+  ensureColumn(sqlite, 'tickets', 'locked_ai_question_window_source', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'locked_git_hook_policy', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'locked_git_hook_policy_source', 'TEXT')
   ensureColumn(sqlite, 'tickets', 'workflow_revision', 'INTEGER NOT NULL DEFAULT 0')
@@ -272,6 +293,8 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'ticket_error_occurrences', 'diagnostic_details', 'TEXT')
   ensureColumn(sqlite, 'projects', 'execution_setup_timeout', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'manual_qa_override', 'INTEGER')
+  ensureColumn(sqlite, 'projects', 'ai_questions_override', 'INTEGER')
+  ensureColumn(sqlite, 'projects', 'ai_question_window_override', 'INTEGER')
   ensureColumn(sqlite, 'projects', 'git_hook_policy', 'TEXT')
   ensureColumn(sqlite, 'projects', 'ignore_mode', 'TEXT')
   ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')

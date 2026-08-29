@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+let nextManualQaActionId = 0
+
 export type ManualQaResultStatus = 'pass' | 'fail' | 'waive' | 'improvement' | 'pending'
 export type ManualQaSeverity = 'required' | 'optional'
 export type ManualQaChecklistSource = 'prd' | 'bead' | 'previous_qa' | 'implementation_diff'
@@ -531,5 +533,6 @@ export function manualQaEvidenceUrl(ticketId: string, version: number, itemId: s
 }
 
 export function newManualQaActionId(prefix: string) {
-  return `${prefix}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
+  const fallbackId = String(++nextManualQaActionId)
+  return `${prefix}:${globalThis.crypto?.randomUUID?.() ?? fallbackId}`
 }

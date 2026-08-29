@@ -18,11 +18,13 @@ const ICONS: Record<ToastType, React.ReactNode> = {
   info: <Info className="h-4 w-4 text-blue-500" />,
 }
 
+let nextToastId = 0
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
 
   const addToast = useCallback((type: ToastType, message: string, duration = TOAST_DURATION_MS) => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const id = `toast-${++nextToastId}`
     setToasts(prev => [...prev, { id, type, message, duration }])
   }, [])
 

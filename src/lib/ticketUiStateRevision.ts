@@ -1,4 +1,5 @@
 const revisions = new Map<string, number>()
+let nextTicketUiStateActionId = 0
 
 function getRevisionKey(ticketId: string, scope: string): string {
   return `${ticketId}\u0000${scope}`
@@ -11,7 +12,7 @@ export function getTicketUiStateRevision(ticketId: string, scope: string): numbe
 export function createTicketUiStateActionId(): string {
   return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    : `ticket-ui-${++nextTicketUiStateActionId}`
 }
 
 export function rememberTicketUiStateRevision(ticketId: string, scope: string, revision: number | null | undefined): void {

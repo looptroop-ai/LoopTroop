@@ -163,7 +163,7 @@ function quoteForCmd(value) {
 function runShim(shimPath, args, options = {}) {
   if (!IS_WINDOWS) return run(shimPath, args, options)
 
-  const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe'
+  const comspec = 'cmd.exe'
   const line = `"${[shimPath, ...args].map(quoteForCmd).join(' ')}"`
   return run(comspec, ['/d', '/s', '/c', line], { ...options, windowsVerbatimArguments: true })
 }

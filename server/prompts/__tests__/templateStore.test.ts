@@ -64,7 +64,7 @@ describe('template store', () => {
     const path = resolve(templatesDir(), 'PROM0.yaml')
     expect(existsSync(path)).toBe(true)
 
-    const edited = readFileSync(path, 'utf-8').replace('description:', 'description:')
+    const edited = readFileSync(path, 'utf-8')
     writeFileSync(path, `${edited}\n# user comment\n`, 'utf-8')
     bootstrapTemplates()
     expect(readFileSync(path, 'utf-8')).toContain('# user comment')

@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 export interface ProgressRingProps {
   percent: number
   size?: number
@@ -13,10 +15,11 @@ export function ProgressRing({
   colorClass = 'text-brand-500',
   gradientId,
 }: ProgressRingProps) {
+  const reactId = useId()
   const radius = (size - stroke) / 2
   const circumference = 2 * Math.PI * radius
   const offset = circumference - (Math.min(100, Math.max(0, percent)) / 100) * circumference
-  const uniqueId = gradientId ?? `ring-grad-${Math.random().toString(36).substr(2, 9)}`
+  const uniqueId = gradientId ?? `ring-grad-${reactId.replace(/:/g, '')}`
 
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 transition-transform duration-300">

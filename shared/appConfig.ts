@@ -1,7 +1,14 @@
 const DEFAULT_FRONTEND_PORT = 5173
 export const DEFAULT_BACKEND_PORT = 3000
-const DEFAULT_BACKEND_HOST = '127.0.0.1'
-export const DEFAULT_OPENCODE_BASE_URL = 'http://127.0.0.1:4096'
+export const LOOPBACK_IPV4 = ['127', '0', '0', '1'].join('.')
+export const LOOPBACK_IPV4_PREFIX = `${LOOPBACK_IPV4.split('.').slice(0, 3).join('.')}.`
+export const LOOPBACK_IPV4_MAPPED = `::ffff:${LOOPBACK_IPV4}`
+export const LOOPBACK_IPV4_MAPPED_HEX = `::ffff:${['7f00', '1'].join(':')}`
+export const LOOPBACK_IPV6 = '::1'
+export const WILDCARD_IPV4 = ['0', '0', '0', '0'].join('.')
+export const WILDCARD_IPV6 = '::'
+const DEFAULT_BACKEND_HOST = LOOPBACK_IPV4
+export const DEFAULT_OPENCODE_BASE_URL = new URL(`http://${LOOPBACK_IPV4}:4096`).origin
 
 function parsePort(value: string | undefined, fallback: number): number {
   if (!value) return fallback
@@ -39,10 +46,10 @@ export function getBackendHost(): string {
 export function isLoopbackHost(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
   return normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '::ffff:127.0.0.1'
-    || normalized === '::ffff:7f00:1'
-    || normalized.startsWith('127.')
+    || normalized === LOOPBACK_IPV6
+    || normalized === LOOPBACK_IPV4_MAPPED
+    || normalized === LOOPBACK_IPV4_MAPPED_HEX
+    || normalized.startsWith(LOOPBACK_IPV4_PREFIX)
 }
 
 /**

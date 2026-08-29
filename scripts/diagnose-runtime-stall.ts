@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { promises as dnsPromises } from 'node:dns'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { Database } from '../server/db/sqliteShim'
+import { findTrustedExecutablePath } from '../server/lib/executablePath.ts'
 import { getErrorMessage } from '../shared/typeGuards'
 
 interface CliOptions {
@@ -679,12 +681,46 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
   let shellArgs: string[]
 
   if (platform === 'windows') {
-    shellCmd = 'powershell.exe'
+    const powershell = findTrustedExecutablePath('powershell.exe')
+    if (!powershell) {
+      return {
+        command,
+        shell: 'powershell.exe -NoProfile -NonInteractive',
+        durationMs: Date.now() - start,
+        exitCode: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        error: 'Required executable is not available from a trusted PATH entry: powershell.exe',
+      }
+    }
+    shellCmd = powershell
     shellArgs = ['-NoProfile', '-NonInteractive', '-Command', command]
   } else {
     // Linux, macOS, WSL — try bash first, fall back to sh
-    shellCmd = 'bash'
-    shellArgs = ['--noprofile', '--norc', '-c', command]
+    const bash = findTrustedExecutablePath('bash')
+    if (bash) {
+      shellCmd = bash
+      shellArgs = ['--noprofile', '--norc', '-c', command]
+    } else {
+      const sh = findTrustedExecutablePath('sh')
+      if (!sh) {
+        return {
+          command,
+          shell: 'sh -c',
+          durationMs: Date.now() - start,
+          exitCode: null,
+          signal: null,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+          error: 'Required executable is not available from a trusted PATH entry: sh',
+        }
+      }
+      shellCmd = sh
+      shellArgs = ['-c', command]
+    }
   }
 
   const result = spawnSync(shellCmd, shellArgs, {
@@ -697,8 +733,22 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
   const error = result.error
 
   // If bash not found, retry with sh
-  if (error && (error as NodeJS.ErrnoException).code === 'ENOENT' && shellCmd === 'bash') {
-    const fallback = spawnSync('sh', ['-c', command], {
+  if (error && (error as NodeJS.ErrnoException).code === 'ENOENT' && shellArgs[0] === '--noprofile') {
+    const sh = findTrustedExecutablePath('sh')
+    if (!sh) {
+      return {
+        command,
+        shell: 'sh -c',
+        durationMs: Date.now() - start,
+        exitCode: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        error: 'Required executable is not available from a trusted PATH entry: sh',
+      }
+    }
+    const fallback = spawnSync(sh, ['-c', command], {
       cwd: process.cwd(),
       encoding: 'utf8',
       timeout: timeoutMs,
@@ -730,6 +780,26 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
     timedOut,
     ...(error ? { error: error.message } : {}),
   }
+}
+
+function runTrustedProcess(command: string, args: string[], timeoutMs = 3000): CommandResult {
+  const displayCommand = [command, ...args].map((part) => part.includes(' ') ? shellQuote(part) : part).join(' ')
+  const executable = findTrustedExecutablePath(command)
+  if (!executable) {
+    return {
+      command: displayCommand,
+      durationMs: 0,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      error: `Required executable is not available from a trusted PATH entry: ${command}`,
+    }
+  }
+
+  const result = runProcess(executable, args, timeoutMs)
+  return { ...result, command: displayCommand }
 }
 
 function runProcess(command: string, args: string[], timeoutMs = 3000): CommandResult {
@@ -779,12 +849,12 @@ function collectShellLatencyBaselines(): SpawnLatencyBaseline[] {
 
   if (platform !== 'windows') {
     baselines.push({ label: 'direct true', result: runProcess('/bin/true', [], 3000) })
-    baselines.push({ label: 'sh -c true', result: runProcess('sh', ['-c', 'true'], 3000) })
-    baselines.push({ label: 'bash --noprofile --norc -c true', result: runProcess('bash', ['--noprofile', '--norc', '-c', 'true'], 3000) })
-    baselines.push({ label: 'bash -lc true', result: runProcess('bash', ['-lc', 'true'], 3000) })
+    baselines.push({ label: 'sh -c true', result: runTrustedProcess('sh', ['-c', 'true'], 3000) })
+    baselines.push({ label: 'bash --noprofile --norc -c true', result: runTrustedProcess('bash', ['--noprofile', '--norc', '-c', 'true'], 3000) })
+    baselines.push({ label: 'bash -lc true', result: runTrustedProcess('bash', ['-lc', 'true'], 3000) })
   }
 
-  const psResult = runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], 5000)
+  const psResult = runTrustedProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], 5000)
   if (!psResult.error?.includes('ENOENT')) {
     baselines.push({ label: 'powershell.exe -NoProfile -Command exit 0', result: psResult })
   }
@@ -850,7 +920,7 @@ function commandExists(binary: string): boolean {
 
 function measureDiskWriteLatency(dirPath: string): FsLatencyProbe {
   const startedAt = Date.now()
-  const tempFile = resolve(dirPath, `.stall-diag-${Math.random().toString(36).slice(2)}.tmp`)
+  const tempFile = resolve(dirPath, `.stall-diag-${randomUUID()}.tmp`)
   const buffer = Buffer.alloc(1024 * 64, 'x') // 64KB write
 
   try {
@@ -879,7 +949,7 @@ function measureDiskWriteLatency(dirPath: string): FsLatencyProbe {
 }
 
 function runPowerShell(command: string, timeoutMs = 5000): CommandResult {
-  return runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], timeoutMs)
+  return runTrustedProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], timeoutMs)
 }
 
 function skippedCommandResult(command: string, message: string): CommandResult {

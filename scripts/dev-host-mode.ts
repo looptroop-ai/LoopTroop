@@ -1,9 +1,17 @@
 import net from 'node:net'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
+import {
+  LOOPBACK_IPV4_MAPPED,
+  LOOPBACK_IPV4_MAPPED_HEX,
+  LOOPBACK_IPV4_PREFIX,
+  LOOPBACK_IPV6,
+  WILDCARD_IPV4,
+  WILDCARD_IPV6,
+} from '../shared/appConfig'
 
 export const LOOPTROOP_DEV_HOST = 'LOOPTROOP_DEV_HOST'
 export const NPM_CONFIG_LONG = 'npm_config_long'
-export const DEFAULT_DEV_BIND_HOST = '0.0.0.0'
+export const DEFAULT_DEV_BIND_HOST = WILDCARD_IPV4
 
 export type DevHostModeSource = 'npm-config' | 'env'
 
@@ -36,7 +44,7 @@ function hasEnvValue(env: Env, key: string) {
 function getHostModeHint(source: DevHostModeSource) {
   return source === 'npm-config'
     ? 'Use npm run dev --lan.'
-    : `Use ${LOOPTROOP_DEV_HOST}=1 or ${LOOPTROOP_DEV_HOST}=0.0.0.0.`
+    : `Use ${LOOPTROOP_DEV_HOST}=1 or ${LOOPTROOP_DEV_HOST}=${DEFAULT_DEV_BIND_HOST}.`
 }
 
 function normalizeBracketedIpv6Host(value: string) {
@@ -114,16 +122,16 @@ export function resolveDevHostMode({ env = process.env }: { env?: Env } = {}): R
 
 export function isWildcardHost(host: string) {
   const normalized = normalizeBracketedIpv6Host(host.trim().toLowerCase())
-  return normalized === '0.0.0.0' || normalized === '::'
+  return normalized === DEFAULT_DEV_BIND_HOST || normalized === WILDCARD_IPV6
 }
 
 function isLoopbackDevHost(host: string) {
   const normalized = normalizeBracketedIpv6Host(host.trim().toLowerCase())
   return normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '::ffff:127.0.0.1'
-    || normalized === '::ffff:7f00:1'
-    || normalized.startsWith('127.')
+    || normalized === LOOPBACK_IPV6
+    || normalized === LOOPBACK_IPV4_MAPPED
+    || normalized === LOOPBACK_IPV4_MAPPED_HEX
+    || normalized.startsWith(LOOPBACK_IPV4_PREFIX)
 }
 
 function formatDevHostForUrl(host: string) {

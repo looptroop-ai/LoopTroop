@@ -1353,6 +1353,42 @@ describe('handleCoding', () => {
     })
 
     /**
+     * Recovering an interrupted bead resets the worktree, which takes a tracked
+     * `opencode.json` back to its committed state — cap and all. Without putting
+     * the cap back the run continues uncapped, and nothing says so.
+     */
+    it('puts the cap back after the reset that recovers an interrupted bead', async () => {
+      setStepCap(25)
+      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'Step cap after recovery' })
+      const paths = getTicketPaths(ticket.id)!
+      const configPath = join(paths.worktreePath, 'opencode.json')
+      const original = `${JSON.stringify({ mcp: { docs: { type: 'local' } } }, null, 2)}\n`
+      writeFileSync(configPath, original, 'utf8')
+      writeTicketBeads(ticket.id, [
+        makePendingBead('bead-1', 1, { status: 'in_progress', iteration: 2, beadStartCommit: 'start-sha' }),
+      ])
+      // What `git reset --hard` does to a configuration the project tracks.
+      resetToBeadStartMock.mockImplementationOnce(() => {
+        writeFileSync(configPath, original, 'utf8')
+      })
+
+      let duringRun: string | undefined
+      executeBeadMock.mockImplementationOnce(async () => {
+        duringRun = readFileSync(configPath, 'utf8')
+        return { success: true, beadId: 'bead-1', iteration: 3, output: 'done', errors: [], rawAttempts: [] }
+      })
+
+      await handleCoding(ticket.id, context, vi.fn(), new AbortController().signal)
+
+      expect(resetToBeadStartMock).toHaveBeenCalled()
+      expect(JSON.parse(duringRun ?? '{}')).toEqual({
+        mcp: { docs: { type: 'local' } },
+        agent: { build: { steps: 25 } },
+      })
+      expect(readFileSync(configPath, 'utf8')).toBe(original)
+    })
+
+    /**
      * The restore has to happen even when the step that hides a created file
      * from git fails — it runs after the file is already written.
      */

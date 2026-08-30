@@ -444,6 +444,9 @@ export async function handleCoding(
         },
       })
       if (interruptedBead) {
+        // This recovery resets the worktree, which takes a tracked
+        // `opencode.json` back to its committed state — cap and all.
+        reapplyStepsConfigAfterReset()
         const interruptedIteration = interruptedBead.iteration - 1
         await abandonInterruptedCodingSessions(ticketId, interruptedBead.id, interruptedIteration)
         emitPhaseLog(

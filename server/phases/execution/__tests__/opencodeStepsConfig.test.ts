@@ -40,6 +40,24 @@ function readConfig(): Record<string, unknown> {
   return JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Record<string, unknown>
 }
 
+/**
+ * A restore record naming a file this ticket has no business touching, and
+ * otherwise entirely well formed: the hash matches what is on disk, so nothing
+ * but the path stands between it and a deletion.
+ */
+function foreignSidecar(configPath: string): string {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    owner: 'looptroop/opencode-steps',
+    configPath,
+    createdAt: new Date().toISOString(),
+    pid: process.pid,
+    originalType: 'absent',
+    originalContent: null,
+    writtenSha256: createHash('sha256').update(readFileSync(configPath, 'utf8'), 'utf8').digest('hex'),
+  }, null, 2)}\n`
+}
+
 beforeEach(() => {
   mkdirSync(TICKET_DIR, { recursive: true })
   mkdirSync(WORKTREE_DIR, { recursive: true })
@@ -213,6 +231,26 @@ describe('applyOpencodeStepsConfig', () => {
     expect(existsSync(strayTemp)).toBe(false)
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
   })
+
+  /**
+   * The settling pass at the start of a run deletes and overwrites the path the
+   * record names, so it is checked here too, not only at boot.
+   */
+  it('ignores a record naming a file outside this ticket\'s worktree', () => {
+    const outside = join(TEST_DIR, 'not-mine.json')
+    writeFileSync(outside, '{"someone else": true}\n', 'utf8')
+    writeFileSync(SIDECAR_PATH, foreignSidecar(outside), 'utf8')
+
+    const { outcome } = apply(25)
+
+    expect(readFileSync(outside, 'utf8')).toBe('{"someone else": true}\n')
+    // The bogus record is disregarded, not treated as a reason to skip the run.
+    expect(outcome.applied).toBe(true)
+    expect(readConfig()).toEqual({
+      $schema: 'https://opencode.ai/config.json',
+      agent: { build: { steps: 25 } },
+    })
+  })
 })
 
 describe('restoreOpencodeStepsConfig', () => {
@@ -265,6 +303,22 @@ describe('restoreOpencodeStepsConfig', () => {
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
     expect(existsSync(SIDECAR_PATH)).toBe(false)
   })
+
+  /**
+   * The cleanup at the end of a run reads the record too, and it is the path
+   * that gets deleted. A record swapped for one naming another file while the
+   * run was going must not take that file with it.
+   */
+  it('ignores a record naming a file outside this ticket\'s worktree', () => {
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    const outside = join(TEST_DIR, 'not-mine.json')
+    writeFileSync(outside, '{"someone else": true}\n', 'utf8')
+    writeFileSync(SIDECAR_PATH, foreignSidecar(outside), 'utf8')
+
+    expect(restore(outcome.handle).result).toBe('nothing-to-do')
+    expect(readFileSync(outside, 'utf8')).toBe('{"someone else": true}\n')
+  })
 })
 
 describe('restoreInterruptedOpencodeStepsConfig', () => {
@@ -315,16 +369,7 @@ describe('restoreInterruptedOpencodeStepsConfig', () => {
   it('refuses a record naming a file outside this ticket\'s worktree', () => {
     const outside = join(TEST_DIR, 'not-mine.json')
     writeFileSync(outside, '{"someone else": true}\n', 'utf8')
-    writeFileSync(SIDECAR_PATH, `${JSON.stringify({
-      schemaVersion: 1,
-      owner: 'looptroop/opencode-steps',
-      configPath: outside,
-      createdAt: new Date().toISOString(),
-      pid: process.pid,
-      originalType: 'absent',
-      originalContent: null,
-      writtenSha256: createHash('sha256').update('{"someone else": true}\n', 'utf8').digest('hex'),
-    }, null, 2)}\n`, 'utf8')
+    writeFileSync(SIDECAR_PATH, foreignSidecar(outside), 'utf8')
 
     expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
     expect(readFileSync(outside, 'utf8')).toBe('{"someone else": true}\n')
@@ -392,5 +437,60 @@ describe('reapplyOpencodeStepsConfig', () => {
     reapplyOpencodeStepsConfig(outcome.handle)
 
     expect(readFileSync(outside, 'utf8')).toBe('{"real": true}')
+  })
+
+  /**
+   * Only a state the reset itself could have produced is written over. An edit
+   * is not one: writing the cap back over it would make the file match the
+   * restore record again, and the cleanup would then revert the edit as though
+   * this run had written it.
+   */
+  it('leaves an edit made during the run alone', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply(30)
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, '{"edited": "during the run"}\n', 'utf8')
+
+    const reported: string[] = []
+    reapplyOpencodeStepsConfig(outcome.handle, (message) => { reported.push(message) })
+
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"edited": "during the run"}\n')
+    expect(reported.join(' ')).toMatch(/has been edited/)
+    // The project's own version is still the one waiting to be put back.
+    expect(restore(outcome.handle).result).toBe('conflict')
+    const sidecar = JSON.parse(readFileSync(SIDECAR_PATH, 'utf8')) as { originalContent: string }
+    expect(sidecar.originalContent).toBe(original)
+  })
+
+  /**
+   * The same rule for a file the run created, where the consequence is worse:
+   * rewriting it would let the cleanup delete somebody's file outright.
+   */
+  it('leaves an edit to a file this run created alone, and the cleanup then keeps it', () => {
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, '{"mine": true}\n', 'utf8')
+
+    reapplyOpencodeStepsConfig(outcome.handle)
+
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
+    expect(restore(outcome.handle).result).toBe('conflict')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
+  })
+
+  it('does nothing when the restore record has gone, so the file can still be put back', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply(30)
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    rmSync(SIDECAR_PATH)
+
+    const reported: string[] = []
+    reapplyOpencodeStepsConfig(outcome.handle, (message) => { reported.push(message) })
+
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
+    expect(reported.join(' ')).toMatch(/opencode-steps-restore\.json/)
   })
 })

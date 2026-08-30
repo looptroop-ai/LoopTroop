@@ -223,11 +223,11 @@ export function applyOpencodeStepsConfig(params: {
   // Most of them resolve to nothing — the file is already the project's own —
   // but one that survives holds the only copy of bytes nothing else has, and
   // overwriting it here is how that copy would be lost.
-  const leftover = readSidecar(params.ticketDir)
+  const leftover = readSidecar(params.ticketDir, configPath)
   if (leftover) {
     removeInterruptedConfigTemps(leftover.configPath)
     const settled = restoreFromSidecar(params.ticketDir, leftover, report)
-    if (settled === 'conflict' && readSidecar(params.ticketDir) !== null) {
+    if (settled === 'conflict' && readSidecar(params.ticketDir, configPath) !== null) {
       const reason = `Left ${OPENCODE_CONFIG_FILENAME} untouched: an earlier run's copy of this project's own version is still waiting in ${RESTORE_SIDECAR_FILENAME}. The OpenCode step limit is not applied for this run.`
       report(reason)
       return { applied: false, reason }
@@ -300,6 +300,26 @@ export function reapplyOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, re
     notify(`Did not put the OpenCode step limit back after the worktree reset because ${current.reason}.`)
     return
   }
+  // Only a state the reset itself could have produced is written over: the file
+  // gone, or exactly the bytes from before the run. Anything else is somebody's
+  // edit, and writing over it would do more than lose it — the restore record
+  // would match again, so the cleanup would read the edited file as this run's
+  // own work and either revert it or, for a file the run created, delete it.
+  const sidecar = readSidecar(handle.ticketDir, handle.configPath)
+  if (!sidecar) {
+    notify(
+      `Did not put the OpenCode step limit back after the worktree reset because ${RESTORE_SIDECAR_FILENAME} `
+        + 'is gone, so there would be no way to put the file back afterwards.',
+    )
+    return
+  }
+  if (current.kind === 'file' && current.raw !== sidecar.originalContent) {
+    notify(
+      `Did not put the OpenCode step limit back after the worktree reset because ${OPENCODE_CONFIG_FILENAME} `
+        + 'has been edited since this run wrote it.',
+    )
+    return
+  }
   try {
     safeAtomicWrite(handle.configPath, handle.appliedContent)
   } catch (error) {
@@ -317,13 +337,30 @@ function removeSidecar(ticketDir: string): void {
   }
 }
 
-function readSidecar(ticketDir: string): RestoreSidecar | null {
+/**
+ * Reads the restore record, refusing one that does not describe
+ * `expectedConfigPath`.
+ *
+ * The check belongs here rather than at the call sites. A restore record is a
+ * file in the worktree, which means anything running inside the worktree —
+ * including the model — can write one, and what this function hands back goes on
+ * to `rmSync` and `safeAtomicWrite`. All three callers already know the one path
+ * this feature is allowed to touch, and two of them used to pass the recorded
+ * path straight through. Checking it where the record is read is what makes that
+ * mistake unavailable. It also catches the honest version: a project folder that
+ * moved since the run.
+ *
+ * The record comes back carrying the expected path rather than the recorded
+ * string, so two spellings of one file cannot send a later write elsewhere.
+ */
+function readSidecar(ticketDir: string, expectedConfigPath: string): RestoreSidecar | null {
   let raw: string
   try {
     raw = readFileSync(sidecarPathFor(ticketDir), 'utf8')
   } catch {
     return null
   }
+  const expected = resolve(expectedConfigPath)
   try {
     const parsed: unknown = JSON.parse(raw)
     if (
@@ -338,7 +375,14 @@ function readSidecar(ticketDir: string): RestoreSidecar | null {
       && ((parsed.originalType === 'file' && typeof parsed.originalContent === 'string')
         || (parsed.originalType === 'absent' && parsed.originalContent === null))
     ) {
-      return parsed as unknown as RestoreSidecar
+      if (resolve(parsed.configPath) !== expected) {
+        console.warn(
+          `[opencode-steps] Ignoring ${sidecarPathFor(ticketDir)}: it names ${parsed.configPath}, `
+            + `which is not this ticket's ${expected}`,
+        )
+        return null
+      }
+      return { ...parsed, configPath: expected } as unknown as RestoreSidecar
     }
   } catch {
     // Falls through to the warning below.
@@ -439,7 +483,7 @@ function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: 
 }
 
 export function restoreOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, report?: Report): RestoreResult {
-  const sidecar = readSidecar(handle.ticketDir)
+  const sidecar = readSidecar(handle.ticketDir, handle.configPath)
   if (!sidecar) return 'nothing-to-do'
   const result = restoreFromSidecar(handle.ticketDir, sidecar, notifier(report))
   removeInterruptedConfigTemps(handle.configPath)
@@ -450,29 +494,17 @@ export function restoreOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, re
  * The boot half: a run killed outright never reached its `finally`, so the
  * restore happens at the next startup instead.
  *
- * `worktreePath` is passed in rather than taken from the record. A restore
- * record is a file in the worktree, which means anything running inside the
- * worktree — including the model — can write one, and this function deletes and
- * overwrites the path it names. Checking that path against the ticket's actual
- * worktree is what keeps that from being a way to reach any file the daemon can
- * write. It also catches the honest version: a project folder that moved since
- * the run.
+ * `worktreePath` is passed in rather than taken from the record, so a record can
+ * only ever be acted on for the file it belongs to. `readSidecar` is where that
+ * is enforced, and says why.
  */
 export function restoreInterruptedOpencodeStepsConfig(
   ticketDir: string,
   worktreePath: string,
 ): RestoreResult {
-  const sidecar = readSidecar(ticketDir)
-  if (!sidecar) return 'nothing-to-do'
-
   const expectedConfigPath = opencodeConfigPathFor(worktreePath)
-  if (resolve(sidecar.configPath) !== expectedConfigPath) {
-    console.warn(
-      `[recovery] Ignoring ${sidecarPathFor(ticketDir)}: it names ${sidecar.configPath}, which is not ` +
-        `this ticket's ${expectedConfigPath}`,
-    )
-    return 'nothing-to-do'
-  }
+  const sidecar = readSidecar(ticketDir, expectedConfigPath)
+  if (!sidecar) return 'nothing-to-do'
 
   removeInterruptedConfigTemps(expectedConfigPath)
   const result = restoreFromSidecar(ticketDir, sidecar, (message) => { console.warn(`[recovery] ${message}`) })

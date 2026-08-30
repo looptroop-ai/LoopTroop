@@ -93,9 +93,14 @@ function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
     } catch {
       return { action: 'discard', reason: 'it is not a readable YAML document' }
     }
-    // `js-yaml` returns `undefined` for a file that is blank or all comments,
-    // which is what an interrupted write looks like when it got as far as the
-    // header and no further. Readable, but not a document.
+    // This proves the file is readable, not that it is complete. A block mapping
+    // has no closing delimiter, so the first half of an interrupted YAML write
+    // usually parses as a smaller, valid document — where the first half of a
+    // JSON object cannot, which is what makes the branch above the stronger
+    // check. What this catches is the interrupted write that produced no
+    // document at all: `undefined` for a file that is blank or all comments,
+    // `null` for one that got as far as `---` and stopped. Every YAML file this
+    // project writes is a mapping, so neither is ever the real thing.
     if (document === undefined || document === null) {
       return { action: 'discard', reason: 'it holds no YAML document' }
     }

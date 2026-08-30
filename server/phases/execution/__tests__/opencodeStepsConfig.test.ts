@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { createHash } from 'crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   applyOpencodeStepsConfig,
   OPENCODE_CONFIG_FILENAME,
+  reapplyOpencodeStepsConfig,
   restoreInterruptedOpencodeStepsConfig,
   restoreOpencodeStepsConfig,
   type OpencodeStepsConfigHandle,
@@ -129,6 +131,20 @@ describe('applyOpencodeStepsConfig', () => {
     expect(reported.join(' ')).toMatch(/"agent" section/)
   })
 
+  it.each([
+    ['an array', { agent: { build: ['a', 'b'] } }],
+    ['null', { agent: { build: null } }],
+    ['a number', { agent: { build: 42 } }],
+  ])('skips when the agent.build section is %s', (_label, config) => {
+    writeFileSync(CONFIG_PATH, JSON.stringify(config), 'utf8')
+
+    const { outcome, reported } = apply()
+
+    expect(outcome.applied).toBe(false)
+    expect(readConfig()).toEqual(config)
+    expect(reported.join(' ')).toMatch(/"agent" section/)
+  })
+
   it('never writes through a symlink', () => {
     const outside = join(TEST_DIR, 'elsewhere.json')
     writeFileSync(outside, '{"real": true}', 'utf8')
@@ -139,6 +155,63 @@ describe('applyOpencodeStepsConfig', () => {
     expect(outcome.applied).toBe(false)
     expect(readFileSync(outside, 'utf8')).toBe('{"real": true}')
     expect(reported.join(' ')).toMatch(/symbolic link/)
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps the restore record owner-only', () => {
+    writeFileSync(CONFIG_PATH, '{"provider": {"anthropic": {"apiKey": "secret"}}}\n', 'utf8')
+
+    apply()
+
+    expect(statSync(SIDECAR_PATH).mode & 0o777).toBe(0o600)
+  })
+
+  /**
+   * The record holds the only copy of the project's own bytes once a run ends in
+   * conflict. Overwriting it with a second run's record would lose them, and
+   * would file the edited file as though the project had written it.
+   */
+  it('refuses to start over an unresolved record from an earlier run', () => {
+    writeFileSync(CONFIG_PATH, '{"mcp": {}}\n', 'utf8')
+    const first = apply()
+    if (!first.outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, '{"edited": "during the run"}\n', 'utf8')
+    restore(first.outcome.handle)
+
+    const { outcome, reported } = apply()
+
+    expect(outcome.applied).toBe(false)
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"edited": "during the run"}\n')
+    expect(reported.join(' ')).toMatch(/still waiting/)
+    const sidecar = JSON.parse(readFileSync(SIDECAR_PATH, 'utf8')) as { originalContent: string }
+    expect(sidecar.originalContent).toBe('{"mcp": {}}\n')
+  })
+
+  it('settles a record left by a run that never got as far as writing the file', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const first = apply()
+    if (!first.outcome.applied) throw new Error('expected the step cap to apply')
+    // The state a kill between the two writes leaves behind.
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+
+    const { outcome } = apply()
+
+    expect(outcome.applied).toBe(true)
+    expect(readConfig()).toEqual({ mcp: {}, agent: { build: { steps: 25 } } })
+  })
+
+  it('clears a temp file an interrupted write left beside the config', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    const strayTemp = `${CONFIG_PATH}.4821.a1b2c3d4e5f6.tmp`
+    writeFileSync(strayTemp, '{"half":', 'utf8')
+
+    restore(outcome.handle)
+
+    expect(existsSync(strayTemp)).toBe(false)
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
   })
 })
 
@@ -196,7 +269,7 @@ describe('restoreOpencodeStepsConfig', () => {
 
 describe('restoreInterruptedOpencodeStepsConfig', () => {
   it('does nothing when no run was interrupted', () => {
-    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR)).toBe(false)
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
   })
 
   /** A SIGKILL between the write and the cleanup: the `finally` never ran. */
@@ -205,7 +278,7 @@ describe('restoreInterruptedOpencodeStepsConfig', () => {
     writeFileSync(CONFIG_PATH, original, 'utf8')
     apply()
 
-    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR)).toBe(true)
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('restored')
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
     expect(existsSync(SIDECAR_PATH)).toBe(false)
   })
@@ -213,7 +286,7 @@ describe('restoreInterruptedOpencodeStepsConfig', () => {
   it('removes a file the interrupted run created', () => {
     apply()
 
-    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR)).toBe(true)
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('removed')
     expect(existsSync(CONFIG_PATH)).toBe(false)
   })
 
@@ -222,7 +295,7 @@ describe('restoreInterruptedOpencodeStepsConfig', () => {
     apply()
     writeFileSync(CONFIG_PATH, '{"changed": true}\n', 'utf8')
 
-    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR)).toBe(false)
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('conflict')
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"changed": true}\n')
     expect(existsSync(SIDECAR_PATH)).toBe(true)
   })
@@ -230,7 +303,94 @@ describe('restoreInterruptedOpencodeStepsConfig', () => {
   it('ignores a restore record it did not write', () => {
     writeFileSync(SIDECAR_PATH, JSON.stringify({ owner: 'something-else' }), 'utf8')
 
-    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR)).toBe(false)
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
     expect(existsSync(SIDECAR_PATH)).toBe(true)
+  })
+
+  /**
+   * A restore record lives in the worktree, so anything running there — the
+   * model included — can write one. The path it names is deleted or overwritten
+   * at boot, so it is checked against the ticket's real worktree first.
+   */
+  it('refuses a record naming a file outside this ticket\'s worktree', () => {
+    const outside = join(TEST_DIR, 'not-mine.json')
+    writeFileSync(outside, '{"someone else": true}\n', 'utf8')
+    writeFileSync(SIDECAR_PATH, `${JSON.stringify({
+      schemaVersion: 1,
+      owner: 'looptroop/opencode-steps',
+      configPath: outside,
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      originalType: 'absent',
+      originalContent: null,
+      writtenSha256: createHash('sha256').update('{"someone else": true}\n', 'utf8').digest('hex'),
+    }, null, 2)}\n`, 'utf8')
+
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
+    expect(readFileSync(outside, 'utf8')).toBe('{"someone else": true}\n')
+  })
+
+  it('rejects a record whose fields do not agree with each other', () => {
+    writeFileSync(SIDECAR_PATH, `${JSON.stringify({
+      schemaVersion: 1,
+      owner: 'looptroop/opencode-steps',
+      configPath: CONFIG_PATH,
+      createdAt: new Date().toISOString(),
+      pid: process.pid,
+      // Says a file was there, carries nothing to put back: restoring would
+      // write an empty document over a real configuration.
+      originalType: 'file',
+      originalContent: null,
+      writtenSha256: createHash('sha256').update('anything', 'utf8').digest('hex'),
+    }, null, 2)}\n`, 'utf8')
+    writeFileSync(CONFIG_PATH, 'anything', 'utf8')
+
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('anything')
+  })
+
+  /** The state a kill between the record and the configuration write leaves. */
+  it('does not report a false conflict when the file is already the project\'s own', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+
+    expect(restoreInterruptedOpencodeStepsConfig(TICKET_DIR, WORKTREE_DIR)).toBe('nothing-to-do')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
+    // Nothing left to warn about at every future boot.
+    expect(existsSync(SIDECAR_PATH)).toBe(false)
+  })
+})
+
+describe('reapplyOpencodeStepsConfig', () => {
+  /** `git reset --hard` puts a tracked config back, cap and all. */
+  it('puts the cap back after a worktree reset', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply(30)
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+
+    reapplyOpencodeStepsConfig(outcome.handle)
+
+    expect(readConfig()).toEqual({ mcp: {}, agent: { build: { steps: 30 } } })
+    // Same bytes as the first application, so the record still describes the file.
+    expect(restore(outcome.handle).result).toBe('restored')
+    expect(readFileSync(CONFIG_PATH, 'utf8')).toBe(original)
+  })
+
+  it('does not write through a symlink that appeared during the run', () => {
+    const { outcome } = apply()
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    const outside = join(TEST_DIR, 'link-target.json')
+    writeFileSync(outside, '{"real": true}', 'utf8')
+    rmSync(CONFIG_PATH)
+    symlinkSync(outside, CONFIG_PATH)
+
+    reapplyOpencodeStepsConfig(outcome.handle)
+
+    expect(readFileSync(outside, 'utf8')).toBe('{"real": true}')
   })
 })

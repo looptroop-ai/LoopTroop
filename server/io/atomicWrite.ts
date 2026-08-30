@@ -37,9 +37,10 @@ const RENAME_RETRY_DELAY_MS = 50
  * finished document.
  */
 const ATOMIC_TMP_SUFFIX = '.tmp'
+/** Twelve hex characters in the pattern below; the round trip is asserted in the tests. */
 const ATOMIC_TMP_RANDOM_BYTES = 6
 /** Case-insensitive on the suffix and the random half, for Windows. */
-const ATOMIC_TMP_PATTERN = new RegExp(`^(.+)\\.(\\d+)\\.([0-9a-f]{${ATOMIC_TMP_RANDOM_BYTES * 2}})\\.tmp$`, 'i')
+const ATOMIC_TMP_PATTERN = /^(.+)\.(\d+)\.([0-9a-f]{12})\.tmp$/i
 
 /** The temp path `safeAtomicWrite` will write for `target`. */
 export function makeAtomicTmpPath(target: string): string {
@@ -77,12 +78,13 @@ const defaultDeps: AtomicWriteDeps = {
 }
 
 /**
- * Replaces the target, waiting out a Windows handle that has not been let go.
+ * Runs a file operation again while Windows says something else holds the file.
  *
- * The rename is the atomic step, and on Windows it is also the step that fails
- * for reasons having nothing to do with this process: a `daemon.json` rename
- * failed a published-install smoke with EPERM because something still had the
- * previous file open. The retries wait for that to end.
+ * On Windows the last step of an atomic write fails for reasons having nothing
+ * to do with this process: a `daemon.json` rename failed a published-install
+ * smoke with EPERM because something still had the previous file open. The
+ * retries wait for that to end. Startup recovery promoting a temp file hits the
+ * same class of failure, which is why this is shared rather than inlined.
  *
  * Deliberately *not* how this is usually worked around. The destination is
  * never unlinked first — that trades an atomic replace for a window where the
@@ -90,19 +92,18 @@ const defaultDeps: AtomicWriteDeps = {
  * temporary file is not rewritten between attempts either: it is already
  * written, mode-matched and fsynced, and only the last step is being repeated.
  *
- * POSIX gets the bare rename with no retry loop at all, because it has no such
- * failure: replacing a file other processes have open is defined behaviour.
+ * POSIX runs the operation once, with no retry loop at all, because it has no
+ * such failure: replacing a file other processes have open is defined behaviour.
  */
-function renameWithRetry(tmpPath: string, filePath: string, deps: AtomicWriteDeps): void {
-  if (deps.platform !== 'win32') {
-    deps.rename(tmpPath, filePath)
-    return
-  }
+export function retryWhileWindowsHoldsTheFile<T>(
+  operation: () => T,
+  deps: AtomicWriteDeps = defaultDeps,
+): T {
+  if (deps.platform !== 'win32') return operation()
 
   for (let attempt = 1; ; attempt += 1) {
     try {
-      deps.rename(tmpPath, filePath)
-      return
+      return operation()
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       // Anything else is a real failure — a missing directory, a full disk, a
@@ -128,10 +129,10 @@ function currentMode(filePath: string): number | null {
 
 export interface SafeAtomicWriteOptions {
   /**
-   * POSIX mode for the finished file, applied to the temp file *before* the
-   * rename. A post-rename `chmod` would leave a window in which a 0600 file
-   * exists at the default umask, which for a file worth restricting is the
-   * whole exposure. Ignored on Windows, where modes are advisory.
+   * POSIX mode for the finished file. Passed to `open` when the temp file is
+   * created, so the content never exists at the umask for even an instant, and
+   * re-applied with `chmod` afterwards because the umask can only *remove* bits
+   * at creation. Ignored on Windows, where modes are advisory.
    *
    * Without this, `safeAtomicWrite` only carries a mode a file already has, so
    * a caller replacing `writeFileSync(..., { mode })` would silently widen
@@ -157,17 +158,25 @@ export function safeAtomicWrite(
 
   mkdirSync(dir, { recursive: true })
 
+  const requestedMode = SUPPORTS_POSIX_MODES ? options.mode : undefined
+
   let tmpCreated = false
   try {
-    writeFileSync(tmpPath, content, 'utf-8')
+    // The mode goes to `open`, so the content is never on disk at the umask —
+    // not even under the temp name, which is where a `chmod` afterwards would
+    // leave it exposed.
+    writeFileSync(tmpPath, content, requestedMode === undefined
+      ? 'utf-8'
+      : { encoding: 'utf-8', mode: requestedMode })
     tmpCreated = true
 
-    // A requested mode is a requirement, not a preference: swallowing the
-    // failure is how a checkpoint that must be 0600 lands world-readable and
-    // nothing says so. The `finally` below removes the temp, so the target
-    // keeps whatever it had.
-    if (SUPPORTS_POSIX_MODES && options.mode !== undefined) {
-      chmodSync(tmpPath, options.mode)
+    // Re-applied because the umask subtracts from the creation mode: 0640 under
+    // a 0027 umask lands as 0640, but 0666 lands as 0640 too. A requested mode
+    // is a requirement, not a preference — swallowing the failure is how a
+    // checkpoint that must be 0600 ends up world-readable with nothing said.
+    // The `finally` below removes the temp, so the target keeps what it had.
+    if (requestedMode !== undefined) {
+      chmodSync(tmpPath, requestedMode)
     } else if (existingMode !== null) {
       try { chmodSync(tmpPath, existingMode) } catch { /* best-effort */ }
     }
@@ -181,7 +190,7 @@ export function safeAtomicWrite(
       closeSync(fd)
     }
 
-    renameWithRetry(tmpPath, filePath, deps)
+    retryWhileWindowsHoldsTheFile(() => { deps.rename(tmpPath, filePath) }, deps)
     tmpCreated = false
 
     // Best-effort parent-directory fsync for crash durability on Linux/macOS.

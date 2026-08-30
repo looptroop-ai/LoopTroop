@@ -1,20 +1,22 @@
 import {
   readdirSync,
-  renameSync,
   readFileSync,
   writeFileSync,
   existsSync,
   statSync,
+  lstatSync,
   openSync,
   readSync,
   ftruncateSync,
   closeSync,
   linkSync,
+  copyFileSync,
   unlinkSync,
+  constants as fsConstants,
 } from 'fs'
 import { extname, join } from 'path'
 import * as jsYaml from 'js-yaml'
-import { parseAtomicTmpPath } from './atomicWrite'
+import { parseAtomicTmpPath, retryWhileWindowsHoldsTheFile } from './atomicWrite'
 
 /** Files below this threshold are loaded entirely into memory (safe for Node's string limit). */
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
@@ -33,48 +35,97 @@ const LINK_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Whether a leftover temp file is worth putting back.
+ * What to do with a leftover temp file, judged on its content.
  *
  * A temp file exists precisely because a write did not finish, so its content
  * is the one thing that cannot be assumed. Promoting on the strength of the
  * name alone replaces nothing with a document that stops mid-sentence — and it
  * looks complete afterwards, because the name is the only thing anyone sees.
+ *
+ * `discard` is for content proved wrong; `leave` is for content that cannot be
+ * judged at all. The difference matters: deleting a file nobody has read is a
+ * worse answer than leaving it where somebody can look at it.
  */
-function describeUnusableContent(tmpPath: string, targetPath: string): string | null {
+type TmpVerdict =
+  | { action: 'promote' }
+  | { action: 'discard'; reason: string }
+  | { action: 'leave'; reason: string }
+
+const PROMOTE: TmpVerdict = { action: 'promote' }
+
+function judgeTmpContent(tmpPath: string, targetPath: string): TmpVerdict {
   let size: number
   try {
     size = statSync(tmpPath).size
   } catch {
-    return 'it could not be read'
+    return { action: 'leave', reason: 'it could not be read' }
   }
-  if (size === 0) return 'it is empty'
-  // Too large to hold as a string; the extension checks below cannot run, and
-  // a partial write of this size is a JSONL log whose tail is repaired by
-  // `fixTrailingLineCorruption` once the file is back under its own name.
-  if (size > MAX_DIRECT_READ_BYTES) return null
+  if (size === 0) return { action: 'discard', reason: 'it is empty' }
 
   const extension = extname(targetPath).toLowerCase()
+
+  // A truncated final line is the expected shape of an interrupted append, and
+  // repairing it is `fixTrailingLineCorruption`'s job — which runs right after
+  // this, on these same files. Size is no obstacle: it never holds the whole
+  // file in memory.
+  if (extension === '.jsonl') return PROMOTE
+
+  // Everything below has to read the file to judge it. Past this size that is
+  // not something to do at boot, and promoting unread would be the name-alone
+  // rule this function exists to replace — so it is left for a person.
+  if (size > MAX_DIRECT_READ_BYTES) {
+    return { action: 'leave', reason: `it is too large to check (${size} bytes)` }
+  }
+
   if (extension === '.json') {
     try {
       JSON.parse(readFileSync(tmpPath, 'utf-8'))
     } catch {
-      return 'it is not readable JSON'
+      return { action: 'discard', reason: 'it is not readable JSON' }
     }
-    return null
+    return PROMOTE
   }
+
   if (extension === '.yaml' || extension === '.yml') {
+    let document: unknown
     try {
-      jsYaml.load(readFileSync(tmpPath, 'utf-8'))
+      document = jsYaml.load(readFileSync(tmpPath, 'utf-8'))
     } catch {
-      return 'it is not a readable YAML document'
+      return { action: 'discard', reason: 'it is not a readable YAML document' }
     }
-    return null
+    // `js-yaml` returns `undefined` for a file that is blank or all comments,
+    // which is what an interrupted write looks like when it got as far as the
+    // header and no further. Readable, but not a document.
+    if (document === undefined || document === null) {
+      return { action: 'discard', reason: 'it holds no YAML document' }
+    }
+    return PROMOTE
   }
-  // `.jsonl` deliberately gets the non-empty check only: a truncated final line
-  // is the expected shape of an interrupted append, and repairing it is
-  // `fixTrailingLineCorruption`'s job, running right after this on the same
-  // files.
-  return null
+
+  return PROMOTE
+}
+
+/**
+ * `${target}.tmp-${pid}-${milliseconds}`, written by the private Manual QA
+ * checkpoint writer that now goes through `safeAtomicWrite`. It does not end in
+ * `.tmp`, so nothing has ever swept it — a pre-upgrade crash leaves one sitting
+ * in `.ticket/` unmentioned. Reported for the same reason as the plain
+ * `${target}.tmp` family: neither name says what the file was becoming.
+ */
+const LEGACY_TMP_NAME = /\.tmp-\d+-\d+$/
+
+function reportLegacyTmpFile(tmpPath: string): void {
+  // Left in place: the pre-upgrade crash that produced it is exactly the case
+  // someone would want to look at, and vaulting it silently is worse than
+  // either promoting it or saying so.
+  let modified = 'an unknown time'
+  try {
+    modified = statSync(tmpPath).mtime.toISOString()
+  } catch { /* reported without it */ }
+  console.warn(
+    `[recovery] Ignoring ${tmpPath} (last modified ${modified}): its name predates the current ` +
+      'atomic-write suffix, so the file it was meant to become cannot be derived',
+  )
 }
 
 function discardTmpFile(tmpPath: string, reason: string): void {
@@ -83,6 +134,21 @@ function discardTmpFile(tmpPath: string, reason: string): void {
     console.warn(`[recovery] Discarded temp file ${tmpPath}: ${reason}`)
   } catch (error) {
     console.error(`[recovery] Failed to remove temp file ${tmpPath} (${reason}):`, error)
+  }
+}
+
+/**
+ * True for anything at this path, including a symlink pointing nowhere.
+ *
+ * `existsSync` follows the link and reports `false` for a broken one, which
+ * would make recovery treat an occupied name as free.
+ */
+function pathIsTaken(path: string): boolean {
+  try {
+    lstatSync(path)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -96,15 +162,25 @@ function discardTmpFile(tmpPath: string, reason: string): void {
  * which leaves `link` as the portable primitive that fails rather than
  * replaces. Temp and target always share a directory, so they are always on one
  * filesystem, which is what makes `link` available at all.
+ *
+ * Where the filesystem has no `link` — FAT volumes, some network shares — the
+ * fallback is `copyFile` with `COPYFILE_EXCL`, which opens the target
+ * `O_CREAT|O_EXCL` and so fails on an existing name (a dangling symlink
+ * included) rather than replacing it. It copies rather than renames, which
+ * costs a pass over the bytes on a path that is already rare.
  */
 function promoteTmpFile(tmpPath: string, targetPath: string): boolean {
-  try {
-    linkSync(tmpPath, targetPath)
+  const removeTmp = () => {
     try {
       unlinkSync(tmpPath)
     } catch (error) {
       console.warn(`[recovery] Promoted ${targetPath} but could not remove ${tmpPath}:`, error)
     }
+  }
+
+  try {
+    retryWhileWindowsHoldsTheFile(() => { linkSync(tmpPath, targetPath) })
+    removeTmp()
     return true
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
@@ -116,15 +192,18 @@ function promoteTmpFile(tmpPath: string, targetPath: string): boolean {
       console.error(`[recovery] Failed to promote ${tmpPath}:`, error)
       return false
     }
-    if (existsSync(targetPath)) {
-      discardTmpFile(tmpPath, 'its target already exists')
-      return false
-    }
     try {
-      renameSync(tmpPath, targetPath)
+      retryWhileWindowsHoldsTheFile(() => {
+        copyFileSync(tmpPath, targetPath, fsConstants.COPYFILE_EXCL)
+      })
+      removeTmp()
       return true
-    } catch (renameError) {
-      console.error(`[recovery] Failed to promote ${tmpPath}:`, renameError)
+    } catch (copyError) {
+      if ((copyError as NodeJS.ErrnoException).code === 'EEXIST') {
+        discardTmpFile(tmpPath, 'its target already exists')
+        return false
+      }
+      console.error(`[recovery] Failed to promote ${tmpPath}:`, copyError)
       return false
     }
   }
@@ -153,32 +232,30 @@ export function recoverOrphanTmpFiles(rootDir: string): string[] {
           continue
         }
         if (!entry.isFile()) continue
-        if (!entry.name.toLowerCase().endsWith('.tmp')) continue
+        const name = entry.name.toLowerCase()
+        if (!name.endsWith('.tmp') && !LEGACY_TMP_NAME.test(name)) continue
 
         const targetPath = parseAtomicTmpPath(fullPath)
         if (targetPath === null) {
-          // Left in place: the pre-upgrade crash that produced it is exactly
-          // the case someone would want to look at, and vaulting it silently
-          // is worse than either promoting it or saying so.
-          let modified = 'an unknown time'
-          try {
-            modified = statSync(fullPath).mtime.toISOString()
-          } catch { /* reported without it */ }
-          console.warn(
-            `[recovery] Ignoring ${fullPath} (last modified ${modified}): its name predates the ` +
-              'current atomic-write suffix, so the file it was meant to become cannot be derived',
-          )
+          reportLegacyTmpFile(fullPath)
           continue
         }
 
-        if (existsSync(targetPath)) {
+        if (pathIsTaken(targetPath)) {
           discardTmpFile(fullPath, 'its target already exists')
           continue
         }
 
-        const unusable = describeUnusableContent(fullPath, targetPath)
-        if (unusable !== null) {
-          discardTmpFile(fullPath, `${unusable}, so it cannot be the finished ${targetPath}`)
+        const verdict = judgeTmpContent(fullPath, targetPath)
+        if (verdict.action === 'discard') {
+          discardTmpFile(fullPath, `${verdict.reason}, so it cannot be the finished ${targetPath}`)
+          continue
+        }
+        if (verdict.action === 'leave') {
+          console.warn(
+            `[recovery] Leaving ${fullPath} where it is: ${verdict.reason}, so it cannot be ` +
+              `confirmed as the finished ${targetPath}`,
+          )
           continue
         }
 

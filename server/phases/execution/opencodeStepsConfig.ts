@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
-import { lstatSync, readFileSync, rmSync, unlinkSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { safeAtomicWrite } from '../../io/atomicWrite'
+import { createHash } from 'crypto'
+import { lstatSync, readFileSync, readdirSync, rmSync, unlinkSync } from 'fs'
+import { dirname, join, resolve } from 'path'
+import { parseAtomicTmpPath, safeAtomicWrite } from '../../io/atomicWrite'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /**
@@ -27,6 +27,8 @@ export const OPENCODE_CONFIG_FILENAME = 'opencode.json'
 const RESTORE_SIDECAR_FILENAME = 'opencode-steps-restore.json'
 const RESTORE_SIDECAR_OWNER = 'looptroop/opencode-steps'
 const RESTORE_SIDECAR_SCHEMA_VERSION = 1
+/** It holds a copy of a file that can carry provider credentials. */
+const RESTORE_SIDECAR_FILE_MODE = 0o600
 
 /**
  * No expiry, deliberately. What makes a restore safe is that the file on disk
@@ -54,6 +56,12 @@ export interface OpencodeStepsConfigHandle {
   configPath: string
   /** True when there was no `opencode.json` and this run made one. */
   created: boolean
+  /**
+   * Exactly what this run wrote. Kept so the cap can be put back after one of
+   * LoopTroop's own worktree resets without re-reading anything: the bytes are
+   * identical, so the restore record still matches and needs no rewrite.
+   */
+  appliedContent: string
 }
 
 export type OpencodeStepsConfigOutcome =
@@ -62,7 +70,18 @@ export type OpencodeStepsConfigOutcome =
 
 type Report = (message: string) => void
 
-const reportToConsole: Report = (message) => { console.warn(`[opencode-steps] ${message}`) }
+/**
+ * Every message goes to the console *and* to the caller's reporter, which is
+ * the ticket log during a run. One or the other is not enough: the console is
+ * where an operator looks, and the ticket log is where the person whose step
+ * cap did not apply is looking.
+ */
+function notifier(report?: Report): Report {
+  return (message) => {
+    console.warn(`[opencode-steps] ${message}`)
+    report?.(message)
+  }
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -74,6 +93,39 @@ function sha256(content: string): string {
 
 function sidecarPathFor(ticketDir: string): string {
   return join(ticketDir, RESTORE_SIDECAR_FILENAME)
+}
+
+/** The one path this feature is ever allowed to touch for a given worktree. */
+export function opencodeConfigPathFor(worktreePath: string): string {
+  return resolve(worktreePath, OPENCODE_CONFIG_FILENAME)
+}
+
+/**
+ * Clears away a temp file left beside the config by an interrupted write.
+ *
+ * `safeAtomicWrite` puts its temp next to its target, and this target is the
+ * worktree root — outside everything startup sweeps. Left alone it shows up in
+ * `git status` and can be committed as an ordinary project file. The sidecar
+ * names the exact target, so this stays a single-file check rather than a
+ * reason to sweep a user's repository.
+ */
+function removeInterruptedConfigTemps(configPath: string): void {
+  let entries: string[]
+  try {
+    entries = readdirSync(dirname(configPath))
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const candidate = join(dirname(configPath), entry)
+    if (parseAtomicTmpPath(candidate) !== configPath) continue
+    try {
+      unlinkSync(candidate)
+      console.warn(`[opencode-steps] Removed ${candidate}, left behind by an interrupted write`)
+    } catch (error) {
+      console.warn(`[opencode-steps] Could not remove ${candidate}:`, error)
+    }
+  }
 }
 
 type ExistingConfig =
@@ -164,8 +216,24 @@ export function applyOpencodeStepsConfig(params: {
   steps: number
   report?: Report
 }): OpencodeStepsConfigOutcome {
-  const report = params.report ?? reportToConsole
-  const configPath = resolve(params.worktreePath, OPENCODE_CONFIG_FILENAME)
+  const report = notifier(params.report)
+  const configPath = opencodeConfigPathFor(params.worktreePath)
+
+  // A record left over from an earlier run is settled before this one starts.
+  // Most of them resolve to nothing — the file is already the project's own —
+  // but one that survives holds the only copy of bytes nothing else has, and
+  // overwriting it here is how that copy would be lost.
+  const leftover = readSidecar(params.ticketDir)
+  if (leftover) {
+    removeInterruptedConfigTemps(leftover.configPath)
+    const settled = restoreFromSidecar(params.ticketDir, leftover, report)
+    if (settled === 'conflict' && readSidecar(params.ticketDir) !== null) {
+      const reason = `Left ${OPENCODE_CONFIG_FILENAME} untouched: an earlier run's copy of this project's own version is still waiting in ${RESTORE_SIDECAR_FILENAME}. The OpenCode step limit is not applied for this run.`
+      report(reason)
+      return { applied: false, reason }
+    }
+  }
+
   const existing = readExistingConfig(configPath)
 
   if (existing.kind === 'unusable') {
@@ -195,7 +263,13 @@ export function applyOpencodeStepsConfig(params: {
   }
 
   try {
-    safeAtomicWrite(sidecarPathFor(params.ticketDir), `${JSON.stringify(sidecar, null, 2)}\n`)
+    // Owner-only: this is a verbatim copy of a file that can hold provider
+    // credentials, and it outlives the run whenever a restore cannot complete.
+    safeAtomicWrite(
+      sidecarPathFor(params.ticketDir),
+      `${JSON.stringify(sidecar, null, 2)}\n`,
+      { mode: RESTORE_SIDECAR_FILE_MODE },
+    )
     safeAtomicWrite(configPath, content)
   } catch (error) {
     const reason = `Could not apply the OpenCode step limit: ${getErrorMessage(error)}. ${OPENCODE_CONFIG_FILENAME} is unchanged.`
@@ -204,7 +278,33 @@ export function applyOpencodeStepsConfig(params: {
     return { applied: false, reason }
   }
 
-  return { applied: true, handle: { ticketDir: params.ticketDir, configPath, created } }
+  return {
+    applied: true,
+    handle: { ticketDir: params.ticketDir, configPath, created, appliedContent: content },
+  }
+}
+
+/**
+ * Puts the cap back after one of LoopTroop's own worktree resets.
+ *
+ * A retry runs `git reset --hard`, which returns a tracked `opencode.json` to
+ * its committed state — so without this the cap silently stops applying part
+ * way through a run. The bytes are the ones already recorded, so the restore
+ * record still describes what is on disk and does not need rewriting.
+ */
+export function reapplyOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, report?: Report): void {
+  const notify = notifier(report)
+  const current = readCurrentConfig(handle.configPath)
+  if (current.kind === 'file' && current.raw === handle.appliedContent) return
+  if (current.kind === 'foreign') {
+    notify(`Did not put the OpenCode step limit back after the worktree reset because ${current.reason}.`)
+    return
+  }
+  try {
+    safeAtomicWrite(handle.configPath, handle.appliedContent)
+  } catch (error) {
+    notify(`Could not put the OpenCode step limit back after the worktree reset: ${getErrorMessage(error)}.`)
+  }
 }
 
 function removeSidecar(ticketDir: string): void {
@@ -231,9 +331,12 @@ function readSidecar(ticketDir: string): RestoreSidecar | null {
       && parsed.schemaVersion === RESTORE_SIDECAR_SCHEMA_VERSION
       && parsed.owner === RESTORE_SIDECAR_OWNER
       && typeof parsed.configPath === 'string'
-      && (parsed.originalType === 'file' || parsed.originalType === 'absent')
-      && (typeof parsed.originalContent === 'string' || parsed.originalContent === null)
       && typeof parsed.writtenSha256 === 'string'
+      // The pairing is checked, not just the field types. `'file'` with no
+      // bytes would restore an empty document over a real configuration, and
+      // `'absent'` with bytes would delete a file somebody's content belongs to.
+      && ((parsed.originalType === 'file' && typeof parsed.originalContent === 'string')
+        || (parsed.originalType === 'absent' && parsed.originalContent === null))
     ) {
       return parsed as unknown as RestoreSidecar
     }
@@ -262,7 +365,7 @@ function readCurrentConfig(configPath: string): { kind: 'absent' } | { kind: 'fi
   }
 }
 
-type RestoreResult = 'restored' | 'removed' | 'conflict' | 'nothing-to-do'
+export type RestoreResult = 'restored' | 'removed' | 'conflict' | 'nothing-to-do'
 
 /**
  * Undoes one application of the step cap.
@@ -299,6 +402,19 @@ function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: 
     return 'nothing-to-do'
   }
 
+  // Already the project's own file, so there is nothing to undo and nothing
+  // worth keeping a record of. Three ordinary things land here: a kill between
+  // the record being written and the configuration being replaced, a kill after
+  // the restore wrote but before the record was removed, and one of LoopTroop's
+  // own worktree resets reverting a tracked file. Without this they are all read
+  // as "somebody edited it", which is both untrue and permanent — the record
+  // would be kept and the warning repeated at every boot for the life of the
+  // ticket.
+  if (keepsOriginal && current.raw === sidecar.originalContent) {
+    removeSidecar(ticketDir)
+    return 'nothing-to-do'
+  }
+
   if (sha256(current.raw) !== sidecar.writtenSha256) {
     return conflict(
       keepsOriginal
@@ -325,22 +441,45 @@ function restoreFromSidecar(ticketDir: string, sidecar: RestoreSidecar, report: 
 export function restoreOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, report?: Report): RestoreResult {
   const sidecar = readSidecar(handle.ticketDir)
   if (!sidecar) return 'nothing-to-do'
-  return restoreFromSidecar(handle.ticketDir, sidecar, report ?? reportToConsole)
+  const result = restoreFromSidecar(handle.ticketDir, sidecar, notifier(report))
+  removeInterruptedConfigTemps(handle.configPath)
+  return result
 }
 
 /**
  * The boot half: a run killed outright never reached its `finally`, so the
- * restore happens at the next startup instead. Returns true when a project's
- * own `opencode.json` was put back.
+ * restore happens at the next startup instead.
+ *
+ * `worktreePath` is passed in rather than taken from the record. A restore
+ * record is a file in the worktree, which means anything running inside the
+ * worktree — including the model — can write one, and this function deletes and
+ * overwrites the path it names. Checking that path against the ticket's actual
+ * worktree is what keeps that from being a way to reach any file the daemon can
+ * write. It also catches the honest version: a project folder that moved since
+ * the run.
  */
-export function restoreInterruptedOpencodeStepsConfig(ticketDir: string): boolean {
+export function restoreInterruptedOpencodeStepsConfig(
+  ticketDir: string,
+  worktreePath: string,
+): RestoreResult {
   const sidecar = readSidecar(ticketDir)
-  if (!sidecar) return false
+  if (!sidecar) return 'nothing-to-do'
+
+  const expectedConfigPath = opencodeConfigPathFor(worktreePath)
+  if (resolve(sidecar.configPath) !== expectedConfigPath) {
+    console.warn(
+      `[recovery] Ignoring ${sidecarPathFor(ticketDir)}: it names ${sidecar.configPath}, which is not ` +
+        `this ticket's ${expectedConfigPath}`,
+    )
+    return 'nothing-to-do'
+  }
+
+  removeInterruptedConfigTemps(expectedConfigPath)
   const result = restoreFromSidecar(ticketDir, sidecar, (message) => { console.warn(`[recovery] ${message}`) })
   if (result === 'restored') {
     console.log(`[recovery] Restored ${sidecar.configPath} after an interrupted coding run`)
   } else if (result === 'removed') {
     console.log(`[recovery] Removed the ${OPENCODE_CONFIG_FILENAME} left behind by an interrupted coding run at ${sidecar.configPath}`)
   }
-  return result === 'restored' || result === 'removed'
+  return result
 }

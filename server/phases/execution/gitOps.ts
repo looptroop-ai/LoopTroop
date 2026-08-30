@@ -40,6 +40,7 @@ export const WORKTREE_RESET_PRESERVE_PATHS = [
 ] as const
 
 export { getExecutionSetupCommitExcludedRoots } from '../../git/worktreeChanges'
+import { normalizeRepoPath } from '../../git/worktreeChanges'
 
 export function isAllowedFile(path: string, options: FileAllowOptions = {}): boolean {
   return classifyWorktreePath(path, {
@@ -146,11 +147,18 @@ export function recordBeadStartCommit(worktreePath: string): string {
  * Commit and push changes after a successful bead.
  * Commits Git-visible project changes while excluding LoopTroop/setup roots
  * and untracked generated/local noise. Graceful — logs warnings but doesn't block on push failure.
+ *
+ * `excludePaths` holds repository-relative paths LoopTroop itself is modifying
+ * for the duration of the run — today, a project's `opencode.json` while a step
+ * cap is applied. Restoring such a file afterwards puts the worktree right but
+ * cannot undo a commit, so the exclusion has to happen here. They are reported
+ * as skipped, like every other file left out.
  */
 export function commitBeadChanges(
   worktreePath: string,
   beadId: string,
   beadTitle: string,
+  options: { excludePaths?: readonly string[] } = {},
 ): {
   committed: boolean
   pushed: boolean
@@ -172,12 +180,18 @@ export function commitBeadChanges(
     }
   }
 
-  const committableFiles = summary.committable.map(entry => entry.path)
+  const excluded = new Set((options.excludePaths ?? []).map(normalizeRepoPath))
+  const committableFiles = summary.committable
+    .map(entry => entry.path)
+    .filter(path => !excluded.has(path))
   const skippedFiles = [
-    ...summary.looptroopExcluded,
-    ...summary.setupExcluded,
-    ...summary.generatedNoise,
-  ].map(entry => entry.path)
+    ...[
+      ...summary.looptroopExcluded,
+      ...summary.setupExcluded,
+      ...summary.generatedNoise,
+    ].map(entry => entry.path),
+    ...summary.committable.map(entry => entry.path).filter(path => excluded.has(path)),
+  ]
   const generatedNoiseWarning = summary.generatedNoise.length > 0
     ? buildGeneratedNoiseWarning(summary.generatedNoise)
     : undefined

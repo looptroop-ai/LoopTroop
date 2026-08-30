@@ -6,9 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import {
@@ -19,6 +17,7 @@ import {
 } from '../finalTest/fileEffectsAudit'
 import { getTicketByRef, getTicketPaths } from '../../storage/tickets'
 import { appendManualQaEvent } from './storage'
+import { safeAtomicWrite } from '../../io/atomicWrite'
 import {
   classifyWorktreePath,
   getExecutionSetupCommitExcludedRoots,
@@ -51,6 +50,12 @@ interface ManualQaDriftReceipt {
   resultingHead: string
   createdAt: string
 }
+
+/**
+ * Baselines and drift receipts record what a worktree looked like, path by
+ * path. Owner-only, as they were before this went through the shared writer.
+ */
+const RECEIPT_FILE_MODE = 0o600
 
 const EXCLUDED_PATHSPECS = ['.', ':(top,exclude).ticket', ':(top,exclude).looptroop'] as const
 
@@ -112,11 +117,15 @@ function assertContained(root: string, target: string): void {
   }
 }
 
-function atomicWriteJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`
-  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-  renameSync(temporaryPath, path)
+/**
+ * Baseline and drift receipts are what a manual QA session is reconstructed
+ * from after a crash, so they go through the same writer as every other durable
+ * artifact: fsynced, retried past a Windows handle, and left under a temp name
+ * startup recovery can identify. The private writer this replaced had none of
+ * that.
+ */
+function writeReceiptJson(path: string, value: unknown): void {
+  safeAtomicWrite(path, `${JSON.stringify(value, null, 2)}\n`, { mode: RECEIPT_FILE_MODE })
 }
 
 function baselinePath(ticketDir: string, version: number): string {
@@ -353,7 +362,7 @@ export function prepareManualQaCheckpoint(ticketId: string, version: number): Ma
   }
 
   const baseline = captureBaseline(paths.worktreePath, version, localOnlyPaths)
-  atomicWriteJson(existingBaselinePath, baseline)
+  writeReceiptJson(existingBaselinePath, baseline)
   return { baseline, checkpointCommit, candidateFiles, quarantinedFiles: [] }
 }
 
@@ -443,7 +452,7 @@ function applyManualQaDriftDecision(
     throw new Error(`Manual QA workspace still has unresolved drift: ${remainingStatus.map(file => file.path).join(', ')}`)
   }
   const nextBaseline = captureBaseline(paths.worktreePath, version, baseline.localOnlyPaths)
-  atomicWriteJson(baselinePath(paths.ticketDir, version), nextBaseline)
+  writeReceiptJson(baselinePath(paths.ticketDir, version), nextBaseline)
   const receipt: ManualQaDriftReceipt = {
     schemaVersion: 1,
     actionId,
@@ -454,7 +463,7 @@ function applyManualQaDriftDecision(
     resultingHead: nextBaseline.head,
     createdAt: new Date().toISOString(),
   }
-  atomicWriteJson(receiptPath, receipt)
+  writeReceiptJson(receiptPath, receipt)
   appendDriftEvent(paths.ticketDir, ticket.externalId, receipt)
   return receipt
 }

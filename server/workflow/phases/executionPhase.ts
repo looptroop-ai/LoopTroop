@@ -9,7 +9,7 @@ import { throwIfAborted } from '../../council/types'
 import { broadcaster } from '../../sse/broadcaster'
 import { withCommandLoggingAsync, withCommandLoggingFieldsAsync } from '../../log/commandLogger'
 import { adapter } from './state'
-import { emitPhaseLog, emitAiMilestone, emitOpenCodeSessionLogs, emitOpenCodeStreamEvent, emitOpenCodePromptLog, createOpenCodeStreamState, resolveExecutionRuntimeSettings, resolveStructuredRetryRuntimeSettings } from './helpers'
+import { emitPhaseLog, emitModelSystemLog, emitAiMilestone, emitOpenCodeSessionLogs, emitOpenCodeStreamEvent, emitOpenCodePromptLog, createOpenCodeStreamState, resolveExecutionRuntimeSettings, resolveStructuredRetryRuntimeSettings } from './helpers'
 import type { OpenCodeStreamState } from './types'
 import { readTicketBeads, recoverCodingBeadWithReset, writeTicketBeads, updateTicketProgressFromBeads } from './beadsPhase'
 import { recordBeadMetric } from '../../storage/executionTelemetry'
@@ -20,8 +20,13 @@ import {
 import { listOpenCodeSessionsForTicket, SessionManager } from '../../opencode/sessionManager'
 import { clearOpenCodePromptDispatchCount } from '../runOpenCodePrompt'
 import { ensureLocalGitExclude } from '../../git/repository'
-import { writeFileSync, rmSync } from 'fs'
-import { resolve } from 'path'
+import {
+  applyOpencodeStepsConfig,
+  OPENCODE_CONFIG_FILENAME,
+  reapplyOpencodeStepsConfig,
+  restoreOpencodeStepsConfig,
+  type OpencodeStepsConfigHandle,
+} from '../../phases/execution/opencodeStepsConfig'
 import { BEAD_FINALIZATION_FAILED } from '@shared/errorCodes'
 
 const ESCAPE_CHARACTER = String.fromCharCode(27)
@@ -297,24 +302,6 @@ export async function handleMockExecutionUnsupported(
   sendEvent({ type: 'ERROR', message, codes: ['MOCK_EXECUTION_UNSUPPORTED'] })
 }
 
-const OPENCODE_STEPS_CONFIG_FILENAME = 'opencode.json'
-
-function writeOpencodeStepsConfig(worktreePath: string, steps: number): void {
-  const config = {
-    $schema: 'https://opencode.ai/config.json',
-    agent: { build: { steps } },
-  }
-  writeFileSync(resolve(worktreePath, OPENCODE_STEPS_CONFIG_FILENAME), JSON.stringify(config, null, 2) + '\n', 'utf8')
-}
-
-function removeOpencodeStepsConfig(worktreePath: string): void {
-  try {
-    rmSync(resolve(worktreePath, OPENCODE_STEPS_CONFIG_FILENAME), { force: true })
-  } catch {
-    // Ignore errors — file may have already been removed
-  }
-}
-
 export async function handleCoding(
   ticketId: string,
   context: TicketContext,
@@ -349,12 +336,46 @@ export async function handleCoding(
   }
 
   const executionSettings = resolveExecutionRuntimeSettings(context)
-  if (executionSettings.opencodeSteps > 0) {
-    writeOpencodeStepsConfig(paths.worktreePath, executionSettings.opencodeSteps)
-    ensureLocalGitExclude(paths.worktreePath, ['/' + OPENCODE_STEPS_CONFIG_FILENAME])
+  let stepsConfig: OpencodeStepsConfigHandle | null = null
+  const reportStepsConfig = (message: string) => {
+    emitModelSystemLog(ticketId, context.externalId, 'CODING', 'info', message, codingModelId)
   }
 
+  /**
+   * `git clean` would delete a project's own untracked `opencode.json`, which
+   * the run is holding a modified copy of. Preserving it is what makes the
+   * restore afterwards possible at all.
+   */
+  const resetPreservePaths = () => (stepsConfig
+    ? [...WORKTREE_RESET_PRESERVE_PATHS, OPENCODE_CONFIG_FILENAME]
+    : [...WORKTREE_RESET_PRESERVE_PATHS])
+
+  /** A reset returns a tracked config to its committed state, cap and all. */
+  const reapplyStepsConfigAfterReset = () => {
+    if (stepsConfig) reapplyOpencodeStepsConfig(stepsConfig, reportStepsConfig)
+  }
+
+  // Inside the `try`, so a failure anywhere after the file is written — the git
+  // exclude included — still reaches the restore in the `finally`.
   try {
+    if (executionSettings.opencodeSteps > 0) {
+      const outcome = applyOpencodeStepsConfig({
+        ticketDir: paths.ticketDir,
+        worktreePath: paths.worktreePath,
+        steps: executionSettings.opencodeSteps,
+        report: reportStepsConfig,
+      })
+      if (outcome.applied) {
+        stepsConfig = outcome.handle
+        // Only a file this run created is ours to hide from git. A project that
+        // ships its own `opencode.json` has already decided how it is tracked —
+        // it is kept out of the bead commit instead, at the commit itself.
+        if (outcome.handle.created) {
+          ensureLocalGitExclude(paths.worktreePath, ['/' + OPENCODE_CONFIG_FILENAME])
+        }
+      }
+    }
+
   let activeBead = getLatestInterruptedInProgressBead(beads)
   let beadStartCommit: string | null = activeBead?.beadStartCommit ?? null
   let result: ExecutionResult | null = null
@@ -417,12 +438,15 @@ export async function handleCoding(
         worktreePath: paths.worktreePath,
         onlyInProgress: true,
         requireReset: true,
-        preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],
+        preservePaths: resetPreservePaths(),
         consumeInterruptedIteration: {
           failureNote: 'Iteration was interrupted before its OpenCode session could be resumed; restarted from the bead start snapshot.',
         },
       })
       if (interruptedBead) {
+        // This recovery resets the worktree, which takes a tracked
+        // `opencode.json` back to its committed state — cap and all.
+        reapplyStepsConfigAfterReset()
         const interruptedIteration = interruptedBead.iteration - 1
         await abandonInterruptedCodingSessions(ticketId, interruptedBead.id, interruptedIteration)
         emitPhaseLog(
@@ -585,9 +609,10 @@ export async function handleCoding(
             await withCommandLoggingFieldsAsync(
               { beadId },
               async () => resetToBeadStart(paths.worktreePath, beadStartCommit!, {
-                preservePaths: [...WORKTREE_RESET_PRESERVE_PATHS],
+                preservePaths: resetPreservePaths(),
               }),
             )
+            reapplyStepsConfigAfterReset()
           } catch (err) {
             const preservedFailureBeads = mergeBeadRetryMetadata(beadsBeforeReset, beadId, {
               failedIterationNotes,
@@ -682,7 +707,14 @@ export async function handleCoding(
   // commit failure blocks progress; a push failure after a commit is recoverable.
   let gitResult: Awaited<ReturnType<typeof commitBeadChanges>>
   try {
-    gitResult = await withCommandLoggingFieldsAsync({ beadId: finalizingBead.id }, async () => commitBeadChanges(paths.worktreePath, finalizingBead.id, finalizingBead.title))
+    gitResult = await withCommandLoggingFieldsAsync(
+      { beadId: finalizingBead.id },
+      // The step cap is LoopTroop's, not the project's, and a commit cannot be
+      // taken back by restoring the file afterwards.
+      async () => commitBeadChanges(paths.worktreePath, finalizingBead.id, finalizingBead.title, {
+        excludePaths: stepsConfig ? [OPENCODE_CONFIG_FILENAME] : [],
+      }),
+    )
   } catch (err) {
     markBeadFinalizationFailed({
       ticketId,
@@ -764,8 +796,8 @@ export async function handleCoding(
     sendEvent({ type: 'BEAD_COMPLETE' })
   }
   } finally {
-    if (executionSettings.opencodeSteps > 0) {
-      removeOpencodeStepsConfig(paths.worktreePath)
+    if (stepsConfig) {
+      restoreOpencodeStepsConfig(stepsConfig, reportStepsConfig)
     }
   }
     },

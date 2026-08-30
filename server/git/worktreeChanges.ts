@@ -118,7 +118,8 @@ interface ExecutionSetupProfileLike {
   workspace_inputs?: Array<{ path?: string | null } | null>
 }
 
-function normalizeRepoPath(path: string): string {
+/** Repository-relative form: forward slashes, no `./` prefix, no trailing slash. */
+export function normalizeRepoPath(path: string): string {
   return path
     .replace(/\\/g, '/')
     .replace(/^\.\//, '')

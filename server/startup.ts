@@ -14,6 +14,7 @@ import {
   initializeStartupState,
 } from './startupState'
 import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
+import { restoreInterruptedOpencodeStepsConfig } from './phases/execution/opencodeStepsConfig'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
 import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
@@ -23,13 +24,25 @@ import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
   let repairedExecutionLogs = 0
+  let settledOpencodeStepCaps = 0
 
   for (const ticket of listTickets()) {
     const paths = getTicketPaths(ticket.id)
     if (!paths) continue
 
     recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
-    for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath]) {
+    // A coding run killed outright never reached the step that puts the
+    // project's own `opencode.json` back, so the next boot does it instead.
+    // Counted for either outcome the boot can settle: the project's file put
+    // back, or the file the interrupted run created taken away.
+    const stepCap = restoreInterruptedOpencodeStepsConfig(paths.ticketDir, paths.worktreePath)
+    if (stepCap === 'restored' || stepCap === 'removed') {
+      settledOpencodeStepCaps += 1
+    }
+    // Every JSONL `safeAtomicWrite` can leave half-written, including the bead
+    // file — recovery puts a torn one back under its own name, and this is what
+    // then trims the incomplete final line.
+    for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath, paths.beadsPath]) {
       if (fixTrailingLineCorruption(logPath)) {
         repairedExecutionLogs += 1
       }
@@ -40,6 +53,7 @@ export function recoverTicketRuntimeArtifacts() {
   return {
     recoveredTmpFiles,
     repairedExecutionLogs,
+    settledOpencodeStepCaps,
     rebuiltProjections,
   }
 }
@@ -225,7 +239,7 @@ export async function startupSequence(): Promise<void> {
 
   console.log('[startup] Step 2: Recover ticket runtime artifacts')
   const recovery = recoverTicketRuntimeArtifacts()
-  console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, rebuilt ${recovery.rebuiltProjections} state projections`)
+  console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, settled ${recovery.settledOpencodeStepCaps} interrupted OpenCode step caps, rebuilt ${recovery.rebuiltProjections} state projections`)
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

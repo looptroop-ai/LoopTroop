@@ -300,11 +300,13 @@ export function reapplyOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, re
     notify(`Did not put the OpenCode step limit back after the worktree reset because ${current.reason}.`)
     return
   }
-  // Only a state the reset itself could have produced is written over: the file
-  // gone, or exactly the bytes from before the run. Anything else is somebody's
-  // edit, and writing over it would do more than lose it — the restore record
-  // would match again, so the cleanup would read the edited file as this run's
-  // own work and either revert it or, for a file the run created, delete it.
+  // The reset puts the bytes from before the run back, and `preservePaths` keeps
+  // the file from being cleaned away — so the one state worth writing over is
+  // exactly those bytes. A file that is gone, or that holds anything else, is
+  // somebody's change. Writing over it would do more than lose it: the file
+  // would match the restore record again, so the cleanup would read the change
+  // as this run's own work and undo it — putting a deleted configuration back,
+  // reverting an edit, or deleting a file the run created outright.
   const sidecar = readSidecar(handle.ticketDir, handle.configPath)
   if (!sidecar) {
     notify(
@@ -313,10 +315,10 @@ export function reapplyOpencodeStepsConfig(handle: OpencodeStepsConfigHandle, re
     )
     return
   }
-  if (current.kind === 'file' && current.raw !== sidecar.originalContent) {
+  if (current.kind !== 'file' || current.raw !== sidecar.originalContent) {
     notify(
       `Did not put the OpenCode step limit back after the worktree reset because ${OPENCODE_CONFIG_FILENAME} `
-        + 'has been edited since this run wrote it.',
+        + `was ${current.kind === 'absent' ? 'removed' : 'edited'} after this run wrote it.`,
     )
     return
   }

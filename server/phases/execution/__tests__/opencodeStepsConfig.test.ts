@@ -456,7 +456,7 @@ describe('reapplyOpencodeStepsConfig', () => {
     reapplyOpencodeStepsConfig(outcome.handle, (message) => { reported.push(message) })
 
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"edited": "during the run"}\n')
-    expect(reported.join(' ')).toMatch(/has been edited/)
+    expect(reported.join(' ')).toMatch(/was edited after this run wrote it/)
     // The project's own version is still the one waiting to be put back.
     expect(restore(outcome.handle).result).toBe('conflict')
     const sidecar = JSON.parse(readFileSync(SIDECAR_PATH, 'utf8')) as { originalContent: string }
@@ -477,6 +477,33 @@ describe('reapplyOpencodeStepsConfig', () => {
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
     expect(restore(outcome.handle).result).toBe('conflict')
     expect(readFileSync(CONFIG_PATH, 'utf8')).toBe('{"mine": true}\n')
+  })
+
+  /**
+   * A deletion is not a state the reset produces — it puts a tracked file back,
+   * and `preservePaths` stops an untracked one being cleaned away — so an
+   * absent file is somebody having deleted it. Writing the cap back would make
+   * the file match the restore record again, and the cleanup would then undo
+   * the deletion by putting the project's version back.
+   */
+  it('leaves a deletion made during the run alone, so the cleanup does not undo it', () => {
+    const original = '{"mcp": {}}\n'
+    writeFileSync(CONFIG_PATH, original, 'utf8')
+    const { outcome } = apply(30)
+    if (!outcome.applied) throw new Error('expected the step cap to apply')
+    rmSync(CONFIG_PATH)
+
+    const reported: string[] = []
+    reapplyOpencodeStepsConfig(outcome.handle, (message) => { reported.push(message) })
+
+    expect(existsSync(CONFIG_PATH)).toBe(false)
+    expect(reported.join(' ')).toMatch(/was removed after this run wrote it/)
+    // And the cleanup respects the deletion rather than reversing it, keeping
+    // the project's own version where it can still be recovered by hand.
+    expect(restore(outcome.handle).result).toBe('conflict')
+    expect(existsSync(CONFIG_PATH)).toBe(false)
+    const sidecar = JSON.parse(readFileSync(SIDECAR_PATH, 'utf8')) as { originalContent: string }
+    expect(sidecar.originalContent).toBe(original)
   })
 
   it('does nothing when the restore record has gone, so the file can still be put back', () => {

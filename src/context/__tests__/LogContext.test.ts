@@ -1,10 +1,11 @@
 import { createElement, useEffect } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { formatLogLine, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
 import { useLogs } from '@/context/useLogContext'
 import { createJsonResponse } from '@/test/renderHelpers'
+import { TEST } from '@/test/factories'
 import type { LogEntry } from '@/context/logUtils'
 
 let latestLogApi: ReturnType<typeof useLogs> = null
@@ -690,6 +691,48 @@ describe('LogProvider', () => {
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('log-count')).toHaveTextContent('1')
+  })
+
+  it('drops only the departing ticket from the server log cache when it unmounts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+
+    // A neighbouring ticket's entry, owned by its own provider. Leaving this ticket must not touch
+    // it, or every other open ticket would lose its cache too.
+    const otherTicketId = `${TEST.projectId}:${TEST.shortnameB}-1`
+    const otherKey = getServerLogCacheKey(otherTicketId, { phase: 'CODING', channel: 'normal' })
+    serverLogCache.set(otherKey, [])
+
+    const view = render(createElement(
+      LogProvider,
+      {
+        ticketId: TEST.ticketId,
+        currentStatus: 'CODING',
+        children: createElement(LogHarness),
+      },
+    ))
+
+    await flushMicrotasks()
+    const fetchCallsWhileMounted = vi.mocked(globalThis.fetch).mock.calls.length
+    expect(fetchCallsWhileMounted).toBeGreaterThan(0)
+    expect(serverLogCache.size).toBe(fetchCallsWhileMounted + 1)
+
+    view.unmount()
+
+    expect([...serverLogCache.keys()]).toEqual([otherKey])
+
+    // And the point of dropping it: coming back goes to the server instead of replaying the
+    // snapshot taken on the way out, which would be missing everything that streamed in between.
+    render(createElement(
+      LogProvider,
+      {
+        ticketId: TEST.ticketId,
+        currentStatus: 'CODING',
+        children: createElement(LogHarness),
+      },
+    ))
+
+    await flushMicrotasks()
+    expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThan(fetchCallsWhileMounted)
   })
 })
 

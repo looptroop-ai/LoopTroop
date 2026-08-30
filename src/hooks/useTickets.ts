@@ -421,6 +421,13 @@ interface TicketUIStateResponse<T = unknown> {
   updatedAt: string | null
   revision: number
   clientRevision: number | null
+  /**
+   * The ticket this payload was loaded for. Stamped client-side — the server answers with the
+   * scope only, so without it a consumer holding a payload cannot tell whose state it is. A
+   * restore effect that applies a payload to whatever ticket is on screen writes one ticket's
+   * answers onto another; the gate needs an identity to compare.
+   */
+  ticketId: string
 }
 
 interface SaveTicketUIStateResponse<T = unknown> {
@@ -445,7 +452,8 @@ async function fetchTicketUIState<T = unknown>(
   if (!res.ok) {
     throw new Error(await parseErrorBody(res, 'Failed to fetch ticket UI state'))
   }
-  return res.json()
+  const payload = await res.json() as Omit<TicketUIStateResponse<T>, 'ticketId'>
+  return { ...payload, ticketId }
 }
 
 async function saveTicketUIState(
@@ -646,6 +654,7 @@ export function useSaveTicketUIState() {
             updatedAt: result.updatedAt,
             revision: result.revision,
             clientRevision: result.revision,
+            ticketId: variables.ticketId,
           },
         )
         return
@@ -659,6 +668,7 @@ export function useSaveTicketUIState() {
           updatedAt: result.updatedAt,
           revision: result.revision,
           clientRevision: result.clientRevision,
+          ticketId: variables.ticketId,
         }),
       )
     },

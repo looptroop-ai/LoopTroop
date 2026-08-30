@@ -233,7 +233,15 @@ function App() {
           onOpenAbout={openAbout}
           isModalOpen={isModalOpen}
         >
-          {state.activeView === 'ticket' && state.selectedTicketId ? <TicketDashboard /> : <KanbanBoard />}
+          {/*
+            Keyed by ticket id on purpose: switching tickets unmounts the previous ticket's
+            dashboard so every useState, useRef, timer and draft buffer below it is rebuilt from
+            scratch. Without the key the subtree stays mounted and each surface keeps the previous
+            ticket's state, which is how an answer typed for one ticket could be saved to another.
+          */}
+          {state.activeView === 'ticket' && state.selectedTicketId
+            ? <TicketDashboard key={state.selectedTicketId} />
+            : <KanbanBoard />}
         </AppShell>
 
         <CenteredModal open={isProfileOpen} onClose={closeProfile} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>

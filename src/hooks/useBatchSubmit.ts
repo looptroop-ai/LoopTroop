@@ -94,38 +94,35 @@ export function useBatchSubmit(ticketId: string) {
     setLastAutosavedAt(null)
   }, [ticketId])
 
-  // Restore persisted drafts once on mount / ticket change
+  // Restore persisted drafts once on mount / ticket change.
   useEffect(() => {
     if (restoredDraftRef.current || !persistedDrafts) return
+    // Only ever restore this ticket's own payload. The dashboard is remounted per ticket, but a
+    // payload held from the previous ticket while the new query is still in flight would otherwise
+    // be applied here and then autosaved onto the ticket now on screen.
+    if (persistedDrafts.ticketId !== ticketId) return
 
     const persisted = persistedDrafts.data
     const frame = requestAnimationFrame(() => {
-      if (persisted) {
-        const persistedSkippedQuestions = persisted.skippedQuestions
-          ? deserializeSkipped(persisted.skippedQuestions)
-          : {}
-        if (persisted.draftAnswers && Object.keys(persisted.draftAnswers).length > 0) {
-          setDraftAnswers(persisted.draftAnswers)
-        }
-        if (persisted.skippedQuestions && Object.keys(persisted.skippedQuestions).length > 0) {
-          setSkippedQuestions(persistedSkippedQuestions)
-        }
-        if (persisted.selectedOptions && Object.keys(persisted.selectedOptions).length > 0) {
-          setBatchSelectedOptions(removeSkippedSelectedOptions(persisted.selectedOptions, persistedSkippedQuestions))
-        }
-        if (persisted.skipReasons && Object.keys(persisted.skipReasons).length > 0) {
-          setBatchSkipReasons(persisted.skipReasons)
-        }
-      }
-
-      const snapshotSkippedQuestions = persisted?.skippedQuestions
+      const persistedSkippedQuestions = persisted?.skippedQuestions
         ? deserializeSkipped(persisted.skippedQuestions)
         : {}
+      // Assigned unconditionally: an absent collection means "nothing saved for this ticket",
+      // which has to clear the surface rather than leave whatever it happened to hold.
+      setDraftAnswers(persisted?.draftAnswers ?? {})
+      setSkippedQuestions(persistedSkippedQuestions)
+      setBatchSelectedOptions(
+        persisted?.selectedOptions
+          ? removeSkippedSelectedOptions(persisted.selectedOptions, persistedSkippedQuestions)
+          : {},
+      )
+      setBatchSkipReasons(persisted?.skipReasons ?? {})
+
       const snapshot: PersistedInterviewDrafts = {
         draftAnswers: persisted?.draftAnswers ?? {},
         skippedQuestions: persisted?.skippedQuestions ?? {},
         selectedOptions: persisted?.selectedOptions
-          ? removeSkippedSelectedOptions(persisted.selectedOptions, snapshotSkippedQuestions)
+          ? removeSkippedSelectedOptions(persisted.selectedOptions, persistedSkippedQuestions)
           : {},
         skipReasons: persisted?.skipReasons ?? {},
       }
@@ -140,7 +137,7 @@ export function useBatchSubmit(ticketId: string) {
       setDraftsRestoreTick((current) => current + 1)
     })
     return () => cancelAnimationFrame(frame)
-  }, [persistedDrafts])
+  }, [persistedDrafts, ticketId])
 
   // Interview batch events forwarded from the ticket stream.
   useEffect(() => {

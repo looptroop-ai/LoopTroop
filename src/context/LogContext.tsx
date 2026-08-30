@@ -13,6 +13,7 @@ import {
   compareTimestamps,
   mergeEntry,
   clearPersistedTicketLogs,
+  clearServerLogCache,
 } from './logUtils'
 
 export type { LogEntry }
@@ -136,6 +137,15 @@ export function LogProvider({
     loadedScopeKeysRef.current = new Set()
     loadingScopeKeysRef.current = new Set()
     logsByPhaseRef.current = {}
+
+    // `serverLogCache` is module scope, so it outlives this provider. Nothing forces a refetch of
+    // a scope it already holds, so leaving the departing ticket's entries behind means coming back
+    // to that ticket replays the snapshot taken on the way out — every line that arrived over SSE
+    // in between is missing, and the map grows for every ticket visited in the tab. Only the
+    // ticket being left is dropped; entries for other tickets belong to their own providers.
+    return () => {
+      if (ticketId) clearServerLogCache(ticketId)
+    }
   }, [ticketId])
 
   const mergeLiveEntry = useCallback((entry: LogEntry) => {

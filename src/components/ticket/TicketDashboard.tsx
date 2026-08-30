@@ -39,6 +39,40 @@ function toDebugJson(data: Record<string, unknown>) {
   }
 }
 
+/**
+ * The navigator width is chrome, not ticket state: the dashboard is remounted per ticket so
+ * every per-ticket buffer is rebuilt, and a width kept in component state alone would snap back
+ * to the default on each switch. Stored locally because it describes this browser's window, not
+ * the ticket — it should not follow the operator to another screen. Reads and writes are guarded;
+ * a private window or blocked site data throws on access rather than returning empty.
+ */
+const NAV_WIDTH_STORAGE_KEY = 'looptroop-ticket-nav-width'
+const NAV_WIDTH_DEFAULT = 280
+const NAV_WIDTH_MIN = 200
+
+function clampNavWidth(width: number): number {
+  const viewportMax = typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth * 0.5
+  return Math.max(NAV_WIDTH_MIN, Math.min(width, viewportMax))
+}
+
+function readNavWidth(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(NAV_WIDTH_STORAGE_KEY))
+    if (!Number.isFinite(stored) || stored <= 0) return NAV_WIDTH_DEFAULT
+    return clampNavWidth(stored)
+  } catch {
+    return NAV_WIDTH_DEFAULT
+  }
+}
+
+function writeNavWidth(width: number): void {
+  try {
+    window.localStorage.setItem(NAV_WIDTH_STORAGE_KEY, String(Math.round(width)))
+  } catch {
+    // A preference that cannot be remembered is not worth failing a drag for.
+  }
+}
+
 function SSELogConnector({
   ticketId,
   currentStatus,
@@ -200,7 +234,7 @@ export function TicketDashboard() {
   } = useTicket(ticketId)
   const { mutate: saveTicketUiState } = useSaveTicketUIState()
   const renderedTicketIdsRef = useRef(new Set<string>())
-  const [navWidth, setNavWidth] = useState(280)
+  const [navWidth, setNavWidth] = useState(readNavWidth)
   const [isFullLogOpen, setIsFullLogOpen] = useState(false)
   const [phaseSelection, setPhaseSelection] = useState<{ ticketId: string | null; phase: string | null }>({
     ticketId: null,
@@ -249,6 +283,11 @@ export function TicketDashboard() {
   )
 
   const closeMobileNav = useCallback(() => setIsMobileNavOpen(false), [])
+
+  const handleNavResize = useCallback((width: number) => {
+    setNavWidth(width)
+    writeNavWidth(width)
+  }, [])
 
   const dbStatus = ticket?.status ?? null
   const effectiveLivePhase = useMemo(() => {
@@ -741,7 +780,7 @@ export function TicketDashboard() {
               />
             </div>
             <div className="hidden md:block">
-              <ResizeHandle onResize={setNavWidth} />
+              <ResizeHandle onResize={handleNavResize} />
             </div>
             {/* Active Workspace */}
             <div className="flex flex-col flex-1 overflow-hidden">

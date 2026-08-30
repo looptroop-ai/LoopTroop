@@ -18,8 +18,10 @@ let interviewData: InterviewSessionView = {
   questions: [],
 }
 
+// `ticketId` mirrors what `fetchTicketUIState` stamps onto every payload it returns. Consumers gate
+// their restore on it, so a fixture without it looks like another ticket's state and is ignored.
 function emptyUiState() {
-  return { scope: 'interview-drafts', exists: false, data: null, updatedAt: null }
+  return { scope: 'interview-drafts', exists: false, data: null, updatedAt: null, ticketId: TEST.ticketId }
 }
 
 function renderWithProviders(ui: React.ReactElement) {
@@ -30,7 +32,7 @@ function renderWithProviders(ui: React.ReactElement) {
   queryClient.setQueryData(
     ['ticket-ui-state', TEST.ticketId, 'interview-drafts'],
     preSeededDrafts
-      ? { scope: 'interview-drafts', exists: true, data: preSeededDrafts, updatedAt: '2026-03-12T10:10:00.000Z' }
+      ? { scope: 'interview-drafts', exists: true, data: preSeededDrafts, updatedAt: '2026-03-12T10:10:00.000Z', ticketId: TEST.ticketId }
       : emptyUiState(),
   )
 

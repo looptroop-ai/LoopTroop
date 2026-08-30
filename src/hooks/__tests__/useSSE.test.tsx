@@ -577,6 +577,33 @@ describe('useSSE', () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ai_metrics' }))
   })
 
+  it('cancels a pending AI details invalidation when the ticket is left', async () => {
+    const ticketId = '1:T-left'
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    const { unmount } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
+
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+
+    await act(async () => {
+      MockEventSource.instances[0]!.emit('ai_metrics', {
+        ticketId,
+        phase: 'CODING',
+        modelId: 'openai/gpt-5.4',
+      }, '')
+    })
+
+    unmount()
+
+    // The debounce timer is held in module scope, so it outlives the hook that scheduled it.
+    // Waiting past the delay is the only way to tell whether it still fires for a ticket nobody is
+    // looking at any more.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600))
+    })
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['ticket-ai-details', ticketId] })
+  })
+
   it('tracks reconnecting state when the live stream drops', async () => {
     const ticketId = '1:T-42'
     const { result } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))

@@ -87,10 +87,32 @@ const sharedEnv = {
   LOOPTROOP_TEST_SILENT: '1',
 }
 
+/**
+ * Client tests that touch no DOM, so they do not need the jsdom project.
+ *
+ * `client-dom` excludes this list, which makes it the only thing deciding where
+ * a file runs — and a pure-logic file left off it pays for a jsdom environment,
+ * a forked worker and per-file isolation to assert on a string.
+ *
+ * Membership is by content, not by directory: a sibling that renders belongs in
+ * `client-dom` however pure its name looks. `ManualQAView.test.ts` is here;
+ * `ManualQAView.render.test.tsx` imports `@testing-library/react` and is not.
+ */
 const clientNodeTests = [
+  'src/components/kanban/__tests__/kanbanSearch.test.ts',
+  'src/components/kanban/__tests__/ticketCardUtils.test.ts',
+  'src/components/shared/__tests__/modelBadgeUtils.test.ts',
+  'src/components/workspace/__tests__/currentActivity.test.ts',
+  'src/components/workspace/__tests__/logFormat.test.ts',
+  'src/components/workspace/__tests__/ManualQAView.test.ts',
   'src/components/workspace/__tests__/phaseArtifactTypes.test.ts',
   'src/hooks/__tests__/ticketStatusCache.test.ts',
   'src/hooks/__tests__/useTickets.test.ts',
+  'src/lib/__tests__/errorDisplay.test.ts',
+  'src/lib/__tests__/executionSetupPlan.test.ts',
+  'src/lib/__tests__/fetchError.test.ts',
+  'src/lib/__tests__/recoveryReload.test.ts',
+  'src/lib/__tests__/viteDependencyRecovery.test.ts',
   'src/lib/__tests__/workflowMeta.test.ts',
 ] as const
 
@@ -192,6 +214,9 @@ const serverIntegrationTests = [
   // Same reason as the group below, found the same way.
   'server/lib/__tests__/commandExecutor.test.ts',
   'server/phases/executionSetup/__tests__/hookValidation.test.ts',
+  // Same reason: it runs `doctor`'s real checks to read their names back, and
+  // those probe `git`, `gh` and `npm` with `execFileSync`.
+  'tests/wireContract.test.ts',
 
   'server/db/__tests__/sqliteContract.test.ts',
   'server/machines/__tests__/persistence.test.ts',

@@ -1,4 +1,4 @@
-import { Project, SyntaxKind } from 'ts-morph'
+import { Node, Project, SyntaxKind } from 'ts-morph'
 import { describe, expect, it } from 'vitest'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
@@ -42,7 +42,9 @@ function collectBrowserBareImports(): string[] {
     for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       if (call.getExpression().getKind() !== SyntaxKind.ImportKeyword) continue
       const argument = call.getArguments()[0]
-      if (argument?.getKind() === SyntaxKind.StringLiteral) imports.add(argument.getLiteralText())
+      // `Node.isStringLiteral` rather than comparing kinds: the kind check does
+      // not narrow, so `getLiteralText` is not on the node's type afterwards.
+      if (argument && Node.isStringLiteral(argument)) imports.add(argument.getLiteralText())
     }
   }
 

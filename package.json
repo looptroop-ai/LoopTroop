@@ -93,7 +93,7 @@
     "test:client": "vitest run --project client-dom --project client-node",
     "test:server": "vitest run --project server-pure --project server-integration",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "lint": "eslint .",
     "db:generate": "drizzle-kit generate --config=drizzle.app.config.ts",
     "db:generate:app": "drizzle-kit generate --config=drizzle.app.config.ts",

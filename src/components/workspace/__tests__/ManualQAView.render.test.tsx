@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -154,6 +155,35 @@ describe('ManualQAView recovery behavior', () => {
     expect(screen.queryByRole('heading', { name: 'Evidence' })).not.toBeInTheDocument()
     expect(document.querySelector('textarea')).toBeNull()
     expect(document.querySelector('input[type="file"]')).toBeNull()
+  })
+
+  it('restores a saved draft that arrives after the round', async () => {
+    // Switching tickets remounts this view, so the round can be served from cache while the saved
+    // draft is still on the wire. The load-bearing assertion is the final one: Pass is the saved
+    // status, and it can only appear if the draft-init effect waited for the query instead of
+    // locking itself to the round's own (empty) draft on the first render.
+    const savedState = {
+      scope: 'manual_qa_draft:v1',
+      exists: true,
+      data: { results: { 'item-1': { itemId: 'item-1', status: 'pass', evidenceIds: [] } } },
+      revision: 3,
+      clientRevision: null,
+      updatedAt: new Date().toISOString(),
+    }
+    mocks.uiState.mockImplementation(() => {
+      // A hook, not a value: the first render reports the query as pending and a re-render delivers
+      // the saved draft, which is the ordering the real query produces on a cached round.
+      const [settled, setSettled] = useState(false)
+      useEffect(() => setSettled(true), [])
+      return settled
+        ? { data: savedState, isPending: false, refetch: mocks.refetchUiState }
+        : { data: undefined, isPending: true, refetch: mocks.refetchUiState }
+    })
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pass' })).toHaveAttribute('data-selected', 'true'))
+    expect(screen.getByRole('button', { name: 'Pending' })).toHaveAttribute('data-selected', 'false')
   })
 
   it('names the checklist number and title in submission validation', async () => {

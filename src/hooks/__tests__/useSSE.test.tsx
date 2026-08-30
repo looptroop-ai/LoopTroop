@@ -577,7 +577,7 @@ describe('useSSE', () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'ai_metrics' }))
   })
 
-  it('cancels a pending AI details invalidation when the ticket is left', async () => {
+  it('settles a pending AI details invalidation when the ticket is left, and only once', async () => {
     const ticketId = '1:T-left'
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     const { unmount } = renderHook(() => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }))
@@ -592,16 +592,33 @@ describe('useSSE', () => {
       }, '')
     })
 
-    unmount()
+    const aiDetailsKey = { queryKey: ['ticket-ai-details', ticketId] }
+    // Still inside the debounce window: the refresh is owed but has not been paid yet.
+    expect(invalidateSpy).not.toHaveBeenCalledWith(aiDetailsKey)
 
-    // The debounce timer is held in module scope, so it outlives the hook that scheduled it.
-    // Waiting past the delay is the only way to tell whether it still fires for a ticket nobody is
-    // looking at any more.
+    await act(async () => {
+      unmount()
+    })
+
+    // Leaving pays it immediately rather than dropping it. Cancelling would be a real loss: the
+    // details query holds its data for 30s, so returning inside that window would show the metrics
+    // from before the event.
+    const callsAfterUnmount = invalidateSpy.mock.calls.filter(
+      ([arg]) => JSON.stringify(arg) === JSON.stringify(aiDetailsKey),
+    ).length
+    expect(callsAfterUnmount).toBe(1)
+
+    // The debounce timer lives in module scope, so it outlives the hook that scheduled it. Waiting
+    // past the delay is the only way to tell from outside that the handle was cleared and no second
+    // invalidation is queued against a ticket nobody is looking at any more.
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 600))
     })
 
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['ticket-ai-details', ticketId] })
+    const callsAfterDelay = invalidateSpy.mock.calls.filter(
+      ([arg]) => JSON.stringify(arg) === JSON.stringify(aiDetailsKey),
+    ).length
+    expect(callsAfterDelay).toBe(1)
   })
 
   it('tracks reconnecting state when the live stream drops', async () => {

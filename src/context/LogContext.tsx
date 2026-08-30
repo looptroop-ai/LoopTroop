@@ -125,6 +125,8 @@ export function LogProvider({
   const loadedScopeKeysRef = useRef<Set<string>>(new Set())
   const loadingScopeKeysRef = useRef<Set<string>>(new Set())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
+  // Bumped whenever this provider stops owning `ticketId`, so a fetch that outlives it can tell.
+  const generationRef = useRef(0)
 
   useEffect(() => {
     currentStatusRef.current = currentStatus
@@ -144,6 +146,7 @@ export function LogProvider({
     // in between is missing, and the map grows for every ticket visited in the tab. Only the
     // ticket being left is dropped; entries for other tickets belong to their own providers.
     return () => {
+      generationRef.current += 1
       if (ticketId) clearServerLogCache(ticketId)
     }
   }, [ticketId])
@@ -258,9 +261,15 @@ export function LogProvider({
     if (loadingScopeKeysRef.current.has(scopeKey)) return
 
     if (options.showLoading !== false) setScopeLoading(scopeKey, true)
+    const generation = generationRef.current
     fetch(getServerLogsUrl(ticketId, normalizedScope))
       .then(res => res.ok ? res.json() : [])
       .then((raw: unknown) => {
+        // A fetch can outlive the provider that started it. Writing to the module-scope cache here
+        // would put back the entries the cleanup above just dropped, and returning to the ticket
+        // would then serve that stale snapshot instead of fetching again — the leak this whole
+        // effect exists to close, reopened for any ticket left mid-request.
+        if (generationRef.current !== generation) return
         const payload = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
         const serverLogs = Array.isArray(raw)
           ? raw as Array<Record<string, unknown>>
@@ -273,6 +282,7 @@ export function LogProvider({
         // Ignore network failures; cached logs remain available.
       })
       .finally(() => {
+        if (generationRef.current !== generation) return
         setScopeLoading(scopeKey, false)
       })
   }, [applyServerLogs, setScopeLoading, ticketId])

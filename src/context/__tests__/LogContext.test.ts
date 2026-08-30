@@ -714,7 +714,10 @@ describe('LogProvider', () => {
     await flushMicrotasks()
     const fetchCallsWhileMounted = vi.mocked(globalThis.fetch).mock.calls.length
     expect(fetchCallsWhileMounted).toBeGreaterThan(0)
-    expect(serverLogCache.size).toBe(fetchCallsWhileMounted + 1)
+    // Asserted by key rather than by count: how many scopes a mount loads is an implementation
+    // detail, but which ticket owns an entry is the thing under test.
+    expect([...serverLogCache.keys()].some((key) => key.startsWith(`${TEST.ticketId}|`))).toBe(true)
+    expect(serverLogCache.has(otherKey)).toBe(true)
 
     view.unmount()
 
@@ -722,6 +725,56 @@ describe('LogProvider', () => {
 
     // And the point of dropping it: coming back goes to the server instead of replaying the
     // snapshot taken on the way out, which would be missing everything that streamed in between.
+    render(createElement(
+      LogProvider,
+      {
+        ticketId: TEST.ticketId,
+        currentStatus: 'CODING',
+        children: createElement(LogHarness),
+      },
+    ))
+
+    await flushMicrotasks()
+    expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThan(fetchCallsWhileMounted)
+  })
+
+  it('does not let a fetch that outlives the provider put the departing ticket back in the cache', async () => {
+    // The request is still in flight when the ticket is left. Its `.then` runs afterwards, and
+    // writing to the module-scope cache there would restore exactly the entries the unmount just
+    // dropped — returning to the ticket would then replay that snapshot and never ask the server.
+    let releaseFetch: (() => void) | null = null
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise((resolve) => {
+      releaseFetch = () => resolve(new Response('[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    }))
+
+    const view = render(createElement(
+      LogProvider,
+      {
+        ticketId: TEST.ticketId,
+        currentStatus: 'CODING',
+        children: createElement(LogHarness),
+      },
+    ))
+
+    await flushMicrotasks()
+    const fetchCallsWhileMounted = vi.mocked(globalThis.fetch).mock.calls.length
+    expect(fetchCallsWhileMounted).toBeGreaterThan(0)
+    expect(releaseFetch).not.toBeNull()
+
+    view.unmount()
+
+    await act(async () => {
+      releaseFetch?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect([...serverLogCache.keys()].filter((key) => key.startsWith(`${TEST.ticketId}|`))).toEqual([])
+
+    // Which is what makes the return trip hit the server rather than a snapshot from before.
     render(createElement(
       LogProvider,
       {

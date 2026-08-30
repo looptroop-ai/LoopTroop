@@ -80,12 +80,11 @@ function scheduleAiDetailsInvalidation(ticketId: string) {
   const currentTimer = aiDetailsInvalidationTimers.get(ticketId)
   if (currentTimer) clearTimeout(currentTimer)
   const timer = setTimeout(() => {
-    // Retire this timer's own entry only. After a reschedule the slot belongs to a newer timer,
-    // and deleting that entry would leave it untracked: nothing could cancel it, and it would
-    // invalidate a ticket that has since been left or reused.
-    if (aiDetailsInvalidationTimers.get(ticketId) === timer) {
-      aiDetailsInvalidationTimers.delete(ticketId)
-    }
+    // Act only while this timer still owns the slot. After a reschedule the slot belongs to a newer
+    // timer: retiring its entry would leave it untracked, and invalidating here would hit a ticket
+    // that has since been left or reused. Both halves of the callback are behind the same check.
+    if (aiDetailsInvalidationTimers.get(ticketId) !== timer) return
+    aiDetailsInvalidationTimers.delete(ticketId)
     queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
   }, AI_DETAILS_INVALIDATION_DELAY_MS)
   aiDetailsInvalidationTimers.set(ticketId, timer)
@@ -93,14 +92,17 @@ function scheduleAiDetailsInvalidation(ticketId: string) {
 
 /**
  * The timer map is module scope, so a pending invalidation outlives the hook that scheduled it.
- * Clearing the handle — not just the map entry — is what stops it firing against a ticket that is
- * no longer mounted. Nothing is lost by cancelling: a remounted ticket refetches its AI details.
+ * Leaving a ticket therefore has to settle the debounce rather than abandon it: the handle is
+ * cleared so nothing fires against an unmounted ticket, and the invalidation the stream had already
+ * earned runs immediately instead. Dropping it would not be free — `useTicketAiDetails` holds its
+ * data for 30s, so returning inside that window would show metrics from before the event.
  */
-function cancelAiDetailsInvalidation(ticketId: string) {
+function flushAiDetailsInvalidation(ticketId: string) {
   const timer = aiDetailsInvalidationTimers.get(ticketId)
   if (!timer) return
   clearTimeout(timer)
   aiDetailsInvalidationTimers.delete(ticketId)
+  queryClient.invalidateQueries({ queryKey: getTicketAiDetailsQueryKey(ticketId) })
 }
 
 export function useSSE({ ticketId, onEvent }: SSEOptions) {
@@ -413,11 +415,11 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   }, [connect])
 
   // Deliberately keyed on the ticket rather than folded into the connect cleanup below: that one
-  // also runs on every reconnect, and cancelling a pending invalidation there would drop a refresh
-  // the stream had already earned. This fires only when the ticket changes or the hook unmounts.
+  // also runs on every reconnect, and settling a pending invalidation there would turn every
+  // reconnect into a refetch. This fires only when the ticket changes or the hook unmounts.
   useEffect(() => {
     if (!ticketId) return
-    return () => cancelAiDetailsInvalidation(ticketId)
+    return () => flushAiDetailsInvalidation(ticketId)
   }, [ticketId])
 
   useEffect(() => {

@@ -12,11 +12,13 @@
  * - One test per workspace surface rather than one test overall. The workspace is routed by
  *   status, so a surface only exists for the status that renders it. Both tickets in a test
  *   therefore share a status, which is the only situation where that surface can leak at all.
- * - Every assertion anchors on state that nothing else resets. Most surfaces also have a restore
- *   effect that assigns unconditionally once the new ticket's query resolves, so a leaked draft
- *   would be overwritten a tick later and the assertion would pass whether or not the subtree was
- *   remounted. Open dialogs, skip forms, edit buffers, selected versions and error overlays have
- *   no such effect: only the remount clears them, so only they can fail when the key is removed.
+ * - Each test carries at least one assertion that only the remount can satisfy, and a comment
+ *   naming it. The others are there to describe the surface, not to guard it: several drafts also
+ *   have a restore effect that reassigns once the new ticket's query resolves, or a per-ticket
+ *   reset, so a leak would be corrected a tick later and the assertion would pass with or without
+ *   the key. Open dialogs, skip forms, edit buffers, selected versions and error overlays have no
+ *   such effect. Every test here was checked by removing the key from `App` and confirming it fails
+ *   on the assertion its comment names.
  *
  * Tickets are switched by dispatching `SELECT_TICKET`, which is what the board and the navigator
  * do, and which works while a modal dialog holds the focus trap.
@@ -448,6 +450,8 @@ describe('cross-ticket state isolation', () => {
     await waitFor(() => {
       expect(screen.getByPlaceholderText('Type your answer here.')).toHaveValue('')
     })
+    // Load-bearing: the open skip-all dialog. The empty answer above is not — `useBatchSubmit`
+    // clears its draft maps when the ticket id changes, so that line passes either way.
     expect(screen.queryByText('Skip Remaining Interview Questions')).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(SKIP_REASON)).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(INTERVIEW_ANSWER)).not.toBeInTheDocument()
@@ -484,6 +488,8 @@ describe('cross-ticket state isolation', () => {
     // absent. Waiting on a control instead would be circular: which controls the panel shows is
     // exactly what a leaked skip form changes.
     await screen.findByText(SECOND_QUESTION)
+    // Load-bearing: the open skip form. It belongs to the question panel's own state, which nothing
+    // reassigns per ticket.
     expect(screen.queryByLabelText(/Skip reason/)).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(SKIP_REASON)).not.toBeInTheDocument()
     // The description tabs are always on screen; what must not survive is the raw mode chosen on
@@ -511,6 +517,9 @@ describe('cross-ticket state isolation', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Manual QA version')).toBeInTheDocument()
     })
+    // Load-bearing: the failure description. `ManualQAView` keys its draft by version and checklist
+    // hash, with no ticket id, so both tickets here produce the same key and its restore effect
+    // returns early — without the remount the first ticket's draft simply stays on screen.
     expect(screen.queryByDisplayValue(QA_OBSERVATION)).not.toBeInTheDocument()
     expect(screen.queryByPlaceholderText(QA_OBSERVATION_PLACEHOLDER)).not.toBeInTheDocument()
   })
@@ -534,6 +543,8 @@ describe('cross-ticket state isolation', () => {
 
     await openTicket(first)
 
+    // Load-bearing: the version is back to the first ticket's live round. Nothing resets the picker
+    // per ticket, so without the remount it would still be showing the version chosen on the second.
     await waitFor(() => {
       expect(screen.getByLabelText('Manual QA version')).toHaveValue('2')
     })
@@ -561,6 +572,8 @@ describe('cross-ticket state isolation', () => {
     // Matched by text, not by role: a leaked dialog is modal, and every role query outside it would
     // come back empty for that reason rather than because the view had re-rendered.
     await screen.findByText(SECOND_ERROR_MESSAGE)
+    // Load-bearing: the retry note. It is a local buffer inside a dialog the error view opens on
+    // demand, so only the remount closes it.
     expect(screen.queryByPlaceholderText(RETRY_NOTE_PLACEHOLDER)).not.toBeInTheDocument()
     expect(screen.queryByDisplayValue(RETRY_NOTE)).not.toBeInTheDocument()
   })

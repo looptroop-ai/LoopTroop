@@ -62,6 +62,15 @@ export function getBatchKey(batch: PersistedInterviewBatch | null | undefined) {
   return [batch.source, batch.roundNumber ?? 0, batch.batchNumber].join(':')
 }
 
+/**
+ * Empty a draft map without forcing a re-render when it is already empty. Deliberately not
+ * `setX({})`: that allocates a new object every time, so the reset below would re-render on every
+ * mount as well as on the ticket changes it is there for.
+ */
+function clearMap<T extends Record<string, unknown>>(current: T): T {
+  return Object.keys(current).length === 0 ? current : ({} as T)
+}
+
 export function useBatchSubmit(ticketId: string) {
   const { mutateAsync: submitBatchMutation, isPending: isSubmitting } = useSubmitBatch()
   const { mutateAsync: skipInterviewMutation, isPending: isSkipping } = useSkipInterview()
@@ -90,6 +99,17 @@ export function useBatchSubmit(ticketId: string) {
     restoredDraftRef.current = false
     lastSavedSnapshotRef.current = ''
     latestDraftSnapshotRef.current = null
+    // The in-memory maps are keyed by source/round/batch with no ticket in the key, so two tickets
+    // sitting at the same interview position share a key. Emptying them here is what stops a submit
+    // on the newly opened ticket from posting the previous ticket's answers — `handleSubmitBatch`
+    // and `handleConfirmSkipAll` read these maps directly, without waiting for a restore. It is
+    // also what makes the "keep what is on screen" fallback in the restore effect below safe.
+    // App.tsx remounts the dashboard per ticket so each ticket already gets a fresh hook; this
+    // keeps the guarantee from depending on that.
+    setDraftAnswers(clearMap)
+    setSkippedQuestions(clearMap)
+    setBatchSelectedOptions(clearMap)
+    setBatchSkipReasons(clearMap)
     setAutosaveState('pending')
     setLastAutosavedAt(null)
   }, [ticketId])
@@ -100,6 +120,11 @@ export function useBatchSubmit(ticketId: string) {
     // Only ever restore this ticket's own payload. The dashboard is remounted per ticket, but a
     // payload held from the previous ticket while the new query is still in flight would otherwise
     // be applied here and then autosaved onto the ticket now on screen.
+    //
+    // This fails closed on purpose: an unstamped payload restores nothing, so `restoredDraftRef`
+    // stays false and autosave stays off rather than saving over whatever is on disk. Every payload
+    // that reaches here through `fetchTicketUIState` carries the id of the ticket it was requested
+    // for, so the only way to trip that is to hand the hook a payload from somewhere else.
     if (persistedDrafts.ticketId !== ticketId) return
 
     const persisted = persistedDrafts.data
@@ -107,16 +132,18 @@ export function useBatchSubmit(ticketId: string) {
       const persistedSkippedQuestions = persisted?.skippedQuestions
         ? deserializeSkipped(persisted.skippedQuestions)
         : {}
-      // Assigned unconditionally: an absent collection means "nothing saved for this ticket",
-      // which has to clear the surface rather than leave whatever it happened to hold.
-      setDraftAnswers(persisted?.draftAnswers ?? {})
-      setSkippedQuestions(persistedSkippedQuestions)
-      setBatchSelectedOptions(
+      // An absent collection means "nothing saved for this ticket", so keep what is on screen: the
+      // ticket change above emptied these maps, which leaves only answers the user has typed on
+      // this ticket while the query was still in flight. The baseline snapshot below still records
+      // what is actually on disk, so that typing reads as unsaved and the next autosave stores it.
+      setDraftAnswers((current) => persisted?.draftAnswers ?? current)
+      setSkippedQuestions((current) => (persisted?.skippedQuestions ? persistedSkippedQuestions : current))
+      setBatchSelectedOptions((current) =>
         persisted?.selectedOptions
           ? removeSkippedSelectedOptions(persisted.selectedOptions, persistedSkippedQuestions)
-          : {},
+          : current,
       )
-      setBatchSkipReasons(persisted?.skipReasons ?? {})
+      setBatchSkipReasons((current) => persisted?.skipReasons ?? current)
 
       const snapshot: PersistedInterviewDrafts = {
         draftAnswers: persisted?.draftAnswers ?? {},
@@ -218,6 +245,11 @@ export function useBatchSubmit(ticketId: string) {
     return () => {
       window.removeEventListener('pagehide', flushLatest)
       window.removeEventListener('beforeunload', flushLatest)
+      // Leaving the ticket cancels the 350ms autosave debounce mid-flight, so an answer typed just
+      // before the switch would otherwise be dropped with no save and no warning. Flushing here
+      // stores it against the ticket it was typed on — `ticketId` is the one this effect captured,
+      // not the one now on screen.
+      flushLatest()
     }
   }, [ticketId])
 

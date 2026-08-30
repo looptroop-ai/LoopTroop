@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, statSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
-import { safeAtomicWrite } from '../atomicWrite'
+import { dirname, join } from 'path'
+import { makeAtomicTmpPath, parseAtomicTmpPath, safeAtomicWrite } from '../atomicWrite'
 import { safeAtomicAppend } from '../atomicAppend'
 import { recoverOrphanTmpFiles, fixTrailingLineCorruption } from '../recovery'
 import { readJsonl, writeJsonl, appendJsonl } from '../jsonl'
@@ -39,6 +39,50 @@ describe('safeAtomicWrite', () => {
   })
 
   /**
+   * The temp name is a contract with `recoverOrphanTmpFiles`, which has to
+   * reverse it to know what an orphan was on its way to becoming. They drifted
+   * apart once already.
+   */
+  it('names temp files so recovery can derive the target back', () => {
+    const filePath = join(TEST_DIR, 'ticket.meta.json')
+    expect(parseAtomicTmpPath(makeAtomicTmpPath(filePath))).toBe(filePath)
+  })
+
+  it('does not claim a name it did not write', () => {
+    expect(parseAtomicTmpPath(join(TEST_DIR, 'ticket.meta.json.tmp'))).toBeNull()
+    expect(parseAtomicTmpPath(join(TEST_DIR, 'ticket.meta.json'))).toBeNull()
+  })
+
+  describe.skipIf(process.platform === 'win32')('a requested POSIX mode', () => {
+    it('is in place before the file appears, not chmodded afterwards', () => {
+      const filePath = join(TEST_DIR, 'receipt.json')
+      safeAtomicWrite(filePath, '{}\n', { mode: 0o600 })
+      expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    })
+
+    it('overrides the mode an existing file carries', () => {
+      const filePath = join(TEST_DIR, 'widened.json')
+      writeFileSync(filePath, '{}\n', { encoding: 'utf-8', mode: 0o644 })
+      safeAtomicWrite(filePath, '{"v":2}\n', { mode: 0o600 })
+      expect(statSync(filePath).mode & 0o777).toBe(0o600)
+    })
+
+    /**
+     * A silently umask-moded checkpoint defeats the point of asking for a mode,
+     * so the failure is the write's failure — and the target keeps what it had.
+     */
+    it('fails the write and leaves nothing behind when it cannot be applied', () => {
+      const filePath = join(TEST_DIR, 'unmodeable.json')
+      writeFileSync(filePath, 'original', 'utf-8')
+
+      expect(() => safeAtomicWrite(filePath, 'replacement', { mode: -1 })).toThrow()
+
+      expect(readFileSync(filePath, 'utf-8')).toBe('original')
+      expect(readdirSync(TEST_DIR).filter((name) => name.toLowerCase().endsWith('.tmp'))).toEqual([])
+    })
+  })
+
+  /**
    * Windows refuses to rename over a file another process still has open, and
    * reports it as EPERM, EACCES or EBUSY depending on how the holder opened it.
    * A published-install smoke hit exactly that renaming `daemon.json`.
@@ -66,8 +110,8 @@ describe('safeAtomicWrite', () => {
       }
     }
 
-    function windowsDeps(rename: (from: string, to: string) => void, waits: number[]) {
-      return { platform: 'win32' as NodeJS.Platform, rename, wait: (ms: number) => { waits.push(ms) } }
+    function windowsOptions(rename: (from: string, to: string) => void, waits: number[]) {
+      return { deps: { platform: 'win32' as NodeJS.Platform, rename, wait: (ms: number) => { waits.push(ms) } } }
     }
 
     it('succeeds without waiting when the rename works first time', () => {
@@ -75,7 +119,7 @@ describe('safeAtomicWrite', () => {
       const waits: number[] = []
       const flaky = flakyRename(0, 'EPERM')
 
-      safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits))
+      safeAtomicWrite(filePath, 'content', windowsOptions(flaky.rename, waits))
 
       expect(readFileSync(filePath, 'utf-8')).toBe('content')
       expect(waits).toEqual([])
@@ -86,7 +130,7 @@ describe('safeAtomicWrite', () => {
       const waits: number[] = []
       const flaky = flakyRename(3, 'EBUSY')
 
-      safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits))
+      safeAtomicWrite(filePath, 'content', windowsOptions(flaky.rename, waits))
 
       expect(readFileSync(filePath, 'utf-8')).toBe('content')
       expect(waits).toEqual([50, 50, 50])
@@ -100,7 +144,7 @@ describe('safeAtomicWrite', () => {
       const waits: number[] = []
       const flaky = flakyRename(Number.POSITIVE_INFINITY, 'EACCES')
 
-      expect(() => safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits)))
+      expect(() => safeAtomicWrite(filePath, 'content', windowsOptions(flaky.rename, waits)))
         .toThrow(/EACCES/)
 
       expect(flaky.attempts).toHaveLength(10)
@@ -116,7 +160,7 @@ describe('safeAtomicWrite', () => {
       const waits: number[] = []
       const flaky = flakyRename(Number.POSITIVE_INFINITY, 'ENOSPC')
 
-      expect(() => safeAtomicWrite(filePath, 'content', windowsDeps(flaky.rename, waits)))
+      expect(() => safeAtomicWrite(filePath, 'content', windowsOptions(flaky.rename, waits)))
         .toThrow(/ENOSPC/)
 
       // Waiting 500ms to report a full disk helps nobody.
@@ -130,9 +174,11 @@ describe('safeAtomicWrite', () => {
       const flaky = flakyRename(1, 'EPERM')
 
       expect(() => safeAtomicWrite(filePath, 'content', {
-        platform: 'linux',
-        rename: flaky.rename,
-        wait: (ms: number) => { waits.push(ms) },
+        deps: {
+          platform: 'linux',
+          rename: flaky.rename,
+          wait: (ms: number) => { waits.push(ms) },
+        },
       })).toThrow(/EPERM/)
 
       expect(flaky.attempts).toHaveLength(1)
@@ -171,25 +217,124 @@ describe('safeAtomicAppend', () => {
 })
 
 describe('recoverOrphanTmpFiles', () => {
-  it('promotes orphan .tmp files', () => {
-    const tmpFile = join(TEST_DIR, 'data.json.tmp')
-    writeFileSync(tmpFile, '{"key": "value"}', 'utf-8')
+  /** A leftover from `safeAtomicWrite`, named the way it names them. */
+  function orphan(targetPath: string, content: string): string {
+    const tmpPath = makeAtomicTmpPath(targetPath)
+    mkdirSync(dirname(tmpPath), { recursive: true })
+    writeFileSync(tmpPath, content, 'utf-8')
+    return tmpPath
+  }
+
+  it('promotes an interrupted write under its real name', () => {
+    const target = join(TEST_DIR, 'data.json')
+    const tmpFile = orphan(target, '{"key": "value"}')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
-    expect(recovered).toContain(join(TEST_DIR, 'data.json'))
-    expect(existsSync(join(TEST_DIR, 'data.json'))).toBe(true)
+
+    expect(recovered).toContain(target)
+    expect(readFileSync(target, 'utf-8')).toBe('{"key": "value"}')
     expect(existsSync(tmpFile)).toBe(false)
   })
 
   it('handles nested .tmp files', () => {
-    const nestedDir = join(TEST_DIR, 'sub')
-    mkdirSync(nestedDir, { recursive: true })
-    writeFileSync(join(nestedDir, 'file.txt.tmp'), 'content', 'utf-8')
+    const target = join(TEST_DIR, 'sub', 'file.txt')
+    orphan(target, 'content')
 
     const recovered = recoverOrphanTmpFiles(TEST_DIR)
-    expect(recovered).toContain(join(nestedDir, 'file.txt'))
+
+    expect(recovered).toContain(target)
+    expect(readFileSync(target, 'utf-8')).toBe('content')
   })
 
+  /**
+   * The pre-upgrade writer used a plain `${target}.tmp`, whose target cannot be
+   * derived from the name: `report.json.tmp` is as consistent with a crashed
+   * write of `report.json` as with a file someone named that on purpose. The
+   * old recovery guessed, and stripping four characters from the current suffix
+   * is what produced `ticket.meta.json.4821.a1b2c3` — never anything's target.
+   */
+  it('leaves a legacy-suffix temp file alone rather than guessing its target', () => {
+    const legacy = join(TEST_DIR, 'data.json.tmp')
+    writeFileSync(legacy, '{"key": "value"}', 'utf-8')
+
+    const recovered = recoverOrphanTmpFiles(TEST_DIR)
+
+    expect(recovered).toEqual([])
+    expect(existsSync(legacy)).toBe(true)
+    expect(existsSync(join(TEST_DIR, 'data.json'))).toBe(false)
+  })
+
+  it('never replaces a target that already exists', () => {
+    const target = join(TEST_DIR, 'data.json')
+    writeFileSync(target, '{"complete": true}', 'utf-8')
+    const tmpFile = orphan(target, '{"partial": true}')
+
+    const recovered = recoverOrphanTmpFiles(TEST_DIR)
+
+    expect(recovered).toEqual([])
+    expect(readFileSync(target, 'utf-8')).toBe('{"complete": true}')
+    // Cleared away, or `.ticket/**/*.tmp` accumulates for the life of the ticket.
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('discards a temp file whose JSON never finished being written', () => {
+    const target = join(TEST_DIR, 'ticket.meta.json')
+    const tmpFile = orphan(target, '{"id": "abc", "titl')
+
+    const recovered = recoverOrphanTmpFiles(TEST_DIR)
+
+    expect(recovered).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('discards a temp file that is not a readable YAML document', () => {
+    const target = join(TEST_DIR, 'prd.yaml')
+    const tmpFile = orphan(target, 'artifact: prd\n  broken: [unclosed\n')
+
+    const recovered = recoverOrphanTmpFiles(TEST_DIR)
+
+    expect(recovered).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  it('promotes a YAML temp file that reads back as a document', () => {
+    const target = join(TEST_DIR, 'interview.yaml')
+    orphan(target, 'artifact: interview\nquestions: []\n')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
+  })
+
+  it('discards an empty temp file', () => {
+    const target = join(TEST_DIR, 'notes.txt')
+    const tmpFile = orphan(target, '')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toEqual([])
+    expect(existsSync(target)).toBe(false)
+    expect(existsSync(tmpFile)).toBe(false)
+  })
+
+  /**
+   * A half-written final line is the expected shape of an interrupted append,
+   * and repairing it is `fixTrailingLineCorruption`'s job — which
+   * `recoverTicketRuntimeArtifacts` runs immediately after this, on these files.
+   */
+  it('promotes a JSONL temp file with a truncated last line', () => {
+    const target = join(TEST_DIR, 'execution.jsonl')
+    orphan(target, '{"a":1}\n{"b":2}\n{"c":')
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
+  })
+
+  it('recognises the suffix case-insensitively, for Windows', () => {
+    const target = join(TEST_DIR, 'data.json')
+    const tmpFile = orphan(target, '{"key": "value"}')
+    const upperCased = `${tmpFile.slice(0, -4)}.TMP`
+    renameSync(tmpFile, upperCased)
+
+    expect(recoverOrphanTmpFiles(TEST_DIR)).toContain(target)
+  })
 })
 
 describe('fixTrailingLineCorruption', () => {

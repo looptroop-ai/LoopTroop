@@ -24,6 +24,39 @@ const RENAME_ATTEMPTS = 10
 const RENAME_RETRY_DELAY_MS = 50
 
 /**
+ * The temp-file naming contract, in one place.
+ *
+ * `${target}.${pid}.${12 hex}.tmp`. The pid and the random half both matter: a
+ * fixed `.tmp` collides when two processes write the same target, and one
+ * rename then clobbers the other's partial file.
+ *
+ * Startup recovery has to reverse this to know what an orphan temp was on its
+ * way to becoming, so the parser lives beside the builder. A private regex on
+ * the recovery side is how the two drifted apart in the first place — it
+ * stripped four characters and promoted `ticket.meta.json.4821.a1b2c3` as a
+ * finished document.
+ */
+const ATOMIC_TMP_SUFFIX = '.tmp'
+const ATOMIC_TMP_RANDOM_BYTES = 6
+/** Case-insensitive on the suffix and the random half, for Windows. */
+const ATOMIC_TMP_PATTERN = new RegExp(`^(.+)\\.(\\d+)\\.([0-9a-f]{${ATOMIC_TMP_RANDOM_BYTES * 2}})\\.tmp$`, 'i')
+
+/** The temp path `safeAtomicWrite` will write for `target`. */
+export function makeAtomicTmpPath(target: string): string {
+  return `${target}.${process.pid}.${randomBytes(ATOMIC_TMP_RANDOM_BYTES).toString('hex')}${ATOMIC_TMP_SUFFIX}`
+}
+
+/**
+ * The target a temp path was written for, or `null` when the name was not
+ * produced by `makeAtomicTmpPath` — including the pre-upgrade `${target}.tmp`,
+ * whose target is genuinely underivable from the name alone.
+ */
+export function parseAtomicTmpPath(tmpPath: string): string | null {
+  const match = ATOMIC_TMP_PATTERN.exec(tmpPath)
+  return match?.[1] ?? null
+}
+
+/**
  * The platform-dependent parts, injectable so the Windows behaviour can be
  * tested somewhere other than Windows.
  */
@@ -93,14 +126,29 @@ function currentMode(filePath: string): number | null {
   }
 }
 
+export interface SafeAtomicWriteOptions {
+  /**
+   * POSIX mode for the finished file, applied to the temp file *before* the
+   * rename. A post-rename `chmod` would leave a window in which a 0600 file
+   * exists at the default umask, which for a file worth restricting is the
+   * whole exposure. Ignored on Windows, where modes are advisory.
+   *
+   * Without this, `safeAtomicWrite` only carries a mode a file already has, so
+   * a caller replacing `writeFileSync(..., { mode })` would silently widen
+   * every newly created file to the umask.
+   */
+  mode?: number
+  /** Test seam for the Windows rename behaviour. */
+  deps?: AtomicWriteDeps
+}
+
 export function safeAtomicWrite(
   filePath: string,
   content: string,
-  deps: AtomicWriteDeps = defaultDeps,
+  options: SafeAtomicWriteOptions = {},
 ): void {
-  // Unique suffix: a fixed ".tmp" collides when concurrent processes write the
-  // same target, and one rename then clobbers the other's partial file.
-  const tmpPath = `${filePath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+  const deps = options.deps ?? defaultDeps
+  const tmpPath = makeAtomicTmpPath(filePath)
   const dir = dirname(filePath)
 
   // Captured before the write so replacing a 0600 file cannot silently widen it
@@ -114,7 +162,13 @@ export function safeAtomicWrite(
     writeFileSync(tmpPath, content, 'utf-8')
     tmpCreated = true
 
-    if (existingMode !== null) {
+    // A requested mode is a requirement, not a preference: swallowing the
+    // failure is how a checkpoint that must be 0600 lands world-readable and
+    // nothing says so. The `finally` below removes the temp, so the target
+    // keeps whatever it had.
+    if (SUPPORTS_POSIX_MODES && options.mode !== undefined) {
+      chmodSync(tmpPath, options.mode)
+    } else if (existingMode !== null) {
       try { chmodSync(tmpPath, existingMode) } catch { /* best-effort */ }
     }
 

@@ -20,8 +20,12 @@ import {
 import { listOpenCodeSessionsForTicket, SessionManager } from '../../opencode/sessionManager'
 import { clearOpenCodePromptDispatchCount } from '../runOpenCodePrompt'
 import { ensureLocalGitExclude } from '../../git/repository'
-import { writeFileSync, rmSync } from 'fs'
-import { resolve } from 'path'
+import {
+  applyOpencodeStepsConfig,
+  OPENCODE_CONFIG_FILENAME,
+  restoreOpencodeStepsConfig,
+  type OpencodeStepsConfigHandle,
+} from '../../phases/execution/opencodeStepsConfig'
 import { BEAD_FINALIZATION_FAILED } from '@shared/errorCodes'
 
 const ESCAPE_CHARACTER = String.fromCharCode(27)
@@ -297,24 +301,6 @@ export async function handleMockExecutionUnsupported(
   sendEvent({ type: 'ERROR', message, codes: ['MOCK_EXECUTION_UNSUPPORTED'] })
 }
 
-const OPENCODE_STEPS_CONFIG_FILENAME = 'opencode.json'
-
-function writeOpencodeStepsConfig(worktreePath: string, steps: number): void {
-  const config = {
-    $schema: 'https://opencode.ai/config.json',
-    agent: { build: { steps } },
-  }
-  writeFileSync(resolve(worktreePath, OPENCODE_STEPS_CONFIG_FILENAME), JSON.stringify(config, null, 2) + '\n', 'utf8')
-}
-
-function removeOpencodeStepsConfig(worktreePath: string): void {
-  try {
-    rmSync(resolve(worktreePath, OPENCODE_STEPS_CONFIG_FILENAME), { force: true })
-  } catch {
-    // Ignore errors — file may have already been removed
-  }
-}
-
 export async function handleCoding(
   ticketId: string,
   context: TicketContext,
@@ -349,9 +335,25 @@ export async function handleCoding(
   }
 
   const executionSettings = resolveExecutionRuntimeSettings(context)
+  let stepsConfig: OpencodeStepsConfigHandle | null = null
+  const reportStepsConfig = (message: string) => {
+    emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', message, { source: 'system', modelId: codingModelId })
+  }
   if (executionSettings.opencodeSteps > 0) {
-    writeOpencodeStepsConfig(paths.worktreePath, executionSettings.opencodeSteps)
-    ensureLocalGitExclude(paths.worktreePath, ['/' + OPENCODE_STEPS_CONFIG_FILENAME])
+    const outcome = applyOpencodeStepsConfig({
+      ticketDir: paths.ticketDir,
+      worktreePath: paths.worktreePath,
+      steps: executionSettings.opencodeSteps,
+      report: reportStepsConfig,
+    })
+    if (outcome.applied) {
+      stepsConfig = outcome.handle
+      // Only a file this run created is ours to hide from git. A project that
+      // ships its own `opencode.json` has already decided how it is tracked.
+      if (outcome.handle.created) {
+        ensureLocalGitExclude(paths.worktreePath, ['/' + OPENCODE_CONFIG_FILENAME])
+      }
+    }
   }
 
   try {
@@ -764,8 +766,8 @@ export async function handleCoding(
     sendEvent({ type: 'BEAD_COMPLETE' })
   }
   } finally {
-    if (executionSettings.opencodeSteps > 0) {
-      removeOpencodeStepsConfig(paths.worktreePath)
+    if (stepsConfig) {
+      restoreOpencodeStepsConfig(stepsConfig, reportStepsConfig)
     }
   }
     },

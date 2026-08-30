@@ -9,8 +9,12 @@ import {
   readSync,
   ftruncateSync,
   closeSync,
+  linkSync,
+  unlinkSync,
 } from 'fs'
-import { join } from 'path'
+import { extname, join } from 'path'
+import * as jsYaml from 'js-yaml'
+import { parseAtomicTmpPath } from './atomicWrite'
 
 /** Files below this threshold are loaded entirely into memory (safe for Node's string limit). */
 const MAX_DIRECT_READ_BYTES = 256 * 1024 * 1024 // 256 MB
@@ -19,7 +23,122 @@ const SCAN_CHUNK_SIZE = 8 * 1024 // 8 KB
 /** Maximum bytes to scan backwards when looking for the start of the last line. */
 const MAX_LAST_LINE_SCAN = 4 * 1024 * 1024 // 4 MB
 
-// Scan for orphan .tmp files and promote them
+/**
+ * Filesystems that do not implement `link` at all, or refuse it for this
+ * caller. Only for these does promotion fall back to the check-then-rename
+ * that `link` exists to avoid.
+ */
+const LINK_UNSUPPORTED_CODES: ReadonlySet<string> = new Set([
+  'EPERM', 'EACCES', 'ENOSYS', 'EXDEV', 'EOPNOTSUPP', 'ENOTSUP', 'EMLINK',
+])
+
+/**
+ * Whether a leftover temp file is worth putting back.
+ *
+ * A temp file exists precisely because a write did not finish, so its content
+ * is the one thing that cannot be assumed. Promoting on the strength of the
+ * name alone replaces nothing with a document that stops mid-sentence — and it
+ * looks complete afterwards, because the name is the only thing anyone sees.
+ */
+function describeUnusableContent(tmpPath: string, targetPath: string): string | null {
+  let size: number
+  try {
+    size = statSync(tmpPath).size
+  } catch {
+    return 'it could not be read'
+  }
+  if (size === 0) return 'it is empty'
+  // Too large to hold as a string; the extension checks below cannot run, and
+  // a partial write of this size is a JSONL log whose tail is repaired by
+  // `fixTrailingLineCorruption` once the file is back under its own name.
+  if (size > MAX_DIRECT_READ_BYTES) return null
+
+  const extension = extname(targetPath).toLowerCase()
+  if (extension === '.json') {
+    try {
+      JSON.parse(readFileSync(tmpPath, 'utf-8'))
+    } catch {
+      return 'it is not readable JSON'
+    }
+    return null
+  }
+  if (extension === '.yaml' || extension === '.yml') {
+    try {
+      jsYaml.load(readFileSync(tmpPath, 'utf-8'))
+    } catch {
+      return 'it is not a readable YAML document'
+    }
+    return null
+  }
+  // `.jsonl` deliberately gets the non-empty check only: a truncated final line
+  // is the expected shape of an interrupted append, and repairing it is
+  // `fixTrailingLineCorruption`'s job, running right after this on the same
+  // files.
+  return null
+}
+
+function discardTmpFile(tmpPath: string, reason: string): void {
+  try {
+    unlinkSync(tmpPath)
+    console.warn(`[recovery] Discarded temp file ${tmpPath}: ${reason}`)
+  } catch (error) {
+    console.error(`[recovery] Failed to remove temp file ${tmpPath} (${reason}):`, error)
+  }
+}
+
+/**
+ * Puts a temp file back under its real name, refusing to replace a target that
+ * already exists.
+ *
+ * "Check that it is missing, then rename" is a race, and POSIX `rename`
+ * replaces silently — so a complete document can be overwritten by a partial
+ * one written before the crash. Node exposes no `renameat2(RENAME_NOREPLACE)`,
+ * which leaves `link` as the portable primitive that fails rather than
+ * replaces. Temp and target always share a directory, so they are always on one
+ * filesystem, which is what makes `link` available at all.
+ */
+function promoteTmpFile(tmpPath: string, targetPath: string): boolean {
+  try {
+    linkSync(tmpPath, targetPath)
+    try {
+      unlinkSync(tmpPath)
+    } catch (error) {
+      console.warn(`[recovery] Promoted ${targetPath} but could not remove ${tmpPath}:`, error)
+    }
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') {
+      discardTmpFile(tmpPath, 'its target already exists')
+      return false
+    }
+    if (code === undefined || !LINK_UNSUPPORTED_CODES.has(code)) {
+      console.error(`[recovery] Failed to promote ${tmpPath}:`, error)
+      return false
+    }
+    if (existsSync(targetPath)) {
+      discardTmpFile(tmpPath, 'its target already exists')
+      return false
+    }
+    try {
+      renameSync(tmpPath, targetPath)
+      return true
+    } catch (renameError) {
+      console.error(`[recovery] Failed to promote ${tmpPath}:`, renameError)
+      return false
+    }
+  }
+}
+
+/**
+ * Puts back writes that a crash interrupted, and clears away the ones it cannot.
+ *
+ * Only names `safeAtomicWrite` produced are recognised. The pre-upgrade writer
+ * used a plain `${target}.tmp`, whose target cannot be derived — a
+ * `report.json.tmp` is as consistent with `report.json` as with a file someone
+ * named `report.json.tmp` on purpose — so those are reported and left alone
+ * rather than guessed at.
+ */
 export function recoverOrphanTmpFiles(rootDir: string): string[] {
   const recovered: string[] = []
 
@@ -31,14 +150,40 @@ export function recoverOrphanTmpFiles(rootDir: string): string[] {
         const fullPath = join(dir, entry.name)
         if (entry.isDirectory()) {
           scanDir(fullPath)
-        } else if (entry.name.endsWith('.tmp')) {
-          const targetPath = fullPath.slice(0, -4) // remove .tmp
+          continue
+        }
+        if (!entry.isFile()) continue
+        if (!entry.name.toLowerCase().endsWith('.tmp')) continue
+
+        const targetPath = parseAtomicTmpPath(fullPath)
+        if (targetPath === null) {
+          // Left in place: the pre-upgrade crash that produced it is exactly
+          // the case someone would want to look at, and vaulting it silently
+          // is worse than either promoting it or saying so.
+          let modified = 'an unknown time'
           try {
-            renameSync(fullPath, targetPath)
-            recovered.push(targetPath)
-          } catch (err) {
-            console.error(`[recovery] Failed to promote ${fullPath}:`, err)
-          }
+            modified = statSync(fullPath).mtime.toISOString()
+          } catch { /* reported without it */ }
+          console.warn(
+            `[recovery] Ignoring ${fullPath} (last modified ${modified}): its name predates the ` +
+              'current atomic-write suffix, so the file it was meant to become cannot be derived',
+          )
+          continue
+        }
+
+        if (existsSync(targetPath)) {
+          discardTmpFile(fullPath, 'its target already exists')
+          continue
+        }
+
+        const unusable = describeUnusableContent(fullPath, targetPath)
+        if (unusable !== null) {
+          discardTmpFile(fullPath, `${unusable}, so it cannot be the finished ${targetPath}`)
+          continue
+        }
+
+        if (promoteTmpFile(fullPath, targetPath)) {
+          recovered.push(targetPath)
         }
       }
     } catch {

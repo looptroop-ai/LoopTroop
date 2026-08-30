@@ -14,6 +14,7 @@ import {
   initializeStartupState,
 } from './startupState'
 import { fixTrailingLineCorruption, recoverOrphanTmpFiles } from './io/recovery'
+import { restoreInterruptedOpencodeStepsConfig } from './phases/execution/opencodeStepsConfig'
 import { rebuildTicketRuntimeProjections } from './storage/ticketRuntimeProjection'
 import { getErrorMessage } from '@shared/typeGuards'
 import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
@@ -23,12 +24,18 @@ import { resolveAiQuestionSettings } from './workflow/phases/helpers'
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
   let repairedExecutionLogs = 0
+  let restoredOpencodeConfigs = 0
 
   for (const ticket of listTickets()) {
     const paths = getTicketPaths(ticket.id)
     if (!paths) continue
 
     recoveredTmpFiles += recoverOrphanTmpFiles(paths.ticketDir).length
+    // A coding run killed outright never reached the step that puts the
+    // project's own `opencode.json` back, so the next boot does it instead.
+    if (restoreInterruptedOpencodeStepsConfig(paths.ticketDir)) {
+      restoredOpencodeConfigs += 1
+    }
     for (const logPath of [paths.executionLogPath, paths.debugLogPath, paths.aiLogPath]) {
       if (fixTrailingLineCorruption(logPath)) {
         repairedExecutionLogs += 1
@@ -40,6 +47,7 @@ export function recoverTicketRuntimeArtifacts() {
   return {
     recoveredTmpFiles,
     repairedExecutionLogs,
+    restoredOpencodeConfigs,
     rebuiltProjections,
   }
 }
@@ -225,7 +233,7 @@ export async function startupSequence(): Promise<void> {
 
   console.log('[startup] Step 2: Recover ticket runtime artifacts')
   const recovery = recoverTicketRuntimeArtifacts()
-  console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, rebuilt ${recovery.rebuiltProjections} state projections`)
+  console.log(`[startup] Recovered ${recovery.recoveredTmpFiles} orphan temp files, repaired ${recovery.repairedExecutionLogs} execution logs, restored ${recovery.restoredOpencodeConfigs} OpenCode configs, rebuilt ${recovery.rebuiltProjections} state projections`)
 
   console.log('[startup] Step 3: Start WAL checkpoint timer')
   startWalCheckpoint()

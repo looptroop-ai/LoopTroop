@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSaveTicketUIState, useTicket } from '@/hooks/useTickets'
 import { useSSE, type SSEConnectionState } from '@/hooks/useSSE'
 import { useUI } from '@/context/useUI'
@@ -11,6 +11,8 @@ import { WorkspacePhaseSummary } from './WorkspacePhaseSummary'
 import { PendingQuestionsPanel } from '@/components/workspace/PendingQuestionsPanel'
 import { useAIQuestions } from '@/context/useAIQuestions'
 import { ResizeHandle } from './ResizeHandle'
+import { readNavWidth, writeNavWidth } from './navWidth'
+import { hasTicketRendered, markTicketRendered } from './renderedTickets'
 import { Menu, RefreshCw, X } from 'lucide-react'
 import { clearErrorTicketSeen, getErrorTicketSignature, markErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { clearNeedsInputSeen, getNeedsInputSignature, markNeedsInputSeen } from '@/lib/needsInputSeen'
@@ -199,8 +201,7 @@ export function TicketDashboard() {
     isFetching: isFetchingTicket,
   } = useTicket(ticketId)
   const { mutate: saveTicketUiState } = useSaveTicketUIState()
-  const renderedTicketIdsRef = useRef(new Set<string>())
-  const [navWidth, setNavWidth] = useState(280)
+  const [navWidth, setNavWidth] = useState(readNavWidth)
   const [isFullLogOpen, setIsFullLogOpen] = useState(false)
   const [phaseSelection, setPhaseSelection] = useState<{ ticketId: string | null; phase: string | null }>({
     ticketId: null,
@@ -230,12 +231,12 @@ export function TicketDashboard() {
   })
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false)
   const [liveUpdatesState, setLiveUpdatesState] = useState<SSEConnectionState>('connecting')
-  const isRecoverableTicketLoading = Boolean(ticketId && !ticket && renderedTicketIdsRef.current.has(ticketId))
+  const isRecoverableTicketLoading = Boolean(ticketId && !ticket && hasTicketRendered(ticketId))
   useRecoveryAutoReload(`ticket-loading:${ticketId ?? 'none'}`, isRecoverableTicketLoading)
 
   useEffect(() => {
     if (ticketId && ticket) {
-      renderedTicketIdsRef.current.add(ticketId)
+      markTicketRendered(ticketId)
     }
   }, [ticket, ticketId])
 
@@ -249,6 +250,16 @@ export function TicketDashboard() {
   )
 
   const closeMobileNav = useCallback(() => setIsMobileNavOpen(false), [])
+
+  const handleNavResize = useCallback((width: number) => {
+    setNavWidth(width)
+  }, [])
+
+  // Persisted once the drag ends rather than on every pointer move: `localStorage` writes are
+  // synchronous, and a drag produces one per `mousemove`.
+  const handleNavResizeEnd = useCallback((width: number) => {
+    writeNavWidth(width)
+  }, [])
 
   const dbStatus = ticket?.status ?? null
   const effectiveLivePhase = useMemo(() => {
@@ -724,6 +735,7 @@ export function TicketDashboard() {
             <div
               className="hidden md:block flex-shrink-0 border-r border-border overflow-hidden"
               style={{ width: navWidth }}
+              data-testid="ticket-navigator-pane"
             >
               <NavigatorPanel
                 ticketId={renderTicket.id}
@@ -741,7 +753,7 @@ export function TicketDashboard() {
               />
             </div>
             <div className="hidden md:block">
-              <ResizeHandle onResize={setNavWidth} />
+              <ResizeHandle onResize={handleNavResize} onResizeEnd={handleNavResizeEnd} />
             </div>
             {/* Active Workspace */}
             <div className="flex flex-col flex-1 overflow-hidden">

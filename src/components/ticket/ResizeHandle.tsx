@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { clampNavWidth } from './navWidth'
 
 interface ResizeHandleProps {
   onResize: (width: number) => void
+  /** Called once with the final width when the drag ends, for callers that persist it. */
+  onResizeEnd?: (width: number) => void
 }
 
-export function ResizeHandle({ onResize }: ResizeHandleProps) {
+export function ResizeHandle({ onResize, onResizeEnd }: ResizeHandleProps) {
   const isDragging = useRef(false)
+  const lastWidthRef = useRef<number | null>(null)
   const listenersRef = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null)
 
   // Clean up listeners on unmount
@@ -22,12 +26,15 @@ export function ResizeHandle({ onResize }: ResizeHandleProps) {
 
   const handleMouseDown = useCallback(() => {
     isDragging.current = true
+    lastWidthRef.current = null
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return
-      onResize(Math.max(200, Math.min(e.clientX, window.innerWidth * 0.5)))
+      const width = clampNavWidth(e.clientX)
+      lastWidthRef.current = width
+      onResize(width)
     }
 
     const handleMouseUp = () => {
@@ -37,12 +44,14 @@ export function ResizeHandle({ onResize }: ResizeHandleProps) {
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
       listenersRef.current = null
+      if (lastWidthRef.current !== null) onResizeEnd?.(lastWidthRef.current)
+      lastWidthRef.current = null
     }
 
     listenersRef.current = { move: handleMouseMove, up: handleMouseUp }
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-  }, [onResize])
+  }, [onResize, onResizeEnd])
 
   return (
     <div

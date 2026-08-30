@@ -11,6 +11,7 @@ import { INTERVIEW_BATCH_EVENT } from '@/lib/interviewBatchEvents'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { createJsonResponse } from '@/test/renderHelpers'
 import { useLogs } from '@/context/useLogContext'
+import { __renderedTicketsForTests } from '../renderedTickets'
 
 const selectedTicketId = '1:T-42'
 const dispatchMock = vi.fn()
@@ -205,6 +206,9 @@ beforeEach(() => {
   mockTicketQuery.override = null
   useRecoveryAutoReloadMock.mockReset()
   saveUiStateMutate.mockReset()
+  // Which tickets have rendered is tab-scoped by design, so it survives a mount. One test's ticket
+  // would otherwise still count as rendered in the next.
+  __renderedTicketsForTests.reset()
   vi.restoreAllMocks()
 })
 
@@ -214,6 +218,7 @@ afterEach(() => {
   mockSSEState.connectionState = 'connected'
   mockTicketQuery.override = null
   useRecoveryAutoReloadMock.mockReset()
+  localStorage.clear()
   vi.restoreAllMocks()
 })
 
@@ -427,6 +432,58 @@ describe('TicketDashboard', () => {
 
     await waitFor(() => {
       expect(useRecoveryAutoReloadMock).toHaveBeenCalledWith(`ticket-loading:${selectedTicketId}`, true)
+    })
+  })
+
+  it('still arms ticket loading recovery for a ticket returned to after a remount', async () => {
+    // Opening a different ticket remounts the dashboard (App keys it by ticket id), so the record of
+    // which tickets have already rendered cannot live in component state: coming back to a ticket
+    // whose data has since been dropped would look like a first load and never arm the reload.
+    const initialTicket = makeTicket({ status: 'CODING', id: selectedTicketId })
+    queryClient.setQueryData(['ticket', selectedTicketId], initialTicket)
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(initialTicket)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    const first = render(renderDashboardElement())
+    await waitFor(() => {
+      expect(screen.getByTestId('dashboard-header')).toHaveTextContent('CODING')
+    })
+
+    // The ticket switch away and back: a full unmount, then a fresh mount with no ticket data.
+    first.unmount()
+    useRecoveryAutoReloadMock.mockReset()
+    mockTicketQuery.override = { data: undefined }
+    render(renderDashboardElement())
+
+    await waitFor(() => {
+      expect(useRecoveryAutoReloadMock).toHaveBeenCalledWith(`ticket-loading:${selectedTicketId}`, true)
+    })
+  })
+
+  it('restores the navigator width a previous session left behind', async () => {
+    // The width is the one thing that has to outlive the per-ticket remount, so it is read from
+    // storage on mount rather than kept in state across switches.
+    localStorage.setItem('looptroop-ticket-nav-width', '420')
+    const ticket = makeTicket({ status: 'CODING', id: selectedTicketId })
+    queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(ticket)
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    renderDashboard()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-navigator-pane')).toHaveStyle({ width: '420px' })
     })
   })
 

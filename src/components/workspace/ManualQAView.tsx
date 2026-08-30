@@ -256,7 +256,12 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   }, [removedEvidenceIds, round?.evidence, uploadedEvidence])
 
   useEffect(() => {
-    if (!round || version === null) return
+    // Wait for the saved draft to arrive before deciding what this round's draft is. The query is
+    // enabled as soon as `version` is known, and committing `draftSourceKey` while it is still
+    // pending would lock the form to the round's own draft — the effect returns early on a matching
+    // key, so a saved draft resolving a moment later would be silently ignored. `isPending` is a
+    // dependency so a failed request still releases the gate and falls back to the round's draft.
+    if (!round || version === null || uiState.isPending) return
     const key = `${version}:${round.checklistHash ?? ''}`
     if (draftSourceKey === key) return
     const restored = extractSavedDraft(uiState.data?.data) ?? round.draft ?? emptyDraft()
@@ -270,7 +275,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
     setExpandedEvidenceItems(new Set())
     setOpenLinkEditors(new Set())
     setLastSavedAt(uiState.data?.updatedAt ? new Date(uiState.data.updatedAt) : null)
-  }, [draftSourceKey, round, uiState.data?.data, uiState.data?.updatedAt, version])
+  }, [draftSourceKey, round, uiState.data?.data, uiState.data?.updatedAt, uiState.isPending, version])
 
   useEffect(() => {
     latestDraftRevisionRef.current = expectedDraftRevision

@@ -1,11 +1,12 @@
 import { describe, expect, it, afterEach, vi } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Hono } from 'hono'
 import { createApp } from '../server/app'
 import { doctorCommand } from '../server/cli/doctorCommand'
 import type { UpdateStatus } from '../server/lib/updateCheck'
+import { SSE_EVENT_TYPES } from '../server/sse/eventTypes'
 import { removeTempDir } from '../server/test/tempDir'
 
 /**
@@ -149,18 +150,12 @@ const EXPECTED_ROUTES = [
 ]
 
 /**
- * The SSE event names, read from the union that declares them.
+ * Compared against `SSE_EVENT_TYPES`, which the daemon broadcasts from.
  *
- * Extracted from source because the union is a type and leaves nothing behind
- * at runtime. If the declaration is ever restructured this extraction returns
- * an empty list, which fails loudly here rather than quietly passing.
+ * A second copy on purpose. Importing the array and asserting it equals itself
+ * would pass through any edit; the point is that these names are read by the
+ * interface, so changing one has to be typed out twice, here and there.
  */
-function sseEventNames(): string[] {
-  const source = readFileSync('server/sse/eventTypes.ts', 'utf8')
-  const declaration = source.match(/export type SSEEventType\s*=\s*([^\n]+)/)?.[1] ?? ''
-  return [...declaration.matchAll(/'([^']+)'/g)].flatMap((match) => match[1] ?? []).sort()
-}
-
 const EXPECTED_SSE_EVENTS = [
   'ai_metrics',
   'app_error',
@@ -217,6 +212,8 @@ describe('wire contract', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    // Separate from `restoreAllMocks`, which does not undo `stubGlobal`.
+    vi.unstubAllGlobals()
     for (const dir of tempDirs.splice(0)) removeTempDir(dir)
     if (previousConfigDir === undefined) delete process.env.LOOPTROOP_CONFIG_DIR
     else process.env.LOOPTROOP_CONFIG_DIR = previousConfigDir
@@ -227,11 +224,7 @@ describe('wire contract', () => {
   })
 
   it('broadcasts exactly the documented SSE event names', () => {
-    const names = sseEventNames()
-
-    // The extraction failing open would make every future rename invisible.
-    expect(names.length).toBeGreaterThan(0)
-    expect(names).toEqual(EXPECTED_SSE_EVENTS)
+    expect([...SSE_EVENT_TYPES].sort()).toEqual(EXPECTED_SSE_EVENTS)
   })
 
   it('reports exactly the documented doctor check names', async () => {
@@ -240,6 +233,14 @@ describe('wire contract', () => {
     const dir = mkdtempSync(join(tmpdir(), 'looptroop-wire-'))
     tempDirs.push(dir)
     process.env.LOOPTROOP_CONFIG_DIR = dir
+
+    // An empty config directory means an empty "latest versions" cache, which
+    // is what sends `getLatestToolVersions` to npm and GitHub for all five
+    // tools. Those answers only decorate a `detail` string and cannot move a
+    // check *name*, so live requests here would buy nothing and cost a wait on
+    // `AbortSignal.timeout` on any runner without egress. `fetchVersion`
+    // swallows the rejection and keeps the name, which is all this asserts.
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('offline by design')))
 
     let captured = ''
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {

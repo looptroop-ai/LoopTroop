@@ -1384,7 +1384,11 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
    * scalar, which invents a value neither copy had.
    *
    * Asserted as it stands so that the fix is a visible edit to this file rather
-   * than a silent change in what the repair accepts.
+   * than a silent change in what the repair accepts. The fix belongs to the
+   * cleanup plan's §13.7 ("duplicate block-scalar skip gap"), which lets the
+   * block-scalar skip pass blank and comment lines through the way the
+   * nested-block skip already does. When that lands, this expectation becomes
+   * the input with the duplicate fully removed.
    */
   it('stops removing a duplicate block scalar at the first blank line', () => {
     const input = ['t: |', '  one', '', '  two', 't: |', '  one', '', '  two', 'z: 9'].join('\n')

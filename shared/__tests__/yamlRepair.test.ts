@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as jsYaml from 'js-yaml'
-import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
+import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
 
 describe.concurrent('repairYamlListDashSpace', () => {
   it.each([
@@ -1246,5 +1246,158 @@ describe('repairYamlInlineSequenceParents', () => {
   it('leaves scalar-looking parent keys unchanged', () => {
     const input = 'status: - pending'
     expect(repairYamlInlineSequenceParents(input)).toBe(input)
+  })
+})
+
+/**
+ * Written before the parsers are refactored, not after.
+ *
+ * These two areas had no focused coverage, and both are due to be edited: the
+ * union repair by the structured-output work, the duplicate-key repair by a
+ * behavioural fix to its block-scalar skip. Some of what is asserted below is
+ * current behaviour rather than desired behaviour, and is labelled where that
+ * is so — the point is that changing it has to be a deliberate edit here.
+ */
+describe.concurrent('repairYamlTypeUnionScalars', () => {
+  it.each([
+    [
+      'a quoted union as a mapping value',
+      'type: "epic" | "user_story"',
+      'type: "\\"epic\\" | \\"user_story\\""',
+    ],
+    [
+      'a quoted union as a list item',
+      ['scope:', '  - "unit" | "integration"'].join('\n'),
+      ['scope:', '  - "\\"unit\\" | \\"integration\\""'].join('\n'),
+    ],
+    [
+      'a union of more than two members',
+      'type: "a" | "b" | "c"',
+      'type: "\\"a\\" | \\"b\\" | \\"c\\""',
+    ],
+    [
+      'bare, unquoted members',
+      'type: epic | user_story',
+      'type: "epic | user_story"',
+    ],
+    [
+      'members carrying dots and subscripts',
+      'type: a.b | c[0]',
+      'type: "a.b | c[0]"',
+    ],
+    [
+      'quoted members containing spaces',
+      'type: "a b" | "c d"',
+      'type: "\\"a b\\" | \\"c d\\""',
+    ],
+  ])('quotes %s', (_, input, expected) => {
+    expect(repairYamlTypeUnionScalars(input)).toBe(expected)
+  })
+
+  it.each([
+    [
+      'a trailing comment',
+      'type: "epic" | "user_story"  # pick one',
+      'type: "\\"epic\\" | \\"user_story\\"" # pick one',
+    ],
+    [
+      'a pipe inside the trailing comment',
+      'type: "epic" | "user_story" # why | not',
+      'type: "\\"epic\\" | \\"user_story\\"" # why | not',
+    ],
+  ])('preserves %s', (_, input, expected) => {
+    expect(repairYamlTypeUnionScalars(input)).toBe(expected)
+  })
+
+  it.each([
+    ['a single member with no pipe at all', 'type: "epic"'],
+    ['a trailing pipe with nothing after it', 'type: "epic" |'],
+    ['a genuine block scalar header', ['type: |', '  "epic" | "user_story"'].join('\n')],
+    ['a union inside a block scalar body', ['body: |', '  type: "epic" | "user_story"', 'next: 1'].join('\n')],
+  ])('leaves %s alone', (_, input) => {
+    expect(repairYamlTypeUnionScalars(input)).toBe(input)
+  })
+
+  it('resumes repairing once a block scalar has closed', () => {
+    // The block-scalar tracking is per-line state, so a repair that stopped
+    // early here would silently skip the rest of the document.
+    const input = ['body: |', '  text', 'type: "epic" | "user_story"'].join('\n')
+
+    expect(repairYamlTypeUnionScalars(input)).toBe(
+      ['body: |', '  text', 'type: "\\"epic\\" | \\"user_story\\""'].join('\n'),
+    )
+  })
+
+  it('turns a document YAML rejects into one it accepts, with the text intact', () => {
+    // This is the whole reason the repair exists: `|` after a quoted token
+    // reads as a block-scalar indicator, so the original does not parse.
+    const input = 'type: "epic" | "user_story"'
+
+    expect(() => jsYaml.load(input)).toThrow()
+    expect(jsYaml.load(repairYamlTypeUnionScalars(input))).toEqual({ type: '"epic" | "user_story"' })
+  })
+})
+
+describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
+  it.each([
+    [
+      'an exact duplicate block scalar',
+      ['t: |', '  one', '  two', 't: |', '  one', '  two', 'z: 9'].join('\n'),
+      ['t: |', '  one', '  two', 'z: 9'].join('\n'),
+    ],
+    [
+      'a duplicate whose body carries comment lines',
+      ['t: |', '  one', '  # note', '  two', 't: |', '  one', '  # note', '  two', 'z: 9'].join('\n'),
+      ['t: |', '  one', '  # note', '  two', 'z: 9'].join('\n'),
+    ],
+    [
+      'a duplicate whose body looks like a mapping',
+      ['t: |', '  key: value', '  other: thing', 't: |', '  key: value', '  other: thing', 'z: 9'].join('\n'),
+      ['t: |', '  key: value', '  other: thing', 'z: 9'].join('\n'),
+    ],
+    [
+      'a duplicate whose body looks like a sequence',
+      ['t: |', '  - one', '  - two', 't: |', '  - one', '  - two', 'z: 9'].join('\n'),
+      ['t: |', '  - one', '  - two', 'z: 9'].join('\n'),
+    ],
+    [
+      'a duplicate key opening a nested block',
+      ['options:', '  - a', '  - b', 'options:', '  - a', '  - b', 'z: 9'].join('\n'),
+      ['options:', '  - a', '  - b', 'z: 9'].join('\n'),
+    ],
+  ])('removes %s', (_, input, expected) => {
+    expect(repairYamlDuplicateKeys(input)).toBe(expected)
+  })
+
+  it('keeps same-key lines whose values differ, for js-yaml to reject', () => {
+    const input = ['a: 1', 'a: 2'].join('\n')
+    expect(repairYamlDuplicateKeys(input)).toBe(input)
+  })
+
+  /**
+   * Current behaviour, and a defect: a blank line ends the skip.
+   *
+   * The nested-block skip passes blank and comment lines through, but the
+   * block-scalar skip only continues while a line is indented deeper than the
+   * key — and a blank line measures as indent zero. So the removal stops there
+   * and the rest of the duplicate is emitted again, folded into the first
+   * scalar, which invents a value neither copy had.
+   *
+   * Asserted as it stands so that the fix is a visible edit to this file rather
+   * than a silent change in what the repair accepts. The fix belongs to the
+   * cleanup plan's §13.7 ("duplicate block-scalar skip gap"), which lets the
+   * block-scalar skip pass blank and comment lines through the way the
+   * nested-block skip already does. When that lands, this expectation becomes
+   * the input with the duplicate fully removed.
+   */
+  it('stops removing a duplicate block scalar at the first blank line', () => {
+    const input = ['t: |', '  one', '', '  two', 't: |', '  one', '', '  two', 'z: 9'].join('\n')
+
+    expect(repairYamlDuplicateKeys(input)).toBe(
+      ['t: |', '  one', '', '  two', '', '  two', 'z: 9'].join('\n'),
+    )
+    // The surviving tail is what makes this a defect rather than a cosmetic
+    // gap: the repaired scalar carries a line the source never had twice.
+    expect(jsYaml.load(repairYamlDuplicateKeys(input))).toEqual({ t: 'one\n\ntwo\n\ntwo\n', z: 9 })
   })
 })

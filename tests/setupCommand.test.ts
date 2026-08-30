@@ -301,7 +301,7 @@ describe('setup command', () => {
       cwd: '/repos/demo',
       prompt,
       out: capture().out,
-      open: () => undefined,
+      open: () => ({ opened: true }),
     })
 
     expect(daemon.created[0]).toMatchObject({ ignoreMode: 'repo' })

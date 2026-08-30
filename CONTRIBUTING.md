@@ -48,6 +48,12 @@ npm run typecheck
 npm run test
 ```
 
+`typecheck` runs two projects: the application (`tsconfig.json`) and the root
+`tests/` directory (`tsconfig.tests.json`). They are separate so that adding a
+test cannot change the compiler settings the application is checked under. A
+test that imports one of the plain-ESM scripts under `scripts/` reads its types
+from the `.d.mts` file beside it; keep the two in step.
+
 For code changes, run the relevant linting, typechecking, and tests for the area you touched.
 
 ## Documentation and changelog

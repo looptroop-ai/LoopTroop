@@ -463,13 +463,15 @@ describe('installer core', () => {
      * has a working LoopTroop through another channel, and the only useful
      * thing to say is which one.
      */
+    // `as const` so the libc column keeps its literal type; widened to `string`
+    // it no longer says which of the two values it is.
     it.each([
       ['darwin', 'x64', 'glibc', 'Intel Macs', 'brew install'],
       ['linux', 'x64', 'musl', 'musl systems such as Alpine', 'docker run'],
       ['win32', 'arm64', 'glibc', 'win32-arm64', 'npm install -g looptroop'],
       ['freebsd', 'x64', 'glibc', 'freebsd-x64', 'npm install -g looptroop'],
-    ])('refuses %s-%s (%s) by naming what to use instead', (platform, arch, libc, mention, remedy) => {
-      const decision = binaryTarget(platform, arch, libc) as { refusal?: string[] }
+    ] as const)('refuses %s-%s (%s) by naming what to use instead', (platform, arch, libc, mention, remedy) => {
+      const decision = binaryTarget(platform, arch, libc)
 
       expect(decision.refusal?.join('\n')).toContain(mention)
       expect(decision.refusal?.join('\n')).toContain(remedy)

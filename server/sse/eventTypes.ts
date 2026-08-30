@@ -1,4 +1,26 @@
-export type SSEEventType = 'state_change' | 'log' | 'progress' | 'app_error' | 'bead_complete' | 'needs_input' | 'artifact_change' | 'ai_metrics'
+/**
+ * Every event name the daemon broadcasts.
+ *
+ * A runtime array with the type derived from it, rather than a bare union: the
+ * interface listens for these by name, so they are a wire contract, and a
+ * contract that only exists as a type cannot be asserted on. The alternative
+ * was scanning this file's source text from a test, which breaks the moment
+ * anyone reformats the declaration.
+ *
+ * Adding a name here is the whole edit — `SSEEventType` follows.
+ */
+export const SSE_EVENT_TYPES = [
+  'state_change',
+  'log',
+  'progress',
+  'app_error',
+  'bead_complete',
+  'needs_input',
+  'artifact_change',
+  'ai_metrics',
+] as const
+
+export type SSEEventType = typeof SSE_EVENT_TYPES[number]
 
 export interface SSEEvent {
   id: string

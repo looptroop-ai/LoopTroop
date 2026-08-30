@@ -1,6 +1,37 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { planMatrix, CHANNELS, binaryPrefix, validatePublishedVersion } from '../scripts/smoke-published.mjs'
+import type { ChannelRecipe, InstalledChannel } from '../scripts/smoke-published.mjs'
+
+/**
+ * A channel by name.
+ *
+ * Every lookup below names a channel this file also asserts the existence of,
+ * so a name that is not there is a broken test rather than a case to handle —
+ * and saying so here fails with the name instead of with a property read on
+ * `undefined` several lines later.
+ */
+function channel(key: string): ChannelRecipe {
+  const recipe = CHANNELS[key]
+  if (!recipe) throw new Error(`no channel named "${key}"`)
+  return recipe
+}
+
+/**
+ * A channel this driver installs itself — not a stub, not delegated.
+ *
+ * The narrowing is the point: `install`, `uninstall`, `expect` and the ports
+ * exist only on this shape, and the assertions that reach for them are
+ * meaningless against a channel that has none.
+ */
+function installedChannel(key: string): InstalledChannel {
+  const recipe = channel(key)
+  // `!== undefined` rather than truthiness: a stub's reason is a string, and an
+  // empty one would still make it a stub.
+  if (recipe.stub !== undefined) throw new Error(`"${key}" is a stub, not an installed channel`)
+  if (recipe.delegate !== undefined) throw new Error(`"${key}" delegates, so it has no install of its own`)
+  return recipe
+}
 
 /**
  * The matrix is asserted by name rather than by count.
@@ -122,7 +153,7 @@ describe('planMatrix', () => {
     // container is the one exemption: the image ships no OpenCode by design and
     // its own smoke script is mock-only for that reason.
     for (const leg of planMatrix({ tier: 'weekly' })) {
-      if (CHANNELS[leg.channel].delegate) continue
+      if (channel(leg.channel).delegate) continue
       expect(leg.opencode, `${leg.name} is on mock`).not.toBe('mock')
     }
   })
@@ -133,9 +164,10 @@ describe('planMatrix', () => {
     // leaves the first in place — so which one answers depends on PATH order.
     // Asserting only that some channel was reported passes on exactly that.
     for (const key of ['bun', 'pnpm', 'yarn']) {
-      expect(CHANNELS[key].expect.channel).toBe(key)
-      expect(CHANNELS[key].expect.upgradeCommand('linux')).toContain(key)
-      expect(CHANNELS[key].expect.upgradeCommand('linux')).not.toContain('npm install')
+      const expected = installedChannel(key).expect
+      expect(expected.channel).toBe(key)
+      expect(expected.upgradeCommand('linux')).toContain(key)
+      expect(expected.upgradeCommand('linux')).not.toContain('npm install')
     }
   })
 
@@ -146,7 +178,7 @@ describe('planMatrix', () => {
     // done because CI builds their packages on every change.
     const scheduled = planMatrix({ tier: 'weekly' }).map((leg) => leg.channel)
     for (const key of ['chocolatey', 'winget', 'aur']) {
-      expect(CHANNELS[key].stub, `${key} has no stated reason`).toBeTruthy()
+      expect(channel(key).stub, `${key} has no stated reason`).toBeTruthy()
       expect(scheduled).not.toContain(key)
     }
   })
@@ -158,7 +190,7 @@ describe('planMatrix', () => {
     // ever pulled the exact version could stay green with a stale pointer
     // forever, which is the silent failure this whole workflow exists to find.
     for (const key of ['npm', 'homebrew', 'scoop', 'container']) {
-      expect(typeof CHANNELS[key].latest, `${key} has no latest probe`).toBe('function')
+      expect(typeof channel(key).latest, `${key} has no latest probe`).toBe('function')
     }
   })
 
@@ -176,7 +208,7 @@ describe('planMatrix', () => {
         expect(typeof recipe.delegate, `${key}`).toBe('function')
         continue
       }
-      for (const field of ['install', 'uninstall', 'published']) {
+      for (const field of ['install', 'uninstall', 'published'] as const) {
         expect(typeof recipe[field], `${key}.${field}`).toBe('function')
       }
       expect(typeof recipe.port, `${key}.port`).toBe('number')
@@ -211,8 +243,8 @@ describe('planMatrix', () => {
     // A tap carries one formula and a bucket one manifest, so an older version
     // is not installable at all. Claiming otherwise would make a --pin run
     // report a failure for a channel that is working exactly as designed.
-    for (const key of ['homebrew', 'scoop']) expect(CHANNELS[key].pinnable).toBe(false)
-    for (const key of ['npm', 'installer-sh', 'installer-ps1']) expect(CHANNELS[key].pinnable).toBe(true)
+    for (const key of ['homebrew', 'scoop']) expect(channel(key).pinnable).toBe(false)
+    for (const key of ['npm', 'installer-sh', 'installer-ps1']) expect(channel(key).pinnable).toBe(true)
   })
 
   it('only claims a self-contained runtime where the channel provides one', () => {
@@ -220,18 +252,18 @@ describe('planMatrix', () => {
     // standalone binary embeds Node — both must run with no Node on PATH.
     // Scoop *depends* on nodejs-lts rather than carrying it, so stripping Node
     // would break it correctly, and asserting otherwise would be wrong.
-    expect(CHANNELS.homebrew.provesOwnRuntime).toBe(true)
-    expect(CHANNELS.scoop.provesOwnRuntime).toBeUndefined()
-    expect(CHANNELS.npm.provesOwnRuntime).toBeUndefined()
+    expect(installedChannel('homebrew').provesOwnRuntime).toBe(true)
+    expect(installedChannel('scoop').provesOwnRuntime).toBeUndefined()
+    expect(installedChannel('npm').provesOwnRuntime).toBeUndefined()
   })
 
   it('runs the documented command verbatim when it is not pinned', () => {
     // The website URL is the path a user takes, and exercising the redirect is
     // half the point of the leg.
-    const sh = CHANNELS['installer-sh'].install({ version: '9.9.9', pin: false })
+    const sh = installedChannel('installer-sh').install({ version: '9.9.9', pin: false })
     expect(sh.display).toBe('curl -fsSL https://www.looptroop.ovh/install | sh')
 
-    const ps1 = CHANNELS['installer-ps1'].install({ version: '9.9.9', pin: false })
+    const ps1 = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
     expect(ps1.display).toBe('irm https://www.looptroop.ovh/install.ps1 | iex')
   })
 
@@ -240,7 +272,7 @@ describe('planMatrix', () => {
     // pair the newest wrapper with an older payload and prove nothing about the
     // release being reproduced.
     for (const key of ['installer-sh', 'installer-ps1']) {
-      const spec = CHANNELS[key].install({ version: '9.9.9', pin: true })
+      const spec = installedChannel(key).install({ version: '9.9.9', pin: true })
       expect(spec.display).toContain('/releases/download/v9.9.9/')
       expect(spec.display).not.toContain('looptroop.ovh')
       expect(spec.display).toMatch(/-{1,2}[Vv]ersion 9\.9\.9/)
@@ -251,9 +283,9 @@ describe('planMatrix', () => {
     // `powershell.exe` is Windows PowerShell 5.1, the runtime that ships with
     // Windows and therefore the one the documented one-liner lands in. `pwsh`
     // is a different runtime. The progress bar makes `irm` take minutes.
-    const spec = CHANNELS['installer-ps1'].install({ version: '9.9.9', pin: false })
+    const spec = installedChannel('installer-ps1').install({ version: '9.9.9', pin: false })
     expect(spec.command).toBe('powershell.exe')
-    expect(spec.args.join(' ')).toContain("$ProgressPreference = 'SilentlyContinue'")
+    expect(spec.args?.join(' ')).toContain("$ProgressPreference = 'SilentlyContinue'")
     expect(spec.args).toContain('-NoProfile')
   })
 
@@ -263,18 +295,18 @@ describe('planMatrix', () => {
     // `npm install -g`. Anyone "correcting" these to an installer-shaped channel
     // breaks the legs.
     for (const key of ['installer-sh', 'installer-ps1']) {
-      expect(CHANNELS[key].expect.channel).toBe('npm')
-      expect(CHANNELS[key].uninstall({}).args).toEqual(['uninstall', '--global', 'looptroop'])
+      expect(installedChannel(key).expect.channel).toBe('npm')
+      expect(installedChannel(key).uninstall({}).args).toEqual(['uninstall', '--global', 'looptroop'])
     }
     for (const key of ['installer-sh-binary', 'installer-ps1-binary']) {
-      expect(CHANNELS[key].expect.channel).toBe('binary')
+      expect(installedChannel(key).expect.channel).toBe('binary')
     }
   })
 
   it('gives the binary channel a platform-specific upgrade command', () => {
     // A piped script cannot take a parameter, so Windows needs the scriptblock
     // form. One string here would fail on one of the two operating systems.
-    const { upgradeCommand } = CHANNELS['installer-sh-binary'].expect
+    const { upgradeCommand } = installedChannel('installer-sh-binary').expect
     expect(upgradeCommand('win32')).toContain('scriptblock')
     expect(upgradeCommand('linux')).toBe('curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
     expect(upgradeCommand('win32')).not.toBe(upgradeCommand('linux'))
@@ -287,7 +319,7 @@ describe('planMatrix', () => {
     // on a developer machine, this test's own.
     const prefix = binaryPrefix()
     for (const key of ['installer-sh-binary', 'installer-ps1-binary']) {
-      expect(CHANNELS[key].uninstall({}).removePath).toBe(prefix)
+      expect(installedChannel(key).uninstall({}).removePath).toBe(prefix)
     }
     expect(prefix).not.toContain('.config')
     expect(prefix.endsWith('.looptroop')).toBe(true)
@@ -296,8 +328,9 @@ describe('planMatrix', () => {
   it('gives every channel its own daemon and OpenCode port', () => {
     // Two channels sharing a port would collide only when both run on one
     // runner, which is rare enough to look like a flake rather than a clash.
-    const daemonPorts = Object.values(CHANNELS).map((c) => c.port).filter(Boolean)
-    const opencodePorts = Object.values(CHANNELS).map((c) => c.opencodePort).filter(Boolean)
+    const assigned = (port: number | undefined): port is number => typeof port === 'number'
+    const daemonPorts = Object.values(CHANNELS).map((c) => c.port).filter(assigned)
+    const opencodePorts = Object.values(CHANNELS).map((c) => c.opencodePort).filter(assigned)
     expect(new Set(daemonPorts).size).toBe(daemonPorts.length)
     expect(new Set(opencodePorts).size).toBe(opencodePorts.length)
     // 39117 is smoke-install.mjs's port; overlapping it would break a run that
@@ -313,7 +346,10 @@ describe('workflow dispatch wiring', () => {
   /** The `workflow_dispatch` inputs the smoke workflow actually declares. */
   function declaredInputs(): Set<string> {
     const block = workflow.slice(workflow.indexOf('workflow_dispatch:'), workflow.indexOf('schedule:'))
-    return new Set([...block.matchAll(/^ {6}([a-z_]+):$/gm)].map((m) => m[1]))
+    // `flatMap` rather than `map`: the capture group is mandatory, so a match
+    // always carries it, but that is not something the types can know and a
+    // `Set<string | undefined>` is not what the caller compares against.
+    return new Set([...block.matchAll(/^ {6}([a-z_]+):$/gm)].flatMap((m) => m[1] ?? []))
   }
 
   /** Every `-f name=` a workflow passes when dispatching the smoke. */
@@ -322,8 +358,8 @@ describe('workflow dispatch wiring', () => {
     return text
       .split('gh workflow run published-smoke.yml')
       .slice(1)
-      .flatMap((block) => [...block.split(/\n\s*\n/)[0].matchAll(/-f ([a-z_]+)=/g)]
-        .map((m) => ({ file, name: m[1] })))
+      .flatMap((block) => [...(block.split(/\n\s*\n/)[0] ?? '').matchAll(/-f ([a-z_]+)=/g)]
+        .flatMap((m) => (m[1] === undefined ? [] : [{ file, name: m[1] }])))
   }
 
   it('passes only inputs the smoke workflow declares', () => {

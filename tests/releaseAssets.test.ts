@@ -197,7 +197,7 @@ describe('the checksums file', () => {
    * reads the manifest then looks for something that is not there.
    */
   it('is restored by a resumed draft that is missing it', () => {
-    const plan = planDraftAssets(withChecksums(), [MANIFEST_ASSET])
+    const plan = planDraftAssets(withChecksums(), [MANIFEST_ASSET], {})
     expect(plan.action).toBe('upload')
     if (plan.action === 'upload') expect(plan.missing).toContain(CHECKSUMS)
   })

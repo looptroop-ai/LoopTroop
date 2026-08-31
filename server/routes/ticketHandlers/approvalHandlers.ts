@@ -37,6 +37,7 @@ import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
   getTicketParam,
+  logTicketOperationError,
   preparePlanningRestart,
   rejectDisplayOnlyMockTicket,
   respondWithState,
@@ -99,8 +100,8 @@ export async function handleApproveTicket(c: Context) {
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
-    console.error(`[tickets] Failed to send APPROVE to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to approve ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send APPROVE to ticket', err)
+    return c.json({ error: 'Failed to approve ticket', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Approve action accepted')
@@ -338,7 +339,7 @@ function recordGapAcknowledgement(input: {
       emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
     }
   } catch (err) {
-    console.error(`[tickets] Failed to record the gap acknowledgement for ${input.ticketId}:`, err)
+    logTicketOperationError(input.ticketId, 'Failed to record the gap acknowledgement for', err)
   }
 }
 
@@ -377,7 +378,7 @@ function approveInterviewForRoute(c: Context, ticketId: string, expectedContentS
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve interview for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve interview for', err)
     return c.json({
       error: 'Failed to approve interview',
       details: getErrorMessage(err),
@@ -425,7 +426,7 @@ function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256:
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve PRD for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve PRD for', err)
     return c.json({
       error: 'Failed to approve PRD',
       details: getErrorMessage(err),
@@ -478,7 +479,7 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve beads for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve beads for', err)
     return c.json({
       error: 'Failed to approve beads',
       details: getErrorMessage(err),
@@ -568,7 +569,7 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
     sendTicketEvent(ticketId, { type: 'APPROVE_EXECUTION_SETUP_PLAN' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve execution setup plan for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve execution setup plan for', err)
     return c.json({
       error: 'Failed to approve execution setup plan',
       details: getErrorMessage(err),

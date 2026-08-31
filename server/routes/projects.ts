@@ -31,6 +31,7 @@ import { buildRuntimeStatus } from '../runtime'
 import { normalizeFolderPath } from '../storage/paths'
 import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../../shared/wslPerformance'
 import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const projectRouter = new Hono()
 const execFileAsync = promisify(execFile)
@@ -368,7 +369,7 @@ projectRouter.post('/projects', async (c) => {
     if (err instanceof ProjectIdentityConflictError) {
       return projectConflictResponse(c, err.conflicts)
     }
-    return c.json({ error: 'Failed to attach project', details: String(err) }, 500)
+    return c.json({ error: 'Failed to attach project', details: getErrorMessage(err) }, 500)
   }
 })
 
@@ -413,7 +414,7 @@ projectRouter.delete('/projects/:id/worktrees', async (c) => {
     const result = await deleteProjectWorktrees(projectRoot)
     return c.json({ success: true, freedBytes: result.freedBytes })
   } catch (err) {
-    return c.json({ error: 'Failed to delete worktrees', details: String(err) }, 500)
+    return c.json({ error: 'Failed to delete worktrees', details: getErrorMessage(err) }, 500)
   }
 })
 
@@ -434,7 +435,7 @@ projectRouter.delete('/projects/:id', (c) => {
     deleteProject(id)
     return c.json({ success: true, projectRoot })
   } catch (err) {
-    return c.json({ error: 'Failed to delete project', details: String(err) }, 500)
+    return c.json({ error: 'Failed to delete project', details: getErrorMessage(err) }, 500)
   }
 })
 

@@ -9,10 +9,10 @@ import { abortTicketSessions } from '../../opencode/sessionManager'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { broadcaster } from '../../sse/broadcaster'
 import { cancelTicket } from '../../workflow/runner'
-import { createTicket as createTicketRecord } from '../../ticket/create'
 import { withCommandLogging } from '../../log/commandLogger'
 import { getProjectContextById } from '../../storage/projects'
 import {
+  createTicket as createTicketRecord,
   deleteTicket as deleteStoredTicket,
   getTicketByRef,
   getTicketContext,
@@ -33,6 +33,7 @@ import {
   getProfileDefaults,
   getRequiredRouteParam,
   getTicketParam,
+  logTicketOperationError,
 } from './routeUtils'
 import { createTicketSchema, updateTicketSchema } from './schemas'
 
@@ -176,7 +177,7 @@ export async function handleCreateTicket(c: Context) {
     if (err instanceof Error && err.message.startsWith('Invalid createTicket input:')) {
       return c.json({ error: 'Invalid input', message: err.message }, 400)
     }
-    return c.json({ error: 'Failed to create ticket', details: String(err) }, 500)
+    return c.json({ error: 'Failed to create ticket', details: getErrorMessage(err) }, 500)
   }
 
   const projectContext = getProjectContextById(result.projectId)
@@ -240,7 +241,7 @@ export async function handleDeleteTicket(c: Context) {
     broadcaster.clearTicket(ticketId)
     return c.json({ success: true, ticketId })
   } catch (err) {
-    console.error(`[tickets] Failed to delete ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to delete ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to delete ticket', err)
+    return c.json({ error: 'Failed to delete ticket', details: getErrorMessage(err) }, 500)
   }
 }

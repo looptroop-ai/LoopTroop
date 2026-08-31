@@ -40,7 +40,14 @@ function normalizeModelList(values: Array<string | null | undefined> | null | un
   return normalized
 }
 
-function arraysEqual(left: string[], right: string[]): boolean {
+/**
+ * Order-sensitive comparison of a council roster.
+ *
+ * Order is load-bearing: `selectWinner` treats `members[0]` as the main
+ * implementer, so reordering the roster changes who implements the ticket and
+ * must invalidate the model lock.
+ */
+export function councilMembersEqualOrdered(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false
   return left.every((value, index) => value === right[index])
 }
@@ -99,7 +106,7 @@ export function lockTicketModelSelection(
   if (currentMainImplementer && currentMainImplementer !== lockedMainImplementer) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
-  if (currentCouncilMembers.length > 0 && !arraysEqual(currentCouncilMembers, lockedCouncilMembers)) {
+  if (currentCouncilMembers.length > 0 && !councilMembersEqualOrdered(currentCouncilMembers, lockedCouncilMembers)) {
     throw new Error(`Ticket model configuration is immutable after start: ${externalId}`)
   }
 

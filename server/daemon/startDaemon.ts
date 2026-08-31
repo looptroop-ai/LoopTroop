@@ -15,6 +15,7 @@ import { resolveSettings, type ResolvedSettings } from '../lib/appSettings'
 import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
+import { getErrorMessage } from '@shared/typeGuards'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
@@ -358,7 +359,7 @@ export function installShutdownHandlers(handle: DaemonHandle): void {
       clearTimeout(forceExit)
       process.exit(0)
     }).catch((error: unknown) => {
-      console.error(`[daemon] Shutdown failed: ${error instanceof Error ? error.message : String(error)}`)
+      console.error(`[daemon] Shutdown failed: ${getErrorMessage(error)}`)
       process.exit(1)
     })
   }

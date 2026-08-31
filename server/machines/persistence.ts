@@ -20,7 +20,7 @@ import {
   resolveLatestTicketErrorOccurrence,
 } from '../storage/tickets'
 import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 const activeActors = new Map<string, ReturnType<typeof createActor<typeof ticketMachine>>>()
 
@@ -46,10 +46,6 @@ type TicketActorInput = {
   lockedAiQuestionsSource?: SettingSource | null
   lockedAiQuestionWindow?: number | null
   lockedAiQuestionWindowSource?: SettingSource | null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function getSnapshotStateValue(snapshot: unknown): string | null {

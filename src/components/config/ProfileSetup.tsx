@@ -49,7 +49,7 @@ import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
-import { DEFAULT_IGNORE_MODE } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
 
 interface ProfileSetupProps {

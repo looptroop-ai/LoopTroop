@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { getBackendPort, getFrontendPort } from '../shared/appConfig'
 import { readDaemonState } from '../server/lib/daemonPaths'
 import { matchProcess } from '../server/lib/processIdentity'
+import { isProcessAlive } from '../server/cli/processControl'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -128,15 +129,6 @@ function collectProtectedPids(currentPid: number, graph: ReturnType<typeof build
 function killProcess(pid: number, signal: NodeJS.Signals = 'SIGTERM') {
   try {
     process.kill(pid, signal)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0)
     return true
   } catch {
     return false

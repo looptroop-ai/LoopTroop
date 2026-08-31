@@ -1,7 +1,6 @@
 import { Database } from './sqliteShim'
-import { drizzle } from 'drizzle-orm/node-sqlite'
+import { createDrizzle, type DrizzleDatabase } from './createDrizzle'
 import { existsSync } from 'fs'
-import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
 import { secureFile } from '../lib/appConfigDir'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
@@ -16,7 +15,7 @@ import {
 
 interface ProjectDatabase {
   sqlite: Database
-  db: ReturnType<typeof drizzle>
+  db: DrizzleDatabase
 }
 
 const MAX_PROJECT_CACHE_SIZE = 50
@@ -432,8 +431,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   const projectDb: ProjectDatabase = {
     sqlite,
-    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-    db: drizzle({ client: sqlite.client, schema }),
+    db: createDrizzle(sqlite.client),
   }
   projectDbCache.set(projectRoot, projectDb)
   return projectDb

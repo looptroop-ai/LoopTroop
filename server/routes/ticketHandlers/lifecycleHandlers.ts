@@ -57,6 +57,7 @@ import {
   emitRoutePhaseLog,
   getProfileDefaults,
   getTicketParam,
+  logTicketOperationError,
   readJsonBody,
   rejectDisplayOnlyMockTicket,
   respondWithState,
@@ -208,7 +209,7 @@ export async function handleStartTicket(c: Context) {
           error: String(sendErr),
         },
       )
-      console.error(`[tickets] Failed to send INIT_FAILED to ticket ${ticketId}:`, sendErr)
+      logTicketOperationError(ticketId, 'Failed to send INIT_FAILED to ticket', sendErr)
       return c.json({ error: 'Failed to block ticket after initialization error', details: String(sendErr) }, 500)
     }
 
@@ -356,12 +357,12 @@ export async function handleStartTicket(c: Context) {
     })
   } catch (err) {
     rollbackTicketStartToDraft(ticketId)
-    emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workflow Dispatch: ${String(err)}`, {
-      error: String(err),
+    emitRoutePhaseLog(ticketId, startPhase, 'error', `✗ Workflow Dispatch: ${getErrorMessage(err)}`, {
+      error: getErrorMessage(err),
       rollback: 'preserved_worktree',
     })
-    console.error(`[tickets] Failed to send START to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to start ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send START to ticket', err)
+    return c.json({ error: 'Failed to start ticket', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Start action accepted')
@@ -451,8 +452,8 @@ export async function handleCancelTicket(c: Context) {
       broadcaster.clearTicket(ticketId)
     }
   } catch (err) {
-    console.error(`[tickets] Failed to send CANCEL to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to cancel ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send CANCEL to ticket', err)
+    return c.json({ error: 'Failed to cancel ticket', details: getErrorMessage(err) }, 500)
   }
 
   if (deleteTicket) {
@@ -463,7 +464,7 @@ export async function handleCancelTicket(c: Context) {
     try {
       cleanupCanceledTicketData(ticketId, { deleteContent, deleteLog })
     } catch (err) {
-      console.error(`[tickets] Failed to cleanup canceled ticket ${ticketId}:`, err)
+      logTicketOperationError(ticketId, 'Failed to cleanup canceled ticket', err)
     }
   }
 
@@ -529,7 +530,7 @@ export function handleMergeTicket(c: Context) {
       })
       return respondWithState(c, ticketId, 'Merge failed and ticket was blocked')
     } catch (dispatchErr) {
-      console.error(`[tickets] Failed to dispatch merge error for ticket ${ticketId}:`, dispatchErr)
+      logTicketOperationError(ticketId, 'Failed to dispatch merge error for ticket', dispatchErr)
       return c.json({ error: 'Failed to merge pull request', details }, 500)
     }
   }
@@ -588,8 +589,8 @@ export async function handleCloseUnmergedTicket(c: Context) {
     }
     sendTicketEvent(ticketId, { type: 'CLOSE_UNMERGED_COMPLETE' })
   } catch (err) {
-    console.error(`[tickets] Failed to close ticket ${ticketId} without merge:`, err)
-    return c.json({ error: 'Failed to finish ticket without merge', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to close ticket', err, 'without merge')
+    return c.json({ error: 'Failed to finish ticket without merge', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Finished without merge')
@@ -682,8 +683,8 @@ export async function handleRetryTicket(c: Context) {
       sendTicketEvent(ticketId, { type: 'RETRY' })
     } catch (err) {
       clearSessionContinuation(setupSession.sessionId)
-      console.error(`[tickets] Failed to resume workspace setup session for ticket ${ticketId}:`, err)
-      return c.json({ error: 'Failed to retry workspace setup with the extra note', details: String(err) }, 500)
+      logTicketOperationError(ticketId, 'Failed to resume workspace setup session for ticket', err)
+      return c.json({ error: 'Failed to retry workspace setup with the extra note', details: getErrorMessage(err) }, 500)
     }
 
     return respondWithState(c, ticketId, 'Workspace setup note accepted')
@@ -726,8 +727,8 @@ export async function handleRetryTicket(c: Context) {
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, { type: 'RETRY' })
   } catch (err) {
-    console.error(`[tickets] Failed to send RETRY to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to retry ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send RETRY to ticket', err)
+    return c.json({ error: 'Failed to retry ticket', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Retry action accepted')
@@ -762,7 +763,7 @@ export async function handleContinueTicket(c: Context) {
   try {
     liveSession = await getOpenCodeAdapter().getSession(continuation.sessionId)
   } catch (err) {
-    console.error(`[tickets] Failed to verify OpenCode session before continuing ticket ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to verify OpenCode session before continuing ticket', err)
     return c.json({
       error: 'Continue is not available because the OpenCode session could not be verified',
       details: getErrorMessage(err),
@@ -786,8 +787,8 @@ export async function handleContinueTicket(c: Context) {
     sendTicketEvent(ticketId, { type: 'CONTINUE' })
   } catch (err) {
     clearSessionContinuation(continuation.sessionId)
-    console.error(`[tickets] Failed to send CONTINUE to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to continue ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send CONTINUE to ticket', err)
+    return c.json({ error: 'Failed to continue ticket', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Continue action accepted')

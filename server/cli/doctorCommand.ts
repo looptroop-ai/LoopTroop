@@ -10,6 +10,7 @@ import { probePort } from '../lib/portProbe'
 import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type Status = 'ok' | 'warn' | 'fail'
 
@@ -551,7 +552,7 @@ async function inspectDatabase(
       ),
     }
   } catch (error) {
-    return { kind: 'unreadable', message: error instanceof Error ? error.message : String(error) }
+    return { kind: 'unreadable', message: getErrorMessage(error) }
   } finally {
     try {
       store?.close()

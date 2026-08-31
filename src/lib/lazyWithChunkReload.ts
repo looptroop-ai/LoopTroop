@@ -7,6 +7,9 @@ type ReloadStorage = Pick<Storage, 'getItem' | 'setItem'>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LazyComponent = ComponentType<any>
 
+// Intentionally not `@shared/typeGuards`'s `getErrorMessage`: callers regex-match the result,
+// so a non-Error value has to come back as '' rather than as its `String(...)` form, which
+// would otherwise let text like "Loading chunk 1 failed" inside an arbitrary object match.
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error

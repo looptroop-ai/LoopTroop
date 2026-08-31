@@ -6,10 +6,6 @@ import { getErrorMessage } from '@shared/typeGuards'
 export const PHASE_DEADLINE_ERROR = 'CouncilPhaseDeadlineReached'
 export const AI_RESPONSE_TIMEOUT_ERROR = 'Timeout'
 
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError'
-}
-
 export function isPhaseDeadlineError(error: unknown): boolean {
   return error instanceof Error && error.message === PHASE_DEADLINE_ERROR
 }

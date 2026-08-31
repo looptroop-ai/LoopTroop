@@ -49,6 +49,7 @@ import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
   getTicketParam,
+  logTicketOperationError,
   preparePlanningRestart,
   readJsonBody,
   rejectDisplayOnlyMockTicket,
@@ -116,7 +117,7 @@ function recordInterviewApprovalSkips(input: {
     // The document is already saved and the restart may already have fired.
     // Failing here would report a save failure for a save that succeeded, and
     // the retry would run the whole planning restart a second time.
-    console.error(`[tickets] Failed to record approval skip receipts for ${input.ticketId}:`, err)
+    logTicketOperationError(input.ticketId, 'Failed to record approval skip receipts for', err)
   }
 }
 
@@ -274,8 +275,8 @@ export async function handleSkipTicket(c: Context) {
 
     sendTicketEvent(ticketId, { type: 'SKIP_ALL_TO_APPROVAL' })
   } catch (err) {
-    console.error(`[tickets] Failed to skip remaining interview questions for ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to skip remaining interview questions', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to skip remaining interview questions for ticket', err)
+    return c.json({ error: 'Failed to skip remaining interview questions', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Remaining interview questions skipped')
@@ -365,7 +366,7 @@ export async function handleAnswerBatch(c: Context) {
           }
         })
         .catch(err => {
-          console.error(`[tickets] Async batch processing failed for ${ticketId}:`, err)
+          logTicketOperationError(ticketId, 'Async batch processing failed for', err)
           broadcaster.broadcast(ticketId, 'needs_input', {
             ticketId,
             type: 'interview_error',
@@ -396,8 +397,8 @@ export async function handleAnswerBatch(c: Context) {
       ...('roundNumber' in result && typeof result.roundNumber === 'number' ? { roundNumber: result.roundNumber } : {}),
     })
   } catch (err) {
-    console.error(`[tickets] Failed to process answer-batch for ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to process batch', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to process answer-batch for ticket', err)
+    return c.json({ error: 'Failed to process batch', details: getErrorMessage(err) }, 500)
   }
 }
 
@@ -468,15 +469,15 @@ export async function handleEditAnswer(c: Context) {
       } catch (err) {
         // The edited answer is already persisted; the trail is not worth
         // failing the edit over.
-        console.error(`[tickets] Failed to record the edit-answer skip for ${ticketId}:`, err)
+        logTicketOperationError(ticketId, 'Failed to record the edit-answer skip for', err)
       }
     }
 
     const questions = buildInterviewQuestionViews(updated)
     return c.json({ success: true, questions })
   } catch (err) {
-    console.error(`[tickets] Failed to edit interview answer for ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to edit answer', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to edit interview answer for ticket', err)
+    return c.json({ error: 'Failed to edit answer', details: getErrorMessage(err) }, 500)
   }
 }
 

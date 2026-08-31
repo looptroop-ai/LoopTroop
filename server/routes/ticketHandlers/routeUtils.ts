@@ -33,6 +33,21 @@ export function getProfileDefaults() {
   return appDb.select().from(profiles).get()
 }
 
+/**
+ * Logs a failed ticket route operation. Keeps the `[tickets]` prefix in one place so every
+ * handler reports the same way; `action` is the wording that precedes the ticket id, for
+ * example `Failed to send START to ticket`. A handful of messages read with wording after the
+ * id instead — pass it as `trailing` rather than writing the prefix out again.
+ */
+export function logTicketOperationError(
+  ticketId: string,
+  action: string,
+  error: unknown,
+  trailing?: string,
+): void {
+  console.error(`[tickets] ${action} ${ticketId}${trailing ? ` ${trailing}` : ''}:`, error)
+}
+
 export function respondWithState(c: Context, ticketId: string, message: string) {
   const updated = getTicketByRef(ticketId)
   const state = getTicketState(ticketId)

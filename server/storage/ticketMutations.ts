@@ -19,7 +19,7 @@ import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { getProjectWorktreesRoot, getTicketAiLogPath, getTicketDebugLogPath, getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath } from './paths'
 import { safeAtomicWrite } from '../io/atomicWrite'
-import { lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
+import { councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
 import type {
   PublicTicket,
   TicketErrorOccurrence,
@@ -41,9 +41,9 @@ import {
   parseLockedCouncilMemberVariants,
   normalizeModelId,
   normalizeModelList,
-  arraysEqual,
   isValidResolutionStatus,
 } from './ticketQueries'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 
@@ -111,7 +111,7 @@ function parseDiagnostics(raw: string | null | undefined): BlockedErrorDiagnosti
 
     return diagnostics
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
+    const detail = getErrorMessage(error)
     console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${truncateLoggedValue(raw)} (${detail})`)
     return null
   }
@@ -287,7 +287,7 @@ function assertLockedModelConfigurationMutable(
   if (currentMainImplementerVariant !== nextMainImplementerVariant) {
     throw new Error(`Ticket model configuration is immutable after start: ${ticket.externalId}`)
   }
-  if (!arraysEqual(currentCouncilMembers, nextCouncilMembers)) {
+  if (!councilMembersEqualOrdered(currentCouncilMembers, nextCouncilMembers)) {
     throw new Error(`Ticket model configuration is immutable after start: ${ticket.externalId}`)
   }
   if (!recordsEqual(currentCouncilMemberVariants, nextCouncilMemberVariants)) {

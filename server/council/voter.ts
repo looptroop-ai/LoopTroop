@@ -24,7 +24,8 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
-import { PHASE_DEADLINE_ERROR, isAbortError, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
 
 function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {

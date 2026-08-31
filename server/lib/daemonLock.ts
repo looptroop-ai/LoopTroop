@@ -5,6 +5,7 @@ import { getDaemonLockPath } from './daemonPaths'
 import { ensureSecureDir, CONFIG_FILE_MODE } from './appConfigDir'
 import { dirname } from 'node:path'
 import { matchProcess, readProcessStartToken } from './processIdentity'
+import { isProcessAlive } from '../cli/processControl'
 
 /**
  * Identifies one daemon run. `nonce` distinguishes this acquisition from any
@@ -53,24 +54,6 @@ function readOwner(lockPath: string): LockOwner | null {
     return candidate as LockOwner
   } catch {
     return null
-  }
-}
-
-/**
- * True when the pid is alive. Signal 0 performs the permission and existence
- * check without delivering anything.
- */
-function isProcessAlive(pid: number): boolean {
-  // 0 and negatives address a process group rather than one process, so they
-  // would report "alive" for a lock that never named a real owner.
-  if (!Number.isInteger(pid) || pid <= 0) return false
-
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // EPERM means the process exists but belongs to another user.
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 

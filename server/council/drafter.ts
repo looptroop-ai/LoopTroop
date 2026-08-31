@@ -16,7 +16,9 @@ import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent }
 import { createWorkBudget } from '../workflow/workBudget'
 import { wasMemberAnswered } from '../workflow/questionWindows'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
-import { PHASE_DEADLINE_ERROR, isAbortError, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError, classifyDraftFailure } from './draftUtils'
+import { isAbortError } from '../lib/abort'
+import { buildStructuredRetryPrompt } from '../structuredOutput'
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnostics'
 import { normalizeStructuredRetryCount } from '../lib/structuredRetryPolicy'
@@ -53,30 +55,6 @@ function buildMemberOutcomeMap(drafts: DraftResult[]) {
     outcomes[draft.memberId] = draft.outcome
     return outcomes
   }, {})
-}
-
-function buildStructuredRetryPrompt(
-  baseParts: PromptPart[],
-  validationError: string,
-  rawResponse: string,
-  schemaReminder?: string,
-): PromptPart[] {
-  return [
-    ...baseParts,
-    {
-      type: 'text',
-      content: [
-        '## Structured Output Retry',
-        `Your previous response failed machine validation: ${validationError}`,
-        'Return only a corrected artifact in the required structured format.',
-        schemaReminder ? `Schema reminder:\n${schemaReminder}` : '',
-        'Previous invalid response:',
-        '```',
-        rawResponse.trim() || '[empty response]',
-        '```',
-      ].filter(Boolean).join('\n\n'),
-    },
-  ]
 }
 
 export async function generateDrafts(
@@ -303,12 +281,11 @@ export async function generateDrafts(
           }
           attemptCount += 1
           promptParts = retryDecision.useStructuredRetryPrompt
-            ? buildStructuredRetryPrompt(
-                contextParts,
+            ? buildStructuredRetryPrompt(contextParts, {
                 validationError,
-                content,
-                runtimeOptions?.structuredRetrySchemaReminder,
-              )
+                rawResponse: content,
+                schemaReminder: runtimeOptions?.structuredRetrySchemaReminder,
+              })
             : contextParts
         }
       }

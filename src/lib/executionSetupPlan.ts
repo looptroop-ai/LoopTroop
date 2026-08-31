@@ -7,6 +7,7 @@ import {
   hostContextSchema,
   type HostContext,
 } from '@shared/hostContext'
+import { isRecord } from '@shared/typeGuards'
 
 export const EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT = 'looptroop:execution-setup-plan-focus'
 
@@ -102,10 +103,6 @@ function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string')
     : []
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['status'] {

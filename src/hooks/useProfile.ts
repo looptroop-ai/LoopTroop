@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
-import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 
 interface Profile {
   id: number

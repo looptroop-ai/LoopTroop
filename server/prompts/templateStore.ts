@@ -17,6 +17,7 @@ import {
   validatePromptTemplate,
   type TemplateValidationResult,
 } from './templateFile'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const GLOBAL_RULE_IDS = Object.keys(DEFAULT_GLOBAL_RULE_TEXTS) as GlobalRuleId[]
 
@@ -130,7 +131,7 @@ export function loadTemplates(): PromptLoadWarning[] {
     } catch (error) {
       warnings.push({
         id: template.id,
-        message: `Using built-in default: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Using built-in default: ${getErrorMessage(error)}`,
       })
     }
   }
@@ -148,7 +149,7 @@ export function loadTemplates(): PromptLoadWarning[] {
     } catch (error) {
       warnings.push({
         id: ruleId,
-        message: `Using built-in default: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Using built-in default: ${getErrorMessage(error)}`,
       })
     }
   }
@@ -193,7 +194,7 @@ export function savePromptTemplate(id: PromptId, source: string): TemplateValida
   try {
     parsed = parsePromptTemplate(source)
   } catch (error) {
-    return { errors: [error instanceof Error ? error.message : String(error)], warnings: [] }
+    return { errors: [getErrorMessage(error)], warnings: [] }
   }
 
   const result = validatePromptTemplate(parsed, defaultTemplate)

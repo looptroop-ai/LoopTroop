@@ -1,4 +1,5 @@
 import type { Ticket } from '@/hooks/useTickets'
+import { isRecord } from '@shared/typeGuards'
 
 type TicketRuntime = Ticket['runtime']
 
@@ -32,10 +33,6 @@ const DEFAULT_CLEANUP_SUMMARY: NonNullable<Ticket['cleanup']> = {
   status: null,
   errorCount: 0,
   latestReportArtifactId: null,
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
 }
 
 function stringOrFallback(value: unknown, fallback: string): string {

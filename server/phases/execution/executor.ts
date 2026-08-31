@@ -2,6 +2,7 @@ import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { Bead } from '../beads/types'
 import type { Message, PromptPart, Session, StreamEvent } from '../../opencode/types'
 import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
+import { stripAnsiSequences } from '@shared/ansi'
 import { parseCompletionMarker } from './completionChecker'
 import {
   clearOpenCodePromptDispatchCount,
@@ -54,12 +55,6 @@ const CONTINUE_CODING_SCHEMA_REMINDER = [
   'Return exactly one <BEAD_STATUS>...</BEAD_STATUS> block and nothing else when all required checks pass.',
   'Inside the final marker, use status done and checks.tests/lint/typecheck/qualitative = pass.',
 ].join('\n')
-
-const ESCAPE_CHARACTER = String.fromCharCode(27)
-const BELL_CHARACTER = String.fromCharCode(7)
-const ANSI_OSC_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}\\][^${BELL_CHARACTER}]*(?:${BELL_CHARACTER}|${ESCAPE_CHARACTER}\\\\)`, 'g')
-const ANSI_CSI_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const ANSI_SINGLE_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}[@-_]`, 'g')
 
 export interface ExecutionResult {
   beadId: string
@@ -130,13 +125,6 @@ function buildContinuationPrompt(
     '```',
   ].join('\n')
   return [{ type: 'text', content: prompt }]
-}
-
-function stripAnsiSequences(text: string): string {
-  return text
-    .replace(ANSI_OSC_SEQUENCE, '')
-    .replace(ANSI_CSI_SEQUENCE, '')
-    .replace(ANSI_SINGLE_SEQUENCE, '')
 }
 
 function shouldUseStructuredRetry(result: ReturnType<typeof parseCompletionMarker>): boolean {

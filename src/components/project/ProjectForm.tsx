@@ -26,7 +26,7 @@ import { ExistingProjectActionDialog } from './ExistingProjectActionDialog'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { IgnoreModeSetting } from './IgnoreModeSetting'
-import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@shared/ignoreMode'
 
 interface ProjectFormProps {
   onClose: () => void

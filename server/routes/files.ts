@@ -12,6 +12,7 @@ import { foldPersistedLogEntries } from '../log/readDedupe'
 import { handlePutInterview, handlePutPrd } from './ticketHandlers'
 import { contentSha256 } from '../lib/contentHash'
 import { readOpenCodeNativeLogs } from '../opencode/logDiagnostics'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const filesRouter = new Hono()
 
@@ -366,7 +367,7 @@ filesRouter.post('/files/open-path', async (c) => {
     await revealFolderInExplorer(body.path.trim())
     return c.json({ success: true })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = getErrorMessage(err)
     return c.json({ error: 'Failed to open path', details: message }, 500)
   }
 })

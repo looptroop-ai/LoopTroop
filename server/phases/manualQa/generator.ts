@@ -1,5 +1,4 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { z } from 'zod'
 import type { TicketContext, TicketEvent } from '../../machines/types'
@@ -36,6 +35,7 @@ import {
   readManualQaSummary,
   reserveManualQaVersion,
 } from './storage'
+import { focusedDiffMetadata } from './focusedDiff'
 
 const PrdSchema = z.object({
   epics: z.array(z.object({
@@ -82,22 +82,6 @@ export function restoreManualQaGenerationArtifacts(ticketDir: string, version: n
     persistManualQaCoverage(ticketDir, coverage)
   }
   return { checklist, coverage }
-}
-
-function focusedDiffMetadata(worktreePath: string, baseBranch: string): string {
-  const mergeBaseResult = spawnSync('git', ['-C', worktreePath, 'merge-base', 'HEAD', baseBranch], {
-    encoding: 'utf8',
-    timeout: 30_000,
-  })
-  const mergeBase = mergeBaseResult.status === 0 ? (mergeBaseResult.stdout ?? '').trim() : ''
-  if (!mergeBase) return 'Focused diff metadata unavailable.'
-  const result = spawnSync('git', [
-    '-C', worktreePath,
-    'diff', '--name-status', '--stat=120,80', `${mergeBase}..HEAD`,
-    '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop',
-  ], { encoding: 'utf8', timeout: 30_000 })
-  if (result.status !== 0) return 'Focused diff metadata unavailable.'
-  return (result.stdout ?? '').trim().slice(0, 80_000) || 'No candidate file metadata was reported.'
 }
 
 function compactBeads(beadsPath: string): Array<Pick<Bead,

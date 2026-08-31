@@ -68,6 +68,7 @@ import {
   type ManualQaFixBeadCandidate,
 } from './fixBeads'
 import { emitAiMilestone, emitPhaseLog } from '../../workflow/phases/helpers'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export interface ManualQaMutationGuard {
   actionId: string
@@ -550,7 +551,7 @@ function copyImprovementEvidence(input: {
         relativePath: `origin/manual-qa/evidence/${destinationName}`,
       })
     } catch (error) {
-      omitted.push({ id: evidence.id, reason: error instanceof Error ? error.message : String(error) })
+      omitted.push({ id: evidence.id, reason: getErrorMessage(error) })
     }
   }
   return { copied, omitted }
@@ -1173,7 +1174,7 @@ export async function submitManualQa(input: {
       writeJournal(operationPath, journal)
       persistManualQaDatabaseOperation(input.ticketId, journal)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = getErrorMessage(error)
       emitPhaseLog(input.ticketId, ticket.externalId, 'WAITING_MANUAL_QA', 'error', `Manual QA fix-bead generation failed: ${message}`, {
         source: 'system',
         phaseAttempt: resolvePhaseAttempt(input.ticketId, 'WAITING_MANUAL_QA'),

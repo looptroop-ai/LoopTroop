@@ -5,7 +5,7 @@ import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { failedResponseError } from '@/lib/fetchError'
-import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 
 interface Project {
   id: number

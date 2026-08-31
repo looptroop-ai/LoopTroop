@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
+import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
 export const MAX_RESTART_ATTEMPTS = 3
@@ -311,7 +312,7 @@ export class OpenCodeSupervisor {
         this.setStatus({
           kind: 'degraded',
           baseUrl: this.options.baseUrl,
-          reason: error instanceof Error ? error.message : String(error),
+          reason: getErrorMessage(error),
         })
         console.error(`[opencode] Restart attempt ${attempt} failed: ${this.describeStatusReason()}`)
       }

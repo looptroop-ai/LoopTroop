@@ -4,7 +4,7 @@ import {
   type StructuredRetryDiagnostic,
   withStructuredRetryDiagnosticAttempt,
 } from '@shared/structuredRetryDiagnostics'
-import { isRecord } from '@shared/typeGuards'
+import { isRecord, normalizeString } from '@shared/typeGuards'
 
 const EXCERPT_CONTEXT_LINES = 2
 const MAX_EXCERPT_LINES = 8
@@ -13,10 +13,6 @@ const MAX_EXCERPT_CHARS = 700
 type StructuredRetryDiagnosticCarrier = Error & {
   retryDiagnostic?: StructuredRetryDiagnostic
   structuredFailureClass?: StructuredFailureClass
-}
-
-function normalizeString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
 function truncateExcerpt(text: string): string {

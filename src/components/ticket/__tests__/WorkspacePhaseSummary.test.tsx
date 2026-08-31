@@ -1,10 +1,9 @@
 import type { ReactElement } from 'react'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LogContext } from '@/context/logContextDef'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST, makeTicket } from '@/test/factories'
-import { renderWithProviders, createTestQueryClient, createJsonResponse } from '@/test/renderHelpers'
+import { renderWithProviders, createTestQueryClient, createJsonResponse, withLogContext } from '@/test/renderHelpers'
 import { WorkspacePhaseSummary } from '../WorkspacePhaseSummary'
 
 function createLogEntry(line: string, timestamp: string): LogEntry {
@@ -42,7 +41,7 @@ function renderWithLogContext(ui: ReactElement, logsByPhase: Record<string, LogE
   }
 
   return renderWithProviders(
-    <LogContext.Provider value={value}>{ui}</LogContext.Provider>,
+    withLogContext(value, ui),
     { queryClient: createTestQueryClient() },
   )
 }

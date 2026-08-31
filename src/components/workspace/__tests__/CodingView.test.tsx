@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -70,6 +70,48 @@ type CodingTestOverrides = Omit<Partial<Ticket>, 'runtime'> & {
   runtime?: Omit<Partial<Ticket['runtime']>, 'beads'> & { beads?: RuntimeBeadInput[] }
 }
 
+/** One log context for the view to read, with harmless defaults for everything unnamed. */
+function makeLogContext(overrides: Partial<LogContextValue> = {}): LogContextValue {
+  return {
+    logsByPhase: {},
+    activePhase: null,
+    isLoadingLogs: false,
+    addLog: vi.fn(),
+    addLogRecord: vi.fn(),
+    getLogsForPhase: () => [],
+    getAllLogs: () => [],
+    setActivePhase: vi.fn(),
+    clearLogs: vi.fn(),
+    ...overrides,
+  }
+}
+
+/**
+ * Serves bead-log history that always claims an older page, and refuses the older page
+ * for the beads named in `refuseOlderFor` — the shape both drain tests need.
+ */
+function mockBeadLogHistory(fetchSpy: ReturnType<typeof vi.spyOn>, refuseOlderFor: string[]) {
+  const jsonResponse = (payload: unknown) => Promise.resolve(
+    new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  )
+  fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (!url.includes('/logs?')) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+    if (!url.includes('before=')) return jsonResponse({ entries: [], olderCursor: 'cursor-older', hasOlder: true })
+    return refuseOlderFor.some((beadId) => url.includes(`beadId=${beadId}`))
+      ? Promise.resolve(new Response('nope', { status: 500 }))
+      : jsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+  })
+}
+
+/** Older-page requests issued for one bead. */
+function countOlderPageRequests(fetchSpy: ReturnType<typeof vi.spyOn>, beadId: string) {
+  return fetchSpy.mock.calls.filter(([input]: unknown[]) => {
+    const url = String(input)
+    return url.includes('before=') && url.includes(`beadId=${beadId}`)
+  }).length
+}
+
 function renderCoding(overrides: CodingTestOverrides = {}) {
   const baseTicket = makeTicket({ status: 'CODING' })
   const ticket = makeTicket({
@@ -123,6 +165,130 @@ afterEach(() => {
 })
 
 describe('CodingView', () => {
+  it('stops draining a bead log after a page is refused', async () => {
+    mockBeadLogHistory(fetchSpy, ['bead-1'])
+
+    renderCoding({
+      runtime: { beads: [{ id: 'bead-1', title: 'Logged bead', status: 'done', iteration: 1 }] },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Logged bead/ }))
+
+    const olderRequests = () => countOlderPageRequests(fetchSpy, 'bead-1')
+    await waitFor(() => expect(olderRequests()).toBe(1))
+
+    // The server refused, and `hasOlder` stays true after a refusal, so nothing but the
+    // latch stops the walk restarting. This is a guard rather than a regression pin: the
+    // unbounded loop needs the effect to re-run while a page is in flight, which React
+    // Query's request dedupe hides here. The deterministic pin for that is the
+    // `fetchAllOlder` identity test in `useTicketHistoricalLogs.test.tsx`.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)) })
+    expect(olderRequests()).toBe(1)
+  })
+
+  it('drains a bead log again when you come back to it after a refused page', async () => {
+    // Only the first bead's older pages fail. If the second bead failed too its latch
+    // would overwrite the first's, and coming back would work by accident.
+    mockBeadLogHistory(fetchSpy, ['bead-1'])
+
+    renderCoding({
+      runtime: {
+        beads: [
+          { id: 'bead-1', title: 'First bead', status: 'done', iteration: 1 },
+          { id: 'bead-2', title: 'Second bead', status: 'done', iteration: 1 },
+        ],
+      },
+    })
+
+    const firstBeadRetries = () => countOlderPageRequests(fetchSpy, 'bead-1')
+
+    fireEvent.click(screen.getByRole('button', { name: /First bead/ }))
+    await waitFor(() => expect(firstBeadRetries()).toBe(1))
+
+    // Away and back. The latch covers one continuous look at a bead — held for the rest
+    // of the view it would hide that bead's remaining history until a reload, and this
+    // view offers no other way to ask for it.
+    fireEvent.click(screen.getByRole('button', { name: /Second bead/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Second bead/ })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /First bead/ }))
+    await waitFor(() => expect(firstBeadRetries()).toBe(2))
+  })
+
+  it('follows a streaming bead log whose row grows without the count changing', async () => {
+    const scrollTo = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      writable: true,
+      value: scrollTo,
+    })
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    const runFrames = () => {
+      const pending = frames.splice(0, frames.length)
+      for (const frame of pending) frame(0)
+    }
+
+    const makeContext = (line: string): LogContextValue => {
+      const logs: LogEntry[] = [{
+        id: 'stream-1',
+        entryId: 'stream-1',
+        line,
+        source: 'model:openai/gpt-5.4',
+        status: 'CODING',
+        audience: 'ai',
+        kind: 'text',
+        beadId: 'bead-1',
+        streaming: true,
+        op: 'upsert',
+        timestamp: '2026-05-28T10:00:00.000Z',
+      }]
+      return makeLogContext({
+        logsByPhase: { CODING: logs },
+        activePhase: 'CODING',
+        getLogsForPhase: () => logs,
+        getAllLogs: () => logs,
+      })
+    }
+
+    const baseTicket = makeTicket({ status: 'CODING' })
+    const ticket = makeTicket({
+      ...baseTicket,
+      runtime: {
+        ...baseTicket.runtime,
+        beads: [{ id: 'bead-1', title: 'Streaming bead', status: 'in_progress', iteration: 1 }],
+      },
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // A fresh element each time: re-rendering the identical element object lets React
+    // bail out of the subtree, which would make this pass without re-running anything.
+    const tree = () => (
+      <QueryClientProvider client={qc}>
+        <TooltipProvider>
+          <CodingView ticket={ticket} />
+        </TooltipProvider>
+      </QueryClientProvider>
+    )
+
+    vi.mocked(useLogs).mockReturnValue(makeContext('Thinking'))
+    const { rerender } = render(tree())
+
+    fireEvent.click(screen.getByRole('button', { name: /Streaming bead/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Log' }))
+    runFrames()
+    scrollTo.mockClear()
+
+    // One row, still one row — only longer. Keying the scroll on the row count meant
+    // the view sat still while the answer was still arriving.
+    vi.mocked(useLogs).mockReturnValue(makeContext('Thinking about the failing test'))
+    rerender(tree())
+    runFrames()
+
+    expect(screen.getByText(/Thinking about the failing test/)).toBeInTheDocument()
+    expect(scrollTo).toHaveBeenCalled()
+  })
+
   it('fetches full bead data even when runtime bead placeholders already exist', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify([
@@ -616,17 +782,12 @@ describe('CodingView', () => {
       writable: true,
     })
 
-    const logContext: LogContextValue = {
+    const logContext = makeLogContext({
       logsByPhase: { CODING: beadLogs },
       activePhase: 'CODING',
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: vi.fn(() => beadLogs),
       getAllLogs: vi.fn(() => beadLogs),
-      setActivePhase: vi.fn(),
-      clearLogs: vi.fn(),
-    }
+    })
     vi.mocked(useLogs).mockReturnValue(logContext)
 
     renderCoding({

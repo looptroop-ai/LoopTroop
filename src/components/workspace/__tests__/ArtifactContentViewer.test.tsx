@@ -7,9 +7,9 @@ import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersVi
 import { buildArtifactProcessingNoticeCopy } from '../artifactProcessingNotice'
 import { serializeBeadCommitsDiffContent } from '../diffUtils'
 import type { ArtifactStructuredOutputData } from '../phaseArtifactTypes'
-import { LogContext } from '@/context/logContextDef'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST } from '@/test/factories'
+import { withLogContext } from '@/test/renderHelpers'
 import {
   buildBeadsDraftContent,
   buildCanonicalInterviewContent,
@@ -110,7 +110,7 @@ function renderWithLogContext(ui: ReactElement, logsByPhase: Record<string, LogE
     setActivePhase: vi.fn(),
     clearLogs: vi.fn(),
   }
-  return render(<LogContext.Provider value={value}>{ui}</LogContext.Provider>)
+  return render(withLogContext(value, ui))
 }
 
 describe('ArtifactContentViewer', () => {

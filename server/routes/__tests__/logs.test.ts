@@ -4,6 +4,7 @@ import { appendFileSync } from 'node:fs'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { sqlite } from '../../db/index'
 import { appendLogEvent } from '../../log/executionLog'
+import { exportLogEntries } from '../../log/projection'
 import { ticketRouter } from '../tickets'
 import { health } from '../health'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
@@ -190,6 +191,27 @@ describe('ticket log projection API', () => {
     const exported = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/logs/export?scope=phase&phase=CODING&view=overview`)
     expect(exported.headers.get('content-type')).toContain('text/plain')
     expect((await exported.text()).split('\n').map(line => line.slice(-5))).toEqual(['row-0', 'row-1', 'row-2', 'row-3'])
+  })
+
+  it('exports the same complete history whether it fits one page or five', async () => {
+    const { ticket } = createInitializedTestTicket(repoManager)
+    for (let index = 0; index < 5; index += 1) {
+      appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:0${index}.000Z` }, 'system', 'CODING')
+    }
+    const query = { scope: 'phase', phase: 'CODING', view: 'overview' } as const
+
+    const singlePage = await exportLogEntries(ticket.id, query)
+    // One row per page walks four cursors, so an off-by-one or a reversed page order
+    // shows up here and nowhere else.
+    const manyPages = await exportLogEntries(ticket.id, query, { pageSize: 1 })
+
+    expect(singlePage?.map(entry => entry.content))
+      .toEqual(['row-0', 'row-1', 'row-2', 'row-3', 'row-4'])
+    expect(manyPages).toEqual(singlePage)
+
+    // A page size below one asks SQLite for nothing, and the walk would end on the first
+    // turn — a complete export replaced by an empty one, with nothing to say so.
+    await expect(exportLogEntries(ticket.id, query, { pageSize: 0 })).rejects.toThrow(RangeError)
   })
 
   it('counts logical text lines for the complete filtered result without applying the page cursor', async () => {

@@ -2,12 +2,11 @@ import type { ReactNode, Ref } from 'react'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
-import { LogContext } from '@/context/logContextDef'
 import type { LogContextValue } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
-import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
+import { createJsonResponse, createTestQueryClient, withLogContext } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -134,6 +133,27 @@ function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> 
       ...runtimeOverrides,
       beads: runtimeOverrides.beads?.map(makeRuntimeBead) ?? [],
     },
+  }
+}
+
+/**
+ * One log context for the panel to read. Every field has a harmless default so a test
+ * names only what it is actually about.
+ */
+function makeLogContext(overrides: Partial<LogContextValue> = {}): LogContextValue {
+  return {
+    logsByPhase: {},
+    activePhase: null,
+    isLoadingLogs: false,
+    addLog: vi.fn(),
+    addLogRecord: vi.fn(),
+    getLogsForPhase: () => [],
+    getAllLogs: () => [],
+    setActivePhase: vi.fn(),
+    loadLogsForPhase: vi.fn(),
+    isLoadingLogScope: vi.fn(() => false),
+    clearLogs: vi.fn(),
+    ...overrides,
   }
 }
 
@@ -505,26 +525,159 @@ describe('PhaseLogPanel', () => {
     }
   })
 
-  it('asks for phase debug logs only after the DEBUG tab is selected', () => {
+  it('does not re-request the phase when a live row arrives', () => {
     const loadLogsForPhase = vi.fn()
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
-      getLogsForPhase: vi.fn(() => []),
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
+    const makeValue = (logs: LogEntry[]) => makeLogContext({
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
+
+    const first = [makeLog('row-1', '[SYS] First row')]
+    const { rerender } = renderWithTooltipProvider(
+      withLogContext(makeValue(first), (
+        <PhaseLogPanel phase="CODING" />
+      )),
+    )
+    expect(loadLogsForPhase).toHaveBeenCalledTimes(1)
+
+    // A streamed line publishes a new context value while the loader keeps its identity.
+    // Depending on the whole context turned each arriving line into another request for
+    // the page it had just arrived on.
+    const second = [...first, makeLog('row-2', '[SYS] Second row')]
+    rerender(
+      withLogContext(makeValue(second), (
+        <PhaseLogPanel phase="CODING" />
+      )),
+    )
+
+    expect(screen.getByText(/Second row/)).toBeInTheDocument()
+    expect(loadLogsForPhase).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows rows on a model tab that only a model-tagged source named', () => {
+    const modelId = 'openai/gpt-5.4'
+    const logs: LogEntry[] = [
+      makeLog('sourced-output', 'Answer from the source-tagged row', {
+        // No `modelId` field: the row names its model only through the source, which is
+        // how the tab beside it came to exist.
+        source: `model:${modelId}`,
+        audience: 'ai',
+        kind: 'text',
+      }),
+      makeLog('other-output', 'Answer from another model', {
+        source: 'model:anthropic/claude-opus-5',
+        audience: 'ai',
+        kind: 'text',
+      }),
+    ]
+    const value = makeLogContext({
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
+    })
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="CODING" />
-      </LogContext.Provider>,
+      )),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
+    fireEvent.click(screen.getByTitle(`${modelId} · Effort: Not reported`))
+
+    expect(screen.getByText(/Answer from the source-tagged row/)).toBeInTheDocument()
+    expect(screen.queryByText(/Answer from another model/)).not.toBeInTheDocument()
+  })
+
+  it('keeps two attempts that reuse one milestone id as two rows', () => {
+    const logs: LogEntry[] = [
+      makeLog('milestone:CODING:started', '[SYS] First attempt started', {
+        phaseAttempt: 1,
+        timestamp: '2026-03-10T10:00:00.000Z',
+      }),
+      makeLog('milestone:CODING:started', '[SYS] Second attempt started', {
+        phaseAttempt: 2,
+        timestamp: '2026-03-10T11:00:00.000Z',
+      }),
+    ]
+    const value = makeLogContext({
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
+    })
+
+    // A retried phase re-emits `milestone:<phase>:started` under the same id, and this
+    // panel loads every attempt when it is not given one. Keying the rows on the bare id
+    // gives React two children with one key, and the index map resolves both to one row.
+    const errors: unknown[] = []
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((...args) => { errors.push(args[0]) })
+    try {
+      renderWithTooltipProvider(
+        withLogContext(value, (
+          <PhaseLogPanel phase="CODING" />
+        )),
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+
+    expect(screen.getByText(/First attempt started/)).toBeInTheDocument()
+    expect(screen.getByText(/Second attempt started/)).toBeInTheDocument()
+    expect(errors.filter((message) => String(message).includes('same key'))).toEqual([])
+  })
+
+  it('stops the activity strip once the ticket reaches a terminal status', () => {
+    // The activity has to belong to the phase on screen, or the strip drops it whatever
+    // `enabled` says — which is what makes the terminal case worth its own assertion.
+    const makePromptFor = (status: string) => makeLog('prompt-1', '[PROMPT] openai/gpt-5.4 prompt #1', {
+      status,
+      source: 'model:openai/gpt-5.4',
+      audience: 'ai',
+      kind: 'prompt',
+      modelId: 'openai/gpt-5.4',
+      sessionId: 'ses_waiting',
+    })
+    const makeValue = (prompt: LogEntry) => makeLogContext({
+      logsByPhase: { [prompt.status]: [prompt] },
+      activePhase: prompt.status,
+      getLogsForPhase: () => [prompt],
+      getAllLogs: () => [prompt],
+    })
+
+    const runningPrompt = makePromptFor('CODING')
+    const running = renderWithTooltipProvider(
+      withLogContext(makeValue(runningPrompt), (
+        <PhaseLogPanel phase="CODING" logs={[runningPrompt]} ticket={{ ...makeTicket(), status: 'CODING' }} />
+      )),
+    )
+    expect(screen.queryAllByText(/Waiting for first model activity/).length).toBeGreaterThan(0)
+    running.unmount()
+
+    // Same shape, except the run is over. The phase still equals the ticket's status, so
+    // the panel read it as live and kept counting elapsed time against work that stopped.
+    const cancelledPrompt = makePromptFor('CANCELED')
+    renderWithTooltipProvider(
+      withLogContext(makeValue(cancelledPrompt), (
+        <PhaseLogPanel phase="CANCELED" logs={[cancelledPrompt]} ticket={{ ...makeTicket(), status: 'CANCELED' }} />
+      )),
+    )
+    expect(screen.queryAllByText(/Waiting for first model activity/)).toEqual([])
+  })
+
+  it('asks for phase debug logs only after the DEBUG tab is selected', () => {
+    const loadLogsForPhase = vi.fn()
+    const value = makeLogContext({ loadLogsForPhase })
+
+    renderWithTooltipProvider(
+      withLogContext(value, (
+        <PhaseLogPanel phase="CODING" />
+      )),
     )
 
     expect(loadLogsForPhase).toHaveBeenCalledWith('CODING')
@@ -543,24 +696,12 @@ describe('PhaseLogPanel', () => {
         phaseAttempt: 2,
       }),
     ])
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
-      getLogsForPhase,
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
-      loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    const value = makeLogContext({ getLogsForPhase, loadLogsForPhase })
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="PREPARING_EXECUTION_ENV" phaseAttempt={2} />
-      </LogContext.Provider>,
+      )),
     )
 
     expect(loadLogsForPhase).toHaveBeenCalledWith('PREPARING_EXECUTION_ENV', { phaseAttempt: 2 })
@@ -584,35 +725,26 @@ describe('PhaseLogPanel', () => {
       ], olderCursor: null, hasOlder: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     )
     const loadLogsForPhase = vi.fn()
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
+    const value = makeLogContext({
       getLogsForPhase: vi.fn(() => [
         makeLog('attempt-2-live', '[SYS] Live row should stay out.', {
           status: 'PREPARING_EXECUTION_ENV',
           phaseAttempt: 2,
         }),
       ]),
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     try {
       renderWithTooltipProvider(
-        <LogContext.Provider value={value}>
+        withLogContext(value, (
           <PhaseLogPanel
             phase="PREPARING_EXECUTION_ENV"
             ticket={makeTicket()}
             phaseAttempt={1}
             logMode="snapshot"
           />
-        </LogContext.Provider>,
+        )),
       )
 
       await waitFor(() => {
@@ -648,24 +780,17 @@ describe('PhaseLogPanel', () => {
         sessionId: 'session-2',
       }),
     ]
-    const value: LogContextValue = {
+    const value = makeLogContext({
       logsByPhase: { CODING: logs },
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: vi.fn(() => logs),
       getAllLogs: vi.fn(() => logs),
-      setActivePhase: vi.fn(),
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="CODING" />
-      </LogContext.Provider>,
+      )),
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'AI' }))

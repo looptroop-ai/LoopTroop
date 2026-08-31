@@ -1,8 +1,10 @@
-import { startTransition, useCallback, useEffect, useState, useRef, type ReactNode } from 'react'
-import { LogContext } from './logContextDef'
+import { startTransition, useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from 'react'
+import { LogActionsContext, LogStateContext } from './logContextDef'
 import {
+  type LogActionsValue,
   type LogEntry,
   type LogChannel,
+  type LogStateValue,
   type PlainLogOptions,
   type ServerLogScope,
   serverLogCache,
@@ -125,12 +127,20 @@ export function LogProvider({
   const loadedScopeKeysRef = useRef<Set<string>>(new Set())
   const loadingScopeKeysRef = useRef<Set<string>>(new Set())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
+  const activePhaseRef = useRef(activePhase)
   // Bumped whenever this provider stops owning `ticketId`, so a fetch that outlives it can tell.
   const generationRef = useRef(0)
 
   useEffect(() => {
     currentStatusRef.current = currentStatus
   }, [currentStatus])
+
+  // Written after commit, like `currentStatusRef` above. A render can be thrown away, and
+  // `getActivePhase` is what a phase-less SSE event is filed under — so a ref written
+  // during render can hand a dispatcher a phase from a render that never happened.
+  useEffect(() => {
+    activePhaseRef.current = activePhase
+  }, [activePhase])
 
   useEffect(() => {
     setLogsByPhase({})
@@ -325,6 +335,10 @@ export function LogProvider({
     mergeLiveEntry(entry)
   }, [mergeLiveEntry])
 
+  // Deliberately bound to `logsByPhase` and published with it: a caller memoising over a
+  // reader wants to recompute when the rows change, and only then. The loaders below are
+  // the opposite — identity-stable, so an effect can ask for a page without asking again
+  // for every line the page then streams.
   const getLogsForPhase = useCallback(
     (phase: string, options?: { phaseAttempt?: number }) => (logsByPhase[phase] ?? [])
       .filter((entry) => entryMatchesPhaseAttempt(entry, options?.phaseAttempt))
@@ -338,6 +352,8 @@ export function LogProvider({
       .flatMap(entries => entries)
       .sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
   }, [logsByPhase])
+
+  const getActivePhase = useCallback(() => activePhaseRef.current, [])
 
   const loadLogsForPhase = useCallback((phase: string, options?: { channel?: LogChannel; phaseAttempt?: number }) => {
     if (!phase) return
@@ -367,9 +383,32 @@ export function LogProvider({
     })
   }, [ticketId])
 
+  const state = useMemo<LogStateValue>(
+    () => ({ logsByPhase, activePhase, isLoadingLogs, getLogsForPhase, getAllLogs, isLoadingLogScope }),
+    [activePhase, getAllLogs, getLogsForPhase, isLoadingLogScope, isLoadingLogs, logsByPhase],
+  )
+
+  // Every member below is already identity-stable, so this memo settles once per ticket
+  // and never invalidates as rows arrive. That is the point: an effect may depend on the
+  // whole actions object without re-running when a line arrives.
+  const actions = useMemo<LogActionsValue>(
+    () => ({
+      addLog,
+      addLogRecord,
+      getActivePhase,
+      setActivePhase: setManualActivePhase,
+      loadLogsForPhase,
+      loadAllLogs,
+      clearLogs,
+    }),
+    [addLog, addLogRecord, clearLogs, getActivePhase, loadAllLogs, loadLogsForPhase],
+  )
+
   return (
-    <LogContext.Provider value={{ logsByPhase, activePhase, isLoadingLogs, addLog, addLogRecord, getLogsForPhase, getAllLogs, setActivePhase: setManualActivePhase, loadLogsForPhase, loadAllLogs, isLoadingLogScope, clearLogs }}>
-      {children}
-    </LogContext.Provider>
+    <LogActionsContext.Provider value={actions}>
+      <LogStateContext.Provider value={state}>
+        {children}
+      </LogStateContext.Provider>
+    </LogActionsContext.Provider>
   )
 }

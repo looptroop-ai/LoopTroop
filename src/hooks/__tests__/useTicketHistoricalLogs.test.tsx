@@ -3,8 +3,17 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
-import { useTicketHistoricalLogs } from '../useTicketHistoricalLogs'
+import { useTicketHistoricalLogs, type HistoricalLogScope } from '../useTicketHistoricalLogs'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+
+/** Mounts the hook against a fresh query client — every test needs the same scaffolding. */
+function renderHistoricalLogs(scope: HistoricalLogScope) {
+  const client = createTestQueryClient()
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+  return renderHook(() => useTicketHistoricalLogs('ticket-1', scope), { wrapper })
+}
 
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -30,13 +39,7 @@ describe('useTicketHistoricalLogs', () => {
         totalEntries: 2001,
         totalTextLines: 4822,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview', })
 
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new']))
     expect(result.current.totalEntries).toBe(2000)
@@ -79,18 +82,16 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'lifecycle', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     await act(async () => { await result.current.fetchAllOlder() })
 
-    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new', 'middle', 'old']))
+    // None of these rows carries a timestamp, so the sort leaves them in the order they
+    // were folded. That order is now the order the pages are held in — oldest first —
+    // where it used to be the reverse, which listed undated history newest-first inside
+    // a log that reads downwards.
+    await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['old', 'middle', 'new']))
     expect(fetchSpy).toHaveBeenNthCalledWith(
       2,
       '/api/tickets/ticket-1/logs?scope=lifecycle&view=overview&limit=250&before=cursor-2',
@@ -103,6 +104,171 @@ describe('useTicketHistoricalLogs', () => {
     )
   })
 
+  it('keeps two archived attempts apart when they reuse one milestone id', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          phase: 'CODING',
+          entryId: 'milestone:CODING:started',
+          phaseAttempt: 2,
+          content: 'second attempt',
+          timestamp: '2026-03-10T00:00:02.000Z',
+        }],
+        olderCursor: 'cursor-older',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          phase: 'CODING',
+          entryId: 'milestone:CODING:started',
+          phaseAttempt: 1,
+          content: 'first attempt',
+          timestamp: '2026-03-10T00:00:01.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'overview', })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+
+    // Folding on the bare entry id kept whichever page was applied last and dropped the
+    // other attempt entirely.
+    await waitFor(() => expect(result.current.entries).toHaveLength(2))
+    expect(result.current.entries.map(entry => entry.phaseAttempt)).toEqual([1, 2])
+    expect(result.current.entries.map(entry => entry.line)).toEqual(['[SYS] first attempt', '[SYS] second attempt'])
+  })
+
+  it('keeps the newer copy when one row spans a page boundary', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          phase: 'CODING',
+          entryId: 'ses-1:answer',
+          content: 'the finished answer',
+          op: 'finalize',
+          timestamp: '2026-03-10T00:00:02.000Z',
+        }],
+        olderCursor: 'cursor-older',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{
+          phase: 'CODING',
+          entryId: 'ses-1:answer',
+          content: 'the answer so f',
+          op: 'append',
+          timestamp: '2026-03-10T00:00:01.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'ai', })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    await act(async () => { await result.current.fetchAllOlder() })
+    await waitFor(() => expect(result.current.data?.pages.length).toBe(2))
+
+    // React Query prepends older pages, so folding them backwards let the unfinished
+    // append overwrite the finalize that had already been fetched.
+    expect(result.current.entries).toHaveLength(1)
+    expect(result.current.entries[0]?.line).toContain('the finished answer')
+    // ...and the row still reads from when it started, the way the live overlay merges
+    // the same pair. Taking the finalize's timestamp would sort a row that streamed for
+    // a while past everything that happened while it was streaming.
+    expect(result.current.entries[0]?.timestamp).toBe('2026-03-10T00:00:01.000Z')
+    expect(result.current.entries[0]?.streaming).toBe(false)
+  })
+
+  it('folds a row re-emitted under a new id when the fingerprint matches', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => createJsonResponse({
+      entries: [
+        {
+          phase: 'CODING',
+          entryId: 'first-delivery',
+          fingerprint: 'opencode-question:session-1:req-1:replied',
+          content: 'AI question answered.',
+          timestamp: '2026-03-10T00:00:01.000Z',
+        },
+        {
+          phase: 'CODING',
+          entryId: 'second-delivery',
+          fingerprint: 'opencode-question:session-1:req-1:replied',
+          content: 'AI question answered.',
+          timestamp: '2026-03-10T00:00:02.000Z',
+        },
+      ],
+      olderCursor: null,
+      hasOlder: false,
+    }))
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'overview', })
+
+    // The live overlay folds on the fingerprint as well as the id, so the archive has to
+    // as well or the same pair renders once live and twice restored.
+    await waitFor(() => expect(result.current.entries).toHaveLength(1))
+  })
+
+  it('stops walking older pages once the caller cancels', async () => {
+    // Bounded at five pages so an uncancelled walk still terminates: this has to fail on
+    // its own assertion if the token is dropped, not by hanging the run.
+    let page = 0
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementation(() => {
+        page += 1
+        return createJsonResponse({
+          entries: [{ phase: 'CODING', entryId: `page-${page}`, content: `row ${page}` }],
+          olderCursor: page < 5 ? `cursor-${page}` : null,
+          hasOlder: page < 5,
+        })
+      })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    const callsBeforeDrain = fetchSpy.mock.calls.length
+
+    // Cancelled the moment the first page lands, standing in for a bead switch or an
+    // unmount mid-walk.
+    let cancelled = false
+    await act(async () => {
+      await result.current.fetchAllOlder(() => {
+        const wasCancelled = cancelled
+        cancelled = true
+        return wasCancelled
+      })
+    })
+
+    expect(fetchSpy.mock.calls.length).toBe(callsBeforeDrain + 1)
+  })
+
+  it('keeps one identity while it pages, so a caller can own a walk across it', async () => {
+    // The second page is the last one, so `hasPreviousPage` flips true -> false. That
+    // flip is what used to rebuild the callback.
+    vi.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'newest', content: 'row' }],
+        olderCursor: 'cursor-next',
+        hasOlder: true,
+      }))
+      .mockImplementationOnce(() => createJsonResponse({
+        entries: [{ phase: 'CODING', entryId: 'oldest', content: 'row' }],
+        olderCursor: null,
+        hasOlder: false,
+      }))
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
+
+    await waitFor(() => expect(result.current.hasOlder).toBe(true))
+    const beforePaging = result.current.fetchAllOlder
+    await act(async () => { await result.current.fetchOlder() })
+    await waitFor(() => expect(result.current.hasOlder).toBe(false))
+
+    // A caller holds this in an effect dependency to own its walk. Rebuilding it as
+    // pages land re-runs that effect, and the cleanup cancels the walk still in flight —
+    // which is how a refused page comes back looking like a cancellation and the retry
+    // latch never closes.
+    expect(result.current.fetchAllOlder).toBe(beforePaging)
+  })
+
   it('includes a bead filter in durable history requests', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockImplementation(() => createJsonResponse({
@@ -110,13 +276,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', view: 'ai', beadId: 'bead-1',
-    }), { wrapper })
+    renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'ai', beadId: 'bead-1', })
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
     expect(fetchSpy).toHaveBeenCalledWith(

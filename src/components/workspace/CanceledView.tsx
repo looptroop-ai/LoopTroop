@@ -39,7 +39,9 @@ export function CanceledView({ ticket }: { ticket?: Ticket }) {
         </Card>
       </div>
 
-      <CollapsiblePhaseLogSection phase="CANCELED" className="px-4 pb-4" />
+      {/* The ticket has to reach the panel: without it no durable history is loaded, so
+          a cancelled ticket showed an empty log. */}
+      <CollapsiblePhaseLogSection phase="CANCELED" ticket={ticket} className="px-4 pb-4" />
     </div>
   )
 }

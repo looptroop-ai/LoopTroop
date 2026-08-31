@@ -1,4 +1,5 @@
 import type { LogEntry } from '@/context/LogContext'
+import { getLogEntryIdentity } from '@/context/logUtils'
 import type { ManualQaBeadOrigin, Ticket } from '@/hooks/useTickets'
 import { isSystem } from './logFormat'
 
@@ -39,6 +40,7 @@ function isCompletedBeadStatus(status?: string | null): boolean {
  */
 export function buildBeadSections(
   entries: LogEntry[],
+  /** Attempt-scoped identities, as produced by `getLogEntryIdentity` — not bare entry ids. */
   visibleEntryIds: Set<string>,
   ticket?: Ticket,
 ): BeadSectionsResult | null {
@@ -100,10 +102,10 @@ export function buildBeadSections(
   const total = runtimeTotal > 0 ? runtimeTotal : discoveredBeadIds.length
   const shouldFilterByRuntimeStatus = runtimeBeadMap.size > 0
 
-  const visiblePreambleEntries = preambleEntries.filter((entry) => visibleEntryIds.has(entry.entryId))
+  const visiblePreambleEntries = preambleEntries.filter((entry) => visibleEntryIds.has(getLogEntryIdentity(entry)))
   const beadSections = beadSegments
     .map((segment, segmentIndex): RenderedBeadSection | null => {
-      const visibleEntries = segment.entries.filter((entry) => visibleEntryIds.has(entry.entryId))
+      const visibleEntries = segment.entries.filter((entry) => visibleEntryIds.has(getLogEntryIdentity(entry)))
       if (visibleEntries.length === 0) return null
 
       const runtimeBead = runtimeBeadMap.get(segment.beadId)

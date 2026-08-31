@@ -6,13 +6,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
-import { compareTimestamps, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
+import { compareTimestamps, getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import type { Ticket } from '@/hooks/useTickets'
-import { filterEntries, formatLogLine, MULTI_MODEL_PHASES, isSystem, isCommand } from './logFormat'
+import { filterEntries, formatLogLine, getEntryFullModelId, MULTI_MODEL_PHASES, isSystem, isCommand } from './logFormat'
 import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
@@ -70,6 +70,11 @@ export function PhaseLogPanel({
   defaultTab,
 }: PhaseLogPanelProps) {
   const logCtx = useLogs()
+  // Destructured so the load effects below depend on the one stable callback rather than
+  // the context object, which is a new value on every streamed line: listing the context
+  // made each arriving line re-request the page that line belongs to.
+  const loadLogsForPhase = logCtx?.loadLogsForPhase
+  const getLogsForPhase = logCtx?.getLogsForPhase
   const [activeTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
   const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
   const aiDetailsPanelId = useId()
@@ -135,21 +140,21 @@ export function PhaseLogPanel({
   useEffect(() => {
     if (propLogs || shouldLoadHistoricalLogs) return
     if (liveLogOptions) {
-      logCtx?.loadLogsForPhase?.(phase, liveLogOptions)
+      loadLogsForPhase?.(phase, liveLogOptions)
     } else {
-      logCtx?.loadLogsForPhase?.(phase)
+      loadLogsForPhase?.(phase)
     }
-  }, [liveLogOptions, logCtx, phase, propLogs, shouldLoadHistoricalLogs])
+  }, [liveLogOptions, loadLogsForPhase, phase, propLogs, shouldLoadHistoricalLogs])
 
   useEffect(() => {
     if (shouldLoadHistoricalLogs || activeTab !== 'DEBUG') return
-    logCtx?.loadLogsForPhase?.(phase, liveDebugLogOptions)
-  }, [activeTab, liveDebugLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
+    loadLogsForPhase?.(phase, liveDebugLogOptions)
+  }, [activeTab, liveDebugLogOptions, loadLogsForPhase, phase, shouldLoadHistoricalLogs])
 
   useEffect(() => {
     if (shouldLoadHistoricalLogs || !isAiLogTab(activeTab)) return
-    logCtx?.loadLogsForPhase?.(phase, liveAiLogOptions)
-  }, [activeTab, liveAiLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
+    loadLogsForPhase?.(phase, liveAiLogOptions)
+  }, [activeTab, liveAiLogOptions, loadLogsForPhase, phase, shouldLoadHistoricalLogs])
 
   const isLoadingLogs = propLogs
     ? false
@@ -164,25 +169,30 @@ export function PhaseLogPanel({
     () => {
       if (propLogs) {
         if (activeTab !== 'DEBUG') return propLogs
-        const debugEntries = (logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []).filter((entry) => isDebugLogEntry(entry))
-        const seenEntryIds = new Set(propLogs.map((entry) => entry.entryId))
+        const debugEntries = (getLogsForPhase?.(phase, liveLogOptions) ?? []).filter((entry) => isDebugLogEntry(entry))
+        const seenIdentities = new Set(propLogs.map(getLogEntryIdentity))
         return [
           ...propLogs,
-          ...debugEntries.filter((entry) => !seenEntryIds.has(entry.entryId)),
+          ...debugEntries.filter((entry) => !seenIdentities.has(getLogEntryIdentity(entry))),
         ].sort((a, b) => compareTimestamps(a.timestamp, b.timestamp))
       }
       if (shouldLoadHistoricalLogs) {
         if (logMode === 'snapshot') return historicalLogs.entries
         return mergeEntriesBatch(
           historicalLogs.entries,
-          logCtx?.getLogsForPhase(phase, liveLogOptions) ?? [],
+          getLogsForPhase?.(phase, liveLogOptions) ?? [],
         )
       }
-      return logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []
+      return getLogsForPhase?.(phase, liveLogOptions) ?? []
     },
-    [activeTab, historicalLogs.entries, liveLogOptions, logCtx, logMode, phase, propLogs, shouldLoadHistoricalLogs],
+    [activeTab, getLogsForPhase, historicalLogs.entries, liveLogOptions, logMode, phase, propLogs, shouldLoadHistoricalLogs],
   )
-  const isLiveTicketPhase = !ticket || ticket.status === phase
+  // A ticket that has finished is not running anything, so its last phase is not live
+  // even though the panel's phase still matches its status — otherwise a cancelled or
+  // completed ticket keeps a current-activity strip ticking over a run that ended.
+  // (Ninth copy of this predicate in the tree; PR-05 §5.3 consolidates them.)
+  const isTerminalTicketStatus = ticket?.status === 'COMPLETED' || ticket?.status === 'CANCELED'
+  const isLiveTicketPhase = !ticket || (ticket.status === phase && !isTerminalTicketStatus)
   const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
   const hasToolbarPrefix = toolbarPrefix != null
   const [isModelsCollapsed, setIsModelsCollapsed] = useState(true)
@@ -324,24 +334,20 @@ export function PhaseLogPanel({
     return lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0)
   }, [lockedCouncilMembers])
 
-  // Detect model IDs from structured source field
+  // Detect model IDs through the same identity the tab filter uses, so every tab this
+  // builds has rows behind it.
   const detectedModelIds = useMemo(() => {
     const ids = new Set<string>()
     for (const entry of phaseLogs) {
-      if (entry.modelId) {
-        ids.add(entry.modelId)
-        continue
-      }
-      if (entry.source.startsWith('model:')) {
-        ids.add(entry.source.slice('model:'.length))
-      }
+      const modelId = getEntryFullModelId(entry)
+      if (modelId) ids.add(modelId)
     }
     return Array.from(ids)
   }, [phaseLogs])
   const observedModelVariants = useMemo(() => {
     const variants = new Map<string, string>()
     for (const entry of phaseLogs) {
-      const modelId = entry.modelId ?? (entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : undefined)
+      const modelId = getEntryFullModelId(entry)
       if (modelId && entry.variant) variants.set(modelId, entry.variant)
     }
     return variants
@@ -395,8 +401,11 @@ export function PhaseLogPanel({
   }), [aiDetailsModelId, phase, phaseAttempt])
   const aiDetails = useTicketAiDetails(ticket?.id, aiDetailsRequest, showAiDetails && isAiDetailsOpen)
 
+  // Keyed by attempt-scoped identity, not the bare entry id: a retried phase re-emits
+  // its milestones under the same id, and this panel loads every attempt when it is not
+  // given one, so bare ids alias two rows onto a single key, index and set entry.
   const visibleEntryIds = useMemo(
-    () => new Set(filteredLogs.map((entry) => entry.entryId)),
+    () => new Set(filteredLogs.map(getLogEntryIdentity)),
     [filteredLogs],
   )
 
@@ -412,7 +421,7 @@ export function PhaseLogPanel({
     ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
     : loadedTextLines
   const filteredIndexMap = useMemo(
-    () => new Map(filteredLogs.map((entry, index) => [entry.entryId, index])),
+    () => new Map(filteredLogs.map((entry, index) => [getLogEntryIdentity(entry), index])),
     [filteredLogs],
   )
   const virtualItems = useMemo(() => {
@@ -421,13 +430,13 @@ export function PhaseLogPanel({
       | { type: 'bead'; key: string; ordinal: number; total: number; title: string }
     > = []
     if (phase === 'CODING' && hasBeadSections && beadSectionsResult) {
-      for (const entry of beadSectionsResult.preambleEntries) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const entry of beadSectionsResult.preambleEntries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       for (const section of beadSectionsResult.beadSections) {
         items.push({ type: 'bead', key: `${section.beadId}-${section.ordinal}`, ordinal: section.ordinal, total: section.total, title: section.title })
-        for (const entry of section.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+        for (const entry of section.entries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       }
     } else {
-      for (const entry of filteredLogs) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const entry of filteredLogs) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
     }
     return items
   }, [beadSectionsResult, filteredLogs, hasBeadSections, phase])
@@ -774,7 +783,7 @@ export function PhaseLogPanel({
                     : (
                         <LogEntryRow
                           entry={item.entry}
-                          index={filteredIndexMap.get(item.entry.entryId) ?? 0}
+                          index={filteredIndexMap.get(getLogEntryIdentity(item.entry)) ?? 0}
                           showModelName={shouldShowModelNameInLogTags}
                         />
                       )}
@@ -783,9 +792,9 @@ export function PhaseLogPanel({
                 <>
                   {beadSectionsResult.preambleEntries.map((entry) => (
                     <LogEntryRow
-                      key={entry.entryId}
+                      key={getLogEntryIdentity(entry)}
                       entry={entry}
-                      index={filteredLogs.findIndex((e) => e.entryId === entry.entryId)}
+                      index={filteredIndexMap.get(getLogEntryIdentity(entry)) ?? 0}
                       showModelName={shouldShowModelNameInLogTags}
                     />
                   ))}
@@ -794,9 +803,9 @@ export function PhaseLogPanel({
                       <BeadDelimiter ordinal={section.ordinal} total={section.total} title={section.title} />
                       {section.entries.map((entry) => (
                         <LogEntryRow
-                          key={entry.entryId}
+                          key={getLogEntryIdentity(entry)}
                           entry={entry}
-                          index={filteredLogs.findIndex((e) => e.entryId === entry.entryId)}
+                          index={filteredIndexMap.get(getLogEntryIdentity(entry)) ?? 0}
                           showModelName={shouldShowModelNameInLogTags}
                         />
                       ))}
@@ -805,7 +814,7 @@ export function PhaseLogPanel({
                 </>
               ) : (
                 filteredLogs.map((entry, i) => (
-                  <LogEntryRow key={entry.entryId} entry={entry} index={i} showModelName={shouldShowModelNameInLogTags} />
+                  <LogEntryRow key={getLogEntryIdentity(entry)} entry={entry} index={i} showModelName={shouldShowModelNameInLogTags} />
                 ))
               )
             ) : isLoadingLogs ? (

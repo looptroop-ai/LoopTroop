@@ -493,6 +493,9 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   const runtime = getTicketRuntime(ticket)
   const descriptionId = useId()
   const logCtx = useLogs()
+  // The reader, not the context: its identity moves when the rows move and at no other
+  // time, so a loading flag flipping no longer recopies this phase's log.
+  const getLogsForPhase = logCtx?.getLogsForPhase
   const isLivePhase = ticket.status === phase
   const shouldTrackCoverageProgress = isLivePhase && isCoveragePhase(phase)
   const shouldTrackPhaseAttempt = isLivePhase && phase !== 'CODING' && !isCoveragePhase(phase)
@@ -508,10 +511,10 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   )
   const shouldTrackLogs = shouldTrackCoverageProgress || (isLivePhase && phase === 'PREPARING_EXECUTION_ENV')
   const phaseLogs = useMemo(
-    () => shouldTrackLogs && logCtx
-      ? logCtx.getLogsForPhase(phase, activeAttempt ? { phaseAttempt: activeAttempt.attemptNumber } : undefined)
+    () => shouldTrackLogs && getLogsForPhase
+      ? getLogsForPhase(phase, activeAttempt ? { phaseAttempt: activeAttempt.attemptNumber } : undefined)
       : [],
-    [shouldTrackLogs, logCtx, phase, activeAttempt],
+    [shouldTrackLogs, getLogsForPhase, phase, activeAttempt],
   )
   const phaseActivationTimestamp = shouldTrackCoverageProgress
     ? findLatestPhaseActivationTimestamp(phase, phaseLogs)

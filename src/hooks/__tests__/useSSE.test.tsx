@@ -64,6 +64,21 @@ class MockEventSource {
     if (this.closed) return
     this.onerror?.call(this as unknown as EventSource, new Event('error'))
   }
+
+  /**
+   * Dispatches the way a browser does for events already queued when `close()` landed:
+   * the stream is gone but its callbacks still run.
+   */
+  emitAfterClose(type: string, data: Record<string, unknown>, lastEventId: string) {
+    const event = { data: JSON.stringify(data), lastEventId } as MessageEvent
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event)
+    }
+  }
+
+  emitTransportErrorAfterClose() {
+    this.onerror?.call(this as unknown as EventSource, new Event('error'))
+  }
 }
 
 describe('useSSE', () => {
@@ -670,5 +685,82 @@ describe('useSSE', () => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['ticket', ticketId] })
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['tickets'] })
     })
+  })
+
+  it('ignores a transport error from the stream a ticket switch left behind', async () => {
+    const { rerender, result } = renderHook(
+      ({ ticketId }: { ticketId: string }) => useSSE({ ticketId, onEvent: vi.fn<SSEHandler>() }),
+      { initialProps: { ticketId: '1:T-42' } },
+    )
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const abandoned = MockEventSource.instances[0]!
+
+    rerender({ ticketId: '1:T-43' })
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(2))
+    const current = MockEventSource.instances[1]!
+    expect(abandoned.closed).toBe(true)
+
+    await act(async () => { current.emitOpen() })
+    await waitFor(() => expect(result.current.connectionState).toBe('connected'))
+
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    await act(async () => {
+      abandoned.emitTransportErrorAfterClose()
+    })
+
+    // Unguarded, the abandoned stream's handler nulls the ref holding the live one,
+    // invalidates whichever ticket is on screen now, drops the UI into reconnecting and
+    // schedules a reconnect for a connection nobody asked for.
+    expect(result.current.connectionState).toBe('connected')
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['ticket', '1:T-43'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['tickets'] })
+    expect(current.closed).toBe(false)
+  })
+
+  it('ignores a message from the stream a ticket switch left behind', async () => {
+    const onEvent = vi.fn<SSEHandler>()
+    const { rerender, result } = renderHook(
+      ({ ticketId }: { ticketId: string }) => useSSE({ ticketId, onEvent }),
+      { initialProps: { ticketId: '1:T-42' } },
+    )
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1))
+    const abandoned = MockEventSource.instances[0]!
+
+    rerender({ ticketId: '1:T-43' })
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(2))
+    onEvent.mockClear()
+
+    await act(async () => {
+      abandoned.emitAfterClose('progress', { ticketId: '1:T-42', content: 'from the old stream' }, '99')
+    })
+
+    // The resume cursor is per hook, not per connection: taking an id from the stream
+    // that was left behind makes the ticket now on screen resume from an event number
+    // belonging to a different ticket, skipping everything before it.
+    expect(result.current.lastEventIdRef.current).toBe('0')
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('opens no stream when the hook unmounts before its queued connect runs', async () => {
+    const queued: Array<() => void> = []
+    const queueSpy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((callback) => {
+      queued.push(callback)
+    })
+
+    const { unmount } = renderHook(() => useSSE({ ticketId: '1:T-42', onEvent: vi.fn<SSEHandler>() }))
+    expect(queued.length).toBeGreaterThan(0)
+
+    unmount()
+    queueSpy.mockRestore()
+
+    // The connect is queued as a microtask, so it can run after the cleanup meant to
+    // stop it — and it mints its own token first thing, so the token check alone always
+    // lets it through and opens a stream nobody will close.
+    await act(async () => {
+      for (const callback of queued) callback()
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+    })
+
+    expect(MockEventSource.instances).toHaveLength(0)
   })
 })

@@ -10,7 +10,13 @@ export interface FormattedLogLine {
   copyText: string
 }
 
-function getEntryFullModelId(entry: LogEntry): string | null {
+/**
+ * Which model a row belongs to. A row can say so in `modelId` or only in a
+ * `model:<id>` source, and the per-model log tabs are built from either — so the
+ * filter behind a tab has to accept either as well, or a tab that exists solely
+ * because of a source-tagged row opens onto nothing.
+ */
+export function getEntryFullModelId(entry: LogEntry): string | null {
   if (entry.modelId) return entry.modelId
   return entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : null
 }
@@ -283,7 +289,7 @@ export function filterEntries(entries: LogEntry[], tab: string): LogEntry[] {
     case 'DEBUG':
       return canonicalEntries
     default:
-      return canonicalEntries.filter(entry => entry.modelId === tab)
+      return canonicalEntries.filter(entry => getEntryFullModelId(entry) === tab)
   }
 }
 

@@ -387,7 +387,54 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   }
 }
 
-export async function exportLogEntries(ticketId: string, query: Omit<LogPageQuery, 'before' | 'limit'>) {
-  const page = await queryLogPage(ticketId, { ...query, limit: Number.MAX_SAFE_INTEGER, includeTotals: false })
-  return page?.entries ?? null
+/**
+ * How many rows one export query pulls.
+ *
+ * There is no cap on the export itself: this walks every page to the end, because
+ * `useTicketHistoricalLogs`, `PhaseLogPanel` and `FullLogView` all treat this endpoint
+ * as the ticket's complete record, and a limit with no truncation signal in the payload
+ * would make a large export quietly lie about being whole. What the paging removes is
+ * the single statement that asked SQLite for a ticket's entire history at once and held
+ * the event loop for as long as that took.
+ */
+const EXPORT_PAGE_SIZE = 500
+
+export async function exportLogEntries(
+  ticketId: string,
+  query: Omit<LogPageQuery, 'before' | 'limit'>,
+  // Overridable so the page boundary can be exercised without writing five hundred rows.
+  { pageSize = EXPORT_PAGE_SIZE }: { pageSize?: number } = {},
+) {
+  // A page size below 1 asks SQLite for nothing, which reads back as a ticket with no
+  // history — an empty export where a complete one was expected, and no error anywhere.
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
+    throw new RangeError(`exportLogEntries pageSize must be a positive integer, received ${pageSize}`)
+  }
+
+  // Pages run newest-first and each page is ordered oldest-first inside itself, so the
+  // pages are collected in reverse and flipped once at the end. For a ticket that is not
+  // being written to, the body is byte-for-byte what the single unbounded query
+  // produced; for one still running, the walk moves toward older rows only, so it sees
+  // the same prefix the one-shot query would have.
+  const pages: Array<Record<string, unknown>[]> = []
+  let before: string | undefined
+
+  for (;;) {
+    const page = await queryLogPage(ticketId, {
+      ...query,
+      limit: pageSize,
+      includeTotals: false,
+      ...(before ? { before } : {}),
+    })
+    // Losing the ticket midway leaves a prefix, not an export. Three call sites read
+    // this endpoint as the whole record, so half of one must not come back looking
+    // complete — the same reason there is no row cap here.
+    if (!page) return null
+
+    pages.push(page.entries)
+    if (!page.hasOlder || !page.olderCursor) break
+    before = page.olderCursor
+  }
+
+  return pages.reverse().flat()
 }

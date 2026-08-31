@@ -3,7 +3,7 @@ import { useSaveTicketUIState, useTicket } from '@/hooks/useTickets'
 import { useSSE, type SSEConnectionState } from '@/hooks/useSSE'
 import { useUI } from '@/context/useUI'
 import { LogProvider } from '@/context/LogContext'
-import { useLogs } from '@/context/useLogContext'
+import { useLogActions } from '@/context/useLogContext'
 import { DashboardHeader } from './DashboardHeader'
 import { NavigatorPanel } from './NavigatorPanel'
 import { ActiveWorkspace } from './ActiveWorkspace'
@@ -52,7 +52,9 @@ function SSELogConnector({
   onStateChange?: (payload: { status: string; previousStatus?: string; workflowRevision?: number }) => void
   onConnectionStateChange?: (state: SSEConnectionState) => void
 }) {
-  const logCtx = useLogs()
+  // Actions only: this component dispatches log rows and never draws them, so it has no
+  // business re-rendering — and rebuilding its SSE callback — on every line it forwards.
+  const logActions = useLogActions()
   const { ingestSseEvent } = useAIQuestions()
 
   const handleEvent = useCallback((event: { type: string; data: Record<string, unknown> }) => {
@@ -72,8 +74,8 @@ function SSELogConnector({
           ...(from ? { previousStatus: from } : {}),
           ...(workflowRevision !== undefined ? { workflowRevision } : {}),
         })
-        logCtx?.setActivePhase(to)
-        logCtx?.addLog(
+        logActions?.setActivePhase(to)
+        logActions?.addLog(
           to,
           `[DEBUG] sse.state_change ${toDebugJson(event.data)}`,
           {
@@ -85,7 +87,7 @@ function SSELogConnector({
             ...(phaseAttempt !== undefined ? { phaseAttempt } : {}),
           },
         )
-        logCtx?.addLog(
+        logActions?.addLog(
           to,
           `[SYS] Transition: ${from || 'unknown'} -> ${to}`,
           {
@@ -102,20 +104,20 @@ function SSELogConnector({
     }
 
     if (event.type === 'log') {
-      const phase = String(event.data.phase ?? logCtx?.activePhase ?? currentStatus ?? '')
+      const phase = String(event.data.phase ?? logActions?.getActivePhase?.() ?? currentStatus ?? '')
       if (phase) {
-        logCtx?.addLogRecord(phase, event.data)
+        logActions?.addLogRecord(phase, event.data)
       }
       return
     }
 
     if (event.type === 'app_error') {
-      const phase = String(event.data.phase ?? logCtx?.activePhase ?? currentStatus ?? '')
+      const phase = String(event.data.phase ?? logActions?.getActivePhase?.() ?? currentStatus ?? '')
       const phaseAttempt = typeof event.data.phaseAttempt === 'number' && Number.isFinite(event.data.phaseAttempt)
         ? event.data.phaseAttempt
         : undefined
       if (phase) {
-        logCtx?.addLog(
+        logActions?.addLog(
           phase,
           `[DEBUG] sse.app_error ${toDebugJson(event.data)}`,
           {
@@ -127,7 +129,7 @@ function SSELogConnector({
             ...(phaseAttempt !== undefined ? { phaseAttempt } : {}),
           },
         )
-        logCtx?.addLogRecord(phase, {
+        logActions?.addLogRecord(phase, {
           type: 'error',
           phase,
           status: phase,
@@ -165,9 +167,9 @@ function SSELogConnector({
       return
     }
 
-    const phase = String(event.data.phase ?? logCtx?.activePhase ?? currentStatus ?? '')
+    const phase = String(event.data.phase ?? logActions?.getActivePhase?.() ?? currentStatus ?? '')
     if (phase) {
-      logCtx?.addLog(
+      logActions?.addLog(
         phase,
         `[DEBUG] sse.${event.type} ${toDebugJson(event.data)}`,
         {
@@ -179,7 +181,7 @@ function SSELogConnector({
         },
       )
     }
-  }, [currentStatus, ingestSseEvent, logCtx, onStateChange])
+  }, [currentStatus, ingestSseEvent, logActions, onStateChange])
 
   const { connectionState } = useSSE({ ticketId, onEvent: handleEvent })
 

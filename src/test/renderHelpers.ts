@@ -2,6 +2,8 @@ import React from 'react'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { LogActionsContext, LogStateContext } from '@/context/logContextDef'
+import type { LogContextValue } from '@/context/logUtils'
 
 export function createTestQueryClient() {
   return new QueryClient({
@@ -29,6 +31,19 @@ export function renderWithProviders(
   wrapped = React.createElement(QueryClientProvider, { client: queryClient }, wrapped)
 
   return { ...render(wrapped), queryClient }
+}
+
+/**
+ * Publishes one hand-built log context to both halves of the real split, so a test
+ * can keep describing the context as a single object while the app subscribes to
+ * the two it actually has.
+ */
+export function withLogContext(value: LogContextValue, ui: React.ReactNode): React.ReactElement {
+  return React.createElement(
+    LogActionsContext.Provider,
+    { value },
+    React.createElement(LogStateContext.Provider, { value }, ui),
+  )
 }
 
 export function createJsonResponse(payload: unknown, status: number = 200) {

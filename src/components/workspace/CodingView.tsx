@@ -1157,9 +1157,23 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         scheduleScrollToBottom('auto')
       }
     }
-  }, [detailTab, scheduleScrollToBottom]) // wait, we also need to trigger on new logs
+  }, [detailTab, scheduleScrollToBottom])
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current)
+        scrollFrameRef.current = null
+      }
+    }
+  }, [])
 
   const logCtx = useLogs()
+  // The loader is identity-stable and the reader is rebound only when rows change, so
+  // neither the fetch effect nor this memo re-runs merely because a line arrived through
+  // some other panel.
+  const loadLogsForPhase = logCtx?.loadLogsForPhase
+  const getLogsForPhase = logCtx?.getLogsForPhase
   const { mutate: performAction, mutateAsync: performActionAsync, isPending } = useTicketAction()
   const { data: fetchedBeads = [] } = useQuery({
     queryKey: ['ticket-beads', ticket.id],
@@ -1214,23 +1228,43 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   } = historicalBeadLogs
   const beadLogEntries = useMemo(() => {
     if (!viewedBead) return []
-    const phaseLogs = logCtx?.getLogsForPhase(phaseForView, { phaseAttempt: logPhaseAttempt }) ?? []
+    const phaseLogs = getLogsForPhase?.(phaseForView, { phaseAttempt: logPhaseAttempt }) ?? []
     const beadLogs = mergeEntriesBatch(
       historicalBeadLogEntries,
       phaseLogs,
     ).filter((entry) => entry.beadId === viewedBead.id)
     return filterBeadLogEntries(beadLogs)
-  }, [historicalBeadLogEntries, logCtx, logPhaseAttempt, phaseForView, viewedBead])
+  }, [getLogsForPhase, historicalBeadLogEntries, logPhaseAttempt, phaseForView, viewedBead])
 
+  // Draining the archive is a loop of requests, so it needs an owner. The token is
+  // released when the bead or the attempt changes and on unmount, which stops the loop
+  // writing pages into a query nobody is showing any more. A failed page ends the drain
+  // rather than restarting it: `hasOlder` stays true after an error, so retrying here
+  // is an unbounded request loop against a server that just said no.
+  const beadLogDrainKey = `${viewedBead?.id ?? 'none'}:${logPhaseAttempt ?? 'active'}`
+  const failedBeadLogDrainRef = useRef<string | null>(null)
   useEffect(() => {
     if (!viewedBead || !hasOlderHistoricalBeadLogs || isFetchingOlderHistoricalBeadLogs) return
-    void fetchAllHistoricalBeadLogs().catch(() => undefined)
-  }, [fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, isFetchingOlderHistoricalBeadLogs, viewedBead])
+    if (failedBeadLogDrainRef.current === beadLogDrainKey) return
+
+    const drain = { cancelled: false }
+    void fetchAllHistoricalBeadLogs(() => drain.cancelled).catch(() => {
+      if (drain.cancelled) return
+      failedBeadLogDrainRef.current = beadLogDrainKey
+    })
+    return () => {
+      drain.cancelled = true
+    }
+  }, [beadLogDrainKey, fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, isFetchingOlderHistoricalBeadLogs, viewedBead])
 
   useEffect(() => {
-    if (!viewedBead || !logCtx?.loadLogsForPhase) return
-    logCtx.loadLogsForPhase('CODING', { channel: 'ai', phaseAttempt: logPhaseAttempt })
-  }, [logCtx, logPhaseAttempt, viewedBead])
+    failedBeadLogDrainRef.current = null
+  }, [beadLogDrainKey])
+
+  useEffect(() => {
+    if (!viewedBead || !loadLogsForPhase) return
+    loadLogsForPhase('CODING', { channel: 'ai', phaseAttempt: logPhaseAttempt })
+  }, [loadLogsForPhase, logPhaseAttempt, viewedBead])
 
   useEffect(() => {
     setSelectedRawIteration(null)
@@ -1324,11 +1358,27 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     copyToClipboard(textToCopy)
   }, [copyToClipboard, selectedBeadLogEntries])
   
+  // The row count is not the signal. A streaming model answer arrives as repeated
+  // upserts of one row whose `line` grows, so the length never moves and the view sat
+  // still while text was still coming in. This tracks the tail itself — which row it is
+  // and how long it has become — the same signature `PhaseLogPanel` follows.
+  const visibleBeadLogTail = useMemo(() => {
+    const lastEntry = selectedBeadLogEntries.at(-1)
+    if (!lastEntry) return null
+    return [
+      selectedBeadLogEntries.length,
+      lastEntry.entryId,
+      lastEntry.line.length,
+      lastEntry.streaming ? 'streaming' : 'static',
+      lastEntry.op,
+    ].join('|')
+  }, [selectedBeadLogEntries])
+
   useEffect(() => {
     if (detailTab === 'model' && autoScrollEnabledRef.current) {
       scheduleScrollToBottom('smooth')
     }
-  }, [detailTab, scheduleScrollToBottom, selectedBeadLogEntries.length])
+  }, [detailTab, scheduleScrollToBottom, visibleBeadLogTail])
 
   const isViewingOther = viewedBead !== null
 

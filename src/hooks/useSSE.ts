@@ -113,6 +113,9 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectAbortControllerRef = useRef<AbortController | null>(null)
   const connectTokenRef = useRef(0)
+  // `connect` is queued as a microtask, so it can still run after the cleanup that was
+  // meant to stop it. Without this it would open an EventSource nobody closes.
+  const mountedRef = useRef(true)
   const ticketIdRef = useRef(ticketId)
   ticketIdRef.current = ticketId
   // Keep the connection stable per ticket while always dispatching to the latest callback.
@@ -145,7 +148,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   }, [])
 
   const connect = useCallback(() => {
-    if (!ticketId) return
+    if (!ticketId || !mountedRef.current) return
     const connectToken = ++connectTokenRef.current
     const connectAbortController = new AbortController()
     connectAbortControllerRef.current?.abort()
@@ -181,7 +184,21 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       const es = new EventSource(url.toString())
       eventSourceRef.current = es
 
+      /**
+       * Every callback below can fire after this connection stopped being the current
+       * one. A closing `EventSource` still dispatches what is already queued, and a
+       * reconnect or a ticket switch installs a second set of listeners over a second
+       * stream — so a late `open`, message or error would invalidate, patch, or start
+       * reconnecting on behalf of whichever ticket is on screen now. That is not the
+       * ticket it was listening for. The token settles which connection is current; the
+       * reference settles which `EventSource` the ref is holding.
+       */
+      const isCurrentConnection = () => mountedRef.current
+        && es === eventSourceRef.current
+        && connectToken === connectTokenRef.current
+
       es.addEventListener('open', () => {
+        if (!isCurrentConnection()) return
         setConnectionState('connected')
         if (recoverOnOpenRef.current) {
           recoverOnOpenRef.current = false
@@ -191,6 +208,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('state_change', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -226,6 +244,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('progress', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -237,6 +256,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('log', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -264,6 +284,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('app_error', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -275,6 +296,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('bead_complete', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -289,6 +311,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('needs_input', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -304,6 +327,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('artifact_change', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -383,6 +407,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.addEventListener('ai_metrics', (e) => {
+        if (!isCurrentConnection()) return
         lastEventIdRef.current = e.lastEventId || lastEventIdRef.current
         persistLastEventId(ticketId, lastEventIdRef.current)
         try {
@@ -396,6 +421,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       })
 
       es.onerror = () => {
+        if (!isCurrentConnection()) return
         es.close()
         eventSourceRef.current = null
         recoverOnOpenRef.current = true
@@ -423,8 +449,10 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
   }, [ticketId])
 
   useEffect(() => {
+    mountedRef.current = true
     queueMicrotask(connect)
     return () => {
+      mountedRef.current = false
       connectTokenRef.current += 1
       connectAbortControllerRef.current?.abort()
       connectAbortControllerRef.current = null

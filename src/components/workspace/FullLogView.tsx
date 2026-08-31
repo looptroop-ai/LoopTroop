@@ -9,7 +9,7 @@ import type { LogEntry } from '@/context/LogContext'
 import { getStatusUserLabel, type StatusLabelOptions } from '@/lib/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import type { Ticket } from '@/hooks/useTickets'
-import { filterEntries, formatLogLine, isSystem, isCommand } from './logFormat'
+import { filterEntries, formatLogLine, getEntryFullModelId, isSystem, isCommand } from './logFormat'
 import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
@@ -134,10 +134,14 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const logCtx = useLogs()
   const loadAllLogs = logCtx?.loadAllLogs
   const isLoadingLogScope = logCtx?.isLoadingLogScope
+  const getAllLogs = logCtx?.getAllLogs
 
+  // Depends on the reader, not on the context: the reader is rebound when the rows
+  // change and at no other time, so a loading flag flipping no longer recopies and
+  // re-sorts every bucket on the ticket.
   const allLogs: LogEntry[] = useMemo(
-    () => logCtx?.getAllLogs() ?? [],
-    [logCtx],
+    () => getAllLogs?.() ?? [],
+    [getAllLogs],
   )
 
   const [activeTab, setActiveTab] = useState<string>('ALL')
@@ -189,20 +193,15 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const detectedModelIds = useMemo(() => {
     const ids = new Set<string>()
     for (const entry of combinedLogs) {
-      if (entry.modelId) {
-        ids.add(entry.modelId)
-        continue
-      }
-      if (entry.source.startsWith('model:')) {
-        ids.add(entry.source.slice('model:'.length))
-      }
+      const modelId = getEntryFullModelId(entry)
+      if (modelId) ids.add(modelId)
     }
     return Array.from(ids)
   }, [combinedLogs])
   const observedModelVariants = useMemo(() => {
     const variants = new Map<string, string>()
     for (const entry of combinedLogs) {
-      const modelId = entry.modelId ?? (entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : undefined)
+      const modelId = getEntryFullModelId(entry)
       if (modelId && entry.variant) variants.set(modelId, entry.variant)
     }
     return variants

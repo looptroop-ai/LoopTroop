@@ -56,20 +56,39 @@ export interface PlainLogOptions {
   streaming?: boolean
 }
 
-export interface LogContextValue {
+/**
+ * The half of the log context that moves as rows arrive: the rows themselves, the
+ * loading flags, and the two readers over them. The readers belong here rather than
+ * with the actions because their identity is the signal a memo needs — it changes
+ * when the rows change and at no other time, so `[getAllLogs]` recomputes a rendered
+ * list per batch of lines instead of per render of the provider.
+ */
+export interface LogStateValue {
   logsByPhase: Record<string, LogEntry[]>
   activePhase: string | null
   isLoadingLogs: boolean
-  addLog: (phase: string, line: string, options?: PlainLogOptions) => void
-  addLogRecord: (phase: string, data: Record<string, unknown>) => void
   getLogsForPhase: (phase: string, options?: { phaseAttempt?: number }) => LogEntry[]
   getAllLogs: () => LogEntry[]
+  isLoadingLogScope?: (scope: ServerLogScope) => boolean
+}
+
+/**
+ * The half that does not move. Every member keeps one identity for the lifetime of
+ * the provider, so an effect may list it in a dependency array without re-running
+ * when a line arrives — which is the whole reason the context is split.
+ */
+export interface LogActionsValue {
+  addLog: (phase: string, line: string, options?: PlainLogOptions) => void
+  addLogRecord: (phase: string, data: Record<string, unknown>) => void
+  /** Reads the live phase from a ref, so a dispatcher never subscribes to the rows for it. */
+  getActivePhase?: () => string | null
   setActivePhase: (phase: string | null) => void
   loadLogsForPhase?: (phase: string, options?: { channel?: LogChannel; phaseAttempt?: number }) => void
   loadAllLogs?: (options?: { channel?: LogChannel }) => void
-  isLoadingLogScope?: (scope: ServerLogScope) => boolean
   clearLogs: () => void
 }
+
+export type LogContextValue = LogStateValue & LogActionsValue
 
 export const LOG_STORAGE_PREFIX = 'logs-v2-'
 export const LEGACY_LOG_STORAGE_PREFIX = 'logs-'
@@ -399,6 +418,34 @@ function timestampDistanceMs(a?: string, b?: string): number | null {
   return Math.abs(at - bt)
 }
 
+/**
+ * Two rows are the same moment only when both actually carry one. `compareTimestamps`
+ * answers `0` for a pair it could not parse as well, because it exists to order rows and
+ * undated ones have no order — but read as equality that says two unrelated events with
+ * the same text are one event, and the second is dropped. Rows that really are identical
+ * still collapse: an undated entry's fallback id is built from its own text.
+ */
+function isSameLogMoment(a?: string, b?: string): boolean {
+  return timestampDistanceMs(a, b) === 0
+}
+
+function isWithinLogMoments(a: string | undefined, b: string | undefined, toleranceMs: number): boolean {
+  const distance = timestampDistanceMs(a, b)
+  return distance !== null && distance <= toleranceMs
+}
+
+/**
+ * Row identity for folding pages or overlaying live rows onto restored ones.
+ *
+ * Scoped by phase attempt because entry ids are only unique within one: a retried
+ * phase re-emits its milestones under the same `milestone:<phase>:started` id, and
+ * keying on the bare id folds two archived attempts into a single row. Entries from
+ * before attempts were recorded share the `active` namespace, which is the bare id.
+ */
+export function getLogEntryIdentity(entry: LogEntry): string {
+  return `id:${entry.phaseAttempt ?? 'active'}:${entry.entryId}`
+}
+
 export function isCommandLine(line: string): boolean {
   return line.startsWith('[CMD] $ ')
 }
@@ -481,11 +528,11 @@ export function mergeEntry(bucket: LogEntry[], entry: LogEntry): LogEntry[] {
         && existing.status === entry.status
         && (
           existing.entryId === entry.entryId
-          || compareTimestamps(existing.timestamp, entry.timestamp) === 0
+          || isSameLogMoment(existing.timestamp, entry.timestamp)
           || (
             isLowValueGitProbeLine(existing.line)
             && isLowValueGitProbeLine(entry.line)
-            && (timestampDistanceMs(existing.timestamp, entry.timestamp) ?? 0) <= 2000
+            && isWithinLogMoments(existing.timestamp, entry.timestamp, 2000)
           )
         )
       )))
@@ -521,13 +568,10 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
 
   const result: LogEntry[] = []
   const indexes = new Map<string, number>()
-  const aliases = (entry: LogEntry) => {
-    const attempt = entry.phaseAttempt ?? 'active'
-    return [
-      `id:${attempt}:${entry.entryId}`,
-      ...(entry.fingerprint ? [`fp:${attempt}:${entry.fingerprint}`] : []),
-    ]
-  }
+  const aliases = (entry: LogEntry) => [
+    getLogEntryIdentity(entry),
+    ...(entry.fingerprint ? [`fp:${entry.phaseAttempt ?? 'active'}:${entry.fingerprint}`] : []),
+  ]
   const add = (entry: LogEntry, incomingRow: boolean) => {
     const keys = aliases(entry)
     const index = keys.map(key => indexes.get(key)).find((value): value is number => value !== undefined)

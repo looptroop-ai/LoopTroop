@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
+  getLogEntryIdentity,
   INITIAL_LOG_PAGE_LIMIT,
   normalizeLogRecord,
   OLDER_LOG_PAGE_LIMIT,
@@ -92,9 +93,14 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   const entries = useMemo(() => {
     // Pages are stored newest -> oldest. Restore chronological order, then use
     // a Map so a canonical upsert/finalize never creates a duplicate row.
+    //
+    // Keyed the same way the live overlay keys rows, by attempt as well as id. Entry
+    // ids are only unique within one attempt — a retried phase re-emits
+    // `milestone:<phase>:started` under the same id — so folding on the bare id showed
+    // two archived attempts as one.
     const byId = new Map<string, LogEntry>()
     for (const page of [...(query.data?.pages ?? [])].reverse()) {
-      for (const entry of page.entries) byId.set(entry.entryId, entry)
+      for (const entry of page.entries) byId.set(getLogEntryIdentity(entry), entry)
     }
     return [...byId.values()].sort((a, b) => {
       const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN
@@ -120,11 +126,19 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
 
   const fetchPreviousPage = query.fetchPreviousPage
   const hasPreviousPage = query.hasPreviousPage
-  const fetchAllOlder = useCallback(async (): Promise<void> => {
+  /**
+   * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
+   * scope they started the walk for is gone — a different bead, a different attempt, an
+   * unmounted panel — because the loop otherwise keeps paging into a query that is no
+   * longer on screen, and the last page to land wins.
+   */
+  const fetchAllOlder = useCallback(async (isCancelled?: () => boolean): Promise<void> => {
     let hasOlder = hasPreviousPage
     while (hasOlder) {
+      if (isCancelled?.()) return
       const result = await fetchPreviousPage()
       if (result.isError) throw result.error
+      if (isCancelled?.()) return
       hasOlder = result.hasPreviousPage
     }
   }, [fetchPreviousPage, hasPreviousPage])

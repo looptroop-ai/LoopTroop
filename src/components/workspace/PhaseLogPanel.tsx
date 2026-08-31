@@ -12,7 +12,7 @@ import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import type { Ticket } from '@/hooks/useTickets'
-import { filterEntries, formatLogLine, MULTI_MODEL_PHASES, isSystem, isCommand } from './logFormat'
+import { filterEntries, formatLogLine, getEntryFullModelId, MULTI_MODEL_PHASES, isSystem, isCommand } from './logFormat'
 import { LogEntryRow } from './LogLine'
 import { LogCountLabel, LogCountTooltip } from './LogCountLegend'
 import { countLogTextLines } from './logCountUtils'
@@ -70,6 +70,11 @@ export function PhaseLogPanel({
   defaultTab,
 }: PhaseLogPanelProps) {
   const logCtx = useLogs()
+  // Destructured so the load effects below depend on the one stable callback rather than
+  // the context object, which is a new value on every streamed line: listing the context
+  // made each arriving line re-request the page that line belongs to.
+  const loadLogsForPhase = logCtx?.loadLogsForPhase
+  const getLogsForPhase = logCtx?.getLogsForPhase
   const [activeTab, setActiveTab] = useState<string>(defaultTab ?? 'ALL')
   const [isAiDetailsOpen, setIsAiDetailsOpen] = useState(false)
   const aiDetailsPanelId = useId()
@@ -135,21 +140,21 @@ export function PhaseLogPanel({
   useEffect(() => {
     if (propLogs || shouldLoadHistoricalLogs) return
     if (liveLogOptions) {
-      logCtx?.loadLogsForPhase?.(phase, liveLogOptions)
+      loadLogsForPhase?.(phase, liveLogOptions)
     } else {
-      logCtx?.loadLogsForPhase?.(phase)
+      loadLogsForPhase?.(phase)
     }
-  }, [liveLogOptions, logCtx, phase, propLogs, shouldLoadHistoricalLogs])
+  }, [liveLogOptions, loadLogsForPhase, phase, propLogs, shouldLoadHistoricalLogs])
 
   useEffect(() => {
     if (shouldLoadHistoricalLogs || activeTab !== 'DEBUG') return
-    logCtx?.loadLogsForPhase?.(phase, liveDebugLogOptions)
-  }, [activeTab, liveDebugLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
+    loadLogsForPhase?.(phase, liveDebugLogOptions)
+  }, [activeTab, liveDebugLogOptions, loadLogsForPhase, phase, shouldLoadHistoricalLogs])
 
   useEffect(() => {
     if (shouldLoadHistoricalLogs || !isAiLogTab(activeTab)) return
-    logCtx?.loadLogsForPhase?.(phase, liveAiLogOptions)
-  }, [activeTab, liveAiLogOptions, logCtx, phase, shouldLoadHistoricalLogs])
+    loadLogsForPhase?.(phase, liveAiLogOptions)
+  }, [activeTab, liveAiLogOptions, loadLogsForPhase, phase, shouldLoadHistoricalLogs])
 
   const isLoadingLogs = propLogs
     ? false
@@ -164,7 +169,7 @@ export function PhaseLogPanel({
     () => {
       if (propLogs) {
         if (activeTab !== 'DEBUG') return propLogs
-        const debugEntries = (logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []).filter((entry) => isDebugLogEntry(entry))
+        const debugEntries = (getLogsForPhase?.(phase, liveLogOptions) ?? []).filter((entry) => isDebugLogEntry(entry))
         const seenEntryIds = new Set(propLogs.map((entry) => entry.entryId))
         return [
           ...propLogs,
@@ -175,12 +180,12 @@ export function PhaseLogPanel({
         if (logMode === 'snapshot') return historicalLogs.entries
         return mergeEntriesBatch(
           historicalLogs.entries,
-          logCtx?.getLogsForPhase(phase, liveLogOptions) ?? [],
+          getLogsForPhase?.(phase, liveLogOptions) ?? [],
         )
       }
-      return logCtx?.getLogsForPhase(phase, liveLogOptions) ?? []
+      return getLogsForPhase?.(phase, liveLogOptions) ?? []
     },
-    [activeTab, historicalLogs.entries, liveLogOptions, logCtx, logMode, phase, propLogs, shouldLoadHistoricalLogs],
+    [activeTab, getLogsForPhase, historicalLogs.entries, liveLogOptions, logMode, phase, propLogs, shouldLoadHistoricalLogs],
   )
   const isLiveTicketPhase = !ticket || ticket.status === phase
   const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
@@ -324,24 +329,20 @@ export function PhaseLogPanel({
     return lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0)
   }, [lockedCouncilMembers])
 
-  // Detect model IDs from structured source field
+  // Detect model IDs through the same identity the tab filter uses, so every tab this
+  // builds has rows behind it.
   const detectedModelIds = useMemo(() => {
     const ids = new Set<string>()
     for (const entry of phaseLogs) {
-      if (entry.modelId) {
-        ids.add(entry.modelId)
-        continue
-      }
-      if (entry.source.startsWith('model:')) {
-        ids.add(entry.source.slice('model:'.length))
-      }
+      const modelId = getEntryFullModelId(entry)
+      if (modelId) ids.add(modelId)
     }
     return Array.from(ids)
   }, [phaseLogs])
   const observedModelVariants = useMemo(() => {
     const variants = new Map<string, string>()
     for (const entry of phaseLogs) {
-      const modelId = entry.modelId ?? (entry.source.startsWith('model:') ? entry.source.slice('model:'.length) : undefined)
+      const modelId = getEntryFullModelId(entry)
       if (modelId && entry.variant) variants.set(modelId, entry.variant)
     }
     return variants

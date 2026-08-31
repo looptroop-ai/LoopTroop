@@ -2,12 +2,11 @@ import type { ReactNode, Ref } from 'react'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogEntry } from '@/context/LogContext'
-import { LogContext } from '@/context/logContextDef'
 import type { LogContextValue } from '@/context/logUtils'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Ticket } from '@/hooks/useTickets'
 import { makeRuntimeBead, type RuntimeBeadInput } from '@/test/factories'
-import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
+import { createJsonResponse, createTestQueryClient, withLogContext } from '@/test/renderHelpers'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -522,9 +521,9 @@ describe('PhaseLogPanel', () => {
     }
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="CODING" />
-      </LogContext.Provider>,
+      )),
     )
 
     expect(loadLogsForPhase).toHaveBeenCalledWith('CODING')
@@ -558,9 +557,9 @@ describe('PhaseLogPanel', () => {
     }
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="PREPARING_EXECUTION_ENV" phaseAttempt={2} />
-      </LogContext.Provider>,
+      )),
     )
 
     expect(loadLogsForPhase).toHaveBeenCalledWith('PREPARING_EXECUTION_ENV', { phaseAttempt: 2 })
@@ -605,14 +604,14 @@ describe('PhaseLogPanel', () => {
 
     try {
       renderWithTooltipProvider(
-        <LogContext.Provider value={value}>
+        withLogContext(value, (
           <PhaseLogPanel
             phase="PREPARING_EXECUTION_ENV"
             ticket={makeTicket()}
             phaseAttempt={1}
             logMode="snapshot"
           />
-        </LogContext.Provider>,
+        )),
       )
 
       await waitFor(() => {
@@ -663,9 +662,9 @@ describe('PhaseLogPanel', () => {
     }
 
     renderWithTooltipProvider(
-      <LogContext.Provider value={value}>
+      withLogContext(value, (
         <PhaseLogPanel phase="CODING" />
-      </LogContext.Provider>,
+      )),
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'AI' }))

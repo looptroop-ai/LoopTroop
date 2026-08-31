@@ -387,7 +387,38 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
   }
 }
 
+/**
+ * How many rows one export query pulls.
+ *
+ * There is no cap on the export itself: this walks every page to the end, because
+ * `useTicketHistoricalLogs`, `PhaseLogPanel` and `FullLogView` all treat this endpoint
+ * as the ticket's complete record, and a limit with no truncation signal in the payload
+ * would make a large export quietly lie about being whole. What the paging removes is
+ * the single statement that asked SQLite for a ticket's entire history at once and held
+ * the event loop for as long as that took.
+ */
+const EXPORT_PAGE_SIZE = 500
+
 export async function exportLogEntries(ticketId: string, query: Omit<LogPageQuery, 'before' | 'limit'>) {
-  const page = await queryLogPage(ticketId, { ...query, limit: Number.MAX_SAFE_INTEGER, includeTotals: false })
-  return page?.entries ?? null
+  // Pages run newest-first and each page is ordered oldest-first inside itself, so the
+  // pages are collected in reverse and flipped once at the end. The body a caller sees
+  // is byte-for-byte what the single unbounded query produced.
+  const pages: Array<Record<string, unknown>[]> = []
+  let before: string | undefined
+
+  for (;;) {
+    const page = await queryLogPage(ticketId, {
+      ...query,
+      limit: EXPORT_PAGE_SIZE,
+      includeTotals: false,
+      ...(before ? { before } : {}),
+    })
+    if (!page) return pages.length > 0 ? pages.reverse().flat() : null
+
+    pages.push(page.entries)
+    if (!page.hasOlder || !page.olderCursor) break
+    before = page.olderCursor
+  }
+
+  return pages.reverse().flat()
 }

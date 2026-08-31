@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
+import { ticketContentFields, ticketOverrideFields } from '../../lib/settingSchemas'
 
 /**
  * Every skip reason on every surface, validated once.
@@ -18,20 +18,16 @@ export const skipReasonSchema = z.string()
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
+// The title bound differs from create's on purpose; everything else is the
+// same contract and is shared so it cannot drift.
 export const updateTicketSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
 export const cancelTicketSchema = z.object({

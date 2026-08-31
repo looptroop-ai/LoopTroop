@@ -1,4 +1,5 @@
 import {
+  isStructuredFailureClass,
   normalizeStructuredRetryDiagnostic,
   type StructuredFailureClass,
   type StructuredRetryDiagnostic,
@@ -185,15 +186,8 @@ export function getStructuredRetryDiagnosticFromError(error: unknown): Structure
 
 export function getStructuredFailureClassFromError(error: unknown): StructuredFailureClass | undefined {
   if (!isRecord(error)) return undefined
-  const failureClass = error.structuredFailureClass
-  return failureClass === 'validation_error'
-    || failureClass === 'output_truncated'
-    || failureClass === 'empty_response'
-    || failureClass === 'provider_error'
-    || failureClass === 'connection_reset'
-    || failureClass === 'session_protocol_error'
-    || failureClass === 'transport_error'
-    ? failureClass
+  return isStructuredFailureClass(error.structuredFailureClass)
+    ? error.structuredFailureClass
     : undefined
 }
 

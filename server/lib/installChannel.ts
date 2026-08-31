@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 import { isSea } from './isSea'
 
-export type InstallChannel = 'npm' | 'bun' | 'pnpm' | 'yarn' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
+import type { InstallChannel } from '@shared/installChannel'
+export type { InstallChannel }
 
 export interface InstallInfo {
   channel: InstallChannel

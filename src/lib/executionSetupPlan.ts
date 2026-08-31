@@ -8,6 +8,7 @@ import {
   type HostContext,
 } from '@shared/hostContext'
 import { isRecord } from '@shared/typeGuards'
+import { DEFAULT_GIT_HOOK_POLICY, migrateGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
 
 export const EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT = 'looptroop:execution-setup-plan-focus'
 
@@ -37,7 +38,7 @@ export interface ExecutionSetupWorkspaceInput {
   reason: string
 }
 
-export type GitHookPolicy = 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+export type { GitHookPolicy } from '@shared/gitHookPolicy'
 
 export interface ExecutionSetupWorkspaceProbe {
   id: string
@@ -115,10 +116,15 @@ function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['
 }
 
 function normalizeGitHookPolicy(value: unknown): GitHookPolicy {
-  if (value === 'observe_only' || value === 'validate_required' || value === 'use_native_hooks') return value
-  if (value === 'ignore_internal_only') return 'observe_only'
-  if (value === 'use_on_internal_commits') return 'use_native_hooks'
-  return 'validate_advisory'
+  const migrated = migrateGitHookPolicy(value)
+  if (migrated) return migrated
+  // A plan that names a policy nobody recognises is a parse problem, not a
+  // preference. Coercing it silently is how an unknown value used to read back
+  // as advisory validation and look deliberate.
+  if (value !== undefined && value !== null) {
+    console.warn(`[executionSetupPlan] Unknown git hook policy ${JSON.stringify(value)}; falling back to ${DEFAULT_GIT_HOOK_POLICY}.`)
+  }
+  return DEFAULT_GIT_HOOK_POLICY
 }
 
 function fallbackHostContext(): HostContext {

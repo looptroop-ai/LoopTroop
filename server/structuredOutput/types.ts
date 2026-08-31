@@ -151,12 +151,21 @@ export interface ExecutionSetupPlanReadinessPayload {
 
 export type ExecutionSetupWorkspaceInputKind = 'file' | 'directory'
 export type ExecutionSetupWorkspaceInputSourceStatus = 'ignored' | 'untracked'
-export type ExecutionSetupWorkspaceInputCategory =
-  | 'local_config'
-  | 'secret'
-  | 'fixture'
-  | 'dataset'
-  | 'other_non_reproducible'
+export const EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES = [
+  'local_config',
+  'secret',
+  'fixture',
+  'dataset',
+  'other_non_reproducible',
+] as const
+
+export type ExecutionSetupWorkspaceInputCategory = (typeof EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES)[number]
+
+export function isExecutionSetupWorkspaceInputCategory(
+  value: unknown,
+): value is ExecutionSetupWorkspaceInputCategory {
+  return (EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES as readonly unknown[]).includes(value)
+}
 
 export interface ExecutionSetupWorkspaceInputPayload {
   path: string
@@ -169,7 +178,8 @@ export interface ExecutionSetupWorkspaceInputPayload {
   reason: string
 }
 
-export type GitHookPolicy = 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+import type { GitHookPolicy } from '@shared/gitHookPolicy'
+export type { GitHookPolicy }
 
 export interface ExecutionSetupCommandProbePayload {
   id: string

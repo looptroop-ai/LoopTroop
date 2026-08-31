@@ -25,12 +25,14 @@ import type {
   TicketErrorOccurrence,
   TicketErrorResolutionStatus,
 } from './ticketQueries'
-import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import {
-  AI_QUESTION_WINDOW_DEFAULT_MS,
-  AI_QUESTION_WINDOW_MAX_MS,
-  AI_QUESTION_WINDOW_MIN_MS,
-} from '@shared/aiQuestions'
+  BLOCKED_ERROR_DIAGNOSTIC_KINDS,
+  BLOCKED_ERROR_DIAGNOSTIC_SOURCES,
+  normalizeBlockedErrorDiagnostics,
+  type BlockedErrorDiagnostics,
+} from '@shared/errorDiagnostics'
+import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
+import { ticketContentFields, ticketOverrideFields } from '../lib/settingSchemas'
 import { syncTicketRuntimeProjection } from './ticketRuntimeProjection'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
@@ -48,8 +50,8 @@ import { getErrorMessage } from '@shared/typeGuards'
 type LocalTicketRow = typeof tickets.$inferSelect
 
 const BlockedErrorDiagnosticsSchema = z.object({
-  kind: z.enum(['model_output_truncated', 'opencode_provider', 'opencode_session', 'timeout', 'transport', 'runtime', 'unknown']).optional(),
-  source: z.enum(['opencode', 'provider', 'system', 'runtime']).optional(),
+  kind: z.enum(BLOCKED_ERROR_DIAGNOSTIC_KINDS).optional(),
+  source: z.enum(BLOCKED_ERROR_DIAGNOSTIC_SOURCES).optional(),
   summary: z.string().optional(),
   modelId: z.string().optional(),
   sessionId: z.string().optional(),
@@ -68,14 +70,19 @@ const BlockedErrorDiagnosticsSchema = z.object({
   cacheWriteTokens: z.number().finite().optional(),
 }).passthrough()
 
+/**
+ * The storage boundary's own check on `createTicket` input.
+ *
+ * Deliberately duplicated validation, not a leftover: `createTicket` is called
+ * from the CLI and from tests as well as from the route, so it cannot rely on
+ * the route schema having run. The fields it shares with the route are imported
+ * so the two cannot disagree about what they accept.
+ */
 const CreateTicketInputSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
 function truncateLoggedValue(value: string, maxLength = 200): string {

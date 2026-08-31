@@ -50,7 +50,8 @@ export interface OpenCodeRunCallbacks {
   onPromptCompleted?: (event: OpenCodePromptCompletedEvent) => void
 }
 
-export type PromptTimeoutKind = 'ai_response' | 'council_response' | 'per_iteration' | 'execution_setup' | 'opencode_prompt'
+import type { PromptTimeoutKind } from '@shared/promptTimeout'
+export type { PromptTimeoutKind }
 
 export interface OpenCodePromptDispatchEvent {
   session: Session

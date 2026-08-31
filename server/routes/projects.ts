@@ -30,7 +30,7 @@ import { getGitHubRepoWriteAccess, parseGitHubRemoteUrl, type GitHubRepoWriteAcc
 import { buildRuntimeStatus } from '../runtime'
 import { normalizeFolderPath } from '../storage/paths'
 import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../../shared/wslPerformance'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
+import { aiQuestionWindowOverrideSchema, gitHookPolicySchema, ignoreModeSchema } from '../lib/settingSchemas'
 import { getErrorMessage } from '@shared/typeGuards'
 
 const projectRouter = new Hono()
@@ -38,11 +38,11 @@ const execFileAsync = promisify(execFile)
 const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 const perProjectOverrides = {
-  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).optional(),
+  gitHookPolicy: gitHookPolicySchema.optional(),
   manualQaOverride: z.boolean().optional(),
   // Nullable: null is how an override is cleared back to inheriting the profile.
   aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  aiQuestionWindowOverride: aiQuestionWindowOverrideSchema,
   councilMembers: z.string().optional(),
   maxIterations: z.number().int().min(0).max(20).optional(),
   perIterationTimeout: z.number().int().nonnegative().optional(),
@@ -60,7 +60,7 @@ const createProjectSchema = z.object({
   folderPath: z.string().min(1),
   profileId: z.number().int().positive().optional(),
   existingStateAction: z.enum(['restore', 'clear_tickets', 'start_fresh']).optional(),
-  ignoreMode: z.enum(['repo', 'local', 'skip']).optional(),
+  ignoreMode: ignoreModeSchema.optional(),
   ...perProjectOverrides,
 })
 

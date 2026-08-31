@@ -1,23 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import type { GitHookPolicy } from '../structuredOutput/types'
+import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
 
-export const DEFAULT_GIT_HOOK_POLICY: GitHookPolicy = 'validate_advisory'
-
-export function isGitHookPolicy(value: unknown): value is GitHookPolicy {
-  return value === 'observe_only'
-    || value === 'validate_advisory'
-    || value === 'validate_required'
-    || value === 'use_native_hooks'
-}
-
-export function migrateGitHookPolicy(value: unknown): GitHookPolicy | null {
-  if (isGitHookPolicy(value)) return value
-  if (value === 'validate_explicitly') return 'validate_advisory'
-  if (value === 'ignore_internal_only') return 'observe_only'
-  if (value === 'use_on_internal_commits') return 'use_native_hooks'
-  return null
-}
+export {
+  DEFAULT_GIT_HOOK_POLICY,
+  isGitHookPolicy,
+  migrateGitHookPolicy,
+  type GitHookPolicy,
+} from '@shared/gitHookPolicy'
 
 export function readWorktreeGitHookPolicy(worktreePath: string): GitHookPolicy {
   try {

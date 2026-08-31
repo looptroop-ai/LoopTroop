@@ -24,10 +24,8 @@ const GLOBAL_RULE_IDS = Object.keys(DEFAULT_GLOBAL_RULE_TEXTS) as GlobalRuleId[]
 export type PromptId = keyof typeof ALL_PROMPTS
 export type EditablePromptId = PromptId | GlobalRuleId
 
-export interface PromptLoadWarning {
-  id: string
-  message: string
-}
+import type { PromptLoadWarning } from '@shared/promptCatalog'
+export type { PromptLoadWarning }
 
 interface StoreState {
   templates: Map<string, PromptTemplate>

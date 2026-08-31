@@ -1,13 +1,27 @@
 import { normalizeString } from '@shared/typeGuards'
 
-export type StructuredFailureClass =
-  | 'validation_error'
-  | 'output_truncated'
-  | 'empty_response'
-  | 'provider_error'
-  | 'connection_reset'
-  | 'session_protocol_error'
-  | 'transport_error'
+/**
+ * Why a structured-output attempt failed.
+ *
+ * The tuple is the single declaration: the type, this module's normaliser and
+ * the server's error-shape reader all derive from it, where each used to spell
+ * the seven names out again.
+ */
+export const STRUCTURED_FAILURE_CLASSES = [
+  'validation_error',
+  'output_truncated',
+  'empty_response',
+  'provider_error',
+  'connection_reset',
+  'session_protocol_error',
+  'transport_error',
+] as const
+
+export type StructuredFailureClass = (typeof STRUCTURED_FAILURE_CLASSES)[number]
+
+export function isStructuredFailureClass(value: unknown): value is StructuredFailureClass {
+  return (STRUCTURED_FAILURE_CLASSES as readonly unknown[]).includes(value)
+}
 
 export interface StructuredRetryDiagnostic {
   attempt: number
@@ -26,15 +40,7 @@ function normalizeExcerpt(value: unknown): string | undefined {
 }
 
 function normalizeStructuredFailureClass(value: unknown): StructuredFailureClass | undefined {
-  return value === 'validation_error'
-    || value === 'output_truncated'
-    || value === 'empty_response'
-    || value === 'provider_error'
-    || value === 'connection_reset'
-    || value === 'session_protocol_error'
-    || value === 'transport_error'
-    ? value
-    : undefined
+  return isStructuredFailureClass(value) ? value : undefined
 }
 
 function buildRetryDiagnosticKey(diagnostic: StructuredRetryDiagnostic): string {

@@ -11,13 +11,8 @@ export const CHECK_INTERVAL_MS = 15 * 60 * 1000
 
 const REQUEST_TIMEOUT_MS = 3_000
 
-export interface ReleaseDetails {
-  version: string
-  name: string
-  url: string
-  publishedAt: string | null
-  notes: string
-}
+import type { ReleaseDetails } from '@shared/installChannel'
+export type { ReleaseDetails }
 
 interface UpdateCache {
   lastAttemptAt: string

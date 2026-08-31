@@ -77,6 +77,17 @@ export const PROMPT_CATALOG: PromptCatalogEntry[] = [
   { id: 'PROM54', status: 'BLOCKED_ERROR', step: 'Session continuation', order: 0 },
 ]
 
+/**
+ * A prompt template that could not be loaded, and why.
+ *
+ * The server's template store produces these and the SPA's prompts screen
+ * renders them, so both used to declare the same record independently.
+ */
+export interface PromptLoadWarning {
+  id: string
+  message: string
+}
+
 export interface PromptGroupStatus {
   status: string
   label: string

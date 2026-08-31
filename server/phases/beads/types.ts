@@ -42,12 +42,8 @@ export interface QaOrigin {
   imageDelivery?: 'attached' | 'references_only'
 }
 
-export interface BeadNoteEntry {
-  timestamp: string
-  iteration: number
-  content: string
-  errorCode?: string
-}
+import type { BeadNoteEntry } from '@shared/beadNotes'
+export type { BeadNoteEntry }
 
 export interface Bead {
   // Subset fields (draft phase — PROM20)

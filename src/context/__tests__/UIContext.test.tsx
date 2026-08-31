@@ -338,6 +338,44 @@ describe('UIProvider', () => {
       expect(screen.getByTestId('global-presets')).toHaveTextContent('')
     })
 
+    it('retires the key on the next write that succeeds after a failed one', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+      const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementationOnce(() => {
+        throw new Error('QuotaExceededError')
+      })
+
+      render(
+        <UIProvider>
+          <PresetDeleteProbe />
+        </UIProvider>,
+      )
+      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
+
+      // Storage recovers and the user deletes the preset. Leaving the legacy key
+      // behind here would resurrect it on the next load, undoing the deletion.
+      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
+
+      expect(setItem).toHaveBeenCalled()
+      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
+    })
+
+    it('survives a browser that refuses to enumerate storage at all', () => {
+      vi.spyOn(window.localStorage, 'key').mockImplementation(() => {
+        throw new Error('Access is denied for this document.')
+      })
+
+      render(
+        <UIProvider>
+          <UIStateProbe />
+        </UIProvider>,
+      )
+
+      // Initialisation happens inside useReducer, so a throw there renders nothing.
+      expect(screen.getByTestId('preset-scopes')).toBeInTheDocument()
+    })
+
     it('leaves the legacy key in place when the blob cannot be written', () => {
       localStorage.setItem('looptroop-presets-global', JSON.stringify({
         'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },

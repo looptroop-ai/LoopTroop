@@ -115,7 +115,8 @@ describe('ExecutionSetupPlanEditor environment variables', () => {
     expect(alerts[0]).toHaveTextContent('Another variable is already called BAR')
     expect(screen.getByLabelText('Environment variable 1 name')).toHaveValue('BAR')
     expect(screen.getByLabelText('Environment variable 2 value')).toHaveValue('two')
-    // Nothing was emitted while the two names collide, so the plan still has both.
+    // The rename was not taken up, so the record is unchanged and there was nothing
+    // to emit — the plan still holds FOO and BAR with their own values.
     expect(latestEnv(onChange)).toBeUndefined()
   })
 
@@ -135,5 +136,34 @@ describe('ExecutionSetupPlanEditor environment variables', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove environment variable 1' }))
 
     expect(latestEnv(onChange)).toEqual({ BAR: 'two' })
+  })
+
+  it('keeps every other edit flowing while a collision is unresolved', () => {
+    const { onChange } = renderWithEnv({ FOO: 'one', BAR: 'two' })
+
+    fireEvent.change(screen.getByLabelText('Environment variable 1 name'), { target: { value: 'BAR' } })
+    // A value typed into the *other* row while the collision stands.
+    fireEvent.change(screen.getByLabelText('Environment variable 2 value'), { target: { value: 'edited' } })
+
+    // The collided rename is not taken up, and nothing else is held hostage to it:
+    // suppressing every change would let Save persist a plan without this value.
+    expect(latestEnv(onChange)).toEqual({ FOO: 'one', BAR: 'edited' })
+  })
+
+  it('adopts a plan loaded underneath an unresolved collision', () => {
+    const onChange = vi.fn()
+    const plan = buildPlan()
+    plan.workspaceProbes[0]!.command.env = { FOO: 'one', BAR: 'two' }
+    const { rerender } = render(<ExecutionSetupPlanEditor plan={plan} onChange={onChange} />)
+
+    fireEvent.change(screen.getByLabelText('Environment variable 1 name'), { target: { value: 'BAR' } })
+
+    const reloaded = buildPlan()
+    reloaded.workspaceProbes[0]!.command.env = { OTHER: 'three' }
+    rerender(<ExecutionSetupPlanEditor plan={reloaded} onChange={onChange} />)
+
+    // The stale draft does not survive to overwrite what was loaded.
+    expect(screen.getByLabelText('Environment variable 1 name')).toHaveValue('OTHER')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

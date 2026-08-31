@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { DROPDOWN_MARGIN, DROPDOWN_OFFSET, DROPDOWN_MAX_HEIGHT } from '@/lib/constants'
+import { PORTAL_ATTRIBUTE } from '@/lib/overlays'
 
 export interface DropdownPickerProps {
   trigger: ReactNode
@@ -37,19 +38,22 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
    * attributes on the wrapper in that third case, where they render nowhere, so the
    * rendered element is found and annotated instead.
    *
-   * `aria-haspopup="dialog"` rather than `menu` or `listbox`: the popup holds whatever
-   * the caller puts in it — a list of projects in one place, a search field over an
-   * emoji grid in another — and claiming a menu whose children are not menu items
-   * misdescribes it to a screen reader.
+   * A disclosure, deliberately: `aria-expanded` plus the id of what it expands, and no
+   * `aria-haspopup`. The popup holds whatever the caller puts in it — a list of
+   * projects in one place, a search field over an emoji grid in another — so there is
+   * no menu, listbox or dialog to claim, and claiming one hands assistive technology a
+   * promise the generic container behind it does not keep.
+   *
+   * `aria-controls` is only set while the popup exists; the rest of the time it would
+   * point at nothing.
    */
   useEffect(() => {
     const control = triggerRef.current?.querySelector<HTMLElement>(TRIGGER_SELECTOR) ?? triggerRef.current
     if (!control) return
-    control.setAttribute('aria-haspopup', 'dialog')
     control.setAttribute('aria-expanded', String(open))
-    control.setAttribute('aria-controls', popupId)
+    if (open) control.setAttribute('aria-controls', popupId)
+    else control.removeAttribute('aria-controls')
     return () => {
-      control.removeAttribute('aria-haspopup')
       control.removeAttribute('aria-expanded')
       control.removeAttribute('aria-controls')
     }
@@ -102,6 +106,7 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
         <div
           ref={dropdownRef}
           id={popupId}
+          {...{ [PORTAL_ATTRIBUTE]: '' }}
           className="fixed z-[100] rounded-lg border border-border bg-popover shadow-xl p-3 animate-in fade-in-0 zoom-in-95"
           style={{
             top: pos.top,

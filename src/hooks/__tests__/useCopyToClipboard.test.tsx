@@ -55,4 +55,20 @@ describe('useCopyToClipboard', () => {
       await expect(result.current[1]('copy me')).resolves.toBe(false)
     })
   })
+
+  it('retracts a previous success when the next write is refused', async () => {
+    let allow = true
+    stubClipboard(() => (allow ? Promise.resolve() : Promise.reject(new Error('Write permission denied.'))))
+    const { result } = renderHook(() => useCopyToClipboard())
+
+    await act(async () => { await result.current[1]('first') })
+    expect(result.current[0]).toBe(true)
+
+    allow = false
+    await act(async () => { await result.current[1]('second') })
+
+    // The tick from the first copy would otherwise sit there for the rest of its
+    // timer, reporting the refusal as a success.
+    expect(result.current[0]).toBe(false)
+  })
 })

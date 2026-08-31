@@ -5,6 +5,7 @@ import { TicketCard } from '../TicketCard'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import { TEST, makeTicket } from '@/test/factories'
+import { ticketCardLabel } from '@/test/ticketCardQueries'
 
 const dispatch = vi.fn()
 
@@ -37,17 +38,29 @@ afterEach(cleanup)
 describe('TicketCard — keyboard operability', () => {
   it('names the ticket on a real, focusable button', () => {
     const ticket = renderCard()
-    const opener = screen.getByRole('button', { name: `Open ticket ${ticket.externalId}` })
+    const opener = screen.getByRole('button', { name: ticketCardLabel(ticket.externalId) })
     expect(opener.tagName).toBe('BUTTON')
 
     opener.focus()
     expect(document.activeElement).toBe(opener)
   })
 
+  /**
+   * The visible title has to be part of the accessible name, or a screen reader
+   * announces only the id and speech input has no name matching the words on screen.
+   */
+  it('leads the accessible name with the ticket title it displays', () => {
+    const ticket = renderCard()
+    const opener = screen.getByRole('button', { name: ticketCardLabel(ticket.externalId) })
+
+    expect(opener).toHaveTextContent(ticket.title)
+    expect(opener.getAttribute('aria-label')).toBe(`${ticket.title}, open ticket ${ticket.externalId}`)
+  })
+
   it('opens the ticket when the title button is activated', () => {
     const ticket = renderCard()
 
-    fireEvent.click(screen.getByRole('button', { name: `Open ticket ${ticket.externalId}` }))
+    fireEvent.click(screen.getByRole('button', { name: ticketCardLabel(ticket.externalId) }))
 
     expect(dispatch).toHaveBeenCalledWith({
       type: 'SELECT_TICKET',
@@ -73,7 +86,7 @@ describe('TicketCard — keyboard operability', () => {
   it('does not put the card itself forward as one control', () => {
     const ticket = renderCard()
     const card = screen
-      .getByRole('button', { name: `Open ticket ${ticket.externalId}` })
+      .getByRole('button', { name: ticketCardLabel(ticket.externalId) })
       .closest('[data-ticket-card]')!
     expect(card).not.toHaveAttribute('role')
   })

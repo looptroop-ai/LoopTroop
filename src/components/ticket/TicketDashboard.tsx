@@ -30,21 +30,7 @@ import { Button } from '@/components/ui/button'
 import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
-
-/**
- * Anything that owns Escape while it is open. Dialogs, dropdown menus, selects and
- * combo boxes each render one of these, and Radix wraps every popper it portals in
- * the last one.
- */
-const OVERLAY_SELECTOR = [
-  '[role="dialog"]',
-  '[role="alertdialog"]',
-  '[data-radix-dialog-content]',
-  '[role="menu"]',
-  '[role="listbox"]',
-  '[role="combobox"]',
-  '[data-radix-popper-content-wrapper]',
-].join(',')
+import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 
 function toDebugJson(data: Record<string, unknown>) {
   if (import.meta.env.PROD) return '[debug]'
@@ -541,9 +527,7 @@ export function TicketDashboard() {
       // without this the same keypress that dismissed "Cancel ticket?" also left the
       // ticket. Radix menus, selects and hover cards are not dialogs, which is why
       // this cannot be a `role="dialog"` check alone.
-      if (e.defaultPrevented) return
-      const target = e.target as Element | null
-      if (target?.closest?.(OVERLAY_SELECTOR)) return
+      if (isEscapeClaimedByNestedOverlay(e, null)) return
 
       if (isMobileNavOpen) {
         setIsMobileNavOpen(false)

@@ -481,6 +481,46 @@ describe('PhaseLogPanel', () => {
     }
   })
 
+  /**
+   * A refused clipboard resolves `false` rather than throwing, so the `catch` that
+   * used to raise this state never fires for it any more. Without the returned value
+   * being read, a denied permission reported the copy as a success.
+   */
+  it('reports a refused clipboard write on Copy all', async () => {
+    writeTextMock.mockRejectedValueOnce(new Error('Write permission denied.'))
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/logs/export?')) return Promise.resolve(new Response('[complete phase history]', { status: 200 }))
+      return createJsonResponse({
+        entries: [{
+          type: 'info',
+          phase: 'CODING',
+          status: 'CODING',
+          source: 'system',
+          content: 'Visible phase row.',
+          entryId: 'visible-phase-row',
+          timestamp: '2026-03-13T10:00:03.000Z',
+        }],
+        olderCursor: null,
+        hasOlder: false,
+      })
+    })
+
+    try {
+      renderWithTooltipProvider(<PhaseLogPanel phase="CODING" ticket={makeTicket()} />)
+      expect(await screen.findByText('Visible phase row.')).toBeInTheDocument()
+      const copyButton = screen.getByRole('button', { name: 'Copy all logs' })
+
+      fireEvent.click(copyButton)
+
+      await waitFor(() => expect(copyButton).not.toBeDisabled())
+      fireEvent.focus(copyButton)
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('Could not copy complete logs')
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('shows the remaining-history indicator above a virtualized phase log', async () => {
     let resolveOlder!: (response: Response) => void
     const olderResponse = new Promise<Response>((resolve) => {

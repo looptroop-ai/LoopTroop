@@ -32,4 +32,15 @@ describe('KeyboardShortcuts', () => {
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+
+  /**
+   * The ticket view and the About window are both `z-[60]`, and Radix dialogs are
+   * `z-[70]`. At `z-50` this overlay opened underneath them — invisible, holding
+   * focus, and making everything the user could still see inert.
+   */
+  it('stacks above the ticket view and the app modals', () => {
+    open()
+    const backdrop = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' }).parentElement!
+    expect(backdrop.className).toContain('z-[80]')
+  })
 })

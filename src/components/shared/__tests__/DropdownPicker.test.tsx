@@ -23,11 +23,18 @@ function ControlledPicker({ onOpenChange }: { onOpenChange?: (open: boolean) => 
 }
 
 describe('DropdownPicker', () => {
+  /**
+   * A disclosure, and only that. The popup holds whatever the caller puts in it, so
+   * there is no menu, listbox or dialog to advertise — and advertising one anyway
+   * promises assistive technology a widget the generic container cannot be.
+   */
   it('reports its expanded state and the popup it owns', () => {
     render(<ControlledPicker />)
     const trigger = screen.getByRole('button', { name: 'Pick a project' })
-    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog')
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).not.toHaveAttribute('aria-haspopup')
+    // Nothing to point at while it is closed.
+    expect(trigger).not.toHaveAttribute('aria-controls')
 
     fireEvent.click(trigger)
 

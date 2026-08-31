@@ -130,6 +130,26 @@ function normalizePresetsByProject(value: unknown): Record<string, Record<string
 let pendingLegacyPresetKeys: string[] = []
 
 /**
+ * Retires the keys the merge read from. Called only after a write that succeeded, from
+ * whichever persistence got there first: if the migration's own write is refused, the
+ * keys stay pending, and the next ordinary state change that reaches storage clears
+ * them. Without that second chance a deletion made after a failed write would be
+ * undone by the legacy key on the following load.
+ */
+function retireMigratedLegacyKeys(): void {
+  if (pendingLegacyPresetKeys.length === 0) return
+  const keys = pendingLegacyPresetKeys
+  pendingLegacyPresetKeys = []
+  for (const key of keys) {
+    try {
+      window.localStorage.removeItem(key)
+    } catch {
+      // A key that cannot be removed is re-migrated next load; the blob already has it.
+    }
+  }
+}
+
+/**
  * One-time, init-only recovery of legacy per-scope `looptroop-presets-*` localStorage keys
  * into `UIState.presetsByProject`. Runs once per page load from `getInitialState` (never on
  * write), so presets that only survived in these standalone keys — e.g. because an earlier
@@ -147,10 +167,23 @@ function migrateLegacyPresets(existing: Record<string, Record<string, TriagePres
   if (typeof window === 'undefined') return { presetsByProject: existing, migratedKeys: [] }
   const merged: Record<string, Record<string, TriagePreset>> = { ...existing }
   const migratedKeys: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    try {
+
+  // Enumerating storage is itself refusable — a browser set to block site data throws
+  // on the accessor, not just on a read — and this runs during `useReducer`
+  // initialisation, where an exception means the provider never mounts and the app
+  // renders nothing at all. Per-key guards stay inside, for malformed entries.
+  let legacyKeys: string[] = []
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
-      if (!key || !key.startsWith(LEGACY_PRESET_KEY_PREFIX)) continue
+      if (key?.startsWith(LEGACY_PRESET_KEY_PREFIX)) legacyKeys.push(key)
+    }
+  } catch {
+    legacyKeys = []
+  }
+
+  for (const key of legacyKeys) {
+    try {
       const stored = localStorage.getItem(key)
       if (!stored) continue
       const parsed = JSON.parse(stored) as unknown
@@ -255,7 +288,7 @@ export function UIProvider({ children }: { children: ReactNode }) {
       hydrated.current = true
       return
     }
-    persistUIState(state)
+    if (persistUIState(state)) retireMigratedLegacyKeys()
   }, [state])
 
   /**
@@ -264,28 +297,26 @@ export function UIProvider({ children }: { children: ReactNode }) {
    *
    * The order is the whole point. Deleting during initialisation — while the first
    * persistence effect above is deliberately skipped — would destroy the only copy of
-   * a user's presets if the tab closed before anything triggered a write. And a write
-   * that fails (quota, private mode, storage disabled) leaves the keys exactly where
-   * they are, so the next load recovers from them again.
+   * a user's presets if the tab closed before anything triggered a write.
+   *
+   * A write that fails (quota, private mode, storage disabled) leaves the keys where
+   * they are *and leaves them pending*, so the next successful persistence retires
+   * them instead. Dropping them here would have let a later write record a deletion
+   * while the legacy key that resurrects it stayed on disk.
    *
    * Runs on mount only, and only when something was actually migrated, so this is not
    * the unconditional write-back that once wiped presets whenever rehydration produced
    * empty state: by construction the state written here carries the recovered presets.
+   * It writes the live state rather than a mount-time copy, so it stays correct if
+   * anything ever dispatches before it runs.
    */
-  // The state as it was rehydrated, which is what the migration has to write back.
-  const migratedStateRef = useRef(state)
+  const liveStateRef = useRef(state)
   useEffect(() => {
-    const keys = pendingLegacyPresetKeys
-    pendingLegacyPresetKeys = []
-    if (keys.length === 0) return
-    if (!persistUIState(migratedStateRef.current)) return
-    for (const key of keys) {
-      try {
-        window.localStorage.removeItem(key)
-      } catch {
-        // A key that cannot be removed is re-migrated next load; the blob already has it.
-      }
-    }
+    liveStateRef.current = state
+  })
+  useEffect(() => {
+    if (pendingLegacyPresetKeys.length === 0) return
+    if (persistUIState(liveStateRef.current)) retireMigratedLegacyKeys()
   }, [])
 
   // Sync URL with state

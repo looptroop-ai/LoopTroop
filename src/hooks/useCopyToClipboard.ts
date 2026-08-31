@@ -19,6 +19,12 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
       try {
         await navigator.clipboard.writeText(text)
       } catch {
+        // A refusal has to retract the previous success, not just decline to add one:
+        // copying twice in a row, the second time denied, otherwise leaves the first
+        // copy's tick on screen for the rest of its timer, reporting the failure as a
+        // success.
+        clearTimeout(timerRef.current)
+        setIsCopied(false)
         return false
       }
       setIsCopied(true)

@@ -144,3 +144,55 @@ describe('ModelPicker', () => {
     expect(screen.queryByText('local/same-name')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * The list is portaled to `document.body`, so an unstopped Escape carried on to the
+ * Configuration window's own document listener and closed the whole thing instead of
+ * the picker in front of it.
+ */
+describe('ModelPicker — Escape', () => {
+  beforeEach(() => {
+    mockModelsQuery()
+  })
+
+  it('closes the list and returns focus to the trigger', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+
+    fireEvent.keyDown(screen.getByLabelText('Search models'), { key: 'Escape' })
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('keeps Escape to itself so the window behind it stays open', () => {
+    const onDocumentEscape = vi.fn()
+    document.addEventListener('keydown', onDocumentEscape)
+    try {
+      render(<ModelPicker value="" onChange={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+      onDocumentEscape.mockClear()
+
+      fireEvent.keyDown(screen.getByLabelText('Search models'), { key: 'Escape' })
+
+      expect(onDocumentEscape).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', onDocumentEscape)
+    }
+  })
+
+  it('lets Escape through while the list is closed', () => {
+    const onDocumentEscape = vi.fn()
+    document.addEventListener('keydown', onDocumentEscape)
+    try {
+      render(<ModelPicker value="" onChange={vi.fn()} />)
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Pick a model' }), { key: 'Escape' })
+
+      expect(onDocumentEscape).toHaveBeenCalledTimes(1)
+    } finally {
+      document.removeEventListener('keydown', onDocumentEscape)
+    }
+  })
+})

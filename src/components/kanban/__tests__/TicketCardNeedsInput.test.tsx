@@ -7,6 +7,7 @@ import { TicketCard } from '../TicketCard'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import { TEST, makeTicket } from '@/test/factories'
+import { ticketCardLabel } from '@/test/ticketCardQueries'
 import type { Ticket } from '@/hooks/useTickets'
 import { clearNeedsInputSeen, getNeedsInputSignature } from '@/lib/needsInputSeen'
 
@@ -67,12 +68,12 @@ function advance() {
 }
 
 function openButtonFor(ticket: Ticket) {
-  // The label carries a trailing clause naming the wait, so match its start.
-  // A plain prefix test rather than a built regex: the id would otherwise need
-  // escaping to stay a literal match.
-  const prefix = `Open ticket ${ticket.externalId}`
+  // The label leads with the ticket title and ends with the id, plus a clause
+  // naming the wait when there is one — matched as a tail so a fixture's title is
+  // not part of every assertion.
+  const suffix = `, open ticket ${ticket.externalId}`
   return screen.getByLabelText(
-    (content) => content === prefix || content.startsWith(`${prefix},`),
+    (content) => content.endsWith(suffix) || content.includes(`${suffix},`),
   ) as HTMLElement
 }
 
@@ -237,7 +238,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       pendingQuestions: pendingQuestions(2, 4),
     })
     renderCard(question)
-    expect(screen.getByLabelText('Open ticket TEST-1, 4 questions waiting for your answer')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', '4 questions waiting for your answer'))).toBeInTheDocument()
     cleanup()
 
     const approval = makeTicket({
@@ -247,7 +248,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       updatedAt: TEST.timestamp,
     })
     renderCard(approval)
-    expect(screen.getByLabelText('Open ticket TEST-1, waiting for your input')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', 'waiting for your input'))).toBeInTheDocument()
   })
 
   it('says "1 question" rather than "1 questions"', () => {
@@ -259,7 +260,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       pendingQuestions: pendingQuestions(1, 1),
     })
     renderCard(ticket)
-    expect(screen.getByLabelText('Open ticket TEST-1, 1 question waiting for your answer')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', '1 question waiting for your answer'))).toBeInTheDocument()
   })
 
   it('re-flashes when the wait reason changes after a prior acknowledgment', () => {

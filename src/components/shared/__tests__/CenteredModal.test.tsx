@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CenteredModal } from '../CenteredModal'
+import { DropdownPicker } from '../DropdownPicker'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
 afterEach(cleanup)
@@ -86,5 +87,107 @@ describe('CenteredModal — dialog semantics and focus containment', () => {
     fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
 
     expect(document.activeElement).toBe(focusable[focusable.length - 1])
+  })
+})
+
+/**
+ * `DropdownPicker` and `ModelPicker` portal their popup to `document.body`, so a
+ * picker opened inside a modal is a DOM sibling of the whole app. A trap that only
+ * looked inside the modal element left those popups unreachable by Tab — openable
+ * from the keyboard and then unusable.
+ */
+describe('CenteredModal — popups the dialog owns', () => {
+  function renderWithPicker(open: boolean) {
+    return render(
+      <TooltipProvider>
+        <button type="button">outside</button>
+        <CenteredModal open onClose={vi.fn()} title="New Ticket">
+          <DropdownPicker open={open} onOpenChange={vi.fn()} trigger={<button type="button">Pick a project</button>}>
+            <button type="button">Project one</button>
+          </DropdownPicker>
+          <button type="button">Create</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+  }
+
+  it('counts the portaled picker as the end of the dialog', () => {
+    renderWithPicker(true)
+    const dialog = screen.getByRole('dialog', { name: 'New Ticket' })
+    const option = screen.getByRole('button', { name: 'Project one' })
+    // The popup really is outside the dialog element — that is the whole problem.
+    expect(dialog).not.toContainElement(option)
+
+    // Shift+Tab off the first control wraps to the last thing in the dialog's scope.
+    const first = dialog.querySelector('button')!
+    first.focus()
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+
+    expect(document.activeElement).toBe(option)
+  })
+
+  it('brings focus back into the dialog when Tab leaves the portaled picker', () => {
+    renderWithPicker(true)
+    const dialog = screen.getByRole('dialog', { name: 'New Ticket' })
+    const option = screen.getByRole('button', { name: 'Project one' })
+    option.focus()
+
+    fireEvent.keyDown(option, { key: 'Tab' })
+
+    expect(document.activeElement).toBe(dialog.querySelector('button'))
+  })
+
+  it('leaves a portaled picker interactive rather than inert', () => {
+    renderWithPicker(true)
+    expect(screen.getByRole('button', { name: 'Project one' })).toBeInTheDocument()
+  })
+})
+
+/**
+ * Escape belongs to the innermost overlay. Both primitives close on a document
+ * keydown, so without this the keypress that dismissed a confirmation dialog, a
+ * folder picker or a model list also closed the window behind it.
+ */
+describe('CenteredModal — Escape ownership', () => {
+  function renderWithNestedOverlay(role: string) {
+    const onClose = vi.fn()
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={onClose} title="Projects">
+          <div role={role} aria-label="Nested">
+            <button type="button">Confirm</button>
+          </div>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+    return onClose
+  }
+
+  it('stays open when Escape dismisses a nested dialog', () => {
+    const onClose = renderWithNestedOverlay('dialog')
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm' }), { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('stays open when Escape dismisses a nested listbox', () => {
+    const onClose = renderWithNestedOverlay('listbox')
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm' }), { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('stays open when something else already handled Escape', () => {
+    const onClose = renderWithNestedOverlay('group')
+    const handled = screen.getByRole('button', { name: 'Confirm' })
+    handled.addEventListener('keydown', (event) => event.preventDefault())
+
+    fireEvent.keyDown(handled, { key: 'Escape' })
+
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('still closes on an Escape nothing else claimed', () => {
+    const onClose = renderWithNestedOverlay('group')
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Confirm' }), { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

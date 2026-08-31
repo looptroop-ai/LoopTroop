@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useDialogFocus } from '@/hooks/useDialogFocus'
+import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 
 interface CenteredModalProps {
   open: boolean
@@ -38,6 +39,11 @@ export function CenteredModal({
     const handler = (e: KeyboardEvent) => {
       if (closeDisabled) return
       if (e.key === 'Escape') {
+        // Escape belongs to the innermost overlay. Without this, dismissing the folder
+        // picker, a confirmation dialog, or a model list opened from inside this window
+        // closed the window behind it as well — the same defect the ticket dashboard
+        // has already been taught to avoid.
+        if (isEscapeClaimedByNestedOverlay(e, panelRef.current)) return
         if (isSessionDirty) {
           const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
           if (!shouldClose) return

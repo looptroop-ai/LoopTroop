@@ -34,8 +34,12 @@ export function KeyboardShortcuts() {
 
   if (!isOpen) return null
 
+  // Above every other surface. At z-50 this sat *under* the ticket view and the About
+  // window, both z-[60] — so `?` from either opened a help overlay nobody could see,
+  // and once it contained focus and made the page inert, the visible UI simply stopped
+  // responding.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsOpen(false)}>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={() => setIsOpen(false)}>
       <Card
         ref={panelRef}
         role="dialog"

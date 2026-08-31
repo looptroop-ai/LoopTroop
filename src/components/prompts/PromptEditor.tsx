@@ -46,11 +46,24 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
     previewResetRef.current = preview.reset
   })
 
-  // The text of the last save this editor made. A successful save invalidates the
-  // query, the server copy comes back changed, and that is not an external edit —
-  // without this the reset below erased the "Saved" line and the warnings the save
-  // had just produced, a few milliseconds after showing them.
-  const savedSourceRef = useRef<string | null>(null)
+  // What is on screen right now, readable from inside an awaited save.
+  const draftRef = useRef(draft)
+  useEffect(() => {
+    draftRef.current = draft
+  })
+
+  /**
+   * Set while the server copy this editor is about to receive is the echo of its own
+   * save. A successful save invalidates the query, the copy comes back changed, and
+   * that is not an external edit — without this the reset below erased the "Saved"
+   * line and the warnings the save had just produced, milliseconds after showing them.
+   *
+   * A flag rather than a comparison against the submitted text: the server stores a
+   * re-serialised document, not the bytes it was sent, so any save whose formatting
+   * differs from what `js-yaml` emits comes back different and a content check would
+   * call the editor's own save somebody else's edit.
+   */
+  const ownSaveEchoRef = useRef(false)
   const lastPromptIdRef = useRef<string | undefined>(undefined)
 
   // Reset local editing state whenever a different prompt is selected or the server
@@ -59,10 +72,14 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
     if (promptCurrent === undefined) return
     const isPromptSwitch = lastPromptIdRef.current !== promptId
     lastPromptIdRef.current = promptId
-    if (!isPromptSwitch && promptCurrent === savedSourceRef.current) return
+    const isOwnSaveEcho = !isPromptSwitch && ownSaveEchoRef.current
+    ownSaveEchoRef.current = false
 
-    savedSourceRef.current = null
+    // The stored copy is canonical and is what the editor should now be showing, but
+    // the save's own feedback still describes it.
     setDraft(promptCurrent)
+    if (isOwnSaveEcho) return
+
     setMode('edit')
     setErrors([])
     setWarnings([])
@@ -72,6 +89,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   // Editing is the point at which the last save stops being news.
   const handleDraftChange = useCallback((next: string) => {
+    ownSaveEchoRef.current = false
     setDraft(next)
     setErrors([])
     setWarnings([])
@@ -93,16 +111,37 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   const handleSave = async () => {
     const source = draft
-    const result = await savePrompt.mutateAsync({ id: promptId, source })
-    savedSourceRef.current = source
+    let result: Awaited<ReturnType<typeof savePrompt.mutateAsync>>
+    try {
+      result = await savePrompt.mutateAsync({ id: promptId, source })
+    } catch (err) {
+      // A refused request — offline, a 500, an unreadable response — used to travel
+      // out of an onClick as an unhandled rejection, leaving the editor looking as
+      // though nothing had been asked of it.
+      setErrors([err instanceof Error ? err.message : 'Failed to save this prompt.'])
+      setWarnings([])
+      setSavedAt(null)
+      return
+    }
+    // The editor stays editable while a save is in flight, so the text on screen may
+    // no longer be the text that was saved. Feedback belongs to what was submitted.
+    if (draftRef.current !== source) return
+    if (result.errors.length === 0) {
+      ownSaveEchoRef.current = true
+      setSavedAt(Date.now())
+    }
     setErrors(result.errors)
     setWarnings(result.warnings)
-    if (result.errors.length === 0) setSavedAt(Date.now())
   }
 
   const handleRevert = async () => {
-    savedSourceRef.current = null
-    await revertPrompt.mutateAsync(promptId)
+    ownSaveEchoRef.current = false
+    try {
+      await revertPrompt.mutateAsync(promptId)
+    } catch (err) {
+      setErrors([err instanceof Error ? err.message : 'Failed to revert this prompt.'])
+      return
+    }
     setErrors([])
     setWarnings([])
     setSavedAt(null)

@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Search, Zap, Eye, Wrench, Brain, AlertCircle, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DROPDOWN_MAX_HEIGHT, DROPDOWN_OFFSET, DROPDOWN_PADDING, DROPDOWN_FOCUS_DELAY_MS, DROPDOWN_Z_INDEX } from '@/lib/constants'
+import { PORTAL_ATTRIBUTE } from '@/lib/overlays'
 import { useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeModels'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
@@ -313,8 +314,22 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
     return Array.from(groups.entries())
   }, [filtered])
 
+  /**
+   * Escape closes the list and nothing else. The list is portaled to `document.body`,
+   * so an unstopped Escape carries on to the Configuration window's own document
+   * listener and closes the whole thing instead of the picker in front of it. Portal
+   * events still travel the React tree, so this one handler covers the trigger and the
+   * list, and it only claims the key while the list is open.
+   */
+  const handleKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key !== 'Escape' || !isOpen) return
+    event.stopPropagation()
+    setIsOpen(false)
+    triggerRef.current?.focus()
+  }
+
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
       {/* Trigger button */}
       <button
         ref={triggerRef}
@@ -361,6 +376,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
         <div
           ref={dropdownRef}
           data-model-dropdown
+          {...{ [PORTAL_ATTRIBUTE]: '' }}
           role="listbox"
           aria-label="Available models"
           className={cn(

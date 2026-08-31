@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useDialogFocus } from '@/hooks/useDialogFocus'
+import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 
 interface FullScreenModalProps {
   open: boolean
@@ -19,7 +20,11 @@ export function FullScreenModal({ open, onClose, title, children }: FullScreenMo
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      // Escape belongs to the innermost overlay; anything opened from inside this one
+      // dismisses itself first.
+      if (isEscapeClaimedByNestedOverlay(e, panelRef.current)) return
+      onClose()
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)

@@ -129,3 +129,62 @@ describe('PromptEditor save feedback', () => {
     })
   })
 })
+
+/**
+ * The server does not store the bytes it was sent: `savePromptTemplate` parses the
+ * YAML and writes `jsYaml.dump` of the result. So the copy that comes back after a
+ * save differs from the draft whenever the user's formatting differs from js-yaml's,
+ * which is most of the time — a guard that compared content would have called the
+ * editor's own save somebody else's edit and wiped the feedback anyway.
+ */
+describe('PromptEditor save feedback — canonicalized and failed saves', () => {
+  it('keeps the feedback when the server returns a re-serialised copy', async () => {
+    state.saveResult = { errors: [], warnings: ['Placeholder {{ticket}} is unused.'] }
+    const { rerender } = renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: "id:   'interview'\n" } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    })
+    // What the store wrote back is not what was sent.
+    serverAccepts("id: interview\n", rerender)
+
+    expect(screen.getByText('Saved. New runs will use this prompt.')).toBeInTheDocument()
+    expect(screen.getByText('Placeholder {{ticket}} is unused.')).toBeInTheDocument()
+    // and the editor now shows the canonical copy, which is what is stored
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('id: interview\n')
+  })
+
+  it('reports a save the server never accepted', async () => {
+    saveMutateAsync.mockRejectedValue(new Error('Failed to save prompt (HTTP 503)'))
+    renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'changed: yes\n' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    })
+
+    expect(screen.getByText('Failed to save prompt (HTTP 503)')).toBeInTheDocument()
+    expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
+    // The draft is still the user's.
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('changed: yes\n')
+  })
+
+  it('does not report a save against a draft the user has moved on from', async () => {
+    let release: (value: { errors: string[]; warnings: string[] }) => void = () => {}
+    saveMutateAsync.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'first edit\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+    // The editor stays editable while the request is in flight.
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'second edit\n' } })
+
+    await act(async () => {
+      release({ errors: [], warnings: [] })
+    })
+
+    expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('second edit\n')
+  })
+})

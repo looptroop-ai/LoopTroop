@@ -24,7 +24,10 @@ function emptyProcessCommand(): CommandSpec {
 
 interface EnvironmentRow {
   id: string
+  /** What the field shows — including a name that is not usable yet. */
   name: string
+  /** The name this row currently occupies in the plan, or '' if it occupies none. */
+  appliedName: string
   value: string
 }
 
@@ -34,15 +37,23 @@ function nextEnvironmentRowId(): string {
 }
 
 function toEnvironmentRows(value: Record<string, string>): EnvironmentRow[] {
-  return Object.entries(value).map(([name, entryValue]) => ({ id: nextEnvironmentRowId(), name, value: entryValue }))
+  return Object.entries(value).map(([name, entryValue]) => ({
+    id: nextEnvironmentRowId(),
+    name,
+    appliedName: name,
+    value: entryValue,
+  }))
 }
 
-/** A row that has not been named yet is not a variable, so it is not in the plan. */
+/**
+ * The plan holds each row under the last name that was usable. A row being renamed
+ * onto a name a sibling already has, or not named yet, keeps the one it had.
+ */
 function toEnvironmentRecord(rows: EnvironmentRow[]): Record<string, string> {
   const record: Record<string, string> = {}
   for (const row of rows) {
-    if (row.name === '') continue
-    record[row.name] = row.value
+    if (row.appliedName === '') continue
+    record[row.appliedName] = row.value
   }
   return record
 }
@@ -58,6 +69,16 @@ function findDuplicateNames(rows: EnvironmentRow[]): Set<string> {
   return duplicates
 }
 
+/** Promotes every row whose typed name is usable; the rest keep the name they hold. */
+function settleRows(rows: EnvironmentRow[]): EnvironmentRow[] {
+  const duplicates = findDuplicateNames(rows)
+  return rows.map((row) => (
+    row.name !== '' && !duplicates.has(row.name) && row.appliedName !== row.name
+      ? { ...row, appliedName: row.name }
+      : row
+  ))
+}
+
 function sameEnvironmentRecord(left: Record<string, string>, right: Record<string, string>): boolean {
   const leftKeys = Object.keys(left)
   if (leftKeys.length !== Object.keys(right).length) return false
@@ -71,9 +92,11 @@ function sameEnvironmentRecord(left: Record<string, string>, right: Record<strin
  * name and remounted the field mid-word — taking focus with it — and renaming `FOO`
  * onto an existing `BAR` silently destroyed both: `FOO` deleted, `BAR` overwritten.
  *
- * Rows with stable ids hold the edit instead. A duplicate name is reported and simply
- * not emitted, so the plan keeps the last unambiguous set of variables and nothing is
- * ever dropped or renamed behind the user's back. The saved plan is still a record.
+ * Rows with stable ids hold the edit instead, each remembering the name it occupies in
+ * the plan. A name a sibling already has is reported and not taken up: that row keeps
+ * the name it had, so nothing is dropped or renamed behind the user's back — and,
+ * unlike a blanket refusal to emit, every other edit on the form still reaches the
+ * plan while the collision is unresolved. The saved plan is still a record.
  */
 function EnvironmentEditor({
   value,
@@ -88,22 +111,20 @@ function EnvironmentEditor({
 
   // Adopt the incoming record whenever it stops describing these rows — a plan loaded,
   // reset, or changed by anything other than this editor. An edit of our own is already
-  // reflected here, and re-deriving rows from it would throw the ids away. While a
-  // duplicate is unresolved the rows deliberately say more than the record can, so they
-  // are left alone rather than overwritten with the record they are ahead of.
+  // reflected here, and re-deriving rows from it would throw the ids away. Rows always
+  // describe a well-formed record now, so an unresolved collision no longer blinds this
+  // comparison and cannot leave a stale draft to overwrite a plan loaded underneath it.
   useEffect(() => {
-    setRows((current) => {
-      if (findDuplicateNames(current).size > 0) return current
-      return sameEnvironmentRecord(toEnvironmentRecord(current), value) ? current : toEnvironmentRows(value)
-    })
+    setRows((current) => (sameEnvironmentRecord(toEnvironmentRecord(current), value) ? current : toEnvironmentRows(value)))
   }, [value])
 
   const duplicateNames = findDuplicateNames(rows)
 
   const applyRows = (next: EnvironmentRow[]) => {
-    setRows(next)
-    if (findDuplicateNames(next).size > 0) return
-    onChange(toEnvironmentRecord(next))
+    const settled = settleRows(next)
+    setRows(settled)
+    const record = toEnvironmentRecord(settled)
+    if (!sameEnvironmentRecord(record, value)) onChange(record)
   }
 
   return (
@@ -155,7 +176,7 @@ function EnvironmentEditor({
         let name = 'VARIABLE'
         let suffix = 1
         while (taken.has(name)) name = `VARIABLE_${++suffix}`
-        applyRows([...rows, { id: nextEnvironmentRowId(), name, value: '' }])
+        applyRows([...rows, { id: nextEnvironmentRowId(), name, appliedName: '', value: '' }])
       }} className="h-7 text-xs">+ Variable</Button>
     </div>
   )

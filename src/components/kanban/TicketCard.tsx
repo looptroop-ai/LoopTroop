@@ -303,7 +303,10 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
             event.stopPropagation()
             handleClick()
           }}
-          aria-label={`Open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}${waitLabel ? `, ${waitLabel}` : ''}`}
+          // The visible title leads the accessible name. An `aria-label` that replaced it
+          // left a screen reader announcing the id and never the ticket, and left speech
+          // input with no name matching the words on screen.
+          aria-label={`${ticket.title}, open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}${waitLabel ? `, ${waitLabel}` : ''}`}
           className="min-w-0 break-words text-left text-sm font-semibold tracking-tight text-foreground leading-snug [overflow-wrap:anywhere] group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
         >
           {ticket.title}

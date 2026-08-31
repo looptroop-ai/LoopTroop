@@ -1222,6 +1222,22 @@ describe('TicketDashboard', () => {
       expect(closedTicket()).toBe(false)
     })
 
+    it('leaves the ticket open when Escape comes from a focused dropdown', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      // The setup-plan editor, Manual QA and the ticket form all render native
+      // selects inside this view; a focused control owns the key.
+      const select = document.createElement('select')
+      document.body.appendChild(select)
+
+      fireEvent.keyDown(select, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(false)
+      document.body.removeChild(select)
+    })
+
     it('leaves the ticket open when something else already handled Escape', async () => {
       renderLoadedDashboard()
       renderDashboard()

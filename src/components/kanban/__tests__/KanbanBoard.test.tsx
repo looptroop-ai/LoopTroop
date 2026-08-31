@@ -5,6 +5,7 @@ import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { KanbanBoard } from '../KanbanBoard'
 import { renderWithProviders as sharedRenderWithProviders } from '@/test/renderHelpers'
 import { TEST, makeTicket } from '@/test/factories'
+import { ticketCardLabel } from '@/test/ticketCardQueries'
 import type { Ticket } from '@/hooks/useTickets'
 import type { Project } from '@/hooks/useProjects'
 
@@ -251,8 +252,8 @@ describe('KanbanBoard', () => {
 
     renderWithSearch(`${TEST.shortname}15`)
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-15`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-16`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-15`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-16`))).not.toBeInTheDocument()
     expect(within(screen.getByText('To Do').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('0')).toBeInTheDocument()
     expect(screen.getAllByText('No matching tickets')).toHaveLength(3)
@@ -273,7 +274,7 @@ describe('KanbanBoard', () => {
 
     renderWithSearch('hidden implementation')
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-17`)).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-17`))).toBeInTheDocument()
     expect(screen.getByText('Description match')).toBeInTheDocument()
   })
 
@@ -314,10 +315,10 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ stuckDays: 1 })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-20, waiting for your input`)).toBeInTheDocument()
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-21`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-22`)).not.toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-23`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-20`, 'waiting for your input'))).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-21`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-22`))).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-23`))).not.toBeInTheDocument()
     expect(within(screen.getByText('To Do').parentElement as HTMLElement).getByText('0')).toBeInTheDocument()
     expect(within(screen.getByText('Needs Input').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
@@ -367,8 +368,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ status: ['CODING'] })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-30`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-31`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-30`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-31`))).not.toBeInTheDocument()
   })
 
   it('filters tickets by selected workflow phase group', () => {
@@ -391,8 +392,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ phase: ['prd'] })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-40`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-41`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-40`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-41`))).not.toBeInTheDocument()
   })
 
   it('filters tickets with past errors when errorState is "past"', () => {
@@ -417,8 +418,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ errorState: 'past' })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-50`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-51`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-50`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-51`))).not.toBeInTheDocument()
   })
 
   it('filters tickets currently blocked when errorState is "blocked"', () => {
@@ -441,8 +442,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ errorState: 'blocked' })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-60`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-61`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-60`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-61`))).not.toBeInTheDocument()
   })
 
   it('shows saved preset details on hover', async () => {

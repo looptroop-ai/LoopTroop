@@ -48,6 +48,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   const [isSkipConfirmOpen, setIsSkipConfirmOpen] = useState(false)
   const [skipAllReason, setSkipAllReason] = useState('')
   const [skipAllError, setSkipAllError] = useState<string | null>(null)
+  const [editAnswerError, setEditAnswerError] = useState<string | null>(null)
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const {
@@ -175,28 +176,34 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
   }, [handleConfirmSkipAll, currentBatch, currentBatchKey, batchAnswers, skipAllReason])
 
   const handleStartEdit = useCallback((questionId: string, currentAnswer: string) => {
+    setEditAnswerError(null)
     setEditingQuestionId(questionId)
     setEditingText(currentAnswer)
   }, [])
 
   const handleCancelEdit = useCallback(() => {
+    setEditAnswerError(null)
     setEditingQuestionId(null)
     setEditingText('')
   }, [])
 
   const handleSaveEdit = useCallback(async () => {
     if (!editingQuestionId) return
+    setEditAnswerError(null)
     try {
       await editAnswerMutation({
         ticketId: ticket.id,
         questionId: editingQuestionId,
         answer: editingText,
       })
-      setEditingQuestionId(null)
-      setEditingText('')
     } catch (err) {
-      console.error('Failed to edit interview answer:', err)
+      // Keep the editor open and the rewritten answer in it. Closing on failure threw
+      // the text away and left the old answer on screen as if the edit had taken.
+      setEditAnswerError(err instanceof Error ? err.message : 'Failed to save this answer')
+      return
     }
+    setEditingQuestionId(null)
+    setEditingText('')
   }, [editingQuestionId, editingText, editAnswerMutation, ticket.id])
 
   if (isLoading && !currentBatch) {
@@ -300,6 +307,7 @@ export function InterviewQAView({ ticket }: InterviewQAViewProps) {
           editingQuestionId={editingQuestionId}
           editingText={editingText}
           isEditingAnswer={isEditingAnswer}
+          editError={editAnswerError}
           onEditingTextChange={setEditingText}
           onStartEdit={handleStartEdit}
           onCancelEdit={handleCancelEdit}

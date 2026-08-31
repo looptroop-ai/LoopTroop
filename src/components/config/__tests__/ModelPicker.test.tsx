@@ -144,3 +144,98 @@ describe('ModelPicker', () => {
     expect(screen.queryByText('local/same-name')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * The list is portaled to `document.body`, so an unstopped Escape carried on to the
+ * Configuration window's own document listener and closed the whole thing instead of
+ * the picker in front of it.
+ */
+describe('ModelPicker — Escape', () => {
+  beforeEach(() => {
+    mockModelsQuery()
+  })
+
+  it('closes the list and returns focus to the trigger', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+
+    fireEvent.keyDown(screen.getByLabelText('Search models'), { key: 'Escape' })
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('keeps Escape to itself so the window behind it stays open', () => {
+    const onDocumentEscape = vi.fn()
+    document.addEventListener('keydown', onDocumentEscape)
+    try {
+      render(<ModelPicker value="" onChange={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+      onDocumentEscape.mockClear()
+
+      fireEvent.keyDown(screen.getByLabelText('Search models'), { key: 'Escape' })
+
+      expect(onDocumentEscape).not.toHaveBeenCalled()
+    } finally {
+      document.removeEventListener('keydown', onDocumentEscape)
+    }
+  })
+
+  it('lets Escape through while the list is closed', () => {
+    const onDocumentEscape = vi.fn()
+    document.addEventListener('keydown', onDocumentEscape)
+    try {
+      render(<ModelPicker value="" onChange={vi.fn()} />)
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Pick a model' }), { key: 'Escape' })
+
+      expect(onDocumentEscape).toHaveBeenCalledTimes(1)
+    } finally {
+      document.removeEventListener('keydown', onDocumentEscape)
+    }
+  })
+})
+
+describe('ModelPicker — closing', () => {
+  beforeEach(() => {
+    mockModelsQuery()
+  })
+
+  it('hands focus back to the trigger after a model is chosen', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+
+    // Selecting closes the list from inside it, detaching the button the user was on.
+    fireEvent.click(screen.getByRole('button', { name: /GPT Alpha/ }))
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('stays open for a click in its own list', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+
+    fireEvent.mouseDown(screen.getByLabelText('Search models'))
+
+    expect(screen.getByLabelText('Search models')).toBeInTheDocument()
+  })
+
+  it('closes for a click in a list belonging to another picker', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+
+    // Another picker's portal: same kind of surface, a different owner. Matching on
+    // "is a model list" rather than on the owner left this one open.
+    const otherList = document.createElement('div')
+    otherList.setAttribute('data-lt-portal', 'some-other-picker')
+    document.body.appendChild(otherList)
+
+    fireEvent.mouseDown(otherList)
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    document.body.removeChild(otherList)
+  })
+})

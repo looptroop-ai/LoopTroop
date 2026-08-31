@@ -5,6 +5,7 @@ import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { KanbanBoard } from '../KanbanBoard'
 import { renderWithProviders as sharedRenderWithProviders } from '@/test/renderHelpers'
 import { TEST, makeTicket } from '@/test/factories'
+import { ticketCardLabel } from '@/test/ticketCardQueries'
 import type { Ticket } from '@/hooks/useTickets'
 import type { Project } from '@/hooks/useProjects'
 
@@ -69,6 +70,17 @@ function renderWithSearch(search: string, dispatch = vi.fn()) {
 function renderWithFilters(filterOverrides: Partial<UIContextValue['state']['filters']>, dispatch = vi.fn()) {
   return sharedRenderWithProviders(
     <UIContext.Provider value={makeUIValue(filterOverrides.search ?? '', dispatch, filterOverrides)}>
+      <KanbanBoard />
+    </UIContext.Provider>,
+  )
+}
+
+/** The filter bar, and with it the Reset button, only exists while triage is open. */
+function renderTriageBar(filterOverrides: Partial<UIContextValue['state']['filters']>, dispatch = vi.fn()) {
+  const uiValue = makeUIValue(filterOverrides.search ?? '', dispatch, filterOverrides)
+  uiValue.state.showTriageBar = true
+  return sharedRenderWithProviders(
+    <UIContext.Provider value={uiValue}>
       <KanbanBoard />
     </UIContext.Provider>,
   )
@@ -240,8 +252,8 @@ describe('KanbanBoard', () => {
 
     renderWithSearch(`${TEST.shortname}15`)
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-15`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-16`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-15`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-16`))).not.toBeInTheDocument()
     expect(within(screen.getByText('To Do').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('0')).toBeInTheDocument()
     expect(screen.getAllByText('No matching tickets')).toHaveLength(3)
@@ -262,7 +274,7 @@ describe('KanbanBoard', () => {
 
     renderWithSearch('hidden implementation')
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-17`)).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-17`))).toBeInTheDocument()
     expect(screen.getByText('Description match')).toBeInTheDocument()
   })
 
@@ -303,10 +315,10 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ stuckDays: 1 })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-20, waiting for your input`)).toBeInTheDocument()
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-21`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-22`)).not.toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-23`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-20`, 'waiting for your input'))).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-21`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-22`))).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-23`))).not.toBeInTheDocument()
     expect(within(screen.getByText('To Do').parentElement as HTMLElement).getByText('0')).toBeInTheDocument()
     expect(within(screen.getByText('Needs Input').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(within(screen.getByText('In Progress').parentElement as HTMLElement).getByText('1')).toBeInTheDocument()
@@ -356,8 +368,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ status: ['CODING'] })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-30`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-31`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-30`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-31`))).not.toBeInTheDocument()
   })
 
   it('filters tickets by selected workflow phase group', () => {
@@ -380,8 +392,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ phase: ['prd'] })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-40`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-41`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-40`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-41`))).not.toBeInTheDocument()
   })
 
   it('filters tickets with past errors when errorState is "past"', () => {
@@ -406,8 +418,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ errorState: 'past' })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-50`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-51`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-50`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-51`))).not.toBeInTheDocument()
   })
 
   it('filters tickets currently blocked when errorState is "blocked"', () => {
@@ -430,8 +442,8 @@ describe('KanbanBoard', () => {
 
     renderWithFilters({ errorState: 'blocked' })
 
-    expect(screen.getByLabelText(`Open ticket ${TEST.shortname}-60`)).toBeInTheDocument()
-    expect(screen.queryByLabelText(`Open ticket ${TEST.shortname}-61`)).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel(`${TEST.shortname}-60`))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel(`${TEST.shortname}-61`))).not.toBeInTheDocument()
   })
 
   it('shows saved preset details on hover', async () => {
@@ -588,6 +600,61 @@ describe('KanbanBoard', () => {
     expect(dispatch).toHaveBeenCalledWith({
       type: 'SET_FILTER',
       filter: { search: '' },
+    })
+  })
+
+  /**
+   * Search and the mock-ticket toggle are filters like any other. Leaving them out of
+   * Reset meant the button disappeared while the board was still filtered, and when it
+   * was there, pressing it left the search in place — so "Reset" did not reset.
+   */
+  describe('the filter bar Reset button', () => {
+    it('appears when only a search is active, and clears it', () => {
+      const dispatch = vi.fn()
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({ search: 'anything' }, dispatch)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'SET_FILTER',
+        filter: expect.objectContaining({ search: '' }),
+      }))
+    })
+
+    it('appears when mock tickets are the only thing hidden', () => {
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({ showMocks: false })
+
+      expect(screen.getByRole('button', { name: 'Reset' })).toBeInTheDocument()
+    })
+
+    it('stays away when nothing is filtered', () => {
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({})
+
+      expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument()
+    })
+
+    it('names the preset each delete control removes', () => {
+      mockBoardData([], [makeProject()])
+      localStorage.setItem('looptroop-ui-state', JSON.stringify({
+        showTriageBar: true,
+        filters: {},
+        presetsByProject: {
+          'looptroop-presets-global': {
+            'Night ops': { priority: [1], stuckDays: 3, errorState: 'blocked', sortBy: 'priority_asc' },
+          },
+        },
+      }))
+
+      renderWithProviders(<KanbanBoard />)
+      fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), { button: 0, ctrlKey: false })
+
+      expect(screen.getByRole('button', { name: 'Delete preset Night ops' })).toBeInTheDocument()
     })
   })
 })

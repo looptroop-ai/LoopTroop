@@ -461,7 +461,10 @@ export function PhaseLogPanel({
             return `${ts}${formatLogLine(entry, shouldShowModelNameInLogTags).copyText}`
           }).join('\n')
       if (!textToCopy) return
-      await copyToClipboard(textToCopy)
+      // The clipboard write reports refusal by returning false rather than throwing,
+      // so the failure branch below covers the export only — both have to be checked
+      // or a denied clipboard reads as a successful copy.
+      if (!await copyToClipboard(textToCopy)) setCopyLogsFailed(true)
     } catch {
       setCopyLogsFailed(true)
     } finally {

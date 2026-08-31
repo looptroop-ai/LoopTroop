@@ -132,10 +132,6 @@ describe('TicketForm', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Choose whether this ticket pauses for your verification after final tests.')
     fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
-    expect(mockUseCreateTicket().mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ manualQaOverride: true }),
-      expect.any(Object),
-    )
     expect(mockUseCreateTicket().mutate.mock.calls[0]?.[0]).not.toHaveProperty('gitHookPolicy')
   })
 
@@ -168,5 +164,45 @@ describe('TicketForm', () => {
 
     expect(screen.getByText('No projects are attached yet. Add a project before creating a ticket.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create Ticket' })).toBeDisabled()
+  })
+
+  /**
+   * The form starts out inheriting, and used to resolve that to a boolean on the way
+   * out — so every new ticket was frozen at whatever the project or profile said the
+   * moment it was created, and a later change to either never reached it. The
+   * AI-question fields beside it always sent the tri-state.
+   */
+  describe('the Manual QA setting on a new ticket', () => {
+    function createTicket() {
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue()}>
+          <TicketForm onClose={vi.fn()} />
+        </UIContext.Provider>,
+      )
+      fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
+      return mockUseCreateTicket().mutate.mock.calls[0]?.[0] as { manualQaOverride: boolean | null }
+    }
+
+    it('keeps inheriting when the user does not choose', () => {
+      expect(createTicket().manualQaOverride).toBeNull()
+    })
+
+    it('sends the explicit choice when the user makes one', () => {
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue()}>
+          <TicketForm onClose={vi.fn()} />
+        </UIContext.Provider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+      fireEvent.click(screen.getByRole('radio', { name: 'Disabled' }))
+      fireEvent.change(screen.getByPlaceholderText('Brief summary of the work'), { target: { value: 'Verify checkout' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Create Ticket' }))
+
+      expect(mockUseCreateTicket().mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ manualQaOverride: false }),
+        expect.any(Object),
+      )
+    })
   })
 })

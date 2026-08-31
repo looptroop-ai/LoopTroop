@@ -30,6 +30,7 @@ import { Button } from '@/components/ui/button'
 import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
+import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 
 function toDebugJson(data: Record<string, unknown>) {
   if (import.meta.env.PROD) return '[debug]'
@@ -519,12 +520,19 @@ export function TicketDashboard() {
   // Escape key closes dashboard
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (isMobileNavOpen) {
-          setIsMobileNavOpen(false)
-        } else {
-          dispatch({ type: 'CLOSE_TICKET' })
-        }
+      if (e.key !== 'Escape') return
+      // Escape belongs to the innermost thing that is open. Every overlay in the
+      // ticket view — the cancel, approve and skip dialogs, the model pickers, the
+      // dropdowns — dismisses itself on Escape and lets the key bubble to here, so
+      // without this the same keypress that dismissed "Cancel ticket?" also left the
+      // ticket. Radix menus, selects and hover cards are not dialogs, which is why
+      // this cannot be a `role="dialog"` check alone.
+      if (isEscapeClaimedByNestedOverlay(e, null)) return
+
+      if (isMobileNavOpen) {
+        setIsMobileNavOpen(false)
+      } else {
+        dispatch({ type: 'CLOSE_TICKET' })
       }
     }
     document.addEventListener('keydown', handleKeyDown)

@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
 import { UIProvider } from '@/context/UIContext'
 import { AIQuestionContext, type AIQuestionContextValue } from '@/context/aiQuestionContextDef'
 import { TicketCard } from '../TicketCard'
 import { renderWithProviders } from '@/test/renderHelpers'
 import { createAiQuestionContextStub } from '@/test/aiQuestionContext'
 import { TEST, makeTicket } from '@/test/factories'
+import { ticketCardLabel } from '@/test/ticketCardQueries'
 import type { Ticket } from '@/hooks/useTickets'
 import { clearNeedsInputSeen, getNeedsInputSignature } from '@/lib/needsInputSeen'
 
@@ -30,14 +32,55 @@ function renderCard(ticket: Ticket, aiQuestions: AIQuestionContextValue = create
   )
 }
 
-function cardFor(ticket: Ticket) {
-  // The label carries a trailing clause naming the wait, so match its start.
-  // A plain prefix test rather than a built regex: the id would otherwise need
-  // escaping to stay a literal match.
-  const prefix = `Open ticket ${ticket.externalId}`
+/**
+ * Keeps one `TicketCard` mounted while its ticket prop advances, which is what a
+ * board does: the card is not remounted when the ticket it shows starts waiting on
+ * something new.
+ */
+function renderAdvancingCard(stages: Ticket[]) {
+  function Harness() {
+    const [index, setIndex] = useState(0)
+    return (
+      <>
+        <button type="button" onClick={() => setIndex((i) => Math.min(i + 1, stages.length - 1))}>
+          advance
+        </button>
+        <TicketCard
+          ticket={stages[index]!}
+          projectColor={projectColor}
+          projectIcon="T"
+          projectName="TestProject"
+        />
+      </>
+    )
+  }
+  return renderWithProviders(
+    <AIQuestionContext.Provider value={createAiQuestionContextStub()}>
+      <UIProvider>
+        <Harness />
+      </UIProvider>
+    </AIQuestionContext.Provider>,
+  )
+}
+
+function advance() {
+  fireEvent.click(screen.getByRole('button', { name: 'advance' }))
+}
+
+function openButtonFor(ticket: Ticket) {
+  // The label leads with the ticket title and ends with the id, plus a clause
+  // naming the wait when there is one — matched as a tail so a fixture's title is
+  // not part of every assertion.
+  const suffix = `, open ticket ${ticket.externalId}`
   return screen.getByLabelText(
-    (content) => content === prefix || content.startsWith(`${prefix},`),
+    (content) => content.endsWith(suffix) || content.includes(`${suffix},`),
   ) as HTMLElement
+}
+
+function cardFor(ticket: Ticket) {
+  // The labelled element is the title button that opens the ticket; the pulse
+  // classes these tests assert on live on the card around it.
+  return openButtonFor(ticket).closest('[data-ticket-card]') as HTMLElement
 }
 
 describe('TicketCard — ack-aware Needs Input flashing', () => {
@@ -195,7 +238,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       pendingQuestions: pendingQuestions(2, 4),
     })
     renderCard(question)
-    expect(screen.getByLabelText('Open ticket TEST-1, 4 questions waiting for your answer')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', '4 questions waiting for your answer'))).toBeInTheDocument()
     cleanup()
 
     const approval = makeTicket({
@@ -205,7 +248,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       updatedAt: TEST.timestamp,
     })
     renderCard(approval)
-    expect(screen.getByLabelText('Open ticket TEST-1, waiting for your input')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', 'waiting for your input'))).toBeInTheDocument()
   })
 
   it('says "1 question" rather than "1 questions"', () => {
@@ -217,7 +260,7 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
       pendingQuestions: pendingQuestions(1, 1),
     })
     renderCard(ticket)
-    expect(screen.getByLabelText('Open ticket TEST-1, 1 question waiting for your answer')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1', '1 question waiting for your answer'))).toBeInTheDocument()
   })
 
   it('re-flashes when the wait reason changes after a prior acknowledgment', () => {
@@ -261,5 +304,59 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
     renderCard(asked)
     const card = cardFor(asked)
     expect(card.innerHTML).toContain('lt-needs-input-pulse')
+  })
+
+  /**
+   * The acknowledgment used to be read once, by a `useState` initialiser. A card
+   * stays mounted for as long as its column does, so a ticket that later began a
+   * different wait kept the answer computed for the previous one and never flashed
+   * again — the exact case a board is for.
+   */
+  it('re-flashes on a new wait without being remounted', () => {
+    const acknowledged = makeTicket({
+      id: '1:TEST-1',
+      externalId: TEST.externalId,
+      status: 'WAITING_PRD_APPROVAL',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    const firstSig = getNeedsInputSignature(acknowledged)!
+    clearNeedsInputSeen(acknowledged.id)
+    localStorage.setItem(`needs-input-seen-${acknowledged.id}`, firstSig)
+
+    const nextWait = makeTicket({
+      ...acknowledged,
+      status: 'WAITING_BEADS_APPROVAL',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    })
+
+    renderAdvancingCard([acknowledged, nextWait])
+    expect(cardFor(acknowledged).innerHTML).not.toContain('lt-needs-input-pulse')
+
+    advance()
+
+    expect(cardFor(nextWait).innerHTML).toContain('lt-needs-input-pulse')
+  })
+
+  it('stops flashing again once the new wait is acknowledged', () => {
+    const waiting = makeTicket({
+      id: '1:TEST-1',
+      externalId: TEST.externalId,
+      status: 'WAITING_PRD_APPROVAL',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      needsInputSeenSignature: null,
+    })
+    clearNeedsInputSeen(waiting.id)
+
+    const acknowledgedElsewhere = makeTicket({
+      ...waiting,
+      needsInputSeenSignature: getNeedsInputSignature(waiting)!,
+    })
+
+    renderAdvancingCard([waiting, acknowledgedElsewhere])
+    expect(cardFor(waiting).innerHTML).toContain('lt-needs-input-pulse')
+
+    advance()
+
+    expect(cardFor(acknowledgedElsewhere).innerHTML).not.toContain('lt-needs-input-pulse')
   })
 })

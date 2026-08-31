@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Columns2, Eye, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -36,18 +36,78 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
   const [warnings, setWarnings] = useState<string[]>([])
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
-  // Reset local editing state whenever a different prompt is selected or the
-  // server copy changes (e.g. after a revert).
+  const promptCurrent = prompt?.current
+
+  // `preview.reset` is a fresh function on every render of the mutation hook. Held in
+  // a ref, resetting the preview stays something the reset below *does* rather than
+  // something that makes it run.
+  const previewResetRef = useRef(preview.reset)
   useEffect(() => {
-    if (!prompt) return
-    setDraft(prompt.current)
+    previewResetRef.current = preview.reset
+  })
+
+  // What is on screen right now, readable from inside an awaited save.
+  const draftRef = useRef(draft)
+  const promptIdRef = useRef(promptId)
+  useEffect(() => {
+    draftRef.current = draft
+    promptIdRef.current = promptId
+  })
+
+  /**
+   * Set while the server copy this editor is about to receive is the echo of its own
+   * save. A successful save invalidates the query, the copy comes back changed, and
+   * that is not an external edit — without this the reset below erased the "Saved"
+   * line and the warnings the save had just produced, milliseconds after showing them.
+   *
+   * A flag rather than a comparison against the submitted text: the server stores a
+   * re-serialised document, not the bytes it was sent, so any save whose formatting
+   * differs from what `js-yaml` emits comes back different and a content check would
+   * call the editor's own save somebody else's edit.
+   */
+  const ownSaveEchoRef = useRef(false)
+  /**
+   * Whether that echo should replace what is on screen. It should not when the user
+   * carried on typing while the save was in flight: the save still happened, so the
+   * invalidation is still ours to absorb, but the canonical copy it brings back is
+   * older than the draft and adopting it would delete what they typed.
+   */
+  const echoAdoptsDraftRef = useRef(true)
+  const lastPromptIdRef = useRef<string | undefined>(undefined)
+
+  // Reset local editing state whenever a different prompt is selected or the server
+  // copy changes underneath the editor (a revert, or another writer).
+  useEffect(() => {
+    if (promptCurrent === undefined) return
+    const isPromptSwitch = lastPromptIdRef.current !== promptId
+    lastPromptIdRef.current = promptId
+    const isOwnSaveEcho = !isPromptSwitch && ownSaveEchoRef.current
+    ownSaveEchoRef.current = false
+
+    if (isOwnSaveEcho) {
+      // The stored copy is canonical and is what the editor should now be showing,
+      // but the save's own feedback still describes it.
+      if (echoAdoptsDraftRef.current) setDraft(promptCurrent)
+      echoAdoptsDraftRef.current = true
+      return
+    }
+
+    setDraft(promptCurrent)
     setMode('edit')
     setErrors([])
     setWarnings([])
     setSavedAt(null)
-    preview.reset()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prompt?.id, prompt?.current])
+    previewResetRef.current()
+  }, [promptId, promptCurrent])
+
+  // Editing is the point at which the last save stops being news.
+  const handleDraftChange = useCallback((next: string) => {
+    ownSaveEchoRef.current = false
+    setDraft(next)
+    setErrors([])
+    setWarnings([])
+    setSavedAt(null)
+  }, [])
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading prompt…</div>
@@ -62,15 +122,56 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   const isDirty = draft !== prompt.current
 
+  /**
+   * The editor is one component instance for every prompt — the dialog swaps the
+   * `promptId` prop rather than remounting — and it stays editable while a request is
+   * in flight. So a result describes the prompt and the text it was sent for, and
+   * belongs to neither if either has moved on since.
+   */
+  const describesCurrentEditor = (savedPromptId: string, source: string) =>
+    promptIdRef.current === savedPromptId && draftRef.current === source
+
   const handleSave = async () => {
-    const result = await savePrompt.mutateAsync({ id: promptId, source: draft })
+    const source = draft
+    const savedPromptId = promptId
+    let result: Awaited<ReturnType<typeof savePrompt.mutateAsync>>
+    try {
+      result = await savePrompt.mutateAsync({ id: savedPromptId, source })
+    } catch (err) {
+      // A refused request — offline, a 500, an unreadable response — used to travel
+      // out of an onClick as an unhandled rejection, leaving the editor looking as
+      // though nothing had been asked of it.
+      if (!describesCurrentEditor(savedPromptId, source)) return
+      setErrors([err instanceof Error ? err.message : 'Failed to save this prompt.'])
+      setWarnings([])
+      setSavedAt(null)
+      return
+    }
+
+    const isCurrent = describesCurrentEditor(savedPromptId, source)
+    if (result.errors.length === 0 && promptIdRef.current === savedPromptId) {
+      // The write happened, so its echo is coming either way; only whether the editor
+      // should adopt what comes back depends on the draft still being the saved one.
+      ownSaveEchoRef.current = true
+      echoAdoptsDraftRef.current = isCurrent
+    }
+    if (!isCurrent) return
+    if (result.errors.length === 0) setSavedAt(Date.now())
     setErrors(result.errors)
     setWarnings(result.warnings)
-    if (result.errors.length === 0) setSavedAt(Date.now())
   }
 
   const handleRevert = async () => {
-    await revertPrompt.mutateAsync(promptId)
+    const revertedPromptId = promptId
+    ownSaveEchoRef.current = false
+    try {
+      await revertPrompt.mutateAsync(revertedPromptId)
+    } catch (err) {
+      if (promptIdRef.current !== revertedPromptId) return
+      setErrors([err instanceof Error ? err.message : 'Failed to revert this prompt.'])
+      return
+    }
+    if (promptIdRef.current !== revertedPromptId) return
     setErrors([])
     setWarnings([])
     setSavedAt(null)
@@ -186,7 +287,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
             key={`${promptId}:diff`}
             original={prompt.default}
             modified={draft}
-            onChange={setDraft}
+            onChange={handleDraftChange}
             wordWrap={wordWrap}
             className="h-full overflow-auto"
           />
@@ -195,7 +296,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
           <YamlEditor
             key={`${promptId}:edit`}
             value={draft}
-            onChange={setDraft}
+            onChange={handleDraftChange}
             wordWrap={wordWrap}
             className="h-full"
           />

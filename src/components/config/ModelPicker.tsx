@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useId, useMemo, useCallback, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Search, Zap, Eye, Wrench, Brain, AlertCircle, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DROPDOWN_MAX_HEIGHT, DROPDOWN_OFFSET, DROPDOWN_PADDING, DROPDOWN_FOCUS_DELAY_MS, DROPDOWN_Z_INDEX } from '@/lib/constants'
+import { PORTAL_ATTRIBUTE, PORTAL_SELECTOR } from '@/lib/overlays'
 import { useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeModels'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
@@ -146,18 +147,20 @@ function ProviderGroup({
 
   return (
     <div>
-      <div 
-        className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-muted/50 transition-colors select-none border-b border-border/40"
+      <button
+        type="button"
+        aria-expanded={!isCollapsed}
+        className="sticky top-0 z-10 w-full bg-popover/95 backdrop-blur-sm px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-muted/50 transition-colors select-none border-b border-border/40 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         onClick={() => setIsCollapsed(c => !c)}
       >
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           {providerName}
           <span className="ml-1.5 font-normal normal-case opacity-60">
             {models.length} {models.length === 1 ? 'model' : 'models'}
           </span>
-        </div>
+        </span>
         <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground opacity-70 transition-transform', isCollapsed && '-rotate-90')} aria-hidden="true" />
-      </div>
+      </button>
       {!isCollapsed && (
         <div className="flex flex-col">
           {models.map(m => (
@@ -201,6 +204,8 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
   const activeError = isShowingAll ? allError : connectedError
   const errorCopy = useMemo(() => getModelQueryErrorCopy(activeError), [activeError])
   const [isOpen, setIsOpen] = useState(false)
+  // Names this picker to the list it portals away; see `PORTAL_ATTRIBUTE`.
+  const ownerId = useId()
   const [query, setQuery] = useState('')
   const [isShowingOnlyFree, setIsShowingOnlyFree] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -228,25 +233,50 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
     }
   }, [])
 
+  // Focusing the search field is deferred until the dropdown has been positioned, so
+  // the timer has to be cancellable: a dropdown closed inside the delay would
+  // otherwise focus an input that is no longer on the page.
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
   const dropdownRef = useCallback((node: HTMLDivElement | null) => {
     dropdownNodeRef.current = node
+    clearTimeout(focusTimerRef.current)
     if (node) {
       applyPosition(node)
-      setTimeout(() => inputRef.current?.focus(), DROPDOWN_FOCUS_DELAY_MS)
+      focusTimerRef.current = setTimeout(() => inputRef.current?.focus(), DROPDOWN_FOCUS_DELAY_MS)
     }
   }, [applyPosition])
 
-  // Close on outside click
+  useEffect(() => () => clearTimeout(focusTimerRef.current), [])
+
+  // Close on outside click. "Outside" means outside *this* picker: the portal is
+  // matched by the owner it names, not by being a model list, so a click in another
+  // picker's list is outside this one and closes it.
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: MouseEvent) => {
-      if (
-        !containerRef.current?.contains(e.target as Node) &&
-        !(e.target as Element)?.closest('[data-model-dropdown]')
-      ) setIsOpen(false)
+      const target = e.target as Element | null
+      if (containerRef.current?.contains(target as Node)) return
+      if (target?.closest?.(PORTAL_SELECTOR)?.getAttribute(PORTAL_ATTRIBUTE) === ownerId) return
+      setIsOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
+  }, [isOpen, ownerId])
+
+  /**
+   * Selecting a model closes the list from inside it, which detaches the button the
+   * user was on and leaves the document focused on nothing. Escape already hands focus
+   * back explicitly; this covers every other way the list goes away.
+   */
+  useEffect(() => {
+    if (!isOpen) return
+    const trigger = triggerRef.current
+    return () => {
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      trigger?.focus()
+    }
   }, [isOpen])
 
   // Reposition on scroll/resize
@@ -303,8 +333,22 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
     return Array.from(groups.entries())
   }, [filtered])
 
+  /**
+   * Escape closes the list and nothing else. The list is portaled to `document.body`,
+   * so an unstopped Escape carries on to the Configuration window's own document
+   * listener and closes the whole thing instead of the picker in front of it. Portal
+   * events still travel the React tree, so this one handler covers the trigger and the
+   * list, and it only claims the key while the list is open.
+   */
+  const handleKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key !== 'Escape' || !isOpen) return
+    event.stopPropagation()
+    setIsOpen(false)
+    triggerRef.current?.focus()
+  }
+
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} id={ownerId} className="relative" onKeyDown={handleKeyDown}>
       {/* Trigger button */}
       <button
         ref={triggerRef}
@@ -350,7 +394,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
       {isOpen && createPortal(
         <div
           ref={dropdownRef}
-          data-model-dropdown
+          {...{ [PORTAL_ATTRIBUTE]: ownerId }}
           role="listbox"
           aria-label="Available models"
           className={cn(

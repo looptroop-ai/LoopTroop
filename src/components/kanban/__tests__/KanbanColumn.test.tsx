@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { UIProvider } from '@/context/UIContext'
 import type { Project } from '@/hooks/useProjects'
 import { makeTicket } from '@/test/factories'
+import { ANY_TICKET_CARD_LABEL, ticketCardLabel } from '@/test/ticketCardQueries'
 import { KanbanColumn } from '../KanbanColumn'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -70,7 +71,7 @@ describe('KanbanColumn', () => {
     const pageInput = screen.getByRole('textbox', { name: /done current page/i })
 
     expect(pageInput).toHaveValue('1')
-    expect(screen.getByLabelText('Open ticket TEST-31')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-31'))).toBeInTheDocument()
 
     fireEvent.change(pageInput, { target: { value: '3abc' } })
 
@@ -79,8 +80,8 @@ describe('KanbanColumn', () => {
     fireEvent.blur(pageInput)
 
     expect(pageInput).toHaveValue('3')
-    expect(screen.getByLabelText('Open ticket TEST-1')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Open ticket TEST-31')).not.toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-1'))).toBeInTheDocument()
+    expect(screen.queryByLabelText(ticketCardLabel('TEST-31'))).not.toBeInTheDocument()
     expect(screen.getByText('of 3')).toBeInTheDocument()
   })
 
@@ -109,7 +110,7 @@ describe('KanbanColumn', () => {
       </TooltipProvider>,
     )
 
-    expect(screen.getByLabelText('Open ticket TEST-99 mock demo ticket')).toBeInTheDocument()
+    expect(screen.getByLabelText(ticketCardLabel('TEST-99 mock demo ticket'))).toBeInTheDocument()
     expect(screen.getByLabelText('TEST-99 mock demo ticket')).toHaveTextContent('TEST-99(M)')
   })
 
@@ -160,9 +161,9 @@ describe('KanbanColumn', () => {
     )
 
     // Default updatedAt_desc sorting: C (June 3), B (June 2), A (June 1)
-    let renderedCardTitles = screen.getAllByRole('paragraph')
+    // The card title is the button that opens the ticket.
+    let renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Beta ticket', 'Alpha ticket', 'Zeta ticket'])
 
     // Sort by Title A-Z
@@ -183,9 +184,8 @@ describe('KanbanColumn', () => {
         </UIProvider>
       </TooltipProvider>,
     )
-    renderedCardTitles = screen.getAllByRole('paragraph')
+    renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
 
     // Sort by Priority High to Low: B (priority 1), C (priority 2), A (priority 3)
@@ -206,9 +206,8 @@ describe('KanbanColumn', () => {
         </UIProvider>
       </TooltipProvider>,
     )
-    renderedCardTitles = screen.getAllByRole('paragraph')
+    renderedCardTitles = screen.getAllByRole('button', { name: ANY_TICKET_CARD_LABEL })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
   })
 })

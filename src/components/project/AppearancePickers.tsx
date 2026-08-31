@@ -112,7 +112,7 @@ export function EmojiPickerSection({ icon, onIconChange, isIconPickerOpen, onIco
               autoComplete="off"
             />
             {emojiSearch && (
-              <button type="button" onClick={() => setEmojiSearch('')} className="text-muted-foreground hover:text-foreground">
+              <button type="button" onClick={() => setEmojiSearch('')} aria-label="Clear emoji search" className="text-muted-foreground hover:text-foreground">
                 <X className="h-3.5 w-3.5" />
               </button>
             )}

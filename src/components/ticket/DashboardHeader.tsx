@@ -192,16 +192,22 @@ function FileTreeNode({ node, depth = 0 }: { node: SizeItem; depth?: number }) {
   const [isOpen, setIsOpen] = useState(false)
   const hasChildren = node.isDirectory && node.children && node.children.length > 0
 
+  // A row that expands is a disclosure and gets a real button; a leaf row is text,
+  // and giving it a button would put a control in the tab order that does nothing.
+  const RowTag = hasChildren ? 'button' : 'div'
+
   return (
     <div className="flex flex-col select-none">
-      <div
-        onClick={() => hasChildren && setIsOpen(!isOpen)}
-        className={`flex items-center justify-between text-[11px] hover:bg-muted/40 px-2 py-0.5 rounded transition-colors group ${
-          hasChildren ? 'cursor-pointer' : ''
+      <RowTag
+        {...(hasChildren
+          ? { type: 'button' as const, 'aria-expanded': isOpen, onClick: () => setIsOpen(!isOpen) }
+          : {})}
+        className={`flex w-full items-center justify-between text-left text-[11px] hover:bg-muted/40 px-2 py-0.5 rounded transition-colors group ${
+          hasChildren ? 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset' : ''
         }`}
         style={{ paddingLeft: `${depth * 8 + 8}px` }}
       >
-        <div className="flex items-center gap-1.5 min-w-0 text-muted-foreground">
+        <span className="flex items-center gap-1.5 min-w-0 text-muted-foreground">
           {node.isDirectory ? (
             <>
               {hasChildren ? (
@@ -224,11 +230,11 @@ function FileTreeNode({ node, depth = 0 }: { node: SizeItem; depth?: number }) {
           <span className="truncate text-foreground font-mono" title={node.name}>
             {node.name}
           </span>
-        </div>
+        </span>
         <span className="text-[10px] font-mono text-muted-foreground ml-2 shrink-0 group-hover:text-foreground transition-colors">
           {formatBytes(node.size)}
         </span>
-      </div>
+      </RowTag>
 
       {isOpen && hasChildren && (
         <div className="flex flex-col gap-0.5 border-l border-border/10 ml-3.5 mt-0.5 pl-1">
@@ -807,20 +813,22 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
 
                       {sizeBreakdown && (
                         <div className="flex flex-col gap-2.5 mt-1 border-t border-border/40 pt-2.5">
-                          {/* Segmented Disk Allocation Bar */}
+                          {/* Segmented Disk Allocation Bar. A ticket that has written
+                              nothing yet has a total of zero, and every segment divided
+                              by it used to render `width: NaN%`. */}
                           <div className="h-2 w-full rounded-full bg-muted/60 overflow-hidden flex">
                             <div
-                              style={{ width: `${Math.max(0.5, (sizeBreakdown.source.total / ticketSize) * 100)}%` }}
+                              style={{ width: `${ticketSize > 0 ? Math.max(0.5, (sizeBreakdown.source.total / ticketSize) * 100) : 0}%` }}
                               className="bg-primary h-full transition-all duration-500"
                               title={`Source Code: ${formatBytes(sizeBreakdown.source.total)}`}
                             />
                             <div
-                              style={{ width: `${Math.max(0.5, (sizeBreakdown.artifacts.total / ticketSize) * 100)}%` }}
+                              style={{ width: `${ticketSize > 0 ? Math.max(0.5, (sizeBreakdown.artifacts.total / ticketSize) * 100) : 0}%` }}
                               className="bg-muted-foreground/60 h-full transition-all duration-500"
                               title={`Phase Artifacts: ${formatBytes(sizeBreakdown.artifacts.total)}`}
                             />
                             <div
-                              style={{ width: `${Math.max(0.5, (sizeBreakdown.logs.total / ticketSize) * 100)}%` }}
+                              style={{ width: `${ticketSize > 0 ? Math.max(0.5, (sizeBreakdown.logs.total / ticketSize) * 100) : 0}%` }}
                               className="bg-muted-foreground/25 h-full transition-all duration-500"
                               title={`Execution Logs: ${formatBytes(sizeBreakdown.logs.total)}`}
                             />

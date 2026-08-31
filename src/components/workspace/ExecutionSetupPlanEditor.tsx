@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -22,6 +22,131 @@ function emptyProcessCommand(): CommandSpec {
   return { mode: 'process', program: '', args: [], cwd: '.', env: {} }
 }
 
+interface EnvironmentRow {
+  id: string
+  /** What the field shows — including a name that is not usable yet. */
+  name: string
+  /** The name this row currently occupies in the plan, or '' if it occupies none. */
+  appliedName: string
+  value: string
+}
+
+let environmentRowSeq = 0
+function nextEnvironmentRowId(): string {
+  return `env-${++environmentRowSeq}`
+}
+
+function toEnvironmentRows(value: Record<string, string>): EnvironmentRow[] {
+  return Object.entries(value).map(([name, entryValue]) => ({
+    id: nextEnvironmentRowId(),
+    name,
+    appliedName: name,
+    value: entryValue,
+  }))
+}
+
+/**
+ * The plan holds each row under the last name that was usable. A row being renamed
+ * onto a name a sibling already has, or not named yet, keeps the one it had.
+ */
+function toEnvironmentRecord(rows: EnvironmentRow[]): Record<string, string> {
+  const record: Record<string, string> = {}
+  for (const row of rows) {
+    if (row.appliedName === '') continue
+    record[row.appliedName] = row.value
+  }
+  return record
+}
+
+/**
+ * Whether another row would collide with `name` — either because it is typing the
+ * same one, or because it still *holds* it in the plan. The second half matters: a
+ * row whose name has been cleared keeps its key until it is removed, so without
+ * counting held names, clearing `FOO` and then renaming a second row to `FOO` passed
+ * validation and wrote the same key twice, losing one variable exactly as before.
+ */
+function isNameTaken(name: string, selfId: string, rows: EnvironmentRow[]): boolean {
+  return rows.some((row) => row.id !== selfId && (row.name === name || row.appliedName === name))
+}
+
+function findDuplicateNames(rows: EnvironmentRow[]): Set<string> {
+  const duplicates = new Set<string>()
+  for (const row of rows) {
+    if (row.name === '') continue
+    if (isNameTaken(row.name, row.id, rows)) duplicates.add(row.name)
+  }
+  return duplicates
+}
+
+/**
+ * Names that differ from another row's only in case. Windows environment variables
+ * are case-insensitive, and Node keeps just one of `PATH` and `Path` when it spawns
+ * a process there — so a plan carrying both looks right in the editor and arrives at
+ * the command missing a value. It is a warning rather than a refusal: on Linux and
+ * macOS the two really are different variables and both are usable.
+ */
+function findCaseOnlyClash(row: EnvironmentRow, rows: EnvironmentRow[]): string | null {
+  if (row.name === '') return null
+  const lowered = row.name.toLowerCase()
+  const clash = rows.find((other) => (
+    other.id !== row.id
+    && other.name !== ''
+    && other.name !== row.name
+    && other.name.toLowerCase() === lowered
+  ))
+  return clash?.name ?? null
+}
+
+/** One promotion pass; returns the input unchanged when nothing could move. */
+function settlePass(rows: EnvironmentRow[]): EnvironmentRow[] {
+  let changed = false
+  const next = rows.map((row) => {
+    if (row.name === '' || row.appliedName === row.name || isNameTaken(row.name, row.id, rows)) return row
+    changed = true
+    return { ...row, appliedName: row.name }
+  })
+  return changed ? next : rows
+}
+
+/**
+ * Promotes every row whose typed name is usable; the rest keep the name they hold.
+ *
+ * Repeatedly, because freeing a name unblocks whoever was waiting for it — and that
+ * is how a collision is actually resolved: rename `FOO` to `BAR`, find `BAR` taken,
+ * then rename the real `BAR` out of the way. A single pass settled only the second
+ * rename and left the first showing `BAR` in the field, with no error, while the plan
+ * still held `FOO`. Promotion never reverses, so this reaches a fixed point in at
+ * most one pass per row.
+ */
+function settleRows(rows: EnvironmentRow[]): EnvironmentRow[] {
+  let current = rows
+  for (let pass = 0; pass < rows.length; pass++) {
+    const next = settlePass(current)
+    if (next === current) break
+    current = next
+  }
+  return current
+}
+
+function sameEnvironmentRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  return leftKeys.every((key) => key in right && left[key] === right[key])
+}
+
+/**
+ * A `Record<string, string>` cannot describe an environment while it is being edited.
+ * Renaming a variable in place meant deleting one key and adding another, so the row
+ * jumped to the bottom of the list on every keystroke, the React key changed with the
+ * name and remounted the field mid-word — taking focus with it — and renaming `FOO`
+ * onto an existing `BAR` silently destroyed both: `FOO` deleted, `BAR` overwritten.
+ *
+ * Rows with stable ids hold the edit instead, each remembering the name it occupies in
+ * the plan. A name a sibling already has is reported and not taken up: that row keeps
+ * the name it had, so nothing is dropped or renamed behind the user's back — and,
+ * unlike a blanket refusal to emit, every other edit on the form still reaches the
+ * plan while the collision is unresolved. The saved plan is still a record.
+ */
 function EnvironmentEditor({
   value,
   disabled,
@@ -31,44 +156,93 @@ function EnvironmentEditor({
   disabled?: boolean
   onChange: (value: Record<string, string>) => void
 }) {
-  const entries = Object.entries(value)
+  const [rows, setRows] = useState<EnvironmentRow[]>(() => toEnvironmentRows(value))
+
+  // Adopt the incoming record whenever it stops describing these rows — a plan loaded,
+  // reset, or changed by anything other than this editor. An edit of our own is already
+  // reflected here, and re-deriving rows from it would throw the ids away. Rows always
+  // describe a well-formed record now, so an unresolved collision no longer blinds this
+  // comparison and cannot leave a stale draft to overwrite a plan loaded underneath it.
+  useEffect(() => {
+    setRows((current) => (sameEnvironmentRecord(toEnvironmentRecord(current), value) ? current : toEnvironmentRows(value)))
+  }, [value])
+
+  const duplicateNames = findDuplicateNames(rows)
+
+  const applyRows = (next: EnvironmentRow[]) => {
+    const settled = settleRows(next)
+    setRows(settled)
+    const record = toEnvironmentRecord(settled)
+    if (!sameEnvironmentRecord(record, value)) onChange(record)
+  }
+
   return (
     <div className="space-y-1">
-      {entries.map(([key, entryValue], index) => (
-        <div key={`${key}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
-          <input
-            aria-label={`Environment variable ${index + 1} name`}
-            value={key}
-            disabled={disabled}
-            onChange={(event) => {
-              const next = { ...value }
-              delete next[key]
-              next[event.target.value] = entryValue
-              onChange(next)
-            }}
-            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
-            placeholder="NAME"
-          />
-          <input
-            aria-label={`Environment variable ${index + 1} value`}
-            value={entryValue}
-            disabled={disabled}
-            onChange={(event) => onChange({ ...value, [key]: event.target.value })}
-            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
-            placeholder="Value"
-          />
-          <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => {
-            const next = { ...value }
-            delete next[key]
-            onChange(next)
-          }} className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive">×</Button>
-        </div>
-      ))}
+      {rows.map((row, index) => {
+        const isDuplicate = duplicateNames.has(row.name)
+        // A row whose name has been cleared still occupies the key it was saved under.
+        // Nothing is thrown away for it, but the form would otherwise show a blank name
+        // beside a plan that still carries the old one.
+        const isUnnamedButHeld = row.name === '' && row.appliedName !== ''
+        const isInvalid = isDuplicate || isUnnamedButHeld
+        const caseOnlyClash = findCaseOnlyClash(row, rows)
+        return (
+          <div key={row.id} className="space-y-1">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
+              <input
+                aria-label={`Environment variable ${index + 1} name`}
+                aria-invalid={isInvalid || undefined}
+                value={row.name}
+                disabled={disabled}
+                onChange={(event) => applyRows(rows.map((r) => (r.id === row.id ? { ...r, name: event.target.value } : r)))}
+                className={`rounded-md border bg-background px-2 py-1 font-mono text-xs ${isInvalid ? 'border-destructive' : 'border-input'}`}
+                placeholder="NAME"
+              />
+              <input
+                aria-label={`Environment variable ${index + 1} value`}
+                value={row.value}
+                disabled={disabled}
+                onChange={(event) => applyRows(rows.map((r) => (r.id === row.id ? { ...r, value: event.target.value } : r)))}
+                className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+                placeholder="Value"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                aria-label={`Remove environment variable ${index + 1}`}
+                onClick={() => applyRows(rows.filter((r) => r.id !== row.id))}
+                className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              >
+                ×
+              </Button>
+            </div>
+            {isDuplicate && (
+              <p role="alert" className="text-[10px] text-destructive">
+                Another variable is already called {row.name}. Rename one of them to save this.
+              </p>
+            )}
+            {isUnnamedButHeld && (
+              <p role="alert" className="text-[10px] text-destructive">
+                Still saved as {row.appliedName}. Give it a name, or remove it with ×.
+              </p>
+            )}
+            {caseOnlyClash && !isDuplicate && (
+              <p role="status" className="text-[10px] text-amber-700 dark:text-amber-400">
+                {row.name} and {caseOnlyClash} differ only in case. On Windows they are the same
+                variable, and only one of them would reach the command.
+              </p>
+            )}
+          </div>
+        )
+      })}
       <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
-        let key = 'VARIABLE'
+        const taken = new Set(rows.map((row) => row.name))
+        let name = 'VARIABLE'
         let suffix = 1
-        while (key in value) key = `VARIABLE_${++suffix}`
-        onChange({ ...value, [key]: '' })
+        while (taken.has(name)) name = `VARIABLE_${++suffix}`
+        applyRows([...rows, { id: nextEnvironmentRowId(), name, appliedName: '', value: '' }])
       }} className="h-7 text-xs">+ Variable</Button>
     </div>
   )

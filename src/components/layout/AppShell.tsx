@@ -89,8 +89,17 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
 
   const handleRefresh = async () => {
     setIsRefreshing(true)
-    await queryClient.refetchQueries()
-    setIsRefreshing(false)
+    try {
+      await queryClient.refetchQueries()
+    } catch {
+      // Each query renders its own failure — the board's banner, the header's offline
+      // state. There is nothing for this button to add, and the rejection travelling
+      // out of an `onClick` was only ever an unhandled one.
+    } finally {
+      // A refetch that throws used to leave the spinner turning for the rest of the
+      // session, which reads as "still working" rather than "that failed".
+      setIsRefreshing(false)
+    }
   }
 
   return (

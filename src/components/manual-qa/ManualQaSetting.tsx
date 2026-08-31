@@ -11,8 +11,11 @@ interface ManualQaSettingProps {
   compact?: boolean
 }
 
-// No inherit button: every surface writes an explicit choice, and a stored
-// `null` resolves to whatever is inherited rather than showing as unset.
+// No inherit button: the two choices are the only ones this control offers, and a
+// stored `null` resolves to whatever is inherited rather than showing as unset —
+// the fallback below is what the radio shows for it. Not choosing is still a
+// state: a new ticket is created with `null` and keeps following its project and
+// profile, and `DraftView` writes back whatever it was given.
 const OPTIONS: readonly TriStateOption[] = [
   {
     value: true,

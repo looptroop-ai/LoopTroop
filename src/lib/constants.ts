@@ -53,6 +53,13 @@ export const COUNTDOWN_TICK_MS = 1_000
 /** z-index for absolutely positioned dropdowns above all other UI */
 export const DROPDOWN_Z_INDEX = 9999
 
+/**
+ * The keyboard-shortcuts overlay, above everything including the dropdowns. It both
+ * holds focus and makes the rest of the page inert while it is open, so anything it
+ * renders underneath is a surface the user cannot see and cannot use.
+ */
+export const SHORTCUTS_OVERLAY_Z_INDEX = DROPDOWN_Z_INDEX + 1
+
 /** Seconds in one hour — used for time display formatting */
 export const SECONDS_PER_HOUR = 3_600
 /** Seconds in one day — used for time display formatting */

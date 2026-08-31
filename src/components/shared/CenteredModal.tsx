@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { useDialogFocus } from '@/hooks/useDialogFocus'
+import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 
 interface CenteredModalProps {
   open: boolean
@@ -22,6 +24,9 @@ export function CenteredModal({
   zIndexClass = 'z-50',
 }: CenteredModalProps) {
   const [isSessionDirty, setIsSessionDirty] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const handleTrapKeyDown = useDialogFocus(open, panelRef)
 
   useEffect(() => {
     if (open) {
@@ -34,6 +39,11 @@ export function CenteredModal({
     const handler = (e: KeyboardEvent) => {
       if (closeDisabled) return
       if (e.key === 'Escape') {
+        // Escape belongs to the innermost overlay. Without this, dismissing the folder
+        // picker, a confirmation dialog, or a model list opened from inside this window
+        // closed the window behind it as well — the same defect the ticket dashboard
+        // has already been taught to avoid.
+        if (isEscapeClaimedByNestedOverlay(e, panelRef.current)) return
         if (isSessionDirty) {
           const shouldClose = window.confirm('You have unsaved changes. Close this window anyway?')
           if (!shouldClose) return
@@ -72,7 +82,15 @@ export function CenteredModal({
         setIsSessionDirty(false)
       }}
     >
-      <div className={`${maxWidth} w-full mx-4 bg-background rounded-xl shadow-xl border border-border flex flex-col max-h-[85vh] relative`}>
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={handleTrapKeyDown}
+        className={`${maxWidth} w-full mx-4 bg-background rounded-xl shadow-xl border border-border flex flex-col max-h-[85vh] relative outline-none`}
+      >
         <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -95,7 +113,7 @@ export function CenteredModal({
                 <TooltipContent className="max-w-xs text-center text-balance">Close window (Esc)</TooltipContent>
               </Tooltip>
         <div className="flex items-center border-b border-border px-6 py-4 pr-10">
-          <h2 className="text-lg font-semibold text-foreground">{title}</h2>
+          <h2 id={titleId} className="text-lg font-semibold text-foreground">{title}</h2>
         </div>
         <div className="flex-1 overflow-auto p-6">
           {children}

@@ -618,4 +618,79 @@ describe('InterviewQAView', () => {
 
     expect(skippedBody?.bulkSkipReason).toBe('Shipping before the demo.')
   })
+
+  /**
+   * A failed edit used to go to the console and nowhere else: the editor closed, the
+   * rewritten answer was thrown away, and the old one stayed on screen looking saved.
+   * The skip-all path beside it has always reported its failures.
+   */
+  describe('when editing a past answer fails', () => {
+    async function openEditorForFirstAnswer() {
+      renderWithProviders(<InterviewQAView ticket={makeTicket({ status: 'WAITING_INTERVIEW_ANSWERS' })} />)
+      await waitFor(() => {
+        expect(screen.getByText(/Interview History/i)).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getByText(/Interview History/i))
+      await waitFor(() => {
+        expect(screen.getByText('Keep imports idempotent.')).toBeInTheDocument()
+      })
+      fireEvent.click(screen.getAllByRole('button', { name: /^edit$/i })[0]!)
+    }
+
+    it('keeps the editor open with the reason and the rewritten text', async () => {
+      const originalFetch = globalThis.fetch as typeof fetch
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith(`/api/tickets/${TEST.ticketId}/edit-answer`)) {
+          return new Response(JSON.stringify({ error: 'Interview session is locked' }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return originalFetch(input, init)
+      }))
+
+      await openEditorForFirstAnswer()
+      const editor = screen.getByDisplayValue('Keep imports idempotent.')
+      fireEvent.change(editor, { target: { value: 'Keep imports idempotent and ordered.' } })
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+      })
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Interview session is locked')
+      expect(screen.getByDisplayValue('Keep imports idempotent and ordered.')).toBeInTheDocument()
+    })
+
+    it('closes the editor and clears the error once the edit lands', async () => {
+      const originalFetch = globalThis.fetch as typeof fetch
+      let shouldFail = true
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith(`/api/tickets/${TEST.ticketId}/edit-answer`)) {
+          if (shouldFail) {
+            shouldFail = false
+            return new Response(JSON.stringify({ error: 'Interview session is locked' }), {
+              status: 409,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+          return createJsonResponse({ success: true, questions: [] })
+        }
+        return originalFetch(input, init)
+      }))
+
+      await openEditorForFirstAnswer()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+      })
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      })
+    })
+  })
 })

@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, within } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { renderWithProviders } from '@/test/renderHelpers'
@@ -558,5 +558,68 @@ describe('DashboardHeader', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel…/i }))
     const deleteContentCheckbox = screen.getByTestId('delete-content-checkbox') as HTMLInputElement
     expect(deleteContentCheckbox.checked).toBe(false)
+  })
+
+  /**
+   * A ticket that has written nothing to disk reports a total of zero, and every
+   * segment of the allocation bar divided by it — producing `width: NaN%`, which the
+   * browser drops, so the bar rendered at whatever width the last one had.
+   */
+  describe('the disk allocation bar', () => {
+    async function openSizeBreakdown(size: number) {
+      const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        size,
+        breakdown: {
+          logs: { total: 0, children: [] },
+          artifacts: { total: 0, children: [] },
+          source: { total: 0, children: [] },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+          <DashboardHeader ticket={ticket} />
+        </UIContext.Provider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /details/i }))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /calculate size/i }))
+      })
+      return screen.getByTitle(/^Source Code:/).parentElement as HTMLElement
+    }
+
+    it('gives every segment a real width when the ticket occupies nothing', async () => {
+      const bar = await openSizeBreakdown(0)
+
+      for (const segment of Array.from(bar.children)) {
+        expect((segment as HTMLElement).style.width).toBe('0%')
+      }
+    })
+
+    it('still proportions the segments when the ticket occupies something', async () => {
+      const ticket = makeTicket({ status: 'DRAFTING_PRD', availableActions: ['cancel'] })
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        size: 200,
+        breakdown: {
+          logs: { total: 50, children: [] },
+          artifacts: { total: 50, children: [] },
+          source: { total: 100, children: [] },
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+      renderWithProviders(
+        <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>
+          <DashboardHeader ticket={ticket} />
+        </UIContext.Provider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: /details/i }))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /calculate size/i }))
+      })
+
+      expect(screen.getByTitle(/^Source Code:/)).toHaveStyle({ width: '50%' })
+      expect(screen.getByTitle(/^Execution Logs:/)).toHaveStyle({ width: '25%' })
+    })
   })
 })

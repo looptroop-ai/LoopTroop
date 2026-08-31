@@ -10,12 +10,14 @@ const useBrowserLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect :
  * single durable localStorage record. React state is the single source of truth, so
  * this is a plain write — no read-back, no per-scope mirror keys, no merge.
  */
-function persistUIState(state: UIState) {
-  if (typeof window === 'undefined') return
+function persistUIState(state: UIState): boolean {
+  if (typeof window === 'undefined') return false
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    return true
   } catch {
     // ignore storage errors (private mode, quota, disabled storage)
+    return false
   }
 }
 
@@ -120,19 +122,72 @@ function normalizePresetsByProject(value: unknown): Record<string, Record<string
 }
 
 /**
+ * The legacy keys this page load actually pulled presets out of. They are deleted once
+ * — and only once — the merged blob has been written back successfully; see
+ * `UIProvider`. Module scope because `getInitialState` produces them during
+ * `useReducer` initialisation, where there is nowhere else to put them.
+ */
+let pendingLegacyPresetKeys: string[] = []
+
+/**
+ * Retires the keys the merge read from. Called only after a write that succeeded, from
+ * whichever persistence got there first: if the migration's own write is refused, the
+ * keys stay pending, and the next ordinary state change that reaches storage clears
+ * them. Without that second chance a deletion made after a failed write would be
+ * undone by the legacy key on the following load.
+ */
+function retireMigratedLegacyKeys(): void {
+  if (pendingLegacyPresetKeys.length === 0) return
+  const keys = pendingLegacyPresetKeys
+  // A key storage refuses to remove stays pending. Dropping it here would leave it on
+  // disk with nothing left to retry it, and the next load would merge it back in —
+  // resurrecting a preset the user deletes in the meantime.
+  const failed: string[] = []
+  for (const key of keys) {
+    try {
+      window.localStorage.removeItem(key)
+    } catch {
+      failed.push(key)
+    }
+  }
+  pendingLegacyPresetKeys = failed
+}
+
+/**
  * One-time, init-only recovery of legacy per-scope `looptroop-presets-*` localStorage keys
  * into `UIState.presetsByProject`. Runs once per page load from `getInitialState` (never on
  * write), so presets that only survived in these standalone keys — e.g. because an earlier
- * build wiped the durable blob — are pulled back in. The blob wins on conflict; legacy keys
- * are left untouched (inert) and are no longer written by the app.
+ * build wiped the durable blob — are pulled back in. The blob wins on conflict.
+ *
+ * The keys it read are reported back so they can be removed after the merge has been
+ * persisted. Leaving them in place made deletion impossible to express: a preset the user
+ * deleted from the blob was copied back out of its legacy key on the very next load, and
+ * came back from the dead however many times it was deleted.
  */
-function migrateLegacyPresets(existing: Record<string, Record<string, TriagePreset>>): Record<string, Record<string, TriagePreset>> {
-  if (typeof window === 'undefined') return existing
+function migrateLegacyPresets(existing: Record<string, Record<string, TriagePreset>>): {
+  presetsByProject: Record<string, Record<string, TriagePreset>>
+  migratedKeys: string[]
+} {
+  if (typeof window === 'undefined') return { presetsByProject: existing, migratedKeys: [] }
   const merged: Record<string, Record<string, TriagePreset>> = { ...existing }
-  for (let i = 0; i < localStorage.length; i++) {
-    try {
+  const migratedKeys: string[] = []
+
+  // Enumerating storage is itself refusable — a browser set to block site data throws
+  // on the accessor, not just on a read — and this runs during `useReducer`
+  // initialisation, where an exception means the provider never mounts and the app
+  // renders nothing at all. Per-key guards stay inside, for malformed entries.
+  let legacyKeys: string[] = []
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i)
-      if (!key || !key.startsWith(LEGACY_PRESET_KEY_PREFIX)) continue
+      if (key?.startsWith(LEGACY_PRESET_KEY_PREFIX)) legacyKeys.push(key)
+    }
+  } catch {
+    legacyKeys = []
+  }
+
+  for (const key of legacyKeys) {
+    try {
       const stored = localStorage.getItem(key)
       if (!stored) continue
       const parsed = JSON.parse(stored) as unknown
@@ -145,12 +200,13 @@ function migrateLegacyPresets(existing: Record<string, Record<string, TriagePres
       }
       if (Object.keys(normalized).length) {
         merged[key] = { ...normalized, ...(merged[key] ?? {}) }
+        migratedKeys.push(key)
       }
     } catch {
       // ignore migration errors for individual keys; legacy presets that are malformed simply won't be carried over
     }
   }
-  return merged
+  return { presetsByProject: merged, migratedKeys }
 }
 
 function normalizeUIState(value: unknown): UIState {
@@ -179,20 +235,47 @@ function normalizeUIState(value: unknown): UIState {
   }
 }
 
-function getInitialState(): UIState {
-  let initialState = defaultState
-  if (typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown
-        initialState = normalizeUIState(parsed)
-      }
-    } catch {
-      // ignore parse errors
-    }
+/** The durable record as it stands right now, or null if there isn't a usable one. */
+function readStoredUIState(): UIState | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (!stored) return null
+    return normalizeUIState(JSON.parse(stored) as unknown)
+  } catch {
+    return null
   }
-  return { ...initialState, presetsByProject: migrateLegacyPresets(initialState.presetsByProject) }
+}
+
+function getInitialState(): UIState {
+  const initialState = readStoredUIState() ?? defaultState
+  const { presetsByProject, migratedKeys } = migrateLegacyPresets(initialState.presetsByProject)
+  pendingLegacyPresetKeys = migratedKeys
+  return { ...initialState, presetsByProject }
+}
+
+/**
+ * Writes the recovered presets into whatever the durable record says *now*, rather
+ * than into the copy this tab rehydrated from.
+ *
+ * Every other write in this provider replaces the record wholesale, and a second tab
+ * losing the change it made a moment ago is recoverable — it can make it again. This
+ * one is not: it is immediately followed by deleting the legacy keys, so a stale
+ * overwrite here destroys the last copy of something. Re-reading costs one
+ * `getItem` on mount and removes that.
+ */
+function persistMigratedPresets(state: UIState): boolean {
+  const stored = readStoredUIState()
+  if (!stored) return persistUIState(state)
+
+  const presetsByProject = { ...stored.presetsByProject }
+  for (const key of pendingLegacyPresetKeys) {
+    const recovered = state.presetsByProject[key]
+    if (!recovered) continue
+    // The durable record still wins on a name conflict, exactly as the merge does.
+    presetsByProject[key] = { ...recovered, ...(presetsByProject[key] ?? {}) }
+  }
+  return persistUIState({ ...stored, presetsByProject })
 }
 
 function uiReducer(state: UIState, action: UIAction): UIState {
@@ -234,8 +317,36 @@ export function UIProvider({ children }: { children: ReactNode }) {
       hydrated.current = true
       return
     }
-    persistUIState(state)
+    if (persistUIState(state)) retireMigratedLegacyKeys()
   }, [state])
+
+  /**
+   * Finish the legacy migration: write the merged blob, and only if that write went
+   * through, remove the keys it came from.
+   *
+   * The order is the whole point. Deleting during initialisation — while the first
+   * persistence effect above is deliberately skipped — would destroy the only copy of
+   * a user's presets if the tab closed before anything triggered a write.
+   *
+   * A write that fails (quota, private mode, storage disabled) leaves the keys where
+   * they are *and leaves them pending*, so the next successful persistence retires
+   * them instead. Dropping them here would have let a later write record a deletion
+   * while the legacy key that resurrects it stayed on disk.
+   *
+   * Runs on mount only, and only when something was actually migrated, so this is not
+   * the unconditional write-back that once wiped presets whenever rehydration produced
+   * empty state: by construction the state written here carries the recovered presets.
+   * It writes the live state rather than a mount-time copy, so it stays correct if
+   * anything ever dispatches before it runs.
+   */
+  const liveStateRef = useRef(state)
+  useEffect(() => {
+    liveStateRef.current = state
+  })
+  useEffect(() => {
+    if (pendingLegacyPresetKeys.length === 0) return
+    if (persistMigratedPresets(liveStateRef.current)) retireMigratedLegacyKeys()
+  }, [])
 
   // Sync URL with state
   useEffect(() => {

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { UIProvider } from '@/context/UIContext'
@@ -33,7 +33,16 @@ vi.mock('@/components/ticket/TicketDashboard', () => ({
 }))
 
 vi.mock('@/components/shared/CenteredModal', () => ({
-  CenteredModal: ({ open, children }: { open: boolean; children: ReactNode }) => (open ? <div>{children}</div> : null),
+  CenteredModal: ({ open, children, onClose, title }: { open: boolean; children: ReactNode; onClose: () => void; title: string }) => (
+    open
+      ? (
+        <div>
+          <button type="button" onClick={onClose}>{`Close ${title}`}</button>
+          {children}
+        </div>
+      )
+      : null
+  ),
 }))
 
 vi.mock('@/components/config/ProfileSetup', () => ({
@@ -163,6 +172,51 @@ describe('App startup notices', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
 
     expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/')
+  })
+
+  /**
+   * About is a full-page overlay with no route of its own. Back reconciled every
+   * routed overlay and left About floating over the board, on top of nothing.
+   */
+  it('closes the About overlay when the user navigates back', async () => {
+    mockState.startupStatus = makeStartupStatus()
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
+    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('About Dialog')).not.toBeInTheDocument()
+    })
+  })
+
+  it('closes the About overlay with the Configuration modal it was opened from', async () => {
+    mockState.startupStatus = makeStartupStatus()
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open About' }))
+    expect(await screen.findByText('About Dialog')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('About Dialog')).not.toBeInTheDocument()
+    })
 
     window.history.pushState(null, '', '/')
   })

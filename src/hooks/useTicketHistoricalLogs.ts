@@ -115,9 +115,19 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
           for (const alias of aliases) slotByAlias.set(alias, nextSlot)
           continue
         }
-        const merged = { ...rows[slot]!, ...entry }
-        rows[slot] = merged
-        for (const alias of getLogEntryAliases(merged)) slotByAlias.set(alias, slot)
+        // Merged on the live overlay's terms, which is the point of sharing the identity:
+        // a row is shown from when it first appeared, not from when its last delivery
+        // landed, and a finalize ends the streaming state. Taking the newer timestamp
+        // would move a row that streamed for a minute to the moment it finished, past
+        // everything that happened while it was running.
+        const existing = rows[slot]!
+        rows[slot] = {
+          ...existing,
+          ...entry,
+          timestamp: existing.timestamp ?? entry.timestamp,
+          streaming: entry.op === 'finalize' ? false : entry.streaming,
+        }
+        for (const alias of getLogEntryAliases(rows[slot]!)) slotByAlias.set(alias, slot)
       }
     }
     return rows.sort((a, b) => {

@@ -136,6 +136,27 @@ function makeTicket(runtimeOverrides: Omit<Partial<Ticket['runtime']>, 'beads'> 
   }
 }
 
+/**
+ * One log context for the panel to read. Every field has a harmless default so a test
+ * names only what it is actually about.
+ */
+function makeLogContext(overrides: Partial<LogContextValue> = {}): LogContextValue {
+  return {
+    logsByPhase: {},
+    activePhase: null,
+    isLoadingLogs: false,
+    addLog: vi.fn(),
+    addLogRecord: vi.fn(),
+    getLogsForPhase: () => [],
+    getAllLogs: () => [],
+    setActivePhase: vi.fn(),
+    loadLogsForPhase: vi.fn(),
+    isLoadingLogScope: vi.fn(() => false),
+    clearLogs: vi.fn(),
+    ...overrides,
+  }
+}
+
 function renderWithTooltipProvider(ui: React.ReactElement) {
   const queryClient = createTestQueryClient()
   return render(ui, {
@@ -506,18 +527,12 @@ describe('PhaseLogPanel', () => {
 
   it('does not re-request the phase when a live row arrives', () => {
     const loadLogsForPhase = vi.fn()
-    const makeValue = (logs: LogEntry[]): LogContextValue => ({
+    const makeValue = (logs: LogEntry[]) => makeLogContext({
       logsByPhase: { CODING: logs },
       activePhase: 'CODING',
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: () => logs,
       getAllLogs: () => logs,
-      setActivePhase: vi.fn(),
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
     })
 
     const first = [makeLog('row-1', '[SYS] First row')]
@@ -558,19 +573,12 @@ describe('PhaseLogPanel', () => {
         kind: 'text',
       }),
     ]
-    const value: LogContextValue = {
+    const value = makeLogContext({
       logsByPhase: { CODING: logs },
       activePhase: 'CODING',
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: () => logs,
       getAllLogs: () => logs,
-      setActivePhase: vi.fn(),
-      loadLogsForPhase: vi.fn(),
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     renderWithTooltipProvider(
       withLogContext(value, (
@@ -597,19 +605,12 @@ describe('PhaseLogPanel', () => {
         timestamp: '2026-03-10T11:00:00.000Z',
       }),
     ]
-    const value: LogContextValue = {
+    const value = makeLogContext({
       logsByPhase: { CODING: logs },
       activePhase: 'CODING',
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: () => logs,
       getAllLogs: () => logs,
-      setActivePhase: vi.fn(),
-      loadLogsForPhase: vi.fn(),
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     // A retried phase re-emits `milestone:<phase>:started` under the same id, and this
     // panel loads every attempt when it is not given one. Keying the rows on the bare id
@@ -642,18 +643,11 @@ describe('PhaseLogPanel', () => {
       modelId: 'openai/gpt-5.4',
       sessionId: 'ses_waiting',
     })
-    const makeValue = (prompt: LogEntry): LogContextValue => ({
+    const makeValue = (prompt: LogEntry) => makeLogContext({
       logsByPhase: { [prompt.status]: [prompt] },
       activePhase: prompt.status,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: () => [prompt],
       getAllLogs: () => [prompt],
-      setActivePhase: vi.fn(),
-      loadLogsForPhase: vi.fn(),
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
     })
 
     const runningPrompt = makePromptFor('CODING')
@@ -678,19 +672,7 @@ describe('PhaseLogPanel', () => {
 
   it('asks for phase debug logs only after the DEBUG tab is selected', () => {
     const loadLogsForPhase = vi.fn()
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
-      getLogsForPhase: vi.fn(() => []),
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
-      loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    const value = makeLogContext({ loadLogsForPhase })
 
     renderWithTooltipProvider(
       withLogContext(value, (
@@ -714,19 +696,7 @@ describe('PhaseLogPanel', () => {
         phaseAttempt: 2,
       }),
     ])
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
-      getLogsForPhase,
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
-      loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    const value = makeLogContext({ getLogsForPhase, loadLogsForPhase })
 
     renderWithTooltipProvider(
       withLogContext(value, (
@@ -755,24 +725,15 @@ describe('PhaseLogPanel', () => {
       ], olderCursor: null, hasOlder: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     )
     const loadLogsForPhase = vi.fn()
-    const value: LogContextValue = {
-      logsByPhase: {},
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
+    const value = makeLogContext({
       getLogsForPhase: vi.fn(() => [
         makeLog('attempt-2-live', '[SYS] Live row should stay out.', {
           status: 'PREPARING_EXECUTION_ENV',
           phaseAttempt: 2,
         }),
       ]),
-      getAllLogs: vi.fn(() => []),
-      setActivePhase: vi.fn(),
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     try {
       renderWithTooltipProvider(
@@ -819,19 +780,12 @@ describe('PhaseLogPanel', () => {
         sessionId: 'session-2',
       }),
     ]
-    const value: LogContextValue = {
+    const value = makeLogContext({
       logsByPhase: { CODING: logs },
-      activePhase: null,
-      isLoadingLogs: false,
-      addLog: vi.fn(),
-      addLogRecord: vi.fn(),
       getLogsForPhase: vi.fn(() => logs),
       getAllLogs: vi.fn(() => logs),
-      setActivePhase: vi.fn(),
       loadLogsForPhase,
-      isLoadingLogScope: vi.fn(() => false),
-      clearLogs: vi.fn(),
-    }
+    })
 
     renderWithTooltipProvider(
       withLogContext(value, (

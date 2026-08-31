@@ -163,10 +163,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
           : activeTab === 'DEBUG'
             ? 'debug'
             : 'ai'
+  const historicalModelId = isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined
   const historicalLogs = useTicketHistoricalLogs(ticket?.id, {
     scope: 'lifecycle',
     view: historicalView,
-    modelId: isAiLogTab(activeTab) && activeTab !== 'AI' ? activeTab : undefined,
+    modelId: historicalModelId,
   }, Boolean(ticket?.id))
   const combinedLogs = useMemo(
     () => ticket?.id ? mergeEntriesBatch(historicalLogs.entries, allLogs) : allLogs,
@@ -508,8 +509,12 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   )
   const [isNavigatingToTop, setIsNavigatingToTop] = useState(false)
   // Going to the top pages the whole archive, so it needs an owner for the same reason
-  // the bead drain does: released when the panel unmounts or the ticket changes, so the
-  // walk stops rather than paging into a query nobody is looking at.
+  // the bead drain does: released when the walk's scope goes away, so it stops rather
+  // than paging into a query nobody is looking at.
+  //
+  // The scope is the whole history query, not just the ticket. `fetchPreviousPage` is
+  // bound to the observer, so it follows whichever query the observer holds — switch to
+  // DEBUG or a model tab mid-walk and the remaining pages land against the new tab.
   const topNavigationOwnerRef = useRef({ cancelled: false })
   useEffect(() => {
     const owner = { cancelled: false }
@@ -517,7 +522,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     return () => {
       owner.cancelled = true
     }
-  }, [ticket?.id])
+  }, [historicalModelId, historicalView, ticket?.id])
   const handleGoToTop = useCallback(async () => {
     if (isNavigatingToTop) return
     const owner = topNavigationOwnerRef.current

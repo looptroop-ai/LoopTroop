@@ -189,6 +189,11 @@ describe('useTicketHistoricalLogs', () => {
     // append overwrite the finalize that had already been fetched.
     expect(result.current.entries).toHaveLength(1)
     expect(result.current.entries[0]?.line).toContain('the finished answer')
+    // ...and the row still reads from when it started, the way the live overlay merges
+    // the same pair. Taking the finalize's timestamp would sort a row that streamed for
+    // a while past everything that happened while it was streaming.
+    expect(result.current.entries[0]?.timestamp).toBe('2026-03-10T00:00:01.000Z')
+    expect(result.current.entries[0]?.streaming).toBe(false)
   })
 
   it('folds a row re-emitted under a new id when the fingerprint matches', async () => {

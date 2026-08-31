@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { useLogs } from '@/context/useLogContext'
-import { mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
+import { getLogEntryIdentity, mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
 import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
@@ -1256,16 +1256,26 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
     const drain = { cancelled: false }
     void fetchAllHistoricalBeadLogs(() => drain.cancelled).catch(() => {
-      // Latched whatever became of this walk. The failure belongs to the bead view, not
-      // to one attempt at reading it, and a cancelled walk is exactly the case that used
-      // to swallow it. The key is captured, so a latch set after the user has moved on
-      // names the view they left and blocks nothing.
+      // Only a walk that was still wanted counts as a failure. Now that nothing moving
+      // is in the dependency list, a cancelled walk means the user genuinely left, and
+      // latching that would blame this bead for a page it was never waiting on.
+      if (drain.cancelled) return
       failedBeadLogDrainRef.current = beadLogDrainKey
     })
     return () => {
       drain.cancelled = true
     }
   }, [beadLogDrainKey, fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, viewedBeadId])
+
+  // The latch covers one continuous look at one bead, not the bead forever. It is
+  // released on the way out, so coming back tries again — otherwise a single refused
+  // page hides the rest of that bead's history for the life of the view, and there is no
+  // other way to ask for it.
+  useEffect(() => {
+    return () => {
+      failedBeadLogDrainRef.current = null
+    }
+  }, [beadLogDrainKey])
 
   useEffect(() => {
     if (!viewedBeadId || !loadLogsForPhase) return
@@ -1623,7 +1633,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                   <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
                     {selectedBeadLogEntries.length > 0 ? (
                       selectedBeadLogEntries.map((entry, i) => (
-                        <LogEntryRow key={entry.entryId} entry={entry} index={i} showModelName />
+                        <LogEntryRow key={getLogEntryIdentity(entry)} entry={entry} index={i} showModelName />
                       ))
                     ) : (
                       <span className="text-muted-foreground/50 italic">No logs for this bead.</span>

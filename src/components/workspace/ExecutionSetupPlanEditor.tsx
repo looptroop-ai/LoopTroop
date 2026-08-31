@@ -58,22 +58,30 @@ function toEnvironmentRecord(rows: EnvironmentRow[]): Record<string, string> {
   return record
 }
 
+/**
+ * Whether another row would collide with `name` — either because it is typing the
+ * same one, or because it still *holds* it in the plan. The second half matters: a
+ * row whose name has been cleared keeps its key until it is removed, so without
+ * counting held names, clearing `FOO` and then renaming a second row to `FOO` passed
+ * validation and wrote the same key twice, losing one variable exactly as before.
+ */
+function isNameTaken(name: string, selfId: string, rows: EnvironmentRow[]): boolean {
+  return rows.some((row) => row.id !== selfId && (row.name === name || row.appliedName === name))
+}
+
 function findDuplicateNames(rows: EnvironmentRow[]): Set<string> {
-  const seen = new Set<string>()
   const duplicates = new Set<string>()
   for (const row of rows) {
     if (row.name === '') continue
-    if (seen.has(row.name)) duplicates.add(row.name)
-    seen.add(row.name)
+    if (isNameTaken(row.name, row.id, rows)) duplicates.add(row.name)
   }
   return duplicates
 }
 
 /** Promotes every row whose typed name is usable; the rest keep the name they hold. */
 function settleRows(rows: EnvironmentRow[]): EnvironmentRow[] {
-  const duplicates = findDuplicateNames(rows)
   return rows.map((row) => (
-    row.name !== '' && !duplicates.has(row.name) && row.appliedName !== row.name
+    row.name !== '' && row.appliedName !== row.name && !isNameTaken(row.name, row.id, rows)
       ? { ...row, appliedName: row.name }
       : row
   ))
@@ -131,16 +139,21 @@ function EnvironmentEditor({
     <div className="space-y-1">
       {rows.map((row, index) => {
         const isDuplicate = duplicateNames.has(row.name)
+        // A row whose name has been cleared still occupies the key it was saved under.
+        // Nothing is thrown away for it, but the form would otherwise show a blank name
+        // beside a plan that still carries the old one.
+        const isUnnamedButHeld = row.name === '' && row.appliedName !== ''
+        const isInvalid = isDuplicate || isUnnamedButHeld
         return (
           <div key={row.id} className="space-y-1">
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
               <input
                 aria-label={`Environment variable ${index + 1} name`}
-                aria-invalid={isDuplicate || undefined}
+                aria-invalid={isInvalid || undefined}
                 value={row.name}
                 disabled={disabled}
                 onChange={(event) => applyRows(rows.map((r) => (r.id === row.id ? { ...r, name: event.target.value } : r)))}
-                className={`rounded-md border bg-background px-2 py-1 font-mono text-xs ${isDuplicate ? 'border-destructive' : 'border-input'}`}
+                className={`rounded-md border bg-background px-2 py-1 font-mono text-xs ${isInvalid ? 'border-destructive' : 'border-input'}`}
                 placeholder="NAME"
               />
               <input
@@ -166,6 +179,11 @@ function EnvironmentEditor({
             {isDuplicate && (
               <p role="alert" className="text-[10px] text-destructive">
                 Another variable is already called {row.name}. Rename one of them to save this.
+              </p>
+            )}
+            {isUnnamedButHeld && (
+              <p role="alert" className="text-[10px] text-destructive">
+                Still saved as {row.appliedName}. Give it a name, or remove it with ×.
               </p>
             )}
           </div>

@@ -166,4 +166,26 @@ describe('ExecutionSetupPlanEditor environment variables', () => {
     expect(screen.getByLabelText('Environment variable 1 name')).toHaveValue('OTHER')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('will not let a cleared name be taken by another row', () => {
+    const { onChange } = renderWithEnv({ FOO: 'one', BAR: 'two' })
+
+    // Clearing a name does not delete the variable — the × does — so the key it holds
+    // stays reserved. Without that, renaming the other row onto it wrote one key twice.
+    fireEvent.change(screen.getByLabelText('Environment variable 1 name'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Environment variable 2 name'), { target: { value: 'FOO' } })
+
+    expect(screen.getByText(/Another variable is already called FOO/)).toBeInTheDocument()
+    // Neither rename was taken up, so the record never changed and the plan still
+    // holds both variables under their own names.
+    expect(latestEnv(onChange)).toBeUndefined()
+  })
+
+  it('says so when a row still holds a name it no longer shows', () => {
+    renderWithEnv({ FOO: 'one' })
+
+    fireEvent.change(screen.getByLabelText('Environment variable 1 name'), { target: { value: '' } })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Still saved as FOO')
+  })
 })

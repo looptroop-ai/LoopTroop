@@ -13,9 +13,14 @@ import { COPY_SUCCESS_DISPLAY_MS } from '@/lib/constants'
 export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
   const [isCopied, setIsCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const attemptRef = useRef(0)
 
   const copy = useCallback(
     async (text: string): Promise<boolean> => {
+      // Only the most recent attempt may touch the indicator: two overlapping copies
+      // can settle out of order, and an earlier refusal must not take down the tick a
+      // later success has already put up.
+      const attempt = ++attemptRef.current
       try {
         await navigator.clipboard.writeText(text)
       } catch {
@@ -23,10 +28,13 @@ export function useCopyToClipboard(displayMs = COPY_SUCCESS_DISPLAY_MS) {
         // copying twice in a row, the second time denied, otherwise leaves the first
         // copy's tick on screen for the rest of its timer, reporting the failure as a
         // success.
-        clearTimeout(timerRef.current)
-        setIsCopied(false)
+        if (attempt === attemptRef.current) {
+          clearTimeout(timerRef.current)
+          setIsCopied(false)
+        }
         return false
       }
+      if (attempt !== attemptRef.current) return true
       setIsCopied(true)
       clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => setIsCopied(false), displayMs)

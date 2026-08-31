@@ -110,3 +110,46 @@ describe('DropdownPicker', () => {
     expect(onSelect).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Tab order follows document order, and the popup is portaled to the end of the body
+ * — so from the trigger, Tab went to the next field in the form and reached the popup
+ * only by wrapping round the whole dialog.
+ */
+describe('DropdownPicker — focus follows the popup', () => {
+  it('moves focus into the popup when it opens', () => {
+    render(<ControlledPicker />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a project' }))
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Project one' }))
+  })
+
+  it('hands focus back to the trigger when the popup goes away', () => {
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <DropdownPicker open={open} onOpenChange={setOpen} trigger={<button type="button">Pick a project</button>}>
+          <button type="button" onClick={() => setOpen(false)}>Project one</button>
+        </DropdownPicker>
+      )
+    }
+    render(<Harness />)
+
+    // Selecting closes the popup; without this the keyboard user was left on <body>.
+    fireEvent.click(screen.getByRole('button', { name: 'Project one' }))
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pick a project' }))
+  })
+
+  it('names the popup after the picker that owns it', () => {
+    render(<ControlledPicker />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a project' }))
+
+    const popup = screen.getByRole('button', { name: 'Project one' }).closest('[data-lt-portal]')!
+    const ownerId = popup.getAttribute('data-lt-portal')!
+    expect(document.getElementById(ownerId)).toContainElement(
+      screen.getByRole('button', { name: 'Pick a project' }),
+    )
+  })
+})

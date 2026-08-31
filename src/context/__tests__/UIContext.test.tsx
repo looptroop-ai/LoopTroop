@@ -361,6 +361,61 @@ describe('UIProvider', () => {
       expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
     })
 
+    it('keeps a key whose removal was refused pending', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+      const removeItem = vi.spyOn(window.localStorage, 'removeItem').mockImplementationOnce(() => {
+        throw new Error('Access is denied for this document.')
+      })
+
+      render(
+        <UIProvider>
+          <PresetDeleteProbe />
+        </UIProvider>,
+      )
+      expect(removeItem).toHaveBeenCalled()
+      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
+
+      // Dropping the key from the retry list would leave it on disk with nothing left
+      // to retire it, and the next load would bring the deleted preset back.
+      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
+
+      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
+    })
+
+    it('merges into the record as it stands, not the copy it started from', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+      localStorage.setItem('looptroop-ui-state', JSON.stringify({ filters: {}, presetsByProject: {}, theme: 'system' }))
+
+      // Another tab writes between this one rehydrating and its migration landing.
+      const realGetItem = window.localStorage.getItem.bind(window.localStorage)
+      let rehydrated = false
+      vi.spyOn(window.localStorage, 'getItem').mockImplementation((key: string) => {
+        if (key === 'looptroop-ui-state' && rehydrated) {
+          return JSON.stringify({ filters: {}, presetsByProject: {}, theme: 'dark' })
+        }
+        if (key === 'looptroop-ui-state') rehydrated = true
+        return realGetItem(key)
+      })
+
+      render(
+        <UIProvider>
+          <UIStateProbe />
+        </UIProvider>,
+      )
+
+      const stored = JSON.parse(realGetItem('looptroop-ui-state') ?? '{}') as {
+        theme?: string
+        presetsByProject?: Record<string, Record<string, unknown>>
+      }
+      // The other tab's change survives, and the recovered preset is added to it.
+      expect(stored.theme).toBe('dark')
+      expect(stored.presetsByProject?.['looptroop-presets-global']).toHaveProperty('Night ops')
+    })
+
     it('survives a browser that refuses to enumerate storage at all', () => {
       vi.spyOn(window.localStorage, 'key').mockImplementation(() => {
         throw new Error('Access is denied for this document.')

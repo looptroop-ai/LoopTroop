@@ -1,6 +1,7 @@
 import { useState, useEffect, useId, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useDialogFocus } from '@/hooks/useDialogFocus'
+import { SHORTCUTS_OVERLAY_Z_INDEX } from '@/lib/constants'
 
 // Only shortcuts the app actually binds. `?` and Escape are handled here, `/` in
 // DashboardSearch. Listing one the app does not implement is worse than listing
@@ -34,12 +35,17 @@ export function KeyboardShortcuts() {
 
   if (!isOpen) return null
 
-  // Above every other surface. At z-50 this sat *under* the ticket view and the About
-  // window, both z-[60] — so `?` from either opened a help overlay nobody could see,
-  // and once it contained focus and made the page inert, the visible UI simply stopped
-  // responding.
+  // Above every other surface, pickers included. At z-50 this sat *under* the ticket
+  // view and the About window (both z-[60]) — so `?` from either opened a help overlay
+  // nobody could see, and once it contained focus and made the page inert, the visible
+  // UI simply stopped responding. The two portaled pickers sit higher still, at z-[100]
+  // and DROPDOWN_Z_INDEX, so clearing only the z-[60] surfaces was not enough.
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={() => setIsOpen(false)}>
+    <div
+      className="fixed inset-0 flex items-center justify-center bg-black/50"
+      style={{ zIndex: SHORTCUTS_OVERLAY_Z_INDEX }}
+      onClick={() => setIsOpen(false)}
+    >
       <Card
         ref={panelRef}
         role="dialog"

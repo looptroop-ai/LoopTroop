@@ -191,3 +191,71 @@ describe('CenteredModal — Escape ownership', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * A popup belongs to the window that opened it. One left open underneath a newer
+ * overlay is part of the page behind it, not part of the overlay — otherwise
+ * summoning the shortcuts overlay over an open picker put that picker in the
+ * overlay's tab order and left it interactive.
+ */
+describe('CenteredModal — popups belonging to something else', () => {
+  function renderPickerOutsideDialog() {
+    return render(
+      <TooltipProvider>
+        <DropdownPicker open onOpenChange={vi.fn()} trigger={<button type="button">Pick a project</button>}>
+          <button type="button">Project one</button>
+        </DropdownPicker>
+        <CenteredModal open onClose={vi.fn()} title="Keyboard Shortcuts">
+          <button type="button">Inside</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+  }
+
+  it('inerts a picker that belongs to the page behind it', () => {
+    renderPickerOutsideDialog()
+    expect(screen.getByText('Project one').closest('[data-lt-portal]')).toHaveAttribute('inert')
+  })
+
+  it('keeps Tab out of it', () => {
+    renderPickerOutsideDialog()
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
+    const inside = screen.getByRole('button', { name: 'Inside' })
+    inside.focus()
+
+    fireEvent.keyDown(inside, { key: 'Tab' })
+
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+  })
+})
+
+/**
+ * Radix brings its own focus scope and portals its content to the body. Its key
+ * events still travel the React tree to this handler, and treating "not in my list"
+ * as "wrap back to my own first control" yanked focus out of the menu the user had
+ * just opened inside the dialog.
+ */
+describe('CenteredModal — overlays with their own focus management', () => {
+  it('leaves Tab alone inside a nested menu', () => {
+    render(
+      <TooltipProvider>
+        <CenteredModal open onClose={vi.fn()} title="Projects">
+          <button type="button">Inside</button>
+        </CenteredModal>
+      </TooltipProvider>,
+    )
+
+    // Stand in for a Radix popper: body-portaled, its own scope, unknown to ours.
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    const item = document.createElement('button')
+    menu.appendChild(item)
+    document.body.appendChild(menu)
+    item.focus()
+
+    fireEvent.keyDown(item, { key: 'Tab' })
+
+    expect(document.activeElement).toBe(item)
+    document.body.removeChild(menu)
+  })
+})

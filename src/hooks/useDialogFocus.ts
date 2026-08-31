@@ -1,5 +1,5 @@
 import { useEffect, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
-import { PORTAL_SELECTOR } from '@/lib/overlays'
+import { PORTAL_SELECTOR, isPortalOwnedBy } from '@/lib/overlays'
 
 /**
  * Focus containment for the app's own overlay primitives.
@@ -65,23 +65,26 @@ function getFocusable(roots: HTMLElement[]): HTMLElement[] {
  * `ModelPicker`, which moves focus into its own popup, escaped the trap entirely
  * because the focused element was outside every boundary the trap knew about.
  *
- * Every such popup that is currently mounted is treated as part of the open
- * dialog. They close on outside pointerdown, so at most one is open at a time, and
- * one open over a dialog belongs to it.
+ * Ownership, not mere existence: a popup belonging to a window *underneath* this one
+ * — a picker still open when the shortcuts overlay is summoned over it — is not part
+ * of this dialog and must be inert like the rest of the page behind it.
  */
 function getScope(container: HTMLElement): HTMLElement[] {
   const portals = Array.from(document.querySelectorAll<HTMLElement>(PORTAL_SELECTOR))
-    .filter((portal) => !container.contains(portal))
+    .filter((portal) => !container.contains(portal) && isPortalOwnedBy(portal, container))
   return [container, ...portals]
 }
 
 const INERT_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'TITLE', 'BASE'])
 
-/** A sibling that must stay interactive: not markup-only, and not a popup surface. */
-function isInertable(node: Element): node is HTMLElement {
+/** A sibling that must stay interactive: not markup-only, and this dialog's own popup. */
+function isInertable(node: Element, container: HTMLElement): node is HTMLElement {
   if (!(node instanceof HTMLElement)) return false
   if (INERT_SKIP_TAGS.has(node.tagName)) return false
-  return !node.matches(`[data-radix-popper-content-wrapper],${PORTAL_SELECTOR}`)
+  // Radix mounts its poppers on demand, after this ran, so they are skipped by name.
+  if (node.matches('[data-radix-popper-content-wrapper]')) return false
+  if (node.matches(PORTAL_SELECTOR)) return !isPortalOwnedBy(node, container)
+  return true
 }
 
 /** Marks one sibling inert, returning the undo for exactly what it changed. */
@@ -112,7 +115,7 @@ function hideOutside(container: HTMLElement): () => void {
   while (node.parentElement) {
     const parent = node.parentElement
     for (const child of parent.children) {
-      if (child !== node && isInertable(child)) restore.push(markInert(child))
+      if (child !== node && isInertable(child, container)) restore.push(markInert(child))
     }
     node = parent
   }
@@ -155,7 +158,19 @@ export function useDialogFocus(open: boolean, containerRef: RefObject<HTMLElemen
     const container = containerRef.current
     if (!container) return
 
-    const focusable = getFocusable(getScope(container))
+    const scope = getScope(container)
+    const active = document.activeElement as HTMLElement | null
+
+    /*
+     * Focus outside this dialog's scope means something nested owns it — a Radix menu
+     * or confirmation dialog opened from inside, each of which brings its own focus
+     * scope and portals its content to the body. Their key events still travel the
+     * React tree to this handler, and treating "not in my list" as "wrap me back to
+     * my own first control" yanked focus straight out of the menu the user had open.
+     */
+    if (!scope.some((root) => root === active || (active !== null && root.contains(active)))) return
+
+    const focusable = getFocusable(scope)
     if (focusable.length === 0) {
       // Nothing to move to, so Tab must not escape to the page behind.
       event.preventDefault()
@@ -164,17 +179,15 @@ export function useDialogFocus(open: boolean, containerRef: RefObject<HTMLElemen
 
     const first = focusable[0]!
     const last = focusable[focusable.length - 1]!
-    const active = document.activeElement as HTMLElement | null
     const index = active ? focusable.indexOf(active) : -1
 
-    // `-1` is the container itself, or a popup control this scope does not list:
-    // either way the next Tab has to land back inside the dialog rather than out.
-    if (event.shiftKey && (index === 0 || index === -1)) {
+    // The container itself holds focus after open, and is not in the tab order.
+    if (event.shiftKey && (index === 0 || active === container)) {
       event.preventDefault()
       last.focus()
       return
     }
-    if (!event.shiftKey && (index === focusable.length - 1 || index === -1)) {
+    if (!event.shiftKey && (index === focusable.length - 1 || active === container)) {
       event.preventDefault()
       first.focus()
     }

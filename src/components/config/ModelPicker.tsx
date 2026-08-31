@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useState, useRef, useEffect, useId, useMemo, useCallback, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Search, Zap, Eye, Wrench, Brain, AlertCircle, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -204,6 +204,8 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
   const activeError = isShowingAll ? allError : connectedError
   const errorCopy = useMemo(() => getModelQueryErrorCopy(activeError), [activeError])
   const [isOpen, setIsOpen] = useState(false)
+  // Names this picker to the list it portals away; see `PORTAL_ATTRIBUTE`.
+  const ownerId = useId()
   const [query, setQuery] = useState('')
   const [isShowingOnlyFree, setIsShowingOnlyFree] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -329,7 +331,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
   }
 
   return (
-    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+    <div ref={containerRef} id={ownerId} className="relative" onKeyDown={handleKeyDown}>
       {/* Trigger button */}
       <button
         ref={triggerRef}
@@ -376,7 +378,7 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
         <div
           ref={dropdownRef}
           data-model-dropdown
-          {...{ [PORTAL_ATTRIBUTE]: '' }}
+          {...{ [PORTAL_ATTRIBUTE]: ownerId }}
           role="listbox"
           aria-label="Available models"
           className={cn(

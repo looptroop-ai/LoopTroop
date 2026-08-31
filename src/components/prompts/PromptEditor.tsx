@@ -48,8 +48,10 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   // What is on screen right now, readable from inside an awaited save.
   const draftRef = useRef(draft)
+  const promptIdRef = useRef(promptId)
   useEffect(() => {
     draftRef.current = draft
+    promptIdRef.current = promptId
   })
 
   /**
@@ -64,6 +66,13 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
    * call the editor's own save somebody else's edit.
    */
   const ownSaveEchoRef = useRef(false)
+  /**
+   * Whether that echo should replace what is on screen. It should not when the user
+   * carried on typing while the save was in flight: the save still happened, so the
+   * invalidation is still ours to absorb, but the canonical copy it brings back is
+   * older than the draft and adopting it would delete what they typed.
+   */
+  const echoAdoptsDraftRef = useRef(true)
   const lastPromptIdRef = useRef<string | undefined>(undefined)
 
   // Reset local editing state whenever a different prompt is selected or the server
@@ -75,11 +84,15 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
     const isOwnSaveEcho = !isPromptSwitch && ownSaveEchoRef.current
     ownSaveEchoRef.current = false
 
-    // The stored copy is canonical and is what the editor should now be showing, but
-    // the save's own feedback still describes it.
-    setDraft(promptCurrent)
-    if (isOwnSaveEcho) return
+    if (isOwnSaveEcho) {
+      // The stored copy is canonical and is what the editor should now be showing,
+      // but the save's own feedback still describes it.
+      if (echoAdoptsDraftRef.current) setDraft(promptCurrent)
+      echoAdoptsDraftRef.current = true
+      return
+    }
 
+    setDraft(promptCurrent)
     setMode('edit')
     setErrors([])
     setWarnings([])
@@ -109,39 +122,56 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
 
   const isDirty = draft !== prompt.current
 
+  /**
+   * The editor is one component instance for every prompt — the dialog swaps the
+   * `promptId` prop rather than remounting — and it stays editable while a request is
+   * in flight. So a result describes the prompt and the text it was sent for, and
+   * belongs to neither if either has moved on since.
+   */
+  const describesCurrentEditor = (savedPromptId: string, source: string) =>
+    promptIdRef.current === savedPromptId && draftRef.current === source
+
   const handleSave = async () => {
     const source = draft
+    const savedPromptId = promptId
     let result: Awaited<ReturnType<typeof savePrompt.mutateAsync>>
     try {
-      result = await savePrompt.mutateAsync({ id: promptId, source })
+      result = await savePrompt.mutateAsync({ id: savedPromptId, source })
     } catch (err) {
       // A refused request — offline, a 500, an unreadable response — used to travel
       // out of an onClick as an unhandled rejection, leaving the editor looking as
       // though nothing had been asked of it.
+      if (!describesCurrentEditor(savedPromptId, source)) return
       setErrors([err instanceof Error ? err.message : 'Failed to save this prompt.'])
       setWarnings([])
       setSavedAt(null)
       return
     }
-    // The editor stays editable while a save is in flight, so the text on screen may
-    // no longer be the text that was saved. Feedback belongs to what was submitted.
-    if (draftRef.current !== source) return
-    if (result.errors.length === 0) {
+
+    const isCurrent = describesCurrentEditor(savedPromptId, source)
+    if (result.errors.length === 0 && promptIdRef.current === savedPromptId) {
+      // The write happened, so its echo is coming either way; only whether the editor
+      // should adopt what comes back depends on the draft still being the saved one.
       ownSaveEchoRef.current = true
-      setSavedAt(Date.now())
+      echoAdoptsDraftRef.current = isCurrent
     }
+    if (!isCurrent) return
+    if (result.errors.length === 0) setSavedAt(Date.now())
     setErrors(result.errors)
     setWarnings(result.warnings)
   }
 
   const handleRevert = async () => {
+    const revertedPromptId = promptId
     ownSaveEchoRef.current = false
     try {
-      await revertPrompt.mutateAsync(promptId)
+      await revertPrompt.mutateAsync(revertedPromptId)
     } catch (err) {
+      if (promptIdRef.current !== revertedPromptId) return
       setErrors([err instanceof Error ? err.message : 'Failed to revert this prompt.'])
       return
     }
+    if (promptIdRef.current !== revertedPromptId) return
     setErrors([])
     setWarnings([])
     setSavedAt(null)

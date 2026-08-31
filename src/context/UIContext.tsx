@@ -139,14 +139,18 @@ let pendingLegacyPresetKeys: string[] = []
 function retireMigratedLegacyKeys(): void {
   if (pendingLegacyPresetKeys.length === 0) return
   const keys = pendingLegacyPresetKeys
-  pendingLegacyPresetKeys = []
+  // A key storage refuses to remove stays pending. Dropping it here would leave it on
+  // disk with nothing left to retry it, and the next load would merge it back in —
+  // resurrecting a preset the user deletes in the meantime.
+  const failed: string[] = []
   for (const key of keys) {
     try {
       window.localStorage.removeItem(key)
     } catch {
-      // A key that cannot be removed is re-migrated next load; the blob already has it.
+      failed.push(key)
     }
   }
+  pendingLegacyPresetKeys = failed
 }
 
 /**
@@ -231,22 +235,47 @@ function normalizeUIState(value: unknown): UIState {
   }
 }
 
-function getInitialState(): UIState {
-  let initialState = defaultState
-  if (typeof window !== 'undefined') {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown
-        initialState = normalizeUIState(parsed)
-      }
-    } catch {
-      // ignore parse errors
-    }
+/** The durable record as it stands right now, or null if there isn't a usable one. */
+function readStoredUIState(): UIState | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (!stored) return null
+    return normalizeUIState(JSON.parse(stored) as unknown)
+  } catch {
+    return null
   }
+}
+
+function getInitialState(): UIState {
+  const initialState = readStoredUIState() ?? defaultState
   const { presetsByProject, migratedKeys } = migrateLegacyPresets(initialState.presetsByProject)
   pendingLegacyPresetKeys = migratedKeys
   return { ...initialState, presetsByProject }
+}
+
+/**
+ * Writes the recovered presets into whatever the durable record says *now*, rather
+ * than into the copy this tab rehydrated from.
+ *
+ * Every other write in this provider replaces the record wholesale, and a second tab
+ * losing the change it made a moment ago is recoverable — it can make it again. This
+ * one is not: it is immediately followed by deleting the legacy keys, so a stale
+ * overwrite here destroys the last copy of something. Re-reading costs one
+ * `getItem` on mount and removes that.
+ */
+function persistMigratedPresets(state: UIState): boolean {
+  const stored = readStoredUIState()
+  if (!stored) return persistUIState(state)
+
+  const presetsByProject = { ...stored.presetsByProject }
+  for (const key of pendingLegacyPresetKeys) {
+    const recovered = state.presetsByProject[key]
+    if (!recovered) continue
+    // The durable record still wins on a name conflict, exactly as the merge does.
+    presetsByProject[key] = { ...recovered, ...(presetsByProject[key] ?? {}) }
+  }
+  return persistUIState({ ...stored, presetsByProject })
 }
 
 function uiReducer(state: UIState, action: UIAction): UIState {
@@ -316,7 +345,7 @@ export function UIProvider({ children }: { children: ReactNode }) {
   })
   useEffect(() => {
     if (pendingLegacyPresetKeys.length === 0) return
-    if (persistUIState(liveStateRef.current)) retireMigratedLegacyKeys()
+    if (persistMigratedPresets(liveStateRef.current)) retireMigratedLegacyKeys()
   }, [])
 
   // Sync URL with state

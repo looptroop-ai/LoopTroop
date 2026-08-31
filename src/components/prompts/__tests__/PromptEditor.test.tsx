@@ -173,7 +173,7 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
   it('does not report a save against a draft the user has moved on from', async () => {
     let release: (value: { errors: string[]; warnings: string[] }) => void = () => {}
     saveMutateAsync.mockImplementation(() => new Promise((resolve) => { release = resolve }))
-    renderEditor()
+    const { rerender } = renderEditor()
 
     fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'first edit\n' } })
     fireEvent.click(screen.getByRole('button', { name: /save/i }))
@@ -183,8 +183,31 @@ describe('PromptEditor save feedback — canonicalized and failed saves', () => 
     await act(async () => {
       release({ errors: [], warnings: [] })
     })
+    // The save did happen, so its echo still arrives — and must not bring the older
+    // text back over the newer one.
+    serverAccepts('first edit\n', rerender)
 
     expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Prompt source')).toHaveValue('second edit\n')
+  })
+
+  it('does not report a save against a prompt the user has switched away from', async () => {
+    let release: (value: { errors: string[]; warnings: string[] }) => void = () => {}
+    saveMutateAsync.mockImplementation(() => new Promise((resolve) => { release = resolve }))
+    const { rerender } = renderEditor()
+
+    fireEvent.change(screen.getByLabelText('Prompt source'), { target: { value: 'interview edit\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    // The dialog swaps the prop; this editor is not remounted.
+    state.prompt = { ...state.prompt, id: 'council', current: 'council prompt\n' }
+    rerender(<PromptEditor promptId="council" wordWrap={false} onToggleWordWrap={vi.fn()} />)
+
+    await act(async () => {
+      release({ errors: [], warnings: [] })
+    })
+
+    expect(screen.queryByText('Saved. New runs will use this prompt.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Prompt source')).toHaveValue('council prompt\n')
   })
 })

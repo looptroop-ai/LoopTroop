@@ -71,4 +71,26 @@ describe('useCopyToClipboard', () => {
     // timer, reporting the refusal as a success.
     expect(result.current[0]).toBe(false)
   })
+
+  it('ignores a refusal that settles after a later success', async () => {
+    let rejectFirst: (reason: Error) => void = () => {}
+    const writeText = vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject }))
+      .mockImplementationOnce(() => Promise.resolve())
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { result } = renderHook(() => useCopyToClipboard())
+
+    let first: Promise<boolean> | undefined
+    await act(async () => { first = result.current[1]('first') })
+    await act(async () => { await result.current[1]('second') })
+    expect(result.current[0]).toBe(true)
+
+    // The earlier attempt loses its race and must not take down the later tick.
+    await act(async () => {
+      rejectFirst(new Error('Write permission denied.'))
+      await first
+    })
+
+    expect(result.current[0]).toBe(true)
+  })
 })

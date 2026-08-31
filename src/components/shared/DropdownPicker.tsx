@@ -20,6 +20,9 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const [isPositioned, setIsPositioned] = useState(false)
   const popupId = useId()
+  // Names this picker to the popup it portals away, so an enclosing dialog can tell
+  // its own picker from one belonging to a window underneath it.
+  const ownerId = useId()
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return
@@ -58,6 +61,32 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
       control.removeAttribute('aria-controls')
     }
   }, [open, popupId])
+
+  /**
+   * Focus follows the popup, both ways.
+   *
+   * Tab order runs in document order, and the popup is portaled to the end of the
+   * body — so from the trigger, Tab went to the next field in the form and reached
+   * the popup only by wrapping round the whole dialog. `ModelPicker` already focuses
+   * its search field on open; this does the same for whatever the caller put first,
+   * and hands focus back to the trigger when the popup goes away, rather than
+   * dropping the keyboard user at the top of the page.
+   */
+  useEffect(() => {
+    if (!open) return
+    // Captured while it is live: the trigger outlives the popup, but the cleanup runs
+    // after the commit that removed the popup, when reading a ref is no longer safe.
+    const triggerWrapper = triggerRef.current
+    dropdownRef.current?.querySelector<HTMLElement>(TRIGGER_SELECTOR)?.focus()
+    return () => {
+      // The popup is gone by now, and with it whatever inside it had focus — which
+      // leaves the document focused on nothing. Anywhere else means the user moved
+      // on deliberately (a click elsewhere closed it), so leave them where they are.
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      triggerWrapper?.querySelector<HTMLElement>(TRIGGER_SELECTOR)?.focus()
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) { setIsPositioned(false); return }
@@ -100,13 +129,13 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
   }
 
   return (
-    <div ref={ref} className="relative inline-block" onKeyDown={handleKeyDown}>
+    <div ref={ref} id={ownerId} className="relative inline-block" onKeyDown={handleKeyDown}>
       <div ref={triggerRef} onClick={() => onOpenChange(!open)}>{trigger}</div>
       {open && createPortal(
         <div
           ref={dropdownRef}
           id={popupId}
-          {...{ [PORTAL_ATTRIBUTE]: '' }}
+          {...{ [PORTAL_ATTRIBUTE]: ownerId }}
           className="fixed z-[100] rounded-lg border border-border bg-popover shadow-xl p-3 animate-in fade-in-0 zoom-in-95"
           style={{
             top: pos.top,

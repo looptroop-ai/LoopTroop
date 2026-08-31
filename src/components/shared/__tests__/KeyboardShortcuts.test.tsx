@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { KeyboardShortcuts } from '../KeyboardShortcuts'
+import { DROPDOWN_Z_INDEX } from '@/lib/constants'
 
 afterEach(cleanup)
 
@@ -34,13 +35,14 @@ describe('KeyboardShortcuts', () => {
   })
 
   /**
-   * The ticket view and the About window are both `z-[60]`, and Radix dialogs are
-   * `z-[70]`. At `z-50` this overlay opened underneath them — invisible, holding
-   * focus, and making everything the user could still see inert.
+   * The ticket view and the About window are both `z-[60]`, Radix dialogs are
+   * `z-[70]`, and the two portaled pickers are higher still. At `z-50` this overlay
+   * opened underneath all of them — invisible, holding focus, and making everything
+   * the user could still see inert.
    */
-  it('stacks above the ticket view and the app modals', () => {
+  it('stacks above every other surface, pickers included', () => {
     open()
     const backdrop = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' }).parentElement!
-    expect(backdrop.className).toContain('z-[80]')
+    expect(Number(backdrop.style.zIndex)).toBeGreaterThan(DROPDOWN_Z_INDEX)
   })
 })

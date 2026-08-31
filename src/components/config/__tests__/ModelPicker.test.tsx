@@ -196,3 +196,46 @@ describe('ModelPicker — Escape', () => {
     }
   })
 })
+
+describe('ModelPicker — closing', () => {
+  beforeEach(() => {
+    mockModelsQuery()
+  })
+
+  it('hands focus back to the trigger after a model is chosen', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Pick a model' })
+    fireEvent.click(trigger)
+
+    // Selecting closes the list from inside it, detaching the button the user was on.
+    fireEvent.click(screen.getByRole('button', { name: /GPT Alpha/ }))
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('stays open for a click in its own list', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+
+    fireEvent.mouseDown(screen.getByLabelText('Search models'))
+
+    expect(screen.getByLabelText('Search models')).toBeInTheDocument()
+  })
+
+  it('closes for a click in a list belonging to another picker', () => {
+    render(<ModelPicker value="" onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Pick a model' }))
+
+    // Another picker's portal: same kind of surface, a different owner. Matching on
+    // "is a model list" rather than on the owner left this one open.
+    const otherList = document.createElement('div')
+    otherList.setAttribute('data-lt-portal', 'some-other-picker')
+    document.body.appendChild(otherList)
+
+    fireEvent.mouseDown(otherList)
+
+    expect(screen.queryByLabelText('Search models')).not.toBeInTheDocument()
+    document.body.removeChild(otherList)
+  })
+})

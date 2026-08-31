@@ -78,13 +78,54 @@ function findDuplicateNames(rows: EnvironmentRow[]): Set<string> {
   return duplicates
 }
 
-/** Promotes every row whose typed name is usable; the rest keep the name they hold. */
-function settleRows(rows: EnvironmentRow[]): EnvironmentRow[] {
-  return rows.map((row) => (
-    row.name !== '' && row.appliedName !== row.name && !isNameTaken(row.name, row.id, rows)
-      ? { ...row, appliedName: row.name }
-      : row
+/**
+ * Names that differ from another row's only in case. Windows environment variables
+ * are case-insensitive, and Node keeps just one of `PATH` and `Path` when it spawns
+ * a process there — so a plan carrying both looks right in the editor and arrives at
+ * the command missing a value. It is a warning rather than a refusal: on Linux and
+ * macOS the two really are different variables and both are usable.
+ */
+function findCaseOnlyClash(row: EnvironmentRow, rows: EnvironmentRow[]): string | null {
+  if (row.name === '') return null
+  const lowered = row.name.toLowerCase()
+  const clash = rows.find((other) => (
+    other.id !== row.id
+    && other.name !== ''
+    && other.name !== row.name
+    && other.name.toLowerCase() === lowered
   ))
+  return clash?.name ?? null
+}
+
+/** One promotion pass; returns the input unchanged when nothing could move. */
+function settlePass(rows: EnvironmentRow[]): EnvironmentRow[] {
+  let changed = false
+  const next = rows.map((row) => {
+    if (row.name === '' || row.appliedName === row.name || isNameTaken(row.name, row.id, rows)) return row
+    changed = true
+    return { ...row, appliedName: row.name }
+  })
+  return changed ? next : rows
+}
+
+/**
+ * Promotes every row whose typed name is usable; the rest keep the name they hold.
+ *
+ * Repeatedly, because freeing a name unblocks whoever was waiting for it — and that
+ * is how a collision is actually resolved: rename `FOO` to `BAR`, find `BAR` taken,
+ * then rename the real `BAR` out of the way. A single pass settled only the second
+ * rename and left the first showing `BAR` in the field, with no error, while the plan
+ * still held `FOO`. Promotion never reverses, so this reaches a fixed point in at
+ * most one pass per row.
+ */
+function settleRows(rows: EnvironmentRow[]): EnvironmentRow[] {
+  let current = rows
+  for (let pass = 0; pass < rows.length; pass++) {
+    const next = settlePass(current)
+    if (next === current) break
+    current = next
+  }
+  return current
 }
 
 function sameEnvironmentRecord(left: Record<string, string>, right: Record<string, string>): boolean {
@@ -144,6 +185,7 @@ function EnvironmentEditor({
         // beside a plan that still carries the old one.
         const isUnnamedButHeld = row.name === '' && row.appliedName !== ''
         const isInvalid = isDuplicate || isUnnamedButHeld
+        const caseOnlyClash = findCaseOnlyClash(row, rows)
         return (
           <div key={row.id} className="space-y-1">
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
@@ -184,6 +226,12 @@ function EnvironmentEditor({
             {isUnnamedButHeld && (
               <p role="alert" className="text-[10px] text-destructive">
                 Still saved as {row.appliedName}. Give it a name, or remove it with ×.
+              </p>
+            )}
+            {caseOnlyClash && !isDuplicate && (
+              <p role="status" className="text-[10px] text-amber-700 dark:text-amber-400">
+                {row.name} and {caseOnlyClash} differ only in case. On Windows they are the same
+                variable, and only one of them would reach the command.
               </p>
             )}
           </div>

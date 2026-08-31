@@ -188,4 +188,27 @@ describe('ExecutionSetupPlanEditor environment variables', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Still saved as FOO')
   })
+
+  it('applies a rename once the name it wanted is freed', () => {
+    const { onChange } = renderWithEnv({ FOO: 'one', BAR: 'two' })
+
+    // The way a collision is actually resolved: ask for the taken name, then move the
+    // row holding it out of the way.
+    fireEvent.change(screen.getByLabelText('Environment variable 1 name'), { target: { value: 'BAR' } })
+    fireEvent.change(screen.getByLabelText('Environment variable 2 name'), { target: { value: 'BAZ' } })
+
+    // A single settle pass left row 1 showing BAR, unflagged, while the plan held FOO.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(latestEnv(onChange)).toEqual({ BAR: 'one', BAZ: 'two' })
+  })
+
+  it('warns when two names differ only in case', () => {
+    const { onChange } = renderWithEnv({ PATH: 'one', OTHER: 'two' })
+
+    fireEvent.change(screen.getByLabelText('Environment variable 2 name'), { target: { value: 'Path' } })
+
+    expect(screen.getAllByRole('status')[0]).toHaveTextContent(/differ only in case/)
+    // A warning, not a refusal: both are real variables off Windows, so both are saved.
+    expect(latestEnv(onChange)).toEqual({ PATH: 'one', Path: 'two' })
+  })
 })

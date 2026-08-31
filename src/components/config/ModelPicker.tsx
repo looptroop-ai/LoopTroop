@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, Search, Zap, Eye, Wrench, Brain, AlertCircle, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { DROPDOWN_MAX_HEIGHT, DROPDOWN_OFFSET, DROPDOWN_PADDING, DROPDOWN_FOCUS_DELAY_MS, DROPDOWN_Z_INDEX } from '@/lib/constants'
-import { PORTAL_ATTRIBUTE } from '@/lib/overlays'
+import { PORTAL_ATTRIBUTE, PORTAL_SELECTOR } from '@/lib/overlays'
 import { useOpenCodeModels, useAllOpenCodeModels } from '@/hooks/useOpenCodeModels'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
 
@@ -249,17 +249,34 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
 
   useEffect(() => () => clearTimeout(focusTimerRef.current), [])
 
-  // Close on outside click
+  // Close on outside click. "Outside" means outside *this* picker: the portal is
+  // matched by the owner it names, not by being a model list, so a click in another
+  // picker's list is outside this one and closes it.
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: MouseEvent) => {
-      if (
-        !containerRef.current?.contains(e.target as Node) &&
-        !(e.target as Element)?.closest('[data-model-dropdown]')
-      ) setIsOpen(false)
+      const target = e.target as Element | null
+      if (containerRef.current?.contains(target as Node)) return
+      if (target?.closest?.(PORTAL_SELECTOR)?.getAttribute(PORTAL_ATTRIBUTE) === ownerId) return
+      setIsOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
+  }, [isOpen, ownerId])
+
+  /**
+   * Selecting a model closes the list from inside it, which detaches the button the
+   * user was on and leaves the document focused on nothing. Escape already hands focus
+   * back explicitly; this covers every other way the list goes away.
+   */
+  useEffect(() => {
+    if (!isOpen) return
+    const trigger = triggerRef.current
+    return () => {
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      trigger?.focus()
+    }
   }, [isOpen])
 
   // Reposition on scroll/resize
@@ -377,7 +394,6 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
       {isOpen && createPortal(
         <div
           ref={dropdownRef}
-          data-model-dropdown
           {...{ [PORTAL_ATTRIBUTE]: ownerId }}
           role="listbox"
           aria-label="Available models"

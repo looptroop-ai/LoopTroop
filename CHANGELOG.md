@@ -26,6 +26,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Startup now genuinely finishes writes that a crash interrupted, and refuses the ones it cannot vouch for. It never replaces a file that is already there, and it never puts back a JSON document that stops mid-sentence.
 - Manual QA baselines and drift receipts are now written durably, and startup can recognise and finish one that a crash interrupted.
 - Opening a different ticket now starts that ticket's workspace clean. Answers, drafts, skip reasons, open dialogs and error notices used to belong to whichever ticket you opened first, and an answer typed for one ticket could be saved onto another. What you were still typing survives the switch too, saved against the ticket you typed it for.
+- Live logs stop working against themselves. Every arriving line used to make the panel ask the server for the page that line had just arrived on, so the busier a ticket got the more work each line caused. Watching a run is now quiet, and streaming output follows itself down the screen again instead of appearing to freeze.
+- A cancelled ticket shows its log history, a per-model tab shows that model's output, and a phase that was retried shows each attempt separately instead of merging them into one.
 
 ### Added
 - Every skip surface now takes an optional reason. Interview questions can be skipped individually with their own reason, or all at once with a single reason for the action. An answer marked skipped at the interview approval screen takes one, as does approving a PRD or bead plan with unresolved coverage gaps, skipping a Manual QA round, finishing a ticket without merging, and cancelling. Reasons are always optional; nothing is blocked for lack of one, and no screen nags about a skip that has none.
@@ -109,6 +111,16 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed the Skips panel overlapping the AI details panel when both were open.
 - Fixed the Skips panel showing state from up to thirty seconds earlier when it was already open as a skip was recorded.
 - Removed Vite's native-config compatibility warnings from build and test runs by using explicit TypeScript extensions for local config imports.
+- Fixed every streamed log line re-requesting the page it arrived on. The log context published its rows and its callbacks as one object, so it was a new value on every render and the panels listing it in their effect dependencies asked for the phase again per line. The rows and the callbacks are now separate: an effect that loads a page depends on the loader, whose identity never changes, and a view that draws rows depends on the reader, whose identity changes when the rows do and at no other time.
+- Fixed the Full Log recopying and re-sorting every log bucket on the ticket whenever a loading flag changed rather than when the rows changed.
+- Fixed the coding view appearing to freeze during streaming model output. It followed the number of log rows, and a streaming answer arrives as repeated updates to one row whose text grows, so the count never moved. It now follows the tail of the log itself. Its pending scroll frame is also cancelled when the view closes.
+- Fixed a retried phase showing one merged attempt in its archived history. Log entry ids are unique only within an attempt, so two attempts that both recorded the same milestone folded into a single row. Restored pages now use the same attempt-aware identity the live overlay already used.
+- Fixed two separate undated events with the same text being treated as one and the second discarded. A missing timestamp says nothing about when something happened; a row that really is delivered twice still collapses.
+- Fixed the walk that loads a bead's complete log history continuing after you switched to another bead or closed the view, and restarting immediately after a failed page instead of stopping.
+- Fixed a log export asking the database for a ticket's entire history in one statement. It now walks it in pages. The exported text is unchanged, and there is still no cap: the panels treat that endpoint as the complete record.
+- Fixed a cancelled ticket showing an empty log. Its view never passed the ticket to the log panel, so no durable history was loaded and the cancelled phase read as though it were still running.
+- Fixed a per-model log tab rendering empty when the rows behind it named their model through the log source rather than a model field. The tab list and the filter behind it now agree on what identifies a model.
+- Fixed a live event stream that had been replaced — by switching tickets, or by a reconnect — still acting on the ticket that replaced it. A late error closed the live connection, refetched the wrong ticket and started a reconnect nobody asked for; a late message could move the new ticket's resume position to an event id belonging to the old one. Every callback a connection installs now checks it is still the current one, and a connection queued as the view was closing no longer opens.
 
 ## 0.5.9 (2026-08-26)
 

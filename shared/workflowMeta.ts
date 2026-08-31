@@ -28,7 +28,11 @@ export type WorkflowContextKey =
   | 'user_answers'
   // No phase asks for council votes today, so no model ever receives them. The
   // key keeps its label and its context-builder branch so a phase can request
-  // votes later; until one lists it in `contextSummary`, nothing assembles it.
+  // votes later, which takes three things: something has to populate
+  // `TicketState.votes`, the phase has to list `'votes'` in `PHASE_ALLOWLISTS`
+  // (`server/opencode/contextBuilder.ts`), and the prompt has to list it in its
+  // `contextInputs`. Listing it in a phase's `contextSummary` only adds a row to
+  // the Details dialog.
   | 'votes'
   | 'prd'
   | 'beads'
@@ -1680,20 +1684,29 @@ export const WORKFLOW_PHASE_MAP = Object.fromEntries(
   WORKFLOW_PHASES.map((phase) => [phase.id, phase]),
 ) as Record<string, WorkflowPhaseMeta>
 
-/** Returns the full phase metadata for a given status ID, or `undefined` if the status is unknown. */
-export function getWorkflowPhaseMeta(status: string): WorkflowPhaseMeta | undefined {
-  return WORKFLOW_PHASE_MAP[status]
-}
-
 /**
  * Narrows an arbitrary string to a declared workflow status.
  *
  * Statuses arrive as plain text from the database, a restored state-machine
  * snapshot, or a query string, so anything unrecognised has to be handled rather
- * than trusted.
+ * than trusted. Checks own keys only: `WORKFLOW_PHASE_MAP` is a plain object, so
+ * a plain index would answer `'toString'` and `'constructor'` with inherited
+ * members of `Object.prototype`.
  */
 export function isWorkflowPhaseId(status: string): status is WorkflowPhaseId {
   return Object.prototype.hasOwnProperty.call(WORKFLOW_PHASE_MAP, status)
+}
+
+/**
+ * Returns the full phase metadata for a given status ID, or `undefined` if the
+ * status is unknown.
+ *
+ * Every lookup goes through the guard above, so "unknown" includes the names
+ * inherited from `Object.prototype`. Callers treat a truthy result as a phase and
+ * read into it, and a function is not a phase.
+ */
+export function getWorkflowPhaseMeta(status: string): WorkflowPhaseMeta | undefined {
+  return isWorkflowPhaseId(status) ? WORKFLOW_PHASE_MAP[status] : undefined
 }
 
 /**
@@ -1702,7 +1715,7 @@ export function isWorkflowPhaseId(status: string): status is WorkflowPhaseId {
  * Prefer `isTerminalWorkflowStatus`; this list exists for the callers that need
  * the values themselves, such as a SQL `IN (...)` filter.
  */
-export const TERMINAL_WORKFLOW_STATUSES: string[] = WORKFLOW_PHASES
+export const TERMINAL_WORKFLOW_STATUSES: readonly string[] = WORKFLOW_PHASES
   .filter((phase) => phase.terminal)
   .map((phase) => phase.id)
 
@@ -1755,6 +1768,11 @@ export function isStatusAtOrPast(currentStatus: string, targetStatus: string): b
  * automatically and do not add recovery actions.
  */
 export function getAvailableWorkflowActions(status: string): WorkflowAction[] {
+  // A finished ticket offers nothing. Read that from the phase table rather than
+  // naming the statuses again here, or a status marked terminal later would keep
+  // offering Cancel in the UI while the route answers 409.
+  if (isTerminalWorkflowStatus(status)) return []
+
   switch (status) {
     case 'DRAFT':
       return ['start', 'cancel']
@@ -1767,9 +1785,6 @@ export function getAvailableWorkflowActions(status: string): WorkflowAction[] {
       return ['merge', 'close_unmerged', 'cancel']
     case 'BLOCKED_ERROR':
       return ['retry', 'cancel']
-    case 'COMPLETED':
-    case 'CANCELED':
-      return []
     default:
       return ['cancel']
   }

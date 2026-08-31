@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   getAvailableWorkflowActions,
+  getWorkflowPhaseMeta,
   isTerminalWorkflowStatus,
   isWorkflowPhaseId,
   TERMINAL_WORKFLOW_STATUSES,
@@ -31,6 +32,17 @@ describe('workflow phase identity', () => {
     expect(isWorkflowPhaseId('toString')).toBe(false)
     expect(isWorkflowPhaseId('constructor')).toBe(false)
     expect(isWorkflowPhaseId('__proto__')).toBe(false)
+  })
+
+  it('returns no metadata for an inherited property name', () => {
+    // Callers check the result for truthiness and then read into it, so handing
+    // back `Object.prototype.toString` for a status named `toString` throws one
+    // property access later.
+    expect(getWorkflowPhaseMeta('toString')).toBeUndefined()
+    expect(getWorkflowPhaseMeta('constructor')).toBeUndefined()
+    expect(getWorkflowPhaseMeta('__proto__')).toBeUndefined()
+    expect(getWorkflowPhaseMeta('NOT_A_STATUS')).toBeUndefined()
+    expect(getWorkflowPhaseMeta('DRAFT')?.id).toBe('DRAFT')
   })
 
   it('gives every status exactly one board column', () => {
@@ -78,13 +90,20 @@ describe('isTerminalWorkflowStatus', () => {
     for (const status of TERMINAL_WORKFLOW_STATUSES) {
       expect(getAvailableWorkflowActions(status), status).toEqual([])
     }
+
+    // And the reverse, so the check that produces the empty list cannot quietly
+    // widen: every status that is still running keeps at least Cancel.
+    for (const phase of WORKFLOW_PHASES.filter((p) => p.terminal !== true)) {
+      expect(getAvailableWorkflowActions(phase.id), phase.id).not.toEqual([])
+    }
   })
 
-  it('is not read off the board column', () => {
-    // Terminality is its own flag precisely so that grouping a status under the
-    // Done column for display reasons cannot decide whether a ticket may be
-    // deleted. Both facts happen to agree today; this asserts they are recorded
-    // separately, so the day they diverge the code still asks the right one.
+  it('requires every status in the Done column to carry the flag itself', () => {
+    // Terminality is its own flag, so a status can be filed under Done for
+    // display and still not be marked finished — and then Delete, Cancel and the
+    // polling would disagree with the board. This catches that authoring
+    // mistake. It does not prove the two are independent: while the sets agree, a
+    // predicate reading `kanbanPhase === 'done'` would pass this too.
     const doneColumn = WORKFLOW_PHASES.filter((phase) => phase.kanbanPhase === 'done')
     expect(doneColumn.length).toBeGreaterThan(0)
     for (const phase of doneColumn) {
@@ -128,9 +147,13 @@ describe('execution band metadata', () => {
   })
 
   it('keeps the band contiguous in workflow order', () => {
-    // The band is one unbroken run from the first readiness check to cleanup.
-    // A gap would mean a ticket leaves the band mid-execution and a second
-    // ticket could take the slot while the first is still running.
+    // The band is one unbroken run from the first readiness check to cleanup. A
+    // gap would mean a ticket leaves the band mid-execution and a second ticket
+    // could take the slot while the first is still running: the slot check is
+    // membership in a set (`findProjectExecutionBandConflict`, server/storage/
+    // ticketQueries.ts), so it cannot tell "before the band" from "in the middle
+    // of it". Nothing reads the order itself — this pins the shape the set check
+    // relies on.
     const indexes = WORKFLOW_PHASES
       .map((phase, index) => (phase.executionBand ? index : -1))
       .filter((index) => index >= 0)

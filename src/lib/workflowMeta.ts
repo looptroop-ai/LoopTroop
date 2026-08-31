@@ -3,6 +3,7 @@ import {
   isWorkflowPhaseId,
   type KanbanPhase,
   WORKFLOW_GROUPS,
+  WORKFLOW_PHASE_IDS,
   WORKFLOW_PHASE_MAP,
   WORKFLOW_PHASES,
   type WorkflowPhaseId,
@@ -25,10 +26,11 @@ export interface StatusLabelOptions {
 /**
  * Builds a per-status lookup from the shared phase table.
  *
- * Keyed by `WorkflowPhaseId` rather than by `string`, so a phase added to shared
- * metadata cannot quietly miss an entry here: the record would not type-check.
- * Statuses arriving as plain text go through the accessors below instead of
- * indexing these records directly.
+ * Every declared phase gets an entry because the table this maps over is the same
+ * one `WorkflowPhaseId` is derived from — there is no second list to keep in step.
+ * Keyed by that union rather than by `string`, so a status arriving as plain text
+ * has to be narrowed by the accessors below instead of indexing these records
+ * directly and getting `undefined` on screen as a blank label.
  */
 function buildPhaseRecord<T>(select: (phase: WorkflowPhaseMeta) => T): Record<WorkflowPhaseId, T> {
   return Object.fromEntries(
@@ -40,7 +42,7 @@ function buildPhaseRecord<T>(select: (phase: WorkflowPhaseMeta) => T): Record<Wo
 const STATUS_DESCRIPTIONS = buildPhaseRecord((phase) => phase.description)
 
 /** Linear ordering of all workflow status IDs — used for range checks and progression queries. */
-export const STATUS_ORDER: readonly string[] = WORKFLOW_PHASES.map((phase) => phase.id)
+export const STATUS_ORDER: readonly string[] = WORKFLOW_PHASE_IDS
 
 const BASE_STATUS_LABELS = buildPhaseRecord((phase) => phase.label)
 

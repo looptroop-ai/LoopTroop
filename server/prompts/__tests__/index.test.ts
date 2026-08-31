@@ -306,6 +306,11 @@ describe.concurrent('structured prompt hardening', () => {
     expect(refinePrompt).toContain('Return one YAML artifact')
     expect(refinePrompt).toContain('Do not split the refined beads and change metadata')
     expect(refinePrompt).toContain('Include `inspiration.item.detail` whenever the source item has useful supporting text')
+
+    // Matches what the phase actually assembles (`PHASE_ALLOWLISTS.beads_refine`).
+    // `votes` is deliberately absent: nothing populates `TicketState.votes`, so
+    // listing it only rendered an empty section in the Prompts window preview.
+    expect(PROM22.contextInputs).toEqual(['relevant_files', 'ticket_details', 'prd', 'drafts'])
   })
 
   it('keeps PROM21 explicit about randomized anonymous beads voting and strict scorecards', () => {

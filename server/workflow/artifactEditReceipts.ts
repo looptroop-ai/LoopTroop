@@ -1,6 +1,7 @@
 import { relative } from 'node:path'
 import { contentSha256 } from '../lib/contentHash'
 import { getActivePhaseAttempt, getTicketByRef, getTicketPaths, insertPhaseArtifact } from '../storage/tickets'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 type EditedArtifactType = 'interview' | 'prd' | 'beads' | 'execution_setup_plan'
 type UserEditAction = 'save' | 'save_and_restart' | 'save_and_rewind' | 'regenerate'
@@ -42,7 +43,7 @@ export function buildContentDigest(raw: string | null): {
 export function writeUserEditReceipt(input: {
   ticketId: string
   artifactType: EditedArtifactType
-  phase: string
+  phase: WorkflowPhaseId
   action: UserEditAction
   editSurface?: EditSurface
   statusBeforeEdit: string

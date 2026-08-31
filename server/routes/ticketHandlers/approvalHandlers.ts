@@ -45,6 +45,7 @@ import {
 import { approvalRequestSchema, rawPrdSaveSchema, structuredPrdSaveSchema } from './schemas'
 import { isCoverageFixInProgress } from './coverageFixHandlers'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 function countPrdItems(document: PrdDocument): number {
   return document.epics.reduce((count, epic) => count + 1 + epic.user_stories.length, 0)
@@ -299,7 +300,7 @@ export async function handlePutPrd(c: Context) {
  */
 function recordGapAcknowledgement(input: {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   ticketStatusBefore: string
   artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan'
   reason: string | undefined

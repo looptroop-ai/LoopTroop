@@ -33,6 +33,7 @@ import {
   stopTicketTimers,
 } from '../../workflow/questionWindows'
 import { resolveAiQuestionSettings } from '../../workflow/phases/helpers'
+import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 function emitOpenCodeQuestionLog(
   ticketId: string,
@@ -134,7 +135,7 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         sessionId: request.sessionID,
         requestId: request.id,
         memberId: session?.memberId ?? null,
-        phase: session?.phase ?? ticketContext.localTicket.status,
+        phase: resolveQuestionPhase(session?.phase, ticketContext.localTicket.status),
         phaseAttempt: session?.phaseAttempt ?? 1,
         windowMs: resolveAiQuestionSettings(ticketId).windowMs,
         questions: request.questions,
@@ -170,6 +171,19 @@ async function findPendingOpenCodeQuestionForTicket(ticketId: string, requestId:
   const questions = await getTicketPendingOpenCodeQuestions(ticketId)
   if (!questions) return null
   return questions.find((request) => request.requestId === requestId) ?? null
+}
+
+/**
+ * Which step a recovered question belongs to.
+ *
+ * The session row stores its phase as free text, so one written by an older
+ * build can name a status that no longer exists. The ticket's current status is
+ * the fallback rather than dropping the question: an unclocked question waits
+ * forever, which is the failure this whole path exists to prevent.
+ */
+function resolveQuestionPhase(sessionPhase: string | undefined, ticketStatus: string): WorkflowPhaseId {
+  if (sessionPhase && isWorkflowPhaseId(sessionPhase)) return sessionPhase
+  return isWorkflowPhaseId(ticketStatus) ? ticketStatus : 'BLOCKED_ERROR'
 }
 
 export async function handleListOpenCodeQuestions(c: Context) {

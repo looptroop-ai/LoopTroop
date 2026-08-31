@@ -2,21 +2,18 @@ import * as jsYaml from 'js-yaml'
 import type { PromptPart } from '../opencode/types'
 import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences, type YamlSequenceItemPrimaryKeyOptions, type YamlSequenceItemPrimaryKeyRepair } from '@shared/yamlRepair'
 import { isRecord } from '@shared/typeGuards'
+import { stripTranscriptPrefixes as stripSharedTranscriptPrefixes } from '@shared/transcriptPrefix'
 
 export { isRecord }
 
-const TRANSCRIPT_PREFIX_PATTERN = /^\s*\[(?:assistant|user|system|sys|tool|model|error)(?:\/[^\]]+)?\](?:\s*\[[^\]]+\])?\s*/i
 
 export function normalizeKey(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+/** The shared strip, plus the trim this module's callers have always relied on. */
 export function stripTranscriptPrefixes(content: string): string {
-  return content
-    .split('\n')
-    .map((line) => line.replace(TRANSCRIPT_PREFIX_PATTERN, ''))
-    .join('\n')
-    .trim()
+  return stripSharedTranscriptPrefixes(content).trim()
 }
 
 export function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined) {

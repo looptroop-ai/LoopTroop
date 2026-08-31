@@ -132,6 +132,7 @@ import {
   mergeErrorCodes,
 } from '../../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 type OpenCodeDiagnosticResult = ReturnType<typeof buildOpenCodeBlockedErrorDiagnostics>
 
@@ -365,12 +366,12 @@ type LatestCoverageSnapshot = CoverageHistorySnapshot & {
   response: string
   coverageRunNumber: number
   maxCoveragePasses: number
-  sourcePhase: string
+  sourcePhase: WorkflowPhaseId
 }
 
 function persistVersionedCoverageArtifact(params: {
   ticketId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   phase: 'prd' | 'beads'
   winnerId: string
   response: string
@@ -470,7 +471,7 @@ function buildCoverageTransitionSummary(params: {
 function loadCoverageHistorySnapshot(
   ticketId: string,
   phase: 'prd' | 'beads',
-  stateLabel: string,
+  stateLabel: WorkflowPhaseId,
 ): CoverageHistorySnapshot {
   const artifact = getLatestPhaseArtifact(ticketId, `ui_artifact_companion:${phase}_coverage`, stateLabel)
   if (!artifact) {
@@ -489,7 +490,13 @@ function loadCoverageHistorySnapshot(
   }
 }
 
-function getCoverageStateLabels(phase: 'prd' | 'beads'): string[] {
+/** The first of the candidates that names a declared workflow status. */
+function firstWorkflowPhaseId(...candidates: Array<string | undefined>): WorkflowPhaseId | undefined {
+  return candidates.find((candidate): candidate is WorkflowPhaseId =>
+    typeof candidate === 'string' && isWorkflowPhaseId(candidate))
+}
+
+function getCoverageStateLabels(phase: 'prd' | 'beads'): WorkflowPhaseId[] {
   return phase === 'prd'
     ? ['WAITING_PRD_APPROVAL', 'VERIFYING_PRD_COVERAGE']
     : ['WAITING_BEADS_APPROVAL', 'VERIFYING_BEADS_COVERAGE']
@@ -562,7 +569,13 @@ function loadLatestCoverageSnapshot(
     attempts: Array.isArray(merged.attempts) ? merged.attempts as CoverageAttemptHistoryEntry[] : [],
     transitions: Array.isArray(merged.transitions) ? merged.transitions as CoverageTransitionHistoryEntry[] : [],
     finalCandidateVersion: typeof merged.finalCandidateVersion === 'number' ? merged.finalCandidateVersion : undefined,
-    sourcePhase: companionArtifact?.phase ?? coverageArtifact?.phase ?? getCoverageStateLabel(phase),
+    // Both artifact rows store their phase as free text, so one written by an
+    // older build can name a status that no longer exists. The coverage state
+    // label for this flow is the correct answer in that case.
+    sourcePhase: firstWorkflowPhaseId(
+      companionArtifact?.phase,
+      coverageArtifact?.phase,
+    ) ?? getCoverageStateLabel(phase),
   }
 }
 
@@ -788,7 +801,7 @@ function normalizeBeadsCoverageEnvelope(envelope: CoverageResultEnvelope): {
 async function runPrdCoverageAuditPrompt(params: {
   ticketId: string
   externalId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   winnerId: string
   worktreePath: string
   promptContent: string
@@ -1041,7 +1054,7 @@ async function runPrdCoverageAuditPrompt(params: {
 async function runPrdCoverageResolutionPrompt(params: {
   ticketId: string
   externalId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   winnerId: string
   worktreePath: string
   promptContent: string
@@ -1228,7 +1241,7 @@ async function runPrdCoverageResolutionPrompt(params: {
 async function runBeadsCoverageAuditPrompt(params: {
   ticketId: string
   externalId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   winnerId: string
   worktreePath: string
   promptContent: string
@@ -1479,7 +1492,7 @@ async function runBeadsCoverageAuditPrompt(params: {
 async function runBeadsCoverageResolutionPrompt(params: {
   ticketId: string
   externalId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   winnerId: string
   worktreePath: string
   promptContent: string
@@ -1663,7 +1676,7 @@ async function runBeadsCoverageResolutionPrompt(params: {
 async function finalizeBeadsCoverageExpansion(params: {
   ticketId: string
   externalId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   winnerId: string
   worktreePath: string
   signal: AbortSignal
@@ -1786,7 +1799,7 @@ async function handlePrdCoverageVerificationLoop(params: {
   worktreePath: string
   ticketDir: string
   winnerId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   ticketState: TicketState
   effectivePrdContent: string
   fullAnswersContent: string
@@ -2126,7 +2139,7 @@ async function handleBeadsCoverageVerificationLoop(params: {
   signal: AbortSignal
   worktreePath: string
   winnerId: string
-  stateLabel: string
+  stateLabel: WorkflowPhaseId
   ticketState: TicketState
   effectivePrdContent: string
   effectiveBeadsContent: string

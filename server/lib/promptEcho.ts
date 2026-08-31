@@ -1,4 +1,5 @@
-const TRANSCRIPT_PREFIX_PATTERN = /^\s*\[(?:assistant|user|system|sys|tool|model|error)(?:\/[^\]]+)?\](?:\s*\[[^\]]+\])?\s*/i
+import { stripTranscriptPrefixes } from '@shared/transcriptPrefix'
+
 
 const COMMON_PROMPT_ECHO_MARKERS = [
   'CRITICAL OUTPUT RULE:',
@@ -22,12 +23,9 @@ const STRUCTURED_PROMPT_SCHEMA_MARKERS = [
   '# Ticket:',
 ]
 
+/** The shared strip, plus the trim the echo markers below are matched against. */
 export function stripPromptEchoTranscriptPrefixes(content: string): string {
-  return content
-    .split('\n')
-    .map((line) => line.replace(TRANSCRIPT_PREFIX_PATTERN, ''))
-    .join('\n')
-    .trim()
+  return stripTranscriptPrefixes(content).trim()
 }
 
 export function looksLikePromptEcho(content: string, extraMarkers: string[] = []): boolean {

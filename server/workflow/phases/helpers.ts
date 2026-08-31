@@ -58,6 +58,7 @@ import {
   markRequestRejectedExternally,
   markRequestReplied,
 } from '../questionWindows'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 // ── Cached tool log limits from profile ──────────────────────────────────────
 
@@ -106,7 +107,7 @@ export function getToolLogLimits(): ToolLogLimits {
 export function emitPhaseLog(
   ticketId: string,
   _ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: LogEventType,
   content: string,
   data?: Record<string, unknown>,
@@ -182,7 +183,7 @@ function buildBeadLogFields(beadId?: string, beadIteration?: number): Pick<Struc
 export function emitModelSystemLog(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: LogEventType,
   content: string,
   modelId: string,
@@ -207,7 +208,7 @@ export function emitModelSystemLog(
  */
 export function emitDebugLog(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   message: string,
   payload?: unknown,
   persist = true,
@@ -469,7 +470,7 @@ export function formatToolState(
 export function emitStructuredPhaseLog(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: LogEventType,
   content: string,
   fields: StructuredLogFields,
@@ -480,7 +481,7 @@ export function emitStructuredPhaseLog(
 export function emitAiMilestone(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   message: string,
   suffix: string,
   extra?: Partial<StructuredLogFields>,
@@ -502,7 +503,7 @@ export function emitAiMilestone(
 export function emitAiDetail(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: LogEventType,
   content: string,
   fields: StructuredLogFields,
@@ -517,7 +518,7 @@ export function emitAiDetail(
 export function emitOpenCodePromptLog(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   event: OpenCodePromptDispatchEvent,
   beadId?: string,
@@ -556,7 +557,7 @@ export function emitOpenCodePromptLog(
 export function finalizeOpenCodeParts(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   sessionId: string,
   state: OpenCodeStreamState,
@@ -714,7 +715,7 @@ function normalizeToolStatus(value: unknown): ToolStatus {
 function emitBackfilledAiDetail(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: LogEventType,
   content: string,
   state: OpenCodeStreamState | undefined,
@@ -732,7 +733,7 @@ function emitBackfilledAiDetail(
 function emitAssistantMessagePartDetails(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   sessionId: string,
   messages: Message[],
@@ -878,7 +879,7 @@ function emitAssistantMessagePartDetails(
 export function emitOpenCodeStreamEvent(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   sessionId: string,
   event: StreamEvent,
@@ -1290,7 +1291,7 @@ export function emitOpenCodeStreamEvent(
 export function emitOpenCodeSessionLogs(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   memberId: string,
   sessionId: string,
   stage: string,
@@ -1421,7 +1422,7 @@ export function emitOpenCodeSessionLogs(
 
 function emitErrorLogOnly(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   content: string,
   data: StructuredLogFields,
 ) {
@@ -1478,7 +1479,7 @@ function questionLogContent(event: Extract<StreamEvent, { type: 'question' }>): 
 function buildQuestionSsePayload(input: {
   ticketId: string
   ticketExternalId: string
-  phase: string
+  phase: WorkflowPhaseId
   memberId: string
   sessionId: string
   event: Extract<StreamEvent, { type: 'question' }>
@@ -1506,7 +1507,7 @@ function buildQuestionSsePayload(input: {
 export function mapCouncilStageToStatus(
   flow: 'interview' | 'prd' | 'beads',
   stage: 'draft' | 'vote' | 'refine',
-): string {
+): WorkflowPhaseId {
   if (flow === 'interview') {
     if (stage === 'draft') return 'COUNCIL_DELIBERATING'
     if (stage === 'vote') return 'COUNCIL_VOTING_INTERVIEW'
@@ -1613,7 +1614,7 @@ export function resolveStructuredRetryCountForTicket(ticketId: string): number {
   )
 }
 
-export function getCoverageStateLabel(phase: 'interview' | 'prd' | 'beads'): string {
+export function getCoverageStateLabel(phase: 'interview' | 'prd' | 'beads'): WorkflowPhaseId {
   return phase === 'interview'
     ? 'VERIFYING_INTERVIEW_COVERAGE'
     : phase === 'prd'
@@ -1863,7 +1864,7 @@ export function formatDraftFailureDetail(
 export function emitDraftProgressInfoLog(
   ticketId: string,
   ticketExternalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   label: string,
   entry: DraftProgressEvent,
 ) {
@@ -1939,7 +1940,7 @@ export function tryBuildInterviewQuestionPreview(label: string, content?: string
 
 export function upsertCouncilDraftArtifact(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   artifactType: string,
   drafts: DraftResult[],
   memberOutcomes?: Record<string, MemberOutcome>,
@@ -1985,7 +1986,7 @@ export function upsertCouncilDraftArtifact(
 
 export function upsertCouncilVoteArtifact(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   artifactType: string,
   drafts: DraftResult[],
   votes: Vote[],
@@ -2095,7 +2096,7 @@ export function collectMembersByOutcome(
 export function emitCouncilDecisionLogs(
   ticketId: string,
   externalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   timeoutMs: number,
   deadlineReached: boolean,
   memberOutcomes: Record<string, MemberOutcome>,

@@ -62,6 +62,7 @@ import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagn
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
 import type { RawAttempt } from '../../council/types'
 import { readManualQaDeliverySummary } from '../../phases/manualQa/delivery'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 const PULL_REQUEST_REPORT_ARTIFACT = 'pull_request_report'
 const MERGE_REPORT_ARTIFACT = 'merge_report'
@@ -380,7 +381,7 @@ function buildPullRequestReport(input: {
   }
 }
 
-function recordGitRecoveryReceipt(ticketId: string, receipt: unknown, phase: string) {
+function recordGitRecoveryReceipt(ticketId: string, receipt: unknown, phase: WorkflowPhaseId) {
   upsertLatestPhaseArtifact(ticketId, GIT_RECOVERY_RECEIPT_ARTIFACT, phase, JSON.stringify(receipt))
 }
 

@@ -1698,6 +1698,31 @@ export function isWorkflowPhaseId(status: string): status is WorkflowPhaseId {
 }
 
 /**
+ * Artifact buckets that deliberately are not workflow statuses.
+ *
+ * The phase artifacts table is keyed by phase, and a few artifacts belong to
+ * the ticket rather than to any step it passes through — the interface's saved
+ * view state is the whole of it today. Those live under their own bucket name
+ * so they cannot collide with a status and are never picked up by a query
+ * scoped to a step.
+ *
+ * Listed rather than allowed through as `string`: an artifact phase that is
+ * neither a declared status nor one of these is a typo, and used to be stored
+ * without complaint.
+ */
+export const NON_WORKFLOW_ARTIFACT_PHASES = ['UI_STATE'] as const
+
+export type NonWorkflowArtifactPhase = (typeof NON_WORKFLOW_ARTIFACT_PHASES)[number]
+
+/** What the phase column of a stored artifact may hold. */
+export type ArtifactPhase = WorkflowPhaseId | NonWorkflowArtifactPhase
+
+export function isArtifactPhase(value: string): value is ArtifactPhase {
+  return isWorkflowPhaseId(value)
+    || (NON_WORKFLOW_ARTIFACT_PHASES as readonly string[]).includes(value)
+}
+
+/**
  * Returns the full phase metadata for a given status ID, or `undefined` if the
  * status is unknown.
  *

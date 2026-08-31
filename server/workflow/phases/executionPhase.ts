@@ -29,6 +29,7 @@ import {
 } from '../../phases/execution/opencodeStepsConfig'
 import { BEAD_FINALIZATION_FAILED } from '@shared/errorCodes'
 import { stripAnsiSequences } from '@shared/ansi'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 function mergeBeadRetryMetadata(
   beads: Bead[],
@@ -282,7 +283,7 @@ function markBeadFinalizationFailed(input: {
 export async function handleMockExecutionUnsupported(
   ticketId: string,
   context: TicketContext,
-  phase: string,
+  phase: WorkflowPhaseId,
   sendEvent: (event: TicketEvent) => void,
 ) {
   const message = 'Mock OpenCode mode stops before execution. Start a real OpenCode server to continue past planning phases.'

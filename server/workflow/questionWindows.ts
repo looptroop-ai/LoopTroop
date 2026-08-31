@@ -36,6 +36,7 @@ import type { SkipActor, SkipQuestionContext } from '@shared/skipReceipt'
 import { deriveSkipActionId, writeSkipReceipts } from './skipReceipts'
 import { getTicketWaitingMs, resumeTicketWork, suspendTicketWork } from './workBudget'
 import { closeQuestionWait, openQuestionWait } from '../storage/questionWaits'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 /** Attempts to tell OpenCode a question is refused before giving up on it. */
 const REJECT_ATTEMPTS = 3
@@ -60,7 +61,7 @@ interface QuestionRequestRecord {
   sessionId: string
   requestId: string
   memberId: string | null
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   questions: OpenCodeQuestionInfo[]
   tool: OpenCodeQuestionTool | undefined
@@ -90,7 +91,7 @@ const RESOLVED_TOMBSTONE_TTL_MS = 15 * 60_000
 
 interface QuestionTimer {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   timerKey: string
   /** Distinguishes this clock from the next one the same step arms. */
@@ -210,7 +211,7 @@ export interface PendingQuestionView {
   sessionId: string
   requestId: string
   memberId: string | null
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   questions: OpenCodeQuestionInfo[]
   questionCount: number
@@ -288,7 +289,7 @@ function parseActor(value: unknown): SkipActor | null {
  */
 export function readTimerArtifact(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   phaseAttempt: number,
 ): RestoredTimerState | null {
   const timerKey = buildAiQuestionTimerKey(phase, phaseAttempt)
@@ -404,7 +405,7 @@ function arm(timer: QuestionTimer): void {
  */
 export function armOrResetTimer(input: {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   windowMs: number
   restore?: RestoredTimerState | undefined
@@ -467,7 +468,7 @@ export function attachRequest(input: {
   sessionId: string
   requestId: string
   memberId: string | null
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   windowMs: number
   questions: OpenCodeQuestionInfo[]
@@ -1113,7 +1114,7 @@ export interface RestartSessionOwner {
   sessionId: string
   ticketId: string
   memberId: string | null
-  phase: string
+  phase: WorkflowPhaseId
   phaseAttempt: number
   /**
    * Whether the session came back.

@@ -504,6 +504,88 @@ describe('PhaseLogPanel', () => {
     }
   })
 
+  it('does not re-request the phase when a live row arrives', () => {
+    const loadLogsForPhase = vi.fn()
+    const makeValue = (logs: LogEntry[]): LogContextValue => ({
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      isLoadingLogs: false,
+      addLog: vi.fn(),
+      addLogRecord: vi.fn(),
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
+      setActivePhase: vi.fn(),
+      loadLogsForPhase,
+      isLoadingLogScope: vi.fn(() => false),
+      clearLogs: vi.fn(),
+    })
+
+    const first = [makeLog('row-1', '[SYS] First row')]
+    const { rerender } = renderWithTooltipProvider(
+      withLogContext(makeValue(first), (
+        <PhaseLogPanel phase="CODING" />
+      )),
+    )
+    expect(loadLogsForPhase).toHaveBeenCalledTimes(1)
+
+    // A streamed line publishes a new context value while the loader keeps its identity.
+    // Depending on the whole context turned each arriving line into another request for
+    // the page it had just arrived on.
+    const second = [...first, makeLog('row-2', '[SYS] Second row')]
+    rerender(
+      withLogContext(makeValue(second), (
+        <PhaseLogPanel phase="CODING" />
+      )),
+    )
+
+    expect(screen.getByText(/Second row/)).toBeInTheDocument()
+    expect(loadLogsForPhase).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows rows on a model tab that only a model-tagged source named', () => {
+    const modelId = 'openai/gpt-5.4'
+    const logs: LogEntry[] = [
+      makeLog('sourced-output', 'Answer from the source-tagged row', {
+        // No `modelId` field: the row names its model only through the source, which is
+        // how the tab beside it came to exist.
+        source: `model:${modelId}`,
+        audience: 'ai',
+        kind: 'text',
+      }),
+      makeLog('other-output', 'Answer from another model', {
+        source: 'model:anthropic/claude-opus-5',
+        audience: 'ai',
+        kind: 'text',
+      }),
+    ]
+    const value: LogContextValue = {
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      isLoadingLogs: false,
+      addLog: vi.fn(),
+      addLogRecord: vi.fn(),
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
+      setActivePhase: vi.fn(),
+      loadLogsForPhase: vi.fn(),
+      isLoadingLogScope: vi.fn(() => false),
+      clearLogs: vi.fn(),
+    }
+
+    renderWithTooltipProvider(
+      withLogContext(value, (
+        <PhaseLogPanel phase="CODING" />
+      )),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show models' }))
+    fireEvent.click(screen.getByTitle(`${modelId} · Effort: Not reported`))
+
+    expect(screen.getByText(/Answer from the source-tagged row/)).toBeInTheDocument()
+    expect(screen.queryByText(/Answer from another model/)).not.toBeInTheDocument()
+  })
+
   it('asks for phase debug logs only after the DEBUG tab is selected', () => {
     const loadLogsForPhase = vi.fn()
     const value: LogContextValue = {

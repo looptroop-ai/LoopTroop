@@ -399,7 +399,12 @@ export async function queryLogPage(ticketId: string, query: LogPageQuery) {
  */
 const EXPORT_PAGE_SIZE = 500
 
-export async function exportLogEntries(ticketId: string, query: Omit<LogPageQuery, 'before' | 'limit'>) {
+export async function exportLogEntries(
+  ticketId: string,
+  query: Omit<LogPageQuery, 'before' | 'limit'>,
+  // Overridable so the page boundary can be exercised without writing five hundred rows.
+  { pageSize = EXPORT_PAGE_SIZE }: { pageSize?: number } = {},
+) {
   // Pages run newest-first and each page is ordered oldest-first inside itself, so the
   // pages are collected in reverse and flipped once at the end. The body a caller sees
   // is byte-for-byte what the single unbounded query produced.
@@ -409,7 +414,7 @@ export async function exportLogEntries(ticketId: string, query: Omit<LogPageQuer
   for (;;) {
     const page = await queryLogPage(ticketId, {
       ...query,
-      limit: EXPORT_PAGE_SIZE,
+      limit: pageSize,
       includeTotals: false,
       ...(before ? { before } : {}),
     })

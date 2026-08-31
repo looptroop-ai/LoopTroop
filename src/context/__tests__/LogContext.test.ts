@@ -3,7 +3,7 @@ import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { formatLogLine, getServerLogCacheKey, mergeEntriesBatch, mergeEntry, normalizeLogRecord, normalizeStoredEntry, serverLogCache, SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
 import { LogProvider } from '@/context/LogContext'
-import { useLogs } from '@/context/useLogContext'
+import { useLogActions, useLogs, useLogState } from '@/context/useLogContext'
 import { createJsonResponse } from '@/test/renderHelpers'
 import { TEST } from '@/test/factories'
 import type { LogEntry } from '@/context/logUtils'
@@ -175,6 +175,49 @@ describe('LogProvider', () => {
     localStorage.clear()
     serverLogCache.clear()
     vi.restoreAllMocks()
+  })
+
+  it('keeps the actions stable while rows stream, so a load effect does not re-run per line', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => createJsonResponse([]))
+
+    const loadEffectRuns = vi.fn()
+    const actionIdentities = new Set<unknown>()
+    const stateIdentities = new Set<unknown>()
+    let addLog: ((phase: string, line: string) => void) | null = null
+
+    function SplitHarness() {
+      const actions = useLogActions()
+      const state = useLogState()
+      if (actions) actionIdentities.add(actions)
+      if (state) stateIdentities.add(state)
+      addLog = actions?.addLog ?? null
+
+      const loadLogsForPhase = actions?.loadLogsForPhase
+      useEffect(() => {
+        loadEffectRuns()
+        loadLogsForPhase?.('CODING')
+      }, [loadLogsForPhase])
+
+      return null
+    }
+
+    render(createElement(
+      LogProvider,
+      { ticketId: '1:T-split', currentStatus: 'CODING', children: createElement(SplitHarness) },
+    ))
+    await flushMicrotasks()
+    expect(loadEffectRuns).toHaveBeenCalledTimes(1)
+
+    for (const line of ['[SYS] one', '[SYS] two', '[SYS] three']) {
+      act(() => addLog?.('CODING', line))
+      await flushMicrotasks()
+    }
+
+    // Every arriving line used to rebuild the single provider value, so an effect that
+    // listed the context re-ran and asked for the page the line had just arrived on.
+    expect(loadEffectRuns).toHaveBeenCalledTimes(1)
+    expect(actionIdentities.size).toBe(1)
+    expect(stateIdentities.size).toBeGreaterThan(1)
   })
 
   it('fetches only explicitly requested phase scopes', async () => {
@@ -848,6 +891,45 @@ describe('mergeEntry', () => {
 
     expect(merged).toHaveLength(1)
     expect(merged[0]).toBe(first)
+  })
+
+  it('keeps two undated events with the same text as separate rows', () => {
+    const first: LogEntry = {
+      id: 'first',
+      entryId: 'first',
+      line: '[SYS] Retrying step',
+      source: 'system',
+      status: 'CODING',
+      audience: 'all',
+      kind: 'milestone',
+      streaming: false,
+      op: 'append',
+    }
+    const second: LogEntry = { ...first, id: 'second', entryId: 'second' }
+
+    // Neither carries a timestamp, so nothing here says they happened at the same
+    // moment — only that the orchestrator retried twice and said so twice.
+    const merged = mergeEntry([first], second)
+
+    expect(merged.map(entry => entry.entryId)).toEqual(['first', 'second'])
+  })
+
+  it('still collapses one undated row delivered twice', () => {
+    const entry: LogEntry = {
+      id: 'CODING:system:no-ts:[SYS] Retrying step',
+      entryId: 'CODING:system:no-ts:[SYS] Retrying step',
+      line: '[SYS] Retrying step',
+      source: 'system',
+      status: 'CODING',
+      audience: 'all',
+      kind: 'milestone',
+      streaming: false,
+      op: 'append',
+    }
+
+    // An undated row's fallback id is built from its own text, so a redelivery of the
+    // same row still matches on identity.
+    expect(mergeEntry([entry], { ...entry })).toHaveLength(1)
   })
 
   it('preserves original start timestamp when a streaming upsert updates an existing entry', () => {

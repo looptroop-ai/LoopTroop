@@ -123,6 +123,87 @@ afterEach(() => {
 })
 
 describe('CodingView', () => {
+  it('follows a streaming bead log whose row grows without the count changing', async () => {
+    const scrollTo = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      configurable: true,
+      writable: true,
+      value: scrollTo,
+    })
+    const frames: FrameRequestCallback[] = []
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    const runFrames = () => {
+      const pending = frames.splice(0, frames.length)
+      for (const frame of pending) frame(0)
+    }
+
+    const makeContext = (line: string): LogContextValue => {
+      const logs: LogEntry[] = [{
+        id: 'stream-1',
+        entryId: 'stream-1',
+        line,
+        source: 'model:openai/gpt-5.4',
+        status: 'CODING',
+        audience: 'ai',
+        kind: 'text',
+        beadId: 'bead-1',
+        streaming: true,
+        op: 'upsert',
+        timestamp: '2026-05-28T10:00:00.000Z',
+      }]
+      return {
+        logsByPhase: { CODING: logs },
+        activePhase: 'CODING',
+        isLoadingLogs: false,
+        addLog: vi.fn(),
+        addLogRecord: vi.fn(),
+        getLogsForPhase: () => logs,
+        getAllLogs: () => logs,
+        setActivePhase: vi.fn(),
+        clearLogs: vi.fn(),
+      }
+    }
+
+    const baseTicket = makeTicket({ status: 'CODING' })
+    const ticket = makeTicket({
+      ...baseTicket,
+      runtime: {
+        ...baseTicket.runtime,
+        beads: [{ id: 'bead-1', title: 'Streaming bead', status: 'in_progress', iteration: 1 }],
+      },
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // A fresh element each time: re-rendering the identical element object lets React
+    // bail out of the subtree, which would make this pass without re-running anything.
+    const tree = () => (
+      <QueryClientProvider client={qc}>
+        <TooltipProvider>
+          <CodingView ticket={ticket} />
+        </TooltipProvider>
+      </QueryClientProvider>
+    )
+
+    vi.mocked(useLogs).mockReturnValue(makeContext('Thinking'))
+    const { rerender } = render(tree())
+
+    fireEvent.click(screen.getByRole('button', { name: /Streaming bead/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Log' }))
+    runFrames()
+    scrollTo.mockClear()
+
+    // One row, still one row — only longer. Keying the scroll on the row count meant
+    // the view sat still while the answer was still arriving.
+    vi.mocked(useLogs).mockReturnValue(makeContext('Thinking about the failing test'))
+    rerender(tree())
+    runFrames()
+
+    expect(screen.getByText(/Thinking about the failing test/)).toBeInTheDocument()
+    expect(scrollTo).toHaveBeenCalled()
+  })
+
   it('fetches full bead data even when runtime bead placeholders already exist', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify([

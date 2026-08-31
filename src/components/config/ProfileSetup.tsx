@@ -37,7 +37,7 @@ import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfi
 import type { CreateProfileInput } from '@/hooks/useProfile'
 import { ChevronDown, Plus, X, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/shared/useToast'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { useQueryClient } from '@tanstack/react-query'
 import { useOpenCodeModels, refetchOpenCodeModelsQuery, refreshOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
 import { numericFields, hasNumericErrors, buildInitialRawNumeric } from './numericFieldConfig'

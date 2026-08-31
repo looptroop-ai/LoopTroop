@@ -14,7 +14,7 @@ import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePh
 import { TicketDescriptionTabs, type TicketDescriptionMode } from '@/components/ticket/TicketDescriptionTabs'
 import { CopyButton } from './RawTextDisplay'
 import { TicketDescriptionViewer } from '@/components/ticket/TicketDescriptionViewer'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'

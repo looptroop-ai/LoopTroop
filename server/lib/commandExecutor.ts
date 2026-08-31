@@ -1,11 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
-import { FORCE_KILL_DELAY_MS } from './constants'
-
-const MAX_COMMAND_OUTPUT_BYTES = 1_000_000
+import { appendBoundedOutput } from './commandOutput'
+import { terminateProcessTreeWithEscalation } from './processTree'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
 // run into a strict-mode failure. Matches the launcher script in
@@ -97,30 +96,6 @@ export function buildCommandInvocation(
   }
 }
 
-function appendBoundedOutput(current: string, chunk: Buffer | string): string {
-  if (Buffer.byteLength(current, 'utf8') >= MAX_COMMAND_OUTPUT_BYTES) return current
-  const text = chunk.toString()
-  const remaining = MAX_COMMAND_OUTPUT_BYTES - Buffer.byteLength(current, 'utf8')
-  const appended = text.slice(0, remaining)
-  const next = `${current}${appended}`
-  return Buffer.byteLength(current, 'utf8') + Buffer.byteLength(appended, 'utf8') >= MAX_COMMAND_OUTPUT_BYTES
-    ? `${next}\n[LoopTroop truncated command output at ${MAX_COMMAND_OUTPUT_BYTES} bytes]`
-    : next
-}
-
-function terminateProcessTree(child: ChildProcess, platform: HostPlatform, signal: NodeJS.Signals): void {
-  if (!child.pid) return
-  if (platform === 'windows') {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => undefined)
-    return
-  }
-  try {
-    process.kill(-child.pid, signal)
-  } catch {
-    child.kill(signal)
-  }
-}
-
 export async function executeCommand(
   command: CommandSpec,
   input: CommandExecutorOptions & { repoRoot: string },
@@ -194,8 +169,7 @@ export async function executeCommand(
     if (command.timeoutMs) {
       timeoutHandle = setTimeout(() => {
         timedOut = true
-        terminateProcessTree(child, platform, 'SIGTERM')
-        setTimeout(() => terminateProcessTree(child, platform, 'SIGKILL'), FORCE_KILL_DELAY_MS).unref()
+        terminateProcessTreeWithEscalation(child, platform)
       }, command.timeoutMs)
     }
   })

@@ -133,6 +133,51 @@ function bundledPackagesManifest(): import('vite').Plugin {
   }
 }
 
+const SERVER_SOURCE_ROOT = resolve(__dirname, 'server')
+
+/**
+ * Fails the client build if a `server/` module reaches the browser bundle.
+ *
+ * Seven components imported `PROFILE_DEFAULTS` from `@server/db/defaults`,
+ * which pulled a database module and its transitive imports into
+ * `dist/client`. Nothing caught it, because a single named export from a
+ * server module compiles and runs perfectly well in the browser right up until
+ * one of those imports touches `node:fs`.
+ *
+ * This reads rollup's module graph rather than grepping the emitted text. A
+ * text search both false-positives on source-map content and package metadata,
+ * and false-negatives on an import whose identifiers were renamed during
+ * bundling.
+ */
+function noServerModulesInClientBundle(): import('vite').Plugin {
+  return {
+    name: 'looptroop-no-server-modules-in-client-bundle',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const offenders = new Set<string>()
+
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk') continue
+        for (const id of chunk.moduleIds) {
+          if (id.includes('node_modules')) continue
+          const path = id.split('?')[0] ?? id
+          if (path.startsWith(`${SERVER_SOURCE_ROOT}/`) || path.startsWith(`${SERVER_SOURCE_ROOT}\\`)) {
+            offenders.add(path.slice(__dirname.length + 1))
+          }
+        }
+      }
+
+      if (offenders.size > 0) {
+        this.error(
+          `The client bundle pulls in ${offenders.size} server module(s):\n`
+          + [...offenders].sort().map((path) => `  - ${path}`).join('\n')
+          + '\n\nMove what both sides need into shared/ and import it from there.',
+        )
+      }
+    },
+  }
+}
+
 function isBackendHealthProbe(req: IncomingMessage) {
   if ((req.method ?? 'GET').toUpperCase() !== 'GET') return false
   if (!req.url) return false
@@ -187,6 +232,7 @@ export default defineConfig({
       },
     },
     bundledPackagesManifest(),
+    noServerModulesInClientBundle(),
   ],
   resolve: {
     alias: {

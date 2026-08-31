@@ -10,7 +10,7 @@ import { FolderPicker } from '@/components/project/FolderPicker'
 import { EmojiPickerSection, ColorPickerSection } from './AppearancePickers'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { DeleteWorktreesDialog } from './DeleteWorktreesDialog'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { PROJECT_GIT_CHECK_DEBOUNCE_MS, SECONDS_PER_HOUR, SECONDS_PER_DAY } from '@/lib/constants'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'

@@ -50,6 +50,60 @@ export interface TicketContext {
   updatedAt: string
 }
 
+/**
+ * Every field of `TicketContext`, as a runtime list.
+ *
+ * `TicketContext` is assembled in four places, and a required field added to
+ * the interface is a compile error in all of them — but an *optional* one is
+ * not, so it can be added to the type and quietly omitted by three of the four
+ * builders. `errorDiagnostics` is already optional, which is how that gap got
+ * here.
+ *
+ * The `Exclude` below fails to compile if a key is added to the interface and
+ * not to this list, and `server/machines/__tests__/ticketContext.test.ts` uses
+ * the list to assert every builder emits exactly these keys.
+ */
+export const TICKET_CONTEXT_KEYS = [
+  'ticketId',
+  'projectId',
+  'externalId',
+  'title',
+  'status',
+  'lockedMainImplementer',
+  'lockedMainImplementerVariant',
+  'lockedCouncilMembers',
+  'lockedCouncilMemberVariants',
+  'lockedInterviewQuestions',
+  'lockedCoverageFollowUpBudgetPercent',
+  'lockedMaxCoveragePasses',
+  'lockedMaxPrdCoveragePasses',
+  'lockedMaxBeadsCoveragePasses',
+  'lockedStructuredRetryCount',
+  'lockedManualQaEnabled',
+  'lockedManualQaSource',
+  'lockedAiQuestionsEnabled',
+  'lockedAiQuestionsSource',
+  'lockedAiQuestionWindow',
+  'lockedAiQuestionWindowSource',
+  'pendingExecutionSetupPlanRequestArtifactId',
+  'previousStatus',
+  'error',
+  'errorCodes',
+  'errorDiagnostics',
+  'blockedErrorResolution',
+  'beadProgress',
+  'iterationCount',
+  'maxIterations',
+  'councilResults',
+  'createdAt',
+  'updatedAt',
+] as const satisfies readonly (keyof TicketContext)[]
+
+// Compile error when a key is added to TicketContext but not to the list above.
+type UnlistedTicketContextKey = Exclude<keyof TicketContext, (typeof TICKET_CONTEXT_KEYS)[number]>
+const _everyTicketContextKeyIsListed: UnlistedTicketContextKey extends never ? true : never = true
+void _everyTicketContextKeyIsListed
+
 export type TicketEvent =
   | {
       type: 'START'

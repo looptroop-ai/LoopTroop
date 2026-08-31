@@ -1,5 +1,4 @@
 import type { Context } from 'hono'
-import type { TicketContext as MachineTicketContext } from '../../machines/types'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -134,15 +133,6 @@ export function getRequiredRouteParam(c: Context, name: string): string {
 export function rejectDisplayOnlyMockTicket(c: Context, ticket: Pick<PublicTicket, 'branchName'>) {
   if (!isDisplayOnlyMockTicket(ticket)) return null
   return c.json({ error: 'Display-only mock tickets are board-only and cannot run workflow actions' }, 409)
-}
-
-export function getMachineContext(ticketId: string): MachineTicketContext {
-  ensureActorForTicket(ticketId)
-  const state = getTicketState(ticketId)
-  if (!state) {
-    throw new Error('Ticket actor state is unavailable')
-  }
-  return state.context as MachineTicketContext
 }
 
 export interface PhaseRestartSummary {

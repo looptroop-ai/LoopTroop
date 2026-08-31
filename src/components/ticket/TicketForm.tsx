@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { TicketDescriptionViewer } from './TicketDescriptionViewer'
 import { TicketDescriptionTabs, type TicketDescriptionMode } from './TicketDescriptionTabs'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { resolveManualQaSettingLabel, type ManualQaOverride } from '@/lib/manualQaSetting'
 import { TriStateSetting } from '@/components/settings/TriStateSetting'

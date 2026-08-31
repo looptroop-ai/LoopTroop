@@ -1,5 +1,7 @@
+import { SHARED_PROFILE_DEFAULTS } from '@shared/profileDefaults'
+
 /** Default council member response timeout (20 minutes) */
-export const COUNCIL_RESPONSE_TIMEOUT_MS = 1_200_000
+export const COUNCIL_RESPONSE_TIMEOUT_MS = SHARED_PROFILE_DEFAULTS.councilResponseTimeout
 /** Delay before retry after OpenCode adapter error */
 export const ADAPTER_RETRY_DELAY_MS = 2000
 /** Default SDK operation timeout */
@@ -10,6 +12,8 @@ export const OPENCODE_SESSION_CREATE_RETRY_DELAYS_MS = [1000, 3000, 7000] as con
 export const OPENCODE_SESSION_CREATE_HEALTH_DIAGNOSTIC_TIMEOUT_MS = 1000
 /** Force-kill process delay */
 export const FORCE_KILL_DELAY_MS = 5000
+/** Most stdout or stderr a single command may contribute, in UTF-8 bytes */
+export const MAX_COMMAND_OUTPUT_BYTES = 1_000_000
 /** SQLite busy timeout */
 export const SQLITE_BUSY_TIMEOUT_MS = 5000
 /** Default context window limit for provider catalog */

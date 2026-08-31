@@ -3,8 +3,17 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createJsonResponse, createTestQueryClient } from '@/test/renderHelpers'
-import { useTicketHistoricalLogs } from '../useTicketHistoricalLogs'
+import { useTicketHistoricalLogs, type HistoricalLogScope } from '../useTicketHistoricalLogs'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+
+/** Mounts the hook against a fresh query client — every test needs the same scaffolding. */
+function renderHistoricalLogs(scope: HistoricalLogScope) {
+  const client = createTestQueryClient()
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+  return renderHook(() => useTicketHistoricalLogs('ticket-1', scope), { wrapper })
+}
 
 describe('useTicketHistoricalLogs', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -30,13 +39,7 @@ describe('useTicketHistoricalLogs', () => {
         totalEntries: 2001,
         totalTextLines: 4822,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', phaseAttempt: 2, view: 'overview', })
 
     await waitFor(() => expect(result.current.entries.map(entry => entry.entryId)).toEqual(['new']))
     expect(result.current.totalEntries).toBe(2000)
@@ -79,13 +82,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'lifecycle', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     await act(async () => { await result.current.fetchAllOlder() })
@@ -131,13 +128,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'overview', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     await act(async () => { await result.current.fetchAllOlder() })
@@ -173,13 +164,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', view: 'ai',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'ai', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     await act(async () => { await result.current.fetchAllOlder() })
@@ -217,13 +202,7 @@ describe('useTicketHistoricalLogs', () => {
       olderCursor: null,
       hasOlder: false,
     }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'overview', })
 
     // The live overlay folds on the fingerprint as well as the id, so the archive has to
     // as well or the same pair renders once live and twice restored.
@@ -243,13 +222,7 @@ describe('useTicketHistoricalLogs', () => {
           hasOlder: page < 5,
         })
       })
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'lifecycle', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     const callsBeforeDrain = fetchSpy.mock.calls.length
@@ -282,13 +255,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'lifecycle', view: 'overview',
-    }), { wrapper })
+    const { result } = renderHistoricalLogs({ scope: 'lifecycle', view: 'overview', })
 
     await waitFor(() => expect(result.current.hasOlder).toBe(true))
     const beforePaging = result.current.fetchAllOlder
@@ -309,13 +276,7 @@ describe('useTicketHistoricalLogs', () => {
         olderCursor: null,
         hasOlder: false,
       }))
-    const client = createTestQueryClient()
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    renderHook(() => useTicketHistoricalLogs('ticket-1', {
-      scope: 'phase', phase: 'CODING', view: 'ai', beadId: 'bead-1',
-    }), { wrapper })
+    renderHistoricalLogs({ scope: 'phase', phase: 'CODING', view: 'ai', beadId: 'bead-1', })
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
     expect(fetchSpy).toHaveBeenCalledWith(

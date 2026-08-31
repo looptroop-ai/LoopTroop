@@ -86,6 +86,32 @@ function makeLogContext(overrides: Partial<LogContextValue> = {}): LogContextVal
   }
 }
 
+/**
+ * Serves bead-log history that always claims an older page, and refuses the older page
+ * for the beads named in `refuseOlderFor` — the shape both drain tests need.
+ */
+function mockBeadLogHistory(fetchSpy: ReturnType<typeof vi.spyOn>, refuseOlderFor: string[]) {
+  const jsonResponse = (payload: unknown) => Promise.resolve(
+    new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  )
+  fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (!url.includes('/logs?')) return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+    if (!url.includes('before=')) return jsonResponse({ entries: [], olderCursor: 'cursor-older', hasOlder: true })
+    return refuseOlderFor.some((beadId) => url.includes(`beadId=${beadId}`))
+      ? Promise.resolve(new Response('nope', { status: 500 }))
+      : jsonResponse({ entries: [], olderCursor: null, hasOlder: false })
+  })
+}
+
+/** Older-page requests issued for one bead. */
+function countOlderPageRequests(fetchSpy: ReturnType<typeof vi.spyOn>, beadId: string) {
+  return fetchSpy.mock.calls.filter(([input]: unknown[]) => {
+    const url = String(input)
+    return url.includes('before=') && url.includes(`beadId=${beadId}`)
+  }).length
+}
+
 function renderCoding(overrides: CodingTestOverrides = {}) {
   const baseTicket = makeTicket({ status: 'CODING' })
   const ticket = makeTicket({
@@ -140,27 +166,14 @@ afterEach(() => {
 
 describe('CodingView', () => {
   it('stops draining a bead log after a page is refused', async () => {
-    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.includes('/logs?') && url.includes('before=')) {
-        return Promise.resolve(new Response('nope', { status: 500 }))
-      }
-      if (url.includes('/logs?')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          entries: [],
-          olderCursor: 'cursor-older',
-          hasOlder: true,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      }
-      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
-    })
+    mockBeadLogHistory(fetchSpy, ['bead-1'])
 
     renderCoding({
       runtime: { beads: [{ id: 'bead-1', title: 'Logged bead', status: 'done', iteration: 1 }] },
     })
     fireEvent.click(screen.getByRole('button', { name: /Logged bead/ }))
 
-    const olderRequests = () => fetchSpy.mock.calls.filter(([input]: unknown[]) => String(input).includes('before=')).length
+    const olderRequests = () => countOlderPageRequests(fetchSpy, 'bead-1')
     await waitFor(() => expect(olderRequests()).toBe(1))
 
     // The server refused, and `hasOlder` stays true after a refusal, so nothing but the
@@ -175,24 +188,7 @@ describe('CodingView', () => {
   it('drains a bead log again when you come back to it after a refused page', async () => {
     // Only the first bead's older pages fail. If the second bead failed too its latch
     // would overwrite the first's, and coming back would work by accident.
-    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.includes('/logs?') && url.includes('before=')) {
-        return url.includes('beadId=bead-1')
-          ? Promise.resolve(new Response('nope', { status: 500 }))
-          : Promise.resolve(new Response(JSON.stringify({
-              entries: [], olderCursor: null, hasOlder: false,
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      }
-      if (url.includes('/logs?')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          entries: [],
-          olderCursor: 'cursor-older',
-          hasOlder: true,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
-      }
-      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
-    })
+    mockBeadLogHistory(fetchSpy, ['bead-1'])
 
     renderCoding({
       runtime: {
@@ -203,10 +199,7 @@ describe('CodingView', () => {
       },
     })
 
-    const firstBeadRetries = () => fetchSpy.mock.calls.filter(([input]: unknown[]) => {
-      const url = String(input)
-      return url.includes('before=') && url.includes('beadId=bead-1')
-    }).length
+    const firstBeadRetries = () => countOlderPageRequests(fetchSpy, 'bead-1')
 
     fireEvent.click(screen.getByRole('button', { name: /First bead/ }))
     await waitFor(() => expect(firstBeadRetries()).toBe(1))

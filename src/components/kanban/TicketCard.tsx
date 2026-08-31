@@ -196,19 +196,33 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
     readNeedsInputSeen(ticket.id, needsInputSignature, ticket.needsInputSeenSignature),
   )
 
+  // Both acknowledgments have to be re-read, not just cleared. A card stays mounted
+  // for as long as its column does, so a `useState` initialiser answers the question
+  // once and never again: a ticket that later starts a fresh wait — a beads approval,
+  // a new question from a model — kept the acknowledgment of the *previous* wait and
+  // never flashed. The signature is what changes when the wait does, so it belongs in
+  // the dependencies.
   useEffect(() => {
-    if (!isError && errorSeen) {
-      clearErrorTicketSeen(ticket.id)
-      setErrorSeen(false)
+    if (!isError) {
+      if (errorSeen) {
+        clearErrorTicketSeen(ticket.id)
+        setErrorSeen(false)
+      }
+      return
     }
-  }, [isError, ticket.id, errorSeen])
+    setErrorSeen(readErrorTicketSeen(ticket.id, errorSignature, ticket.errorSeenSignature))
+  }, [isError, ticket.id, errorSeen, errorSignature, ticket.errorSeenSignature])
 
   useEffect(() => {
-    if (!isNeedsInput && needsInputSeen) {
-      clearNeedsInputSeen(ticket.id)
-      setNeedsInputSeen(false)
+    if (!isNeedsInput) {
+      if (needsInputSeen) {
+        clearNeedsInputSeen(ticket.id)
+        setNeedsInputSeen(false)
+      }
+      return
     }
-  }, [isNeedsInput, ticket.id, needsInputSeen])
+    setNeedsInputSeen(readNeedsInputSeen(ticket.id, needsInputSignature, ticket.needsInputSeenSignature))
+  }, [isNeedsInput, ticket.id, needsInputSeen, needsInputSignature, ticket.needsInputSeenSignature])
 
   const handleClick = () => {
     if (isError && !errorSeen) {
@@ -248,9 +262,9 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
 
   return (
     <Card
+      data-ticket-card={ticket.externalId}
       className="group relative min-w-0 max-w-full cursor-pointer overflow-hidden p-3.5 transition-all duration-200 rounded-xl border border-border/70 bg-card hover:bg-accent/40 hover:shadow-md hover:border-border hover:-translate-y-0.5 active:scale-[0.99]"
       onClick={handleClick}
-      aria-label={`Open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}${waitLabel ? `, ${waitLabel}` : ''}`}
     >
       {/* Top Project Tag Badge */}
       <div className="flex items-center justify-between gap-2 border-b border-border/40 pb-2 mb-2">
@@ -275,9 +289,25 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
       </div>
 
       <div className="flex min-w-0 items-start justify-between gap-2">
-        <p className="break-words text-sm font-semibold tracking-tight text-foreground leading-snug [overflow-wrap:anywhere] group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
+        {/*
+          The card is a `<div>`, so its click handler was reachable by mouse only. The
+          title carries the action instead — a real button, so Tab reaches it and Enter
+          and Space open the ticket. `role="button"` on the card itself would have been
+          invalid ARIA: the card holds its own interactive descendants, which a screen
+          reader then either hides or mis-announces as part of one control. Clicking the
+          card anywhere still works, through the handler above.
+        */}
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            handleClick()
+          }}
+          aria-label={`Open ticket ${getTicketExternalIdLabel(ticket.externalId, ticket.isDisplayOnlyMock)}${waitLabel ? `, ${waitLabel}` : ''}`}
+          className="min-w-0 break-words text-left text-sm font-semibold tracking-tight text-foreground leading-snug [overflow-wrap:anywhere] group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card"
+        >
           {ticket.title}
-        </p>
+        </button>
         <div className="flex shrink-0 items-center gap-1.5 ml-2">
           <PriorityArrows priority={ticket.priority} />
           {isInProgress && <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-500" />}

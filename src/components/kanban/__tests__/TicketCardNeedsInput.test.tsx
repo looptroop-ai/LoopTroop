@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, screen } from '@testing-library/react'
+import { cleanup, fireEvent, screen } from '@testing-library/react'
 import { UIProvider } from '@/context/UIContext'
 import { AIQuestionContext, type AIQuestionContextValue } from '@/context/aiQuestionContextDef'
 import { TicketCard } from '../TicketCard'
@@ -30,7 +31,42 @@ function renderCard(ticket: Ticket, aiQuestions: AIQuestionContextValue = create
   )
 }
 
-function cardFor(ticket: Ticket) {
+/**
+ * Keeps one `TicketCard` mounted while its ticket prop advances, which is what a
+ * board does: the card is not remounted when the ticket it shows starts waiting on
+ * something new.
+ */
+function renderAdvancingCard(stages: Ticket[]) {
+  function Harness() {
+    const [index, setIndex] = useState(0)
+    return (
+      <>
+        <button type="button" onClick={() => setIndex((i) => Math.min(i + 1, stages.length - 1))}>
+          advance
+        </button>
+        <TicketCard
+          ticket={stages[index]!}
+          projectColor={projectColor}
+          projectIcon="T"
+          projectName="TestProject"
+        />
+      </>
+    )
+  }
+  return renderWithProviders(
+    <AIQuestionContext.Provider value={createAiQuestionContextStub()}>
+      <UIProvider>
+        <Harness />
+      </UIProvider>
+    </AIQuestionContext.Provider>,
+  )
+}
+
+function advance() {
+  fireEvent.click(screen.getByRole('button', { name: 'advance' }))
+}
+
+function openButtonFor(ticket: Ticket) {
   // The label carries a trailing clause naming the wait, so match its start.
   // A plain prefix test rather than a built regex: the id would otherwise need
   // escaping to stay a literal match.
@@ -38,6 +74,12 @@ function cardFor(ticket: Ticket) {
   return screen.getByLabelText(
     (content) => content === prefix || content.startsWith(`${prefix},`),
   ) as HTMLElement
+}
+
+function cardFor(ticket: Ticket) {
+  // The labelled element is the title button that opens the ticket; the pulse
+  // classes these tests assert on live on the card around it.
+  return openButtonFor(ticket).closest('[data-ticket-card]') as HTMLElement
 }
 
 describe('TicketCard — ack-aware Needs Input flashing', () => {
@@ -261,5 +303,59 @@ describe('TicketCard — ack-aware Needs Input flashing', () => {
     renderCard(asked)
     const card = cardFor(asked)
     expect(card.innerHTML).toContain('lt-needs-input-pulse')
+  })
+
+  /**
+   * The acknowledgment used to be read once, by a `useState` initialiser. A card
+   * stays mounted for as long as its column does, so a ticket that later began a
+   * different wait kept the answer computed for the previous one and never flashed
+   * again — the exact case a board is for.
+   */
+  it('re-flashes on a new wait without being remounted', () => {
+    const acknowledged = makeTicket({
+      id: '1:TEST-1',
+      externalId: TEST.externalId,
+      status: 'WAITING_PRD_APPROVAL',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    })
+    const firstSig = getNeedsInputSignature(acknowledged)!
+    clearNeedsInputSeen(acknowledged.id)
+    localStorage.setItem(`needs-input-seen-${acknowledged.id}`, firstSig)
+
+    const nextWait = makeTicket({
+      ...acknowledged,
+      status: 'WAITING_BEADS_APPROVAL',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    })
+
+    renderAdvancingCard([acknowledged, nextWait])
+    expect(cardFor(acknowledged).innerHTML).not.toContain('lt-needs-input-pulse')
+
+    advance()
+
+    expect(cardFor(nextWait).innerHTML).toContain('lt-needs-input-pulse')
+  })
+
+  it('stops flashing again once the new wait is acknowledged', () => {
+    const waiting = makeTicket({
+      id: '1:TEST-1',
+      externalId: TEST.externalId,
+      status: 'WAITING_PRD_APPROVAL',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      needsInputSeenSignature: null,
+    })
+    clearNeedsInputSeen(waiting.id)
+
+    const acknowledgedElsewhere = makeTicket({
+      ...waiting,
+      needsInputSeenSignature: getNeedsInputSignature(waiting)!,
+    })
+
+    renderAdvancingCard([waiting, acknowledgedElsewhere])
+    expect(cardFor(waiting).innerHTML).toContain('lt-needs-input-pulse')
+
+    advance()
+
+    expect(cardFor(acknowledgedElsewhere).innerHTML).not.toContain('lt-needs-input-pulse')
   })
 })

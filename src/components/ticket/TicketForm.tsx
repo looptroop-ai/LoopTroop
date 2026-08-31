@@ -74,7 +74,11 @@ export function TicketForm({ onClose }: TicketFormProps) {
     title,
     description: description || undefined,
     priority,
-    manualQaOverride: effectiveManualQa.enabled,
+    // The tri-state, as the AI-question fields on this form already send. Resolving it
+    // to a boolean here froze every new ticket at whatever the project or profile said
+    // at the moment it was created, so a later change to either never reached it — even
+    // though the form was showing "Inherit".
+    manualQaOverride,
     aiQuestionsOverride,
     aiQuestionWindowOverride,
   })

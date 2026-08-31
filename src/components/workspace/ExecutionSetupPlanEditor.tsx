@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -22,6 +22,59 @@ function emptyProcessCommand(): CommandSpec {
   return { mode: 'process', program: '', args: [], cwd: '.', env: {} }
 }
 
+interface EnvironmentRow {
+  id: string
+  name: string
+  value: string
+}
+
+let environmentRowSeq = 0
+function nextEnvironmentRowId(): string {
+  return `env-${++environmentRowSeq}`
+}
+
+function toEnvironmentRows(value: Record<string, string>): EnvironmentRow[] {
+  return Object.entries(value).map(([name, entryValue]) => ({ id: nextEnvironmentRowId(), name, value: entryValue }))
+}
+
+/** A row that has not been named yet is not a variable, so it is not in the plan. */
+function toEnvironmentRecord(rows: EnvironmentRow[]): Record<string, string> {
+  const record: Record<string, string> = {}
+  for (const row of rows) {
+    if (row.name === '') continue
+    record[row.name] = row.value
+  }
+  return record
+}
+
+function findDuplicateNames(rows: EnvironmentRow[]): Set<string> {
+  const seen = new Set<string>()
+  const duplicates = new Set<string>()
+  for (const row of rows) {
+    if (row.name === '') continue
+    if (seen.has(row.name)) duplicates.add(row.name)
+    seen.add(row.name)
+  }
+  return duplicates
+}
+
+function sameEnvironmentRecord(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  return leftKeys.every((key) => key in right && left[key] === right[key])
+}
+
+/**
+ * A `Record<string, string>` cannot describe an environment while it is being edited.
+ * Renaming a variable in place meant deleting one key and adding another, so the row
+ * jumped to the bottom of the list on every keystroke, the React key changed with the
+ * name and remounted the field mid-word — taking focus with it — and renaming `FOO`
+ * onto an existing `BAR` silently destroyed both: `FOO` deleted, `BAR` overwritten.
+ *
+ * Rows with stable ids hold the edit instead. A duplicate name is reported and simply
+ * not emitted, so the plan keeps the last unambiguous set of variables and nothing is
+ * ever dropped or renamed behind the user's back. The saved plan is still a record.
+ */
 function EnvironmentEditor({
   value,
   disabled,
@@ -31,44 +84,78 @@ function EnvironmentEditor({
   disabled?: boolean
   onChange: (value: Record<string, string>) => void
 }) {
-  const entries = Object.entries(value)
+  const [rows, setRows] = useState<EnvironmentRow[]>(() => toEnvironmentRows(value))
+
+  // Adopt the incoming record whenever it stops describing these rows — a plan loaded,
+  // reset, or changed by anything other than this editor. An edit of our own is already
+  // reflected here, and re-deriving rows from it would throw the ids away. While a
+  // duplicate is unresolved the rows deliberately say more than the record can, so they
+  // are left alone rather than overwritten with the record they are ahead of.
+  useEffect(() => {
+    setRows((current) => {
+      if (findDuplicateNames(current).size > 0) return current
+      return sameEnvironmentRecord(toEnvironmentRecord(current), value) ? current : toEnvironmentRows(value)
+    })
+  }, [value])
+
+  const duplicateNames = findDuplicateNames(rows)
+
+  const applyRows = (next: EnvironmentRow[]) => {
+    setRows(next)
+    if (findDuplicateNames(next).size > 0) return
+    onChange(toEnvironmentRecord(next))
+  }
+
   return (
     <div className="space-y-1">
-      {entries.map(([key, entryValue], index) => (
-        <div key={`${key}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
-          <input
-            aria-label={`Environment variable ${index + 1} name`}
-            value={key}
-            disabled={disabled}
-            onChange={(event) => {
-              const next = { ...value }
-              delete next[key]
-              next[event.target.value] = entryValue
-              onChange(next)
-            }}
-            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
-            placeholder="NAME"
-          />
-          <input
-            aria-label={`Environment variable ${index + 1} value`}
-            value={entryValue}
-            disabled={disabled}
-            onChange={(event) => onChange({ ...value, [key]: event.target.value })}
-            className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
-            placeholder="Value"
-          />
-          <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={() => {
-            const next = { ...value }
-            delete next[key]
-            onChange(next)
-          }} className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive">×</Button>
-        </div>
-      ))}
+      {rows.map((row, index) => {
+        const isDuplicate = duplicateNames.has(row.name)
+        return (
+          <div key={row.id} className="space-y-1">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] gap-1">
+              <input
+                aria-label={`Environment variable ${index + 1} name`}
+                aria-invalid={isDuplicate || undefined}
+                value={row.name}
+                disabled={disabled}
+                onChange={(event) => applyRows(rows.map((r) => (r.id === row.id ? { ...r, name: event.target.value } : r)))}
+                className={`rounded-md border bg-background px-2 py-1 font-mono text-xs ${isDuplicate ? 'border-destructive' : 'border-input'}`}
+                placeholder="NAME"
+              />
+              <input
+                aria-label={`Environment variable ${index + 1} value`}
+                value={row.value}
+                disabled={disabled}
+                onChange={(event) => applyRows(rows.map((r) => (r.id === row.id ? { ...r, value: event.target.value } : r)))}
+                className="rounded-md border border-input bg-background px-2 py-1 font-mono text-xs"
+                placeholder="Value"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                aria-label={`Remove environment variable ${index + 1}`}
+                onClick={() => applyRows(rows.filter((r) => r.id !== row.id))}
+                className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+              >
+                ×
+              </Button>
+            </div>
+            {isDuplicate && (
+              <p role="alert" className="text-[10px] text-destructive">
+                Another variable is already called {row.name}. Rename one of them to save this.
+              </p>
+            )}
+          </div>
+        )
+      })}
       <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => {
-        let key = 'VARIABLE'
+        const taken = new Set(rows.map((row) => row.name))
+        let name = 'VARIABLE'
         let suffix = 1
-        while (key in value) key = `VARIABLE_${++suffix}`
-        onChange({ ...value, [key]: '' })
+        while (taken.has(name)) name = `VARIABLE_${++suffix}`
+        applyRows([...rows, { id: nextEnvironmentRowId(), name, value: '' }])
       }} className="h-7 text-xs">+ Variable</Button>
     </div>
   )

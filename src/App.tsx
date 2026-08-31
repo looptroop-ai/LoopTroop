@@ -129,6 +129,10 @@ function App() {
     const handlePop = () => {
       const p = window.location.pathname
       prevPathRef.current = p
+      // About has no route of its own and sits above everything else, so a Back that
+      // reconciles the routed overlays would otherwise close Configuration underneath
+      // it and leave About floating over the board with nothing behind it.
+      setIsAboutOpen(false)
       setIsPromptsOpen(p === ROUTE_PROMPTS)
       if (p === ROUTE_ROOT || p === '') {
         dispatch({ type: 'CLOSE_TICKET' })
@@ -176,6 +180,9 @@ function App() {
   const closeProfile = () => {
     window.history.pushState(null, '', prevPathRef.current)
     setIsProfileOpen(false)
+    // About is opened from inside Configuration; it has nowhere to belong once
+    // Configuration is gone.
+    setIsAboutOpen(false)
   }
   const openPrompts = () => {
     prevPathRef.current = window.location.pathname

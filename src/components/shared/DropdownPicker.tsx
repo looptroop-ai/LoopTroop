@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, useCallback, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { DROPDOWN_MARGIN, DROPDOWN_OFFSET, DROPDOWN_MAX_HEIGHT } from '@/lib/constants'
 
@@ -9,12 +9,16 @@ export interface DropdownPickerProps {
   onOpenChange: (open: boolean) => void
 }
 
+/** What a caller's `trigger` node can turn out to be once rendered. */
+const TRIGGER_SELECTOR = 'button, [role="button"], a[href], input, select, textarea'
+
 export function DropdownPicker({ trigger, children, open, onOpenChange }: DropdownPickerProps) {
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const [isPositioned, setIsPositioned] = useState(false)
+  const popupId = useId()
 
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return
@@ -25,6 +29,31 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
       left: Math.max(DROPDOWN_MARGIN, Math.min(rect.left, window.innerWidth - 340)),
     })
   }, [])
+
+  /**
+   * The expanded state belongs on the control the user actually operates, and callers
+   * hand us that control wrapped in whatever they like — a bare `<button>` in two
+   * places, a Radix `Tooltip` around one in a third. Cloning the node would put these
+   * attributes on the wrapper in that third case, where they render nowhere, so the
+   * rendered element is found and annotated instead.
+   *
+   * `aria-haspopup="dialog"` rather than `menu` or `listbox`: the popup holds whatever
+   * the caller puts in it — a list of projects in one place, a search field over an
+   * emoji grid in another — and claiming a menu whose children are not menu items
+   * misdescribes it to a screen reader.
+   */
+  useEffect(() => {
+    const control = triggerRef.current?.querySelector<HTMLElement>(TRIGGER_SELECTOR) ?? triggerRef.current
+    if (!control) return
+    control.setAttribute('aria-haspopup', 'dialog')
+    control.setAttribute('aria-expanded', String(open))
+    control.setAttribute('aria-controls', popupId)
+    return () => {
+      control.removeAttribute('aria-haspopup')
+      control.removeAttribute('aria-expanded')
+      control.removeAttribute('aria-controls')
+    }
+  }, [open, popupId])
 
   useEffect(() => {
     if (!open) { setIsPositioned(false); return }
@@ -52,12 +81,27 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
     }
   }, [open, onOpenChange, updatePosition])
 
+  /**
+   * Escape closes the popup and nothing else. The popup is portaled to `document.body`
+   * as a plain `div`, so an unstopped Escape carries on to the document listeners that
+   * close the ticket dashboard — dismissing a picker would leave the ticket. Portal
+   * events still bubble through the React tree, so this one handler covers both the
+   * trigger and the popup, and only claims the key while the popup is open.
+   */
+  const handleKeyDown = (event: ReactKeyboardEvent) => {
+    if (event.key !== 'Escape' || !open) return
+    event.stopPropagation()
+    onOpenChange(false)
+    triggerRef.current?.querySelector<HTMLElement>(TRIGGER_SELECTOR)?.focus()
+  }
+
   return (
-    <div ref={ref} className="relative inline-block">
+    <div ref={ref} className="relative inline-block" onKeyDown={handleKeyDown}>
       <div ref={triggerRef} onClick={() => onOpenChange(!open)}>{trigger}</div>
       {open && createPortal(
         <div
           ref={dropdownRef}
+          id={popupId}
           className="fixed z-[100] rounded-lg border border-border bg-popover shadow-xl p-3 animate-in fade-in-0 zoom-in-95"
           style={{
             top: pos.top,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Columns2, Eye, RotateCcw, Save, WrapText, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -36,18 +36,47 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
   const [warnings, setWarnings] = useState<string[]>([])
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
-  // Reset local editing state whenever a different prompt is selected or the
-  // server copy changes (e.g. after a revert).
+  const promptCurrent = prompt?.current
+
+  // `preview.reset` is a fresh function on every render of the mutation hook. Held in
+  // a ref, resetting the preview stays something the reset below *does* rather than
+  // something that makes it run.
+  const previewResetRef = useRef(preview.reset)
   useEffect(() => {
-    if (!prompt) return
-    setDraft(prompt.current)
+    previewResetRef.current = preview.reset
+  })
+
+  // The text of the last save this editor made. A successful save invalidates the
+  // query, the server copy comes back changed, and that is not an external edit —
+  // without this the reset below erased the "Saved" line and the warnings the save
+  // had just produced, a few milliseconds after showing them.
+  const savedSourceRef = useRef<string | null>(null)
+  const lastPromptIdRef = useRef<string | undefined>(undefined)
+
+  // Reset local editing state whenever a different prompt is selected or the server
+  // copy changes underneath the editor (a revert, or another writer).
+  useEffect(() => {
+    if (promptCurrent === undefined) return
+    const isPromptSwitch = lastPromptIdRef.current !== promptId
+    lastPromptIdRef.current = promptId
+    if (!isPromptSwitch && promptCurrent === savedSourceRef.current) return
+
+    savedSourceRef.current = null
+    setDraft(promptCurrent)
     setMode('edit')
     setErrors([])
     setWarnings([])
     setSavedAt(null)
-    preview.reset()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prompt?.id, prompt?.current])
+    previewResetRef.current()
+  }, [promptId, promptCurrent])
+
+  // Editing is the point at which the last save stops being news.
+  const handleDraftChange = useCallback((next: string) => {
+    setDraft(next)
+    setErrors([])
+    setWarnings([])
+    setSavedAt(null)
+  }, [])
 
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading prompt…</div>
@@ -63,13 +92,16 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
   const isDirty = draft !== prompt.current
 
   const handleSave = async () => {
-    const result = await savePrompt.mutateAsync({ id: promptId, source: draft })
+    const source = draft
+    const result = await savePrompt.mutateAsync({ id: promptId, source })
+    savedSourceRef.current = source
     setErrors(result.errors)
     setWarnings(result.warnings)
     if (result.errors.length === 0) setSavedAt(Date.now())
   }
 
   const handleRevert = async () => {
+    savedSourceRef.current = null
     await revertPrompt.mutateAsync(promptId)
     setErrors([])
     setWarnings([])
@@ -186,7 +218,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
             key={`${promptId}:diff`}
             original={prompt.default}
             modified={draft}
-            onChange={setDraft}
+            onChange={handleDraftChange}
             wordWrap={wordWrap}
             className="h-full overflow-auto"
           />
@@ -195,7 +227,7 @@ export function PromptEditor({ promptId, wordWrap, onToggleWordWrap }: PromptEdi
           <YamlEditor
             key={`${promptId}:edit`}
             value={draft}
-            onChange={setDraft}
+            onChange={handleDraftChange}
             wordWrap={wordWrap}
             className="h-full"
           />

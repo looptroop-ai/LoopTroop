@@ -146,18 +146,20 @@ function ProviderGroup({
 
   return (
     <div>
-      <div 
-        className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-muted/50 transition-colors select-none border-b border-border/40"
+      <button
+        type="button"
+        aria-expanded={!isCollapsed}
+        className="sticky top-0 z-10 w-full bg-popover/95 backdrop-blur-sm px-3 py-1.5 flex items-center justify-between cursor-pointer hover:bg-muted/50 transition-colors select-none border-b border-border/40 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         onClick={() => setIsCollapsed(c => !c)}
       >
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           {providerName}
           <span className="ml-1.5 font-normal normal-case opacity-60">
             {models.length} {models.length === 1 ? 'model' : 'models'}
           </span>
-        </div>
+        </span>
         <ChevronDown className={cn('h-3.5 w-3.5 text-muted-foreground opacity-70 transition-transform', isCollapsed && '-rotate-90')} aria-hidden="true" />
-      </div>
+      </button>
       {!isCollapsed && (
         <div className="flex flex-col">
           {models.map(m => (
@@ -228,13 +230,21 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
     }
   }, [])
 
+  // Focusing the search field is deferred until the dropdown has been positioned, so
+  // the timer has to be cancellable: a dropdown closed inside the delay would
+  // otherwise focus an input that is no longer on the page.
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
   const dropdownRef = useCallback((node: HTMLDivElement | null) => {
     dropdownNodeRef.current = node
+    clearTimeout(focusTimerRef.current)
     if (node) {
       applyPosition(node)
-      setTimeout(() => inputRef.current?.focus(), DROPDOWN_FOCUS_DELAY_MS)
+      focusTimerRef.current = setTimeout(() => inputRef.current?.focus(), DROPDOWN_FOCUS_DELAY_MS)
     }
   }, [applyPosition])
+
+  useEffect(() => () => clearTimeout(focusTimerRef.current), [])
 
   // Close on outside click
   useEffect(() => {

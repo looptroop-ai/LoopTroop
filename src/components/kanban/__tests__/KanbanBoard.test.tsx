@@ -74,6 +74,17 @@ function renderWithFilters(filterOverrides: Partial<UIContextValue['state']['fil
   )
 }
 
+/** The filter bar, and with it the Reset button, only exists while triage is open. */
+function renderTriageBar(filterOverrides: Partial<UIContextValue['state']['filters']>, dispatch = vi.fn()) {
+  const uiValue = makeUIValue(filterOverrides.search ?? '', dispatch, filterOverrides)
+  uiValue.state.showTriageBar = true
+  return sharedRenderWithProviders(
+    <UIContext.Provider value={uiValue}>
+      <KanbanBoard />
+    </UIContext.Provider>,
+  )
+}
+
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: TEST.projectId,
@@ -588,6 +599,61 @@ describe('KanbanBoard', () => {
     expect(dispatch).toHaveBeenCalledWith({
       type: 'SET_FILTER',
       filter: { search: '' },
+    })
+  })
+
+  /**
+   * Search and the mock-ticket toggle are filters like any other. Leaving them out of
+   * Reset meant the button disappeared while the board was still filtered, and when it
+   * was there, pressing it left the search in place — so "Reset" did not reset.
+   */
+  describe('the filter bar Reset button', () => {
+    it('appears when only a search is active, and clears it', () => {
+      const dispatch = vi.fn()
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({ search: 'anything' }, dispatch)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reset' }))
+
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'SET_FILTER',
+        filter: expect.objectContaining({ search: '' }),
+      }))
+    })
+
+    it('appears when mock tickets are the only thing hidden', () => {
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({ showMocks: false })
+
+      expect(screen.getByRole('button', { name: 'Reset' })).toBeInTheDocument()
+    })
+
+    it('stays away when nothing is filtered', () => {
+      mockBoardData([], [makeProject()])
+
+      renderTriageBar({})
+
+      expect(screen.queryByRole('button', { name: 'Reset' })).not.toBeInTheDocument()
+    })
+
+    it('names the preset each delete control removes', () => {
+      mockBoardData([], [makeProject()])
+      localStorage.setItem('looptroop-ui-state', JSON.stringify({
+        showTriageBar: true,
+        filters: {},
+        presetsByProject: {
+          'looptroop-presets-global': {
+            'Night ops': { priority: [1], stuckDays: 3, errorState: 'blocked', sortBy: 'priority_asc' },
+          },
+        },
+      }))
+
+      renderWithProviders(<KanbanBoard />)
+      fireEvent.pointerDown(screen.getByRole('button', { name: /presets/i }), { button: 0, ctrlKey: false })
+
+      expect(screen.getByRole('button', { name: 'Delete preset Night ops' })).toBeInTheDocument()
     })
   })
 })

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest'
 import { UIProvider } from '../UIContext'
 import { useUI } from '../useUI'
 
@@ -46,6 +46,23 @@ function PresetDispatchProbe() {
         })}
       >
         Save preset
+      </button>
+      <span data-testid="preset-names">{presetNames.join('|')}</span>
+    </div>
+  )
+}
+
+function PresetDeleteProbe() {
+  const { state, dispatch } = useUI()
+  const presetNames = Object.keys(state.presetsByProject['looptroop-presets-global'] ?? {})
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'SET_PRESETS', presetKey: 'looptroop-presets-global', presets: {} })}
+      >
+        Delete presets
       </button>
       <span data-testid="preset-names">{presetNames.join('|')}</span>
     </div>
@@ -144,8 +161,9 @@ describe('UIProvider', () => {
 
     expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
 
-    // A refresh with no user action re-runs the init-time recovery, so the preset
-    // survives purely on the standalone key even if the durable blob is never written.
+    // A refresh with no user action still shows the preset: the first load wrote the
+    // merged blob before retiring the standalone key, so the second load reads it back
+    // from the blob.
     unmount()
     render(
       <UIProvider>
@@ -264,5 +282,78 @@ describe('UIProvider', () => {
     )
 
     expect(screen.getByTestId('preset-scopes')).toHaveTextContent('looptroop-presets-global')
+  })
+
+  /**
+   * The legacy keys were merged on every load and never removed, so the blob could
+   * never express a deletion: a preset the user deleted was copied back out of its
+   * standalone key on the next load, however many times they deleted it. They are
+   * retired now — but only once the merged blob has actually been written, because
+   * deleting first and failing to write would destroy the only copy.
+   */
+  describe('legacy preset keys', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('retires a legacy key once the merged blob is written', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+
+      render(
+        <UIProvider>
+          <UIStateProbe />
+        </UIProvider>,
+      )
+
+      expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
+      const stored = JSON.parse(localStorage.getItem('looptroop-ui-state') ?? '{}') as {
+        presetsByProject?: Record<string, Record<string, unknown>>
+      }
+      expect(stored.presetsByProject?.['looptroop-presets-global']).toHaveProperty('Night ops')
+      expect(localStorage.getItem('looptroop-presets-global')).toBeNull()
+    })
+
+    it('keeps a deleted preset deleted across a reload', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+
+      const { unmount } = render(
+        <UIProvider>
+          <PresetDeleteProbe />
+        </UIProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Delete presets' }))
+      expect(screen.getByTestId('preset-names')).toHaveTextContent('')
+
+      unmount()
+      render(
+        <UIProvider>
+          <UIStateProbe />
+        </UIProvider>,
+      )
+
+      expect(screen.getByTestId('global-presets')).toHaveTextContent('')
+    })
+
+    it('leaves the legacy key in place when the blob cannot be written', () => {
+      localStorage.setItem('looptroop-presets-global', JSON.stringify({
+        'Night ops': { priority: [1], stuckDays: 3, onlyErrors: true, sortBy: 'priority_asc' },
+      }))
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+        throw new Error('QuotaExceededError')
+      })
+
+      render(
+        <UIProvider>
+          <UIStateProbe />
+        </UIProvider>,
+      )
+
+      expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
+      expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
+    })
   })
 })

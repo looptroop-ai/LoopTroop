@@ -587,6 +587,7 @@ export function KanbanBoard() {
                       onClick={() => deletePreset(name)}
                       className="text-muted-foreground hover:text-destructive font-semibold ml-2 cursor-pointer text-sm px-1.5 py-0.5 rounded hover:bg-muted"
                       title="Delete preset"
+                      aria-label={`Delete preset ${name}`}
                     >
                       ×
                     </button>
@@ -654,8 +655,12 @@ export function KanbanBoard() {
             </select>
           </label>
 
-          {/* Reset Filters button */}
-          {(selectedProjectId !== null ||
+          {/* Reset Filters button. Search and a hidden-mocks toggle are filters too:
+              leaving them out meant the button vanished while the board was still
+              filtered, and clicking it left the search in place. */}
+          {(isSearchActive ||
+            showMocks === false ||
+            selectedProjectId !== null ||
             selectedPriority !== null ||
             selectedStatus !== null ||
             selectedPhase !== null ||
@@ -670,6 +675,7 @@ export function KanbanBoard() {
                 dispatch({
                   type: 'SET_FILTER',
                   filter: {
+                    search: '',
                     projectId: null,
                     priority: null,
                     status: null,

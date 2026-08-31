@@ -28,6 +28,8 @@ export interface QuestionListProps {
   editingQuestionId: string | null
   editingText: string
   isEditingAnswer: boolean
+  /** Why the last edit of the open answer failed, if it did. */
+  editError: string | null
   onEditingTextChange: (text: string) => void
   onStartEdit: (questionId: string, currentAnswer: string) => void
   onCancelEdit: () => void
@@ -42,6 +44,7 @@ export function QuestionList({
   editingQuestionId,
   editingText,
   isEditingAnswer,
+  editError,
   onEditingTextChange,
   onStartEdit,
   onCancelEdit,
@@ -114,6 +117,9 @@ export function QuestionList({
                             {isEditingAnswer ? <LoadingText text="Saving" /> : 'Save'}
                           </Button>
                         </div>
+                        {editError && (
+                          <p role="alert" className="text-[11px] text-destructive">{editError}</p>
+                        )}
                       </div>
                     ) : (
                       <>

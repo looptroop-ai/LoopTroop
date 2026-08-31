@@ -119,6 +119,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                         <Button
                                             variant="outline"
                                             size="icon"
+                                            aria-label="Go up one level"
                                             disabled={!data?.parentPath || isLoading}
                                             onClick={() => data?.parentPath && fetchLs(data.parentPath)}
                                         >

@@ -160,9 +160,9 @@ describe('KanbanColumn', () => {
     )
 
     // Default updatedAt_desc sorting: C (June 3), B (June 2), A (June 1)
-    let renderedCardTitles = screen.getAllByRole('paragraph')
+    // The card title is the button that opens the ticket.
+    let renderedCardTitles = screen.getAllByRole('button', { name: /^Open ticket/ })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Beta ticket', 'Alpha ticket', 'Zeta ticket'])
 
     // Sort by Title A-Z
@@ -183,9 +183,8 @@ describe('KanbanColumn', () => {
         </UIProvider>
       </TooltipProvider>,
     )
-    renderedCardTitles = screen.getAllByRole('paragraph')
+    renderedCardTitles = screen.getAllByRole('button', { name: /^Open ticket/ })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
 
     // Sort by Priority High to Low: B (priority 1), C (priority 2), A (priority 3)
@@ -206,9 +205,8 @@ describe('KanbanColumn', () => {
         </UIProvider>
       </TooltipProvider>,
     )
-    renderedCardTitles = screen.getAllByRole('paragraph')
+    renderedCardTitles = screen.getAllByRole('button', { name: /^Open ticket/ })
       .map(el => el.textContent)
-      .filter(txt => txt !== 'Backlog')
     expect(renderedCardTitles).toEqual(['Alpha ticket', 'Beta ticket', 'Zeta ticket'])
   })
 })

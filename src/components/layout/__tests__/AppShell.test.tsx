@@ -1,10 +1,11 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppShell } from '../AppShell'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
-import { renderWithProviders } from '@/test/renderHelpers'
+import { createTestQueryClient, renderWithProviders } from '@/test/renderHelpers'
 import { TEST } from '@/test/factories'
 import type { Project } from '@/hooks/useProjects'
+import type { QueryClient } from '@tanstack/react-query'
 
 vi.mock('@/hooks/useBackendHealth', () => ({
   useBackendHealth: vi.fn(() => ({ isOffline: false })),
@@ -126,13 +127,14 @@ function makeUIValue(overrides: Partial<UIContextValue['state']> = {}, dispatch 
   }
 }
 
-function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void) {
+function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void, queryClient?: QueryClient) {
   return renderWithProviders(
     <UIContext.Provider value={uiValue}>
       <AppShell onOpenAbout={onOpenAbout}>
         <div>Dashboard</div>
       </AppShell>
     </UIContext.Provider>,
+    queryClient ? { queryClient } : undefined,
   )
 }
 
@@ -292,5 +294,27 @@ describe('AppShell', () => {
     expect(screen.getByTestId('backend-reconnecting-banner')).toBeInTheDocument()
     expect(screen.getByText(/reconnecting to server/i)).toBeInTheDocument()
     expect(useRecoveryAutoReloadMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The spinner used to be turned on before the refetch and off after it, with
+   * nothing in between: a refetch that threw left it spinning for the rest of the
+   * session, which reads as "still working" rather than "that failed".
+   */
+  it('stops the refresh spinner when the refetch fails', async () => {
+    const queryClient = createTestQueryClient()
+    vi.spyOn(queryClient, 'refetchQueries').mockRejectedValue(new Error('offline'))
+    renderShell(uiValue, undefined, queryClient)
+
+    const refresh = screen.getByRole('button', { name: 'Refresh Dashboard' })
+    await act(async () => {
+      fireEvent.click(refresh)
+    })
+
+    expect(queryClient.refetchQueries).toHaveBeenCalled()
+    await waitFor(() => {
+      expect(refresh).not.toBeDisabled()
+    })
+    expect(refresh.querySelector('.animate-spin')).toBeNull()
   })
 })

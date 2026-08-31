@@ -160,6 +160,7 @@ vi.mock('../NavigatorPanel', () => ({
 }))
 
 import { TicketDashboard } from '../TicketDashboard'
+import { DropdownPicker } from '@/components/shared/DropdownPicker'
 
 /** Simulate a realistic SSE state_change: patch the cache first (as useSSE does), then fire onEvent. */
 function simulateSSE(from: string, to: string) {
@@ -1144,6 +1145,97 @@ describe('TicketDashboard', () => {
     expect(focusEvent?.detail).toEqual({
       ticketId: selectedTicketId,
       anchorId: 'interview-group-phase-foundation',
+    })
+  })
+  describe('Escape', () => {
+    /**
+     * Escape belongs to whatever is open on top. Every nested overlay in this view
+     * dismisses itself and lets the key bubble, so an unguarded document handler
+     * turned "dismiss this dialog" into "leave the ticket".
+     */
+    function renderLoadedDashboard() {
+      const ticket = makeTicket({ status: 'CODING', id: selectedTicketId })
+      queryClient.setQueryData(['ticket', selectedTicketId], ticket)
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+        const url = String(input)
+        if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
+        if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
+        if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(ticket)
+        throw new Error(`Unhandled fetch: ${url}`)
+      })
+      return ticket
+    }
+
+    function closedTicket() {
+      return dispatchMock.mock.calls.some(([action]) => action?.type === 'CLOSE_TICKET')
+    }
+
+    it('closes the ticket on a plain Escape', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(true)
+    })
+
+    it('leaves the ticket open when Escape dismisses a nested dialog', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      const dialog = document.createElement('div')
+      dialog.setAttribute('role', 'dialog')
+      const confirmButton = document.createElement('button')
+      dialog.appendChild(confirmButton)
+      document.body.appendChild(dialog)
+
+      fireEvent.keyDown(confirmButton, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(false)
+      document.body.removeChild(dialog)
+    })
+
+    it('leaves the ticket open when Escape closes a dropdown', async () => {
+      renderLoadedDashboard()
+      const onOpenChange = vi.fn()
+      render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <TicketDashboard />
+            <DropdownPicker
+              open
+              onOpenChange={onOpenChange}
+              trigger={<button type="button">Pick a model</button>}
+            >
+              <button type="button">Some model</button>
+            </DropdownPicker>
+          </TooltipProvider>
+        </QueryClientProvider>,
+      )
+      await screen.findByTestId('active-workspace')
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Some model' }), { key: 'Escape' })
+
+      expect(onOpenChange).toHaveBeenCalledWith(false)
+      expect(closedTicket()).toBe(false)
+    })
+
+    it('leaves the ticket open when something else already handled Escape', async () => {
+      renderLoadedDashboard()
+      renderDashboard()
+      await screen.findByTestId('active-workspace')
+
+      // An overlay that consumes Escape marks the event handled on its way up.
+      const handled = document.createElement('div')
+      handled.addEventListener('keydown', (event) => event.preventDefault())
+      document.body.appendChild(handled)
+
+      fireEvent.keyDown(handled, { key: 'Escape' })
+
+      expect(closedTicket()).toBe(false)
+      document.body.removeChild(handled)
     })
   })
 })

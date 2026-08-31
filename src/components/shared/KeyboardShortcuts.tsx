@@ -1,16 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { useDialogFocus } from '@/hooks/useDialogFocus'
 
+// Only shortcuts the app actually binds. `?` and Escape are handled here, `/` in
+// DashboardSearch. Listing one the app does not implement is worse than listing
+// nothing: the user presses it, nothing happens, and the whole list loses credit.
 const SHORTCUTS = [
   { key: '?', description: 'Show keyboard shortcuts' },
   { key: 'Escape', description: 'Close current view / modal' },
-  { key: 'n', description: 'Create new ticket' },
-  { key: 'k', description: 'Navigate to Kanban board' },
   { key: '/', description: 'Focus search' },
 ]
 
 export function KeyboardShortcuts() {
   const [isOpen, setIsOpen] = useState(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  const handleTrapKeyDown = useDialogFocus(isOpen, panelRef)
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -31,9 +36,18 @@ export function KeyboardShortcuts() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setIsOpen(false)}>
-      <Card className="w-full max-w-md" onClick={e => e.stopPropagation()}>
+      <Card
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={handleTrapKeyDown}
+        className="w-full max-w-md outline-none"
+        onClick={e => e.stopPropagation()}
+      >
         <CardHeader>
-          <CardTitle className="text-sm">Keyboard Shortcuts</CardTitle>
+          <CardTitle id={titleId} className="text-sm">Keyboard Shortcuts</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">

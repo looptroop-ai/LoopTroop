@@ -446,6 +446,21 @@ export function getLogEntryIdentity(entry: LogEntry): string {
   return `id:${entry.phaseAttempt ?? 'active'}:${entry.entryId}`
 }
 
+/**
+ * Every key one row answers to. A row can be recognised by its id or by its
+ * fingerprint, and the two can disagree — the same event re-emitted under a fresh id
+ * keeps its fingerprint. Folding on the id alone therefore merges a pair in the live
+ * overlay and shows it twice from the archive, which is the asymmetry the two paths
+ * are meant not to have.
+ */
+export function getLogEntryAliases(entry: LogEntry): string[] {
+  const attempt = entry.phaseAttempt ?? 'active'
+  return [
+    getLogEntryIdentity(entry),
+    ...(entry.fingerprint ? [`fp:${attempt}:${entry.fingerprint}`] : []),
+  ]
+}
+
 export function isCommandLine(line: string): boolean {
   return line.startsWith('[CMD] $ ')
 }
@@ -568,10 +583,7 @@ export function mergeEntriesBatch(base: LogEntry[], incoming: LogEntry[]): LogEn
 
   const result: LogEntry[] = []
   const indexes = new Map<string, number>()
-  const aliases = (entry: LogEntry) => [
-    getLogEntryIdentity(entry),
-    ...(entry.fingerprint ? [`fp:${entry.phaseAttempt ?? 'active'}:${entry.fingerprint}`] : []),
-  ]
+  const aliases = getLogEntryAliases
   const add = (entry: LogEntry, incomingRow: boolean) => {
     const keys = aliases(entry)
     const index = keys.map(key => indexes.get(key)).find((value): value is number => value !== undefined)

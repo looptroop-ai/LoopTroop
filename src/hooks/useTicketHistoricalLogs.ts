@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import {
-  getLogEntryIdentity,
+  getLogEntryAliases,
   INITIAL_LOG_PAGE_LIMIT,
   normalizeLogRecord,
   OLDER_LOG_PAGE_LIMIT,
@@ -91,18 +91,36 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   })
 
   const entries = useMemo(() => {
-    // Pages are stored newest -> oldest. Restore chronological order, then use
-    // a Map so a canonical upsert/finalize never creates a duplicate row.
+    // Folded on every key the live overlay folds on — attempt-scoped id and
+    // fingerprint. Entry ids are unique only within one attempt, so a retried phase
+    // re-emitting `milestone:<phase>:started` used to collapse two archived attempts
+    // into one row; and a row re-emitted under a fresh id is still the same row.
     //
-    // Keyed the same way the live overlay keys rows, by attempt as well as id. Entry
-    // ids are only unique within one attempt — a retried phase re-emits
-    // `milestone:<phase>:started` under the same id — so folding on the bare id showed
-    // two archived attempts as one.
-    const byId = new Map<string, LogEntry>()
-    for (const page of [...(query.data?.pages ?? [])].reverse()) {
-      for (const entry of page.entries) byId.set(getLogEntryIdentity(entry), entry)
+    // Read in the order React Query holds the pages, which is oldest page first:
+    // `fetchPreviousPage` prepends. Walking them backwards let an older page's copy
+    // overwrite the newer one, so an entry whose append and later finalize fell on
+    // opposite sides of a page boundary showed the unfinished text.
+    // One slot per row, with every alias pointing at the slot rather than at the row, so
+    // a row that arrives under a second alias updates the slot instead of leaving the
+    // first alias holding the copy from before the merge.
+    const rows: LogEntry[] = []
+    const slotByAlias = new Map<string, number>()
+    for (const page of query.data?.pages ?? []) {
+      for (const entry of page.entries) {
+        const aliases = getLogEntryAliases(entry)
+        const slot = aliases.map(alias => slotByAlias.get(alias)).find((value): value is number => value !== undefined)
+        if (slot === undefined) {
+          const nextSlot = rows.length
+          rows.push(entry)
+          for (const alias of aliases) slotByAlias.set(alias, nextSlot)
+          continue
+        }
+        const merged = { ...rows[slot]!, ...entry }
+        rows[slot] = merged
+        for (const alias of getLogEntryAliases(merged)) slotByAlias.set(alias, slot)
+      }
     }
-    return [...byId.values()].sort((a, b) => {
+    return rows.sort((a, b) => {
       const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.NaN
       const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.NaN
       if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0
@@ -125,23 +143,27 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
   }, [scope, ticketId])
 
   const fetchPreviousPage = query.fetchPreviousPage
-  const hasPreviousPage = query.hasPreviousPage
   /**
    * Walks every older page in one go. Callers pass `isCancelled` and flip it when the
    * scope they started the walk for is gone — a different bead, a different attempt, an
    * unmounted panel — because the loop otherwise keeps paging into a query that is no
    * longer on screen, and the last page to land wins.
+   *
+   * Depends on `fetchPreviousPage` alone so it keeps one identity for the life of the
+   * query. Listing `hasPreviousPage` rebuilt it on every page, and a caller that holds
+   * it in an effect dependency then cancels and restarts its own walk mid-flight — which
+   * is how a failure ends up looking like a cancellation and never latches. The entry
+   * condition is gone with it: `fetchPreviousPage` on a query with no older page is a
+   * no-op that reports `hasPreviousPage: false`, and both callers already gate on it.
    */
   const fetchAllOlder = useCallback(async (isCancelled?: () => boolean): Promise<void> => {
-    let hasOlder = hasPreviousPage
-    while (hasOlder) {
+    for (;;) {
       if (isCancelled?.()) return
       const result = await fetchPreviousPage()
       if (result.isError) throw result.error
-      if (isCancelled?.()) return
-      hasOlder = result.hasPreviousPage
+      if (isCancelled?.() || !result.hasPreviousPage) return
     }
-  }, [fetchPreviousPage, hasPreviousPage])
+  }, [fetchPreviousPage])
 
   useEffect(() => {
     if (!ticketId || !enabled) return

@@ -586,6 +586,96 @@ describe('PhaseLogPanel', () => {
     expect(screen.queryByText(/Answer from another model/)).not.toBeInTheDocument()
   })
 
+  it('keeps two attempts that reuse one milestone id as two rows', () => {
+    const logs: LogEntry[] = [
+      makeLog('milestone:CODING:started', '[SYS] First attempt started', {
+        phaseAttempt: 1,
+        timestamp: '2026-03-10T10:00:00.000Z',
+      }),
+      makeLog('milestone:CODING:started', '[SYS] Second attempt started', {
+        phaseAttempt: 2,
+        timestamp: '2026-03-10T11:00:00.000Z',
+      }),
+    ]
+    const value: LogContextValue = {
+      logsByPhase: { CODING: logs },
+      activePhase: 'CODING',
+      isLoadingLogs: false,
+      addLog: vi.fn(),
+      addLogRecord: vi.fn(),
+      getLogsForPhase: () => logs,
+      getAllLogs: () => logs,
+      setActivePhase: vi.fn(),
+      loadLogsForPhase: vi.fn(),
+      isLoadingLogScope: vi.fn(() => false),
+      clearLogs: vi.fn(),
+    }
+
+    // A retried phase re-emits `milestone:<phase>:started` under the same id, and this
+    // panel loads every attempt when it is not given one. Keying the rows on the bare id
+    // gives React two children with one key, and the index map resolves both to one row.
+    const errors: unknown[] = []
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((...args) => { errors.push(args[0]) })
+    try {
+      renderWithTooltipProvider(
+        withLogContext(value, (
+          <PhaseLogPanel phase="CODING" />
+        )),
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+
+    expect(screen.getByText(/First attempt started/)).toBeInTheDocument()
+    expect(screen.getByText(/Second attempt started/)).toBeInTheDocument()
+    expect(errors.filter((message) => String(message).includes('same key'))).toEqual([])
+  })
+
+  it('stops the activity strip once the ticket reaches a terminal status', () => {
+    // The activity has to belong to the phase on screen, or the strip drops it whatever
+    // `enabled` says — which is what makes the terminal case worth its own assertion.
+    const makePromptFor = (status: string) => makeLog('prompt-1', '[PROMPT] openai/gpt-5.4 prompt #1', {
+      status,
+      source: 'model:openai/gpt-5.4',
+      audience: 'ai',
+      kind: 'prompt',
+      modelId: 'openai/gpt-5.4',
+      sessionId: 'ses_waiting',
+    })
+    const makeValue = (prompt: LogEntry): LogContextValue => ({
+      logsByPhase: { [prompt.status]: [prompt] },
+      activePhase: prompt.status,
+      isLoadingLogs: false,
+      addLog: vi.fn(),
+      addLogRecord: vi.fn(),
+      getLogsForPhase: () => [prompt],
+      getAllLogs: () => [prompt],
+      setActivePhase: vi.fn(),
+      loadLogsForPhase: vi.fn(),
+      isLoadingLogScope: vi.fn(() => false),
+      clearLogs: vi.fn(),
+    })
+
+    const runningPrompt = makePromptFor('CODING')
+    const running = renderWithTooltipProvider(
+      withLogContext(makeValue(runningPrompt), (
+        <PhaseLogPanel phase="CODING" logs={[runningPrompt]} ticket={{ ...makeTicket(), status: 'CODING' }} />
+      )),
+    )
+    expect(screen.queryAllByText(/Waiting for first model activity/).length).toBeGreaterThan(0)
+    running.unmount()
+
+    // Same shape, except the run is over. The phase still equals the ticket's status, so
+    // the panel read it as live and kept counting elapsed time against work that stopped.
+    const cancelledPrompt = makePromptFor('CANCELED')
+    renderWithTooltipProvider(
+      withLogContext(makeValue(cancelledPrompt), (
+        <PhaseLogPanel phase="CANCELED" logs={[cancelledPrompt]} ticket={{ ...makeTicket(), status: 'CANCELED' }} />
+      )),
+    )
+    expect(screen.queryAllByText(/Waiting for first model activity/)).toEqual([])
+  })
+
   it('asks for phase debug logs only after the DEBUG tab is selected', () => {
     const loadLogsForPhase = vi.fn()
     const value: LogContextValue = {

@@ -128,13 +128,19 @@ export function LogProvider({
   const loadingScopeKeysRef = useRef<Set<string>>(new Set())
   const logsByPhaseRef = useRef<Record<string, LogEntry[]>>({})
   const activePhaseRef = useRef(activePhase)
-  activePhaseRef.current = activePhase
   // Bumped whenever this provider stops owning `ticketId`, so a fetch that outlives it can tell.
   const generationRef = useRef(0)
 
   useEffect(() => {
     currentStatusRef.current = currentStatus
   }, [currentStatus])
+
+  // Written after commit, like `currentStatusRef` above. A render can be thrown away, and
+  // `getActivePhase` is what a phase-less SSE event is filed under — so a ref written
+  // during render can hand a dispatcher a phase from a render that never happened.
+  useEffect(() => {
+    activePhaseRef.current = activePhase
+  }, [activePhase])
 
   useEffect(() => {
     setLogsByPhase({})

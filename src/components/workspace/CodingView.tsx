@@ -1224,7 +1224,6 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     entries: historicalBeadLogEntries,
     fetchAllOlder: fetchAllHistoricalBeadLogs,
     hasOlder: hasOlderHistoricalBeadLogs,
-    isFetchingOlder: isFetchingOlderHistoricalBeadLogs,
   } = historicalBeadLogs
   const beadLogEntries = useMemo(() => {
     if (!viewedBead) return []
@@ -1241,30 +1240,37 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   // writing pages into a query nobody is showing any more. A failed page ends the drain
   // rather than restarting it: `hasOlder` stays true after an error, so retrying here
   // is an unbounded request loop against a server that just said no.
+  //
+  // Nothing that moves while the walk is running belongs in this dependency list. The
+  // in-flight flag and the bead object both do — React Query raises the flag as the
+  // first page leaves, and `beads.find` is a fresh object on every bead refetch — and
+  // either one re-runs this effect, whose cleanup then cancels the walk it just started.
+  // A failure arriving after that reads as a cancellation, so the latch below never
+  // closes and the retry loop runs anyway.
   const beadLogDrainKey = `${viewedBead?.id ?? 'none'}:${logPhaseAttempt ?? 'active'}`
   const failedBeadLogDrainRef = useRef<string | null>(null)
+  const viewedBeadId = viewedBead?.id ?? null
   useEffect(() => {
-    if (!viewedBead || !hasOlderHistoricalBeadLogs || isFetchingOlderHistoricalBeadLogs) return
+    if (!viewedBeadId || !hasOlderHistoricalBeadLogs) return
     if (failedBeadLogDrainRef.current === beadLogDrainKey) return
 
     const drain = { cancelled: false }
     void fetchAllHistoricalBeadLogs(() => drain.cancelled).catch(() => {
-      if (drain.cancelled) return
+      // Latched whatever became of this walk. The failure belongs to the bead view, not
+      // to one attempt at reading it, and a cancelled walk is exactly the case that used
+      // to swallow it. The key is captured, so a latch set after the user has moved on
+      // names the view they left and blocks nothing.
       failedBeadLogDrainRef.current = beadLogDrainKey
     })
     return () => {
       drain.cancelled = true
     }
-  }, [beadLogDrainKey, fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, isFetchingOlderHistoricalBeadLogs, viewedBead])
+  }, [beadLogDrainKey, fetchAllHistoricalBeadLogs, hasOlderHistoricalBeadLogs, viewedBeadId])
 
   useEffect(() => {
-    failedBeadLogDrainRef.current = null
-  }, [beadLogDrainKey])
-
-  useEffect(() => {
-    if (!viewedBead || !loadLogsForPhase) return
+    if (!viewedBeadId || !loadLogsForPhase) return
     loadLogsForPhase('CODING', { channel: 'ai', phaseAttempt: logPhaseAttempt })
-  }, [loadLogsForPhase, logPhaseAttempt, viewedBead])
+  }, [loadLogsForPhase, logPhaseAttempt, viewedBeadId])
 
   useEffect(() => {
     setSelectedRawIteration(null)

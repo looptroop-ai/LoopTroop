@@ -208,6 +208,10 @@ describe('ticket log projection API', () => {
     expect(singlePage?.map(entry => entry.content))
       .toEqual(['row-0', 'row-1', 'row-2', 'row-3', 'row-4'])
     expect(manyPages).toEqual(singlePage)
+
+    // A page size below one asks SQLite for nothing, and the walk would end on the first
+    // turn — a complete export replaced by an empty one, with nothing to say so.
+    await expect(exportLogEntries(ticket.id, query, { pageSize: 0 })).rejects.toThrow(RangeError)
   })
 
   it('counts logical text lines for the complete filtered result without applying the page cursor', async () => {

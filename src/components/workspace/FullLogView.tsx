@@ -20,7 +20,7 @@ import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
-import { mergeEntriesBatch } from '@/context/logUtils'
+import { getLogEntryIdentity, mergeEntriesBatch } from '@/context/logUtils'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
@@ -97,18 +97,19 @@ function PhaseDelimiter({ phase, labelOptions, label }: { phase: string; labelOp
 
 function buildRenderedPhaseGroups(
   phaseGroups: PhaseGroup[],
+  /** Attempt-scoped identities, as produced by `getLogEntryIdentity` — not bare entry ids. */
   visibleEntryIds: Set<string>,
   ticket?: Ticket,
 ): RenderedPhaseGroup[] {
   return phaseGroups.flatMap((group) => {
     if (group.phase !== 'CODING') {
-      const entries = group.entries.filter((entry) => visibleEntryIds.has(entry.entryId))
+      const entries = group.entries.filter((entry) => visibleEntryIds.has(getLogEntryIdentity(entry)))
       return entries.length > 0 ? [{ phase: group.phase, entries }] : []
     }
 
     const beadResult = buildBeadSections(group.entries, visibleEntryIds, ticket)
     if (!beadResult) {
-      const entries = group.entries.filter((entry) => visibleEntryIds.has(entry.entryId))
+      const entries = group.entries.filter((entry) => visibleEntryIds.has(getLogEntryIdentity(entry)))
       return entries.length > 0 ? [{ phase: group.phase, entries }] : []
     }
 
@@ -273,8 +274,11 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     [combinedLogs],
   )
 
+  // Attempt-scoped, because lifecycle history spans every attempt of every phase and a
+  // retried phase re-emits its milestones under the same entry id. Bare ids gave two
+  // real rows one React key, one index and one set entry.
   const visibleEntryIds = useMemo(
-    () => new Set(filteredLogs.map((entry) => entry.entryId)),
+    () => new Set(filteredLogs.map(getLogEntryIdentity)),
     [filteredLogs],
   )
 
@@ -474,7 +478,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     const map = new Map<string, number>()
     let idx = 0
     for (const entry of renderedEntries) {
-      map.set(entry.entryId, idx++)
+      map.set(getLogEntryIdentity(entry), idx++)
     }
     return map
   }, [renderedEntries])
@@ -485,13 +489,13 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       | { type: 'entry'; key: string; entry: LogEntry }
     > = [{ type: 'phase', key: `${group.phase}-${groupIndex}`, group }]
     if (group.phase === 'CODING' && group.beadSections !== undefined) {
-      for (const entry of group.preambleEntries ?? []) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const entry of group.preambleEntries ?? []) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       for (const section of group.beadSections) {
         items.push({ type: 'bead', key: `${group.phase}-${groupIndex}-${section.beadId}-${section.ordinal}`, section })
-        for (const entry of section.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+        for (const entry of section.entries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
       }
     } else {
-      for (const entry of group.entries) items.push({ type: 'entry', key: entry.entryId, entry })
+      for (const entry of group.entries) items.push({ type: 'entry', key: getLogEntryIdentity(entry), entry })
     }
     return items
   }), [phaseGroups])
@@ -503,21 +507,38 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     `full-log:${effectiveTab}`,
   )
   const [isNavigatingToTop, setIsNavigatingToTop] = useState(false)
+  // Going to the top pages the whole archive, so it needs an owner for the same reason
+  // the bead drain does: released when the panel unmounts or the ticket changes, so the
+  // walk stops rather than paging into a query nobody is looking at.
+  const topNavigationOwnerRef = useRef({ cancelled: false })
+  useEffect(() => {
+    const owner = { cancelled: false }
+    topNavigationOwnerRef.current = owner
+    return () => {
+      owner.cancelled = true
+    }
+  }, [ticket?.id])
   const handleGoToTop = useCallback(async () => {
     if (isNavigatingToTop) return
+    const owner = topNavigationOwnerRef.current
     explicitTopNavigationRef.current = true
     olderPageAnchorRef.current = null
     autoScrollEnabledRef.current = false
     setIsAutoScroll(false)
     setIsNavigatingToTop(true)
     try {
-      await historicalLogs.fetchAllOlder()
+      await historicalLogs.fetchAllOlder(() => owner.cancelled)
+      if (owner.cancelled) return
       await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
       if (virtuosoRef.current && virtualItemCountRef.current > 0) {
         virtuosoRef.current.scrollToIndex({ index: 0, align: 'start', behavior: 'auto' })
       } else {
         viewportRef.current?.scrollTo({ top: 0, behavior: 'auto' })
       }
+    } catch {
+      // A refused page leaves the history partly loaded and the button available to try
+      // again. Swallowed here because the caller discards this promise, and an
+      // unhandled rejection is the one outcome that helps nobody.
     } finally {
       explicitTopNavigationRef.current = false
       setIsNavigatingToTop(false)
@@ -840,7 +861,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                       )
                     : item.type === 'bead'
                       ? <BeadDelimiter ordinal={item.section.ordinal} total={item.section.total} title={item.section.title} qaOrigin={item.section.qaOrigin} />
-                      : <LogEntryRow entry={item.entry} index={globalIndexMap.get(item.entry.entryId) ?? 0} showModelName />}
+                      : <LogEntryRow entry={item.entry} index={globalIndexMap.get(getLogEntryIdentity(item.entry)) ?? 0} showModelName />}
                 />
               ) : phaseGroups.map((group, groupIdx) => (
                 <Fragment key={`${group.phase}-${groupIdx}`}>
@@ -853,9 +874,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                     <>
                       {(group.preambleEntries ?? []).map((entry) => (
                         <LogEntryRow
-                          key={entry.entryId}
+                          key={getLogEntryIdentity(entry)}
                           entry={entry}
-                          index={globalIndexMap.get(entry.entryId) ?? 0}
+                          index={globalIndexMap.get(getLogEntryIdentity(entry)) ?? 0}
                           showModelName={true}
                         />
                       ))}
@@ -864,9 +885,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                           <BeadDelimiter ordinal={section.ordinal} total={section.total} title={section.title} qaOrigin={section.qaOrigin} />
                           {section.entries.map((entry) => (
                             <LogEntryRow
-                              key={entry.entryId}
+                              key={getLogEntryIdentity(entry)}
                               entry={entry}
-                              index={globalIndexMap.get(entry.entryId) ?? 0}
+                              index={globalIndexMap.get(getLogEntryIdentity(entry)) ?? 0}
                               showModelName={true}
                             />
                           ))}
@@ -876,9 +897,9 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   ) : (
                     group.entries.map((entry) => (
                       <LogEntryRow
-                        key={entry.entryId}
+                        key={getLogEntryIdentity(entry)}
                         entry={entry}
-                        index={globalIndexMap.get(entry.entryId) ?? 0}
+                        index={globalIndexMap.get(getLogEntryIdentity(entry)) ?? 0}
                         showModelName={true}
                       />
                     ))

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -123,6 +123,39 @@ afterEach(() => {
 })
 
 describe('CodingView', () => {
+  it('stops draining a bead log after a page is refused', async () => {
+    fetchSpy.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/logs?') && url.includes('before=')) {
+        return Promise.resolve(new Response('nope', { status: 500 }))
+      }
+      if (url.includes('/logs?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          entries: [],
+          olderCursor: 'cursor-older',
+          hasOlder: true,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), { status: 200 }))
+    })
+
+    renderCoding({
+      runtime: { beads: [{ id: 'bead-1', title: 'Logged bead', status: 'done', iteration: 1 }] },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Logged bead/ }))
+
+    const olderRequests = () => fetchSpy.mock.calls.filter(([input]: unknown[]) => String(input).includes('before=')).length
+    await waitFor(() => expect(olderRequests()).toBe(1))
+
+    // The server refused, and `hasOlder` stays true after a refusal, so nothing but the
+    // latch stops the walk restarting. This is a guard rather than a regression pin: the
+    // unbounded loop needs the effect to re-run while a page is in flight, which React
+    // Query's request dedupe hides here. The deterministic pin for that is the
+    // `fetchAllOlder` identity test in `useTicketHistoricalLogs.test.tsx`.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)) })
+    expect(olderRequests()).toBe(1)
+  })
+
   it('follows a streaming bead log whose row grows without the count changing', async () => {
     const scrollTo = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollTo', {

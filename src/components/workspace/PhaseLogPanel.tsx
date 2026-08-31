@@ -8,6 +8,7 @@ import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
 import { compareTimestamps, getLogEntryIdentity, isDebugLogEntry, mergeEntriesBatch } from '@/context/logUtils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
@@ -190,8 +191,7 @@ export function PhaseLogPanel({
   // A ticket that has finished is not running anything, so its last phase is not live
   // even though the panel's phase still matches its status — otherwise a cancelled or
   // completed ticket keeps a current-activity strip ticking over a run that ended.
-  // (Ninth copy of this predicate in the tree; PR-05 §5.3 consolidates them.)
-  const isTerminalTicketStatus = ticket?.status === 'COMPLETED' || ticket?.status === 'CANCELED'
+  const isTerminalTicketStatus = isTerminalWorkflowStatus(ticket?.status)
   const isLiveTicketPhase = !ticket || (ticket.status === phase && !isTerminalTicketStatus)
   const currentActivityEnabled = logMode !== 'snapshot' && isLiveTicketPhase
   const hasToolbarPrefix = toolbarPrefix != null

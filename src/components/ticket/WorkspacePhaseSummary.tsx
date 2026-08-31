@@ -22,8 +22,9 @@ import { ActiveBeadCountdown } from '../navigator/ActiveBeadCountdown'
  * Human-readable labels and tooltip descriptions for each workflow context key,
  * shown in the "Context" section of the Details dialog.
  *
- * NOTE: `votes` is defined here for completeness but is not currently referenced
- * by any phase’s `contextSummary` array.
+ * `votes` is labelled here but no phase requests it, so it never appears in this
+ * section today. The label is kept so that a phase which starts asking for
+ * council votes has one ready — see the key’s note in `shared/workflowMeta.ts`.
  */
 const CONTEXT_KEY_LABELS: Record<WorkflowContextKey, { label: string; description: string }> = {
   ticket_details: { label: 'Ticket Details', description: 'The saved ticket title and full description text. This is the root user-requirement context for planning; priority, project data, settings, and structured provenance remain informational and are not included.' },

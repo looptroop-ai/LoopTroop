@@ -26,7 +26,14 @@ export type WorkflowContextKey =
   | 'interview'
   | 'full_answers'
   | 'user_answers'
-  | 'votes' // Reserved — defined in CONTEXT_KEY_LABELS but not currently used in any phase's contextSummary
+  // No phase asks for council votes today, so no model ever receives them. The
+  // key keeps its label and its context-builder branch so a phase can request
+  // votes later, which takes three things: something has to populate
+  // `TicketState.votes`, the phase has to list `'votes'` in `PHASE_ALLOWLISTS`
+  // (`server/opencode/contextBuilder.ts`), and the prompt has to list it in its
+  // `contextInputs`. Listing it in a phase's `contextSummary` only adds a row to
+  // the Details dialog.
+  | 'votes'
   | 'prd'
   | 'beads'
   | 'beads_draft'
@@ -63,13 +70,30 @@ export interface WorkflowPhaseMeta {
   details: WorkflowPhaseDetails
   kanbanPhase: KanbanPhase
   groupId: WorkflowGroupId
+  /**
+   * Set only on the statuses that mean the workflow is over: nothing will run
+   * again, Cancel is refused, and the ticket can be deleted.
+   *
+   * Deliberately not read off `kanbanPhase === 'done'`. The board column is a
+   * display choice, so grouping a status under Done for presentation must never
+   * be what decides whether a person can delete a ticket or is refused a cancel.
+   */
+  terminal?: true
+  /**
+   * Set only on the statuses that hold a project's single execution slot.
+   *
+   * Cannot be derived from `kanbanPhase` or `groupId`: the band spans three
+   * kanban columns, and most `in_progress` statuses sit outside it. It is its
+   * own fact about a phase, so it is recorded as one.
+   */
+  executionBand?: true
   uiView: WorkflowUIView
   editable: boolean
   multiModelLogs: boolean
   reviewArtifactType?: ReviewArtifactType
   progressKind?: 'questions' | 'beads'
   /** Context keys whose descriptions are shown in the "Context" section of the Details dialog. */
-  contextSummary: WorkflowContextKey[]
+  contextSummary: readonly WorkflowContextKey[]
   contextSections?: readonly WorkflowContextSection[]
 }
 
@@ -1198,7 +1222,7 @@ function withSafeResumeMetadata(phase: WorkflowPhaseMeta): WorkflowPhaseMeta {
   }
 }
 
-const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
+const BASE_WORKFLOW_PHASES = [
   {
     id: 'DRAFT',
     label: 'Backlog',
@@ -1441,6 +1465,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.PRE_FLIGHT_CHECK,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: true,
     multiModelLogs: false,
@@ -1453,6 +1478,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.GENERATING_EXECUTION_SETUP_PLAN,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
+    executionBand: true,
     uiView: 'phase_review',
     editable: false,
     multiModelLogs: false,
@@ -1473,6 +1499,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.WAITING_EXECUTION_SETUP_APPROVAL,
     kanbanPhase: 'needs_input',
     groupId: 'pre_implementation',
+    executionBand: true,
     uiView: 'approval',
     editable: true,
     multiModelLogs: false,
@@ -1486,6 +1513,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.PREPARING_EXECUTION_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'pre_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1498,6 +1526,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.CODING,
     kanbanPhase: 'in_progress',
     groupId: 'implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1511,6 +1540,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.RUNNING_FINAL_TEST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1523,6 +1553,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.GENERATING_QA_CHECKLIST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1536,6 +1567,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.WAITING_MANUAL_QA,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'manual_qa',
     editable: false,
     multiModelLogs: false,
@@ -1549,6 +1581,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.INTEGRATING_CHANGES,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1561,6 +1594,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.CREATING_PULL_REQUEST,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1573,6 +1607,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.WAITING_PR_REVIEW,
     kanbanPhase: 'needs_input',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1585,6 +1620,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.CLEANING_ENV,
     kanbanPhase: 'in_progress',
     groupId: 'post_implementation',
+    executionBand: true,
     uiView: 'coding',
     editable: false,
     multiModelLogs: false,
@@ -1597,6 +1633,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.COMPLETED,
     kanbanPhase: 'done',
     groupId: 'done',
+    terminal: true,
     uiView: 'done',
     editable: false,
     multiModelLogs: false,
@@ -1609,6 +1646,7 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     details: WORKFLOW_PHASE_DETAILS.CANCELED,
     kanbanPhase: 'done',
     groupId: 'done',
+    terminal: true,
     uiView: 'canceled',
     editable: false,
     multiModelLogs: false,
@@ -1626,7 +1664,17 @@ const BASE_WORKFLOW_PHASES: WorkflowPhaseMeta[] = [
     multiModelLogs: false,
     contextSummary: ['bead_data', 'error_context'],
   },
-]
+] as const satisfies readonly WorkflowPhaseMeta[]
+
+/**
+ * Every workflow status, as a union of the ids actually declared above.
+ *
+ * Derived rather than hand-written so a status cannot exist in one list and be
+ * missing from another: a lookup keyed by this type will not compile until every
+ * phase has an entry, and a misspelled status is a compile error rather than an
+ * `undefined` that reaches the screen as a blank label.
+ */
+export type WorkflowPhaseId = (typeof BASE_WORKFLOW_PHASES)[number]['id']
 
 export const WORKFLOW_PHASES: WorkflowPhaseMeta[] = BASE_WORKFLOW_PHASES.map(withSafeResumeMetadata)
 
@@ -1636,9 +1684,50 @@ export const WORKFLOW_PHASE_MAP = Object.fromEntries(
   WORKFLOW_PHASES.map((phase) => [phase.id, phase]),
 ) as Record<string, WorkflowPhaseMeta>
 
-/** Returns the full phase metadata for a given status ID, or `undefined` if the status is unknown. */
+/**
+ * Narrows an arbitrary string to a declared workflow status.
+ *
+ * Statuses arrive as plain text from the database, a restored state-machine
+ * snapshot, or a query string, so anything unrecognised has to be handled rather
+ * than trusted. Checks own keys only: `WORKFLOW_PHASE_MAP` is a plain object, so
+ * a plain index would answer `'toString'` and `'constructor'` with inherited
+ * members of `Object.prototype`.
+ */
+export function isWorkflowPhaseId(status: string): status is WorkflowPhaseId {
+  return Object.prototype.hasOwnProperty.call(WORKFLOW_PHASE_MAP, status)
+}
+
+/**
+ * Returns the full phase metadata for a given status ID, or `undefined` if the
+ * status is unknown.
+ *
+ * Every lookup goes through the guard above, so "unknown" includes the names
+ * inherited from `Object.prototype`. Callers treat a truthy result as a phase and
+ * read into it, and a function is not a phase.
+ */
 export function getWorkflowPhaseMeta(status: string): WorkflowPhaseMeta | undefined {
-  return WORKFLOW_PHASE_MAP[status]
+  return isWorkflowPhaseId(status) ? WORKFLOW_PHASE_MAP[status] : undefined
+}
+
+/**
+ * The statuses that mean the workflow is over — nothing will run again.
+ *
+ * Prefer `isTerminalWorkflowStatus`; this list exists for the callers that need
+ * the values themselves, such as a SQL `IN (...)` filter.
+ */
+export const TERMINAL_WORKFLOW_STATUSES: readonly string[] = WORKFLOW_PHASES
+  .filter((phase) => phase.terminal)
+  .map((phase) => phase.id)
+
+/**
+ * True when the ticket has finished: no automation will run again, Cancel is
+ * refused, and the ticket can be deleted.
+ *
+ * Every check of "is this ticket done" goes through here so that the answer can
+ * only be changed in one place — `terminal` in the phase table above.
+ */
+export function isTerminalWorkflowStatus(status: string | null | undefined): boolean {
+  return typeof status === 'string' && getWorkflowPhaseMeta(status)?.terminal === true
 }
 
 export type WorkflowAction =
@@ -1679,6 +1768,11 @@ export function isStatusAtOrPast(currentStatus: string, targetStatus: string): b
  * automatically and do not add recovery actions.
  */
 export function getAvailableWorkflowActions(status: string): WorkflowAction[] {
+  // A finished ticket offers nothing. Read that from the phase table rather than
+  // naming the statuses again here, or a status marked terminal later would keep
+  // offering Cancel in the UI while the route answers 409.
+  if (isTerminalWorkflowStatus(status)) return []
+
   switch (status) {
     case 'DRAFT':
       return ['start', 'cancel']
@@ -1691,9 +1785,6 @@ export function getAvailableWorkflowActions(status: string): WorkflowAction[] {
       return ['merge', 'close_unmerged', 'cancel']
     case 'BLOCKED_ERROR':
       return ['retry', 'cancel']
-    case 'COMPLETED':
-    case 'CANCELED':
-      return []
     default:
       return ['cancel']
   }

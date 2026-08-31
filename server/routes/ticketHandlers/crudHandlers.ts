@@ -27,6 +27,7 @@ import {
   type PullRequestReport,
 } from '../../workflow/phases/pullRequestPhase'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import {
   emitRoutePhaseLog,
   getProfileDefaults,
@@ -222,7 +223,7 @@ export async function handleDeleteTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
-  if (!['COMPLETED', 'CANCELED'].includes(ticket.status)) {
+  if (!isTerminalWorkflowStatus(ticket.status)) {
     return c.json({ error: 'Only completed or canceled tickets can be deleted' }, 409)
   }
 

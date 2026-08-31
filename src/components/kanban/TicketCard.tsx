@@ -6,8 +6,9 @@ import { cn } from '@/lib/utils'
 import { Loader2, AlertTriangle, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown, Minus, HelpCircle } from 'lucide-react'
 import { useUI } from '@/context/useUI'
 import { useAIQuestions } from '@/context/useAIQuestions'
-import { STATUS_DESCRIPTIONS, getStatusUserLabel } from '@/lib/workflowMeta'
+import { getStatusDescription, getStatusUserLabel } from '@/lib/workflowMeta'
 import { resolveKanbanPhase } from '@shared/kanbanPhase'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import {
   clearErrorTicketSeen,
   getErrorTicketSignature,
@@ -154,7 +155,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const { dispatch } = useUI()
   const { getPendingCount } = useAIQuestions()
   const isError = ticket.status === 'BLOCKED_ERROR'
-  const isTerminal = ticket.status === 'COMPLETED' || ticket.status === 'CANCELED'
+  const isTerminal = isTerminalWorkflowStatus(ticket.status)
   // The DTO decides, so the card and the column it sits in never disagree — the
   // live feed only reaches the ticket view, and an SSE frame refreshes the list
   // anyway.
@@ -355,7 +356,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
               </Badge>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs text-center text-balance">
-              {STATUS_DESCRIPTIONS[ticket.status] ?? statusLabel}
+              {getStatusDescription(ticket.status) ?? statusLabel}
               {statusProgressPercent !== null && ` (${statusProgressPercent}% complete)`}
             </TooltipContent>
           </Tooltip>

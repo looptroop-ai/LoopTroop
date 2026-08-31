@@ -5,7 +5,7 @@ import { StatusIndicator } from './StatusIndicator'
 import { EtaRange } from './EtaRange'
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { STATUS_DESCRIPTIONS, getStatusUserLabel } from '@/lib/workflowMeta'
+import { getStatusDescription, getStatusUserLabel } from '@/lib/workflowMeta'
 import { resolveKanbanPhase } from '@shared/kanbanPhase'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 import type { Ticket } from '@/hooks/useTickets'
@@ -129,7 +129,7 @@ function getGroupStatus(
 }
 
 function getPhaseTooltip(phaseId: string): string {
-  return STATUS_DESCRIPTIONS[phaseId] ?? phaseId.replace(/_/g, ' ')
+  return getStatusDescription(phaseId) ?? phaseId.replace(/_/g, ' ')
 }
 
 function resolvePositiveNumber(...values: Array<number | null | undefined>): number | null {

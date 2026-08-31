@@ -629,7 +629,7 @@ export const PROM22: PromptTemplate = {
     STRUCTURED_SELF_CHECK,
   ],
   outputFormat: `${BEAD_SUBSET_OUTPUT_FORMAT} Also include a top-level \`changes\` list. Each change item: {type, item_type, before, after, inspiration?}. \`type\` must be one of {modified, added, removed}. \`item_type\` must be \`bead\`. \`before\` and \`after\` use {id, label, detail?} or null when appropriate. Optional \`inspiration\` uses {alternative_draft, item}. Keep everything in one YAML artifact.`,
-  contextInputs: ['relevant_files', 'ticket_details', 'prd', 'drafts', 'votes'],
+  contextInputs: ['relevant_files', 'ticket_details', 'prd', 'drafts'],
   toolPolicy: 'read_only',
 }
 

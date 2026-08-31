@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest'
-import { WORKFLOW_PHASES, getAvailableWorkflowActions } from '@shared/workflowMeta'
-import { getCascadeEditWarningMessage } from '@/lib/workflowMeta'
+import { WORKFLOW_PHASES, WORKFLOW_PHASE_IDS, getAvailableWorkflowActions } from '@shared/workflowMeta'
+import { getCascadeEditWarningMessage, getStatusDescription, getStatusUserLabel } from '@/lib/workflowMeta'
+
+describe.concurrent('status text lookups', () => {
+  it('has a description and a label for every workflow phase', () => {
+    // The lookups are built from the phase table and keyed by it, so a phase
+    // without text cannot compile. This checks the other half: that the text is
+    // actually present rather than an empty string.
+    for (const id of WORKFLOW_PHASE_IDS) {
+      expect(getStatusDescription(id), id).toBeTruthy()
+      expect(getStatusUserLabel(id), id).toBeTruthy()
+    }
+  })
+
+  it('has no description for a status that is not part of the workflow', () => {
+    expect(getStatusDescription('NOT_A_STATUS')).toBeUndefined()
+    expect(getStatusDescription('')).toBeUndefined()
+    // A plain object's inherited members are not statuses either.
+    expect(getStatusDescription('toString')).toBeUndefined()
+  })
+
+  it('falls back to a readable label for an unrecognised status', () => {
+    expect(getStatusUserLabel('SOME_FUTURE_STATUS')).toBe('SOME FUTURE STATUS')
+  })
+})
 
 describe.concurrent('getCascadeEditWarningMessage', () => {
   it('does not warn when editing interview before PRD has started', () => {

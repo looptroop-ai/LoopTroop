@@ -16,7 +16,7 @@ import {
   getTicketWorktreePath,
 } from './paths'
 import { readJsonl } from '../io/jsonl'
-import { getAvailableWorkflowActions } from '@shared/workflowMeta'
+import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
 import type { ArtifactSnapshot } from '../sse/eventTypes'
 import { EXECUTION_BAND_STATUSES } from '../workflow/executionBand'
@@ -46,7 +46,7 @@ export function isDisplayOnlyMockTicket(ticket: Pick<LocalTicketRow, 'branchName
 }
 
 function getDisplayOnlyMockTicketActions(status: string): string[] {
-  return status === 'COMPLETED' || status === 'CANCELED' ? [] : ['cancel']
+  return isTerminalWorkflowStatus(status) ? [] : ['cancel']
 }
 
 const TrimmedNonEmptyStringSchema = z.string().trim().min(1)
@@ -1353,7 +1353,7 @@ export function getTicketStorageContext(ticketRef: string): { projectId: number;
 
 export function listNonTerminalTickets(): PublicTicket[] {
   return listTickets().filter(ticket => (
-    !['COMPLETED', 'CANCELED'].includes(ticket.status)
+    !isTerminalWorkflowStatus(ticket.status)
     && !isDisplayOnlyMockTicket(ticket)
   ))
 }

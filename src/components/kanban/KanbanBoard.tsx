@@ -3,7 +3,7 @@ import { KanbanColumn } from './KanbanColumn'
 import { useTickets, type Ticket } from '@/hooks/useTickets'
 import { useProjects } from '@/hooks/useProjects'
 import { useUI } from '@/context/useUI'
-import { WORKFLOW_GROUPS, WORKFLOW_PHASES, WORKFLOW_PHASE_MAP } from '@/lib/workflowMeta'
+import { WORKFLOW_GROUPS, WORKFLOW_PHASES, WORKFLOW_PHASE_MAP, type KanbanPhase } from '@/lib/workflowMeta'
 import { resolveKanbanPhase } from '@shared/kanbanPhase'
 import type { WorkflowGroupMeta, WorkflowPhaseMeta } from '@shared/workflowMeta'
 import type { TriagePreset, ErrorStateFilter } from '@/context/uiContextDef'
@@ -20,8 +20,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
-
-export type KanbanPhase = 'todo' | 'in_progress' | 'needs_input' | 'done'
 
 export interface KanbanColumnConfig {
   id: KanbanPhase

@@ -1,19 +1,15 @@
-import { getWorkflowPhaseMeta } from '@shared/workflowMeta'
+import { getWorkflowPhaseMeta, WORKFLOW_PHASES } from '@shared/workflowMeta'
 
-export const EXECUTION_BAND_STATUSES = [
-  'PRE_FLIGHT_CHECK',
-  'GENERATING_EXECUTION_SETUP_PLAN',
-  'WAITING_EXECUTION_SETUP_APPROVAL',
-  'PREPARING_EXECUTION_ENV',
-  'CODING',
-  'RUNNING_FINAL_TEST',
-  'GENERATING_QA_CHECKLIST',
-  'WAITING_MANUAL_QA',
-  'INTEGRATING_CHANGES',
-  'CREATING_PULL_REQUEST',
-  'WAITING_PR_REVIEW',
-  'CLEANING_ENV',
-] as const
+/**
+ * The statuses that hold a project's single execution slot, in workflow order.
+ *
+ * Derived from the phase table so the band and the workflow cannot disagree —
+ * a new execution phase joins the band by carrying `executionBand` there, and
+ * there is no second list to forget.
+ */
+export const EXECUTION_BAND_STATUSES: readonly string[] = WORKFLOW_PHASES
+  .filter((phase) => phase.executionBand)
+  .map((phase) => phase.id)
 
 export const EXECUTION_BAND_CONCURRENCY_LIMIT_MESSAGE =
   'Configured limitation in LoopTroop alpha: Each project may have only one active ticket in the execution band at a time.'
@@ -41,5 +37,5 @@ export function buildExecutionBandConflictMessage(
 }
 
 export function isExecutionBandStatus(status: string | null | undefined): boolean {
-  return typeof status === 'string' && EXECUTION_BAND_STATUSES.includes(status as (typeof EXECUTION_BAND_STATUSES)[number])
+  return typeof status === 'string' && getWorkflowPhaseMeta(status)?.executionBand === true
 }

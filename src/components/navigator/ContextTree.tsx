@@ -258,7 +258,7 @@ const PHASE_OUTPUTS: Record<string, ContextItem[]> = {
   ],
 }
 
-function getAllowedContextItems(keys: WorkflowContextKey[]): ContextItem[] {
+function getAllowedContextItems(keys: readonly WorkflowContextKey[]): ContextItem[] {
   return keys
     .map(key => CONTEXT_LABELS[key])
     .filter((item): item is ContextItem => Boolean(item))
@@ -266,7 +266,7 @@ function getAllowedContextItems(keys: WorkflowContextKey[]): ContextItem[] {
 
 function getAllowedContextSections(
   sections: readonly WorkflowContextSection[] | undefined,
-  fallbackKeys: WorkflowContextKey[],
+  fallbackKeys: readonly WorkflowContextKey[],
 ): Array<{ label?: string; description?: string; items: ContextItem[] }> {
   if (!sections || sections.length === 0) {
     return [{ items: getAllowedContextItems(fallbackKeys) }]
@@ -275,7 +275,7 @@ function getAllowedContextSections(
   return sections.map((section) => ({
     label: section.label,
     description: section.description,
-    items: getAllowedContextItems([...section.keys]),
+    items: getAllowedContextItems(section.keys),
   }))
 }
 

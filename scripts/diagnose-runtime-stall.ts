@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
+import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
 
 interface CliOptions {
   backendPort?: number
@@ -2587,10 +2588,10 @@ function inspectProjectDatabase(project: AttachedProjectRow): ProjectSnapshot {
       ? db.prepare(
         `SELECT external_id, status, updated_at
          FROM tickets
-         WHERE status NOT IN ('COMPLETED', 'CANCELED')
+         WHERE status NOT IN (${TERMINAL_WORKFLOW_STATUSES.map(() => '?').join(', ')})
          ORDER BY updated_at DESC
          LIMIT 1`,
-      ).get() as TicketRow | undefined
+      ).get(...TERMINAL_WORKFLOW_STATUSES) as TicketRow | undefined
       : undefined
 
     const statusCounts = tableExists(db, 'tickets')

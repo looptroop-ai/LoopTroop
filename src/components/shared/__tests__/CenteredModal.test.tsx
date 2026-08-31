@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CenteredModal } from '../CenteredModal'
@@ -220,12 +221,14 @@ describe('CenteredModal — popups belonging to something else', () => {
   it('keeps Tab out of it', () => {
     renderPickerOutsideDialog()
     const dialog = screen.getByRole('dialog', { name: 'Keyboard Shortcuts' })
-    const inside = screen.getByRole('button', { name: 'Inside' })
-    inside.focus()
+    const first = dialog.querySelector('button')!
+    first.focus()
 
-    fireEvent.keyDown(inside, { key: 'Tab' })
+    // Shift+Tab off the first control wraps to the end of the dialog's own scope. If
+    // the picker behind were counted as part of it, that end would be its option.
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
 
-    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Inside' }))
   })
 })
 
@@ -237,25 +240,33 @@ describe('CenteredModal — popups belonging to something else', () => {
  */
 describe('CenteredModal — overlays with their own focus management', () => {
   it('leaves Tab alone inside a nested menu', () => {
-    render(
-      <TooltipProvider>
-        <CenteredModal open onClose={vi.fn()} title="Projects">
-          <button type="button">Inside</button>
-        </CenteredModal>
-      </TooltipProvider>,
-    )
+    function Harness() {
+      const [menuOpen, setMenuOpen] = useState(false)
+      return (
+        <TooltipProvider>
+          <CenteredModal open onClose={vi.fn()} title="Projects">
+            <button type="button" onClick={() => setMenuOpen(true)}>Sort</button>
+            {/* What Radix does: content portaled to the body only while it is open,
+                with its own focus scope, and key events that still travel this React
+                tree to the dialog's handler. */}
+            {menuOpen && createPortal(
+              <div role="menu">
+                <button type="button">Sort by name</button>
+              </div>,
+              document.body,
+            )}
+          </CenteredModal>
+        </TooltipProvider>
+      )
+    }
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sort' }))
 
-    // Stand in for a Radix popper: body-portaled, its own scope, unknown to ours.
-    const menu = document.createElement('div')
-    menu.setAttribute('role', 'menu')
-    const item = document.createElement('button')
-    menu.appendChild(item)
-    document.body.appendChild(menu)
+    const item = screen.getByRole('button', { name: 'Sort by name' })
     item.focus()
 
     fireEvent.keyDown(item, { key: 'Tab' })
 
     expect(document.activeElement).toBe(item)
-    document.body.removeChild(menu)
   })
 })

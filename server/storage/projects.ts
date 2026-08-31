@@ -1,4 +1,4 @@
-import { eq, or } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { existsSync, rmSync } from 'fs'
 import { access, lstat, readdir } from 'fs/promises'
 import { resolve as resolvePath } from 'path'
@@ -7,6 +7,7 @@ import { APP_DB_PATH, db as appDb } from '../db/index'
 import { closeProjectDatabase, getExistingProjectDatabase, getProjectDatabase } from '../db/project'
 import { attachedProjects, profiles, projects, tickets } from '../db/schema'
 import { PROFILE_DEFAULTS } from '../db/defaults'
+import { TERMINAL_WORKFLOW_STATUSES } from '@shared/workflowMeta'
 import { applyIgnoreMode, DEFAULT_IGNORE_MODE, isIgnoreMode, type IgnoreMode } from '../git/repository'
 import { isGitHookPolicy } from '../git/hookPolicy'
 import type { GitHookPolicy } from '../structuredOutput/types'
@@ -548,7 +549,7 @@ function getTerminalTicketExternalIds(projectRoot: string): string[] {
   const rows = db
     .select({ externalId: tickets.externalId })
     .from(tickets)
-    .where(or(eq(tickets.status, 'COMPLETED'), eq(tickets.status, 'CANCELED')))
+    .where(inArray(tickets.status, TERMINAL_WORKFLOW_STATUSES))
     .all()
   return rows.map(r => r.externalId)
 }

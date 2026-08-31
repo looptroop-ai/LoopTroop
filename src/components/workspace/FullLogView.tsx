@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
 import { getStatusUserLabel, type StatusLabelOptions } from '@/lib/workflowMeta'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { LoadingText } from '@/components/ui/LoadingText'
 import type { Ticket } from '@/hooks/useTickets'
 import { filterEntries, formatLogLine, getEntryFullModelId, isSystem, isCommand } from './logFormat'
@@ -298,7 +299,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const totalTextLines = ticket?.id
     ? Math.max(loadedTextLines, historicalLogs.totalTextLines ?? loadedTextLines)
     : loadedTextLines
-  const isTerminalTicket = ticket?.status === 'COMPLETED' || ticket?.status === 'CANCELED'
+  const isTerminalTicket = isTerminalWorkflowStatus(ticket?.status)
 
   const beadLabelOptions: StatusLabelOptions | undefined = useMemo(() => {
     if (!ticket) return undefined

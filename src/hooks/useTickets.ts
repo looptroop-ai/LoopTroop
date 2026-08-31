@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { clearPersistedTicketLogs } from '@/context/logUtils'
 import { clearTicketArtifactsCache } from './useTicketArtifacts'
 import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCache'
-import type { WorkflowAction } from '@shared/workflowMeta'
+import { isTerminalWorkflowStatus, type WorkflowAction } from '@shared/workflowMeta'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { failedResponseError } from '@/lib/fetchError'
@@ -258,14 +258,10 @@ interface TicketActionResponse {
 const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
 const ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS = 10000
 
-function isTerminalTicketStatus(status: string): boolean {
-  return status === 'COMPLETED' || status === 'CANCELED'
-}
-
 export function getTicketAutoRefreshInterval(
   ticket: Pick<Ticket, 'status'> | null | undefined,
 ): number | false {
-  return ticket && !isTerminalTicketStatus(ticket.status)
+  return ticket && !isTerminalWorkflowStatus(ticket.status)
     ? ACTIVE_TICKET_REFETCH_INTERVAL_MS
     : false
 }
@@ -273,7 +269,7 @@ export function getTicketAutoRefreshInterval(
 export function getTicketsAutoRefreshInterval(
   tickets: Array<Pick<Ticket, 'status'>> | null | undefined,
 ): number | false {
-  return tickets?.some((ticket) => !isTerminalTicketStatus(ticket.status))
+  return tickets?.some((ticket) => !isTerminalWorkflowStatus(ticket.status))
     ? ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS
     : false
 }

@@ -1,6 +1,7 @@
 import { createActor } from 'xstate'
 import { ticketMachine } from './ticketMachine'
-import { STATUS_TO_PHASE, TERMINAL_STATES, normalizeSettingSource, type ManualQaConfigurationSource, type SettingSource, type TicketContext } from './types'
+import { isTerminalWorkflowStatus, isWorkflowPhaseId } from '@shared/workflowMeta'
+import { normalizeSettingSource, type ManualQaConfigurationSource, type SettingSource, type TicketContext } from './types'
 import { PROFILE_DEFAULTS } from '../db/defaults'
 import { attachWorkflowRunner } from '../workflow/runner'
 import { broadcaster } from '../sse/broadcaster'
@@ -45,10 +46,6 @@ type TicketActorInput = {
   lockedAiQuestionsSource?: SettingSource | null
   lockedAiQuestionWindow?: number | null
   lockedAiQuestionWindowSource?: SettingSource | null
-}
-
-function isKnownWorkflowState(status: string): boolean {
-  return Object.prototype.hasOwnProperty.call(STATUS_TO_PHASE, status)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -126,7 +123,7 @@ function buildPersistedSnapshot(
   },
 ) {
   return {
-    status: TERMINAL_STATES.includes(options.status as (typeof TERMINAL_STATES)[number]) ? 'done' : 'active',
+    status: isTerminalWorkflowStatus(options.status) ? 'done' : 'active',
     value: options.status,
     historyValue: {},
     context: buildMachineContext(input, options),
@@ -140,10 +137,10 @@ function reconcileSnapshotForTicket(
   input: TicketActorInput,
   dbStatus: string,
 ): unknown | null {
-  if (!isKnownWorkflowState(dbStatus)) return null
+  if (!isWorkflowPhaseId(dbStatus)) return null
 
   const snapshotStatus = getSnapshotStateValue(rawSnapshot)
-  if (!snapshotStatus || !isKnownWorkflowState(snapshotStatus)) return null
+  if (!snapshotStatus || !isWorkflowPhaseId(snapshotStatus)) return null
 
   const context = getSnapshotContext(rawSnapshot)
   if (!context) return null
@@ -184,7 +181,7 @@ function reconcileSnapshotForTicket(
 
   if (
     dbStatus === 'BLOCKED_ERROR'
-    && (typeof context.previousStatus !== 'string' || !isKnownWorkflowState(context.previousStatus))
+    && (typeof context.previousStatus !== 'string' || !isWorkflowPhaseId(context.previousStatus))
   ) {
     const durablePreviousStatus = getTicketByRef(ticketRef)?.previousStatus
     if (durablePreviousStatus) {
@@ -216,7 +213,7 @@ function recoverSnapshotForTicket(
   dbStatus: string,
   errorMessage?: string | null,
 ): unknown | null {
-  if (!isKnownWorkflowState(dbStatus)) return null
+  if (!isWorkflowPhaseId(dbStatus)) return null
   const ticket = getTicketByRef(ticketRef)
   const previousStatus = dbStatus === 'BLOCKED_ERROR'
     ? ticket?.previousStatus ?? null
@@ -245,7 +242,7 @@ function blockTicketForSnapshotRecovery(
   failedStatus: string,
   cause: unknown,
 ): unknown {
-  const blockedFromStatus = isKnownWorkflowState(failedStatus) && failedStatus !== 'BLOCKED_ERROR'
+  const blockedFromStatus = isWorkflowPhaseId(failedStatus) && failedStatus !== 'BLOCKED_ERROR'
     ? failedStatus
     : getTicketByRef(ticketRef)?.previousStatus ?? 'DRAFT'
   const message = `Ticket workflow snapshot could not be restored safely. Retry will resume from ${blockedFromStatus}. Details: ${getErrorMessage(cause)}`
@@ -354,7 +351,7 @@ export function ensureActorForTicket(ticketRef: string | number) {
 
   const ticket = getTicketContext(resolvedTicketRef)
   if (!ticket) throw new Error(`Ticket ${resolvedTicketRef} not found`)
-  if (TERMINAL_STATES.includes(ticket.localTicket.status as (typeof TERMINAL_STATES)[number])) {
+  if (isTerminalWorkflowStatus(ticket.localTicket.status)) {
     throw new Error(`Ticket ${resolvedTicketRef} is terminal (${ticket.localTicket.status})`)
   }
   if (isDisplayOnlyMockTicket(ticket.localTicket)) {

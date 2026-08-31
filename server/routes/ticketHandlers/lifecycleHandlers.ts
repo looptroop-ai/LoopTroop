@@ -46,6 +46,7 @@ import { recoverCodingBeadWithReset } from '../../workflow/phases/beadsPhase'
 import { recoverSuccessfulExecutionCheckpointForFinalization } from '../../workflow/phases/executionPhase'
 import { isExecutionBandStatus } from '../../workflow/executionBand'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { broadcaster } from '../../sse/broadcaster'
 import {
   clearSessionContinuation,
@@ -373,7 +374,7 @@ export async function handleCancelTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
-  if (['COMPLETED', 'CANCELED'].includes(ticket.status)) {
+  if (isTerminalWorkflowStatus(ticket.status)) {
     return c.json({ error: 'Cannot cancel a terminal ticket' }, 409)
   }
 

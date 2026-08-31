@@ -1,9 +1,12 @@
 import {
   type EditableArtifactType,
+  isWorkflowPhaseId,
   type KanbanPhase,
   WORKFLOW_GROUPS,
   WORKFLOW_PHASE_MAP,
   WORKFLOW_PHASES,
+  type WorkflowPhaseId,
+  type WorkflowPhaseMeta,
 } from '@shared/workflowMeta'
 import { sanitizeErrorForDisplay } from './errorDisplay'
 
@@ -19,22 +22,35 @@ export interface StatusLabelOptions {
   errorMessage?: string | null
 }
 
-/** Maps every workflow status ID to its kanban column. */
-export const STATUS_TO_PHASE: Record<string, KanbanPhase> = Object.fromEntries(
-  WORKFLOW_PHASES.map((phase) => [phase.id, phase.kanbanPhase]),
-) as Record<string, KanbanPhase>
+/**
+ * Builds a per-status lookup from the shared phase table.
+ *
+ * Keyed by `WorkflowPhaseId` rather than by `string`, so a phase added to shared
+ * metadata cannot quietly miss an entry here: the record would not type-check.
+ * Statuses arriving as plain text go through the accessors below instead of
+ * indexing these records directly.
+ */
+function buildPhaseRecord<T>(select: (phase: WorkflowPhaseMeta) => T): Record<WorkflowPhaseId, T> {
+  return Object.fromEntries(
+    WORKFLOW_PHASES.map((phase) => [phase.id, select(phase)]),
+  ) as Record<WorkflowPhaseId, T>
+}
 
 /** Maps every workflow status ID to its short description (includes safe-resume suffix). */
-export const STATUS_DESCRIPTIONS: Record<string, string> = Object.fromEntries(
-  WORKFLOW_PHASES.map((phase) => [phase.id, phase.description]),
-) as Record<string, string>
+const STATUS_DESCRIPTIONS = buildPhaseRecord((phase) => phase.description)
 
 /** Linear ordering of all workflow status IDs — used for range checks and progression queries. */
-export const STATUS_ORDER: string[] = WORKFLOW_PHASES.map((phase) => phase.id)
+export const STATUS_ORDER: readonly string[] = WORKFLOW_PHASES.map((phase) => phase.id)
 
-const BASE_STATUS_LABELS: Record<string, string> = Object.fromEntries(
-  WORKFLOW_PHASES.map((phase) => [phase.id, phase.label]),
-) as Record<string, string>
+const BASE_STATUS_LABELS = buildPhaseRecord((phase) => phase.label)
+
+/**
+ * Returns the short description shown in status tooltips, or `undefined` for a
+ * status that is not part of the workflow.
+ */
+export function getStatusDescription(status: string): string | undefined {
+  return isWorkflowPhaseId(status) ? STATUS_DESCRIPTIONS[status] : undefined
+}
 
 function hasReachedStatus(currentStatus: string, targetStatus: string): boolean {
   const currentIndex = STATUS_ORDER.indexOf(currentStatus)
@@ -94,7 +110,7 @@ export function getCascadeEditWarningMessage(
 }
 
 function formatBlockedErrorLabel(errorMessage?: string | null): string {
-  const blockedErrorLabel = BASE_STATUS_LABELS.BLOCKED_ERROR ?? 'Error (reason)'
+  const blockedErrorLabel = BASE_STATUS_LABELS.BLOCKED_ERROR
   if (!errorMessage) return blockedErrorLabel
   const trimmed = sanitizeErrorForDisplay(errorMessage).replace(/\s+/g, ' ').trim()
   if (!trimmed) return blockedErrorLabel
@@ -123,5 +139,6 @@ export function getStatusUserLabel(status: string, options: StatusLabelOptions =
     return formatBlockedErrorLabel(options.errorMessage)
   }
 
-  return BASE_STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
+  return (isWorkflowPhaseId(status) ? BASE_STATUS_LABELS[status] : undefined)
+    ?? status.replace(/_/g, ' ')
 }

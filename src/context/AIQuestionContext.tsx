@@ -7,6 +7,7 @@ import type { Ticket } from '@/hooks/useTickets'
 import { useUI } from '@/context/useUI'
 import type { AiQuestionTimerState } from '@shared/aiQuestions'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import {
   AIQuestionContext,
   type AIQuestionContextValue,
@@ -30,10 +31,6 @@ interface AiQuestionPayload {
   timer?: AiQuestionTimerState
   requests?: Array<Record<string, unknown>>
   timestamp?: string
-}
-
-function isTerminalStatus(status: string) {
-  return status === 'COMPLETED' || status === 'CANCELED'
 }
 
 function normalizeQuestion(question: AiQuestionInfo): AiQuestionInfo {
@@ -125,7 +122,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const stoppedTimersRef = useRef(new Set<string>())
 
   const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
-  const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalStatus(ticket.status)), [tickets])
+  const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalWorkflowStatus(ticket.status)), [tickets])
   const activeTicketIds = useMemo(() => new Set(activeTickets.map((ticket) => ticket.id)), [activeTickets])
   const activeTicketKey = useMemo(() => activeTickets.map((ticket) => ticket.id).sort().join('|'), [activeTickets])
 

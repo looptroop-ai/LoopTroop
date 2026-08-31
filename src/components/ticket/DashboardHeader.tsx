@@ -9,6 +9,7 @@ import type { Ticket } from '@/hooks/useTickets'
 import { useProfile } from '@/hooks/useProfile'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketAvailableActions, getTicketCouncilMembers, getTicketRuntime } from '@/lib/ticketNormalization'
 import { getWorkflowRingProgress, getStatusRingColor } from '@/components/kanban/ticketCardUtils'
 import { ProgressRing } from '@/components/kanban/ProgressRing'
@@ -58,12 +59,10 @@ function formatDuration(durationMs: number): string {
 
 function getStatusBadgeClasses(status: string): string {
   if (status === 'BLOCKED_ERROR') return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400 border-red-200 dark:border-red-800'
-  if (['COMPLETED', 'CANCELED'].includes(status)) return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 border-gray-200 dark:border-gray-700'
+  if (isTerminalWorkflowStatus(status)) return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300 border-gray-200 dark:border-gray-700'
   if (status.startsWith('WAITING_')) return 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200 dark:border-amber-800'
   return 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200 dark:border-blue-800'
 }
-
-const NON_CANCELABLE = ['COMPLETED', 'CANCELED']
 
 function CopyablePathRow({ label, path }: { label: string; path: string }) {
   const [copied, handleCopy] = useCopyToClipboard()
@@ -337,7 +336,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
   const availableActions = getTicketAvailableActions(ticket)
   const lockedCouncilMembers = getTicketCouncilMembers(ticket)
   const canCancel = availableActions.includes('cancel')
-  const canDelete = NON_CANCELABLE.includes(ticket.status)
+  const canDelete = isTerminalWorkflowStatus(ticket.status)
   const isActionPending = isPending
   const { data: projects = [] } = useProjects()
   const project = projects.find(p => p.id === ticket.projectId)
@@ -492,7 +491,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                 <span className="text-xs font-medium text-muted-foreground">Duration</span>
                 <p className="mt-0.5">{(() => {
                   const start = new Date(ticket.startedAt).getTime()
-                  const end = ['COMPLETED', 'CANCELED', 'BLOCKED_ERROR'].includes(ticket.status)
+                  // Blocked tickets stop the clock too: nothing is running while
+                  // the ticket waits for a recovery decision.
+                  const end = isTerminalWorkflowStatus(ticket.status) || ticket.status === 'BLOCKED_ERROR'
                     ? new Date(ticket.updatedAt).getTime()
                     : Date.now()
                   const diffMs = end - start

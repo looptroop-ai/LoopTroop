@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { createActor } from 'xstate'
 import { FINAL_TEST_FAILED } from '@shared/errorCodes'
+import { isWorkflowPhaseId, WORKFLOW_PHASE_IDS } from '@shared/workflowMeta'
 import { ticketMachine } from '../ticketMachine'
+
+describe('ticketMachine states', () => {
+  it('has one state per declared workflow phase, and no others', () => {
+    // The machine's states and the shared phase table describe the same set of
+    // statuses. They used to be kept in step by a second status list written out
+    // by hand next to the machine; this assertion replaces it, so a state added
+    // to one and not the other fails here instead of surfacing as a ticket whose
+    // restored snapshot is silently discarded.
+    const states = Object.keys(ticketMachine.config.states ?? {})
+
+    expect([...states].sort()).toEqual([...WORKFLOW_PHASE_IDS].sort())
+    for (const state of states) {
+      expect(isWorkflowPhaseId(state), `${state} is not a declared workflow phase`).toBe(true)
+    }
+  })
+})
 
 describe('ticketMachine execution setup flow', () => {
   it('records a stable cause code when Final Testing fails', () => {

@@ -1,16 +1,13 @@
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 import * as yaml from 'js-yaml'
+import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { getTicketByRef, getTicketPaths, listTickets, type PublicTicket } from './ticketQueries'
 
 function getRuntimeStatePath(ticket: PublicTicket): string | null {
   const paths = getTicketPaths(ticket.id)
   return paths ? resolve(paths.ticketDir, 'runtime', 'state.yaml') : null
-}
-
-function isTerminalStatus(status: string): boolean {
-  return status === 'COMPLETED' || status === 'CANCELED'
 }
 
 function buildRuntimeProjection(ticket: PublicTicket) {
@@ -66,7 +63,7 @@ export function syncTicketRuntimeProjection(ticketOrRef: PublicTicket | string):
   const statePath = getRuntimeStatePath(ticket)
   if (!statePath) return
 
-  if (isTerminalStatus(ticket.status)) {
+  if (isTerminalWorkflowStatus(ticket.status)) {
     rmSync(statePath, { force: true })
     return
   }

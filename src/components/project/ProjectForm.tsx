@@ -27,6 +27,7 @@ import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySettin
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { IgnoreModeSetting } from './IgnoreModeSetting'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@shared/ignoreMode'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 interface ProjectFormProps {
   onClose: () => void
@@ -95,7 +96,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
     normalizeGitHookPolicySetting(project?.gitHookPolicy)
       ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-      ?? 'validate_advisory',
+      ?? DEFAULT_GIT_HOOK_POLICY,
   )
   const [isIconPickerOpen, setIsIconPickerOpen] = useState(false)
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false)
@@ -170,7 +171,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               setGitHookPolicy(
                 normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
                   ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-                  ?? 'validate_advisory',
+                  ?? DEFAULT_GIT_HOOK_POLICY,
               )
             }
             if (data.existingProject.ignoreMode !== undefined) {
@@ -498,7 +499,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   <GitHookPolicySetting
                     value={gitHookPolicy}
                     onChange={setGitHookPolicy}
-                    inheritedPolicy={profile?.gitHookPolicy ?? 'validate_advisory'}
+                    inheritedPolicy={profile?.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY}
                     compact
                   />
                 </div>

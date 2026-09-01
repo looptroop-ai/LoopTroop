@@ -38,7 +38,12 @@ function truncateToBytes(text: string, maxBytes: number): { text: string; trunca
  */
 export function appendBoundedOutput(current: string, chunk: string): string {
   const currentBytes = Buffer.byteLength(current, 'utf8')
-  if (currentBytes >= MAX_COMMAND_OUTPUT_BYTES) return current
+  if (currentBytes >= MAX_COMMAND_OUTPUT_BYTES) {
+    // Already full. Anything arriving now is dropped, and dropped output has to
+    // say so — but only once, so a run of later chunks does not stack notices.
+    if (chunk.length === 0 || current.endsWith(TRUNCATION_NOTICE)) return current
+    return `${current}${TRUNCATION_NOTICE}`
+  }
 
   const remaining = MAX_COMMAND_OUTPUT_BYTES - currentBytes
   const { text: appended, truncated } = truncateToBytes(chunk, remaining)
@@ -59,8 +64,6 @@ export interface BoundedOutputCollector {
   appendText(text: string): void
   /** Flushes the decoder and returns the final text. Safe to call more than once. */
   end(): string
-  /** What has been collected so far, without flushing. */
-  readonly value: string
 }
 
 /**
@@ -101,9 +104,6 @@ export function createBoundedOutputCollector(): BoundedOutputCollector {
         // visible as such instead of vanishing.
         push(decoder.end())
       }
-      return text
-    },
-    get value() {
       return text
     },
   }

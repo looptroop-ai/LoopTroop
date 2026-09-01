@@ -15,6 +15,9 @@ import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { listOpenCodeSessionsForTicket, SessionManager } from '../sessionManager'
+import { eq } from 'drizzle-orm'
+import { opencodeSessions } from '../../db/schema'
+import { getTicketContext } from '../../storage/tickets'
 import { attachProject } from '../../storage/projects'
 import { createTicket, patchTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
@@ -319,5 +322,56 @@ describe('SessionManager', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+  it('reconnects a session row whose stored phase is no longer a declared status', async () => {
+    // The phase is a lookup key against a row this process may not have
+    // written. Running it through a "narrow it or fall back" helper first
+    // rewrites the key, finds nothing, and abandons a session that is alive.
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({
+      folderPath: repoDir,
+      name: 'LoopTroop',
+      shortname: 'LOOP',
+    })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Reconnect a legacy session phase',
+      description: 'A session row written under a status that has since been renamed.',
+    })
+    patchTicket(ticket.id, { status: 'CODING' })
+
+    const adapter = new TestOpenCodeAdapter()
+    const sessionManager = new SessionManager(adapter)
+    const created = await sessionManager.createSessionForPhase(
+      ticket.id,
+      'CODING',
+      1,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      repoDir,
+    )
+
+    // Rewrite both the row and the ticket to a status this build no longer
+    // declares, which is what an upgrade mid-run leaves behind. The session is
+    // still live and the two still agree, so the only thing that can lose it is
+    // the lookup key being rewritten on the way in.
+    const context = getTicketContext(ticket.id)!
+    context.projectDb
+      .update(opencodeSessions)
+      .set({ phase: 'OLD_RENAMED_PHASE' })
+      .where(eq(opencodeSessions.sessionId, created.id))
+      .run()
+    patchTicket(ticket.id, { status: 'OLD_RENAMED_PHASE' })
+
+    adapter.sessions = []
+    adapter.exactSessionLookup = (sessionId) => sessionId === created.id ? created : null
+
+    const result = await sessionManager.reconcileActiveSession(ticket.id, 'OLD_RENAMED_PHASE', created.id)
+
+    expect(result.state).toBe('reconnected')
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId))
+      .toEqual([created.id])
   })
 })

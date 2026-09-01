@@ -88,7 +88,7 @@ export async function reconcileOpenCodeSessions(
         : undefined
       const ticketRef = localTicket ? buildTicketRef(project.id, localTicket.externalId) : undefined
       const result = ticketRef
-        ? await sessionManager.reconcileActiveSession(ticketRef, resolveStoredWorkflowPhase(session.phase), session.sessionId, {
+        ? await sessionManager.reconcileActiveSession(ticketRef, session.phase, session.sessionId, {
             ...(session.phaseAttempt != null ? { phaseAttempt: session.phaseAttempt } : {}),
             memberId: session.memberId,
             beadId: session.beadId,

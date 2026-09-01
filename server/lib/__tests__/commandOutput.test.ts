@@ -49,9 +49,24 @@ describe('appendBoundedOutput', () => {
     expect(Buffer.byteLength(keptText(result), 'utf8')).toBe(MAX_COMMAND_OUTPUT_BYTES)
   })
 
-  it('returns the existing output untouched once the cap is reached', () => {
+  it('reports output dropped after the cap was already reached', () => {
     const full = 'x'.repeat(MAX_COMMAND_OUTPUT_BYTES)
-    expect(appendBoundedOutput(full, 'more')).toBe(full)
+    const result = appendBoundedOutput(full, 'more')
+
+    expect(keptText(result)).toBe(full)
+    expect(result.endsWith(TRUNCATION_NOTICE)).toBe(true)
+  })
+
+  it('does not stack notices across repeated dropped chunks', () => {
+    const full = 'x'.repeat(MAX_COMMAND_OUTPUT_BYTES)
+    const once = appendBoundedOutput(full, 'more')
+
+    expect(appendBoundedOutput(once, 'and more')).toBe(once)
+  })
+
+  it('says nothing when an empty chunk arrives after the cap', () => {
+    const full = 'x'.repeat(MAX_COMMAND_OUTPUT_BYTES)
+    expect(appendBoundedOutput(full, '')).toBe(full)
   })
 })
 

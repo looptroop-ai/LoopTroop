@@ -50,6 +50,15 @@ describe('stripAnsiSequences', () => {
       expect(stripAnsiSequences(input)).toBe(' VISIBLE tail')
     })
 
+    it('does not keep an unterminated 8-bit introducer either', () => {
+      // The 7-bit case is cleaned by the two-character escape rule below; the
+      // C1 introducer had no equivalent and travelled into bead notes intact.
+      expect(stripAnsiSequences(`${C1_OSC}0;never terminated`)).toBe('0;never terminated')
+      // `C1_CSI` followed by a letter is a *complete* CSI sequence, so the
+      // unterminated case needs a byte no CSI can end on.
+      expect(stripAnsiSequences(`${C1_CSI}\nnever terminated`)).toBe('\nnever terminated')
+    })
+
     it('does not eat the rest of the text after an unterminated OSC introducer', () => {
       // No terminator means no OSC match at all. The introducer is then removed
       // by the two-character escape rule and the payload stays visible, which is

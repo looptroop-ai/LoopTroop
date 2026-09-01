@@ -9,6 +9,11 @@ export interface PhaseIntermediateData {
   memberOutcomes: Record<string, MemberOutcome>
   contextBuilder?: (step: 'vote' | 'refine') => PromptPart[]
   worktreePath: string
+  /**
+   * The council *stage* — `prd_draft`, `beads`, `interview` — not a workflow
+   * status, despite the name it shares with one. Narrowing this to
+   * `WorkflowPhaseId` was tried and does not compile.
+   */
   phase: string
   ticketState?: TicketState
   votes?: Vote[]

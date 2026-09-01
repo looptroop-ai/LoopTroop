@@ -178,6 +178,11 @@ export async function runExplicitGitHookValidation(input: {
   const policy = config?.policy ?? DEFAULT_GIT_HOOK_POLICY
   const noMutation = { mutated: false, candidatePaths: [], temporaryPaths: [], internalPaths: [] }
   if (!config || (policy !== 'validate_advisory' && policy !== 'validate_required')) {
+    // Two different reasons land here and they are not the same news. A policy
+    // that disables validation is a choice; a profile whose policy could not be
+    // read is a problem, and reporting it as `Explicit validation is disabled by
+    // policy validate_advisory` claims a decision nobody made.
+    const unreadableProfile = !config
     return {
       policy,
       receipts: [{
@@ -185,10 +190,14 @@ export async function runExplicitGitHookValidation(input: {
         status: 'skipped',
         exitCode: null,
         durationMs: 0,
-        outputExcerpt: `Explicit validation is disabled by policy ${policy}.`,
+        outputExcerpt: unreadableProfile
+          ? 'Explicit validation was skipped: the workspace profile declares no readable git hook policy.'
+          : `Explicit validation is disabled by policy ${policy}.`,
       }],
       errors: [],
-      warnings: [],
+      warnings: unreadableProfile
+        ? ['The workspace profile declares no readable git hook policy, so explicit hook validation was skipped.']
+        : [],
       fileAudit: noMutation,
     }
   }

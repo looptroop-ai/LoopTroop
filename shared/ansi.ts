@@ -32,10 +32,23 @@ const ANSI_OSC_SEQUENCE = new RegExp(
 const ANSI_CSI_SEQUENCE = new RegExp(`(?:${ESCAPE}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g')
 const ANSI_SINGLE_SEQUENCE = new RegExp(`${ESCAPE}[@-_]`, 'g')
 
+/**
+ * A C1 introducer left behind by an unterminated sequence.
+ *
+ * The 7-bit forms get this for free: an unterminated `ESC ]` is not an OSC
+ * match, and the two-character escape rule then removes the `ESC ]` and leaves
+ * the payload readable. Nothing did the same for `U+009B` / `U+009D`, so an
+ * unterminated 8-bit sequence kept its control character all the way into a
+ * bead note. Removing the introducer and keeping the text is the same trade
+ * the 7-bit path already makes.
+ */
+const C1_INTRODUCER = new RegExp(`[${C1_CSI}${C1_OSC}]`, 'g')
+
 /** Removes OSC, CSI (7-bit and C1) and single-character ESC sequences. */
 export function stripAnsiSequences(text: string): string {
   return text
     .replace(ANSI_OSC_SEQUENCE, '')
     .replace(ANSI_CSI_SEQUENCE, '')
     .replace(ANSI_SINGLE_SEQUENCE, '')
+    .replace(C1_INTRODUCER, '')
 }

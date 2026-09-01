@@ -32,6 +32,9 @@ const sharedHelperRedeclarationRules = Object.entries(SHARED_HELPER_HOMES).flatM
     },
     // `const f = function isRecord() {}` — the name is on the expression, not the binding.
     { selector: `FunctionExpression[id.name='${name}']`, message },
+    // `{ isRecord() {} }` and `class X { isRecord() {} }`
+    { selector: `Property[key.name='${name}'][value.type=/FunctionExpression|ArrowFunctionExpression/]`, message },
+    { selector: `MethodDefinition[key.name='${name}']`, message },
   ]
 })
 

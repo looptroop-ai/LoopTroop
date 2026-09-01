@@ -160,9 +160,17 @@ export function requestSessionContinuation(input: {
   return pending
 }
 
+/**
+ * `phase` is a lookup key, so it stays `string`.
+ *
+ * The map itself only ever holds real phase ids — `requestSessionContinuation`
+ * takes a `WorkflowPhaseId` — but callers ask with a phase read off a stored
+ * session row, and an unrecognised one should simply match nothing rather than
+ * be rewritten into a phase that could match the wrong entry.
+ */
 export function getPendingSessionContinuationForTicketPhase(
   ticketId: string,
-  phase: WorkflowPhaseId,
+  phase: string,
 ): PendingSessionContinuation | null {
   pruneStalePendingContinuations()
   for (const pending of pendingSessionContinuations.values()) {
@@ -188,7 +196,7 @@ export function clearSessionContinuation(sessionId: string): void {
   pendingSessionContinuations.delete(sessionId)
 }
 
-export function hasPendingSessionContinuationForTicketPhase(ticketId: string, phase: WorkflowPhaseId): boolean {
+export function hasPendingSessionContinuationForTicketPhase(ticketId: string, phase: string): boolean {
   return getPendingSessionContinuationForTicketPhase(ticketId, phase) !== null
 }
 

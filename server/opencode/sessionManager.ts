@@ -63,9 +63,20 @@ export function listOpenCodeSessionsForTicket(ticketId: string, states: string[]
     .filter((session) => states.length === 0 || states.includes(session.state))
 }
 
+/**
+ * A phase used to look a session row up, as that row stores it.
+ *
+ * Deliberately not `WorkflowPhaseId`. These are query keys against rows this
+ * process did not necessarily write, and narrowing one means running an
+ * unrecognised value through a fallback before the lookup — which changes the
+ * key, finds nothing, and abandons a session that is still alive. Session
+ * *creation* below is a write and does take `WorkflowPhaseId`.
+ */
+type StoredSessionPhase = string
+
 export function reactivateOpenCodeSessionForContinuation(
   ticketId: string,
-  phase: WorkflowPhaseId,
+  phase: StoredSessionPhase,
   sessionId: string,
 ): boolean {
   const context = getTicketContext(ticketId)
@@ -171,7 +182,7 @@ export class SessionManager {
     })
   }
 
-  getActiveSession(ticketId: string, phase: WorkflowPhaseId, memberId?: string) {
+  getActiveSession(ticketId: string, phase: StoredSessionPhase, memberId?: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -189,7 +200,7 @@ export class SessionManager {
       .get()
   }
 
-  getOwnedActiveSession(ticketId: string, phase: WorkflowPhaseId, ownership: SessionOwnership) {
+  getOwnedActiveSession(ticketId: string, phase: StoredSessionPhase, ownership: SessionOwnership) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -227,7 +238,7 @@ export class SessionManager {
 
   async validateAndReconnect(
     ticketId: string,
-    phase: WorkflowPhaseId,
+    phase: StoredSessionPhase,
     ownership?: SessionOwnership,
     signal?: AbortSignal,
   ): Promise<Session | null> {
@@ -252,7 +263,7 @@ export class SessionManager {
     return null
   }
 
-  private getActiveSessionById(ticketId: string, phase: WorkflowPhaseId, sessionId: string) {
+  private getActiveSessionById(ticketId: string, phase: StoredSessionPhase, sessionId: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     return context.projectDb
@@ -273,7 +284,7 @@ export class SessionManager {
    */
   async reconcileActiveSession(
     ticketId: string,
-    phase: WorkflowPhaseId,
+    phase: StoredSessionPhase,
     sessionId: string,
     ownership?: SessionOwnership,
     signal?: AbortSignal,

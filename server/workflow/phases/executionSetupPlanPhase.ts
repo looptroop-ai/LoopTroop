@@ -42,6 +42,7 @@ import {
 import { enrichGeneratedExecutionSetupPlan } from '../../phases/executionSetupPlan/hookEvidence'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
 import { detectHostContext } from '../../lib/hostContext'
+import { getErrorMessage } from '@shared/typeGuards'
 
 function buildExecutionSetupPlanReport(input: {
   generatedBy: string
@@ -209,7 +210,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
           })
           return []
         } catch (error) {
-          return [error instanceof Error ? error.message : String(error)]
+          return [getErrorMessage(error)]
         }
       },
       onSessionCreated: (sessionId) => {
@@ -277,7 +278,7 @@ async function generateAndPersistExecutionSetupPlan(input: {
         }),
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = getErrorMessage(error)
       generation.parse.errors.push(message)
       generation.parse.plan = null
       generation.plan = null

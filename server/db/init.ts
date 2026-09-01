@@ -8,6 +8,7 @@ import {
   shouldStampAfterInit,
   writeUserVersion,
 } from './schemaVersion'
+import { buildGitHookPolicyMigrationSql } from '@shared/gitHookPolicy'
 
 function ensureColumn(table: string, column: string, definition: string) {
   const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
@@ -199,20 +200,8 @@ export function initializeDatabase() {
   ensureColumn('profiles', 'ai_questions_enabled', `INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.aiQuestionsEnabled ? 1 : 0}`)
   ensureColumn('profiles', 'ai_question_window', `INTEGER DEFAULT ${PROFILE_DEFAULTS.aiQuestionWindow}`)
 
-  sqlite.exec(`
-    UPDATE profiles
-    SET git_hook_policy = CASE git_hook_policy
-      WHEN 'validate_explicitly' THEN 'validate_advisory'
-      WHEN 'ignore_internal_only' THEN 'observe_only'
-      WHEN 'use_on_internal_commits' THEN 'use_native_hooks'
-      ELSE git_hook_policy
-    END
-    WHERE git_hook_policy IN (
-      'validate_explicitly',
-      'ignore_internal_only',
-      'use_on_internal_commits'
-    );
-  `)
+  const gitHookPolicyMigration = buildGitHookPolicyMigrationSql('profiles')
+  if (gitHookPolicyMigration) sqlite.exec(gitHookPolicyMigration)
 
   // Stamp after all DDL: the database is now at the current schema version.
   if (shouldStampAfterInit(compatibility)) {

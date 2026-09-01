@@ -4,14 +4,17 @@ import {
   OPENCODE_SESSION_CREATE_HEALTH_DIAGNOSTIC_TIMEOUT_MS,
   OPENCODE_SESSION_CREATE_RETRY_DELAYS_MS,
 } from '../lib/constants'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export interface OpenCodeSessionCreateRetryOptions {
   retryDelaysMs?: readonly number[]
   healthDiagnosticTimeoutMs?: number
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
+// Differs from `@shared/typeGuards`'s `getErrorMessage` on purpose: an Error thrown with an
+// empty message would leave the retry diagnostic blank, so fall back to `String(error)`.
+function describeSessionError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return getErrorMessage(error)
   return String(error)
 }
 
@@ -95,14 +98,14 @@ async function collectHealthDiagnostic(
     return formatHealthDiagnostic(health)
   } catch (error) {
     if (isAbortLike(error, signal)) throw error
-    return `health check failed: ${getErrorMessage(error)}`
+    return `health check failed: ${describeSessionError(error)}`
   }
 }
 
 function buildRetryError(errors: unknown[], lastHealthDiagnostic: string | undefined): Error {
   const attempts = errors.length
   const attemptDetails = errors
-    .map((error, index) => `attempt ${index + 1}: ${getErrorMessage(error)}`)
+    .map((error, index) => `attempt ${index + 1}: ${describeSessionError(error)}`)
     .join(' | ')
   const healthDetails = lastHealthDiagnostic
     ? ` Last OpenCode health check: ${lastHealthDiagnostic}.`

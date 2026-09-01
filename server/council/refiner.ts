@@ -13,6 +13,7 @@ import {
   attachOpenCodeBlockedErrorDiagnostics,
   buildOutputTruncatedBlockedErrorDiagnostics,
 } from '../opencode/blockedErrorDiagnostics'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export interface RefineDraftResult {
   content: string
@@ -77,7 +78,9 @@ export async function refineDraft(
   }) => void,
   sessionOwnership?: {
     ticketId: string
-    phase: string
+    // The workflow status the round runs in, not the council stage — the two
+    // are both called "phase" in this file and mean different things.
+    phase: WorkflowPhaseId
     phaseAttempt?: number
   },
   buildPrompt?: (winnerDraft: DraftResult, losingDrafts: DraftResult[]) => PromptPart[],

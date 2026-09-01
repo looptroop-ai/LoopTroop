@@ -205,13 +205,13 @@ describe('ticketRouter POST /tickets/:id/retry', () => {
 
   it.each([
     {
-      phase: 'PREPARING_EXECUTION_ENV',
+      phase: 'PREPARING_EXECUTION_ENV' as const,
       artifactType: 'execution_setup_report',
       failedContent: { status: 'failed', summary: 'setup blocker' },
       successfulContent: { status: 'ready', summary: 'setup ready' },
     },
     {
-      phase: 'RUNNING_FINAL_TEST',
+      phase: 'RUNNING_FINAL_TEST' as const,
       artifactType: 'final_test_report',
       failedContent: { status: 'failed', summary: 'test blocker' },
       successfulContent: { status: 'passed', summary: 'tests passed' },

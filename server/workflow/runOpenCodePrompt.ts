@@ -50,7 +50,9 @@ export interface OpenCodeRunCallbacks {
   onPromptCompleted?: (event: OpenCodePromptCompletedEvent) => void
 }
 
-export type PromptTimeoutKind = 'ai_response' | 'council_response' | 'per_iteration' | 'execution_setup' | 'opencode_prompt'
+import type { PromptTimeoutKind } from '@shared/promptTimeout'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
+export type { PromptTimeoutKind }
 
 export interface OpenCodePromptDispatchEvent {
   session: Session
@@ -67,7 +69,7 @@ export interface OpenCodePromptDispatchEvent {
 
 export interface OpenCodeSessionOwnership extends SessionOwnership {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   keepActive?: boolean
   forceFresh?: boolean
 }

@@ -9,7 +9,7 @@ import {
   type WorkflowPhaseId,
   type WorkflowPhaseMeta,
 } from '@shared/workflowMeta'
-import { sanitizeErrorForDisplay } from './errorDisplay'
+import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
 
 export { WORKFLOW_GROUPS, WORKFLOW_PHASES, WORKFLOW_PHASE_MAP }
 export type { EditableArtifactType, KanbanPhase }

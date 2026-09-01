@@ -100,4 +100,41 @@ describe('execution setup workspace verification contract', () => {
     expect(parsed.warnings).toEqual([])
     expect(parsed.plan?.workspaceProbes[0]?.command.mode).toBe('process')
   })
+  /** A minimal ready plan, with only the hook policy varying. */
+  function parseReadyPlanWithPolicy(policy: string) {
+    return parseExecutionSetupPlanContent(JSON.stringify({
+      summary: 'Ready.',
+      readiness: { status: 'ready', actions_required: false, evidence: [], gaps: [] },
+      workspace_inputs: [],
+      workspace_probes: [],
+      git_hooks: { policy, detected: [], validation_commands: [] },
+      steps: [],
+      project_commands: { prepare: [], test_full: [], lint_full: [], typecheck_full: [] },
+    }))
+  }
+
+  it('warns and falls back when the plan names an unrecognised git hook policy', () => {
+    const parsed = parseReadyPlanWithPolicy('not_a_policy')
+
+    // Silently reading back as advisory validation is indistinguishable from a
+    // plan that asked for it, which is why this has to be said out loud.
+    expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')
+    expect(parsed.warnings).toEqual([expect.stringContaining('git_hooks.policy')])
+  })
+
+  it('migrates a legacy git hook policy name without warning', () => {
+    const parsed = parseReadyPlanWithPolicy('use_on_internal_commits')
+
+    expect(parsed.plan?.gitHooks.policy).toBe('use_native_hooks')
+    expect(parsed.warnings).toEqual([])
+  })
+
+  it('does not treat an inherited property name as a legacy policy', () => {
+    // `'constructor' in legacyMap` was true, so this used to come back as a
+    // function rather than falling through to the default.
+    const parsed = parseReadyPlanWithPolicy('constructor')
+
+    expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')
+    expect(parsed.warnings).toEqual([expect.stringContaining('git_hooks.policy')])
+  })
 })

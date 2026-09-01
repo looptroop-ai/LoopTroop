@@ -5,6 +5,7 @@ import { broadcaster } from '../sse/broadcaster'
 import type { ArtifactManifestEntry, ArtifactSnapshot } from '../sse/eventTypes'
 import { getTicketContext } from './ticketQueries'
 import { assertCurrentEditablePhaseAttempt, resolvePhaseAttempt } from './ticketPhaseAttempts'
+import type { ArtifactPhase } from '@shared/workflowMeta'
 
 type LocalPhaseArtifactRow = typeof phaseArtifacts.$inferSelect
 
@@ -62,7 +63,7 @@ export function toArtifactManifestEntry(ticketRef: string, artifact: LocalPhaseA
 
 function broadcastArtifactChange(
   ticketRef: string,
-  phase: string,
+  phase: ArtifactPhase,
   artifactType: string,
   artifact: LocalPhaseArtifactRow,
 ) {
@@ -166,7 +167,10 @@ export function countPhaseArtifacts(ticketRef: string, artifactType: string, pha
   return rows.length
 }
 
-export function insertPhaseArtifact(ticketRef: string, artifact: Omit<typeof phaseArtifacts.$inferInsert, 'ticketId'>): void {
+export function insertPhaseArtifact(
+  ticketRef: string,
+  artifact: Omit<typeof phaseArtifacts.$inferInsert, 'ticketId' | 'phase'> & { phase: ArtifactPhase },
+): void {
   const context = getTicketContext(ticketRef)
   if (!context) throw new Error(`Ticket not found: ${ticketRef}`)
   assertCurrentEditablePhaseAttempt({
@@ -188,7 +192,7 @@ export function insertPhaseArtifact(ticketRef: string, artifact: Omit<typeof pha
 export function upsertLatestPhaseArtifact(
   ticketRef: string,
   artifactType: string,
-  phase: string,
+  phase: ArtifactPhase,
   content: string,
   phaseAttempt?: number,
 ): void {

@@ -11,6 +11,7 @@ import {
   getPendingSessionContinuationForTicketPhase,
   isContinuableBlockedError,
 } from './sessionContinuation'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export interface SessionOwnership {
   ticketId?: string
@@ -62,9 +63,20 @@ export function listOpenCodeSessionsForTicket(ticketId: string, states: string[]
     .filter((session) => states.length === 0 || states.includes(session.state))
 }
 
+/**
+ * A phase used to look a session row up, as that row stores it.
+ *
+ * Deliberately not `WorkflowPhaseId`. These are query keys against rows this
+ * process did not necessarily write, and narrowing one means running an
+ * unrecognised value through a fallback before the lookup — which changes the
+ * key, finds nothing, and abandons a session that is still alive. Session
+ * *creation* below is a write and does take `WorkflowPhaseId`.
+ */
+type StoredSessionPhase = string
+
 export function reactivateOpenCodeSessionForContinuation(
   ticketId: string,
-  phase: string,
+  phase: StoredSessionPhase,
   sessionId: string,
 ): boolean {
   const context = getTicketContext(ticketId)
@@ -85,7 +97,7 @@ export class SessionManager {
 
   async createSessionForPhase(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     phaseAttempt: number,
     memberId?: string,
     beadId?: string,
@@ -124,7 +136,7 @@ export class SessionManager {
 
   createSessionForOwnership(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     ownership: SessionOwnership,
     projectPath?: string,
     createOptions?: OpenCodeSessionCreateOptions,
@@ -170,7 +182,7 @@ export class SessionManager {
     })
   }
 
-  getActiveSession(ticketId: string, phase: string, memberId?: string) {
+  getActiveSession(ticketId: string, phase: StoredSessionPhase, memberId?: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -188,7 +200,7 @@ export class SessionManager {
       .get()
   }
 
-  getOwnedActiveSession(ticketId: string, phase: string, ownership: SessionOwnership) {
+  getOwnedActiveSession(ticketId: string, phase: StoredSessionPhase, ownership: SessionOwnership) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -226,7 +238,7 @@ export class SessionManager {
 
   async validateAndReconnect(
     ticketId: string,
-    phase: string,
+    phase: StoredSessionPhase,
     ownership?: SessionOwnership,
     signal?: AbortSignal,
   ): Promise<Session | null> {
@@ -251,7 +263,7 @@ export class SessionManager {
     return null
   }
 
-  private getActiveSessionById(ticketId: string, phase: string, sessionId: string) {
+  private getActiveSessionById(ticketId: string, phase: StoredSessionPhase, sessionId: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     return context.projectDb
@@ -272,7 +284,7 @@ export class SessionManager {
    */
   async reconcileActiveSession(
     ticketId: string,
-    phase: string,
+    phase: StoredSessionPhase,
     sessionId: string,
     ownership?: SessionOwnership,
     signal?: AbortSignal,

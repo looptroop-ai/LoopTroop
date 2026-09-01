@@ -12,6 +12,7 @@ import type { OpenCodeResponseMeta } from './assistantMessageAnalysis'
 import type { StepFinishMessagePart } from './types'
 import type { ModelErrorInfo } from './errorDetails'
 import { extractModelErrorInfo, summarizeModelErrorForLog } from './errorDetails'
+import { isRecord } from '@shared/typeGuards'
 
 export interface OpenCodeAttemptDiagnosticMeta {
   errorSource?: 'session_error' | 'assistant_error'
@@ -38,10 +39,6 @@ export interface OpenCodeBlockedErrorDiagnosticsResult {
 type BlockedErrorDiagnosticsCarrier = Error & {
   blockedErrorDiagnostics?: BlockedErrorDiagnostics | null
   blockedErrorCodes?: string[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function readErrorProperty(error: unknown, key: string): unknown {

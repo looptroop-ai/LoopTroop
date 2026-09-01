@@ -3,6 +3,7 @@ import { EXECUTION_SETUP_RUNTIME_DIR } from './types'
 import { accessSync, constants, lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { isRecord } from '@shared/typeGuards'
 
 export const EXECUTION_SETUP_RUN_WRAPPER = `${EXECUTION_SETUP_RUNTIME_DIR}/run`
 
@@ -127,10 +128,6 @@ export function hasExecutionSetupProjectCommands(profile: ExecutionSetupProfile 
     profile.projectCommands.lintFull,
     profile.projectCommands.typecheckFull,
   ].some((commands) => commands.length > 0)
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {

@@ -1,10 +1,7 @@
 import type { Context } from 'hono'
 import { z } from 'zod'
-import { normalizeSettingSource, type TicketContext } from '../../machines/types'
-import {
-  getTicketByRef,
-  type PublicTicket,
-} from '../../storage/tickets'
+import { buildTicketContextFromTicket } from '../../machines/ticketContext'
+import { getTicketByRef } from '../../storage/tickets'
 import {
   performCoverageExtraFix,
   type CoverageExtraFixDomain,
@@ -31,52 +28,6 @@ export function isCoverageFixInProgress(ticketId: string, domain?: CoverageExtra
   if (domain) return activeCoverageFixes.has(coverageFixKey(ticketId, domain))
   return activeCoverageFixes.has(coverageFixKey(ticketId, 'prd'))
     || activeCoverageFixes.has(coverageFixKey(ticketId, 'beads'))
-}
-
-function buildMachineContextFromTicket(ticket: PublicTicket): TicketContext {
-  return {
-    ticketId: ticket.id,
-    projectId: ticket.projectId,
-    externalId: ticket.externalId,
-    title: ticket.title,
-    status: ticket.status,
-    lockedMainImplementer: ticket.lockedMainImplementer,
-    lockedMainImplementerVariant: ticket.lockedMainImplementerVariant,
-    lockedCouncilMembers: ticket.lockedCouncilMembers,
-    lockedCouncilMemberVariants: ticket.lockedCouncilMemberVariants,
-    lockedInterviewQuestions: ticket.lockedInterviewQuestions,
-    lockedCoverageFollowUpBudgetPercent: ticket.lockedCoverageFollowUpBudgetPercent,
-    lockedMaxCoveragePasses: ticket.lockedMaxCoveragePasses,
-    lockedMaxPrdCoveragePasses: ticket.lockedMaxPrdCoveragePasses,
-    lockedMaxBeadsCoveragePasses: ticket.lockedMaxBeadsCoveragePasses,
-    lockedStructuredRetryCount: ticket.lockedStructuredRetryCount,
-    lockedManualQaEnabled: ticket.lockedManualQaEnabled,
-    lockedManualQaSource: ticket.lockedManualQaSource === 'profile'
-      || ticket.lockedManualQaSource === 'project'
-      || ticket.lockedManualQaSource === 'ticket'
-      ? ticket.lockedManualQaSource
-      : null,
-    lockedAiQuestionsEnabled: ticket.lockedAiQuestionsEnabled,
-    lockedAiQuestionsSource: normalizeSettingSource(ticket.lockedAiQuestionsSource),
-    lockedAiQuestionWindow: ticket.lockedAiQuestionWindow,
-    lockedAiQuestionWindowSource: normalizeSettingSource(ticket.lockedAiQuestionWindowSource),
-    pendingExecutionSetupPlanRequestArtifactId: null,
-    previousStatus: ticket.previousStatus,
-    error: ticket.errorMessage,
-    errorCodes: ticket.errorOccurrences.at(-1)?.errorCodes ?? [],
-    errorDiagnostics: ticket.errorOccurrences.at(-1)?.diagnostics ?? null,
-    blockedErrorResolution: null,
-    beadProgress: {
-      total: ticket.runtime.totalBeads,
-      completed: ticket.runtime.completedBeads,
-      current: ticket.runtime.activeBeadId,
-    },
-    iterationCount: ticket.runtime.iterationCount,
-    maxIterations: ticket.runtime.maxIterations ?? 0,
-    councilResults: null,
-    createdAt: ticket.createdAt,
-    updatedAt: ticket.updatedAt,
-  }
 }
 
 function expectedApprovalStatus(domain: CoverageExtraFixDomain): 'WAITING_PRD_APPROVAL' | 'WAITING_BEADS_APPROVAL' {
@@ -115,7 +66,7 @@ export async function handleFixCoverageGaps(c: Context) {
   try {
     const result = await performCoverageExtraFix({
       ticketId,
-      context: buildMachineContextFromTicket(ticket),
+      context: buildTicketContextFromTicket(ticket),
       domain,
       signal: c.req.raw.signal,
     })

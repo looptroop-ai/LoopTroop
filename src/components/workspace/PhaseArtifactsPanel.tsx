@@ -48,13 +48,10 @@ import { ArtifactList } from './ArtifactList'
 import { ArtifactTypeFilter } from './ArtifactTypeFilter'
 import { getSupplementalArtifacts } from './supplementalArtifacts'
 import { getBeadCommitsDiffStats, serializeBeadCommitsDiffContent } from './diffUtils'
+import { isRecord } from '@shared/typeGuards'
 
 // Re-export viewer components so existing imports from this module continue to work
 export { RawContentView, InterviewAnswersView, PrdDraftView }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 function attachCandidateFileAuditToPullRequestReport(reportContent: string | null | undefined, auditContent: string | null | undefined): string | null {
   if (!reportContent) return null

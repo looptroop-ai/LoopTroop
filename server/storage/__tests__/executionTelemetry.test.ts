@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Database } from '../../db/sqliteShim'
-import { drizzle } from 'drizzle-orm/node-sqlite'
-import * as schema from '../../db/schema'
+import { createDrizzle } from '../../db/createDrizzle'
 import { beadExecutionMetrics } from '../../db/schema'
 import {
   bucketForBeadCount,
@@ -34,8 +33,7 @@ function makeDb() {
       cost_usd REAL
     );
   `)
-  // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-  return drizzle({ client: sqlite.client, schema })
+  return createDrizzle(sqlite.client)
 }
 
 function insertMetric(

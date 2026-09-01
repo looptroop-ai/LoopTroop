@@ -24,8 +24,10 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { getStructuredRetryDecision } from '../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount, shouldRetryStructuredOutput } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
-import { PHASE_DEADLINE_ERROR, isAbortError, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { PHASE_DEADLINE_ERROR, isPhaseDeadlineError, isAiResponseTimeoutError } from './draftUtils'
+import { isAbortError } from '../lib/abort'
 import { getErrorMessage } from '@shared/typeGuards'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
   return [
@@ -136,7 +138,9 @@ export async function conductVoting(
   }) => PromptPart[],
   sessionOwnership?: {
     ticketId: string
-    phase: string
+    // The workflow status the round runs in, not the council stage — the two
+    // are both called "phase" in this file and mean different things.
+    phase: WorkflowPhaseId
     phaseAttempt?: number
   },
   toolPolicy: OpenCodeToolPolicy = 'default',

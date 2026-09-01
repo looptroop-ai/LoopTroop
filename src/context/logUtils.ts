@@ -1,6 +1,7 @@
 import { extractLogFingerprint, hasMatchingLogFingerprint } from '@shared/logIdentity'
 
-export type PromptTimeoutKind = 'ai_response' | 'council_response' | 'per_iteration' | 'execution_setup' | 'opencode_prompt'
+import { isPromptTimeoutKind, type PromptTimeoutKind } from '@shared/promptTimeout'
+export type { PromptTimeoutKind }
 
 export interface LogEntry {
   id: string
@@ -245,16 +246,7 @@ function deriveOperation(data: Record<string, unknown>): LogEntry['op'] {
 }
 
 function deriveTimeoutKind(data: Record<string, unknown>): PromptTimeoutKind | undefined {
-  if (
-    data.timeoutKind === 'ai_response' ||
-    data.timeoutKind === 'council_response' ||
-    data.timeoutKind === 'per_iteration' ||
-    data.timeoutKind === 'execution_setup' ||
-    data.timeoutKind === 'opencode_prompt'
-  ) {
-    return data.timeoutKind
-  }
-  return undefined
+  return isPromptTimeoutKind(data.timeoutKind) ? data.timeoutKind : undefined
 }
 
 function normalizePhaseAttempt(value: unknown): number | undefined {

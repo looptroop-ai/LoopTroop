@@ -1,4 +1,5 @@
 import { buildTextDiffSegments, type TextDiffSegment } from './textDiffSegments'
+import { isRecord } from '@shared/typeGuards'
 
 export interface DiffStats {
   files: number
@@ -63,10 +64,6 @@ export interface FileDiffGroup {
   additions: number
   deletions: number
   occurrences: FileDiffOccurrence[]
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 function normalizeDiffContent(value: unknown): string | undefined {

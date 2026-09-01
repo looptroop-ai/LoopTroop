@@ -28,12 +28,8 @@ import {
   type OpencodeStepsConfigHandle,
 } from '../../phases/execution/opencodeStepsConfig'
 import { BEAD_FINALIZATION_FAILED } from '@shared/errorCodes'
-
-const ESCAPE_CHARACTER = String.fromCharCode(27)
-const BELL_CHARACTER = String.fromCharCode(7)
-const ANSI_OSC_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}\\][^${BELL_CHARACTER}]*(?:${BELL_CHARACTER}|${ESCAPE_CHARACTER}\\\\)`, 'g')
-const ANSI_CSI_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const ANSI_SINGLE_SEQUENCE = new RegExp(`${ESCAPE_CHARACTER}[@-_]`, 'g')
+import { stripAnsiSequences } from '@shared/ansi'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 function mergeBeadRetryMetadata(
   beads: Bead[],
@@ -56,13 +52,6 @@ function mergeBeadRetryMetadata(
       updatedAt,
     }
   })
-}
-
-function stripAnsiSequences(text: string): string {
-  return text
-    .replace(ANSI_OSC_SEQUENCE, '')
-    .replace(ANSI_CSI_SEQUENCE, '')
-    .replace(ANSI_SINGLE_SEQUENCE, '')
 }
 
 function conciseFinalizationFailure(message: string): string {
@@ -294,7 +283,7 @@ function markBeadFinalizationFailed(input: {
 export async function handleMockExecutionUnsupported(
   ticketId: string,
   context: TicketContext,
-  phase: string,
+  phase: WorkflowPhaseId,
   sendEvent: (event: TicketEvent) => void,
 ) {
   const message = 'Mock OpenCode mode stops before execution. Start a real OpenCode server to continue past planning phases.'

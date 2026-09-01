@@ -3,6 +3,7 @@ import { APP_VERSION } from '../lib/appVersion'
 import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { startDaemonLogRotation } from '../lib/daemonLog'
 import { resolveSettings } from '../lib/appSettings'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export interface DaemonProcessOptions {
   port?: number
@@ -73,7 +74,7 @@ export async function runDaemonProcess(options: DaemonProcessOptions = {}): Prom
 // Executed directly when spawned as the detached child.
 if (isEntryPoint(import.meta.url, process.argv[1])) {
   runDaemonProcess().catch((error: unknown) => {
-    console.error(`[daemon] Failed to start: ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`[daemon] Failed to start: ${getErrorMessage(error)}`)
     process.exit(1)
   })
 }

@@ -5,7 +5,7 @@ import { getSettingsPath } from '../lib/appSettings'
 import { getDaemonLogPath, getDaemonStatePath, type DaemonState } from '../lib/daemonPaths'
 import { resolveAppDbPath } from '../db/appDbPath'
 import { mintBootstrapUrl, openInBrowser, readRunningDaemon, startCommand, type BrowserLaunch } from './commands'
-import type { IgnoreMode } from '../git/repository'
+import { isIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 
 /** Asks one question. Returns `fallback` when the user just presses enter. */
 export type SetupPrompt = (question: string, fallback: string) => Promise<string>
@@ -255,10 +255,6 @@ async function askIgnoreMode(
   if (answer === '2' || answer === 'local') return 'local'
   if (answer === '3' || answer === 'skip') return 'skip'
   return 'repo'
-}
-
-function isIgnoreMode(value: unknown): value is IgnoreMode {
-  return value === 'repo' || value === 'local' || value === 'skip'
 }
 
 /** A shortname is 3-5 uppercase letters or digits; the API rejects anything else. */

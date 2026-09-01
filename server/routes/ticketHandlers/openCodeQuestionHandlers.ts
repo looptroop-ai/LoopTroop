@@ -33,10 +33,11 @@ import {
   stopTicketTimers,
 } from '../../workflow/questionWindows'
 import { resolveAiQuestionSettings } from '../../workflow/phases/helpers'
+import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 function emitOpenCodeQuestionLog(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   content: string,
   data: {
     requestId: string
@@ -134,7 +135,11 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         sessionId: request.sessionID,
         requestId: request.id,
         memberId: session?.memberId ?? null,
-        phase: session?.phase ?? ticketContext.localTicket.status,
+        // A session row stores its phase as free text, so one written by an
+        // older build can name a status that no longer exists. The ticket's own
+        // status is the fallback rather than dropping the question: an unclocked
+        // question waits forever, which is the failure this path exists to stop.
+        phase: resolveStoredWorkflowPhase(session?.phase, ticketContext.localTicket.status),
         phaseAttempt: session?.phaseAttempt ?? 1,
         windowMs: resolveAiQuestionSettings(ticketId).windowMs,
         questions: request.questions,
@@ -182,7 +187,9 @@ export async function handleListOpenCodeQuestions(c: Context) {
     return c.json({ questions, timer: getTicketQuestionState(ticketId).timer })
   } catch (err) {
     const message = getErrorMessage(err)
-    emitRoutePhaseLog(ticketId, getTicketByRef(ticketId)?.status ?? 'UNKNOWN', 'error', `Failed to list OpenCode questions: ${message}`)
+    // The ticket may have gone, or hold a status this build no longer declares.
+    // The failure still has to be logged against something real.
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketByRef(ticketId)?.status), 'error', `Failed to list OpenCode questions: ${message}`)
     return c.json({ error: 'Failed to list OpenCode questions', details: message }, 500)
   }
 }

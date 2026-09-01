@@ -1,28 +1,10 @@
-import { timingSafeEqual } from 'node:crypto'
 import type { Context, Next } from 'hono'
+import { API_TOKEN_HEADER, constantTimeEquals, getBearerToken } from './authUtils'
 
-export const API_TOKEN_HEADER = 'x-looptroop-token'
+export { API_TOKEN_HEADER }
 
 export interface ApiAuthOptions {
   token?: string
-}
-
-function getBearerToken(value: string | undefined): string | null {
-  if (!value) return null
-  const match = /^Bearer\s+(.+)$/i.exec(value.trim())
-  return match?.[1]?.trim() || null
-}
-
-function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a)
-  const right = Buffer.from(b)
-  // Always perform a constant-time comparison to avoid leaking length information
-  // via timing side-channels. When lengths differ, compare the expected token against
-  // a zero-filled buffer of the same length so the comparison still takes constant time.
-  if (left.length !== right.length) {
-    return timingSafeEqual(Buffer.alloc(left.length, 0), left) && false
-  }
-  return timingSafeEqual(left, right)
 }
 
 /**

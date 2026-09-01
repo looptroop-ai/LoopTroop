@@ -1,10 +1,6 @@
+import { stripAnsiSequences } from './ansi'
+
 const DECORATION_ONLY_LINE = /^[\s\-_=~.*:|/\\()[\]{}<>+─-╿▀-▟■-◿➯⬀-⯿]+$/u
-const ESCAPE = String.fromCodePoint(27)
-const BELL = String.fromCodePoint(7)
-const C1_CSI = String.fromCodePoint(155)
-const C1_OSC = String.fromCodePoint(157)
-const ANSI_OSC_SEQUENCE = new RegExp(`(?:${ESCAPE}\\]|${C1_OSC})[^${BELL}]*(?:${BELL}|${ESCAPE}\\\\)`, 'g')
-const ANSI_CSI_SEQUENCE = new RegExp(`(?:${ESCAPE}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g')
 
 function stripControlCharacters(value: string): string {
   return Array.from(value, (character) => {
@@ -66,7 +62,7 @@ function dedupeConsecutiveLineBlocks(lines: string[]): string[] {
 /** Builds a readable view while leaving persisted errors and raw logs unchanged. */
 export function sanitizeErrorForDisplay(value: string): string {
   const normalized = stripControlCharacters(
-    value.replace(ANSI_OSC_SEQUENCE, '').replace(ANSI_CSI_SEQUENCE, '').replace(/\r\n?/g, '\n'),
+    stripAnsiSequences(value).replace(/\r\n?/g, '\n'),
   )
   const lines: string[] = []
   let previousComparable: string | null = null

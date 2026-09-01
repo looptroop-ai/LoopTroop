@@ -6,6 +6,7 @@ import type {
   InterviewSessionQuestion,
   PersistedInterviewBatch,
 } from '@shared/interviewSession'
+import { isRecord } from '@shared/typeGuards'
 
 export const INTERVIEW_BATCH_EVENT = 'looptroop:interview-batch'
 
@@ -25,10 +26,6 @@ const ANSWER_TYPES = new Set<InterviewQuestionAnswerType>([
   'single_choice',
   'multiple_choice',
 ])
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)

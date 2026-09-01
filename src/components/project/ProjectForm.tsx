@@ -10,7 +10,7 @@ import { FolderPicker } from '@/components/project/FolderPicker'
 import { EmojiPickerSection, ColorPickerSection } from './AppearancePickers'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { DeleteWorktreesDialog } from './DeleteWorktreesDialog'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { PROJECT_GIT_CHECK_DEBOUNCE_MS, SECONDS_PER_HOUR, SECONDS_PER_DAY } from '@/lib/constants'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
@@ -26,7 +26,8 @@ import { ExistingProjectActionDialog } from './ExistingProjectActionDialog'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { IgnoreModeSetting } from './IgnoreModeSetting'
-import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@shared/ignoreMode'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 interface ProjectFormProps {
   onClose: () => void
@@ -95,7 +96,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
   const [gitHookPolicy, setGitHookPolicy] = useState<GitHookPolicy>(
     normalizeGitHookPolicySetting(project?.gitHookPolicy)
       ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-      ?? 'validate_advisory',
+      ?? DEFAULT_GIT_HOOK_POLICY,
   )
   const [isIconPickerOpen, setIsIconPickerOpen] = useState(false)
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false)
@@ -170,7 +171,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
               setGitHookPolicy(
                 normalizeGitHookPolicySetting(data.existingProject.gitHookPolicy)
                   ?? normalizeGitHookPolicySetting(profile?.gitHookPolicy)
-                  ?? 'validate_advisory',
+                  ?? DEFAULT_GIT_HOOK_POLICY,
               )
             }
             if (data.existingProject.ignoreMode !== undefined) {
@@ -498,7 +499,7 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
                   <GitHookPolicySetting
                     value={gitHookPolicy}
                     onChange={setGitHookPolicy}
-                    inheritedPolicy={profile?.gitHookPolicy ?? 'validate_advisory'}
+                    inheritedPolicy={profile?.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY}
                     compact
                   />
                 </div>

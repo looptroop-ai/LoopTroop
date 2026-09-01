@@ -9,7 +9,8 @@ import type {
   RawAttempt,
 } from '../../council/types'
 import { CancelledError } from '../../council/types'
-import { classifyDraftFailure, isAbortError, isPhaseDeadlineError, PHASE_DEADLINE_ERROR } from '../../council/draftUtils'
+import { classifyDraftFailure, isPhaseDeadlineError, PHASE_DEADLINE_ERROR } from '../../council/draftUtils'
+import { isAbortError } from '../../lib/abort'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { OpenCodeToolPolicy } from '../../opencode/toolPolicy'
 import type { Message, PromptPart, Session, StreamEvent } from '../../opencode/types'
@@ -452,7 +453,7 @@ async function executeStructuredStep(
   const sessionOwnership = options.ticketId
     ? {
         ticketId: options.ticketId,
-        phase: 'DRAFTING_PRD',
+        phase: 'DRAFTING_PRD' as const,
         phaseAttempt: options.phaseAttempt ?? 1,
         memberId: member.modelId,
         step: options.step,

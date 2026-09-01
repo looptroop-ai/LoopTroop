@@ -10,7 +10,8 @@ import {
 import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
-import { applyIgnoreMode, areLoopTroopPathsIgnored, ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin, type IgnoreMode } from '../git/repository'
+import { applyIgnoreMode, areLoopTroopPathsIgnored, ensureLocalGitExclude, resolveBaseBranchRef, tryFetchOrigin } from '../git/repository'
+import type { IgnoreMode } from '@shared/ignoreMode'
 import { getProjectIgnoreMode } from '../storage/projects'
 import {
   detectGitBaseBranch,

@@ -1,4 +1,4 @@
-import { sanitizeErrorForDisplay } from '@/lib/errorDisplay'
+import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
 
 export interface ErrorBannerProps {
   errorMessage: string

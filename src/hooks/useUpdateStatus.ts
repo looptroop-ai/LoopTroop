@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
-export type InstallChannel = 'npm' | 'bun' | 'pnpm' | 'yarn' | 'homebrew' | 'scoop' | 'chocolatey' | 'winget' | 'aur' | 'binary' | 'container' | 'source' | 'unknown'
+import type { InstallChannel, ReleaseDetails } from '@shared/installChannel'
+export type { InstallChannel, ReleaseDetails }
 
 export interface UpdateStatus {
   currentVersion: string
@@ -12,13 +13,7 @@ export interface UpdateStatus {
   upgradeFirst?: string
   postUpgradeCommand?: string
   upgradeNote?: string
-  release: {
-    version: string
-    name: string
-    url: string
-    publishedAt: string | null
-    notes: string
-  } | null
+  release: ReleaseDetails | null
 }
 
 export const UPDATE_STATUS_QUERY_KEY = ['update-status'] as const

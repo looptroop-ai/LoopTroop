@@ -37,6 +37,7 @@ import {
   buildRouteStatePayload,
   emitRoutePhaseLog,
   getTicketParam,
+  logTicketOperationError,
   preparePlanningRestart,
   rejectDisplayOnlyMockTicket,
   respondWithState,
@@ -44,6 +45,7 @@ import {
 import { approvalRequestSchema, rawPrdSaveSchema, structuredPrdSaveSchema } from './schemas'
 import { isCoverageFixInProgress } from './coverageFixHandlers'
 import { validateExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 function countPrdItems(document: PrdDocument): number {
   return document.epics.reduce((count, epic) => count + 1 + epic.user_stories.length, 0)
@@ -99,8 +101,8 @@ export async function handleApproveTicket(c: Context) {
     ensureActorForTicket(ticketId)
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
-    console.error(`[tickets] Failed to send APPROVE to ticket ${ticketId}:`, err)
-    return c.json({ error: 'Failed to approve ticket', details: String(err) }, 500)
+    logTicketOperationError(ticketId, 'Failed to send APPROVE to ticket', err)
+    return c.json({ error: 'Failed to approve ticket', details: getErrorMessage(err) }, 500)
   }
 
   return respondWithState(c, ticketId, 'Approve action accepted')
@@ -298,7 +300,7 @@ export async function handlePutPrd(c: Context) {
  */
 function recordGapAcknowledgement(input: {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   ticketStatusBefore: string
   artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan'
   reason: string | undefined
@@ -338,7 +340,7 @@ function recordGapAcknowledgement(input: {
       emitRoutePhaseLog(input.ticketId, input.phase, 'info', line)
     }
   } catch (err) {
-    console.error(`[tickets] Failed to record the gap acknowledgement for ${input.ticketId}:`, err)
+    logTicketOperationError(input.ticketId, 'Failed to record the gap acknowledgement for', err)
   }
 }
 
@@ -377,7 +379,7 @@ function approveInterviewForRoute(c: Context, ticketId: string, expectedContentS
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve interview for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve interview for', err)
     return c.json({
       error: 'Failed to approve interview',
       details: getErrorMessage(err),
@@ -425,7 +427,7 @@ function approvePrdForRoute(c: Context, ticketId: string, expectedContentSha256:
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve PRD for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve PRD for', err)
     return c.json({
       error: 'Failed to approve PRD',
       details: getErrorMessage(err),
@@ -478,7 +480,7 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve beads for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve beads for', err)
     return c.json({
       error: 'Failed to approve beads',
       details: getErrorMessage(err),
@@ -568,7 +570,7 @@ function approveExecutionSetupPlanForRoute(c: Context, ticketId: string, expecte
     sendTicketEvent(ticketId, { type: 'APPROVE_EXECUTION_SETUP_PLAN' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
-    console.error(`[tickets] Failed to approve execution setup plan for ${ticketId}:`, err)
+    logTicketOperationError(ticketId, 'Failed to approve execution setup plan for', err)
     return c.json({
       error: 'Failed to approve execution setup plan',
       details: getErrorMessage(err),

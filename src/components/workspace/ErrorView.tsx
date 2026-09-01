@@ -37,7 +37,7 @@ import {
 import type { WorkflowAction } from '@shared/workflowMeta'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { CancelTicketDialog } from '@/components/ticket/CancelTicketDialog'
-import { sanitizeErrorForDisplay } from '@/lib/errorDisplay'
+import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
 
 const MAX_RETRY_NOTE_LENGTH = 20_000
 

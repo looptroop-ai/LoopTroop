@@ -149,6 +149,18 @@ describe('ticket start configuration locking', () => {
       lockedCouncilMembers: JSON.stringify(['openai/gpt-5-codex', 'anthropic/claude-sonnet-4']),
     })).toThrow(/immutable after start/i)
 
+    // Reordering the same members is the case a set comparison let through.
+    // `members[0]` is the main implementer, so a permutation changes who
+    // implements the ticket and has to fail the lock like any other change.
+    expect(() => patchTicket(ticket.id, {
+      lockedCouncilMembers: JSON.stringify([...lockedCouncilMembers].reverse()),
+    })).toThrow(/immutable after start/i)
+
+    // The same roster in the same order is not a change.
+    expect(() => patchTicket(ticket.id, {
+      lockedCouncilMembers: JSON.stringify(lockedCouncilMembers),
+    })).not.toThrow()
+
     expect(() => patchTicket(ticket.id, {
       lockedManualQaEnabled: true,
     })).toThrow(/Manual QA configuration is immutable after start/i)

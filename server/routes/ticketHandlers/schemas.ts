@@ -2,7 +2,9 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES } from '@shared/executionSetupCategories'
+import { gitHookPolicySchema, ticketContentFields, ticketOverrideFields } from '../../lib/settingSchemas'
 
 /**
  * Every skip reason on every surface, validated once.
@@ -18,20 +20,16 @@ export const skipReasonSchema = z.string()
 export const createTicketSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
+// The title bound differs from create's on purpose; everything else is the
+// same contract and is shared so it cannot drift.
 export const updateTicketSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
 export const cancelTicketSchema = z.object({
@@ -201,7 +199,7 @@ export const executionSetupPlanSchema = z.object({
     path: z.string(),
     kind: z.enum(['file', 'directory']),
     sourceStatus: z.enum(['ignored', 'untracked']),
-    category: z.enum(['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible']),
+    category: z.enum(EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES),
     allowLargeCopy: z.boolean().optional(),
     fileCount: z.number().int().nonnegative().optional(),
     totalBytes: z.number().int().nonnegative().optional(),
@@ -213,7 +211,7 @@ export const executionSetupPlanSchema = z.object({
     purpose: z.string(),
   }).strict()).default([]),
   gitHooks: z.object({
-    policy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']),
+    policy: gitHookPolicySchema,
     detected: z.array(z.object({
       name: z.string(),
       path: z.string(),
@@ -229,7 +227,7 @@ export const executionSetupPlanSchema = z.object({
       purpose: z.string(),
     }).strict()),
   }).strict().default({
-    policy: 'validate_advisory',
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }),

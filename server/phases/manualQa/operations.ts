@@ -21,7 +21,8 @@ import {
   resolvePhaseAttempt,
 } from '../../storage/tickets'
 import { manualQaOperations } from '../../db/schema'
-import { normalizeSettingSource, type TicketEvent } from '../../machines/types'
+import type { TicketEvent } from '../../machines/types'
+import { buildTicketContextFromTicket } from '../../machines/ticketContext'
 import type { Bead, QaOriginEvidenceRef } from '../beads/types'
 import { captureFinalTestDirtyFiles } from '../finalTest/fileEffectsAudit'
 import { fetchProviderCatalog, flattenCatalogModels } from '../../opencode/providerCatalog'
@@ -68,6 +69,7 @@ import {
   type ManualQaFixBeadCandidate,
 } from './fixBeads'
 import { emitAiMilestone, emitPhaseLog } from '../../workflow/phases/helpers'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export interface ManualQaMutationGuard {
   actionId: string
@@ -550,7 +552,7 @@ function copyImprovementEvidence(input: {
         relativePath: `origin/manual-qa/evidence/${destinationName}`,
       })
     } catch (error) {
-      omitted.push({ id: evidence.id, reason: error instanceof Error ? error.message : String(error) })
+      omitted.push({ id: evidence.id, reason: getErrorMessage(error) })
     }
   }
   return { copied, omitted }
@@ -1104,45 +1106,7 @@ export async function submitManualQa(input: {
       const storedCandidates = readManualQaFixBeadCandidates(paths.ticketDir, input.version, fixGroups)
       const candidates = storedCandidates ?? await (input.generateFixBeads ?? generateManualQaFixBeadCandidates)({
         ticketId: input.ticketId,
-        context: {
-          ticketId: input.ticketId,
-          projectId: ticket.projectId,
-          externalId: ticket.externalId,
-          title: ticket.title,
-          status: ticket.status,
-          lockedMainImplementer: ticket.lockedMainImplementer,
-          lockedMainImplementerVariant: ticket.lockedMainImplementerVariant,
-          lockedCouncilMembers: ticket.lockedCouncilMembers,
-          lockedCouncilMemberVariants: ticket.lockedCouncilMemberVariants,
-          lockedInterviewQuestions: ticket.lockedInterviewQuestions,
-          lockedCoverageFollowUpBudgetPercent: ticket.lockedCoverageFollowUpBudgetPercent,
-          lockedMaxCoveragePasses: ticket.lockedMaxCoveragePasses,
-          lockedMaxPrdCoveragePasses: ticket.lockedMaxPrdCoveragePasses,
-          lockedMaxBeadsCoveragePasses: ticket.lockedMaxBeadsCoveragePasses,
-          lockedStructuredRetryCount: ticket.lockedStructuredRetryCount,
-          lockedManualQaEnabled: ticket.lockedManualQaEnabled,
-          lockedManualQaSource: ticket.lockedManualQaSource,
-          lockedAiQuestionsEnabled: ticket.lockedAiQuestionsEnabled,
-          lockedAiQuestionsSource: normalizeSettingSource(ticket.lockedAiQuestionsSource),
-          lockedAiQuestionWindow: ticket.lockedAiQuestionWindow,
-          lockedAiQuestionWindowSource: normalizeSettingSource(ticket.lockedAiQuestionWindowSource),
-          pendingExecutionSetupPlanRequestArtifactId: null,
-          previousStatus: ticket.previousStatus,
-          error: null,
-          errorCodes: [],
-          errorDiagnostics: null,
-          blockedErrorResolution: null,
-          beadProgress: {
-            total: ticket.runtime.totalBeads,
-            completed: ticket.runtime.completedBeads,
-            current: ticket.runtime.activeBeadId,
-          },
-          iterationCount: ticket.runtime.iterationCount,
-          maxIterations: ticket.runtime.maxIterations ?? 1,
-          councilResults: null,
-          createdAt: ticket.createdAt,
-          updatedAt: ticket.updatedAt,
-        },
+        context: buildTicketContextFromTicket(ticket),
         checklist,
         draft,
         evidence,
@@ -1173,7 +1137,7 @@ export async function submitManualQa(input: {
       writeJournal(operationPath, journal)
       persistManualQaDatabaseOperation(input.ticketId, journal)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = getErrorMessage(error)
       emitPhaseLog(input.ticketId, ticket.externalId, 'WAITING_MANUAL_QA', 'error', `Manual QA fix-bead generation failed: ${message}`, {
         source: 'system',
         phaseAttempt: resolvePhaseAttempt(input.ticketId, 'WAITING_MANUAL_QA'),

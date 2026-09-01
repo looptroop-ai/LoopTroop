@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { ConfigurationDocsLink } from '@/components/config/ConfigurationDocsLink'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { IgnoreMode } from '@/lib/ignoreMode'
+import type { IgnoreMode } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
 
 interface IgnoreModeSettingProps {

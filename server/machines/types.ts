@@ -50,6 +50,59 @@ export interface TicketContext {
   updatedAt: string
 }
 
+/**
+ * Every field of `TicketContext`, as a runtime list.
+ *
+ * `TicketContext` is assembled in four places, and a required field added to
+ * the interface is a compile error in all of them — but an *optional* one is
+ * not, so it can be added to the type and quietly omitted by three of the four
+ * builders. `errorDiagnostics` is already optional, which is how that gap got
+ * here.
+ *
+ * The `satisfies Record<keyof TicketContext, true>` below is two-sided: a key
+ * added to the interface and not to this table is a missing property, and a key
+ * here that is not on the interface is an excess one. Both are compile errors.
+ * `server/machines/__tests__/ticketContext.test.ts` then uses the list to assert
+ * every builder emits exactly these keys.
+ */
+const TICKET_CONTEXT_KEY_TABLE = {
+  ticketId: true,
+  projectId: true,
+  externalId: true,
+  title: true,
+  status: true,
+  lockedMainImplementer: true,
+  lockedMainImplementerVariant: true,
+  lockedCouncilMembers: true,
+  lockedCouncilMemberVariants: true,
+  lockedInterviewQuestions: true,
+  lockedCoverageFollowUpBudgetPercent: true,
+  lockedMaxCoveragePasses: true,
+  lockedMaxPrdCoveragePasses: true,
+  lockedMaxBeadsCoveragePasses: true,
+  lockedStructuredRetryCount: true,
+  lockedManualQaEnabled: true,
+  lockedManualQaSource: true,
+  lockedAiQuestionsEnabled: true,
+  lockedAiQuestionsSource: true,
+  lockedAiQuestionWindow: true,
+  lockedAiQuestionWindowSource: true,
+  pendingExecutionSetupPlanRequestArtifactId: true,
+  previousStatus: true,
+  error: true,
+  errorCodes: true,
+  errorDiagnostics: true,
+  blockedErrorResolution: true,
+  beadProgress: true,
+  iterationCount: true,
+  maxIterations: true,
+  councilResults: true,
+  createdAt: true,
+  updatedAt: true,
+} as const satisfies Record<keyof TicketContext, true>
+
+export const TICKET_CONTEXT_KEYS = Object.keys(TICKET_CONTEXT_KEY_TABLE) as (keyof TicketContext)[]
+
 export type TicketEvent =
   | {
       type: 'START'

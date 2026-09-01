@@ -1,6 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import { repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlSequenceEntryIndent } from './yamlRepair'
 import { getErrorMessage, isRecord } from './typeGuards'
+import { stripTranscriptLinePrefix, stripTranscriptPrefixes } from './transcriptPrefix'
 
 export interface InterviewQuestionPreview {
   id?: string
@@ -62,7 +63,6 @@ const QUESTION_COLLECTION_KEYS = new Set([
 const ID_FIELD_KEYS = ['id', 'questionid', 'qid', 'key']
 const PHASE_FIELD_KEYS = ['phase', 'category', 'section', 'stage']
 const QUESTION_FIELD_KEYS = ['question', 'prompt', 'text', 'content']
-const TRANSCRIPT_PREFIX_PATTERN = /^\s*\[(?:assistant|user|system|sys|tool|model|error)(?:\/[^\]]+)?\](?:\s*\[[^\]]+\])?\s*/i
 const PHASE_HEADING_PATTERN = /^(?:#{1,6}\s*|\*{1,2})\s*(foundation|structure|assembly)\s*(?:\*{1,2})?\s*:?\s*$/i
 const INLINE_PHASE_PATTERN = /^\[([^\]]+)\]\s*/
 const INLINE_ID_PATTERN = /^(?:question\s*)?(q?\d+)\s*[:.)-]\s*/i
@@ -80,23 +80,6 @@ function normalizePhaseValue(value: string | undefined): string | undefined {
   if (normalized === 'structure') return 'Structure'
   if (normalized === 'assembly') return 'Assembly'
   return trimmed
-}
-
-function stripTranscriptLinePrefix(line: string): string {
-  let current = line
-  let previous = ''
-  while (current !== previous) {
-    previous = current
-    current = current.replace(TRANSCRIPT_PREFIX_PATTERN, '')
-  }
-  return current
-}
-
-function stripTranscriptPrefixes(content: string): string {
-  return content
-    .split('\n')
-    .map(stripTranscriptLinePrefix)
-    .join('\n')
 }
 
 function addCandidate(candidates: string[], seen: Set<string>, candidate: string | null | undefined) {

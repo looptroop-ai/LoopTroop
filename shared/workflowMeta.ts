@@ -1698,6 +1698,57 @@ export function isWorkflowPhaseId(status: string): status is WorkflowPhaseId {
 }
 
 /**
+ * Artifact buckets that deliberately are not workflow statuses.
+ *
+ * The phase artifacts table is keyed by phase, and a few artifacts belong to
+ * the ticket rather than to any step it passes through — the interface's saved
+ * view state is the whole of it today. Those live under their own bucket name
+ * so they cannot collide with a status and are never picked up by a query
+ * scoped to a step.
+ *
+ * Listed rather than allowed through as `string`: an artifact phase that is
+ * neither a declared status nor one of these is a typo, and used to be stored
+ * without complaint.
+ */
+export const NON_WORKFLOW_ARTIFACT_PHASES = ['UI_STATE'] as const
+
+export type NonWorkflowArtifactPhase = (typeof NON_WORKFLOW_ARTIFACT_PHASES)[number]
+
+/** What the phase column of a stored artifact may hold. */
+export type ArtifactPhase = WorkflowPhaseId | NonWorkflowArtifactPhase
+
+/**
+ * The last-resort phase for a record whose own phase cannot be trusted.
+ *
+ * Not an arbitrary pick: a record that reached one of these boundaries with an
+ * unreadable phase describes a ticket in an unexpected state, which is what
+ * this status means. Filing it here keeps it visible instead of dropping it.
+ */
+export const FALLBACK_WORKFLOW_PHASE_ID: WorkflowPhaseId = 'BLOCKED_ERROR'
+
+/**
+ * Narrows a phase that arrived from outside the type system.
+ *
+ * Session rows, phase artifacts and machine snapshots all store their phase as
+ * free text, so a row written by an older build can name a status that no
+ * longer exists — and a compound machine state serialises to JSON rather than
+ * to a status at all. Each of those boundaries needs the same decision: use the
+ * stored value if it is real, otherwise the record's own ticket status, and
+ * failing both a status that says something is wrong.
+ *
+ * One helper rather than one chain per boundary: three of them had been written
+ * out separately, which is the drift this whole change exists to remove.
+ */
+export function resolveStoredWorkflowPhase(
+  ...candidates: Array<string | null | undefined>
+): WorkflowPhaseId {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && isWorkflowPhaseId(candidate)) return candidate
+  }
+  return FALLBACK_WORKFLOW_PHASE_ID
+}
+
+/**
  * Returns the full phase metadata for a given status ID, or `undefined` if the
  * status is unknown.
  *

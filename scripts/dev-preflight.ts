@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { getBackendPort, getFrontendPort } from '../shared/appConfig'
 import { readDaemonState } from '../server/lib/daemonPaths'
 import { matchProcess } from '../server/lib/processIdentity'
+import { isProcessAlive } from '../server/cli/processControl'
+import { getErrorMessage } from '../shared/typeGuards'
 import { resolveDevHostMode } from './dev-host-mode'
 import {
   decideDailyMaintenanceTask,
@@ -56,7 +58,7 @@ const devHostMode = (() => {
   try {
     return resolveDevHostMode()
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = getErrorMessage(error)
     console.error(`[dev-preflight] ${message}`)
     process.exit(1)
   }
@@ -88,7 +90,7 @@ function listProcesses() {
     const output = execFileSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8' })
     return parseProcessTable(output)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = getErrorMessage(error)
     console.warn(`[dev-preflight] Process table inspection is unavailable on this platform: ${message}`)
     return []
   }
@@ -128,15 +130,6 @@ function collectProtectedPids(currentPid: number, graph: ReturnType<typeof build
 function killProcess(pid: number, signal: NodeJS.Signals = 'SIGTERM') {
   try {
     process.kill(pid, signal)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function isProcessAlive(pid: number) {
-  try {
-    process.kill(pid, 0)
     return true
   } catch {
     return false
@@ -509,7 +502,7 @@ for (const { label, port } of configuredPorts) {
       await ensurePortFree(port, portAvailabilityHost)
     } catch (retryError) {
       const updatedInspection = inspectPortOccupants(port)
-      const message = retryError instanceof Error ? retryError.message : String(retryError)
+      const message = getErrorMessage(retryError)
       console.error(`[dev-preflight] Cannot start LoopTroop ${label} service on port ${port}: ${message}`)
       console.error(`[dev-preflight] ${describePortOccupants(port, updatedInspection)}`)
       if (error instanceof Error && error.message) {

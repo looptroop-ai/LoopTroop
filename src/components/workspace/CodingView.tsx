@@ -34,6 +34,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
+import { stripAnsiSequences } from '@shared/ansi'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -86,8 +87,6 @@ interface TicketBead {
   } | null
 }
 
-const ANSI_SEQUENCE_PATTERN = new RegExp(`(?:${String.fromCharCode(27)}\\[|${String.fromCharCode(155)})[0-?]*[ -/]*[@-~]`, 'g')
-
 function resolveCodingReviewStatus(ticket: Pick<Ticket, 'status' | 'previousStatus' | 'reviewCutoffStatus'>): string | null {
   if (ticket.status === 'BLOCKED_ERROR') {
     return ticket.previousStatus ?? ticket.reviewCutoffStatus ?? null
@@ -120,7 +119,7 @@ function normalizeNoteEntries(input: unknown, stripAnsi = true): BeadNoteEntry[]
     if (!item || typeof item !== 'object' || Array.isArray(item)) return []
     const entry = item as Record<string, unknown>
     if (typeof entry.content !== 'string' || !entry.content.trim()) return []
-    const content = stripAnsi ? entry.content.replace(ANSI_SEQUENCE_PATTERN, '') : entry.content
+    const content = stripAnsi ? stripAnsiSequences(entry.content) : entry.content
     return [{
       timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : '',
       iteration: typeof entry.iteration === 'number' && Number.isFinite(entry.iteration) ? entry.iteration : 0,

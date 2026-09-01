@@ -1,10 +1,11 @@
 import {
+  isStructuredFailureClass,
   normalizeStructuredRetryDiagnostic,
   type StructuredFailureClass,
   type StructuredRetryDiagnostic,
   withStructuredRetryDiagnosticAttempt,
 } from '@shared/structuredRetryDiagnostics'
-import { isRecord } from '@shared/typeGuards'
+import { isRecord, normalizeString } from '@shared/typeGuards'
 
 const EXCERPT_CONTEXT_LINES = 2
 const MAX_EXCERPT_LINES = 8
@@ -13,10 +14,6 @@ const MAX_EXCERPT_CHARS = 700
 type StructuredRetryDiagnosticCarrier = Error & {
   retryDiagnostic?: StructuredRetryDiagnostic
   structuredFailureClass?: StructuredFailureClass
-}
-
-function normalizeString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
 }
 
 function truncateExcerpt(text: string): string {
@@ -189,15 +186,8 @@ export function getStructuredRetryDiagnosticFromError(error: unknown): Structure
 
 export function getStructuredFailureClassFromError(error: unknown): StructuredFailureClass | undefined {
   if (!isRecord(error)) return undefined
-  const failureClass = error.structuredFailureClass
-  return failureClass === 'validation_error'
-    || failureClass === 'output_truncated'
-    || failureClass === 'empty_response'
-    || failureClass === 'provider_error'
-    || failureClass === 'connection_reset'
-    || failureClass === 'session_protocol_error'
-    || failureClass === 'transport_error'
-    ? failureClass
+  return isStructuredFailureClass(error.structuredFailureClass)
+    ? error.structuredFailureClass
     : undefined
 }
 

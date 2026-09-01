@@ -1,4 +1,4 @@
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import type { ManualQaOverride } from '@/lib/manualQaSetting'
 import { TriStateSetting, type TriStateOption } from '@/components/settings/TriStateSetting'
 

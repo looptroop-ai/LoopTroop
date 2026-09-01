@@ -1,10 +1,10 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import type { Context, Next } from 'hono'
+import { API_TOKEN_HEADER, constantTimeEquals, getBearerToken } from './authUtils'
 
 export const SESSION_COOKIE_NAME = 'looptroop_session'
 
-/** Header a script may present the API token in, for clients that cannot set Authorization. */
-export const API_TOKEN_HEADER = 'x-looptroop-token'
+export { API_TOKEN_HEADER, constantTimeEquals }
 
 /** Bootstrap nonces are single-use and short-lived by design. */
 export const BOOTSTRAP_NONCE_TTL_MS = 5 * 60_000
@@ -21,17 +21,6 @@ export function createSessionCredentials(): SessionCredentials {
     apiToken: randomBytes(32).toString('base64url'),
     sessionToken: randomBytes(32).toString('base64url'),
   }
-}
-
-export function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a)
-  const right = Buffer.from(b)
-  // Compare against a same-length buffer when lengths differ so the comparison
-  // still takes constant time and cannot leak the expected length.
-  if (left.length !== right.length) {
-    return timingSafeEqual(Buffer.alloc(left.length, 0), left) && false
-  }
-  return timingSafeEqual(left, right)
 }
 
 /** Minimal cookie parsing: avoids a dependency for one header. */
@@ -148,12 +137,6 @@ export class BootstrapNonceStore {
       if (expiresAt <= now) this.live.delete(value)
     }
   }
-}
-
-function getBearerToken(value: string | undefined): string | null {
-  if (!value) return null
-  const match = /^Bearer\s+(.+)$/i.exec(value.trim())
-  return match?.[1]?.trim() || null
 }
 
 export interface SessionAuthOptions {

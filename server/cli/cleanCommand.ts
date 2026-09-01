@@ -8,6 +8,7 @@ import { getProjectWorktreesRoot, normalizeFolderPath } from '../storage/paths'
 import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
 import { readRunningDaemon } from './commands'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export interface CleanOptions {
   apply: boolean
@@ -316,7 +317,7 @@ async function removeCandidates(candidates: WorktreeCandidate[]): Promise<number
       removed += 1
     } catch (error) {
       process.stderr.write(
-        `Failed to remove ${candidate.path}: ${error instanceof Error ? error.message : String(error)}\n`,
+        `Failed to remove ${candidate.path}: ${getErrorMessage(error)}\n`,
       )
     }
   }

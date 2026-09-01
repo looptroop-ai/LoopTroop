@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import * as commandLogger from '../log/commandLogger'
+import { DEFAULT_IGNORE_MODE, type IgnoreMode } from '@shared/ignoreMode'
 
 // Tolerates partial vi.mock() factories that omit logCommand.
 function logCmd(
@@ -84,13 +85,6 @@ const LOOP_TROOP_EXCLUDE_RULES = [
  * this checkout only; `skip` writes nothing, for a repository whose ignore
  * rules are managed elsewhere.
  */
-export type IgnoreMode = 'repo' | 'local' | 'skip'
-
-export const DEFAULT_IGNORE_MODE: IgnoreMode = 'local'
-
-export function isIgnoreMode(value: unknown): value is IgnoreMode {
-  return value === 'repo' || value === 'local' || value === 'skip'
-}
 
 export function getCurrentBranch(projectPath: string): string | null {
   try {

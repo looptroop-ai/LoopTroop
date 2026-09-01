@@ -1,7 +1,6 @@
 import { Database } from './sqliteShim'
-import { drizzle } from 'drizzle-orm/node-sqlite'
+import { createDrizzle, type DrizzleDatabase } from './createDrizzle'
 import { existsSync } from 'fs'
-import * as schema from './schema'
 import { ensureProjectStorageDirs, getProjectDbPath } from '../storage/paths'
 import { secureFile } from '../lib/appConfigDir'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
@@ -13,10 +12,11 @@ import {
   writeUserVersion,
   type SchemaCompatibility,
 } from './schemaVersion'
+import { buildGitHookPolicyMigrationSql } from '@shared/gitHookPolicy'
 
 interface ProjectDatabase {
   sqlite: Database
-  db: ReturnType<typeof drizzle>
+  db: DrizzleDatabase
 }
 
 const MAX_PROJECT_CACHE_SIZE = 50
@@ -300,20 +300,10 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
 
-  sqlite.exec(`
-    UPDATE projects
-    SET git_hook_policy = CASE git_hook_policy
-      WHEN 'validate_explicitly' THEN 'validate_advisory'
-      WHEN 'ignore_internal_only' THEN 'observe_only'
-      WHEN 'use_on_internal_commits' THEN 'use_native_hooks'
-      ELSE git_hook_policy
-    END
-    WHERE git_hook_policy IN (
-      'validate_explicitly',
-      'ignore_internal_only',
-      'use_on_internal_commits'
-    );
+  const gitHookPolicyMigration = buildGitHookPolicyMigrationSql('projects')
+  if (gitHookPolicyMigration) sqlite.exec(gitHookPolicyMigration)
 
+  sqlite.exec(`
     UPDATE phase_artifacts
     SET phase_attempt = COALESCE(phase_attempt, 1)
     WHERE phase_attempt IS NULL;
@@ -432,8 +422,7 @@ export function getProjectDatabase(projectRoot: string): ProjectDatabase {
 
   const projectDb: ProjectDatabase = {
     sqlite,
-    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-    db: drizzle({ client: sqlite.client, schema }),
+    db: createDrizzle(sqlite.client),
   }
   projectDbCache.set(projectRoot, projectDb)
   return projectDb

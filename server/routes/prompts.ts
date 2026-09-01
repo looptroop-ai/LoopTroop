@@ -28,6 +28,7 @@ import {
   templatesDir,
   type EditablePromptId,
 } from '../prompts/templateStore'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const promptsRouter = new Hono()
 
@@ -105,7 +106,7 @@ promptsRouter.post('/prompts/:id/preview', async (c) => {
     const rules = getGlobalRuleText(resolveRuleIdForPrompt(id))
     return c.json({ preview: previewPrompt(rules, template) })
   } catch (error) {
-    return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
+    return c.json({ error: getErrorMessage(error) }, 400)
   }
 })
 
@@ -139,7 +140,7 @@ promptsRouter.put('/prompts/:id', async (c) => {
       text = parseGlobalRule(parsedBody.data.source).text
     } catch (error) {
       return c.json(
-        { errors: [error instanceof Error ? error.message : String(error)], warnings: [] },
+        { errors: [getErrorMessage(error)], warnings: [] },
         400,
       )
     }

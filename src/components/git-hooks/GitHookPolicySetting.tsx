@@ -5,6 +5,7 @@ import {
 } from '@/lib/gitHookPolicySetting'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 interface GitHookPolicySettingProps {
   value: GitHookPolicyOverride
@@ -40,13 +41,13 @@ const OPTIONS: Array<{ value: GitHookPolicy; label: string; tooltip: string }> =
 export function GitHookPolicySetting({
   value,
   onChange,
-  inheritedPolicy = 'validate_advisory',
+  inheritedPolicy = DEFAULT_GIT_HOOK_POLICY,
   disabled = false,
   compact = false,
 }: GitHookPolicySettingProps) {
   const selectedValue = normalizeGitHookPolicySetting(value)
     ?? normalizeGitHookPolicySetting(inheritedPolicy)
-    ?? 'validate_advisory'
+    ?? DEFAULT_GIT_HOOK_POLICY
 
   return (
     <div>

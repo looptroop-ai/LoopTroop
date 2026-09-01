@@ -37,7 +37,7 @@ import { useProfile, useCreateProfile, useUpdateProfile } from '@/hooks/useProfi
 import type { CreateProfileInput } from '@/hooks/useProfile'
 import { ChevronDown, Plus, X, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/shared/useToast'
-import { PROFILE_DEFAULTS } from '@server/db/defaults'
+import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { useQueryClient } from '@tanstack/react-query'
 import { useOpenCodeModels, refetchOpenCodeModelsQuery, refreshOpenCodeModelsQuery } from '@/hooks/useOpenCodeModels'
 import { numericFields, hasNumericErrors, buildInitialRawNumeric } from './numericFieldConfig'
@@ -49,8 +49,9 @@ import { TriStateSetting } from '@/components/settings/TriStateSetting'
 import { AI_QUESTIONS_OPTIONS, AI_QUESTION_WAIT_HINT } from '@/components/settings/aiQuestionOptions'
 import { GitHookPolicySetting } from '@/components/git-hooks/GitHookPolicySetting'
 import { IgnoreModeSetting } from '@/components/project/IgnoreModeSetting'
-import { DEFAULT_IGNORE_MODE } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
 import { cn } from '@/lib/utils'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 interface ProfileSetupProps {
   onClose: () => void
@@ -91,7 +92,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     manualQaEnabled: profile?.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
     aiQuestionsEnabled: profile?.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
     aiQuestionWindow: profile?.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
-    gitHookPolicy: profile?.gitHookPolicy ?? 'validate_advisory',
+    gitHookPolicy: profile?.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
     ignoreMode: profile?.ignoreMode ?? DEFAULT_IGNORE_MODE,
   })
 
@@ -150,7 +151,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
       manualQaEnabled: profile.manualQaEnabled ?? PROFILE_DEFAULTS.manualQaEnabled,
       aiQuestionsEnabled: profile.aiQuestionsEnabled ?? PROFILE_DEFAULTS.aiQuestionsEnabled,
       aiQuestionWindow: profile.aiQuestionWindow ?? PROFILE_DEFAULTS.aiQuestionWindow,
-      gitHookPolicy: profile.gitHookPolicy ?? 'validate_advisory',
+      gitHookPolicy: profile.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
       ignoreMode: profile.ignoreMode ?? DEFAULT_IGNORE_MODE,
     })
     setRawNumeric(buildInitialRawNumeric({
@@ -623,7 +624,7 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
                     </p>
                   </div>
                   <GitHookPolicySetting
-                    value={formData.gitHookPolicy ?? 'validate_advisory'}
+                    value={formData.gitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY}
                     onChange={(value) => updateField('gitHookPolicy', value)}
                     compact
                   />

@@ -1,8 +1,9 @@
 import type { Context } from 'hono'
 import { getTicketState, sendTicketEvent } from '../../machines/persistence'
 import { getTicketByRef } from '../../storage/tickets'
-import { getTicketParam } from './routeUtils'
+import { getTicketParam, logTicketOperationError } from './routeUtils'
 import { devEventSchema } from './schemas'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export async function handleDevEvent(c: Context) {
   const enabled = process.env.LOOPTROOP_ENABLE_DEV_EVENT === '1'
@@ -27,8 +28,8 @@ export async function handleDevEvent(c: Context) {
     }
     sendTicketEvent(ticketId, parsed.data)
   } catch (err) {
-    console.error(`[tickets] dev-event failed for ticket ${ticketId}:`, err)
-    return c.json({ error: String(err) }, 500)
+    logTicketOperationError(ticketId, 'dev-event failed for ticket', err)
+    return c.json({ error: getErrorMessage(err) }, 500)
   }
 
   const updated = getTicketByRef(ticketId)

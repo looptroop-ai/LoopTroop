@@ -80,6 +80,7 @@ import {
   handleCleanup,
 } from './phases'
 import { handleManualQaChecklistGeneration } from '../phases/manualQa'
+import { isWorkflowPhaseId } from '@shared/workflowMeta'
 
 // Re-export public API for external callers
 export {
@@ -285,7 +286,7 @@ export function attachWorkflowRunner(
         'CLEANING_ENV',
       ])
 
-      if (mockHandledStates.has(state)) {
+      if (isWorkflowPhaseId(state) && mockHandledStates.has(state)) {
         runningPhases.add(key)
         handleMockLifecycleState(ticketId, context, state, sendEvent)
           .catch((err: unknown) => {

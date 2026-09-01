@@ -7,6 +7,12 @@ import {
   hostContextSchema,
   type HostContext,
 } from '@shared/hostContext'
+import { isRecord } from '@shared/typeGuards'
+import { DEFAULT_GIT_HOOK_POLICY, migrateGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
+import {
+  isExecutionSetupWorkspaceInputCategory,
+  type ExecutionSetupWorkspaceInputCategory,
+} from '@shared/executionSetupCategories'
 
 export const EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT = 'looptroop:execution-setup-plan-focus'
 
@@ -31,12 +37,12 @@ export interface ExecutionSetupWorkspaceInput {
   path: string
   kind: 'file' | 'directory'
   sourceStatus: 'ignored' | 'untracked'
-  category: 'local_config' | 'secret' | 'fixture' | 'dataset' | 'other_non_reproducible'
+  category: ExecutionSetupWorkspaceInputCategory
   allowLargeCopy?: boolean
   reason: string
 }
 
-export type GitHookPolicy = 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+export type { GitHookPolicy } from '@shared/gitHookPolicy'
 
 export interface ExecutionSetupWorkspaceProbe {
   id: string
@@ -104,10 +110,6 @@ function toStringArray(value: unknown): string[] {
     : []
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
 function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['status'] {
   if (typeof value !== 'string') return 'ready'
   const normalized = value.trim().toLowerCase()
@@ -117,11 +119,20 @@ function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['
   return 'ready'
 }
 
-function normalizeGitHookPolicy(value: unknown): GitHookPolicy {
-  if (value === 'observe_only' || value === 'validate_required' || value === 'use_native_hooks') return value
-  if (value === 'ignore_internal_only') return 'observe_only'
-  if (value === 'use_on_internal_commits') return 'use_native_hooks'
-  return 'validate_advisory'
+function normalizeGitHookPolicy(value: unknown, warnings: string[]): GitHookPolicy {
+  const migrated = migrateGitHookPolicy(value)
+  if (migrated) return migrated
+  // A plan that names a policy nobody recognises is a parse problem, not a
+  // preference. Coercing it silently is how an unknown value used to read back
+  // as advisory validation and look deliberate.
+  //
+  // Into the same `warnings` array every other normalisation uses, not the
+  // console: the parser hands that array back to the screen showing the plan,
+  // so a warning that only reaches devtools is one nobody reads.
+  if (value !== undefined && value !== null) {
+    warnings.push(`git_hooks.policy: unknown value ${JSON.stringify(value)}; using ${DEFAULT_GIT_HOOK_POLICY}.`)
+  }
+  return DEFAULT_GIT_HOOK_POLICY
 }
 
 function fallbackHostContext(): HostContext {
@@ -223,9 +234,7 @@ function toExecutionSetupPlan(value: unknown, warnings: string[]): ExecutionSetu
           path: typeof entry.path === 'string' ? entry.path : '',
           kind,
           sourceStatus,
-          category: ['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(String(entry.category))
-            ? entry.category as ExecutionSetupWorkspaceInput['category']
-            : 'other_non_reproducible',
+          category: isExecutionSetupWorkspaceInputCategory(entry.category) ? entry.category : 'other_non_reproducible',
           ...((entry.allowLargeCopy ?? entry.allow_large_copy) === true ? { allowLargeCopy: true } : {}),
           reason: typeof entry.reason === 'string' ? entry.reason : '',
         } satisfies ExecutionSetupWorkspaceInput]
@@ -314,7 +323,7 @@ function toExecutionSetupPlan(value: unknown, warnings: string[]): ExecutionSetu
     workspaceInputs,
     workspaceProbes,
     gitHooks: {
-      policy: normalizeGitHookPolicy(gitHooks.policy),
+      policy: normalizeGitHookPolicy(gitHooks.policy, warnings),
       detected,
       validationCommands,
     },

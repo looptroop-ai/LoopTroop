@@ -1,27 +1,16 @@
-import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
-import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { DEFAULT_IGNORE_MODE } from '@shared/ignoreMode'
+import { SHARED_PROFILE_DEFAULTS } from '@shared/profileDefaults'
 
+/**
+ * The full profile defaults, as the database and the workflow read them.
+ *
+ * Everything the SPA also reads lives in `@shared/profileDefaults`; the two
+ * below stay here because only the server uses them, and both come from the
+ * modules that own those unions rather than being spelled out again.
+ */
 export const PROFILE_DEFAULTS = {
-  gitHookPolicy: 'validate_advisory',
-  ignoreMode: 'local',
-  manualQaEnabled: true,
-  aiQuestionsEnabled: true,
-  aiQuestionWindow: AI_QUESTION_WINDOW_DEFAULT_MS,
-  minCouncilQuorum: 2,
-  perIterationTimeout: 1200000,
-  executionSetupTimeout: 1200000,
-  councilResponseTimeout: COUNCIL_RESPONSE_TIMEOUT_MS,
-  interviewQuestions: 50,
-  coverageFollowUpBudgetPercent: 20,
-  maxCoveragePasses: 2,
-  maxPrdCoveragePasses: 5,
-  maxBeadsCoveragePasses: 5,
-  structuredRetryCount: 1,
-  maxIterations: 5,
-  opencodeRetryLimit: 10,
-  opencodeRetryDelay: 60_000,
-  opencodeSteps: 0,
-  toolInputMaxChars: 4000,
-  toolOutputMaxChars: 12_000,
-  toolErrorMaxChars: 6_000,
+  gitHookPolicy: DEFAULT_GIT_HOOK_POLICY,
+  ignoreMode: DEFAULT_IGNORE_MODE,
+  ...SHARED_PROFILE_DEFAULTS,
 } as const

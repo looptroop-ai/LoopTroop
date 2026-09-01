@@ -31,6 +31,7 @@ import { readTicketUiState } from './uiStateHandlers'
 import { getRequiredRouteParam, getTicketParam } from './routeUtils'
 import { createManualQaImprovementDraftId } from '../../../shared/manualQaImprovement'
 import { buildManualQaMergeGroupIds } from '../../../shared/manualQaMergeGroups'
+import { getErrorMessage } from '@shared/typeGuards'
 
 function parseVersion(c: Context): number {
   const version = Number(getRequiredRouteParam(c, 'version'))
@@ -226,7 +227,7 @@ function appendEvidenceEvent(input: {
 }
 
 function manualQaError(c: Context, error: unknown) {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = getErrorMessage(error)
   const drift = error && typeof error === 'object' && 'drift' in error ? (error as { drift: unknown }).drift : undefined
   const code = error && typeof error === 'object' && 'code' in error ? (error as { code: unknown }).code : undefined
   if (code === 'MANUAL_QA_DRAFT_CONFLICT') {

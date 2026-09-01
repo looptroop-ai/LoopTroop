@@ -7,17 +7,17 @@ import { validateModelSelection } from '../opencode/modelValidation'
 import { parseCouncilMembers } from '../council/members'
 import { registerOpenRouterRoutingModels } from '../opencode/openRouterRoutingConfig'
 import { refreshProviderCatalog } from '../opencode/providerCatalog'
-import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS } from '@shared/aiQuestions'
+import { aiQuestionWindowSchema, gitHookPolicySchema, ignoreModeSchema } from '../lib/settingSchemas'
 
 const profileRouter = new Hono()
 const MAX_TIMEOUT_MS = 3_600_000
 
 const profileSchema = z.object({
-  gitHookPolicy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']).optional(),
-  ignoreMode: z.enum(['repo', 'local', 'skip']).optional(),
+  gitHookPolicy: gitHookPolicySchema.optional(),
+  ignoreMode: ignoreModeSchema.optional(),
   manualQaEnabled: z.boolean().optional(),
   aiQuestionsEnabled: z.boolean().optional(),
-  aiQuestionWindow: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).optional(),
+  aiQuestionWindow: aiQuestionWindowSchema.optional(),
   mainImplementer: z.string().optional(),
   mainImplementerVariant: z.string().optional(),
   councilMembers: z.string().optional(),

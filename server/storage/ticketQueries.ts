@@ -35,6 +35,7 @@ import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -334,7 +335,7 @@ export function parseLockedCouncilMembers(raw: string | null | undefined): strin
     }
     return normalizeModelList(result.data)
   } catch (error) {
-    warnInvalidDbJson('lockedCouncilMembers', raw, error instanceof Error ? error.message : String(error))
+    warnInvalidDbJson('lockedCouncilMembers', raw, getErrorMessage(error))
     return []
   }
 }
@@ -354,12 +355,19 @@ export function parseLockedCouncilMemberVariants(raw: string | null | undefined)
       Object.entries(result.data).map(([key, value]) => [key.trim(), value]),
     )
   } catch (error) {
-    warnInvalidDbJson('lockedCouncilMemberVariants', raw, error instanceof Error ? error.message : String(error))
+    warnInvalidDbJson('lockedCouncilMemberVariants', raw, getErrorMessage(error))
     return null
   }
 }
 
-export function arraysEqual(left: string[], right: string[]): boolean {
+/**
+ * Set equality that also rejects duplicates on either side.
+ *
+ * Deliberately *not* the comparison used for the council model lock — see
+ * `councilMembersEqualOrdered` in `server/ticket/metadata.ts`, where roster
+ * order decides who the main implementer is.
+ */
+export function sameMemberSet(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false
 
   const leftSet = new Set(left)

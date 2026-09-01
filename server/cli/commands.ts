@@ -10,6 +10,7 @@ import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { daemonArgv } from './daemonHandoff'
 import { isProcessAlive, killProcessTree, signalTermination, waitForExit } from './processControl'
+import { getErrorMessage } from '@shared/typeGuards'
 
 /** A start is abandoned rather than hanging forever if the child never reports. */
 const READY_TIMEOUT_MS = 60_000
@@ -777,7 +778,7 @@ export function openInBrowser(url: string): Promise<BrowserLaunch> {
     try {
       child = spawn(opener, args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
     } catch (error) {
-      resolve({ opened: false, reason: error instanceof Error ? error.message : String(error) })
+      resolve({ opened: false, reason: getErrorMessage(error) })
       return
     }
 

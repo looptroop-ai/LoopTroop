@@ -20,6 +20,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
+import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
@@ -162,14 +163,14 @@ export async function reconcileOpenCodeQuestions(
 
     const externalIds = new Map(
       context.projectDb
-        .select({ id: tickets.id, externalId: tickets.externalId })
+        .select({ id: tickets.id, externalId: tickets.externalId, status: tickets.status })
         .from(tickets)
         .where(inArray(
           tickets.id,
           sessionRows.map((row) => row.ticketId).filter((id): id is number => id !== null),
         ))
         .all()
-        .map((row) => [row.id, row.externalId] as const),
+        .map((row) => [row.id, { externalId: row.externalId, status: row.status }] as const),
     )
 
     // Open waits can belong to a ticket with no sessions left at all, so the
@@ -183,13 +184,18 @@ export async function reconcileOpenCodeQuestions(
     )
 
     const owners = sessionRows.flatMap((row) => {
-      const externalId = row.ticketId === null ? undefined : externalIds.get(row.ticketId)
-      if (!externalId) return []
+      const ticket = row.ticketId === null ? undefined : externalIds.get(row.ticketId)
+      if (!ticket) return []
+      // Reconciliation has to file the question somewhere, and the ticket's own
+      // status is the honest stand-in for a session row whose stored phase is
+      // no longer a declared status — dropping the row would silently abandon a
+      // question that is genuinely still waiting.
+      const phase = resolveStoredWorkflowPhase(row.phase, ticket.status)
       return [{
         sessionId: row.sessionId,
-        ticketId: buildTicketRef(project.id, externalId),
+        ticketId: buildTicketRef(project.id, ticket.externalId),
         memberId: row.memberId ?? null,
-        phase: row.phase,
+        phase,
         phaseAttempt: row.phaseAttempt ?? 1,
         active: row.state === 'active',
       }]
@@ -216,7 +222,8 @@ export async function reconcileOpenCodeQuestions(
     // downtime: the daemon was not working either, and an open row is far worse
     // than a slightly long one.
     for (const localTicketId of listOpenQuestionWaitTicketIds(context.projectDb)) {
-      const externalId = externalIds.get(localTicketId) ?? allTicketExternalIds.get(localTicketId)
+      const externalId = externalIds.get(localTicketId)?.externalId
+        ?? allTicketExternalIds.get(localTicketId)
       if (!externalId) continue
       const ticketRef = buildTicketRef(project.id, externalId)
       if (getPendingQuestionSummary(ticketRef)) continue

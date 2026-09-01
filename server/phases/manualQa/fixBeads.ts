@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path, { resolve } from 'node:path'
 import { z } from 'zod'
@@ -31,6 +30,8 @@ import type {
 import { normalizeCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../lib/hostContext'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './storage'
+import { getErrorMessage } from '@shared/typeGuards'
+import { focusedDiffMetadata } from './focusedDiff'
 
 export const MANUAL_QA_FIX_BEADS_TAG = 'MANUAL_QA_FIX_BEADS'
 
@@ -160,23 +161,6 @@ export function validateManualQaFixBeadCandidates(
       }
     }
   }
-}
-
-function focusedDiffMetadata(worktreePath: string, baseBranch: string): string {
-  const mergeBase = spawnSync('git', ['-C', worktreePath, 'merge-base', 'HEAD', baseBranch], {
-    encoding: 'utf8',
-    timeout: 30_000,
-  })
-  const base = mergeBase.status === 0 ? (mergeBase.stdout ?? '').trim() : ''
-  if (!base) return 'Focused diff metadata unavailable.'
-  const diff = spawnSync('git', [
-    '-C', worktreePath,
-    'diff', '--name-status', '--stat=120,80', `${base}..HEAD`,
-    '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop',
-  ], { encoding: 'utf8', timeout: 30_000 })
-  return diff.status === 0
-    ? ((diff.stdout ?? '').trim().slice(0, 80_000) || 'No candidate file metadata was reported.')
-    : 'Focused diff metadata unavailable.'
 }
 
 export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[]): boolean {
@@ -333,7 +317,7 @@ export async function generateManualQaFixBeadCandidates(
       emitAiMilestone(input.ticketId, input.context.externalId, phase, `Validated ${parsed.length} Manual QA fix bead candidate${parsed.length === 1 ? '' : 's'}.`, 'fix-beads-validated')
       return parsed
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
+      lastError = getErrorMessage(error)
       correction = [
         '\n\n## Structured-output correction',
         `The previous attempt was invalid: ${lastError}`,

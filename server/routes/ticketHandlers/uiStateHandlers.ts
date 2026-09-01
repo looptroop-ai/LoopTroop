@@ -6,6 +6,7 @@ import {
   getTicketByRef,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
+import { getErrorMessage } from '@shared/typeGuards'
 import { getTicketParam } from './routeUtils'
 import { uiStateScopeSchema, upsertUiStateSchema } from './schemas'
 
@@ -194,6 +195,6 @@ export async function handlePutUiState(c: Context) {
       clientRevision: result.revision,
     })
   } catch (err) {
-    return c.json({ error: 'Failed to persist UI state', details: String(err) }, 500)
+    return c.json({ error: 'Failed to persist UI state', details: getErrorMessage(err) }, 500)
   }
 }

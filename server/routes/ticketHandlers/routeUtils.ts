@@ -1,5 +1,4 @@
 import type { Context } from 'hono'
-import type { TicketContext as MachineTicketContext } from '../../machines/types'
 import { db as appDb } from '../../db/index'
 import { profiles } from '../../db/schema'
 import {
@@ -26,11 +25,27 @@ import {
   type PublicTicketPhaseAttemptRow,
 } from '../../storage/tickets'
 import { clearExecutionSetupRuntimeArtifacts } from '../../phases/executionSetup/storage'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
 
 export function getProfileDefaults() {
   return appDb.select().from(profiles).get()
+}
+
+/**
+ * Logs a failed ticket route operation. Keeps the `[tickets]` prefix in one place so every
+ * handler reports the same way; `action` is the wording that precedes the ticket id, for
+ * example `Failed to send START to ticket`. A handful of messages read with wording after the
+ * id instead — pass it as `trailing` rather than writing the prefix out again.
+ */
+export function logTicketOperationError(
+  ticketId: string,
+  action: string,
+  error: unknown,
+  trailing?: string,
+): void {
+  console.error(`[tickets] ${action} ${ticketId}${trailing ? ` ${trailing}` : ''}:`, error)
 }
 
 export function respondWithState(c: Context, ticketId: string, message: string) {
@@ -57,7 +72,7 @@ export function buildRouteStatePayload(ticketId: string) {
 
 export function emitRoutePhaseLog(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: 'info' | 'error',
   content: string,
   data?: Record<string, unknown>,
@@ -119,15 +134,6 @@ export function getRequiredRouteParam(c: Context, name: string): string {
 export function rejectDisplayOnlyMockTicket(c: Context, ticket: Pick<PublicTicket, 'branchName'>) {
   if (!isDisplayOnlyMockTicket(ticket)) return null
   return c.json({ error: 'Display-only mock tickets are board-only and cannot run workflow actions' }, 409)
-}
-
-export function getMachineContext(ticketId: string): MachineTicketContext {
-  ensureActorForTicket(ticketId)
-  const state = getTicketState(ticketId)
-  if (!state) {
-    throw new Error('Ticket actor state is unavailable')
-  }
-  return state.context as MachineTicketContext
 }
 
 export interface PhaseRestartSummary {

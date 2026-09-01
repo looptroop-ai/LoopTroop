@@ -4,6 +4,7 @@ import { isSea } from '../lib/isSea'
 import { DAEMON_ARGV } from './daemonHandoff'
 import { formatUpdateStatusNotice, getUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { isEntryPoint } from './entryPoint'
+import { getErrorMessage } from '@shared/typeGuards'
 
 /**
  * Exported so the published CLI reference can be generated from it rather than
@@ -243,7 +244,7 @@ export async function main(argv: string[]): Promise<number> {
       },
     })
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n\n${USAGE}`)
+    process.stderr.write(`${getErrorMessage(error)}\n\n${USAGE}`)
     return 1
   }
 
@@ -367,7 +368,7 @@ if (isEntryPoint(import.meta.url, process.argv[1]) || isSea()) {
   main(process.argv.slice(2))
     .then((code) => { process.exitCode = code })
     .catch((error: unknown) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+      process.stderr.write(`${getErrorMessage(error)}\n`)
       process.exitCode = 1
     })
 }

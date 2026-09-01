@@ -2,6 +2,7 @@ import { createRuntime, type LoopTroopRuntime } from './createRuntime'
 import { createApp } from './app'
 import { isLoopbackHost } from '../shared/appConfig'
 import { isEntryPoint } from './cli/entryPoint'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const SHUTDOWN_FORCE_EXIT_MS = 30_000
 
@@ -23,7 +24,7 @@ export async function main(): Promise<void> {
     const address = await runtime.start()
     console.log(`[server] LoopTroop backend running on http://${address.hostname}:${address.port}`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = getErrorMessage(error)
     console.error(`[server] LoopTroop backend failed to start: ${message}`)
     process.exit(1)
   }
@@ -49,7 +50,7 @@ function installShutdownHandlers(runtime: LoopTroopRuntime): void {
       console.log('[server] Graceful shutdown completed.')
       process.exit(0)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = getErrorMessage(error)
       console.error(`[server] Shutdown failed: ${message}`)
       process.exit(1)
     }

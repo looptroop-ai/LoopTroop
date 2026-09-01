@@ -18,6 +18,7 @@ import type {
   FinalTestFileEffectIntent,
   StructuredOutputResult,
 } from './types'
+import { EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES, isExecutionSetupWorkspaceInputCategory } from './types'
 import {
   isRecord,
   normalizeKey,
@@ -38,6 +39,7 @@ import {
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy } from '@shared/gitHookPolicy'
 
 const COMPLETION_NESTED_MAPPING_CHILDREN = {
   checks: ['tests', 'lint', 'typecheck', 'qualitative'],
@@ -484,9 +486,9 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
       ['category'],
       `workspace_inputs[${index}].category`,
     )
-    if (!['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(category)) {
+    if (!isExecutionSetupWorkspaceInputCategory(category)) {
       throw new Error(
-        `workspace_inputs[${index}].category must be local_config, secret, fixture, dataset, or other_non_reproducible`,
+        `workspace_inputs[${index}].category must be ${EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES.slice(0, -1).join(', ')}, or ${EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES.at(-1)}`,
       )
     }
     const allowLargeCopy = getValueByAliases(entry, ['allowlargecopy'])
@@ -497,7 +499,7 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
       ),
       kind,
       sourceStatus,
-      category: category as ExecutionSetupPlanPayload['workspaceInputs'][number]['category'],
+      category,
       ...(typeof allowLargeCopy === 'boolean' ? { allowLargeCopy } : {}),
       reason: getRequiredString(entry, ['reason', 'rationale'], `workspace_inputs[${index}].reason`),
     }
@@ -510,7 +512,7 @@ function normalizeExecutionSetupGitHooks(
   preserveBackendFields = false,
 ): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
-    return { policy: 'validate_advisory', detected: [], validationCommands: [] }
+    return { policy: DEFAULT_GIT_HOOK_POLICY, detected: [], validationCommands: [] }
   }
   if (!isRecord(value)) throw new Error('git_hooks must be an object')
   const rawDetected = getValueByAliases(value, ['detected', 'detectedhooks'])
@@ -521,10 +523,9 @@ function normalizeExecutionSetupGitHooks(
     repairWarnings?.push('Ignored model-supplied git_hooks.policy; LoopTroop applies the configured policy.')
   }
   const policyValue = getValueByAliases(value, ['policy'])
-  const policy = preserveBackendFields && typeof policyValue === 'string'
-    && ['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'].includes(policyValue)
-    ? policyValue as ExecutionSetupGitHooksPayload['policy']
-    : 'validate_advisory'
+  const policy = preserveBackendFields && isGitHookPolicy(policyValue)
+    ? policyValue
+    : DEFAULT_GIT_HOOK_POLICY
   const detected = preserveBackendFields && Array.isArray(rawDetected)
     ? rawDetected.map((entry, index) => {
         if (!isRecord(entry)) throw new Error(`git_hooks.detected[${index}] must be an object`)
@@ -843,7 +844,7 @@ function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[
   const workspaceInputs: ExecutionSetupPlanPayload['workspaceInputs'] = []
   const workspaceProbes: ExecutionSetupCommandProbePayload[] = []
   const gitHooks: ExecutionSetupGitHooksPayload = {
-    policy: 'validate_advisory',
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }

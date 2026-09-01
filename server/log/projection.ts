@@ -6,6 +6,7 @@ import { getProjectDatabase } from '../db/project'
 import { getTicketContext, getTicketPaths } from '../storage/tickets'
 import { extractLogFingerprint } from '@shared/logIdentity'
 import { normalizePersistedLogEntry, classifyPersistedLogEntry, type LogView } from './view'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export type PersistedLogChannel = 'normal' | 'debug' | 'ai'
 
@@ -155,7 +156,7 @@ export function queueProjectionAppend(ticketId: string, channel: PersistedLogCha
       const storage = ensureProjectionSchema(ticketId)
       if (storage) storage.statements.advanceCursor.run(storage.context.localTicketId, channel, offset + length)
     } catch (error) {
-      console.warn(`[logs] projection append deferred for ${ticketId}: ${error instanceof Error ? error.message : String(error)}`)
+      console.warn(`[logs] projection append deferred for ${ticketId}: ${getErrorMessage(error)}`)
     }
   })
 }

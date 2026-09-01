@@ -1,13 +1,36 @@
-export type BlockedErrorDiagnosticKind =
-  | 'model_output_truncated'
-  | 'opencode_provider'
-  | 'opencode_session'
-  | 'timeout'
-  | 'transport'
-  | 'runtime'
-  | 'unknown'
+/**
+ * One tuple per union, with the type, the Zod enum and the guard all derived
+ * from it.
+ *
+ * Each of these existed three times over — as a TypeScript union here, as a
+ * `z.enum` at the storage boundary, and as a chain of `===` comparisons in the
+ * normaliser below. Adding a kind meant editing all three, and forgetting the
+ * `z.enum` meant stored rows with the new kind failed to parse and were
+ * silently discarded. Order is preserved from the original declarations.
+ */
+export const BLOCKED_ERROR_DIAGNOSTIC_KINDS = [
+  'model_output_truncated',
+  'opencode_provider',
+  'opencode_session',
+  'timeout',
+  'transport',
+  'runtime',
+  'unknown',
+] as const
 
-export type BlockedErrorDiagnosticSource = 'opencode' | 'provider' | 'system' | 'runtime'
+export type BlockedErrorDiagnosticKind = (typeof BLOCKED_ERROR_DIAGNOSTIC_KINDS)[number]
+
+export const BLOCKED_ERROR_DIAGNOSTIC_SOURCES = ['opencode', 'provider', 'system', 'runtime'] as const
+
+export type BlockedErrorDiagnosticSource = (typeof BLOCKED_ERROR_DIAGNOSTIC_SOURCES)[number]
+
+export function isBlockedErrorDiagnosticKind(value: unknown): value is BlockedErrorDiagnosticKind {
+  return (BLOCKED_ERROR_DIAGNOSTIC_KINDS as readonly unknown[]).includes(value)
+}
+
+export function isBlockedErrorDiagnosticSource(value: unknown): value is BlockedErrorDiagnosticSource {
+  return (BLOCKED_ERROR_DIAGNOSTIC_SOURCES as readonly unknown[]).includes(value)
+}
 
 export interface BlockedErrorDiagnostics {
   kind: BlockedErrorDiagnosticKind
@@ -74,25 +97,11 @@ function cleanBoolean(value: unknown): boolean | undefined {
 }
 
 function cleanKind(value: unknown): BlockedErrorDiagnosticKind | undefined {
-  if (
-    value === 'model_output_truncated'
-    || value === 'opencode_provider'
-    || value === 'opencode_session'
-    || value === 'timeout'
-    || value === 'transport'
-    || value === 'runtime'
-    || value === 'unknown'
-  ) {
-    return value
-  }
-  return undefined
+  return isBlockedErrorDiagnosticKind(value) ? value : undefined
 }
 
 function cleanSource(value: unknown): BlockedErrorDiagnosticSource | undefined {
-  if (value === 'opencode' || value === 'provider' || value === 'system' || value === 'runtime') {
-    return value
-  }
-  return undefined
+  return isBlockedErrorDiagnosticSource(value) ? value : undefined
 }
 
 export function normalizeBlockedErrorDiagnostics(value: unknown): BlockedErrorDiagnostics | null {

@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { contentSha256 } from '../lib/contentHash'
 import { LOG_TRUNCATION_LENGTH } from '../lib/constants'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 interface CommandLogContext {
   ticketId: string
   externalId: string
-  phase: string
+  phase: WorkflowPhaseId
   fields?: Record<string, unknown>
   state: {
     isEmittingCommandLog: boolean
@@ -13,7 +14,7 @@ interface CommandLogContext {
     lastCommandLogTimestamp: number
   }
   /** Emitter callback for SYS log entries. */
-  emit: (phase: string, type: 'info' | 'error', content: string, data?: Record<string, unknown>) => void
+  emit: (phase: WorkflowPhaseId, type: 'info' | 'error', content: string, data?: Record<string, unknown>) => void
 }
 
 // Use a globalThis singleton so the same AsyncLocalStorage is shared across
@@ -52,7 +53,7 @@ type LoggedCommandResult =
 export function withCommandLogging<T>(
   ticketId: string,
   externalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   fn: () => T,
   emit: CommandLogContext['emit'],
 ): T {
@@ -71,7 +72,7 @@ export function withCommandLogging<T>(
 export async function withCommandLoggingAsync<T>(
   ticketId: string,
   externalId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   fn: () => Promise<T>,
   emit: CommandLogContext['emit'],
 ): Promise<T> {

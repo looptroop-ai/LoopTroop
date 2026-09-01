@@ -19,18 +19,21 @@ import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { getProjectWorktreesRoot, getTicketAiLogPath, getTicketDebugLogPath, getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath } from './paths'
 import { safeAtomicWrite } from '../io/atomicWrite'
-import { lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
+import { councilMembersEqualOrdered, lockTicketModelSelection, resolveTicketBaseBranch } from '../ticket/metadata'
 import type {
   PublicTicket,
   TicketErrorOccurrence,
   TicketErrorResolutionStatus,
 } from './ticketQueries'
-import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import {
-  AI_QUESTION_WINDOW_DEFAULT_MS,
-  AI_QUESTION_WINDOW_MAX_MS,
-  AI_QUESTION_WINDOW_MIN_MS,
-} from '@shared/aiQuestions'
+  BLOCKED_ERROR_DIAGNOSTIC_KINDS,
+  BLOCKED_ERROR_DIAGNOSTIC_SOURCES,
+  normalizeBlockedErrorDiagnostics,
+  type BlockedErrorDiagnostics,
+} from '@shared/errorDiagnostics'
+import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
+import { DEFAULT_GIT_HOOK_POLICY, type GitHookPolicy } from '@shared/gitHookPolicy'
+import { ticketContentFields, ticketOverrideFields } from '../lib/settingSchemas'
 import { syncTicketRuntimeProjection } from './ticketRuntimeProjection'
 import { removeWorktree } from '../git/worktreeRemoval'
 import {
@@ -41,15 +44,15 @@ import {
   parseLockedCouncilMemberVariants,
   normalizeModelId,
   normalizeModelList,
-  arraysEqual,
   isValidResolutionStatus,
 } from './ticketQueries'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 
 const BlockedErrorDiagnosticsSchema = z.object({
-  kind: z.enum(['model_output_truncated', 'opencode_provider', 'opencode_session', 'timeout', 'transport', 'runtime', 'unknown']).optional(),
-  source: z.enum(['opencode', 'provider', 'system', 'runtime']).optional(),
+  kind: z.enum(BLOCKED_ERROR_DIAGNOSTIC_KINDS).optional(),
+  source: z.enum(BLOCKED_ERROR_DIAGNOSTIC_SOURCES).optional(),
   summary: z.string().optional(),
   modelId: z.string().optional(),
   sessionId: z.string().optional(),
@@ -68,14 +71,19 @@ const BlockedErrorDiagnosticsSchema = z.object({
   cacheWriteTokens: z.number().finite().optional(),
 }).passthrough()
 
+/**
+ * The storage boundary's own check on `createTicket` input.
+ *
+ * Deliberately duplicated validation, not a leftover: `createTicket` is called
+ * from the CLI and from tests as well as from the route, so it cannot rely on
+ * the route schema having run. The fields it shares with the route are imported
+ * so the two cannot disagree about what they accept.
+ */
 const CreateTicketInputSchema = z.object({
   projectId: z.number().int().positive(),
   title: z.string().min(1).max(500),
-  description: z.string().max(50000).optional(),
-  priority: z.number().int().min(1).max(5).optional(),
-  manualQaOverride: z.boolean().nullable().optional(),
-  aiQuestionsOverride: z.boolean().nullable().optional(),
-  aiQuestionWindowOverride: z.number().int().min(AI_QUESTION_WINDOW_MIN_MS).max(AI_QUESTION_WINDOW_MAX_MS).nullable().optional(),
+  ...ticketContentFields,
+  ...ticketOverrideFields,
 }).strict()
 
 function truncateLoggedValue(value: string, maxLength = 200): string {
@@ -111,7 +119,7 @@ function parseDiagnostics(raw: string | null | undefined): BlockedErrorDiagnosti
 
     return diagnostics
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
+    const detail = getErrorMessage(error)
     console.warn(`[tickets] Failed to parse stored diagnostics JSON: ${truncateLoggedValue(raw)} (${detail})`)
     return null
   }
@@ -287,7 +295,7 @@ function assertLockedModelConfigurationMutable(
   if (currentMainImplementerVariant !== nextMainImplementerVariant) {
     throw new Error(`Ticket model configuration is immutable after start: ${ticket.externalId}`)
   }
-  if (!arraysEqual(currentCouncilMembers, nextCouncilMembers)) {
+  if (!councilMembersEqualOrdered(currentCouncilMembers, nextCouncilMembers)) {
     throw new Error(`Ticket model configuration is immutable after start: ${ticket.externalId}`)
   }
   if (!recordsEqual(currentCouncilMemberVariants, nextCouncilMemberVariants)) {
@@ -640,7 +648,7 @@ export function lockTicketStartConfiguration(
     lockedAiQuestionsSource?: 'profile' | 'project' | 'ticket'
     lockedAiQuestionWindow?: number
     lockedAiQuestionWindowSource?: 'profile' | 'project' | 'ticket'
-    lockedGitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+    lockedGitHookPolicy?: GitHookPolicy
     lockedGitHookPolicySource?: 'profile' | 'project'
   },
 ): PublicTicket | undefined {
@@ -678,7 +686,7 @@ export function lockTicketStartConfiguration(
     lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
   }, LOCKED_AI_QUESTION_FIELDS, 'AI question')
   assertLockedGitHookConfigurationMutable(context.localTicket, {
-    lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
+    lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
   })
 
@@ -707,7 +715,7 @@ export function lockTicketStartConfiguration(
       lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
       lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
       lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
-      lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
+      lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
       lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
       startedAt: meta.startedAt ?? input.startedAt,
       updatedAt: new Date().toISOString(),

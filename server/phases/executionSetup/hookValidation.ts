@@ -1,6 +1,7 @@
 import { executeCommand } from '../../lib/commandExecutor'
 import { detectHostContext } from '../../lib/hostContext'
 import type { ExecutionSetupCommandReceiptPayload, GitHookPolicy } from '../../structuredOutput/types'
+import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy } from '@shared/gitHookPolicy'
 import {
   normalizeCommandSpec,
   renderCommandSpec,
@@ -133,12 +134,7 @@ function readProfileValidation(content: string): {
     const value = JSON.parse(content) as Record<string, unknown>
     const hooks = (value.git_hooks ?? value.gitHooks) as Record<string, unknown> | undefined
     const policy = hooks?.policy
-    if (
-      policy !== 'observe_only'
-      && policy !== 'validate_advisory'
-      && policy !== 'validate_required'
-      && policy !== 'use_native_hooks'
-    ) return null
+    if (!isGitHookPolicy(policy)) return null
     const rawCommands = hooks?.validation_commands ?? hooks?.validationCommands
     const commands = Array.isArray(rawCommands) ? rawCommands.flatMap((entry) => {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
@@ -179,9 +175,14 @@ export async function runExplicitGitHookValidation(input: {
   fileAudit: GitHookValidationFileAudit
 }> {
   const config = readProfileValidation(input.profileContent)
-  const policy = config?.policy ?? 'validate_advisory'
+  const policy = config?.policy ?? DEFAULT_GIT_HOOK_POLICY
   const noMutation = { mutated: false, candidatePaths: [], temporaryPaths: [], internalPaths: [] }
   if (!config || (policy !== 'validate_advisory' && policy !== 'validate_required')) {
+    // Two different reasons land here and they are not the same news. A policy
+    // that disables validation is a choice; a profile whose policy could not be
+    // read is a problem, and reporting it as `Explicit validation is disabled by
+    // policy validate_advisory` claims a decision nobody made.
+    const unreadableProfile = !config
     return {
       policy,
       receipts: [{
@@ -189,10 +190,14 @@ export async function runExplicitGitHookValidation(input: {
         status: 'skipped',
         exitCode: null,
         durationMs: 0,
-        outputExcerpt: `Explicit validation is disabled by policy ${policy}.`,
+        outputExcerpt: unreadableProfile
+          ? 'Explicit validation was skipped: the workspace profile declares no readable git hook policy.'
+          : `Explicit validation is disabled by policy ${policy}.`,
       }],
       errors: [],
-      warnings: [],
+      warnings: unreadableProfile
+        ? ['The workspace profile declares no readable git hook policy, so explicit hook validation was skipped.']
+        : [],
       fileAudit: noMutation,
     }
   }

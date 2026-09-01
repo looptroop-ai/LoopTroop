@@ -19,10 +19,8 @@ export interface PromptGroup {
   statuses: PromptStatusGroup[]
 }
 
-export interface PromptLoadWarning {
-  id: string
-  message: string
-}
+import type { PromptLoadWarning } from '@shared/promptCatalog'
+export type { PromptLoadWarning }
 
 export interface PromptCatalogResponse {
   groups: PromptGroup[]

@@ -8,6 +8,7 @@ import {
 import type { OpenCodeResponseMeta } from './assistantMessageAnalysis'
 import type { SessionOwnership } from './sessionManager'
 import { isWorkflowDeadlineTimeoutError } from '../lib/deadlineErrors'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 const CONTINUABLE_STATUS_CODES = new Set([402, 408, 429, 500, 502, 503, 504, 529])
 const NON_CONTINUABLE_STATUS_CODES = new Set([400, 401, 403, 404, 413, 422])
@@ -15,7 +16,7 @@ const PENDING_CONTINUATION_TTL_MS = 30 * 60 * 1000
 
 export interface PendingSessionContinuation {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   sessionId: string
   requestedAt: string
   prompt?: string
@@ -36,7 +37,7 @@ export interface BuildContinuationDiagnosticsInput {
 }
 
 export interface PreserveSessionForContinuationInput extends BuildContinuationDiagnosticsInput {
-  sessionOwnership?: SessionOwnership & { ticketId?: string; phase?: string; keepActive?: boolean }
+  sessionOwnership?: SessionOwnership & { ticketId?: string; phase?: WorkflowPhaseId; keepActive?: boolean }
   signal?: AbortSignal
 }
 
@@ -138,7 +139,7 @@ export function attachContinuationDiagnostics<T extends Error>(
 
 export function requestSessionContinuation(input: {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   sessionId: string
   requestedAt?: string
   prompt?: string
@@ -159,6 +160,14 @@ export function requestSessionContinuation(input: {
   return pending
 }
 
+/**
+ * `phase` is a lookup key, so it stays `string`.
+ *
+ * The map itself only ever holds real phase ids — `requestSessionContinuation`
+ * takes a `WorkflowPhaseId` — but callers ask with a phase read off a stored
+ * session row, and an unrecognised one should simply match nothing rather than
+ * be rewritten into a phase that could match the wrong entry.
+ */
 export function getPendingSessionContinuationForTicketPhase(
   ticketId: string,
   phase: string,
@@ -172,7 +181,7 @@ export function getPendingSessionContinuationForTicketPhase(
 
 export function consumeSessionContinuation(input: {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   sessionId: string
 }): PendingSessionContinuation | null {
   pruneStalePendingContinuations()

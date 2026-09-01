@@ -1,11 +1,11 @@
 import { Database } from './sqliteShim'
-import { drizzle } from 'drizzle-orm/node-sqlite'
+import { createDrizzle, type DrizzleDatabase } from './createDrizzle'
 import { dirname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
-import * as schema from './schema'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
 import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
 import { resolveAppDbPath } from './appDbPath'
+import { getErrorMessage } from '@shared/typeGuards'
 
 type AppStorageConfigSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
 
@@ -52,7 +52,7 @@ function ensureStorageDirs(): void {
 }
 
 let sqliteInstance: Database | null = null
-let dbInstance: ReturnType<typeof drizzle> | null = null
+let dbInstance: DrizzleDatabase | null = null
 
 function getOrCreateSqlite(): Database {
   if (!sqliteInstance) {
@@ -71,10 +71,9 @@ function getOrCreateSqlite(): Database {
   return sqliteInstance
 }
 
-function getOrCreateDb(): ReturnType<typeof drizzle> {
+function getOrCreateDb(): DrizzleDatabase {
   if (!dbInstance) {
-    // @ts-expect-error Drizzle 1.0 RC removes `schema` from the config type but accepts it at runtime
-    dbInstance = drizzle({ client: getOrCreateSqlite().client, schema })
+    dbInstance = createDrizzle(getOrCreateSqlite().client)
   }
   return dbInstance
 }
@@ -90,7 +89,7 @@ export const sqlite = new Proxy({} as Database, {
   },
 })
 
-export const db = new Proxy({} as ReturnType<typeof drizzle>, {
+export const db = new Proxy({} as DrizzleDatabase, {
   get(_target, prop: string | symbol) {
     const real = getOrCreateDb()
     const value = (real as unknown as Record<string | symbol, unknown>)[prop]
@@ -114,7 +113,7 @@ export function startWalCheckpoint() {
     try {
       sqlite.pragma('wal_checkpoint(PASSIVE)')
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = getErrorMessage(error)
       console.error(`[db] WAL checkpoint failed: ${message}`)
     }
   }, 30000)

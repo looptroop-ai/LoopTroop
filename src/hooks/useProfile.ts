@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
-import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@/lib/ignoreMode'
+import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 interface Profile {
   id: number
@@ -68,7 +69,7 @@ interface CreateProfileInput {
 function normalizeProfile(profile: Profile): Profile {
   return {
     ...profile,
-    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? 'validate_advisory',
+    gitHookPolicy: normalizeGitHookPolicySetting(profile.gitHookPolicy) ?? DEFAULT_GIT_HOOK_POLICY,
     ignoreMode: normalizeIgnoreMode(profile.ignoreMode) ?? DEFAULT_IGNORE_MODE,
   }
 }

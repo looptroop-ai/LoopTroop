@@ -183,7 +183,11 @@ function noServerModulesInClientBundle(): import('vite').Plugin {
       if (offenders.size > 0) {
         this.error(
           `The client bundle pulls in ${offenders.size} server module(s):\n`
-          + [...offenders].sort().map((path) => `  - ${path}`).join('\n')
+          // Explicit comparator, not `localeCompare`: a build error listing
+          // should read the same on every machine, and locale-aware ordering
+          // does not guarantee that.
+          + [...offenders].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+            .map((path) => `  - ${path}`).join('\n')
           + '\n\nMove what both sides need into shared/ and import it from there.',
         )
       }

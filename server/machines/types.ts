@@ -59,50 +59,49 @@ export interface TicketContext {
  * builders. `errorDiagnostics` is already optional, which is how that gap got
  * here.
  *
- * The `Exclude` below fails to compile if a key is added to the interface and
- * not to this list, and `server/machines/__tests__/ticketContext.test.ts` uses
- * the list to assert every builder emits exactly these keys.
+ * The `satisfies Record<keyof TicketContext, true>` below is two-sided: a key
+ * added to the interface and not to this table is a missing property, and a key
+ * here that is not on the interface is an excess one. Both are compile errors.
+ * `server/machines/__tests__/ticketContext.test.ts` then uses the list to assert
+ * every builder emits exactly these keys.
  */
-export const TICKET_CONTEXT_KEYS = [
-  'ticketId',
-  'projectId',
-  'externalId',
-  'title',
-  'status',
-  'lockedMainImplementer',
-  'lockedMainImplementerVariant',
-  'lockedCouncilMembers',
-  'lockedCouncilMemberVariants',
-  'lockedInterviewQuestions',
-  'lockedCoverageFollowUpBudgetPercent',
-  'lockedMaxCoveragePasses',
-  'lockedMaxPrdCoveragePasses',
-  'lockedMaxBeadsCoveragePasses',
-  'lockedStructuredRetryCount',
-  'lockedManualQaEnabled',
-  'lockedManualQaSource',
-  'lockedAiQuestionsEnabled',
-  'lockedAiQuestionsSource',
-  'lockedAiQuestionWindow',
-  'lockedAiQuestionWindowSource',
-  'pendingExecutionSetupPlanRequestArtifactId',
-  'previousStatus',
-  'error',
-  'errorCodes',
-  'errorDiagnostics',
-  'blockedErrorResolution',
-  'beadProgress',
-  'iterationCount',
-  'maxIterations',
-  'councilResults',
-  'createdAt',
-  'updatedAt',
-] as const satisfies readonly (keyof TicketContext)[]
+const TICKET_CONTEXT_KEY_TABLE = {
+  ticketId: true,
+  projectId: true,
+  externalId: true,
+  title: true,
+  status: true,
+  lockedMainImplementer: true,
+  lockedMainImplementerVariant: true,
+  lockedCouncilMembers: true,
+  lockedCouncilMemberVariants: true,
+  lockedInterviewQuestions: true,
+  lockedCoverageFollowUpBudgetPercent: true,
+  lockedMaxCoveragePasses: true,
+  lockedMaxPrdCoveragePasses: true,
+  lockedMaxBeadsCoveragePasses: true,
+  lockedStructuredRetryCount: true,
+  lockedManualQaEnabled: true,
+  lockedManualQaSource: true,
+  lockedAiQuestionsEnabled: true,
+  lockedAiQuestionsSource: true,
+  lockedAiQuestionWindow: true,
+  lockedAiQuestionWindowSource: true,
+  pendingExecutionSetupPlanRequestArtifactId: true,
+  previousStatus: true,
+  error: true,
+  errorCodes: true,
+  errorDiagnostics: true,
+  blockedErrorResolution: true,
+  beadProgress: true,
+  iterationCount: true,
+  maxIterations: true,
+  councilResults: true,
+  createdAt: true,
+  updatedAt: true,
+} as const satisfies Record<keyof TicketContext, true>
 
-// Compile error when a key is added to TicketContext but not to the list above.
-type UnlistedTicketContextKey = Exclude<keyof TicketContext, (typeof TICKET_CONTEXT_KEYS)[number]>
-const _everyTicketContextKeyIsListed: UnlistedTicketContextKey extends never ? true : never = true
-void _everyTicketContextKeyIsListed
+export const TICKET_CONTEXT_KEYS = Object.keys(TICKET_CONTEXT_KEY_TABLE) as (keyof TicketContext)[]
 
 export type TicketEvent =
   | {

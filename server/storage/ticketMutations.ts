@@ -32,6 +32,7 @@ import {
   type BlockedErrorDiagnostics,
 } from '@shared/errorDiagnostics'
 import { AI_QUESTION_WINDOW_DEFAULT_MS } from '@shared/aiQuestions'
+import { DEFAULT_GIT_HOOK_POLICY, type GitHookPolicy } from '@shared/gitHookPolicy'
 import { ticketContentFields, ticketOverrideFields } from '../lib/settingSchemas'
 import { syncTicketRuntimeProjection } from './ticketRuntimeProjection'
 import { removeWorktree } from '../git/worktreeRemoval'
@@ -647,7 +648,7 @@ export function lockTicketStartConfiguration(
     lockedAiQuestionsSource?: 'profile' | 'project' | 'ticket'
     lockedAiQuestionWindow?: number
     lockedAiQuestionWindowSource?: 'profile' | 'project' | 'ticket'
-    lockedGitHookPolicy?: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+    lockedGitHookPolicy?: GitHookPolicy
     lockedGitHookPolicySource?: 'profile' | 'project'
   },
 ): PublicTicket | undefined {
@@ -685,7 +686,7 @@ export function lockTicketStartConfiguration(
     lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
   }, LOCKED_AI_QUESTION_FIELDS, 'AI question')
   assertLockedGitHookConfigurationMutable(context.localTicket, {
-    lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
+    lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
     lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
   })
 
@@ -714,7 +715,7 @@ export function lockTicketStartConfiguration(
       lockedAiQuestionsSource: input.lockedAiQuestionsSource ?? 'profile',
       lockedAiQuestionWindow: input.lockedAiQuestionWindow ?? AI_QUESTION_WINDOW_DEFAULT_MS,
       lockedAiQuestionWindowSource: input.lockedAiQuestionWindowSource ?? 'profile',
-      lockedGitHookPolicy: input.lockedGitHookPolicy ?? 'validate_advisory',
+      lockedGitHookPolicy: input.lockedGitHookPolicy ?? DEFAULT_GIT_HOOK_POLICY,
       lockedGitHookPolicySource: input.lockedGitHookPolicySource ?? 'profile',
       startedAt: meta.startedAt ?? input.startedAt,
       updatedAt: new Date().toISOString(),

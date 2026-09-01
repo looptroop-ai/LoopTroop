@@ -11,6 +11,7 @@ import {
   getPendingSessionContinuationForTicketPhase,
   isContinuableBlockedError,
 } from './sessionContinuation'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export interface SessionOwnership {
   ticketId?: string
@@ -64,7 +65,7 @@ export function listOpenCodeSessionsForTicket(ticketId: string, states: string[]
 
 export function reactivateOpenCodeSessionForContinuation(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   sessionId: string,
 ): boolean {
   const context = getTicketContext(ticketId)
@@ -85,7 +86,7 @@ export class SessionManager {
 
   async createSessionForPhase(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     phaseAttempt: number,
     memberId?: string,
     beadId?: string,
@@ -124,7 +125,7 @@ export class SessionManager {
 
   createSessionForOwnership(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     ownership: SessionOwnership,
     projectPath?: string,
     createOptions?: OpenCodeSessionCreateOptions,
@@ -170,7 +171,7 @@ export class SessionManager {
     })
   }
 
-  getActiveSession(ticketId: string, phase: string, memberId?: string) {
+  getActiveSession(ticketId: string, phase: WorkflowPhaseId, memberId?: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -188,7 +189,7 @@ export class SessionManager {
       .get()
   }
 
-  getOwnedActiveSession(ticketId: string, phase: string, ownership: SessionOwnership) {
+  getOwnedActiveSession(ticketId: string, phase: WorkflowPhaseId, ownership: SessionOwnership) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     const conditions = [
@@ -226,7 +227,7 @@ export class SessionManager {
 
   async validateAndReconnect(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     ownership?: SessionOwnership,
     signal?: AbortSignal,
   ): Promise<Session | null> {
@@ -251,7 +252,7 @@ export class SessionManager {
     return null
   }
 
-  private getActiveSessionById(ticketId: string, phase: string, sessionId: string) {
+  private getActiveSessionById(ticketId: string, phase: WorkflowPhaseId, sessionId: string) {
     const context = getTicketContext(ticketId)
     if (!context) return undefined
     return context.projectDb
@@ -272,7 +273,7 @@ export class SessionManager {
    */
   async reconcileActiveSession(
     ticketId: string,
-    phase: string,
+    phase: WorkflowPhaseId,
     sessionId: string,
     ownership?: SessionOwnership,
     signal?: AbortSignal,

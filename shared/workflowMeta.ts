@@ -1717,9 +1717,35 @@ export type NonWorkflowArtifactPhase = (typeof NON_WORKFLOW_ARTIFACT_PHASES)[num
 /** What the phase column of a stored artifact may hold. */
 export type ArtifactPhase = WorkflowPhaseId | NonWorkflowArtifactPhase
 
-export function isArtifactPhase(value: string): value is ArtifactPhase {
-  return isWorkflowPhaseId(value)
-    || (NON_WORKFLOW_ARTIFACT_PHASES as readonly string[]).includes(value)
+/**
+ * The last-resort phase for a record whose own phase cannot be trusted.
+ *
+ * Not an arbitrary pick: a record that reached one of these boundaries with an
+ * unreadable phase describes a ticket in an unexpected state, which is what
+ * this status means. Filing it here keeps it visible instead of dropping it.
+ */
+export const FALLBACK_WORKFLOW_PHASE_ID: WorkflowPhaseId = 'BLOCKED_ERROR'
+
+/**
+ * Narrows a phase that arrived from outside the type system.
+ *
+ * Session rows, phase artifacts and machine snapshots all store their phase as
+ * free text, so a row written by an older build can name a status that no
+ * longer exists — and a compound machine state serialises to JSON rather than
+ * to a status at all. Each of those boundaries needs the same decision: use the
+ * stored value if it is real, otherwise the record's own ticket status, and
+ * failing both a status that says something is wrong.
+ *
+ * One helper rather than one chain per boundary: three of them had been written
+ * out separately, which is the drift this whole change exists to remove.
+ */
+export function resolveStoredWorkflowPhase(
+  ...candidates: Array<string | null | undefined>
+): WorkflowPhaseId {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && isWorkflowPhaseId(candidate)) return candidate
+  }
+  return FALLBACK_WORKFLOW_PHASE_ID
 }
 
 /**

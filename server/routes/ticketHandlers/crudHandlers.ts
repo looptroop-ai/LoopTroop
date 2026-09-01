@@ -36,6 +36,7 @@ import {
   logTicketOperationError,
 } from './routeUtils'
 import { createTicketSchema, updateTicketSchema } from './schemas'
+import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 
 export function handleListTickets(c: Context) {
   const projectId = c.req.query('project') ?? c.req.query('projectId')
@@ -234,7 +235,7 @@ export async function handleDeleteTicket(c: Context) {
     await abortTicketSessions(ticketId)
     clearContextCache(ticketId)
 
-    emitRoutePhaseLog(ticketId, ticket.status, 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.status), 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
     const deleted = deleteStoredTicket(ticketId)
     if (!deleted) return c.json({ error: 'Ticket not found' }, 404)
 

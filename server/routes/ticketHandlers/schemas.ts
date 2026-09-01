@@ -2,7 +2,9 @@ import { z } from 'zod'
 import { hostContextSchema } from '@shared/hostContext'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { SKIP_REASON_MAX_LENGTH } from '@shared/skipReceipt'
-import { ticketContentFields, ticketOverrideFields } from '../../lib/settingSchemas'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES } from '@shared/executionSetupCategories'
+import { gitHookPolicySchema, ticketContentFields, ticketOverrideFields } from '../../lib/settingSchemas'
 
 /**
  * Every skip reason on every surface, validated once.
@@ -197,7 +199,7 @@ export const executionSetupPlanSchema = z.object({
     path: z.string(),
     kind: z.enum(['file', 'directory']),
     sourceStatus: z.enum(['ignored', 'untracked']),
-    category: z.enum(['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible']),
+    category: z.enum(EXECUTION_SETUP_WORKSPACE_INPUT_CATEGORIES),
     allowLargeCopy: z.boolean().optional(),
     fileCount: z.number().int().nonnegative().optional(),
     totalBytes: z.number().int().nonnegative().optional(),
@@ -209,7 +211,7 @@ export const executionSetupPlanSchema = z.object({
     purpose: z.string(),
   }).strict()).default([]),
   gitHooks: z.object({
-    policy: z.enum(['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks']),
+    policy: gitHookPolicySchema,
     detected: z.array(z.object({
       name: z.string(),
       path: z.string(),
@@ -225,7 +227,7 @@ export const executionSetupPlanSchema = z.object({
       purpose: z.string(),
     }).strict()),
   }).strict().default({
-    policy: 'validate_advisory',
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }),

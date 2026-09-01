@@ -33,11 +33,11 @@ import {
   stopTicketTimers,
 } from '../../workflow/questionWindows'
 import { resolveAiQuestionSettings } from '../../workflow/phases/helpers'
-import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
+import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 function emitOpenCodeQuestionLog(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   content: string,
   data: {
     requestId: string
@@ -135,7 +135,7 @@ async function getTicketPendingOpenCodeQuestions(ticketId: string) {
         sessionId: request.sessionID,
         requestId: request.id,
         memberId: session?.memberId ?? null,
-        phase: resolveQuestionPhase(session?.phase, ticketContext.localTicket.status),
+        phase: resolveStoredWorkflowPhase(session?.phase, ticketContext.localTicket.status),
         phaseAttempt: session?.phaseAttempt ?? 1,
         windowMs: resolveAiQuestionSettings(ticketId).windowMs,
         questions: request.questions,
@@ -181,11 +181,6 @@ async function findPendingOpenCodeQuestionForTicket(ticketId: string, requestId:
  * the fallback rather than dropping the question: an unclocked question waits
  * forever, which is the failure this whole path exists to prevent.
  */
-function resolveQuestionPhase(sessionPhase: string | undefined, ticketStatus: string): WorkflowPhaseId {
-  if (sessionPhase && isWorkflowPhaseId(sessionPhase)) return sessionPhase
-  return isWorkflowPhaseId(ticketStatus) ? ticketStatus : 'BLOCKED_ERROR'
-}
-
 export async function handleListOpenCodeQuestions(c: Context) {
   const ticketId = getTicketParam(c)
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
@@ -196,7 +191,7 @@ export async function handleListOpenCodeQuestions(c: Context) {
     return c.json({ questions, timer: getTicketQuestionState(ticketId).timer })
   } catch (err) {
     const message = getErrorMessage(err)
-    emitRoutePhaseLog(ticketId, getTicketByRef(ticketId)?.status ?? 'UNKNOWN', 'error', `Failed to list OpenCode questions: ${message}`)
+    emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(getTicketByRef(ticketId)?.status), 'error', `Failed to list OpenCode questions: ${message}`)
     return c.json({ error: 'Failed to list OpenCode questions', details: message }, 500)
   }
 }

@@ -51,6 +51,7 @@ export interface OpenCodeRunCallbacks {
 }
 
 import type { PromptTimeoutKind } from '@shared/promptTimeout'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 export type { PromptTimeoutKind }
 
 export interface OpenCodePromptDispatchEvent {
@@ -68,7 +69,7 @@ export interface OpenCodePromptDispatchEvent {
 
 export interface OpenCodeSessionOwnership extends SessionOwnership {
   ticketId: string
-  phase: string
+  phase: WorkflowPhaseId
   keepActive?: boolean
   forceFresh?: boolean
 }

@@ -100,4 +100,54 @@ describe('execution setup workspace verification contract', () => {
     expect(parsed.warnings).toEqual([])
     expect(parsed.plan?.workspaceProbes[0]?.command.mode).toBe('process')
   })
+  it('warns and falls back when the plan names an unrecognised git hook policy', () => {
+    const parsed = parseExecutionSetupPlanContent(JSON.stringify({
+      summary: 'Ready.',
+      readiness: { status: 'ready', actions_required: false, evidence: [], gaps: [] },
+      workspace_inputs: [],
+      workspace_probes: [],
+      git_hooks: { policy: 'not_a_policy', detected: [], validation_commands: [] },
+      steps: [],
+      project_commands: { prepare: [], test_full: [], lint_full: [], typecheck_full: [] },
+    }))
+
+    // Silently reading back as advisory validation is indistinguishable from a
+    // plan that asked for it, which is why this has to be said out loud.
+    expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')
+    expect(parsed.warnings).toEqual([
+      expect.stringContaining('git_hooks.policy'),
+    ])
+  })
+
+  it('migrates a legacy git hook policy name without warning', () => {
+    const parsed = parseExecutionSetupPlanContent(JSON.stringify({
+      summary: 'Ready.',
+      readiness: { status: 'ready', actions_required: false, evidence: [], gaps: [] },
+      workspace_inputs: [],
+      workspace_probes: [],
+      git_hooks: { policy: 'use_on_internal_commits', detected: [], validation_commands: [] },
+      steps: [],
+      project_commands: { prepare: [], test_full: [], lint_full: [], typecheck_full: [] },
+    }))
+
+    expect(parsed.plan?.gitHooks.policy).toBe('use_native_hooks')
+    expect(parsed.warnings).toEqual([])
+  })
+
+  it('does not treat an inherited property name as a legacy policy', () => {
+    const parsed = parseExecutionSetupPlanContent(JSON.stringify({
+      summary: 'Ready.',
+      readiness: { status: 'ready', actions_required: false, evidence: [], gaps: [] },
+      workspace_inputs: [],
+      workspace_probes: [],
+      git_hooks: { policy: 'constructor', detected: [], validation_commands: [] },
+      steps: [],
+      project_commands: { prepare: [], test_full: [], lint_full: [], typecheck_full: [] },
+    }))
+
+    expect(parsed.plan?.gitHooks.policy).toBe('validate_advisory')
+    expect(parsed.warnings).toEqual([
+      expect.stringContaining('git_hooks.policy'),
+    ])
+  })
 })

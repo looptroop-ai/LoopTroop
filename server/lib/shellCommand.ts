@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
-import { appendBoundedOutput } from './commandOutput'
+import { createBoundedOutputCollector } from './commandOutput'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
 export interface CommandShell {
@@ -171,8 +171,8 @@ export async function runShellCommand(input: {
       detached: process.platform !== 'win32',
     })
 
-    let stdout = ''
-    let stderr = ''
+    const stdoutCollector = createBoundedOutputCollector()
+    const stderrCollector = createBoundedOutputCollector()
     let settled = false
     let timedOut = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
@@ -189,23 +189,20 @@ export async function runShellCommand(input: {
         args,
         exitCode,
         signal,
-        stdout,
-        stderr,
+        stdout: stdoutCollector.end(),
+        stderr: stderrCollector.end(),
         durationMs: Date.now() - startedAt,
         timedOut,
       })
     }
 
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout = appendBoundedOutput(stdout, chunk)
-    })
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr = appendBoundedOutput(stderr, chunk)
-    })
+    child.stdout.on('data', (chunk: Buffer | string) => stdoutCollector.append(chunk))
+    child.stderr.on('data', (chunk: Buffer | string) => stderrCollector.append(chunk))
     child.on('error', (error) => {
-      stderr += shouldApplyWrapper && input.commandWrapper
+      // Through the collector so a spawn failure cannot push stderr past the cap.
+      stderrCollector.appendText(shouldApplyWrapper && input.commandWrapper
         ? `Execution setup wrapper ${input.commandWrapper} could not be launched: ${error.message}`
-        : error.message
+        : error.message)
       finish(null, null)
     })
     child.on('close', (exitCode, signal) => {

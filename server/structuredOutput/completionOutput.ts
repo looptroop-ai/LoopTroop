@@ -512,7 +512,7 @@ function normalizeExecutionSetupGitHooks(
   preserveBackendFields = false,
 ): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
-    return { policy: 'validate_advisory', detected: [], validationCommands: [] }
+    return { policy: DEFAULT_GIT_HOOK_POLICY, detected: [], validationCommands: [] }
   }
   if (!isRecord(value)) throw new Error('git_hooks must be an object')
   const rawDetected = getValueByAliases(value, ['detected', 'detectedhooks'])
@@ -844,7 +844,7 @@ function normalizeExecutionSetupProfile(value: unknown, repairWarnings?: string[
   const workspaceInputs: ExecutionSetupPlanPayload['workspaceInputs'] = []
   const workspaceProbes: ExecutionSetupCommandProbePayload[] = []
   const gitHooks: ExecutionSetupGitHooksPayload = {
-    policy: 'validate_advisory',
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }

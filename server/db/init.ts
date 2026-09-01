@@ -200,7 +200,8 @@ export function initializeDatabase() {
   ensureColumn('profiles', 'ai_questions_enabled', `INTEGER NOT NULL DEFAULT ${PROFILE_DEFAULTS.aiQuestionsEnabled ? 1 : 0}`)
   ensureColumn('profiles', 'ai_question_window', `INTEGER DEFAULT ${PROFILE_DEFAULTS.aiQuestionWindow}`)
 
-  sqlite.exec(buildGitHookPolicyMigrationSql('profiles'))
+  const gitHookPolicyMigration = buildGitHookPolicyMigrationSql('profiles')
+  if (gitHookPolicyMigration) sqlite.exec(gitHookPolicyMigration)
 
   // Stamp after all DDL: the database is now at the current schema version.
   if (shouldStampAfterInit(compatibility)) {

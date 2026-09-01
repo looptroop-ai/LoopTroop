@@ -38,7 +38,11 @@ export const LEGACY_GIT_HOOK_POLICIES: Readonly<Record<string, GitHookPolicy>> =
 /** The current name for a stored policy, or null when the value is not one. */
 export function migrateGitHookPolicy(value: unknown): GitHookPolicy | null {
   if (isGitHookPolicy(value)) return value
-  if (typeof value === 'string' && value in LEGACY_GIT_HOOK_POLICIES) {
+  // `hasOwn` rather than `in`: `in` walks the prototype chain, so a model that
+  // emitted `"constructor"` or `"toString"` as a policy would pass the check and
+  // be handed back `Object` or `Object.prototype.toString` — a function typed as
+  // a `GitHookPolicy`, truthy enough to skip every caller's fallback.
+  if (typeof value === 'string' && Object.hasOwn(LEGACY_GIT_HOOK_POLICIES, value)) {
     return LEGACY_GIT_HOOK_POLICIES[value]!
   }
   return null
@@ -51,8 +55,23 @@ export function migrateGitHookPolicy(value: unknown): GitHookPolicy | null {
  * and project databases each ran their own hand-written copy of this `CASE`,
  * and a mapping added to `migrateGitHookPolicy` reached neither.
  */
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 export function buildGitHookPolicyMigrationSql(table: string, column = 'git_hook_policy'): string {
+  // Both callers pass literals today. The check is here because this is exported
+  // from `shared/`, and a string interpolated into SQL should never be able to
+  // reach it unchecked just because today's callers happen to be safe.
+  for (const identifier of [table, column]) {
+    if (!SQL_IDENTIFIER.test(identifier)) {
+      throw new Error(`Refusing to build migration SQL for unsafe identifier: ${identifier}`)
+    }
+  }
+
   const legacyNames = Object.keys(LEGACY_GIT_HOOK_POLICIES)
+  // No legacy names means nothing to rewrite. Emitting the statement anyway
+  // would produce `WHERE column IN ()`, which is a syntax error.
+  if (legacyNames.length === 0) return ''
+
   const cases = legacyNames
     .map((legacy) => `      WHEN '${legacy}' THEN '${LEGACY_GIT_HOOK_POLICIES[legacy]}'`)
     .join('\n')

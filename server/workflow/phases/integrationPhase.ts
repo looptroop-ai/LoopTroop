@@ -14,6 +14,7 @@ import { ManualQaSummarySchema } from '../../phases/manualQa/types'
 import { readManualQaDeliverySummary as readCanonicalManualQaDeliverySummary } from '../../phases/manualQa/delivery'
 import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE } from '../../phases/executionSetup/types'
 import { runExplicitGitHookValidation } from '../../phases/executionSetup/hookValidation'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 import { discoverGitHooks } from '../../git/hookDiscovery'
 
 function readApprovedHookEvidence(profileContent: string): unknown[] {
@@ -130,7 +131,7 @@ export async function handleIntegration(
         signal,
       })
     : {
-        policy: 'validate_advisory' as const,
+        policy: DEFAULT_GIT_HOOK_POLICY,
         receipts: [{
           id: 'git-hook-policy', status: 'skipped' as const, exitCode: null, durationMs: 0,
           outputExcerpt: 'No execution setup profile was available for explicit Git hook validation.',

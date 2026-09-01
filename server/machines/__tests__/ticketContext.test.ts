@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { createActor } from 'xstate'
 import { PROFILE_DEFAULTS } from '../../db/defaults'
 import { makeTicketContext } from '../../test/factories'
+import { buildMachineContext } from '../persistence'
+import { ticketMachine } from '../ticketMachine'
 import { buildTicketContextFromTicket, type TicketContextSource } from '../ticketContext'
 import { TICKET_CONTEXT_KEYS } from '../types'
 
@@ -112,5 +115,36 @@ describe('makeTicketContext', () => {
     // TicketContext as optional would compile without it, and every test using
     // the factory would then exercise a context production never produces.
     expect(Object.keys(makeTicketContext()).sort()).toEqual([...TICKET_CONTEXT_KEYS].sort())
+  })
+})
+
+describe('buildMachineContext', () => {
+  it('emits exactly the machine context fields', () => {
+    // The actor-creation builder. It takes actor input rather than a ticket
+    // row, which is why it is not the shared builder — but it assembles the
+    // same record, so an optional field omitted here would be just as invisible.
+    const context = buildMachineContext(
+      { ticketId: '1:TEST-1', projectId: 1, externalId: 'TEST-1', title: 'Test ticket' },
+      { status: 'DRAFT' },
+    )
+
+    expect(Object.keys(context).sort()).toEqual([...TICKET_CONTEXT_KEYS].sort())
+  })
+})
+
+describe('the state machine context factory', () => {
+  it('emits exactly the machine context fields', () => {
+    // The fourth assembler: xstate builds the initial context itself, so a
+    // field missing here is missing from every actor that starts fresh.
+    const actor = createActor(ticketMachine, {
+      input: { ticketId: '1:TEST-1', projectId: 1, externalId: 'TEST-1', title: 'Test ticket' },
+    })
+    actor.start()
+
+    try {
+      expect(Object.keys(actor.getSnapshot().context).sort()).toEqual([...TICKET_CONTEXT_KEYS].sort())
+    } finally {
+      actor.stop()
+    }
   })
 })

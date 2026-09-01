@@ -44,6 +44,7 @@ import { broadcaster } from '../sse/broadcaster'
 import { getTicketContext } from '../storage/ticketQueries'
 import { toArtifactManifestEntry } from '../storage/ticketArtifacts'
 import { assertCurrentEditablePhaseAttempt, resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 /** Manual QA wrote its own skip records long before this module existed. */
 const MANUAL_QA_SKIP_RECEIPT_ARTIFACT = 'manual_qa_skip_receipt'
@@ -189,7 +190,7 @@ export interface WriteSkipReceiptsInput {
   ticketId: string
   surface: SkipSurface
   itemType: SkipItemType
-  phase: string
+  phase: WorkflowPhaseId
   /** Snapshot this *before* firing any event: `CANCEL` moves the ticket first. */
   ticketStatusBefore: string
   phaseAttempt?: number | null
@@ -245,6 +246,7 @@ export function deriveSkipActionId(prefix: string, parts: Array<string | number 
 
 function readSkipReceiptRows(ticketRef: string): Array<{
   id: number
+  /** As stored. A row written by an older build can name a status that is gone. */
   phase: string
   phaseAttempt: number
   artifactType: string
@@ -562,7 +564,13 @@ function adaptManualQaArtifact(row: {
 }
 
 export interface ListSkipEventsOptions {
-  /** Restrict to one phase. Omit for the whole ticket, every attempt. */
+  /**
+   * Restrict to one phase. Omit for the whole ticket, every attempt.
+   *
+   * A read filter, matched against the phase as stored, so it stays `string`:
+   * the audit view can legitimately be asked about a status that no longer
+   * exists, and the honest answer is an empty list rather than a rejection.
+   */
   phase?: string
   /**
    * Restrict to one attempt. Omitted by design for the audit view: a receipt

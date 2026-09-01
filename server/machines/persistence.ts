@@ -21,6 +21,7 @@ import {
 } from '../storage/tickets'
 import { normalizeBlockedErrorDiagnostics, type BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
 import { getErrorMessage, isRecord } from '@shared/typeGuards'
+import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 const activeActors = new Map<string, ReturnType<typeof createActor<typeof ticketMachine>>>()
 
@@ -57,7 +58,8 @@ function getSnapshotContext(snapshot: unknown): Record<string, unknown> | null {
   return isRecord(snapshot) && isRecord(snapshot.context) ? snapshot.context : null
 }
 
-function buildMachineContext(
+/** Exported for the field-parity test in `__tests__/ticketContext.test.ts`. */
+export function buildMachineContext(
   input: TicketActorInput,
   options: {
     status: string
@@ -290,7 +292,7 @@ function getStateValue(actor: ReturnType<typeof createActor<typeof ticketMachine
 
 function emitAppErrorLog(
   ticketRef: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   content: string,
   data?: Record<string, unknown>,
 ) {
@@ -459,7 +461,7 @@ function persistSnapshot(
     appendLogEvent(
       resolvedTicketRef,
       'state_change',
-      stateValue,
+      resolveStoredWorkflowPhase(stateValue),
       `[SYS] Transition: ${payload.from} -> ${payload.to}`,
       { ...payload, timestamp: new Date().toISOString() },
       'system',

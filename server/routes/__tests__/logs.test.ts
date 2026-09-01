@@ -219,7 +219,7 @@ describe('ticket log projection API', () => {
     appendLogEvent(ticket.id, 'info', 'CODING', 'first\nsecond\nthird', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ ignored-overview\nsecond-command-line', {}, 'system', 'CODING')
-    appendLogEvent(ticket.id, 'info', 'REVIEW', 'different phase\nline', {}, 'system', 'REVIEW')
+    appendLogEvent(ticket.id, 'info', 'RUNNING_FINAL_TEST', 'different phase\nline', {}, 'system', 'RUNNING_FINAL_TEST')
 
     const overviewResponse = await app.request(
       `/api/tickets/${encodeURIComponent(ticket.id)}/logs?scope=phase&phase=CODING&view=overview&limit=1`,

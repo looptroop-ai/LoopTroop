@@ -20,7 +20,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 import { getPendingQuestionSummary, reconcilePendingQuestionsAfterRestart } from './workflow/questionWindows'
 import { closeQuestionWait, listOpenQuestionWaitTicketIds } from './storage/questionWaits'
 import { resolveAiQuestionSettings } from './workflow/phases/helpers'
-import { isWorkflowPhaseId } from '@shared/workflowMeta'
+import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 
 export function recoverTicketRuntimeArtifacts() {
   let recoveredTmpFiles = 0
@@ -88,7 +88,7 @@ export async function reconcileOpenCodeSessions(
         : undefined
       const ticketRef = localTicket ? buildTicketRef(project.id, localTicket.externalId) : undefined
       const result = ticketRef
-        ? await sessionManager.reconcileActiveSession(ticketRef, session.phase, session.sessionId, {
+        ? await sessionManager.reconcileActiveSession(ticketRef, resolveStoredWorkflowPhase(session.phase), session.sessionId, {
             ...(session.phaseAttempt != null ? { phaseAttempt: session.phaseAttempt } : {}),
             memberId: session.memberId,
             beadId: session.beadId,
@@ -186,14 +186,11 @@ export async function reconcileOpenCodeQuestions(
     const owners = sessionRows.flatMap((row) => {
       const ticket = row.ticketId === null ? undefined : externalIds.get(row.ticketId)
       if (!ticket) return []
-      // The session's phase is stored as free text, so a row written by an older
-      // build can name a status that no longer exists. Reconciliation still has
-      // to file the question somewhere, and the ticket's own status is the
-      // honest stand-in — dropping the row would silently abandon a question
-      // that is genuinely still waiting.
-      const phase = isWorkflowPhaseId(row.phase)
-        ? row.phase
-        : isWorkflowPhaseId(ticket.status) ? ticket.status : 'BLOCKED_ERROR'
+      // Reconciliation has to file the question somewhere, and the ticket's own
+      // status is the honest stand-in for a session row whose stored phase is
+      // no longer a declared status — dropping the row would silently abandon a
+      // question that is genuinely still waiting.
+      const phase = resolveStoredWorkflowPhase(row.phase, ticket.status)
       return [{
         sessionId: row.sessionId,
         ticketId: buildTicketRef(project.id, ticket.externalId),

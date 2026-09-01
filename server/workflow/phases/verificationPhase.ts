@@ -132,7 +132,7 @@ import {
   mergeErrorCodes,
 } from '../../opencode/blockedErrorDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
-import { isWorkflowPhaseId, type WorkflowPhaseId } from '@shared/workflowMeta'
+import { resolveStoredWorkflowPhase, type WorkflowPhaseId } from '@shared/workflowMeta'
 
 type OpenCodeDiagnosticResult = ReturnType<typeof buildOpenCodeBlockedErrorDiagnostics>
 
@@ -490,12 +490,6 @@ function loadCoverageHistorySnapshot(
   }
 }
 
-/** The first of the candidates that names a declared workflow status. */
-function firstWorkflowPhaseId(...candidates: Array<string | undefined>): WorkflowPhaseId | undefined {
-  return candidates.find((candidate): candidate is WorkflowPhaseId =>
-    typeof candidate === 'string' && isWorkflowPhaseId(candidate))
-}
-
 function getCoverageStateLabels(phase: 'prd' | 'beads'): WorkflowPhaseId[] {
   return phase === 'prd'
     ? ['WAITING_PRD_APPROVAL', 'VERIFYING_PRD_COVERAGE']
@@ -572,10 +566,11 @@ function loadLatestCoverageSnapshot(
     // Both artifact rows store their phase as free text, so one written by an
     // older build can name a status that no longer exists. The coverage state
     // label for this flow is the correct answer in that case.
-    sourcePhase: firstWorkflowPhaseId(
+    sourcePhase: resolveStoredWorkflowPhase(
       companionArtifact?.phase,
       coverageArtifact?.phase,
-    ) ?? getCoverageStateLabel(phase),
+      getCoverageStateLabel(phase),
+    ),
   }
 }
 

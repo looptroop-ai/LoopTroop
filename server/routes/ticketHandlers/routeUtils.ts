@@ -25,6 +25,7 @@ import {
   type PublicTicketPhaseAttemptRow,
 } from '../../storage/tickets'
 import { clearExecutionSetupRuntimeArtifacts } from '../../phases/executionSetup/storage'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export { buildExecutionBandConflictMessage } from '../../workflow/executionBand'
 
@@ -71,7 +72,7 @@ export function buildRouteStatePayload(ticketId: string) {
 
 export function emitRoutePhaseLog(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   type: 'info' | 'error',
   content: string,
   data?: Record<string, unknown>,

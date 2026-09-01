@@ -1,5 +1,6 @@
 import type { OpenCodeResponseMeta } from '../opencode/assistantMessageAnalysis'
 import type { StructuredFailureClass } from '@shared/structuredRetryDiagnostics'
+import { getErrorMessage } from '@shared/typeGuards'
 
 export type { StructuredFailureClass } from '@shared/structuredRetryDiagnostics'
 
@@ -7,11 +8,6 @@ export interface StructuredRetryDecision {
   failureClass: StructuredFailureClass
   reuseSession: boolean
   useStructuredRetryPrompt: boolean
-}
-
-function normalizeErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
 }
 
 export function classifyStructuredFailureFromMessage(message: string): StructuredFailureClass {
@@ -26,7 +22,7 @@ export function classifyStructuredFailureFromMessage(message: string): Structure
 }
 
 export function classifyStructuredFailureFromError(error: unknown): StructuredFailureClass {
-  return classifyStructuredFailureFromMessage(normalizeErrorMessage(error))
+  return classifyStructuredFailureFromMessage(getErrorMessage(error))
 }
 
 export function classifyStructuredFailureFromValidation(

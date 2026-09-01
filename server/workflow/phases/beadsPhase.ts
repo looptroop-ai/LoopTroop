@@ -69,11 +69,12 @@ import { syncTicketRuntimeProjection } from '../../storage/ticketRuntimeProjecti
 import { upsertBeadsApprovalSnapshot } from '../../phases/beads/document'
 import { resetToBeadStart, WORKTREE_RESET_PRESERVE_PATHS } from '../../phases/execution/gitOps'
 import { isBeforeExecution } from '@shared/workflowMeta'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 export async function executeBeadsExpandStep(params: {
   ticketId: string
   externalId: string
-  phaseLabel: string
+  phaseLabel: WorkflowPhaseId
   worktreePath: string
   winnerId: string
   externalRef: string

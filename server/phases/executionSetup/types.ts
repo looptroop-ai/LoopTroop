@@ -7,6 +7,7 @@ import type { Session } from '../../opencode/types'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 export const EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE = 'execution_setup_profile'
 export const EXECUTION_SETUP_REPORT_ARTIFACT_TYPE = 'execution_setup_report'
@@ -80,7 +81,7 @@ export function serializeExecutionSetupRetryNotes(notes: string[]): string {
 
 export function toExecutionSetupProfileArtifact(profile: ExecutionSetupProfile): Record<string, unknown> {
   const gitHooks = profile.gitHooks ?? {
-    policy: 'validate_advisory' as const,
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }

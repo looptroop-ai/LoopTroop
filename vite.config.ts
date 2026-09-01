@@ -133,7 +133,13 @@ function bundledPackagesManifest(): import('vite').Plugin {
   }
 }
 
-const SERVER_SOURCE_ROOT = resolve(__dirname, 'server')
+/** Forward slashes throughout, because that is what rollup module ids use. */
+function toPosixPath(value: string): string {
+  return value.replace(/\\/g, '/')
+}
+
+const PROJECT_ROOT_POSIX = toPosixPath(__dirname)
+const SERVER_SOURCE_ROOT_POSIX = `${toPosixPath(resolve(__dirname, 'server'))}/`
 
 /**
  * Fails the client build if a `server/` module reaches the browser bundle.
@@ -148,6 +154,11 @@ const SERVER_SOURCE_ROOT = resolve(__dirname, 'server')
  * text search both false-positives on source-map content and package metadata,
  * and false-negatives on an import whose identifiers were renamed during
  * bundling.
+ *
+ * Everything is compared in posix form. Rollup normalises module ids to forward
+ * slashes on every platform, while `resolve()` returns the host's separators —
+ * so on Windows a raw comparison matches nothing at all and the guard passes
+ * silently, which is the one failure mode a fail-closed check must not have.
  */
 function noServerModulesInClientBundle(): import('vite').Plugin {
   return {
@@ -160,9 +171,11 @@ function noServerModulesInClientBundle(): import('vite').Plugin {
         if (chunk.type !== 'chunk') continue
         for (const id of chunk.moduleIds) {
           if (id.includes('node_modules')) continue
-          const path = id.split('?')[0] ?? id
-          if (path.startsWith(`${SERVER_SOURCE_ROOT}/`) || path.startsWith(`${SERVER_SOURCE_ROOT}\\`)) {
-            offenders.add(path.slice(__dirname.length + 1))
+          const path = toPosixPath(id.split('?')[0] ?? id)
+          if (path.startsWith(SERVER_SOURCE_ROOT_POSIX)) {
+            offenders.add(path.startsWith(`${PROJECT_ROOT_POSIX}/`)
+              ? path.slice(PROJECT_ROOT_POSIX.length + 1)
+              : path)
           }
         }
       }

@@ -88,7 +88,7 @@ describe('skip receipts', () => {
       ticketId: ticket.id,
       surface: 'interview_question' as const,
       itemType: 'interview_question' as const,
-      phase: 'WAITING_INTERVIEW_ANSWERS',
+      phase: 'WAITING_INTERVIEW_ANSWERS' as const,
       ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
       actionId: 'action-replayed',
       items: [{ itemId: 'Q01', reason: 'Not relevant to this ticket.' }],

@@ -13,21 +13,27 @@ import tseslint from 'typescript-eslint'
  * the drift, so it is the thing this bans — the canonical modules and the two
  * variants that genuinely differ are exempted below.
  */
-const sharedHelperRedeclarationRules = [
-  'isRecord',
-  'getErrorMessage',
-  'normalizeString',
-  'stripAnsiSequences',
-].flatMap((name) => [
-  {
-    selector: `FunctionDeclaration[id.name='${name}']`,
-    message: `Import ${name} from @shared/typeGuards or @shared/ansi instead of redeclaring it.`,
-  },
-  {
-    selector: `VariableDeclarator[id.name='${name}'][init.type=/FunctionExpression|ArrowFunctionExpression/]`,
-    message: `Import ${name} from @shared/typeGuards or @shared/ansi instead of redeclaring it.`,
-  },
-])
+const SHARED_HELPER_HOMES = {
+  isRecord: '@shared/typeGuards',
+  getErrorMessage: '@shared/typeGuards',
+  normalizeString: '@shared/typeGuards',
+  stripAnsiSequences: '@shared/ansi',
+}
+
+const sharedHelperRedeclarationRules = Object.entries(SHARED_HELPER_HOMES).flatMap(([name, home]) => {
+  const message = `Import ${name} from ${home} instead of redeclaring it.`
+  return [
+    // `function isRecord() {}`
+    { selector: `FunctionDeclaration[id.name='${name}']`, message },
+    // `const isRecord = () => {}` / `= function () {}`
+    {
+      selector: `VariableDeclarator[id.name='${name}'][init.type=/FunctionExpression|ArrowFunctionExpression/]`,
+      message,
+    },
+    // `const f = function isRecord() {}` — the name is on the expression, not the binding.
+    { selector: `FunctionExpression[id.name='${name}']`, message },
+  ]
+})
 
 export default tseslint.config(
   { ignores: ['dist', 'site', 'docs/.vitepress', 'node_modules', '.looptroop'] },
@@ -61,10 +67,11 @@ export default tseslint.config(
   },
   {
     // The canonical definitions themselves, and the two documented exceptions.
+    // Nothing else belongs here: an exemption is a hole in the guard, and this
+    // list once carried `shared/errorDisplay.ts`, which declares none of these.
     files: [
       'shared/typeGuards.ts',
       'shared/ansi.ts',
-      'shared/errorDisplay.ts',
       // Returns '' for non-Error values because callers regex-match the result.
       'src/lib/lazyWithChunkReload.ts',
       // Returns `string | null`, not `string | undefined`.

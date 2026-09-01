@@ -300,7 +300,8 @@ function initializeProjectSqlite(sqlite: Database) {
   ensureColumn(sqlite, 'phase_artifacts', 'phase_attempt', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(sqlite, 'phase_artifacts', 'updated_at', 'TEXT')
 
-  sqlite.exec(buildGitHookPolicyMigrationSql('projects'))
+  const gitHookPolicyMigration = buildGitHookPolicyMigrationSql('projects')
+  if (gitHookPolicyMigration) sqlite.exec(gitHookPolicyMigration)
 
   sqlite.exec(`
     UPDATE phase_artifacts

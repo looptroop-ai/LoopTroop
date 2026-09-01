@@ -24,6 +24,7 @@ import { resolveStructuredRetryDiagnostic } from '../lib/structuredRetryDiagnost
 import { normalizeStructuredRetryCount } from '../lib/structuredRetryPolicy'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../lib/structuredRawAttempts'
 import { getErrorMessage } from '@shared/typeGuards'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 interface DraftValidationResult {
   questionCount?: number
@@ -37,7 +38,8 @@ type DraftValidator = (content: string) => DraftValidationResult
 
 interface GenerateDraftsRuntimeOptions {
   ticketId?: string
-  phase?: string
+  /** The workflow status the round runs in, not the council stage. */
+  phase?: WorkflowPhaseId
   phaseAttempt?: number
   toolPolicy?: OpenCodeToolPolicy
   onPromptDispatched?: (entry: {

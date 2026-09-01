@@ -13,8 +13,22 @@ const ESCAPE = String.fromCodePoint(27)
 const BELL = String.fromCodePoint(7)
 const C1_CSI = String.fromCodePoint(155)
 const C1_OSC = String.fromCodePoint(157)
+const C1_ST = String.fromCodePoint(156)
 
-const ANSI_OSC_SEQUENCE = new RegExp(`(?:${ESCAPE}\\]|${C1_OSC})[^${BELL}]*(?:${BELL}|${ESCAPE}\\\\)`, 'g')
+/**
+ * An OSC sequence, ending at the *first* terminator rather than the last.
+ *
+ * Three things terminate one: BEL, the two-character `ESC \` string
+ * terminator, and the 8-bit C1 string terminator. The body therefore has to
+ * exclude all three and be lazy, or a greedy `[^BEL]*` runs straight past an
+ * `ESC \` to a BEL later in the text and deletes everything in between —
+ * `ESC]0;first ESC\ VISIBLE ESC]0;second BEL tail` returned `tail`, silently
+ * eating a real line of build output on its way.
+ */
+const ANSI_OSC_SEQUENCE = new RegExp(
+  `(?:${ESCAPE}\\]|${C1_OSC})(?:(?!${BELL}|${C1_ST}|${ESCAPE}\\\\)[\\s\\S])*?(?:${BELL}|${C1_ST}|${ESCAPE}\\\\)`,
+  'g',
+)
 const ANSI_CSI_SEQUENCE = new RegExp(`(?:${ESCAPE}\\[|${C1_CSI})[0-?]*[ -/]*[@-~]`, 'g')
 const ANSI_SINGLE_SEQUENCE = new RegExp(`${ESCAPE}[@-_]`, 'g')
 

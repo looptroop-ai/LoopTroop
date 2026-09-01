@@ -550,7 +550,7 @@ export async function executeBead(
         const codingSessionOwnership = callbacks?.ticketId
           ? {
               ticketId: callbacks.ticketId,
-              phase: 'CODING',
+              phase: 'CODING' as const,
               memberId: callbacks.model,
               beadId: bead.id,
               iteration,

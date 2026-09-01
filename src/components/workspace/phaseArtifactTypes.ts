@@ -5,6 +5,11 @@ import type { CommandSpec } from '@shared/commandSpec'
 import { normalizeStructuredRetryDiagnostics } from '@shared/structuredRetryDiagnostics'
 import { normalizeStructuredInterventions } from '@shared/structuredInterventions'
 import { isRecord } from '@shared/typeGuards'
+import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
+import {
+  isExecutionSetupWorkspaceInputCategory,
+  type ExecutionSetupWorkspaceInputCategory,
+} from '@shared/executionSetupCategories'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import type { DBartifact } from '@/hooks/useTicketArtifacts'
 import {
@@ -426,7 +431,7 @@ export interface ExecutionSetupCommandReceiptData {
 }
 
 export interface ExecutionSetupGitHooksData {
-  policy: 'observe_only' | 'validate_advisory' | 'validate_required' | 'use_native_hooks'
+  policy: GitHookPolicy
   detected: Array<{ name: string; path: string; source: string; kind: 'hook' | 'manager_config'; runnable: 'yes' | 'no' | 'unknown'; managerHint?: string }>
   validationCommands: Array<{ id: string; hook: string; command: string; purpose: string }>
   validationReceipts: ExecutionSetupCommandReceiptData[]
@@ -443,7 +448,7 @@ export interface ExecutionSetupProfileData {
     path: string
     kind: 'file' | 'directory'
     sourceStatus: 'ignored' | 'untracked'
-    category: 'local_config' | 'secret' | 'fixture' | 'dataset' | 'other_non_reproducible'
+    category: ExecutionSetupWorkspaceInputCategory
     allowLargeCopy?: boolean
     reason: string
   }>
@@ -1170,6 +1175,7 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
         purpose: normalizeOptionalString(getValueByAliases(entry, ['purpose'])) ?? '',
       }))
     : []
+  const gitHooksPolicy = getValueByAliases(gitHooks, ['policy'])
   const detectedRaw = getValueByAliases(gitHooks, ['detected'])
   const validationCommandsRaw = getValueByAliases(gitHooks, ['validationCommands', 'validation_commands'])
   const validationReceiptsRaw = getValueByAliases(gitHooks, ['validationReceipts', 'validation_receipts'])
@@ -1208,25 +1214,24 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
     summary: normalizeOptionalString(getValueByAliases(record, ['summary'])),
     tempRoots,
     workspaceInputs: Array.isArray(workspaceInputsRaw)
-      ? workspaceInputsRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
-          path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
-          kind: getValueByAliases(entry, ['kind']) === 'directory' ? 'directory' : 'file',
-          sourceStatus: getValueByAliases(entry, ['sourceStatus', 'source_status']) === 'untracked' ? 'untracked' : 'ignored',
-          category: ['local_config', 'secret', 'fixture', 'dataset', 'other_non_reproducible'].includes(String(getValueByAliases(entry, ['category'])))
-            ? getValueByAliases(entry, ['category']) as ExecutionSetupProfileData['workspaceInputs'][number]['category']
-            : 'other_non_reproducible',
-          ...(getValueByAliases(entry, ['allowLargeCopy', 'allow_large_copy']) === true ? { allowLargeCopy: true } : {}),
-          reason: normalizeOptionalString(getValueByAliases(entry, ['reason'])) ?? '',
-        }))
+      ? workspaceInputsRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => {
+          const category = getValueByAliases(entry, ['category'])
+          return {
+            path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
+            kind: getValueByAliases(entry, ['kind']) === 'directory' ? 'directory' : 'file',
+            sourceStatus: getValueByAliases(entry, ['sourceStatus', 'source_status']) === 'untracked' ? 'untracked' : 'ignored',
+            category: isExecutionSetupWorkspaceInputCategory(category) ? category : 'other_non_reproducible',
+            ...(getValueByAliases(entry, ['allowLargeCopy', 'allow_large_copy']) === true ? { allowLargeCopy: true } : {}),
+            reason: normalizeOptionalString(getValueByAliases(entry, ['reason'])) ?? '',
+          }
+        })
       : [],
     bootstrapCommands,
     toolingProbeCommands,
     workspaceProbes,
     workspaceProbeReceipts: parseReceipts(workspaceProbeReceiptsRaw),
     gitHooks: {
-      policy: ['observe_only', 'validate_advisory', 'validate_required', 'use_native_hooks'].includes(String(getValueByAliases(gitHooks, ['policy'])))
-        ? getValueByAliases(gitHooks, ['policy']) as ExecutionSetupGitHooksData['policy']
-        : 'validate_advisory',
+      policy: isGitHookPolicy(gitHooksPolicy) ? gitHooksPolicy : DEFAULT_GIT_HOOK_POLICY,
       detected: Array.isArray(detectedRaw)
         ? detectedRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
             name: normalizeOptionalString(getValueByAliases(entry, ['name'])) ?? '',

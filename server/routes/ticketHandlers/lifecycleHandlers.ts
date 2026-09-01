@@ -68,6 +68,7 @@ import { normalizeSkipReason } from '@shared/skipReceipt'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { clearTicketWindows } from '../../workflow/questionWindows'
 import { clearTicketWorkBudget } from '../../workflow/workBudget'
+import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -199,18 +200,19 @@ export async function handleStartTicket(c: Context) {
         codes: [initErr.code],
       })
     } catch (sendErr) {
+      const sendErrDetails = getErrorMessage(sendErr)
       emitRoutePhaseLog(
         ticketId,
         startPhase,
         'error',
-        `Failed to block ticket after initialization error: ${String(sendErr)}`,
+        `Failed to block ticket after initialization error: ${sendErrDetails}`,
         {
           code: initErr.code,
-          error: String(sendErr),
+          error: sendErrDetails,
         },
       )
       logTicketOperationError(ticketId, 'Failed to send INIT_FAILED to ticket', sendErr)
-      return c.json({ error: 'Failed to block ticket after initialization error', details: String(sendErr) }, 500)
+      return c.json({ error: 'Failed to block ticket after initialization error', details: sendErrDetails }, 500)
     }
 
     const updated = getTicketByRef(ticketId)
@@ -423,7 +425,7 @@ export async function handleCancelTicket(c: Context) {
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)
-        emitRoutePhaseLog(ticketId, ticket.status, 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
+        emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(ticket.status), 'info', `Deleting ticket ${ticket.externalId}: removing worktree, branch, and database records.`)
         deleteStoredTicket(ticketId)
       }
     }
@@ -439,13 +441,13 @@ export async function handleCancelTicket(c: Context) {
         ticketId,
         surface: 'cancel_ticket',
         itemType: 'ticket',
-        phase: statusBeforeCancel,
+        phase: resolveStoredWorkflowPhase(statusBeforeCancel),
         ticketStatusBefore: statusBeforeCancel,
         actionId: deriveSkipActionId('cancel_ticket', [ticketId, statusBeforeCancel, cancelReason]),
         items: [{ itemId: null, reason: cancelReason }],
       })
       for (const line of formatSkipReceiptLogLines(receipts)) {
-        emitRoutePhaseLog(ticketId, statusBeforeCancel, 'info', line)
+        emitRoutePhaseLog(ticketId, resolveStoredWorkflowPhase(statusBeforeCancel), 'info', line)
       }
     }
     if (deleteTicket) {
@@ -778,7 +780,7 @@ export async function handleContinueTicket(c: Context) {
 
   requestSessionContinuation({
     ticketId,
-    phase: continuation.previousStatus,
+    phase: resolveStoredWorkflowPhase(continuation.previousStatus),
     sessionId: continuation.sessionId,
   })
 

@@ -6,6 +6,7 @@ import type { Session } from '../../opencode/types'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
+import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
 
 export const EXECUTION_SETUP_PLAN_ARTIFACT_TYPE = 'execution_setup_plan'
 export const EXECUTION_SETUP_PLAN_REPORT_ARTIFACT_TYPE = 'execution_setup_plan_report'
@@ -59,7 +60,7 @@ export interface ExecutionSetupPlanRegenerationRequest {
 
 export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {
   const gitHooks = plan.gitHooks ?? {
-    policy: 'validate_advisory' as const,
+    policy: DEFAULT_GIT_HOOK_POLICY,
     detected: [],
     validationCommands: [],
   }

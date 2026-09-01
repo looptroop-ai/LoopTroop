@@ -3,6 +3,7 @@ import { safeAtomicAppend } from '../io/atomicAppend'
 import { getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { queueProjectionAppend, type PersistedLogChannel } from './projection'
+import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 type StructuredLogFields = Omit<LogEvent, 'timestamp' | 'type' | 'ticketId' | 'phase' | 'message' | 'source' | 'status' | 'data'>
 
@@ -77,7 +78,7 @@ function isDebugLogInput(type: LogEventType, source?: LogSource, extra?: Partial
 
 function resolvePhaseAttemptSafely(
   ticketId: string,
-  phase: string,
+  phase: WorkflowPhaseId,
   phaseAttempt?: number,
 ): number {
   if (typeof phaseAttempt === 'number' && Number.isFinite(phaseAttempt) && phaseAttempt > 0) {
@@ -124,7 +125,7 @@ function resolvePhaseAttemptSafely(
 export function appendLogEvent(
   ticketId: string,
   type: LogEventType,
-  phase: string,
+  phase: WorkflowPhaseId,
   message: string,
   data?: Record<string, unknown>,
   source?: LogSource,
@@ -185,7 +186,7 @@ function appendEventToChannel(
   channel: PersistedLogChannel,
   logPath: string,
   event: LogEvent,
-  phase: string,
+  phase: WorkflowPhaseId,
   phaseAttempt: number,
   fingerprint?: string,
 ): void {
@@ -201,16 +202,16 @@ function appendEventToChannel(
   }
 }
 
-function buildFingerprintScopeKey(channel: 'emit' | PersistedLogChannel, phase: string, phaseAttempt: number, fingerprint: string): string {
+function buildFingerprintScopeKey(channel: 'emit' | PersistedLogChannel, phase: WorkflowPhaseId, phaseAttempt: number, fingerprint: string): string {
   return `${channel}:${phase}:${phaseAttempt}:${fingerprint}`
 }
 
-function hasPersistedFingerprint(ticketId: string, channel: 'emit' | PersistedLogChannel, phase: string, phaseAttempt: number, fingerprint: string): boolean {
+function hasPersistedFingerprint(ticketId: string, channel: 'emit' | PersistedLogChannel, phase: WorkflowPhaseId, phaseAttempt: number, fingerprint: string): boolean {
   const key = buildFingerprintScopeKey(channel, phase, phaseAttempt, fingerprint)
   return persistedFingerprintsByTicket.get(ticketId)?.has(key) ?? false
 }
 
-function rememberPersistedFingerprint(ticketId: string, channel: 'emit' | PersistedLogChannel, phase: string, phaseAttempt: number, fingerprint: string): void {
+function rememberPersistedFingerprint(ticketId: string, channel: 'emit' | PersistedLogChannel, phase: WorkflowPhaseId, phaseAttempt: number, fingerprint: string): void {
   // Evict oldest ticket buckets if the outer map exceeds max size
   if (!persistedFingerprintsByTicket.has(ticketId) && persistedFingerprintsByTicket.size >= MAX_FINGERPRINT_TICKETS) {
     const oldestTicketKey = persistedFingerprintsByTicket.keys().next().value
@@ -240,7 +241,7 @@ export function clearTicketFingerprints(ticketId: string): void {
 export function shouldSkipLogEmission(
   ticketId: string,
   type: LogEventType,
-  phase: string,
+  phase: WorkflowPhaseId,
   message: string,
   data?: Record<string, unknown>,
   source?: LogSource,
@@ -267,7 +268,7 @@ export function shouldSkipLogEmission(
 export function createLogEvent(
   ticketId: string,
   type: LogEventType,
-  phase: string,
+  phase: WorkflowPhaseId,
   message: string,
   data?: Record<string, unknown>,
   source?: LogSource,

@@ -453,7 +453,7 @@ async function executeStructuredStep(
   const sessionOwnership = options.ticketId
     ? {
         ticketId: options.ticketId,
-        phase: 'DRAFTING_PRD',
+        phase: 'DRAFTING_PRD' as const,
         phaseAttempt: options.phaseAttempt ?? 1,
         memberId: member.modelId,
         step: options.step,

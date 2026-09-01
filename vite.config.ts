@@ -160,6 +160,19 @@ const SERVER_SOURCE_ROOT_POSIX = `${toPosixPath(resolve(__dirname, 'server'))}/`
  * so on Windows a raw comparison matches nothing at all and the guard passes
  * silently, which is the one failure mode a fail-closed check must not have.
  */
+/** The repo-relative path of a `server/` module, or null for anything else. */
+function serverModuleOffender(moduleId: string): string | null {
+  if (moduleId.includes('node_modules')) return null
+  const path = toPosixPath(moduleId.split('?')[0] ?? moduleId)
+  if (!path.startsWith(SERVER_SOURCE_ROOT_POSIX)) return null
+  return path.startsWith(`${PROJECT_ROOT_POSIX}/`) ? path.slice(PROJECT_ROOT_POSIX.length + 1) : path
+}
+
+/** Deterministic on every machine, unlike `localeCompare`. */
+function byPath(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 function noServerModulesInClientBundle(): import('vite').Plugin {
   return {
     name: 'looptroop-no-server-modules-in-client-bundle',
@@ -170,27 +183,18 @@ function noServerModulesInClientBundle(): import('vite').Plugin {
       for (const chunk of Object.values(bundle)) {
         if (chunk.type !== 'chunk') continue
         for (const id of chunk.moduleIds) {
-          if (id.includes('node_modules')) continue
-          const path = toPosixPath(id.split('?')[0] ?? id)
-          if (path.startsWith(SERVER_SOURCE_ROOT_POSIX)) {
-            offenders.add(path.startsWith(`${PROJECT_ROOT_POSIX}/`)
-              ? path.slice(PROJECT_ROOT_POSIX.length + 1)
-              : path)
-          }
+          const offender = serverModuleOffender(id)
+          if (offender) offenders.add(offender)
         }
       }
 
-      if (offenders.size > 0) {
-        this.error(
-          `The client bundle pulls in ${offenders.size} server module(s):\n`
-          // Explicit comparator, not `localeCompare`: a build error listing
-          // should read the same on every machine, and locale-aware ordering
-          // does not guarantee that.
-          + [...offenders].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
-            .map((path) => `  - ${path}`).join('\n')
-          + '\n\nMove what both sides need into shared/ and import it from there.',
-        )
-      }
+      if (offenders.size === 0) return
+
+      this.error(
+        `The client bundle pulls in ${offenders.size} server module(s):\n`
+        + [...offenders].sort(byPath).map((path) => `  - ${path}`).join('\n')
+        + '\n\nMove what both sides need into shared/ and import it from there.',
+      )
     },
   }
 }

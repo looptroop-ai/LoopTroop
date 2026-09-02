@@ -222,3 +222,30 @@ describe('required scalars', () => {
     expect(ticket.implementationTiming.activeDurationMs).toBe(120)
   })
 })
+
+describe('normalizeTicketPatch validation', () => {
+  it('drops a field the response got wrong rather than spreading it through', () => {
+    // The raw spread copies the payload wholesale and the conditional keys only
+    // ever add, so anything invalid survived unless it is removed. A numeric
+    // status reaches `getStatusBadgeClasses`, which calls `startsWith` on it.
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      status: 123,
+      previousStatus: { was: 'CODING' },
+      runtime: 'not an object',
+      errorOccurrences: 'not a list',
+    })
+
+    expect(patch).not.toBeNull()
+    expect(patch && 'status' in patch).toBe(false)
+    expect(patch && 'previousStatus' in patch).toBe(false)
+    expect(patch && 'runtime' in patch).toBe(false)
+    expect(patch && 'errorOccurrences' in patch).toBe(false)
+  })
+
+  it('keeps an explicit null previousStatus, which is a real value', () => {
+    const patch = normalizeTicketPatch({ id: '1:NORM-1', previousStatus: null })
+
+    expect(patch?.previousStatus).toBeNull()
+  })
+})

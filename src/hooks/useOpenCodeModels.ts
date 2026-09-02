@@ -49,8 +49,8 @@ export function fetchAllModelsApi(signal?: AbortSignal): Promise<ModelsApiRespon
   return requestModelsApi('/api/models?scope=all', 'GET', signal)
 }
 
-export function refreshModelsApi(): Promise<ModelsApiResponse> {
-  return requestModelsApi('/api/models/refresh', 'POST')
+export function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
+  return requestModelsApi('/api/models/refresh', 'POST', signal)
 }
 
 export function clearOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'removeQueries'>) {
@@ -63,7 +63,7 @@ export function refreshOpenCodeModelsQuery(queryClient: Pick<QueryClient, 'remov
   clearOpenCodeModelsQuery(queryClient)
   return queryClient.fetchQuery({
     queryKey: OPENCODE_MODELS_QUERY_KEY,
-    queryFn: refreshModelsApi,
+    queryFn: ({ signal }) => refreshModelsApi(signal),
     staleTime: QUERY_STALE_TIME_5M,
   })
 }

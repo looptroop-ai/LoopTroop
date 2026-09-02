@@ -1,11 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import {
   findLatestArtifact,
@@ -137,28 +137,17 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   const isVerifying = step === 'Verifying Coverage'
   const isExpanding = step === 'Expanding'
   const {
-    data: attempts = [],
+    attempts,
+    selectedAttempt,
+    setManualSelectedAttemptNumber,
+    archivedAttemptNumber,
+    logPhaseAttempt,
+    logMode,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
-  } = useTicketPhaseAttempts(ticket.id, phase)
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
-  const selectedAttemptNumber = useMemo(() => {
-    if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
-      return manualSelectedAttemptNumber
-    }
-    return (attempts.find((attempt) => attempt.state === 'active') ?? attempts[0])?.attemptNumber ?? null
-  }, [attempts, manualSelectedAttemptNumber])
-  const selectedAttempt = useMemo(
-    () => attempts.find((attempt) => attempt.attemptNumber === selectedAttemptNumber)
-      ?? attempts.find((attempt) => attempt.state === 'active')
-      ?? attempts[0]
-      ?? null,
-    [attempts, selectedAttemptNumber],
-  )
-  const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
-  const logPhaseAttempt = attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
-  const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
+    isPhaseVersionUnknown,
+  } = useSelectedPhaseAttempt(ticket.id, phase)
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
     if (!selectedAttempt) return []
     if (selectedAttempt.state === 'archived') {
@@ -223,23 +212,31 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
           </CardContent>
         </Card>
 
-        <PhaseArtifactsPanel
-          phase={phase}
-          isCompleted={false}
-          ticketId={ticket.id}
-          councilMemberCount={councilMemberCount}
-          councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
-          artifactState={artifactState}
-        />
+        // Which attempt these belong to is unknown while the history request is
+        // failing with nothing cached, and artifacts and logs are scoped by it — so
+        // they would be shown as the live version, which may not be the one the
+        // reader selected. The notice above says why they are missing.
+        {isPhaseVersionUnknown ? null : (
+          <PhaseArtifactsPanel
+            phase={phase}
+            isCompleted={false}
+            ticketId={ticket.id}
+            councilMemberCount={councilMemberCount}
+            councilMemberNames={councilMemberNames.length > 0 ? councilMemberNames : undefined}
+            artifactState={artifactState}
+          />
+        )}
       </div>
 
-      <CollapsiblePhaseLogSection
-        phase={phase}
-        phaseAttempt={logPhaseAttempt}
-        logMode={logMode}
-        ticket={ticket}
-        className="px-4 pb-4"
-      />
+      {isPhaseVersionUnknown ? null : (
+        <CollapsiblePhaseLogSection
+          phase={phase}
+          phaseAttempt={logPhaseAttempt}
+          logMode={logMode}
+          ticket={ticket}
+          className="px-4 pb-4"
+        />
+      )}
     </div>
   )
 }

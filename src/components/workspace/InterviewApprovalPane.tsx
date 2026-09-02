@@ -248,7 +248,7 @@ export function InterviewApprovalPane({
       queryClient.setQueryData(['interview', ticket.id], payload)
       queryClient.setQueryData(['artifact', ticket.id, 'interview'], payload.raw ?? '')
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
 
       const savedDocument = normalizeInterviewDocumentLike(payload.document) ?? parseInterviewDocument(payload.raw)
       setAnswerDrafts(savedDocument ? buildInterviewAnswerDrafts(savedDocument) : {})
@@ -277,7 +277,7 @@ export function InterviewApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['interview', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('answers')
     } catch (error) {
@@ -441,6 +441,13 @@ export function InterviewApprovalPane({
       </div>
 
       <div className="flex-1 min-h-0 px-4 pb-2 overflow-auto">
+        {isInterviewError && rawContent ? (
+          <QueryErrorNotice
+            title="Showing the last interview that loaded. The refresh failed."
+            error={interviewError}
+            onRetry={() => void refetchInterview()}
+          />
+        ) : null}
         {isInterviewError && !rawContent ? (
           <QueryErrorNotice
             className="py-8"

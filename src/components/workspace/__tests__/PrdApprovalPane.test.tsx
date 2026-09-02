@@ -540,6 +540,29 @@ describe('PrdApprovalPane', () => {
     })
     expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled()
     expect(fixCalls).toBe(2)
-    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(TEST.ticketId)
+    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST.ticketId,
+    )
+  })
+
+  it('will not approve while the coverage answer is unknown', async () => {
+    // Coverage gaps live in the artifacts, so a failed artifact request makes
+    // the warning absent — which reads exactly like "no gaps".
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
+      refetch: vi.fn(),
+    })
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+
+    expect(await screen.findByText('Coverage could not be checked, so this PRD cannot be approved yet.')).toBeInTheDocument()
+    // The PRD itself has to have loaded, or the button is disabled for that
+    // reason instead and this proves nothing.
+    await waitFor(() => expect(document.getElementById('prd-product')).not.toBeNull())
+    expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
   })
 })

@@ -526,7 +526,7 @@ export function ExecutionSetupPlanApprovalPane({
       queryClient.setQueryData(['artifact', ticket.id, 'execution-setup-plan'], nextData)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -558,7 +558,7 @@ export function ExecutionSetupPlanApprovalPane({
 
       // Invalidate queries so old cached plan is gone, new poll will start fresh
       queryClient.removeQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       queryClient.invalidateQueries({
         queryKey: getTicketPhaseAttemptsQueryKey(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL'),
       })
@@ -593,7 +593,7 @@ export function ExecutionSetupPlanApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -872,6 +872,16 @@ export function ExecutionSetupPlanApprovalPane({
           ) : null}
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />
+
+          {/* Beside the plan, not instead of it: a failed refresh must not hide
+              content the operator is about to approve, only mark it as stale. */}
+          {isPlanError && fetchedPlan ? (
+            <QueryErrorNotice
+              title="Showing the last setup plan that loaded. The refresh failed."
+              error={planError}
+              onRetry={() => void refetchPlan()}
+            />
+          ) : null}
 
           {isPlanLoading ? (
             <div className="rounded-2xl border border-border bg-muted/20 p-6 text-sm">

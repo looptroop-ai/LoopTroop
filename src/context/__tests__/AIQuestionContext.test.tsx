@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIQuestionProvider } from '../AIQuestionContext'
 import { UIProvider } from '../UIContext'
@@ -424,5 +424,50 @@ describe('AIQuestionProvider', () => {
     await waitFor(() => expect(
       screen.getByText('error:Could not send that answer (HTTP 400: Invalid question reply payload)'),
     ).toBeInTheDocument())
+  })
+
+  it('does not let a slow per-ticket refresh undo a newer live update', async () => {
+    // Round 1 ordered the poll against a newer refresh but not the reverse, and
+    // not against SSE at all. A snapshot prunes, so an older one applying last
+    // deletes a question that has just arrived.
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseRefresh!: (body: unknown) => void
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/opencode/questions')) {
+        // The per-ticket refresh: held open until the SSE event has landed.
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
+    }))
+
+    function Refresher({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+          <button onClick={() => ingestSseEvent(buildQuestion(ticketId))}>live</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseRefresh).toBeDefined())
+
+    // The question arrives live while the refresh is still in flight.
+    fireEvent.click(screen.getByText('live'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // The refresh read the server before that, so its empty view is stale.
+    await act(async () => releaseRefresh({ questions: [], timer: null }))
+
+    expect(screen.getByText('requests:1')).toBeInTheDocument()
   })
 })

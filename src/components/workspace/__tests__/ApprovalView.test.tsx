@@ -324,7 +324,10 @@ describe('Interview approval UI', () => {
         expect.objectContaining({ method: 'PUT' }),
       )
     })
-    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(TEST.ticketId)
+    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST.ticketId,
+    )
   }, 30_000)
 
   it('strips selected option IDs from skipped answer drafts before saving', async () => {
@@ -881,5 +884,41 @@ describe('Approval surfaces on a failed request', () => {
     expect(await screen.findByText('The beads artifact could not be loaded.')).toBeInTheDocument()
     expect(screen.getByText('Failed to load beads (HTTP 500: Corrupted JSONL data)')).toBeInTheDocument()
     expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
+  })
+
+  it('will not approve while the coverage answer is unknown', async () => {
+    // Coverage gaps live in the artifacts. A failed request made the warning
+    // absent, which reads exactly like "no gaps" — so the button said "Approve"
+    // and the operator approved without the question having been answered.
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
+      refetch: vi.fn(),
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        // With the content hash present the button would otherwise be enabled,
+        // so the assertion below is about coverage and nothing else.
+        return Promise.resolve(new Response(
+          JSON.stringify([{ id: 'b1', title: 'One', status: 'pending', iteration: 0 }]),
+          { status: 200, headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': 'abc' } },
+        ))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('Coverage could not be checked, so this plan cannot be approved yet.')).toBeInTheDocument()
+    // The beads have to have arrived before the button means anything: an empty
+    // list disables it too, which would make this assertion pass for the wrong
+    // reason.
+    await waitFor(() => expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('Loading beads…')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
   })
 })

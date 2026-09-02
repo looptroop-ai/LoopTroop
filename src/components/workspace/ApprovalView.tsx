@@ -21,13 +21,15 @@ import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdDocumentContent } from '@/lib/prdDocument'
 import {
   useApprovalDraftReset,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
+  approveArtifact,
+  fixCoverageGaps,
 } from './approvalHooks'
 import { AutosaveStatus } from './AutosaveStatus'
 import { commandSpecSchema } from '@shared/commandSpec'
@@ -173,7 +175,15 @@ function BeadsApprovalPane({
     [ticket.lockedCouncilMembers],
   )
   const councilMemberCount = councilMemberNames.length || 3
-  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const {
+    artifacts: loadedArtifacts,
+    isError: isArtifactsError,
+    error: artifactsError,
+    refetch: refetchArtifacts,
+  } = useTicketArtifacts(ticket.id)
+  // See `PrdApprovalPane`: an absent coverage warning is indistinguishable from
+  // "no gaps", so approving on a failed artifact request approves an unknown.
+  const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)
@@ -338,7 +348,7 @@ function BeadsApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
 
       setIsEditMode(false)
       setEditTab('structured')
@@ -354,22 +364,13 @@ function BeadsApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(apiTicketPath(ticket.id, 'approve-beads'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expectedContentSha256: currentContentSha256,
-          ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
-        }),
+      await approveArtifact(queryClient, {
+        ticketId: ticket.id,
+        domain: 'beads',
+        expectedContentSha256: currentContentSha256,
+        gapAcknowledgementReason: gapReason,
+        failureMessage: 'Failed to approve beads',
       })
-      await throwIfNotOk(response, 'Failed to approve beads')
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -384,18 +385,7 @@ function BeadsApprovalPane({
     setCoverageFixError(null)
 
     try {
-      const response = await fetch(apiTicketPath(ticket.id, 'coverage', 'fix-gaps'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: 'beads' }),
-      })
-      await throwIfNotOk(response, 'Failed to fix coverage gaps')
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads'] })
-      clearTicketArtifactsCache(ticket.id)
+      await fixCoverageGaps(queryClient, { ticketId: ticket.id, domain: 'beads' })
       // The acknowledgement described the gaps that were just repaired. Keeping
       // it would attach an explanation for old gaps to a later approval.
       setGapReason('')
@@ -480,7 +470,7 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
@@ -552,6 +542,20 @@ function BeadsApprovalPane({
               gapReason={gapReason}
               onGapReasonChange={setGapReason}
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
+            />
+          ) : null}
+          {isCoverageUnknown ? (
+            <QueryErrorNotice
+              title="Coverage could not be checked, so this plan cannot be approved yet."
+              error={artifactsError}
+              onRetry={() => void refetchArtifacts()}
+            />
+          ) : null}
+          {isBeadsError && fetchedBeads !== undefined ? (
+            <QueryErrorNotice
+              title="Showing the last beads that loaded. The refresh failed."
+              error={beadsError}
+              onRetry={() => void refetchBeads()}
             />
           ) : null}
           {isBeadsError && fetchedBeads === undefined ? (
@@ -811,29 +815,16 @@ function resolveApprovalPhase(artifactType: ApprovalViewProps['artifactType'], p
 export function ApprovalView({ ticket, phase, artifactType, readOnly }: ApprovalViewProps) {
   const resolvedPhase = resolveApprovalPhase(artifactType, phase)
   const {
-    data: attempts = [],
+    attempts,
+    selectedAttempt,
+    setManualSelectedAttemptNumber,
+    archivedAttemptNumber,
+    logPhaseAttempt,
+    logMode,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
-  } = useTicketPhaseAttempts(ticket.id, resolvedPhase)
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
-  const selectedAttemptNumber = useMemo(() => {
-    if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
-      return manualSelectedAttemptNumber
-    }
-    return (attempts.find((attempt) => attempt.state === 'active') ?? attempts[0])?.attemptNumber ?? null
-  }, [attempts, manualSelectedAttemptNumber])
-  const selectedAttempt = useMemo(
-    () => attempts.find((attempt) => attempt.attemptNumber === selectedAttemptNumber)
-      ?? attempts.find((attempt) => attempt.state === 'active')
-      ?? attempts[0]
-      ?? null,
-    [attempts, selectedAttemptNumber],
-  )
-
-  const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
-  const logPhaseAttempt = attempts.length > 1 ? selectedAttemptNumber ?? undefined : undefined
-  const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
+  } = useSelectedPhaseAttempt(ticket.id, resolvedPhase)
   const selector = isAttemptsError ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />

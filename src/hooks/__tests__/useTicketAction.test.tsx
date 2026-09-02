@@ -3,6 +3,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useCancelTicket, useTicketAction, type Ticket } from '../useTickets'
+import { useDeleteProject } from '../useProjects'
 
 const ticketId = '1:ACT-1'
 
@@ -150,5 +151,26 @@ describe('applyTicketActionResult without a detail cache entry', () => {
       status: 'BLOCKED_ERROR',
       previousStatus: 'PREPARING_EXECUTION_ENV',
     })
+  })
+})
+
+describe('useDeleteProject barrier', () => {
+  it('lets panels save again when the project delete fails', async () => {
+    // The barrier is added before the DELETE. The ticket paths release it in a
+    // catch; this one did not, so one refused project delete left every ticket
+    // of that project unable to persist panel state for the life of the tab.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: 'Project is busy' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    )))
+    const { client, wrapper } = setup()
+    client.setQueryData(['tickets'], [{ id: '1:P-1', projectId: 1 }])
+
+    const { result } = renderHook(() => useDeleteProject(), { wrapper })
+    result.current.mutate(1)
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    const { isTicketClosing } = await import('../useTickets')
+    expect(isTicketClosing('1:P-1')).toBe(false)
   })
 })

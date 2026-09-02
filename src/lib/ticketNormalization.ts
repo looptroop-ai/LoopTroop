@@ -420,7 +420,7 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
   const raw = payload
   const cleanup = isRecord(raw.cleanup) ? raw.cleanup : null
 
-  return {
+  const patch: Record<string, unknown> = {
     ...(raw as unknown as Partial<Ticket>),
     id: payload.id,
     ...(isRecord(raw.runtime) ? { runtime: normalizeRuntimePatch(raw.runtime) } : {}),
@@ -442,4 +442,20 @@ export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
         }
       : {}),
   }
+
+  // The spread above copies the payload wholesale, and the conditional keys
+  // only ever *add*. So anything the response got wrong survives unless it is
+  // removed here: a numeric `status` reaches `getStatusBadgeClasses`, which
+  // calls `startsWith` on it, and a `runtime` that is not an object replaces a
+  // complete cached one.
+  for (const [key, isValid] of [
+    ['status', typeof raw.status === 'string'],
+    ['previousStatus', raw.previousStatus === null || typeof raw.previousStatus === 'string'],
+    ['runtime', isRecord(raw.runtime)],
+    ['errorOccurrences', Array.isArray(raw.errorOccurrences)],
+  ] as const) {
+    if (key in patch && !isValid) delete patch[key]
+  }
+
+  return patch as TicketPatch
 }

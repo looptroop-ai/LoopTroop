@@ -163,21 +163,20 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * older response landing after a newer one deletes questions that are still
    * live. Only the current generation is allowed to apply.
    */
-  const refreshGenerationsRef = useRef(new Map<string, number>())
   /**
-   * One sequence for every snapshot request, per-ticket and aggregate alike.
+   * One never-restarting sequence for everything that can rewrite a ticket's
+   * question set: the per-ticket refresh, the aggregate poll, and each SSE
+   * event.
    *
-   * Shared so the two can be ordered against each other: a per-ticket refresh
-   * issued after a poll started holds a higher token, and the poll's older view
-   * of that ticket is skipped rather than pruning what the refresh just learned.
-   * It never restarts, which is what stops a token being handed out twice — the
-   * per-ticket entry is dropped when a ticket leaves the active set, and a
-   * counter restarting at 1 would let a response from that ticket's previous
-   * life pass the guard.
+   * A snapshot is authoritative — it prunes whatever it does not list — so the
+   * only safe rule is that a snapshot may apply to a ticket when nothing newer
+   * already has. One counter and one "last applied per ticket" map express
+   * that in every direction at once: poll after refresh, refresh after poll, and
+   * either after an SSE update that arrived while the request was in flight.
+   * Guarding one direction at a time is what left the other two open.
    */
   const snapshotTokenRef = useRef(0)
-  /** The newest aggregate poll; an older snapshot must not apply after it. */
-  const recoverGenerationRef = useRef(0)
+  const appliedSnapshotRef = useRef(new Map<string, number>())
   /** The newest timer frame accepted per ticket; see `applyTimer`. */
   const timerFreshnessRef = useRef(new Map<string, { generation: number; revision: number }>())
 
@@ -296,6 +295,12 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   }, [ticketsById])
 
   const ingestPayload = useCallback((payload: AiQuestionPayload) => {
+    // A live event is newer than any snapshot request already in flight, so it
+    // claims the sequence: a response that read the server before this arrived
+    // must not prune what it just told us.
+    if (payload.ticketId) {
+      appliedSnapshotRef.current.set(payload.ticketId, ++snapshotTokenRef.current)
+    }
     if (payload.type === 'opencode_question_resolved') {
       if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
       // The card has to leave Needs Input too. Without this a question refused
@@ -370,15 +375,15 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
 
   const refreshTicket = useCallback((ticketId: string) => {
     const generation = ++snapshotTokenRef.current
-    refreshGenerationsRef.current.set(ticketId, generation)
     void (async () => {
       try {
         const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
         await throwIfNotOk(res, 'Failed to refresh questions')
         const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
         // The snapshot prunes, so applying an older one deletes questions that
-        // are still live.
-        if (refreshGenerationsRef.current.get(ticketId) !== generation) return
+        // are still live — whether the newer thing was a poll or an SSE event.
+        if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) return
+        appliedSnapshotRef.current.set(ticketId, generation)
         applyTicketSnapshot(ticketId, Array.isArray(body.questions) ? body.questions : [], parseTimer(body.timer))
       } catch {
         // Best-effort; the aggregate poll is the backstop.
@@ -406,7 +411,6 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       // does not list — so one slow poll landing after a faster later one, or
       // after a per-ticket refresh, would delete questions that are still live.
       const generation = ++snapshotTokenRef.current
-      recoverGenerationRef.current = generation
       try {
         const res = await fetch('/api/opencode/questions')
         await throwIfNotOk(res, 'Failed to recover questions')
@@ -414,8 +418,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           questions?: Array<Record<string, unknown>>
           timers?: Record<string, unknown>
         }
-        if (cancelled || generation !== recoverGenerationRef.current) return
-        if (!Array.isArray(body.questions)) return
+        if (cancelled || !Array.isArray(body.questions)) return
 
         const byTicket = new Map<string, Array<Record<string, unknown>>>()
         for (const raw of body.questions) {
@@ -426,11 +429,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           byTicket.set(ticketId, bucket)
         }
         for (const ticketId of activeIds) {
-          // A per-ticket refresh issued after this poll started is the fresher
-          // authority for that ticket; applying the poll's older view of it
-          // would prune whatever the refresh has just learned.
-          const ticketRefresh = refreshGenerationsRef.current.get(ticketId)
-          if (ticketRefresh !== undefined && ticketRefresh > generation) continue
+          // Per ticket, because a refresh or an SSE event may have overtaken
+          // this poll for one ticket and not for the others.
+          if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) continue
+          appliedSnapshotRef.current.set(ticketId, generation)
           applyTicketSnapshot(ticketId, byTicket.get(ticketId) ?? [], parseTimer(body.timers?.[ticketId]))
         }
       } catch {
@@ -486,9 +488,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     for (const stopKey of stoppedTimersRef.current) {
       if (!activeIds.has(stopKeyTicketId(stopKey))) stoppedTimersRef.current.delete(stopKey)
     }
-    for (const ticketId of refreshGenerationsRef.current.keys()) {
-      if (!activeIds.has(ticketId)) refreshGenerationsRef.current.delete(ticketId)
-    }
+    // `appliedSnapshotRef` is deliberately not pruned here. Clearing it would
+    // reset a ticket to sequence 0, and a response still in flight from that
+    // ticket's previous life would then compare as newer and prune the current
+    // one. It holds one number per ticket seen in this tab.
     for (const ticketId of timerFreshnessRef.current.keys()) {
       if (!activeIds.has(ticketId)) timerFreshnessRef.current.delete(ticketId)
     }

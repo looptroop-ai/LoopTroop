@@ -5,7 +5,7 @@ import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
+import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 
 import type { Ticket } from '@/hooks/useTickets'
@@ -34,28 +34,17 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
   const isCouncilPhase = phaseMap[phase]?.uiView === 'council'
   const [descriptionMode, setDescriptionMode] = useState<TicketDescriptionMode>('markdown')
   const {
-    data: attempts = [],
+    attempts,
+    selectedAttempt,
+    setManualSelectedAttemptNumber,
+    logPhaseAttempt,
+    logMode,
     isError: isAttemptsError,
     error: attemptsError,
     refetch: refetchAttempts,
-  } = useTicketPhaseAttempts(ticket.id, phase)
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
-  const selectedAttemptNumber = useMemo(() => {
-    if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
-      return manualSelectedAttemptNumber
-    }
-    return (attempts.find((attempt) => attempt.state === 'active') ?? attempts[0])?.attemptNumber ?? null
-  }, [attempts, manualSelectedAttemptNumber])
-  const selectedAttempt = useMemo(
-    () => attempts.find((attempt) => attempt.attemptNumber === selectedAttemptNumber)
-      ?? attempts.find((attempt) => attempt.state === 'active')
-      ?? attempts[0]
-      ?? null,
-    [attempts, selectedAttemptNumber],
-  )
-  const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
-  const logPhaseAttempt = attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
-  const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
+    isPhaseVersionUnknown,
+  } = useSelectedPhaseAttempt(ticket.id, phase)
+
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
     if (!selectedAttempt) return []
     if (selectedAttempt.state === 'archived') {
@@ -107,7 +96,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             </div>
           </div>
         ) : null}
-        {!isDraft && (
+        {!isDraft && !isPhaseVersionUnknown && (
           <PhaseArtifactsPanel
             phase={phase}
             isCompleted={selectedAttempt?.state === 'archived' || ticket.status !== phase}
@@ -167,7 +156,7 @@ export function PhaseReviewView({ phase, ticket }: PhaseReviewViewProps) {
             className="px-4 pb-4"
           />
         </div>
-      ) : (
+      ) : isPhaseVersionUnknown ? null : (
         <CollapsiblePhaseLogSection
           key={`${phase}:${selectedAttempt?.attemptNumber ?? 'active'}`}
           phase={phase}

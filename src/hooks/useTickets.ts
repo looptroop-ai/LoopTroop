@@ -466,6 +466,20 @@ async function saveTicketUIState(
  */
 const closingTickets = new Set<string>()
 
+/**
+ * The save sequence each ticket's deletion abandoned.
+ *
+ * The tombstone alone is not enough. The drain gives up after five seconds, and
+ * a successful delete then clears the tombstone — so a save still queued behind
+ * a stalled predecessor finds the door open again when its turn finally comes,
+ * and PUTs to a ticket that is gone. A save is stamped when it is enqueued and
+ * refused if its stamp predates the deletion, which survives the tombstone being
+ * lifted. Saves made *after* a deletion — a reissued id, or a delete that
+ * failed — carry a higher stamp and are unaffected.
+ */
+const abandonedSaveSequence = new Map<string, number>()
+let uiStateSaveSequence = 0
+
 /** How long the delete waits for a queued save before going ahead without it. */
 const UI_STATE_DRAIN_TIMEOUT_MS = 5_000
 
@@ -480,12 +494,17 @@ function enqueueTicketUIStateSave(
   fetchImpl: typeof fetch,
 ): Promise<SaveTicketUIStateResponse> {
   const key = `${ticketId}\u0000${scope}`
+  const sequence = ++uiStateSaveSequence
   const previous = uiStateSaveQueues.get(key)
   const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
     .then(() => {
       // Checked here, not at call time: a save queued behind another one can
-      // reach the front after the delete has started.
+      // reach the front long after the delete started, and after the drain that
+      // waited for it has already given up.
       if (closingTickets.has(ticketId)) throw new Error('Ticket is being deleted')
+      if (sequence <= (abandonedSaveSequence.get(ticketId) ?? 0)) {
+        throw new Error('Ticket was deleted while this save was queued')
+      }
       return saveTicketUIState(ticketId, scope, data, fetchImpl)
     })
   uiStateSaveQueues.set(key, pending)
@@ -510,6 +529,7 @@ function enqueueTicketUIStateSave(
  */
 async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
   closingTickets.add(ticketId)
+  abandonedSaveSequence.set(ticketId, uiStateSaveSequence)
   const prefix = `${ticketId}\u0000`
   const pending = [...uiStateSaveQueues.entries()]
     .filter(([key]) => key.startsWith(prefix))
@@ -527,24 +547,40 @@ async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
   }
 }
 
-/** Reopens the door after a delete that did not happen. */
-function releaseClosingTicket(ticketId: string): void {
+/**
+ * Reopens the door after a delete that did not happen.
+ *
+ * The abandoned-save stamp is deliberately left behind: saves that were already
+ * queued when the delete began were abandoned either way, and anything enqueued
+ * from here carries a higher stamp.
+ */
+export function releaseClosingTicket(ticketId: string): void {
   closingTickets.delete(ticketId)
 }
 
 /**
- * True when any part of a query key names this ticket.
+ * Every string a query key holds, including one level inside object parts.
  *
- * Object parts are searched one level down as well. Every family today puts the
- * id in directly, but a future `['artifact', { ticketId }]` would slip past a
- * flat comparison — which is the same silent escape the enumerated list this
- * predicate replaced was built to end.
+ * Shared by the delete predicate and by project deletion's id discovery, which
+ * had drifted apart: one searched object parts and the other did not, so a
+ * future `['artifact', { ticketId }]` would have been cleared but never drained.
  */
+export function collectQueryKeyStrings(queryKey: readonly unknown[]): string[] {
+  const found: string[] = []
+  for (const part of queryKey) {
+    if (typeof part === 'string') {
+      found.push(part)
+    } else if (isRecord(part)) {
+      for (const value of Object.values(part)) {
+        if (typeof value === 'string') found.push(value)
+      }
+    }
+  }
+  return found
+}
+
 function queryKeyNamesTicket(queryKey: readonly unknown[], ticketId: string): boolean {
-  return queryKey.some((part) => {
-    if (part === ticketId) return true
-    return isRecord(part) && Object.values(part).some((value) => value === ticketId)
-  })
+  return collectQueryKeyStrings(queryKey).includes(ticketId)
 }
 
 /**

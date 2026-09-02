@@ -1,7 +1,6 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQueries, useQuery, type QueryClient } from '@tanstack/react-query'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
-import { queryClient } from '@/lib/queryClient'
 
 export interface DBartifact {
   id: number
@@ -105,8 +104,16 @@ export function getTicketArtifactsQueryKey(ticketId: string, options?: TicketArt
   ] as const
 }
 
-export function clearTicketArtifactsCache(ticketId: string) {
-  queryClient.removeQueries({ queryKey: ['ticket-artifacts', ticketId] })
+/**
+ * Drops this ticket's artifact queries from the caller's client.
+ *
+ * The client is a parameter because the panes that call this run under
+ * `useQueryClient()`: reaching for the module singleton instead cleared one
+ * cache while the rendered provider kept serving another, which is the split
+ * §7.13 exists to close. Production supplies the same instance either way.
+ */
+export function clearTicketArtifactsCache(client: Pick<QueryClient, 'removeQueries'>, ticketId: string) {
+  client.removeQueries({ queryKey: ['ticket-artifacts', ticketId] })
 }
 
 function queryStatus(

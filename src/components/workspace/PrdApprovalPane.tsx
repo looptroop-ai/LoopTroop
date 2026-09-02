@@ -35,6 +35,8 @@ import {
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
+  approveArtifact,
+  fixCoverageGaps,
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { AutosaveStatus } from './AutosaveStatus'
@@ -45,7 +47,7 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
+import { apiFilePath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
@@ -161,7 +163,16 @@ export function PrdApprovalPane({
     },
     staleTime: QUERY_STALE_TIME_5M,
   })
-  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const {
+    artifacts: loadedArtifacts,
+    isError: isArtifactsError,
+    error: artifactsError,
+    refetch: refetchArtifacts,
+  } = useTicketArtifacts(ticket.id)
+  // Coverage gaps live in the artifacts. A failed request made `coverageWarning`
+  // absent, which reads exactly like "no gaps" — so the button said "Approve"
+  // and the operator approved without the answer having been obtained.
+  const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   const rawContent = fetchedPrd?.content ?? ''
@@ -311,7 +322,7 @@ export function PrdApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
 
       const savedDocument = parsePrdDocument(nextRaw)
       setStructuredDraft(savedDocument ? buildPrdApprovalDraft(savedDocument) : null)
@@ -330,22 +341,13 @@ export function PrdApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(apiTicketPath(ticket.id, 'approve-prd'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expectedContentSha256: currentContentSha256,
-          ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
-        }),
+      await approveArtifact(queryClient, {
+        ticketId: ticket.id,
+        domain: 'prd',
+        expectedContentSha256: currentContentSha256,
+        gapAcknowledgementReason: gapReason,
+        failureMessage: 'Failed to approve PRD',
       })
-      await throwIfNotOk(response, 'Failed to approve PRD')
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -360,18 +362,7 @@ export function PrdApprovalPane({
     setCoverageFixError(null)
 
     try {
-      const response = await fetch(apiTicketPath(ticket.id, 'coverage', 'fix-gaps'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: 'prd' }),
-      })
-      await throwIfNotOk(response, 'Failed to fix coverage gaps')
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
-      clearTicketArtifactsCache(ticket.id)
+      await fixCoverageGaps(queryClient, { ticketId: ticket.id, domain: 'prd' })
       // The acknowledgement described the gaps that were just repaired. Keeping
       // it would attach an explanation for old gaps to a later approval.
       setGapReason('')
@@ -527,7 +518,7 @@ export function PrdApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !currentContentSha256 || ticket.status !== phase}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !currentContentSha256 || ticket.status !== phase}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
@@ -590,6 +581,13 @@ export function PrdApprovalPane({
               gapReason={gapReason}
               onGapReasonChange={setGapReason}
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
+            />
+          ) : null}
+          {isCoverageUnknown ? (
+            <QueryErrorNotice
+              title="Coverage could not be checked, so this PRD cannot be approved yet."
+              error={artifactsError}
+              onRetry={() => void refetchArtifacts()}
             />
           ) : null}
           {isPrdError && rawContent ? (

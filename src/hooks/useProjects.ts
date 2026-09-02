@@ -1,5 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { clearTicketCaches, settleTicketUiStateSavesForDelete } from './useTickets'
+import {
+  clearTicketCaches,
+  collectQueryKeyStrings,
+  releaseClosingTicket,
+  settleTicketUiStateSavesForDelete,
+} from './useTickets'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { throwIfNotOk } from '@/lib/fetchError'
@@ -118,8 +123,8 @@ function collectCachedProjectTicketIds(
   }
 
   for (const query of queryClient.getQueryCache().getAll()) {
-    for (const part of query.queryKey) {
-      if (typeof part === 'string' && ticketIdBelongsToProject(part, projectId)) cachedTicketIds.add(part)
+    for (const part of collectQueryKeyStrings(query.queryKey)) {
+      if (ticketIdBelongsToProject(part, projectId)) cachedTicketIds.add(part)
     }
   }
 
@@ -211,8 +216,16 @@ export function useDeleteProject() {
       const ticketIds = collectCachedProjectTicketIds(queryClient, id)
       await Promise.all([...ticketIds].map((ticketId) => settleTicketUiStateSavesForDelete(ticketId)))
 
-      const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
-      await throwIfNotOk(res, 'Failed to delete project')
+      try {
+        const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
+        await throwIfNotOk(res, 'Failed to delete project')
+      } catch (error) {
+        // The project and its tickets are still there, so their panels have to
+        // be able to save again. Without this every collected ticket stayed
+        // tombstoned for the life of the tab.
+        for (const ticketId of ticketIds) releaseClosingTicket(ticketId)
+        throw error
+      }
       return ticketIds
     },
     onSuccess: async (ticketIds, projectId) => {

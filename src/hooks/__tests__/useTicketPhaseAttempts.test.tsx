@@ -80,3 +80,25 @@ describe('useTicketPhaseAttempts', () => {
       .toBe(`/api/tickets/1%3AATT-1/phases/${phase}/attempts`)
   })
 })
+
+describe('phase attempt records', () => {
+  it('drops an entry that cannot drive the version selector', async () => {
+    // `attemptNumber` keys the selector and scopes artifacts and logs; `state`
+    // decides whether an attempt reads as archived. Casting the array element
+    // let a record missing either pick the wrong version silently.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { ticketId, phase, attemptNumber: 1, state: 'archived', archivedReason: null, createdAt: 'x', archivedAt: null },
+      { ticketId, phase, attemptNumber: 'two', state: 'active' },
+      { ticketId, phase, attemptNumber: 3, state: 'sideways' },
+      'not a record',
+      { ticketId, phase, attemptNumber: 4, state: 'active' },
+    ]), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+    const { wrapper } = setup()
+
+    const { result } = renderHook(() => useTicketPhaseAttempts(ticketId, phase), { wrapper })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data?.map((attempt) => attempt.attemptNumber)).toEqual([1, 4])
+    expect(result.current.data?.[1]).toMatchObject({ state: 'active', archivedReason: null, archivedAt: null })
+  })
+})

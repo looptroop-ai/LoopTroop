@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { encode } from 'gpt-tokenizer'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -6,7 +6,10 @@ import { AlertTriangle, FileText, Loader2 } from 'lucide-react'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { useTicketArtifacts, type TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
-import { describeQueryError } from '@/lib/fetchError'
+import { useQuery } from '@tanstack/react-query'
+import { describeQueryError, throwIfNotOk } from '@/lib/fetchError'
+import { QUERY_STALE_TIME_5M } from '@/lib/constants'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import {
   buildCouncilMemberArtifacts,
   buildFullAnswerMemberArtifacts,
@@ -49,6 +52,7 @@ import { ArtifactTypeFilter } from './ArtifactTypeFilter'
 import { getSupplementalArtifacts } from './supplementalArtifacts'
 import { getBeadCommitsDiffStats, serializeBeadCommitsDiffContent } from './diffUtils'
 import { isRecord } from '@shared/typeGuards'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 // Re-export viewer components so existing imports from this module continue to work
 export { RawContentView, InterviewAnswersView, PrdDraftView }
@@ -105,35 +109,31 @@ function normalizeBeadCommitMetadata(value: unknown): BeadCommitMetadata | null 
 export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMemberCount = 3, councilMemberNames, prefixElement, artifactState }: PhaseArtifactsPanelProps) {
   const supplementalArtifacts = useMemo(() => getSupplementalArtifacts(phase, isCompleted), [phase, isCompleted])
   const [viewingSelection, setViewingSelection] = useState<ViewingArtifactSelection | null>(null)
-  const [beadCommitMetadata, setBeadCommitMetadata] = useState<BeadCommitMetadata[]>([])
   const internalArtifactState = useTicketArtifacts(artifactState ? undefined : ticketId)
   const resolvedArtifactState = artifactState ?? internalArtifactState
   const dbArtifacts = useMemo(() => resolvedArtifactState.artifacts ?? [], [resolvedArtifactState.artifacts])
   const artifactErrorMessage = describeQueryError(resolvedArtifactState.error) ?? 'The artifact request failed.'
 
-  useEffect(() => {
-    if (viewingSelection?.kind !== 'supplemental' || viewingSelection.id !== 'bead-commits' || !ticketId) return
-
-    let cancelled = false
-    void fetch(`/api/tickets/${ticketId}/beads`)
-      .then(async (response) => response.ok ? response.json() : [])
-      .then((payload: unknown) => {
-        if (cancelled) return
-        setBeadCommitMetadata(Array.isArray(payload)
-          ? payload.map(normalizeBeadCommitMetadata).filter((bead): bead is BeadCommitMetadata => bead !== null)
-          : [])
-      })
-      .catch(() => {
-        if (!cancelled) setBeadCommitMetadata([])
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [ticketId, viewingSelection])
+  // Bead titles and priorities that label the per-bead diffs. A query rather than
+  // an effect writing state: a failed request used to blank the labels it had
+  // already collected, so a hiccup while the dialog was open silently downgraded
+  // named commits to bare ids with nothing saying why.
+  const { data: beadCommitMetadata } = useQuery({
+    queryKey: ['bead-commit-metadata', ticketId],
+    queryFn: async ({ signal }): Promise<BeadCommitMetadata[]> => {
+      const response = await fetch(apiTicketPath(ticketId!, 'beads'), { signal })
+      await throwIfNotOk(response, 'Failed to load bead metadata')
+      const payload: unknown = await response.json()
+      return Array.isArray(payload)
+        ? payload.map(normalizeBeadCommitMetadata).filter((bead): bead is BeadCommitMetadata => bead !== null)
+        : []
+    },
+    enabled: Boolean(ticketId) && viewingSelection?.kind === 'supplemental' && viewingSelection.id === 'bead-commits',
+    staleTime: QUERY_STALE_TIME_5M,
+  })
 
   const beadCommitMetadataById = useMemo(
-    () => new Map(beadCommitMetadata.map((bead) => [bead.id, bead])),
+    () => new Map((beadCommitMetadata ?? []).map((bead) => [bead.id, bead])),
     [beadCommitMetadata],
   )
 
@@ -794,6 +794,17 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
   return (
     <>
+      {/* Beside the list, not instead of it: the rows come from static phase
+          definitions, so they still render on a failed request and read as
+          "not produced yet". The dialog kept the only notice, and nobody opens
+          a dialog to find out why a button is empty. */}
+      {resolvedArtifactState.isError && resolvedArtifactState.artifacts === undefined ? (
+        <QueryErrorNotice
+          title="This phase's artifacts could not be loaded."
+          error={resolvedArtifactState.error}
+          onRetry={() => void resolvedArtifactState.refetch()}
+        />
+      ) : null}
       {artifactsBody}
 
       <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>

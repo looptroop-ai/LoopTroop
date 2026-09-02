@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { createTicketUiStateActionId, getTicketUiStateRevision } from '@/lib/ticketUiStateRevision'
 import type { AutosaveStatusState } from './AutosaveStatus'
+import type { QueryClient } from '@tanstack/react-query'
+import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { clearTicketArtifactsCache } from '@/hooks/useTicketArtifacts'
 
 interface SaveTicketUiStateInput<T> {
   ticketId: string
@@ -41,7 +45,7 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
 
   if (typeof fetch === 'function') {
     try {
-      void fetch(`/api/tickets/${ticketId}/ui-state`, {
+      void fetch(apiTicketPath(ticketId, 'ui-state'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
@@ -56,7 +60,7 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
       return navigator.sendBeacon(
-        `/api/tickets/${ticketId}/ui-state`,
+        apiTicketPath(ticketId, 'ui-state'),
         new Blob([payload], { type: 'application/json' }),
       )
     } catch {
@@ -233,4 +237,70 @@ export function useApprovalPaneState<TEditTab extends string = string>(): Approv
     discardTarget, setDiscardTarget,
     clearDiscardTarget,
   }
+}
+
+/**
+ * The two approval mutations the PRD and beads panes both run.
+ *
+ * Only four things differ between the panes — the route, the coverage domain,
+ * the artifact cache key and the sentence shown on failure — and everything
+ * around them was copied. The copies had already drifted once: routing the
+ * panes through the shared error helper is what made them identical again, and
+ * what SonarCloud then measured as new duplication.
+ *
+ * The state juggling stays in the component. Only the request and the cache
+ * invalidation live here, which is the half that was actually the same.
+ */
+export type ApprovalDomain = 'prd' | 'beads'
+
+function invalidateApprovedArtifact(
+  queryClient: QueryClient,
+  ticketId: string,
+  domain: ApprovalDomain,
+): void {
+  queryClient.invalidateQueries({ queryKey: ['tickets'] })
+  queryClient.invalidateQueries({ queryKey: ['ticket', ticketId] })
+  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, domain, 'approval'] })
+  queryClient.invalidateQueries({ queryKey: ['artifact', ticketId, domain] })
+  clearTicketArtifactsCache(queryClient, ticketId)
+}
+
+export async function approveArtifact(
+  queryClient: QueryClient,
+  options: {
+    ticketId: string
+    domain: ApprovalDomain
+    expectedContentSha256: string | null
+    gapAcknowledgementReason?: string
+    failureMessage: string
+  },
+): Promise<void> {
+  const response = await fetch(apiTicketPath(options.ticketId, `approve-${options.domain}`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      expectedContentSha256: options.expectedContentSha256,
+      ...(options.gapAcknowledgementReason?.trim()
+        ? { gapAcknowledgementReason: options.gapAcknowledgementReason.trim() }
+        : {}),
+    }),
+  })
+  await throwIfNotOk(response, options.failureMessage)
+
+  queryClient.invalidateQueries({ queryKey: ['ticket-skips', options.ticketId] })
+  invalidateApprovedArtifact(queryClient, options.ticketId, options.domain)
+}
+
+export async function fixCoverageGaps(
+  queryClient: QueryClient,
+  options: { ticketId: string; domain: ApprovalDomain },
+): Promise<void> {
+  const response = await fetch(apiTicketPath(options.ticketId, 'coverage', 'fix-gaps'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ domain: options.domain }),
+  })
+  await throwIfNotOk(response, 'Failed to fix coverage gaps')
+
+  invalidateApprovedArtifact(queryClient, options.ticketId, options.domain)
 }

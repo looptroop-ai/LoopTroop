@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AIQuestionProvider } from '../AIQuestionContext'
 import { UIProvider } from '../UIContext'
@@ -329,5 +329,195 @@ describe('AIQuestionProvider', () => {
     // Revisions are per clock. Comparing them across clocks threw away the new
     // countdown and left the browser showing one that had already gone.
     await waitFor(() => expect(screen.getByText('key:VERIFYING:1')).toBeInTheDocument())
+  })
+
+  it('drops a request the step no longer lists', async () => {
+    // `opencode_question_updated` carries the step's whole pending set, so it is
+    // also how this client learns a request went away. Only upserting left a
+    // request that was dropped without an explicit `resolved` event answerable
+    // until the 30-second poll noticed.
+    const ticket = makeTicket({ status: 'CODING' })
+    stubAggregate({
+      questions: [buildQuestion(ticket.id), buildQuestion(ticket.id, { sessionId: 'session-2', requestId: 'question-2' })],
+      timers: {},
+    })
+
+    function Pruner({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_updated',
+            ticketId,
+            requests: [{ sessionId: 'session-1234567890', requestId: 'question-1', questions: [{ header: 'H', question: 'Q?', options: [] }] }],
+          })}>update</button>
+          <button onClick={() => ingestSseEvent({ type: 'opencode_question_updated', ticketId })}>timer-only</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Pruner ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('update'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // An update with no `requests` array is not a statement about the set.
+    fireEvent.click(screen.getByText('timer-only'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+  })
+
+  it('lets go of a ticket that has finished', async () => {
+    // Requests were retained for the life of the tab, so a cancelled ticket kept
+    // an answer-and-skip affordance for a step nothing is waiting on.
+    const ticket = makeTicket({ status: 'CODING' })
+    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })
+
+    const { rerender } = renderProvider([ticket], <Counts ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument())
+
+    rerender(
+      <UIProvider>
+        <AIQuestionProvider tickets={[{ ...ticket, status: 'CANCELED' }]}>
+          <Counts ticketId={ticket.id} />
+        </AIQuestionProvider>
+      </UIProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
+  })
+
+  it('reports an answer failure with its status instead of [object Object]', async () => {
+    // The question routes answer a validation failure with `details` set to a Zod
+    // field map. This provider had its own parser, which stringified that object
+    // straight into the panel and dropped the status with it.
+    const ticket = makeTicket({ status: 'CODING' })
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/reply')) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid question reply payload', details: { formErrors: [], fieldErrors: {} } }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+    }))
+
+    function Answerer({ ticketId }: { ticketId: string }) {
+      const { answerRequest, getTicketRequests } = useAIQuestions()
+      const request = getTicketRequests(ticketId)[0]
+      return (
+        <>
+          <div>error:{request?.error ?? 'none'}</div>
+          <button onClick={() => answerRequest(ticketId, 'question-1', [['Small']])}>answer</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Answerer ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('error:none')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('answer'))
+
+    await waitFor(() => expect(
+      screen.getByText('error:Could not send that answer (HTTP 400: Invalid question reply payload)'),
+    ).toBeInTheDocument())
+  })
+
+  it('does not let a slow per-ticket refresh undo a newer live update', async () => {
+    // Round 1 ordered the poll against a newer refresh but not the reverse, and
+    // not against SSE at all. A snapshot prunes, so an older one applying last
+    // deletes a question that has just arrived.
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseRefresh!: (body: unknown) => void
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/opencode/questions')) {
+        // The per-ticket refresh: held open until the SSE event has landed.
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
+    }))
+
+    function Refresher({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+          <button onClick={() => ingestSseEvent(buildQuestion(ticketId))}>live</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseRefresh).toBeDefined())
+
+    // The question arrives live while the refresh is still in flight.
+    fireEvent.click(screen.getByText('live'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // The refresh read the server before that, so its empty view is stale.
+    await act(async () => releaseRefresh({ questions: [], timer: null }))
+
+    expect(screen.getByText('requests:1')).toBeInTheDocument()
+  })
+
+  it('keeps a superseded snapshot\'s other questions instead of dropping it whole', async () => {
+    // A live `opencode_question` carries one request, not the step's whole set.
+    // Rejecting the in-flight snapshot outright — the first fix for the ordering
+    // problem — therefore lost every *other* question that snapshot had learned
+    // about until the next poll. What the event invalidates is the snapshot's
+    // right to prune, not its contents.
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseRefresh!: (body: unknown) => void
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/opencode/questions')) {
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
+    }))
+
+    function Refresher({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+          <button onClick={() => ingestSseEvent(buildQuestion(ticketId, {
+            sessionId: 'session-live', requestId: 'question-live',
+          }))}>live</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseRefresh).toBeDefined())
+
+    fireEvent.click(screen.getByText('live'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // The snapshot knows about a different question the live event never
+    // mentioned. Its upserts still count; only its prune is refused.
+    await act(async () => releaseRefresh({
+      questions: [buildQuestion(ticket.id, { sessionId: 'session-snap', requestId: 'question-snap' })],
+      timer: null,
+    }))
+
+    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
   })
 })

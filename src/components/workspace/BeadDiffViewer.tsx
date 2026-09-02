@@ -4,6 +4,9 @@ import { Loader2, FileCode2, ChevronRight, ChevronDown } from 'lucide-react'
 import { parseDiffStats, parseFileDiffs, computeLineNumbersWithWordDiff, type FileDiff } from './diffUtils'
 import { renderUnifiedDiffLineText } from './diffWordHighlights'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
+import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface BeadDiffViewerProps {
   ticketId: string
@@ -15,11 +18,9 @@ interface DiffResponse {
   captured: boolean
 }
 
-async function fetchBeadDiff(ticketId: string, beadId: string): Promise<DiffResponse> {
-  const response = await fetch(`/api/tickets/${ticketId}/beads/${beadId}/diff`)
-  if (!response.ok) {
-    throw new Error(`Failed to load bead diff (${response.status})`)
-  }
+async function fetchBeadDiff(ticketId: string, beadId: string, signal?: AbortSignal): Promise<DiffResponse> {
+  const response = await fetch(apiTicketPath(ticketId, 'beads', beadId, 'diff'), { signal })
+  await throwIfNotOk(response, 'Failed to load bead diff')
   return response.json()
 }
 
@@ -91,9 +92,9 @@ function DiffContent({ diff }: { diff: string }) {
 }
 
 export function BeadDiffViewer({ ticketId, beadId }: BeadDiffViewerProps) {
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: getBeadDiffQueryKey(ticketId, beadId),
-    queryFn: () => fetchBeadDiff(ticketId, beadId),
+    queryFn: ({ signal }) => fetchBeadDiff(ticketId, beadId, signal),
     staleTime: 30_000,
   })
 
@@ -108,10 +109,12 @@ export function BeadDiffViewer({ ticketId, beadId }: BeadDiffViewerProps) {
 
   if (isError) {
     return (
-      <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-        <FileCode2 className="h-4 w-4" />
-        Could not load diff for this bead.
-      </div>
+      <QueryErrorNotice
+        className="p-4"
+        title="Could not load the diff for this bead."
+        error={error}
+        onRetry={() => void refetch()}
+      />
     )
   }
 

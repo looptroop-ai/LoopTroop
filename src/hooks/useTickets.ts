@@ -1,34 +1,28 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { clearPersistedTicketLogs } from '@/context/logUtils'
-import { clearTicketArtifactsCache } from './useTicketArtifacts'
 import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCache'
 import { isTerminalWorkflowStatus, type WorkflowAction } from '@shared/workflowMeta'
+import { isRecord } from '@shared/typeGuards'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
-import { failedResponseError } from '@/lib/fetchError'
+import { clearNeedsInputSeen } from '@/lib/needsInputSeen'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
+import {
+  normalizeTicketListResponse,
+  normalizeTicketPatch,
+  normalizeTicketResponse,
+  type RawTicketResponse,
+} from '@/lib/ticketNormalization'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
+  clearTicketUiStateRevisions,
   createTicketUiStateActionId,
   getTicketUiStateRevision,
   rememberTicketUiStateRevision,
 } from '@/lib/ticketUiStateRevision'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import type { SettingSource } from '@shared/aiQuestions'
-
-async function parseErrorBody(res: Response, fallback: string): Promise<string> {
-  let message = fallback
-  try {
-    const err = await res.json() as { error?: string; message?: string }
-    const category = err.error?.trim()
-    const detail = err.message?.trim()
-    message = category && detail && category !== detail
-      ? `${category}: ${detail}`
-      : detail || category || message
-  } catch {
-    // ignore parse failure
-  }
-  return message
-}
 
 export interface TicketEta {
   bestMs: number
@@ -248,7 +242,8 @@ interface TicketActionResponse {
   ticketId: string
   status?: string
   state?: string
-  ticket?: Ticket
+  /** The server's own shape, not the view model — it goes through the normaliser. */
+  ticket?: RawTicketResponse
 }
 
 const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
@@ -270,17 +265,19 @@ export function getTicketsAutoRefreshInterval(
     : false
 }
 
-async function fetchTickets(projectId?: number): Promise<Ticket[]> {
-  const url = projectId ? `/api/tickets?projectId=${projectId}` : '/api/tickets'
-  const res = await fetch(url)
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch tickets')
-  return res.json()
+async function fetchTickets(projectId?: number, signal?: AbortSignal): Promise<Ticket[]> {
+  const url = projectId
+    ? `/api/tickets?${new URLSearchParams({ projectId: String(projectId) }).toString()}`
+    : '/api/tickets'
+  const res = await fetch(url, { signal })
+  await throwIfNotOk(res, 'Failed to fetch tickets')
+  return normalizeTicketListResponse(await res.json())
 }
 
-async function fetchTicket(id: string): Promise<Ticket> {
-  const res = await fetch(`/api/tickets/${id}`)
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch ticket')
-  return res.json()
+async function fetchTicket(id: string, signal?: AbortSignal): Promise<Ticket> {
+  const res = await fetch(apiTicketPath(id), { signal })
+  await throwIfNotOk(res, 'Failed to fetch ticket')
+  return normalizeTicketResponse(await res.json())
 }
 
 async function createTicket(input: CreateTicketInput): Promise<Ticket> {
@@ -289,10 +286,8 @@ async function createTicket(input: CreateTicketInput): Promise<Ticket> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to create ticket'))
-  }
-  return res.json()
+  await throwIfNotOk(res, 'Failed to create ticket')
+  return normalizeTicketResponse(await res.json())
 }
 
 type UpdateTicketInput = Partial<Pick<
@@ -301,25 +296,23 @@ type UpdateTicketInput = Partial<Pick<
 >>
 
 async function updateTicket(id: string, input: UpdateTicketInput): Promise<Ticket> {
-  const res = await fetch(`/api/tickets/${id}`, {
+  const res = await fetch(apiTicketPath(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to update ticket'))
-  }
-  return res.json()
+  await throwIfNotOk(res, 'Failed to update ticket')
+  return normalizeTicketResponse(await res.json())
 }
 
 function getTicketActionPath(id: string, action: WorkflowAction): string {
   switch (action) {
     case 'close_unmerged':
-      return `/api/tickets/${id}/close-unmerged`
+      return apiTicketPath(id, 'close-unmerged')
     case 'edit_execution_setup_plan':
-      return `/api/tickets/${id}/edit-execution-setup-plan`
+      return apiTicketPath(id, 'edit-execution-setup-plan')
     default:
-      return `/api/tickets/${id}/${action}`
+      return apiTicketPath(id, action)
   }
 }
 
@@ -362,9 +355,7 @@ export async function ticketAction(
         }
       : {}),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, `Failed to ${action} ticket`))
-  }
+  await throwIfNotOk(res, `Failed to ${action} ticket`)
   return res.json()
 }
 
@@ -376,7 +367,7 @@ interface CancelTicketOptions {
 }
 
 async function cancelTicket(id: string, options: CancelTicketOptions = {}): Promise<TicketActionResponse> {
-  const res = await fetch(`/api/tickets/${id}/cancel`, {
+  const res = await fetch(apiTicketPath(id, 'cancel'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -386,23 +377,19 @@ async function cancelTicket(id: string, options: CancelTicketOptions = {}): Prom
       ...(options.reason?.trim() ? { reason: options.reason.trim() } : {}),
     }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to cancel ticket'))
-  }
+  await throwIfNotOk(res, 'Failed to cancel ticket')
   return res.json()
 }
 
 async function deleteTicket(id: string): Promise<{ success: boolean; ticketId: string }> {
-  const res = await fetch(`/api/tickets/${id}`, { method: 'DELETE' })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to delete ticket'))
-  }
+  const res = await fetch(apiTicketPath(id), { method: 'DELETE' })
+  await throwIfNotOk(res, 'Failed to delete ticket')
   return res.json()
 }
 
-async function fetchInterview(ticketId: string): Promise<InterviewSessionView> {
-  const res = await fetch(`/api/tickets/${ticketId}/interview`)
-  if (!res.ok) throw new Error('Failed to fetch interview data')
+async function fetchInterview(ticketId: string, signal?: AbortSignal): Promise<InterviewSessionView> {
+  const res = await fetch(apiTicketPath(ticketId, 'interview'), { signal })
+  await throwIfNotOk(res, 'Failed to fetch interview data')
   return res.json()
 }
 
@@ -438,12 +425,11 @@ const uiStateSaveQueues = new Map<string, Promise<SaveTicketUIStateResponse>>()
 async function fetchTicketUIState<T = unknown>(
   ticketId: string,
   scope: string,
+  signal?: AbortSignal,
 ): Promise<TicketUIStateResponse<T>> {
   const params = new URLSearchParams({ scope })
-  const res = await fetch(`/api/tickets/${ticketId}/ui-state?${params.toString()}`)
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to fetch ticket UI state'))
-  }
+  const res = await fetch(`${apiTicketPath(ticketId, 'ui-state')}?${params.toString()}`, { signal })
+  await throwIfNotOk(res, 'Failed to fetch ticket UI state')
   const payload = await res.json() as Omit<TicketUIStateResponse<T>, 'ticketId'>
   return { ...payload, ticketId }
 }
@@ -455,7 +441,7 @@ async function saveTicketUIState(
   fetchImpl: typeof fetch = fetch,
 ): Promise<SaveTicketUIStateResponse> {
   const expectedRevision = getTicketUiStateRevision(ticketId, scope)
-  const res = await fetchImpl(`/api/tickets/${ticketId}/ui-state`, {
+  const res = await fetchImpl(apiTicketPath(ticketId, 'ui-state'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -466,10 +452,39 @@ async function saveTicketUIState(
     }),
   })
   if (res.status === 409) return res.json()
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to save ticket UI state'))
-  }
+  await throwIfNotOk(res, 'Failed to save ticket UI state')
   return res.json()
+}
+
+/**
+ * Tickets whose deletion has started.
+ *
+ * Draining the queue is not enough on its own: the debounced approval autosave
+ * can enqueue a *new* save while the drain is awaiting the old one, and that PUT
+ * then lands after the DELETE. A ticket named here refuses further saves, so the
+ * barrier closes instead of merely emptying.
+ */
+const closingTickets = new Set<string>()
+
+/**
+ * The save sequence each ticket's deletion abandoned.
+ *
+ * The tombstone alone is not enough. The drain gives up after five seconds, and
+ * a successful delete then clears the tombstone — so a save still queued behind
+ * a stalled predecessor finds the door open again when its turn finally comes,
+ * and PUTs to a ticket that is gone. A save is stamped when it is enqueued and
+ * refused if its stamp predates the deletion, which survives the tombstone being
+ * lifted. Saves made *after* a deletion — a reissued id, or a delete that
+ * failed — carry a higher stamp and are unaffected.
+ */
+const abandonedSaveSequence = new Map<string, number>()
+let uiStateSaveSequence = 0
+
+/** How long the delete waits for a queued save before going ahead without it. */
+const UI_STATE_DRAIN_TIMEOUT_MS = 5_000
+
+export function isTicketClosing(ticketId: string): boolean {
+  return closingTickets.has(ticketId)
 }
 
 function enqueueTicketUIStateSave(
@@ -479,9 +494,19 @@ function enqueueTicketUIStateSave(
   fetchImpl: typeof fetch,
 ): Promise<SaveTicketUIStateResponse> {
   const key = `${ticketId}\u0000${scope}`
+  const sequence = ++uiStateSaveSequence
   const previous = uiStateSaveQueues.get(key)
   const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
-    .then(() => saveTicketUIState(ticketId, scope, data, fetchImpl))
+    .then(() => {
+      // Checked here, not at call time: a save queued behind another one can
+      // reach the front long after the delete started, and after the drain that
+      // waited for it has already given up.
+      if (closingTickets.has(ticketId)) throw new Error('Ticket is being deleted')
+      if (sequence <= (abandonedSaveSequence.get(ticketId) ?? 0)) {
+        throw new Error('Ticket was deleted while this save was queued')
+      }
+      return saveTicketUIState(ticketId, scope, data, fetchImpl)
+    })
   uiStateSaveQueues.set(key, pending)
   void pending.finally(() => {
     if (uiStateSaveQueues.get(key) === pending) uiStateSaveQueues.delete(key)
@@ -489,10 +514,161 @@ function enqueueTicketUIStateSave(
   return pending
 }
 
+/**
+ * Closes the door on this ticket's queued UI-state saves, then waits them out.
+ *
+ * A save is enqueued per `ticketId\0scope` and settles well after the keystroke
+ * that started it, so deleting first left a PUT in the air for a row that no
+ * longer exists. Two things have to be true for that to stop: nothing new may be
+ * enqueued (the tombstone), and what is already in flight must finish (the
+ * drain).
+ *
+ * Bounded, because the drain is not worth blocking the delete on: a stalled PUT
+ * would otherwise hold the mutation open indefinitely and the DELETE would never
+ * be sent. Failures are swallowed — this is a barrier, not a checkpoint.
+ */
+async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
+  closingTickets.add(ticketId)
+  abandonedSaveSequence.set(ticketId, uiStateSaveSequence)
+  const prefix = `${ticketId}\u0000`
+  const pending = [...uiStateSaveQueues.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, save]) => save.catch(() => undefined))
+  if (pending.length === 0) return
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.all(pending),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, UI_STATE_DRAIN_TIMEOUT_MS) }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * Reopens the door after a delete that did not happen.
+ *
+ * The abandoned-save stamp is deliberately left behind: saves that were already
+ * queued when the delete began were abandoned either way, and anything enqueued
+ * from here carries a higher stamp.
+ */
+export function releaseClosingTicket(ticketId: string): void {
+  closingTickets.delete(ticketId)
+}
+
+/**
+ * Every string a query key holds, including one level inside object parts.
+ *
+ * Shared by the delete predicate and by project deletion's id discovery, which
+ * had drifted apart: one searched object parts and the other did not, so a
+ * future `['artifact', { ticketId }]` would have been cleared but never drained.
+ */
+export function collectQueryKeyStrings(queryKey: readonly unknown[]): string[] {
+  const found: string[] = []
+  for (const part of queryKey) {
+    if (typeof part === 'string') {
+      found.push(part)
+    } else if (isRecord(part)) {
+      for (const value of Object.values(part)) {
+        if (typeof value === 'string') found.push(value)
+      }
+    }
+  }
+  return found
+}
+
+function queryKeyNamesTicket(queryKey: readonly unknown[], ticketId: string): boolean {
+  return collectQueryKeyStrings(queryKey).includes(ticketId)
+}
+
+/**
+ * Drops everything cached against one ticket.
+ *
+ * Matched by predicate rather than by an enumerated list of query families: the
+ * enumerated version had grown to six of the twelve families that key on a
+ * ticket id, and the six it missed — phase attempts, Manual QA, AI details,
+ * ticket beads, bead diffs, and every `['artifact', id, …]` — stayed in memory
+ * under an id the server can hand out again. A new family added next release
+ * escapes a list silently; it cannot escape this.
+ *
+ * The ticket *list* queries are untouched: `['tickets']` does not carry a ticket
+ * id, and the list is filtered by its own caller.
+ *
+ * In-flight requests are cancelled before the keys go, so a response that was
+ * already on the wire cannot repopulate a deleted ticket.
+ */
+export async function settleTicketUiStateSavesForDelete(ticketId: string): Promise<void> {
+  await settleTicketUiStateSaves(ticketId)
+}
+
+export async function clearTicketCaches(queryClient: QueryClient, ticketId: string): Promise<void> {
+  const predicate = (query: { queryKey: readonly unknown[] }) => queryKeyNamesTicket(query.queryKey, ticketId)
+
+  await queryClient.cancelQueries({ predicate })
+  queryClient.removeQueries({ predicate })
+
+  // Module-scope stores, which no query client owns. `clearPersistedTicketLogs`
+  // already calls `clearServerLogCache` for this ticket — calling it here too
+  // would be the second clear, and broadening it takes every other open
+  // ticket's cache with it.
+  clearPersistedTicketLogs(ticketId)
+  clearErrorTicketSeen(ticketId)
+  clearNeedsInputSeen(ticketId)
+  // The revision map only ever climbs, so carrying it past a deletion makes the
+  // next ticket issued under the same id send an `expectedRevision` from a
+  // ticket that no longer exists — and every one of its autosaves is refused as
+  // a conflict.
+  clearTicketUiStateRevisions(ticketId)
+  closingTickets.delete(ticketId)
+}
+
+/**
+ * Writes a mutation's answer into the ticket cache.
+ *
+ * Two shapes, and only one of them applies. When the route returned the whole
+ * ticket, that is the truth — including its own `previousStatus` — and a
+ * status-only patch on top would overwrite it with one derived here. When it
+ * returned a status alone, `previousStatus` is set from what the cache currently
+ * holds, which is what `useSSE` already does for a `state_change`: without it,
+ * every surface that explains *what* failed (the error view's setup detection,
+ * `isBeforeExecution`) reads a `previousStatus` left over from an earlier
+ * transition.
+ */
+function applyTicketActionResult(
+  queryClient: QueryClient,
+  ticketId: string,
+  result: TicketActionResponse,
+): void {
+  const incomingTicket = normalizeTicketPatch(result.ticket)
+  if (incomingTicket) {
+    mergeTicketInCache<Ticket>(queryClient, incomingTicket)
+    return
+  }
+
+  const nextStatus = result.state ?? result.status
+  if (!nextStatus) return
+
+  // The detail entry first, then any list that holds the ticket: a board action
+  // fires without the detail query ever having been mounted, and reading only
+  // the detail cache there left `previousStatus` stale.
+  const cachedStatus = queryClient.getQueryData<Ticket>(['ticket', ticketId])?.status
+    ?? queryClient.getQueriesData<Ticket[]>({ queryKey: ['tickets'] })
+      .flatMap(([, tickets]) => tickets ?? [])
+      .find((ticket) => ticket.id === ticketId)?.status
+  patchTicketStatusInCache<Ticket>(
+    queryClient,
+    ticketId,
+    nextStatus,
+    cachedStatus && cachedStatus !== nextStatus ? cachedStatus : undefined,
+  )
+}
+
 export function useTickets(projectId?: number) {
   return useQuery({
     queryKey: projectId ? ['tickets', { projectId }] : ['tickets'],
-    queryFn: () => fetchTickets(projectId),
+    queryFn: ({ signal }) => fetchTickets(projectId, signal),
     refetchInterval: (query) => getTicketsAutoRefreshInterval(query.state.data as Ticket[] | undefined),
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
@@ -503,7 +679,7 @@ export function useTicket(id: string | null) {
   const queryClient = useQueryClient()
   return useQuery({
     queryKey: ['ticket', id],
-    queryFn: () => fetchTicket(id!),
+    queryFn: ({ signal }) => fetchTicket(id!, signal),
     enabled: id !== null,
     initialData: () => {
       const allTicketLists = queryClient.getQueriesData<Ticket[]>({ queryKey: ['tickets'] })
@@ -548,15 +724,7 @@ export function useTicketAction() {
     mutationFn: ({ id, action, payload }: TicketActionVariables) =>
       ticketAction(id, action, payload),
     onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
-      }
-
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        const ticketId = result.ticketId || variables.id
-        patchTicketStatusInCache<Ticket>(queryClient, ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, result.ticketId || variables.id, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
@@ -568,18 +736,36 @@ export function useTicketAction() {
 export function useCancelTicket() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, options }: { id: string; options?: CancelTicketOptions }) =>
-      cancelTicket(id, options),
-    onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
+    mutationFn: async ({ id, options }: { id: string; options?: CancelTicketOptions }) => {
+      // The cancel dialog's "also delete the ticket" really deletes the row, so
+      // this request needs the same barrier the delete mutation has.
+      if (!options?.deleteTicket) return cancelTicket(id, options)
+
+      await settleTicketUiStateSaves(id)
+      try {
+        return await cancelTicket(id, options)
+      } catch (error) {
+        releaseClosingTicket(id)
+        throw error
+      }
+    },
+    onSuccess: async (result, variables) => {
+      const ticketId = result.ticketId || variables.id
+
+      if (variables.options?.deleteTicket) {
+        // A deleting cancel answers `{ success, ticketId }` and nothing else, so
+        // `applyTicketActionResult` has nothing to apply. Without this the
+        // ticket's phase attempts, Manual QA rounds, artifacts, bead diffs, logs
+        // and UI state all stayed cached under an id the server can reissue.
+        queryClient.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (tickets) =>
+          tickets?.filter(ticket => ticket.id !== ticketId) ?? tickets,
+        )
+        await clearTicketCaches(queryClient, ticketId)
+        queryClient.invalidateQueries({ queryKey: ['tickets'] })
+        return
       }
 
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        const ticketId = result.ticketId || variables.id
-        patchTicketStatusInCache<Ticket>(queryClient, ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, ticketId, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
@@ -591,40 +777,60 @@ export function useCancelTicket() {
 export function useDeleteTicket() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: deleteTicket,
-    onSuccess: (_, ticketId) => {
+    mutationFn: async (ticketId: string) => {
+      // Before the DELETE, not after: a queued panel save otherwise reaches the
+      // server for a ticket row that is already gone.
+      await settleTicketUiStateSaves(ticketId)
+      try {
+        return await deleteTicket(ticketId)
+      } catch (error) {
+        // The ticket is still there, so its panels may save again.
+        releaseClosingTicket(ticketId)
+        throw error
+      }
+    },
+    onSuccess: async (_, ticketId) => {
       queryClient.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (tickets) =>
         tickets?.filter(ticket => ticket.id !== ticketId) ?? tickets,
       )
-      queryClient.removeQueries({ queryKey: ['ticket', ticketId], exact: true })
-      queryClient.removeQueries({ queryKey: ['interview', ticketId], exact: true })
-      queryClient.removeQueries({ queryKey: ['ticket-ui-state', ticketId] })
+      await clearTicketCaches(queryClient, ticketId)
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
-
-      clearTicketArtifactsCache(ticketId)
-      clearPersistedTicketLogs(ticketId)
-
-      clearErrorTicketSeen(ticketId)
     },
   })
 }
 
-export function useInterviewQuestions(ticketId: string) {
+/**
+ * The interview session for a ticket.
+ *
+ * `enabled` defaults to "there is a ticket", which is what the three interview
+ * surfaces want. The read-only approval view is the exception: it renders PRD
+ * and beads attempts too, and asking `/interview` for those both costs a request
+ * and puts an interview failure in front of somebody looking at a bead plan.
+ */
+export function useInterviewQuestions(ticketId: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['interview', ticketId],
-    queryFn: () => fetchInterview(ticketId),
+    queryFn: ({ signal }) => fetchInterview(ticketId, signal),
+    enabled: options?.enabled ?? Boolean(ticketId),
   })
 }
 
 export function useTicketUIState<T = unknown>(ticketId: string, scope: string, enabled: boolean = true) {
   return useQuery({
     queryKey: ['ticket-ui-state', ticketId, scope],
-    queryFn: () => fetchTicketUIState<T>(ticketId, scope),
-    enabled,
-    select: (data) => {
-      rememberTicketUiStateRevision(ticketId, scope, data.revision)
-      return data
+    // The revision is remembered where the payload is produced, not in `select`.
+    // `select` must be pure: it runs per observer and again on every re-render
+    // that changes its identity, so StrictMode's extra observer alone was enough
+    // to write the module-level revision map twice. A `useEffect` is not the
+    // alternative — it runs after the render that already queued a save, which
+    // would send the previous revision as `expectedRevision` and lose the write
+    // to a false conflict.
+    queryFn: async ({ signal }) => {
+      const payload = await fetchTicketUIState<T>(ticketId, scope, signal)
+      rememberTicketUiStateRevision(ticketId, scope, payload.revision)
+      return payload
     },
+    enabled,
   })
 }
 
@@ -673,14 +879,12 @@ async function submitBatch(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
 ): Promise<PersistedInterviewBatch | { accepted: boolean }> {
-  const res = await fetch(`/api/tickets/${ticketId}/answer-batch`, {
+  const res = await fetch(apiTicketPath(ticketId, 'answer-batch'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers, selectedOptions, skipReasons }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to submit batch'))
-  }
+  await throwIfNotOk(res, 'Failed to submit batch')
   return res.json()
 }
 
@@ -689,14 +893,12 @@ async function editInterviewAnswer(
   questionId: string,
   answer: string,
 ): Promise<{ success: boolean; questions: unknown[] }> {
-  const res = await fetch(`/api/tickets/${ticketId}/edit-answer`, {
+  const res = await fetch(apiTicketPath(ticketId, 'edit-answer'), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ questionId, answer }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to edit answer'))
-  }
+  await throwIfNotOk(res, 'Failed to edit answer')
   return res.json()
 }
 
@@ -707,7 +909,7 @@ async function skipInterview(
   skipReasons: Record<string, string> = {},
   bulkSkipReason?: string,
 ): Promise<TicketActionResponse> {
-  const res = await fetch(`/api/tickets/${ticketId}/skip`, {
+  const res = await fetch(apiTicketPath(ticketId, 'skip'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -717,9 +919,7 @@ async function skipInterview(
       ...(bulkSkipReason ? { bulkSkipReason } : {}),
     }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to skip remaining interview questions'))
-  }
+  await throwIfNotOk(res, 'Failed to skip remaining interview questions')
   return res.json()
 }
 
@@ -764,14 +964,7 @@ export function useSkipInterview() {
       bulkSkipReason?: string
     }) => skipInterview(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
     onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
-      }
-
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        patchTicketStatusInCache<Ticket>(queryClient, variables.ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, result.ticketId || variables.ticketId, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })

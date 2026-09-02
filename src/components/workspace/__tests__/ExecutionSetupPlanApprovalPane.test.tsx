@@ -240,7 +240,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
 
-      if (url === `/api/tickets/${TEST.ticketId}/execution-setup-plan` && (!init || init.method === 'GET')) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({
             exists: true,
@@ -255,7 +255,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/execution-setup-plan?phaseAttempt=1` && (!init || init.method === 'GET')) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan?phaseAttempt=1` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({
             exists: true,
@@ -270,7 +270,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/regenerate-execution-setup-plan` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/regenerate-execution-setup-plan` && init?.method === 'POST') {
         return Promise.resolve(
           new Response(JSON.stringify({
             success: true,
@@ -284,7 +284,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/approve-execution-setup-plan` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-execution-setup-plan` && init?.method === 'POST') {
         return Promise.resolve(
           new Response(JSON.stringify({ success: true }), {
             status: 200,
@@ -348,7 +348,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/execution-setup-plan`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`) {
         return Promise.resolve(new Response(JSON.stringify({
           exists: false,
           raw: null,
@@ -397,7 +397,10 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
 
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(`/api/tickets/${TEST.ticketId}/execution-setup-plan`)
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`,
+        expect.objectContaining({ signal: expect.anything() }),
+      )
     })
 
     await waitFor(() => {
@@ -427,7 +430,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/regenerate-execution-setup-plan`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/regenerate-execution-setup-plan`,
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -513,7 +516,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/regenerate-execution-setup-plan`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/regenerate-execution-setup-plan`,
         expect.objectContaining({
           method: 'POST',
           body: expect.stringContaining('Regenerate after runtime setup started.'),

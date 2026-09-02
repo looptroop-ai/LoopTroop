@@ -328,7 +328,10 @@ describe('CodingView', () => {
     })
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/1:TEST-1/beads')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent('1:TEST-1')}/beads`,
+        expect.objectContaining({ signal: expect.anything() }),
+      )
     })
 
     fireEvent.click(screen.getByRole('button', { name: /First/ }))
@@ -364,10 +367,10 @@ describe('CodingView', () => {
     expect(screen.queryByText('0/2')).toBeNull()
 
     await waitFor(() => {
-      expect(fetchSpy.mock.calls.some(([url]: [string, ...unknown[]]) => url === '/api/files/1:TEST-1/prd')).toBe(true)
+      expect(fetchSpy.mock.calls.some(([url]: [string, ...unknown[]]) => url === `/api/files/${encodeURIComponent('1:TEST-1')}/prd`)).toBe(true)
     })
     expect(
-      fetchSpy.mock.calls.some(([url]: [string, ...unknown[]]) => url === '/api/tickets/1:TEST-1/beads'),
+      fetchSpy.mock.calls.some(([url]: [string, ...unknown[]]) => url === `/api/tickets/${encodeURIComponent('1:TEST-1')}/beads`),
     ).toBe(false)
   })
 
@@ -680,7 +683,10 @@ describe('CodingView', () => {
     )
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith('/api/tickets/1:TEST-1/beads')
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent('1:TEST-1')}/beads`,
+        expect.objectContaining({ signal: expect.anything() }),
+      )
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Retry bead/ }))
@@ -715,7 +721,7 @@ describe('CodingView', () => {
     expect(screen.getAllByText(/iteration 2/i).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(/retry note after timeout/i)).toBeTruthy()
     expect(
-      fetchSpy.mock.calls.filter(([url]: [string, ...unknown[]]) => url === '/api/tickets/1:TEST-1/beads'),
+      fetchSpy.mock.calls.filter(([url]: [string, ...unknown[]]) => url === `/api/tickets/${encodeURIComponent('1:TEST-1')}/beads`),
     ).toHaveLength(1)
   })
 

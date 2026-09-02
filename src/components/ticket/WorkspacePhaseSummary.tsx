@@ -9,7 +9,6 @@ import { cn } from '@/lib/utils'
 import type { Ticket } from '@/hooks/useTickets'
 import { type DBartifact, useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { useTicketPhaseAttempts, type TicketPhaseAttempt } from '@/hooks/useTicketPhaseAttempts'
-import { getTicketRuntime } from '@/lib/ticketNormalization'
 import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import { findLatestArtifactByType, findLatestCompanionArtifact, parseArtifactCompanionPayload } from '@/components/workspace/artifactCompanionUtils'
@@ -345,7 +344,7 @@ function DetailsList({ items }: { items: readonly string[] }) {
   )
 }
 
-function formatCodingLiveLabel(runtime: ReturnType<typeof getTicketRuntime>): string {
+function formatCodingLiveLabel(runtime: Ticket['runtime']): string {
   const beadLabel = runtime.currentBead > 0 && runtime.totalBeads > 0
     ? `working on bead ${runtime.currentBead} of ${runtime.totalBeads}`
     : null
@@ -491,7 +490,7 @@ export function WorkspacePhaseSummary({ phase, ticket, errorMessage, errorOccurr
   const [isOpen, setIsOpen] = useState(false)
   const [isExpanded, setIsExpanded] = useState(true)
   const phaseMeta = getWorkflowPhaseMeta(phase)
-  const runtime = getTicketRuntime(ticket)
+  const runtime = ticket.runtime
   const descriptionId = useId()
   const logCtx = useLogs()
   // The reader, not the context: its identity moves when the rows move and at no other

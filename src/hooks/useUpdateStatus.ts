@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 import type { InstallChannel, ReleaseDetails } from '@shared/installChannel'
 export type { InstallChannel, ReleaseDetails }
@@ -18,16 +19,16 @@ export interface UpdateStatus {
 
 export const UPDATE_STATUS_QUERY_KEY = ['update-status'] as const
 
-async function fetchUpdateStatus(): Promise<UpdateStatus> {
-  const response = await fetch('/api/health/update')
-  if (!response.ok) throw new Error('Failed to check for LoopTroop updates')
+async function fetchUpdateStatus(signal?: AbortSignal): Promise<UpdateStatus> {
+  const response = await fetch('/api/health/update', { signal })
+  await throwIfNotOk(response, 'Failed to check for LoopTroop updates')
   return response.json()
 }
 
 export function useUpdateStatus() {
   return useQuery({
     queryKey: UPDATE_STATUS_QUERY_KEY,
-    queryFn: fetchUpdateStatus,
+    queryFn: ({ signal }) => fetchUpdateStatus(signal),
     staleTime: 15 * 60 * 1000,
     refetchOnWindowFocus: true,
   })

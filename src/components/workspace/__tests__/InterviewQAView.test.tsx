@@ -215,11 +215,11 @@ describe('InterviewQAView', () => {
 
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/answer-batch`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/answer-batch`)) {
         submittedBody = init?.body ? JSON.parse(String(init.body)) as { answers?: Record<string, string>; selectedOptions?: Record<string, string[]> } : null
         return createJsonResponse(makeBatch())
       }
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/skip`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/skip`)) {
         skippedBody = init?.body ? JSON.parse(String(init.body)) as { answers?: Record<string, string> } : null
         return createJsonResponse({
           message: 'Remaining interview questions skipped',
@@ -232,10 +232,10 @@ describe('InterviewQAView', () => {
           },
         })
       }
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/interview`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview`)) {
         return createJsonResponse(interviewData)
       }
-      if (url.includes(`/api/tickets/${TEST.ticketId}/ui-state`)) {
+      if (url.includes(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/ui-state`)) {
         if (init?.method === 'PUT') {
           savedUiState = init.body ? JSON.parse(String(init.body)) as { scope?: string; data?: unknown } : null
           return createJsonResponse({ success: true, scope: 'interview-drafts', updatedAt: new Date().toISOString() })
@@ -388,7 +388,7 @@ describe('InterviewQAView', () => {
   it('surfaces an interview draft autosave conflict', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input, init) => {
       const url = String(input)
-      if (url.includes(`/api/tickets/${TEST.ticketId}/ui-state`)) {
+      if (url.includes(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/ui-state`)) {
         if (init?.method === 'PUT') {
           return createJsonResponse({
             conflict: true,
@@ -400,7 +400,7 @@ describe('InterviewQAView', () => {
         }
         return createJsonResponse(emptyUiState())
       }
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/interview`)) return createJsonResponse(interviewData)
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview`)) return createJsonResponse(interviewData)
       throw new Error(`Unhandled fetch: ${url}`)
     }))
 
@@ -640,7 +640,7 @@ describe('InterviewQAView', () => {
     it('keeps the editor open with the reason and the rewritten text', async () => {
       const originalFetch = globalThis.fetch as typeof fetch
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).endsWith(`/api/tickets/${TEST.ticketId}/edit-answer`)) {
+        if (String(input).endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/edit-answer`)) {
           return new Response(JSON.stringify({ error: 'Interview session is locked' }), {
             status: 409,
             headers: { 'Content-Type': 'application/json' },
@@ -665,7 +665,7 @@ describe('InterviewQAView', () => {
       const originalFetch = globalThis.fetch as typeof fetch
       let shouldFail = true
       vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).endsWith(`/api/tickets/${TEST.ticketId}/edit-answer`)) {
+        if (String(input).endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/edit-answer`)) {
           if (shouldFail) {
             shouldFail = false
             return new Response(JSON.stringify({ error: 'Interview session is locked' }), {

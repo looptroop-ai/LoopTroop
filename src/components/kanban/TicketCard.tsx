@@ -56,17 +56,22 @@ interface TicketCardProps {
       stoppedAt: string | null
     } | null
     completionDisposition?: 'merged' | 'closed_unmerged' | null
-    runtime?: {
-      currentBead?: number | null
-      completedBeads?: number | null
-      totalBeads?: number | null
-      percentComplete?: number | null
-      iterationCount?: number | null
-      maxIterations?: number | null
-      activeBeadIteration?: number | null
-      maxIterationsPerBead?: number | null
+    /**
+     * Required, because every ticket the board renders comes out of the query
+     * cache and the boundary normaliser fills this in — including for a server
+     * payload that carried no runtime at all.
+     */
+    runtime: {
+      currentBead: number
+      completedBeads: number
+      totalBeads: number
+      percentComplete: number
+      iterationCount: number
+      maxIterations: number | null
+      activeBeadIteration: number | null
+      maxIterationsPerBead: number | null
       eta?: TicketEta | null
-    } | null
+    }
   }
   projectColor?: string
   projectIcon?: string
@@ -163,12 +168,16 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
   const kanbanPhase = resolveKanbanPhase(ticket.status, { hasPendingQuestion: hasPendingAIQuestion })
   const isInProgress = !isTerminal && kanbanPhase === 'in_progress'
   const workflowRingProgress = getWorkflowRingProgress(ticket.status)
+  // `runtime` is the live projection and the boundary normaliser already falls
+  // back to the ticket's own columns when the server sends no runtime, so this
+  // card no longer picks between the two itself — it had the precedence the
+  // other way round from every other surface.
   const beadCompletionProgress = getBeadCompletionProgress(ticket.status, {
-    totalBeads: ticket.totalBeads ?? ticket.runtime?.totalBeads ?? 0,
-    percentComplete: ticket.percentComplete ?? ticket.runtime?.percentComplete ?? 0,
+    totalBeads: ticket.runtime.totalBeads,
+    percentComplete: ticket.runtime.percentComplete,
   })
-  const currentBead = ticket.currentBead ?? ticket.runtime?.currentBead ?? null
-  const totalBeads = ticket.totalBeads ?? ticket.runtime?.totalBeads ?? null
+  const currentBead = ticket.runtime.currentBead
+  const totalBeads = ticket.runtime.totalBeads
   const statusLabel = getStatusUserLabel(ticket.status, {
     currentBead,
     totalBeads,
@@ -384,7 +393,7 @@ export function TicketCard({ ticket, projectColor, projectIcon, projectName, sea
               <TooltipContent className="max-w-xs text-center text-balance">Dashboard search matched this field.</TooltipContent>
             </Tooltip>
           )}
-          {ticket.status === 'CODING' && ticket.runtime?.eta && (
+          {ticket.status === 'CODING' && ticket.runtime.eta && (
             <EtaRange eta={ticket.runtime.eta} />
           )}
         </div>

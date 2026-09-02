@@ -108,7 +108,7 @@ describe('PrdApprovalPane', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
 
-      if (url === `/api/files/${TEST.ticketId}/prd` && (!init || init.method === 'GET')) {
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({ content: currentContent, contentSha256: currentContentSha256 }), {
             status: 200,
@@ -117,7 +117,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/files/${TEST.ticketId}/prd` && init?.method === 'PUT') {
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body)) as { content?: string; document?: ReturnType<typeof makePrdDocument> }
         currentContent = body.document ? buildPrdDocumentYaml(body.document) : body.content ?? currentContent
         currentContentSha256 = SAVED_CONTENT_HASH
@@ -129,7 +129,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/approve-prd` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-prd` && init?.method === 'POST') {
         return Promise.resolve(
           new Response(JSON.stringify({ success: true }), {
             status: 200,
@@ -138,7 +138,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/coverage/fix-gaps` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps` && init?.method === 'POST') {
         if (coverageFixRequestHandler) return coverageFixRequestHandler()
         return Promise.resolve(
           new Response(JSON.stringify({ result: { status: 'gaps', remainingGaps: [] } }), {
@@ -313,7 +313,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/files/${TEST.ticketId}/prd`,
+        `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`,
         expect.objectContaining({ method: 'PUT' }),
       )
     })
@@ -326,7 +326,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/approve-prd`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-prd`,
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ expectedContentSha256: SAVED_CONTENT_HASH }),
@@ -420,7 +420,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/coverage/fix-gaps`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps`,
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ domain: 'prd' }),
@@ -540,6 +540,29 @@ describe('PrdApprovalPane', () => {
     })
     expect(screen.getByRole('button', { name: 'Approve' })).not.toBeDisabled()
     expect(fixCalls).toBe(2)
-    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(TEST.ticketId)
+    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST.ticketId,
+    )
+  })
+
+  it('will not approve while the coverage answer is unknown', async () => {
+    // Coverage gaps live in the artifacts, so a failed artifact request makes
+    // the warning absent — which reads exactly like "no gaps".
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
+      refetch: vi.fn(),
+    })
+
+    renderWithProviders(<PrdApprovalPane ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} />)
+
+    expect(await screen.findByText('Coverage could not be checked, so this PRD cannot be approved yet.')).toBeInTheDocument()
+    // The PRD itself has to have loaded, or the button is disabled for that
+    // reason instead and this proves nothing.
+    await waitFor(() => expect(document.getElementById('prd-product')).not.toBeNull())
+    expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
   })
 })

@@ -1,4 +1,5 @@
 import type { TicketPhaseAttempt } from '@/hooks/useTicketPhaseAttempts'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface PhaseAttemptSelectorProps {
   attempts: TicketPhaseAttempt[]
@@ -37,5 +38,23 @@ export function PhaseAttemptSelector({
         ))}
       </select>
     </label>
+  )
+}
+
+/**
+ * What the selector's slot shows when the attempt list could not be loaded.
+ *
+ * A failed request used to render as "one attempt", which hides the selector and
+ * silently scopes artifacts and logs to the live attempt — the wrong version,
+ * with nothing saying so. One sentence, in one place, for every surface that
+ * offers the selector.
+ */
+export function PhaseAttemptsUnavailable({ error, onRetry }: { error?: unknown; onRetry?: () => void }) {
+  return (
+    <QueryErrorNotice
+      title="The version history for this phase could not be loaded."
+      error={error}
+      onRetry={onRetry}
+    />
   )
 }

@@ -79,7 +79,11 @@ export function readNeedsInputSeen(
   if (typeof window === 'undefined') return false
   try {
     const stored = localStorage.getItem(getNeedsInputSeenStorageKey(ticketId))
-    const seen = stored === signature || stored === '1'
+    // Compared against this exact signature and nothing else. A bare '1' used to
+    // count as "seen" for *any* signature, so a recycled `projectId:SHORT-n` id
+    // inherited the previous ticket's acknowledgment and never flashed again.
+    // Nothing writes '1' any more.
+    const seen = stored === signature
     if (seen) seenNeedsInputTickets.set(ticketId, signature)
     return seen
   } catch {

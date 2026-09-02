@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { FolderOpen, Copy, Check as CheckIcon, Pencil, HardDrive, RotateCw, ChevronDown, ChevronRight, File, Folder, ExternalLink, CircleHelp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,10 +7,11 @@ import { useUI } from '@/context/useUI'
 import { useTicketAction, useUpdateTicket } from '@/hooks/useTickets'
 import type { Ticket } from '@/hooks/useTickets'
 import { useProfile } from '@/hooks/useProfile'
+import { getProfileCouncil } from '@/lib/profileCouncil'
+import { throwIfNotOk } from '@/lib/fetchError'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { getTicketAvailableActions, getTicketCouncilMembers, getTicketRuntime } from '@/lib/ticketNormalization'
 import { getWorkflowRingProgress, getStatusRingColor } from '@/components/kanban/ticketCardUtils'
 import { ProgressRing } from '@/components/kanban/ProgressRing'
 import { BeadCompletionChip } from '@/components/kanban/BeadCompletionChip'
@@ -25,6 +26,7 @@ import { TicketExternalId } from './TicketExternalId'
 import { CancelTicketDialog } from './CancelTicketDialog'
 import { describeSettingSource } from '@/lib/aiQuestionSetting'
 import { formatAiQuestionWindow } from '@shared/aiQuestions'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface DashboardHeaderProps {
   ticket: Ticket
@@ -78,10 +80,7 @@ function CopyablePathRow({ label, path }: { label: string; path: string }) {
         },
         body: JSON.stringify({ path }),
       })
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}))
-        console.error('Failed to open path:', data.error || response.statusText)
-      }
+      await throwIfNotOk(response, 'Failed to open path')
     } catch (err) {
       console.error('Error opening path:', err)
     } finally {
@@ -252,6 +251,10 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
   const { isPending } = useTicketAction()
   const { mutateAsync: updateTicket } = useUpdateTicket()
   const { data: profile } = useProfile()
+  // Parsed here rather than inside the panel's render: these are JSON strings on
+  // the profile, and parsing them where they are read meant doing it on every
+  // render and asserting the result instead of checking it.
+  const profileCouncil = useMemo(() => getProfileCouncil(profile), [profile])
   const [isDetailsOpen, setIsDetailsOpen] = useState(false)
   const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false)
   const [isBottomFadeVisible, setIsBottomFadeVisible] = useState(false)
@@ -270,8 +273,8 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
     setIsCalculatingSize(true)
     setSizeError(null)
     try {
-      const res = await fetch(`/api/tickets/${ticket.id}/size`)
-      if (!res.ok) throw new Error('Failed to calculate size')
+      const res = await fetch(apiTicketPath(ticket.id, 'size'))
+      await throwIfNotOk(res, 'Failed to calculate size')
       const data = await res.json()
       setTicketSize(data.size)
       setSizeBreakdown(data.breakdown || null)
@@ -332,9 +335,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
       requestAnimationFrame(() => handleScroll())
     })
   }, [handleScroll])
-  const runtime = getTicketRuntime(ticket)
-  const availableActions = getTicketAvailableActions(ticket)
-  const lockedCouncilMembers = getTicketCouncilMembers(ticket)
+  const runtime = ticket.runtime
+  const availableActions = ticket.availableActions
+  const lockedCouncilMembers = ticket.lockedCouncilMembers
   const canCancel = availableActions.includes('cancel')
   const canDelete = isTerminalWorkflowStatus(ticket.status)
   const isActionPending = isPending
@@ -568,11 +571,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
               const mainModel = isDraft ? profile?.mainImplementer ?? null : ticket.lockedMainImplementer
               const mainVariant = isDraft ? (profile?.mainImplementerVariant ?? null) : ticket.lockedMainImplementerVariant
               const rawCouncilVariants = isDraft
-                ? (profile?.councilMemberVariants ? JSON.parse(profile.councilMemberVariants) as Record<string, string> : {})
+                ? profileCouncil.variants
                 : (ticket.lockedCouncilMemberVariants ?? {})
-              const rawMembers: string[] = isDraft
-                ? (profile?.councilMembers ? JSON.parse(profile.councilMembers) as string[] : [])
-                : lockedCouncilMembers
+              const rawMembers: string[] = isDraft ? profileCouncil.members : lockedCouncilMembers
               const otherMembers = (rawMembers.length > 0 && rawMembers[0] === mainModel) ? rawMembers.slice(1) : rawMembers
               if (!mainModel && otherMembers.length === 0) return null
               return (

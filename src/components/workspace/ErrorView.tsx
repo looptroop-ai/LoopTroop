@@ -90,9 +90,14 @@ function filterLogsWithinWindow(
     includeEnd = true,
   } = options
 
+  // An undated line has no place in a window defined by time. Keeping them
+  // pulled every undated row in the phase — every attempt of it — into the
+  // failure window, which is the opposite of what a window is for.
+  if (startTime === null && endTime === null) return logs
+
   return logs.filter((entry) => {
     const timestamp = readTimestamp(entry.timestamp)
-    if (timestamp === null) return true
+    if (timestamp === null) return false
     if (startTime !== null) {
       if (includeStart ? timestamp < startTime : timestamp <= startTime) return false
     }
@@ -253,7 +258,15 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
 
     const allOccurrences = getTicketErrorOccurrences(ticket)
     const occurrenceIndex = allOccurrences.findIndex((candidate) => candidate.id === visibleOccurrence.id)
-    const previousOccurrence = occurrenceIndex > 0 ? allOccurrences[occurrenceIndex - 1] : null
+    // `getTicketErrorOccurrences` answers newest-first, so the chronologically
+    // *previous* error is the next index, not the one before. Reading backwards
+    // took the newer occurrence, which made `startTime` later than `endTime` and
+    // produced a window nothing could fall inside. Undated rows used to slip
+    // through that window and hide it; now that they are excluded, a historical
+    // error would render with no phase logs at all.
+    const previousOccurrence = occurrenceIndex >= 0 && occurrenceIndex < allOccurrences.length - 1
+      ? allOccurrences[occurrenceIndex + 1]
+      : null
     const previousResolutionTime = readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt ?? null)
     const blockedAt = readTimestamp(visibleOccurrence.occurredAt)
     const resolvedAt = readTimestamp(visibleOccurrence.resolvedAt)
@@ -277,7 +290,14 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
     && ticket.status === 'BLOCKED_ERROR'
     && Boolean(visibleOccurrence)
     && visibleOccurrence?.resolvedAt === null
-  const isSetupRuntimeError = isLiveError && ticket.previousStatus === 'PREPARING_EXECUTION_ENV'
+  // Gated on the occurrence, not on `ticket.previousStatus`: the surrounding copy
+  // already reads `visibleOccurrence.blockedFromStatus`, and `explainBlockedError`
+  // already treats both setup statuses as setup — so "Edit setup plan" was
+  // missing after a failure that blocked from `WAITING_EXECUTION_SETUP_APPROVAL`,
+  // and after any error whose occurrence disagreed with `previousStatus`.
+  const isSetupRuntimeError = isLiveError
+    && (visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
+      || visibleOccurrence?.blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL')
   const canContinue = isLiveError && ticket.availableActions.includes('continue')
   const canRetryWithNote = isLiveError
     && (visibleOccurrence?.blockedFromStatus === 'CODING' || isSetupRuntimeError)

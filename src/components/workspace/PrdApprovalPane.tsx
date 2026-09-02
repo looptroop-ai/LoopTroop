@@ -35,9 +35,10 @@ import {
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
+  approveArtifact,
+  fixCoverageGaps,
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { AutosaveStatus } from './AutosaveStatus'
 import {
   findLatestArtifact,
   findLatestCompanionArtifact,
@@ -45,6 +46,10 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { apiFilePath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalEditToolbar } from './ApprovalEditToolbar'
 
 type EditTab = 'structured' | 'yaml'
 
@@ -145,13 +150,11 @@ export function PrdApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
-  const { data: fetchedPrd, isLoading, isFetching } = useQuery({
+  const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticket.id}/prd`)
-      if (!response.ok) {
-        throw new Error('Failed to load PRD')
-      }
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticket.id, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json() as PrdArtifactResponse
       return {
         content: payload.content ?? '',
@@ -160,7 +163,16 @@ export function PrdApprovalPane({
     },
     staleTime: QUERY_STALE_TIME_5M,
   })
-  const { artifacts: loadedArtifacts } = useTicketArtifacts(ticket.id)
+  const {
+    artifacts: loadedArtifacts,
+    isError: isArtifactsError,
+    error: artifactsError,
+    refetch: refetchArtifacts,
+  } = useTicketArtifacts(ticket.id)
+  // Coverage gaps live in the artifacts. A failed request made `coverageWarning`
+  // absent, which reads exactly like "no gaps" — so the button said "Approve"
+  // and the operator approved without the answer having been obtained.
+  const isCoverageUnknown = isArtifactsError && loadedArtifacts === undefined
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   const rawContent = fetchedPrd?.content ?? ''
@@ -288,7 +300,7 @@ export function PrdApprovalPane({
     setSaveError(null)
 
     try {
-      const response = await fetch(`/api/files/${ticket.id}/prd`, {
+      const response = await fetch(apiFilePath(ticket.id, 'prd'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -298,10 +310,8 @@ export function PrdApprovalPane({
         ),
       })
 
-      const payload = await response.json() as PrdArtifactResponse & { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Save failed')
-      }
+      await throwIfNotOk(response, 'Failed to save PRD')
+      const payload = await response.json() as PrdArtifactResponse
 
       const nextRaw = payload.content ?? ''
       queryClient.setQueryData(['artifact', ticket.id, 'prd', 'approval'], {
@@ -312,7 +322,7 @@ export function PrdApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
 
       const savedDocument = parsePrdDocument(nextRaw)
       setStructuredDraft(savedDocument ? buildPrdApprovalDraft(savedDocument) : null)
@@ -331,25 +341,13 @@ export function PrdApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-prd`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expectedContentSha256: currentContentSha256,
-          ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
-        }),
+      await approveArtifact(queryClient, {
+        ticketId: ticket.id,
+        domain: 'prd',
+        expectedContentSha256: currentContentSha256,
+        gapAcknowledgementReason: gapReason,
+        failureMessage: 'Failed to approve PRD',
       })
-      const payload = await response.json() as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve PRD')
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket-skips', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -364,21 +362,7 @@ export function PrdApprovalPane({
     setCoverageFixError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/coverage/fix-gaps`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: 'prd' }),
-      })
-      const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to fix coverage gaps')
-      }
-
-      queryClient.invalidateQueries({ queryKey: ['tickets'] })
-      queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd', 'approval'] })
-      queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'prd'] })
-      clearTicketArtifactsCache(ticket.id)
+      await fixCoverageGaps(queryClient, { ticketId: ticket.id, domain: 'prd' })
       // The acknowledgement described the gaps that were just repaired. Keeping
       // it would attach an explanation for old gaps to a later approval.
       setGapReason('')
@@ -534,7 +518,7 @@ export function PrdApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !currentContentSha256 || ticket.status !== phase}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && (hasUnsavedChanges || structuredEditorUnavailable)) || !prdDocument || !currentContentSha256 || ticket.status !== phase}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
@@ -542,44 +526,15 @@ export function PrdApprovalPane({
         </div>
 
         {isEditMode ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => requestTabChange('structured')}
-                className={editTab === 'structured'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Structured
-              </button>
-              <button
-                type="button"
-                onClick={() => requestTabChange('yaml')}
-                className={editTab === 'yaml'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                YAML
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <AutosaveStatus
-                state={approvalAutosave.state}
-                lastSavedAt={approvalAutosave.lastSavedAt}
-                label="Draft autosave on"
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={handleSave}
-                disabled={isSaving || !hasUnsavedChanges || structuredEditorUnavailable}
-              >
-                {isSaving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ApprovalEditToolbar
+            tabs={[{ id: 'structured', label: 'Structured' }, { id: 'yaml', label: 'YAML' }]}
+            activeTab={editTab}
+            onTabChange={requestTabChange}
+            autosave={approvalAutosave}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveDisabled={isSaving || !hasUnsavedChanges || structuredEditorUnavailable}
+          />
         ) : null}
 
         {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}
@@ -599,7 +554,28 @@ export function PrdApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
-          {isLoading || isPreparingStructuredPrd ? (
+          {isCoverageUnknown ? (
+            <QueryErrorNotice
+              title="Coverage could not be checked, so this PRD cannot be approved yet."
+              error={artifactsError}
+              onRetry={() => void refetchArtifacts()}
+            />
+          ) : null}
+          {isPrdError && rawContent ? (
+            <QueryErrorNotice
+              title="Showing the last PRD that loaded. The refresh failed."
+              error={prdError}
+              onRetry={() => void refetchPrd()}
+            />
+          ) : null}
+          {isPrdError && !rawContent ? (
+            <QueryErrorNotice
+              className="py-8"
+              title="The PRD could not be loaded."
+              error={prdError}
+              onRetry={() => void refetchPrd()}
+            />
+          ) : isLoading || isPreparingStructuredPrd ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
               <div className="text-center space-y-2">
                 <LoadingText text={isPreparingStructuredPrd ? 'Preparing PRD approval view' : 'Loading PRD'} className="text-sm font-medium animate-pulse" />

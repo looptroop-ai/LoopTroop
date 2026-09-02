@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 export type StartupStorageKind = 'fresh' | 'empty_existing' | 'restored'
 export type StartupStorageSource = 'default' | 'LOOPTROOP_CONFIG_DIR' | 'LOOPTROOP_APP_DB_PATH'
@@ -38,9 +39,9 @@ export interface DismissStartupRestoreNoticeResponse {
 
 export const STARTUP_STATUS_QUERY_KEY = ['startup-status'] as const
 
-async function fetchStartupStatus(): Promise<StartupStatus> {
-  const res = await fetch('/api/health/startup')
-  if (!res.ok) throw new Error('Failed to fetch startup status')
+async function fetchStartupStatus(signal?: AbortSignal): Promise<StartupStatus> {
+  const res = await fetch('/api/health/startup', { signal })
+  await throwIfNotOk(res, 'Failed to fetch startup status')
   return res.json()
 }
 
@@ -48,14 +49,14 @@ async function dismissStartupRestoreNotice(): Promise<DismissStartupRestoreNotic
   const res = await fetch('/api/health/startup/restore-notice/dismiss', {
     method: 'POST',
   })
-  if (!res.ok) throw new Error('Failed to dismiss restore notice')
+  await throwIfNotOk(res, 'Failed to dismiss restore notice')
   return res.json()
 }
 
 export function useStartupStatus() {
   return useQuery({
     queryKey: STARTUP_STATUS_QUERY_KEY,
-    queryFn: fetchStartupStatus,
+    queryFn: ({ signal }) => fetchStartupStatus(signal),
     staleTime: Infinity,
   })
 }

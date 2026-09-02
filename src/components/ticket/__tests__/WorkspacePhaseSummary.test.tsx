@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST, makeTicket } from '@/test/factories'
+import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { renderWithProviders, createTestQueryClient, createJsonResponse, withLogContext } from '@/test/renderHelpers'
 import { WorkspacePhaseSummary } from '../WorkspacePhaseSummary'
 
@@ -67,7 +68,7 @@ beforeEach(() => {
         },
       ])
     }
-    if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+    if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
       return createJsonResponse([])
     }
     throw new Error(`Unhandled fetch: ${url}`)
@@ -180,13 +181,13 @@ describe('WorkspacePhaseSummary', () => {
     expect(summary.textContent?.length).toBeLessThan(350)
   })
 
-  it('renders with runtime defaults when cached ticket data is partial', () => {
-    const ticket = {
+  it('renders with runtime defaults when the server sent no runtime', () => {
+    const ticket = normalizeTicketResponse({
       ...makeTicket({ status: 'CODING' }),
       runtime: undefined,
       currentBead: 2,
       totalBeads: 4,
-    } as unknown as ReturnType<typeof makeTicket>
+    })
 
     renderWithProviders(
       <WorkspacePhaseSummary phase="CODING" ticket={ticket} />,
@@ -296,7 +297,7 @@ describe('WorkspacePhaseSummary', () => {
   it('shows the next live PRD coverage version and pass in the main title when revision work starts', async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
         return createJsonResponse([])
       }
       if (url.includes('/attempts')) {
@@ -327,7 +328,7 @@ describe('WorkspacePhaseSummary', () => {
   it('shows the latest live beads coverage version and pass in the main title from coverage artifacts', async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
         return createJsonResponse([
           {
             id: 1,
@@ -367,7 +368,7 @@ describe('WorkspacePhaseSummary', () => {
   it('shows the live interview coverage pass without a candidate version', async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
         return createJsonResponse([
           {
             id: 1,
@@ -408,7 +409,7 @@ describe('WorkspacePhaseSummary', () => {
   it('shows the live retry attempt for manually retried phases', async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/phases/REFINING_PRD/attempts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/REFINING_PRD/attempts`)) {
         return createJsonResponse([
           {
             ticketId: TEST.ticketId,
@@ -430,7 +431,7 @@ describe('WorkspacePhaseSummary', () => {
           },
         ])
       }
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
         return createJsonResponse([])
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -486,7 +487,7 @@ describe('WorkspacePhaseSummary', () => {
   it('shows the live execution setup attempt with phase attempt label when status is PREPARING_EXECUTION_ENV', async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input) => {
       const url = String(input)
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/phases/PREPARING_EXECUTION_ENV/attempts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/PREPARING_EXECUTION_ENV/attempts`)) {
         return createJsonResponse([
           {
             ticketId: TEST.ticketId,
@@ -508,7 +509,7 @@ describe('WorkspacePhaseSummary', () => {
           },
         ])
       }
-      if (url.endsWith(`/api/tickets/${TEST.ticketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`)) {
         return createJsonResponse([])
       }
       throw new Error(`Unhandled fetch: ${url}`)

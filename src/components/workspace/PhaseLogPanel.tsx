@@ -22,6 +22,7 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { Virtuoso } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
 import { AiDetailsSummary } from './AiDetailsSummary'
@@ -824,6 +825,12 @@ export function PhaseLogPanel({
               <span className="text-muted-foreground/50 italic">
                 <LoadingText text="Loading logs" />
               </span>
+            ) : historicalLogs.isError ? (
+              <QueryErrorNotice
+                title="The log history could not be loaded."
+                error={historicalLogs.error}
+                onRetry={() => void historicalLogs.refetch()}
+              />
             ) : (
               <span className="text-muted-foreground/50 italic">
                 {phaseLogs.length > 0 ? 'No entries match current filter.' : 'No log entries yet. Logs will stream here during execution.'}

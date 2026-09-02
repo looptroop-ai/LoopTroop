@@ -1,4 +1,5 @@
 import { extractLogFingerprint, hasMatchingLogFingerprint } from '@shared/logIdentity'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 import { isPromptTimeoutKind, type PromptTimeoutKind } from '@shared/promptTimeout'
 export type { PromptTimeoutKind }
@@ -143,7 +144,7 @@ export function getServerLogsUrl(ticketId: string, scope: ServerLogScope = {}): 
   if (typeof scope.phaseAttempt === 'number' && Number.isFinite(scope.phaseAttempt)) {
     params.set('phaseAttempt', String(scope.phaseAttempt))
   }
-  return `/api/tickets/${encodeURIComponent(ticketId)}/logs?${params.toString()}`
+  return `${apiTicketPath(ticketId, 'logs')}?${params.toString()}`
 }
 
 export function clearServerLogCache(ticketId: string) {

@@ -280,10 +280,10 @@ describe('Interview approval UI', () => {
   it('opens edit mode on the friendly Answers tab and saves answer-only edits', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/interview-answers` && init?.method === 'PUT') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview-answers` && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body)) as {
           questions: Array<{ id: string; answer: { free_text: string } }>
         }
@@ -320,11 +320,14 @@ describe('Interview approval UI', () => {
 
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/interview-answers`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview-answers`,
         expect.objectContaining({ method: 'PUT' }),
       )
     })
-    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(TEST.ticketId)
+    expect(mockClearTicketArtifactsCache).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST.ticketId,
+    )
   }, 30_000)
 
   it('strips selected option IDs from skipped answer drafts before saving', async () => {
@@ -350,10 +353,10 @@ describe('Interview approval UI', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/interview-answers` && init?.method === 'PUT') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview-answers` && init?.method === 'PUT') {
         submittedBody = JSON.parse(String(init.body)) as typeof submittedBody
         return createJsonResponse({ success: true, ...interviewPayload })
       }
@@ -408,7 +411,7 @@ describe('Interview approval UI', () => {
   it('shows the Interview cascade warning copy after PRD and Beads planning have started', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -443,7 +446,7 @@ describe('Interview approval UI', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/phases/WAITING_INTERVIEW_APPROVAL/attempts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/WAITING_INTERVIEW_APPROVAL/attempts`) {
         return createJsonResponse([
           {
             ticketId: TEST.ticketId,
@@ -465,7 +468,7 @@ describe('Interview approval UI', () => {
           },
         ])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -494,7 +497,7 @@ describe('Interview approval UI', () => {
   it('lets the interview summary collapse and reopen in approval view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -514,7 +517,7 @@ describe('Interview approval UI', () => {
   it('confirms before switching from dirty answer edits to the YAML tab and resets to the last saved artifact', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -540,10 +543,10 @@ describe('Interview approval UI', () => {
   it('shows local YAML validation feedback and saves valid YAML edits', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/phases/WAITING_INTERVIEW_APPROVAL/attempts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/phases/WAITING_INTERVIEW_APPROVAL/attempts`) {
         return createJsonResponse([{
           ticketId: TEST.ticketId,
           phase: 'WAITING_INTERVIEW_APPROVAL',
@@ -554,7 +557,7 @@ describe('Interview approval UI', () => {
           archivedAt: null,
         }])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/interview` && init?.method === 'PUT') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/interview` && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body)) as { content: string }
         interviewPayload = body.content.includes('Updated from YAML.')
           ? buildInterviewPayload('Updated from YAML.')
@@ -613,7 +616,7 @@ describe('Interview approval UI', () => {
   it('uses the shared bead renderer with nested metadata in beads approval view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/beads`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
         return createJsonResponse([
           {
             id: 'proj-1-review-approval-metadata',
@@ -623,7 +626,7 @@ describe('Interview approval UI', () => {
           },
         ])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -659,10 +662,10 @@ describe('Interview approval UI', () => {
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/beads`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
         return createJsonResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       throw new Error(`Unexpected fetch: ${url}`)
     })
 
@@ -699,7 +702,7 @@ describe('Interview approval UI', () => {
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
-      if (url === `/api/tickets/${TEST.ticketId}/beads`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
         return Promise.resolve(
           new Response(JSON.stringify([
             {
@@ -715,10 +718,10 @@ describe('Interview approval UI', () => {
           }),
         )
       }
-      if (url === `/api/tickets/${TEST.ticketId}/artifacts`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
         return createJsonResponse([])
       }
-      if (url === `/api/tickets/${TEST.ticketId}/coverage/fix-gaps` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps` && init?.method === 'POST') {
         return createJsonResponse({ result: { status: 'gaps', remainingGaps: ['Still missing beads coverage.'] } })
       }
       throw new Error(`Unexpected fetch: ${url}`)
@@ -745,7 +748,7 @@ describe('Interview approval UI', () => {
 
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/coverage/fix-gaps`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps`,
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ domain: 'beads' }),
@@ -759,4 +762,163 @@ describe('Interview approval UI', () => {
       expect(screen.getByRole('button', { name: /Approve with gaps/i })).not.toBeDisabled()
     })
   }, 30_000)
+})
+
+describe('Read-only approval attempts', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset()
+    mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
+    mockUseTicketUIState.mockReturnValue({
+      data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null },
+    })
+    mockUseTicketArtifacts.mockReset()
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not ask the interview endpoint about a PRD attempt', async () => {
+    // The interview query says nothing about a PRD or a bead plan, so leaving it
+    // enabled cost a request per open and surfaced an interview failure on the
+    // wrong artifact.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`) {
+        return createJsonResponse({ content: 'problem: keep it steady' })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} artifactType="prd" readOnly />,
+    )
+
+    await waitFor(() => expect(mockUseInterviewQuestions).toHaveBeenCalled())
+    expect(mockUseInterviewQuestions).toHaveBeenCalledWith(TEST.ticketId, { enabled: false })
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/interview'))).toBe(false)
+    })
+  })
+
+  it('says the PRD request failed instead of drawing an empty artifact', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Artifact store unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} artifactType="prd" readOnly />,
+    )
+
+    expect(await screen.findByText('This artifact could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load PRD (HTTP 503: Artifact store unavailable)')).toBeInTheDocument()
+    expect(screen.queryByText('No PRD artifact available.')).not.toBeInTheDocument()
+  })
+})
+
+describe('Approval surfaces on a failed request', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset()
+    mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
+    mockUseTicketUIState.mockReturnValue({
+      data: { scope: 'approval_beads', exists: false, data: null, updatedAt: null },
+    })
+    mockUseTicketArtifacts.mockReset()
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('says the version history failed instead of showing one attempt', async () => {
+    // Resolving to `[]` hid the selector and silently scoped every artifact and
+    // log to the live attempt — the wrong version, with nothing saying so.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Database is locked' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The version history for this phase could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Unable to load phase attempts (HTTP 500: Database is locked)')).toBeInTheDocument()
+  })
+
+  it('says the beads request failed instead of "no beads artifact available yet"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Corrupted JSONL data' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The beads artifact could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load beads (HTTP 500: Corrupted JSONL data)')).toBeInTheDocument()
+    expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
+  })
+
+  it('will not approve while the coverage answer is unknown', async () => {
+    // Coverage gaps live in the artifacts. A failed request made the warning
+    // absent, which reads exactly like "no gaps" — so the button said "Approve"
+    // and the operator approved without the question having been answered.
+    mockUseTicketArtifacts.mockReturnValue({
+      artifacts: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error('Failed to load ticket artifacts (HTTP 503: busy)'),
+      refetch: vi.fn(),
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        // With the content hash present the button would otherwise be enabled,
+        // so the assertion below is about coverage and nothing else.
+        return Promise.resolve(new Response(
+          JSON.stringify([{ id: 'b1', title: 'One', status: 'pending', iteration: 0 }]),
+          { status: 200, headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': 'abc' } },
+        ))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('Coverage could not be checked, so this plan cannot be approved yet.')).toBeInTheDocument()
+    // The beads have to have arrived before the button means anything: an empty
+    // list disables it too, which would make this assertion pass for the wrong
+    // reason.
+    await waitFor(() => expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('Loading beads…')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
+  })
 })

@@ -25,7 +25,10 @@ import {
   useApprovalPaneState,
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
-import { AutosaveStatus } from './AutosaveStatus'
+import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalEditToolbar } from './ApprovalEditToolbar'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -341,13 +344,20 @@ export function ExecutionSetupPlanApprovalPane({
     ? ['artifact', ticket.id, 'execution-setup-plan', phaseAttempt]
     : ['artifact', ticket.id, 'execution-setup-plan']
   const planUrl = phaseAttempt != null
-    ? `/api/tickets/${ticket.id}/execution-setup-plan?phaseAttempt=${phaseAttempt}`
-    : `/api/tickets/${ticket.id}/execution-setup-plan`
-  const { data: fetchedPlan, isLoading, isFetching } = useQuery({
+    ? `${apiTicketPath(ticket.id, 'execution-setup-plan')}?${new URLSearchParams({ phaseAttempt: String(phaseAttempt) }).toString()}`
+    : apiTicketPath(ticket.id, 'execution-setup-plan')
+  const {
+    data: fetchedPlan,
+    isLoading,
+    isFetching,
+    isError: isPlanError,
+    error: planError,
+    refetch: refetchPlan,
+  } = useQuery({
     queryKey: planQueryKey,
-    queryFn: async () => {
-      const response = await fetch(planUrl)
-      if (!response.ok) throw new Error('Failed to load execution setup plan')
+    queryFn: async ({ signal }) => {
+      const response = await fetch(planUrl, { signal })
+      await throwIfNotOk(response, 'Failed to load execution setup plan')
       return response.json() as Promise<ExecutionSetupPlanApprovalResponse>
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -357,9 +367,14 @@ export function ExecutionSetupPlanApprovalPane({
   const currentContentSha256 = fetchedPlan?.contentSha256 ?? null
   const plan = fetchedPlan?.plan ?? null
   const isPlanLoading = !fetchedPlan && (isLoading || isFetching)
+  // A request that failed says nothing about whether generation succeeded. Left
+  // out of this condition, a 500 rendered the "generation failed" banner and
+  // offered Regenerate — a destructive action — for a plan that may well exist.
+  const planRequestFailed = isPlanError && !fetchedPlan
   const generationFailed = ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL'
     && !isArchivedAttempt
     && !isPlanLoading
+    && !planRequestFailed
     && !plan
   const executionSetupPlanReportContent = useMemo(() => {
     const matchingArtifact = [...artifacts].reverse().find((artifact) => (
@@ -489,7 +504,7 @@ export function ExecutionSetupPlanApprovalPane({
     setIsSaving(true)
     setSaveError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'execution-setup-plan'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -498,10 +513,8 @@ export function ExecutionSetupPlanApprovalPane({
             : { content: rawDraft },
         ),
       })
-      const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan; error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to save execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to save execution setup plan')
+      const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan }
 
       const nextData: ExecutionSetupPlanApprovalResponse = {
         exists: Boolean(payload.plan),
@@ -513,7 +526,7 @@ export function ExecutionSetupPlanApprovalPane({
       queryClient.setQueryData(['artifact', ticket.id, 'execution-setup-plan'], nextData)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -532,7 +545,7 @@ export function ExecutionSetupPlanApprovalPane({
     setIsRegenerating(true)
     setRegenerateError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'regenerate-execution-setup-plan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -541,14 +554,11 @@ export function ExecutionSetupPlanApprovalPane({
           ...(editTab === 'raw' && rawDraft.trim() ? { rawContent: rawDraft } : {}),
         }),
       })
-      const payload = await response.json() as { success?: boolean; error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to regenerate execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to regenerate execution setup plan')
 
       // Invalidate queries so old cached plan is gone, new poll will start fresh
       queryClient.removeQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       queryClient.invalidateQueries({
         queryKey: getTicketPhaseAttemptsQueryKey(ticket.id, 'WAITING_EXECUTION_SETUP_APPROVAL'),
       })
@@ -573,20 +583,17 @@ export function ExecutionSetupPlanApprovalPane({
     setIsApproving(true)
     setApproveError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-execution-setup-plan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
       })
-      const payload = await response.json() as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to approve execution setup plan')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
@@ -801,38 +808,15 @@ export function ExecutionSetupPlanApprovalPane({
         />
 
         {!readOnly && isEditMode ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => requestTabChange('structured')}
-                className={editTab === 'structured'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Structured
-              </button>
-              <button
-                type="button"
-                onClick={() => requestTabChange('raw')}
-                className={editTab === 'raw'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Raw
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <AutosaveStatus
-                state={approvalAutosave.state}
-                lastSavedAt={approvalAutosave.lastSavedAt}
-                label="Draft autosave on"
-              />
-              <Button size="sm" variant="secondary" onClick={handleSave} disabled={isSaving || !hasUnsavedChanges}>
-                {isSaving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ApprovalEditToolbar
+            tabs={[{ id: 'structured', label: 'Structured' }, { id: 'raw', label: 'Raw' }]}
+            activeTab={editTab}
+            onTabChange={requestTabChange}
+            autosave={approvalAutosave}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveDisabled={isSaving || !hasUnsavedChanges}
+          />
         ) : null}
 
         {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}
@@ -866,6 +850,16 @@ export function ExecutionSetupPlanApprovalPane({
 
           <RegenerateCommentaryPanel notes={regenerateNotes} />
 
+          {/* Beside the plan, not instead of it: a failed refresh must not hide
+              content the operator is about to approve, only mark it as stale. */}
+          {isPlanError && fetchedPlan ? (
+            <QueryErrorNotice
+              title="Showing the last setup plan that loaded. The refresh failed."
+              error={planError}
+              onRetry={() => void refetchPlan()}
+            />
+          ) : null}
+
           {isPlanLoading ? (
             <div className="rounded-2xl border border-border bg-muted/20 p-6 text-sm">
               <div className="font-semibold">Loading the setup plan.</div>
@@ -873,6 +867,13 @@ export function ExecutionSetupPlanApprovalPane({
                 LoopTroop is loading the completed drafting result for review.
               </p>
             </div>
+          ) : planRequestFailed ? (
+            <QueryErrorNotice
+              className="py-8"
+              title="The setup plan could not be loaded."
+              error={planError}
+              onRetry={() => void refetchPlan()}
+            />
           ) : generationFailed ? (
             <div className="space-y-3">
               <FailedSetupPlanGenerationBanner reportContent={executionSetupPlanReportContent} />

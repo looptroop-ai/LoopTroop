@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export type TicketAiDetailsScope = 'phase' | 'lifecycle'
 
@@ -59,7 +61,7 @@ function getTicketAiDetailsUrl(ticketId: string, request: TicketAiDetailsRequest
   if (request.phase) params.set('phase', request.phase)
   if (typeof request.phaseAttempt === 'number') params.set('phaseAttempt', String(request.phaseAttempt))
   if (request.modelId) params.set('modelId', request.modelId)
-  return `/api/tickets/${encodeURIComponent(ticketId)}/ai-details?${params.toString()}`
+  return `${apiTicketPath(ticketId, 'ai-details')}?${params.toString()}`
 }
 
 async function fetchTicketAiDetails(
@@ -68,7 +70,7 @@ async function fetchTicketAiDetails(
   signal?: AbortSignal,
 ): Promise<TicketAiDetails> {
   const response = await fetch(getTicketAiDetailsUrl(ticketId, request), { signal })
-  if (!response.ok) throw new Error(`Unable to load AI details (${response.status})`)
+  await throwIfNotOk(response, 'Unable to load AI details')
   return response.json() as Promise<TicketAiDetails>
 }
 

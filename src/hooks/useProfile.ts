@@ -3,6 +3,7 @@ import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 interface Profile {
   id: number
@@ -74,9 +75,9 @@ function normalizeProfile(profile: Profile): Profile {
   }
 }
 
-async function fetchProfile(): Promise<Profile | null> {
-  const res = await fetch('/api/profile')
-  if (!res.ok) throw new Error('Failed to fetch profile')
+async function fetchProfile(signal?: AbortSignal): Promise<Profile | null> {
+  const res = await fetch('/api/profile', { signal })
+  await throwIfNotOk(res, 'Failed to fetch profile')
   const profile = await res.json() as Profile | null
   return profile ? normalizeProfile(profile) : null
 }
@@ -87,10 +88,7 @@ async function createProfile(input: CreateProfileInput): Promise<Profile> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.error || 'Failed to create profile')
-  }
+  await throwIfNotOk(res, 'Failed to create profile')
   const profile = await res.json() as Profile
   return normalizeProfile(profile)
 }
@@ -101,10 +99,7 @@ async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profil
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    throw new Error(err.error || 'Failed to update profile')
-  }
+  await throwIfNotOk(res, 'Failed to update profile')
   const profile = await res.json() as Profile
   return normalizeProfile(profile)
 }
@@ -112,7 +107,7 @@ async function updateProfile(input: Partial<CreateProfileInput>): Promise<Profil
 export function useProfile() {
   return useQuery({
     queryKey: ['profile'],
-    queryFn: fetchProfile,
+    queryFn: ({ signal }) => fetchProfile(signal),
     staleTime: Infinity,
   })
 }

@@ -2,6 +2,7 @@ import { act, fireEvent, screen, within } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UIContext, type UIContextValue } from '@/context/uiContextDef'
 import { renderWithProviders } from '@/test/renderHelpers'
+import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { makeTicket } from '@/test/factories'
 import { DashboardHeader } from '../DashboardHeader'
 
@@ -362,13 +363,16 @@ describe('DashboardHeader', () => {
     expect(screen.getByRole('button', { name: /cancel…/i })).toBeInTheDocument()
   })
 
-  it('renders status and actions with defaults when cached ticket data is partial', () => {
-    const ticket = {
+  it('renders status and actions with defaults when the server sent a partial ticket', () => {
+    // The header reads `ticket.runtime` and `ticket.availableActions` directly
+    // now; the boundary is what turns a payload missing them into a complete
+    // ticket, so the test goes through the boundary rather than around it.
+    const ticket = normalizeTicketResponse({
       ...makeTicket({ status: 'CODING', currentBead: 1, totalBeads: 3 }),
       runtime: undefined,
       availableActions: undefined,
       lockedCouncilMembers: null,
-    } as unknown as ReturnType<typeof makeTicket>
+    })
 
     renderWithProviders(
       <UIContext.Provider value={makeUIValue(ticket.id, ticket.externalId)}>

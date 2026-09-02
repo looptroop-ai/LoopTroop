@@ -1,10 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { clearPersistedTicketLogs } from '@/context/logUtils'
-import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
-import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
+import {
+  clearTicketCaches,
+  collectQueryKeyStrings,
+  releaseClosingTicket,
+  settleTicketUiStateSavesForDelete,
+} from './useTickets'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
-import { failedResponseError } from '@/lib/fetchError'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiProjectPath } from '@/lib/apiPaths'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 
 interface Project {
@@ -82,38 +86,66 @@ function invalidateProjectQueries(queryClient: ReturnType<typeof useQueryClient>
   queryClient.invalidateQueries({ queryKey: ['tickets'] })
 }
 
-function removeDeletedProjectTicketCaches(
+/**
+ * Whether a ticket id belongs to this project.
+ *
+ * A ticket id is `<projectId>:<externalId>` — the server builds it that way in
+ * `buildTicketRef` and takes it apart the same way in `parseTicketRef`. Reading
+ * the project off the id is what lets a deletion find tickets the cache knows
+ * only by id: a detail query still in flight has no data to check `projectId`
+ * against, and an artifact or UI-state entry never had any.
+ */
+function ticketIdBelongsToProject(ticketId: string, projectId: number): boolean {
+  const separator = ticketId.indexOf(':')
+  return separator > 0 && Number(ticketId.slice(0, separator)) === projectId
+}
+
+/**
+ * Every ticket of this project the cache knows about, by any route.
+ *
+ * The list queries are not the whole story: opening a ticket writes
+ * `['ticket', id]`, and a list refetch that no longer includes it leaves that
+ * entry as the only record of the id. Nor is the detail cache — a request that
+ * has not resolved yet holds no `projectId` to match on, and its response can
+ * land after the delete and reinstall the ticket. So every cached key is
+ * searched for an id this project owns.
+ */
+function collectCachedProjectTicketIds(
   queryClient: ReturnType<typeof useQueryClient>,
   projectId: number,
-) {
+): Set<string> {
   const cachedTicketIds = new Set<string>()
-  const ticketLists = queryClient.getQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] })
 
-  for (const [, tickets] of ticketLists) {
+  for (const [, tickets] of queryClient.getQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] })) {
     for (const ticket of tickets ?? []) {
-      if (ticket.projectId === projectId) {
-        cachedTicketIds.add(ticket.id)
-      }
+      if (ticket.projectId === projectId) cachedTicketIds.add(ticket.id)
     }
   }
 
+  for (const query of queryClient.getQueryCache().getAll()) {
+    for (const part of collectQueryKeyStrings(query.queryKey)) {
+      if (ticketIdBelongsToProject(part, projectId)) cachedTicketIds.add(part)
+    }
+  }
+
+  return cachedTicketIds
+}
+
+async function removeDeletedProjectTicketCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  cachedTicketIds: Set<string>,
+  projectId: number,
+) {
   queryClient.setQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] }, (tickets) =>
     tickets?.filter((ticket) => ticket.projectId !== projectId) ?? tickets,
   )
 
-  for (const ticketId of cachedTicketIds) {
-    queryClient.removeQueries({ queryKey: ['ticket', ticketId], exact: true })
-    queryClient.removeQueries({ queryKey: ['interview', ticketId], exact: true })
-    queryClient.removeQueries({ queryKey: ['ticket-ui-state', ticketId] })
-    queryClient.removeQueries({ queryKey: getTicketArtifactsQueryKey(ticketId), exact: true })
-    clearPersistedTicketLogs(ticketId)
-    clearErrorTicketSeen(ticketId)
-  }
+  await Promise.all([...cachedTicketIds].map((ticketId) => clearTicketCaches(queryClient, ticketId)))
 }
 
-async function fetchProjects(): Promise<Project[]> {
-  const res = await fetch('/api/projects')
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch projects')
+async function fetchProjects(signal?: AbortSignal): Promise<Project[]> {
+  const res = await fetch('/api/projects', { signal })
+  await throwIfNotOk(res, 'Failed to fetch projects')
   const projects = await res.json() as Project[]
   return projects.map((project) => ({
     ...project,
@@ -128,11 +160,7 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
-    throw new Error(message || 'Failed to create project')
-  }
+  await throwIfNotOk(res, 'Failed to create project')
   const project = await res.json() as Project
   return {
     ...project,
@@ -147,16 +175,12 @@ type UpdateProjectInput = Partial<Pick<
 >>
 
 async function updateProject(id: number, input: UpdateProjectInput): Promise<Project> {
-  const res = await fetch(`/api/projects/${id}`, {
+  const res = await fetch(apiProjectPath(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
-    throw new Error(message || 'Failed to update project')
-  }
+  await throwIfNotOk(res, 'Failed to update project')
   const project = await res.json() as Project
   return {
     ...project,
@@ -168,7 +192,7 @@ async function updateProject(id: number, input: UpdateProjectInput): Promise<Pro
 export function useProjects() {
   return useQuery({
     queryKey: ['projects'],
-    queryFn: fetchProjects,
+    queryFn: ({ signal }) => fetchProjects(signal),
   })
 }
 
@@ -186,15 +210,26 @@ export function useDeleteProject() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
-      if (!res.ok) {
-        const err = await res.json()
-        const message = [err.error, err.details].filter(Boolean).join(' — ')
-        throw new Error(message || 'Failed to delete project')
+      // The same barrier the ticket delete uses, for every ticket of this
+      // project: a debounced approval autosave otherwise reaches the server for
+      // rows the project delete is about to remove.
+      const ticketIds = collectCachedProjectTicketIds(queryClient, id)
+      await Promise.all([...ticketIds].map((ticketId) => settleTicketUiStateSavesForDelete(ticketId)))
+
+      try {
+        const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
+        await throwIfNotOk(res, 'Failed to delete project')
+      } catch (error) {
+        // The project and its tickets are still there, so their panels have to
+        // be able to save again. Without this every collected ticket stayed
+        // tombstoned for the life of the tab.
+        for (const ticketId of ticketIds) releaseClosingTicket(ticketId)
+        throw error
       }
+      return ticketIds
     },
-    onSuccess: (_, projectId) => {
-      removeDeletedProjectTicketCaches(queryClient, projectId)
+    onSuccess: async (ticketIds, projectId) => {
+      await removeDeletedProjectTicketCaches(queryClient, ticketIds, projectId)
       invalidateProjectQueries(queryClient)
     },
   })
@@ -215,9 +250,9 @@ export function useUpdateProject() {
 export function useProjectWorktreesSize(projectId: number) {
   return useQuery({
     queryKey: ['project-worktrees-size', projectId],
-    queryFn: async () => {
-      const res = await fetch(`/api/projects/${projectId}/worktrees/size`)
-      if (!res.ok) throw new Error('Failed to fetch worktrees size')
+    queryFn: async ({ signal }) => {
+      const res = await fetch(apiProjectPath(projectId, 'worktrees', 'size'), { signal })
+      await throwIfNotOk(res, 'Failed to fetch worktrees size')
       return res.json() as Promise<{ bytes: number }>
     },
     enabled: false,
@@ -229,12 +264,8 @@ export function useDeleteProjectWorktrees() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/projects/${id}/worktrees`, { method: 'DELETE' })
-      if (!res.ok) {
-        const err = await res.json()
-        const message = [err.error, err.details].filter(Boolean).join(' — ')
-        throw new Error(message || 'Failed to delete worktrees')
-      }
+      const res = await fetch(apiProjectPath(id, 'worktrees'), { method: 'DELETE' })
+      await throwIfNotOk(res, 'Failed to delete worktrees')
       return res.json() as Promise<{ success: boolean; freedBytes: number }>
     },
     onSuccess: () => {

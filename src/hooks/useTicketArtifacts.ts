@@ -1,6 +1,6 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
-import { failedResponseError } from '@/lib/fetchError'
-import { queryClient } from '@/lib/queryClient'
+import { useQueries, useQuery, type QueryClient } from '@tanstack/react-query'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export interface DBartifact {
   id: number
@@ -72,6 +72,7 @@ export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: strin
 export async function fetchTicketArtifacts(
   ticketId: string,
   options?: TicketArtifactQueryScope,
+  signal?: AbortSignal,
 ): Promise<DBartifact[]> {
   const params = new URLSearchParams()
   if (options?.phase) params.set('phase', options.phase)
@@ -79,8 +80,8 @@ export async function fetchTicketArtifacts(
     params.set('phaseAttempt', String(options.phaseAttempt))
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : ''
-  const res = await fetch(`/api/tickets/${ticketId}/artifacts${suffix}`)
-  if (!res.ok) throw await failedResponseError(res, 'Failed to load ticket artifacts')
+  const res = await fetch(`${apiTicketPath(ticketId, 'artifacts')}${suffix}`, { signal })
+  await throwIfNotOk(res, 'Failed to load ticket artifacts')
 
   const payload: unknown = await res.json()
   if (!Array.isArray(payload)) throw new Error('Failed to load ticket artifacts: invalid response')
@@ -103,8 +104,16 @@ export function getTicketArtifactsQueryKey(ticketId: string, options?: TicketArt
   ] as const
 }
 
-export function clearTicketArtifactsCache(ticketId: string) {
-  queryClient.removeQueries({ queryKey: ['ticket-artifacts', ticketId] })
+/**
+ * Drops this ticket's artifact queries from the caller's client.
+ *
+ * The client is a parameter because the panes that call this run under
+ * `useQueryClient()`: reaching for the module singleton instead cleared one
+ * cache while the rendered provider kept serving another, which is the split
+ * §7.13 exists to close. Production supplies the same instance either way.
+ */
+export function clearTicketArtifactsCache(client: Pick<QueryClient, 'removeQueries'>, ticketId: string) {
+  client.removeQueries({ queryKey: ['ticket-artifacts', ticketId] })
 }
 
 function queryStatus(
@@ -129,7 +138,7 @@ export function useTicketArtifacts(
     queryKey: ticketId
       ? getTicketArtifactsQueryKey(ticketId, scope)
       : ['ticket-artifacts', '__missing__'] as const,
-    queryFn: () => fetchTicketArtifacts(ticketId!, scope),
+    queryFn: ({ signal }) => fetchTicketArtifacts(ticketId!, scope, signal),
     enabled,
   })
 
@@ -166,7 +175,7 @@ export function useTicketArtifactBundle(
       queryKey: ticketId
         ? getTicketArtifactsQueryKey(ticketId, scope)
         : ['ticket-artifacts', '__missing__', scope.phase ?? '__all__'] as const,
-      queryFn: () => fetchTicketArtifacts(ticketId!, scope),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchTicketArtifacts(ticketId!, scope, signal),
       enabled,
     })),
   })

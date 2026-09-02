@@ -146,7 +146,7 @@ describe('useDebouncedApprovalUiState', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     const [url, init] = fetchSpy.mock.calls[0] ?? []
-    expect(url).toBe('/api/tickets/1:T-42/ui-state')
+    expect(url).toBe(`/api/tickets/${encodeURIComponent('1:T-42')}/ui-state`)
     expect(init).toMatchObject({
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

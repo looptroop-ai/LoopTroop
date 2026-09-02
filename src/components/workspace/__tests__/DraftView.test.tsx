@@ -149,7 +149,7 @@ describe('DraftView', () => {
     }, 400)
 
     mockFetch((url) => {
-      if (url === `/api/tickets/${TEST.ticketId}/start`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/start`) {
         return startResponse.promise
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -181,7 +181,7 @@ describe('DraftView', () => {
     const startResponse = createDeferredJsonResponse({ error: 'Failed to start ticket.' }, 400)
 
     mockFetch((url) => {
-      if (url === `/api/tickets/${TEST.ticketId}/start`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/start`) {
         return startResponse.promise
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -230,7 +230,7 @@ describe('DraftView', () => {
   it('lets users edit the description while the ticket is in backlog', async () => {
     const updatedDescription = 'Add a planning gate before interview and let users adjust the description before start.'
     const fetchMock = mockFetch((url, init) => {
-      if (url === `/api/tickets/${TEST.ticketId}` && init?.method === 'PATCH') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}` && init?.method === 'PATCH') {
         expect(init.body).toBe(JSON.stringify({ description: updatedDescription }))
         return createJsonResponse({
           ...makeTicket(),
@@ -261,7 +261,7 @@ describe('DraftView', () => {
       expect(screen.getByText(updatedDescription)).toBeInTheDocument()
       expect(screen.queryByRole('textbox', { name: 'Ticket description' })).not.toBeInTheDocument()
     })
-    expect(fetchMock).toHaveBeenCalledWith(`/api/tickets/${TEST.ticketId}`, expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}`, expect.objectContaining({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description: updatedDescription }),

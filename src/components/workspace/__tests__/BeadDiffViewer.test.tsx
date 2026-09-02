@@ -186,7 +186,7 @@ describe('BeadDiffViewer', () => {
 
     renderBeadDiffViewer()
 
-    expect(await screen.findByText('Could not load diff for this bead.')).toBeInTheDocument()
+    expect(await screen.findByText('Could not load the diff for this bead.')).toBeInTheDocument()
   })
 
   it('shows pending capture state only when the backend reports uncaptured diff', async () => {

@@ -7,6 +7,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortPicker } from './EffortPicker'
 import { OpenRouterRoutingPicker } from './OpenRouterRoutingPicker'
 import type { OpenCodeModel } from '@/hooks/useOpenCodeModels'
+import { getProfileCouncil } from '@/lib/profileCouncil'
 
 function cleanModelId(id: string | null | undefined): string {
   if (id && id.startsWith('openrouter/')) {
@@ -176,24 +177,16 @@ export function ProfileSetup({ onClose, onOpenAbout = () => undefined }: Profile
     }))
     // Restore variant state
     setMainVariant(profile.mainImplementerVariant || undefined)
-    try {
-      const parsed = profile.councilMemberVariants ? JSON.parse(profile.councilMemberVariants) : {}
-      const cleanedVariants: Record<string, string> = {}
-      if (typeof parsed === 'object' && parsed !== null) {
-        for (const [k, v] of Object.entries(parsed)) {
-          cleanedVariants[cleanModelId(k)] = v as string
-        }
-      }
-      setCouncilVariants(cleanedVariants)
-    } catch {
-      setCouncilVariants({})
+    // Parsed and validated once, in one place: both fields are JSON strings from
+    // the database, and a stored variant that is not a string used to be cast
+    // and handed straight to a badge.
+    const council = getProfileCouncil(profile)
+    const cleanedVariants: Record<string, string> = {}
+    for (const [modelId, variant] of Object.entries(council.variants)) {
+      cleanedVariants[cleanModelId(modelId)] = variant
     }
-    try {
-      const council: string[] = profile.councilMembers ? JSON.parse(profile.councilMembers) : []
-      setCouncilSlots(council.filter(id => id !== profile.mainImplementer))
-    } catch {
-      setCouncilSlots([])
-    }
+    setCouncilVariants(cleanedVariants)
+    setCouncilSlots(council.members.filter(id => id !== profile.mainImplementer))
   }, [profile])
 
   const [isOpenCodeConnected, setIsOpenCodeConnected] = useState<boolean | null>(null)

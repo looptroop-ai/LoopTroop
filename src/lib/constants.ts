@@ -36,8 +36,17 @@ export const DROPDOWN_FOCUS_DELAY_MS = 50
 
 /** Query stale time for infrequently-changing data (5 minutes) */
 export const QUERY_STALE_TIME_5M = 5 * 60 * 1000
-/** Default retry count for OpenCode API calls */
-export const OPENCODE_RETRY_COUNT = 8
+/**
+ * How the model catalog waits out OpenCode's startup window.
+ *
+ * The catalog answers HTTP 200 with a `message` while OpenCode is still coming
+ * up, so the query retries its way through that window. These are its own knobs:
+ * they started life borrowed from the SSE reconnect delay, which meant retuning
+ * the stream's cadence silently retuned model fetching. Same numbers, separate
+ * reasons to change.
+ */
+export const MODEL_FETCH_RETRY_COUNT = 8
+export const MODEL_FETCH_RETRY_DELAY_MS = 3000
 /** Default toast notification duration */
 export const TOAST_DURATION_MS = 4000
 /** Interval for polling to recover unanswered AI questions */

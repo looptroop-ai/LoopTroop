@@ -17,6 +17,7 @@ import {
   clearPersistedTicketLogs,
   clearServerLogCache,
 } from './logUtils'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 export type { LogEntry }
 
@@ -273,7 +274,14 @@ export function LogProvider({
     if (options.showLoading !== false) setScopeLoading(scopeKey, true)
     const generation = generationRef.current
     fetch(getServerLogsUrl(ticketId, normalizedScope))
-      .then(res => res.ok ? res.json() : [])
+      .then(async (res) => {
+        // A 500 used to be read as "this scope has no rows", which then went into
+        // the module cache and the loaded-scope set — so the panel showed an empty
+        // log, and every later request for it was served from that empty snapshot
+        // instead of retrying. Failing here leaves both untouched.
+        await throwIfNotOk(res, 'Failed to load logs')
+        return res.json()
+      })
       .then((raw: unknown) => {
         // A fetch can outlive the provider that started it. Writing to the module-scope cache here
         // would put back the entries the cleanup above just dropped, and returning to the ticket
@@ -289,7 +297,9 @@ export function LogProvider({
         applyServerLogs(serverLogs, normalizedScope)
       })
       .catch(() => {
-        // Ignore network failures; cached logs remain available.
+        // Ignore the failure here; cached rows stay on screen and the scope is
+        // left unloaded, so the next request for it actually asks the server
+        // again. The panel's own error surface is the historical-log query.
       })
       .finally(() => {
         if (generationRef.current !== generation) return

@@ -11,7 +11,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
-import { PhaseAttemptSelector } from './PhaseAttemptSelector'
+import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { BeadDiffViewer } from './BeadDiffViewer'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { LogEntryRow } from './LogLine'
@@ -22,7 +23,6 @@ import { formatElapsedDuration } from './currentActivity'
 import type { BeadNoteEntry, Ticket } from '@/hooks/useTickets'
 import { useTicketAction } from '@/hooks/useTickets'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { useTicketHistoricalLogs } from '@/hooks/useTicketHistoricalLogs'
 import { cn } from '@/lib/utils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
@@ -35,6 +35,9 @@ import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './R
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
 import { stripAnsiSequences } from '@shared/ansi'
+import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -338,9 +341,9 @@ function mergeBeadRuntimeOverlay(
   return merged
 }
 
-async function fetchTicketBeads(ticketId: string): Promise<TicketBead[]> {
-  const response = await fetch(`/api/tickets/${ticketId}/beads`)
-  if (!response.ok) return []
+async function fetchTicketBeads(ticketId: string, signal?: AbortSignal): Promise<TicketBead[]> {
+  const response = await fetch(apiTicketPath(ticketId, 'beads'), { signal })
+  await throwIfNotOk(response, 'Failed to load beads')
   const payload = await response.json()
   return Array.isArray(payload)
     ? payload
@@ -669,9 +672,9 @@ function selectDefaultRawAttemptKey(attempts: BeadRawAttempt[], bead: TicketBead
 function usePrdDocument(ticketId: string): { prd: PrdDocument | null; isLoading: boolean; isError: boolean } {
   const { data: fetchedContent, isLoading, isError } = useQuery({
     queryKey: ['artifact', ticketId, 'prd'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticketId}/prd`)
-      if (!response.ok) throw new Error(`PRD fetch failed: ${response.status}`)
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticketId, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json() as { content?: string }
       return payload.content ?? ''
     },
@@ -1068,30 +1071,20 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const hasBeadControls = phaseForView === 'CODING'
   const viewingBeadId = hasBeadControls ? rawViewingBeadId : null
   const shouldShowPhaseVersionSelector = phaseForView !== 'CODING'
-  const { data: phaseAttempts = [] } = useTicketPhaseAttempts(
+  const {
+    attempts: phaseAttempts,
+    selectedAttempt,
+    setManualSelectedAttemptNumber,
+    archivedAttemptNumber,
+    logPhaseAttempt,
+    logMode,
+    isError: isPhaseAttemptsError,
+    error: phaseAttemptsError,
+    refetch: refetchPhaseAttempts,
+  } = useSelectedPhaseAttempt(
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
-  useEffect(() => {
-    setManualSelectedAttemptNumber(null)
-  }, [phaseForView])
-  const selectedAttemptNumber = useMemo(() => {
-    if (manualSelectedAttemptNumber != null && phaseAttempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
-      return manualSelectedAttemptNumber
-    }
-    return (phaseAttempts.find((attempt) => attempt.state === 'active') ?? phaseAttempts[0])?.attemptNumber ?? null
-  }, [manualSelectedAttemptNumber, phaseAttempts])
-  const selectedAttempt = useMemo(
-    () => phaseAttempts.find((attempt) => attempt.attemptNumber === selectedAttemptNumber)
-      ?? phaseAttempts.find((attempt) => attempt.state === 'active')
-      ?? phaseAttempts[0]
-      ?? null,
-    [phaseAttempts, selectedAttemptNumber],
-  )
-  const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
-  const logPhaseAttempt = phaseAttempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
-  const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
   const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null
@@ -1174,9 +1167,14 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const loadLogsForPhase = logCtx?.loadLogsForPhase
   const getLogsForPhase = logCtx?.getLogsForPhase
   const { mutate: performAction, mutateAsync: performActionAsync, isPending } = useTicketAction()
-  const { data: fetchedBeads = [] } = useQuery({
+  const {
+    data: fetchedBeads = [],
+    isError: isBeadsError,
+    error: beadsError,
+    refetch: refetchBeads,
+  } = useQuery({
     queryKey: ['ticket-beads', ticket.id],
-    queryFn: () => fetchTicketBeads(ticket.id),
+    queryFn: ({ signal }) => fetchTicketBeads(ticket.id, signal),
     enabled: hasBeadControls && ticket.runtime.totalBeads > 0,
     placeholderData: hasBeadControls
       ? (ticket.runtime.beads ?? []).map((bead) => normalizeBead(bead))
@@ -1427,6 +1425,15 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         )}
       </div>
 
+      {shouldShowPhaseVersionSelector && isPhaseAttemptsError ? (
+        <div className="px-4 border-b border-border shrink-0">
+          <PhaseAttemptsUnavailable
+            error={phaseAttemptsError}
+            onRetry={() => void refetchPhaseAttempts()}
+          />
+        </div>
+      ) : null}
+
       {shouldShowPhaseVersionSelector && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">
           <PhaseAttemptSelector
@@ -1464,6 +1471,16 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
           >
             {readOnly || isCompleted ? 'Close' : 'Back to live'}
           </Button>
+        </div>
+      )}
+
+      {hasBeadControls && isBeadsError && (
+        <div className="px-4 border-b border-border shrink-0">
+          <QueryErrorNotice
+            title="The bead list could not be refreshed. Anything shown below is the last known state."
+            error={beadsError}
+            onRetry={() => void refetchBeads()}
+          />
         </div>
       )}
 

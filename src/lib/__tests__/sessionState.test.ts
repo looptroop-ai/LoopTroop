@@ -3,6 +3,7 @@ import {
   __sessionStateForTests,
   installSessionWatch,
   isSignedOut,
+  probeSessionAfterStreamFailure,
   reportSignedOut,
   subscribeToSessionState,
 } from '../sessionState'
@@ -156,5 +157,93 @@ describe('session state', () => {
       await window.fetch('/api/tickets')
       expect(mock).toHaveBeenCalledTimes(1)
     })
+  })
+})
+
+/**
+ * §9.57: `EventSource.onerror` carries no HTTP status, so a stream refused with
+ * 401 looks exactly like a dropped connection. The probe is what tells them
+ * apart — and it has to keep telling them apart, because conflating the two
+ * either signs people out on a flaky network or never signs them out at all.
+ */
+describe('probeSessionAfterStreamFailure', () => {
+  const realFetch = window.fetch
+
+  beforeEach(() => {
+    __sessionStateForTests.reset()
+  })
+
+  afterEach(() => {
+    window.fetch = realFetch
+    __sessionStateForTests.reset()
+  })
+
+  it('latches signed-out on a 401', async () => {
+    window.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 401 })) as unknown as typeof window.fetch
+
+    await probeSessionAfterStreamFailure()
+
+    expect(isSignedOut()).toBe(true)
+  })
+
+  it('says nothing on an ordinary server close, which answers 200', async () => {
+    window.fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 })) as unknown as typeof window.fetch
+
+    await probeSessionAfterStreamFailure()
+
+    expect(isSignedOut()).toBe(false)
+  })
+
+  it('says nothing when the daemon is unreachable', async () => {
+    // A refused connection is a dead daemon, not an expired session. Signing out
+    // here would replace the app with a sign-in screen every time the network
+    // hiccupped.
+    window.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) as unknown as typeof window.fetch
+
+    await expect(probeSessionAfterStreamFailure()).resolves.toBeUndefined()
+    expect(isSignedOut()).toBe(false)
+  })
+
+  it('says nothing on a 500, which is a daemon problem rather than a session one', async () => {
+    window.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 })) as unknown as typeof window.fetch
+
+    await probeSessionAfterStreamFailure()
+
+    expect(isSignedOut()).toBe(false)
+  })
+
+  it('asks once while a probe is already in flight', async () => {
+    let release!: (response: Response) => void
+    const mock = vi.fn(() => new Promise<Response>((resolve) => { release = resolve }))
+    window.fetch = mock as unknown as typeof window.fetch
+
+    const first = probeSessionAfterStreamFailure()
+    const second = probeSessionAfterStreamFailure()
+    release(new Response(null, { status: 200 }))
+    await Promise.all([first, second])
+
+    // A reconnect storm is one question, not twenty.
+    expect(mock).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks an authenticated route, not the unauthenticated health probe', async () => {
+    // `/api/health` answers without a session on purpose, so it can never say
+    // whether this browser still has one.
+    const mock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    window.fetch = mock as unknown as typeof window.fetch
+
+    await probeSessionAfterStreamFailure()
+
+    expect(String(mock.mock.calls[0]?.[0])).toBe('/api/workflow/meta')
+  })
+
+  it('does not ask again once the session is already known to be gone', async () => {
+    const mock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }))
+    window.fetch = mock as unknown as typeof window.fetch
+    reportSignedOut()
+
+    await probeSessionAfterStreamFailure()
+
+    expect(mock).not.toHaveBeenCalled()
   })
 })

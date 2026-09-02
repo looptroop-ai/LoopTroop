@@ -34,6 +34,7 @@ function normalizeCodeList(value: unknown): string[] {
 function normalizeErrorOccurrence(
   occurrence: TicketErrorOccurrenceInput,
   fallbackNumber: number,
+  fallbackOccurredAt: string,
 ): TicketErrorOccurrence {
   const occurrenceNumber = typeof occurrence.occurrenceNumber === 'number' && occurrence.occurrenceNumber > 0
     ? occurrence.occurrenceNumber
@@ -52,9 +53,13 @@ function normalizeErrorOccurrence(
     errorMessage: typeof occurrence.errorMessage === 'string' ? occurrence.errorMessage : '',
     errorCodes: normalizeCodeList(occurrence.errorCodes),
     diagnostics: normalizeBlockedErrorDiagnostics(occurrence.diagnostics),
+    // Not `new Date()`: this runs during render, from `ActiveWorkspace` and
+    // `ErrorView`, and the list is sorted by this field. A fresh timestamp per
+    // render reordered the list and churned the React keys under it. The
+    // ticket's `updatedAt` is stable and is the closest thing to the truth.
     occurredAt: typeof occurrence.occurredAt === 'string' && occurrence.occurredAt.length > 0
       ? occurrence.occurredAt
-      : new Date().toISOString(),
+      : fallbackOccurredAt,
     resolvedAt: typeof occurrence.resolvedAt === 'string' && occurrence.resolvedAt.length > 0
       ? occurrence.resolvedAt
       : null,
@@ -97,6 +102,7 @@ export function getTicketErrorOccurrences(ticket: TicketErrorSource): TicketErro
         ? occurrence as TicketErrorOccurrenceInput
         : { id: `error-${index + 1}` },
       index + 1,
+      ticket.updatedAt,
     ))
     .sort((left, right) => {
       const leftTime = Date.parse(left.occurredAt)
@@ -118,15 +124,27 @@ export function getActiveErrorOccurrence(ticket: TicketErrorSource): TicketError
   if (occurrences.length === 0) return null
 
   if (ticket.activeErrorOccurrenceId != null) {
+    // `String(...)` although the type is now `string`: this is a lookup against a
+    // value that came off the wire, and the boundary is the only thing making it
+    // a string. A payload that reaches here another way must still match rather
+    // than silently find nothing.
     const activeOccurrenceId = String(ticket.activeErrorOccurrenceId)
     const matched = occurrences.find((occurrence) => occurrence.id === activeOccurrenceId)
-    if (matched) return matched
+    // A resolved occurrence is history. While the ticket is blocked, the id is
+    // for reviewing that history — the *active* error is the one still open, and
+    // returning a resolved occurrence here offered recovery actions against an
+    // error that had already been dealt with.
+    if (matched && (matched.resolvedAt === null || ticket.status !== 'BLOCKED_ERROR')) return matched
   }
 
   if (ticket.status !== 'BLOCKED_ERROR') return null
 
-  const openOccurrence = [...occurrences].reverse().find((occurrence) => occurrence.resolvedAt === null)
-  return openOccurrence ?? occurrences.at(-1) ?? null
+  // Newest-first, so `find` is already the most recent unresolved error and
+  // `[0]` the most recent of any kind. Reversing first picked the *oldest* open
+  // one and offered Retry and Continue against it — reachable now that an active
+  // id naming a resolved occurrence falls through to here.
+  const openOccurrence = occurrences.find((occurrence) => occurrence.resolvedAt === null)
+  return openOccurrence ?? occurrences[0] ?? null
 }
 
 export function formatErrorOccurrenceLabel(

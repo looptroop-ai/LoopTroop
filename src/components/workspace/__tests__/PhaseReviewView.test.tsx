@@ -176,7 +176,7 @@ describe('PhaseReviewView', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${ticket.id}/phases/GENERATING_EXECUTION_SETUP_PLAN/attempts`) {
+      if (url === `/api/tickets/${encodeURIComponent(ticket.id)}/phases/GENERATING_EXECUTION_SETUP_PLAN/attempts`) {
         return createJsonResponse([
           {
             ticketId: ticket.id,

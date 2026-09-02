@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import type { SkipEvent, SkipEventCounts } from '@shared/skipReceipt'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export interface TicketSkips {
   ticketId: string
@@ -12,8 +14,8 @@ export function getTicketSkipsQueryKey(ticketId: string) {
 }
 
 async function fetchTicketSkips(ticketId: string, signal?: AbortSignal): Promise<TicketSkips> {
-  const response = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/skips`, { signal })
-  if (!response.ok) throw new Error(`Unable to load skips (${response.status})`)
+  const response = await fetch(apiTicketPath(ticketId, 'skips'), { signal })
+  await throwIfNotOk(response, 'Unable to load skips')
   return response.json() as Promise<TicketSkips>
 }
 

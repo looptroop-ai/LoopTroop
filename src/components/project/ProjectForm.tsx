@@ -28,6 +28,7 @@ import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { IgnoreModeSetting } from './IgnoreModeSetting'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode } from '@shared/ignoreMode'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 interface ProjectFormProps {
   onClose: () => void
@@ -142,7 +143,12 @@ export function ProjectForm({ onClose, onBack, project }: ProjectFormProps) {
     })
     const timer = setTimeout(() => {
       fetch(`/api/projects/check-git?path=${encodeURIComponent(folder)}`)
-        .then(r => r.json())
+        // A refused request is not a git verdict: without this the error body was
+        // read as a `GitCheckResponse`, so a 500 became "not a git repository".
+        .then(async (r) => {
+          await throwIfNotOk(r, 'Git check failed')
+          return r.json() as Promise<GitCheckResponse>
+        })
         .then((data: GitCheckResponse) => {
           if (cancelled) return
           if (

@@ -28,7 +28,10 @@ import {
   useApprovalPaneState,
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { AutosaveStatus } from './AutosaveStatus'
+import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalEditToolbar } from './ApprovalEditToolbar'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -90,7 +93,14 @@ export function InterviewApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
-  const { data: interviewData, isLoading, isFetching } = useInterviewQuestions(ticket.id)
+  const {
+    data: interviewData,
+    isLoading,
+    isFetching,
+    isError: isInterviewError,
+    refetch: refetchInterview,
+    error: interviewError,
+  } = useInterviewQuestions(ticket.id)
 
   const interviewDocument = useMemo(
     () => normalizeInterviewDocumentLike(interviewData?.document) ?? parseInterviewDocument(interviewData?.raw),
@@ -204,8 +214,8 @@ export function InterviewApprovalPane({
     try {
       const response = await fetch(
         editTab === 'answers'
-          ? `/api/tickets/${ticket.id}/interview-answers`
-          : `/api/tickets/${ticket.id}/interview`,
+          ? apiTicketPath(ticket.id, 'interview-answers')
+          : apiTicketPath(ticket.id, 'interview'),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -232,15 +242,13 @@ export function InterviewApprovalPane({
         },
       )
 
+      await throwIfNotOk(response, 'Failed to save interview')
       const payload = await response.json()
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Save failed')
-      }
 
       queryClient.setQueryData(['interview', ticket.id], payload)
       queryClient.setQueryData(['artifact', ticket.id, 'interview'], payload.raw ?? '')
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
 
       const savedDocument = normalizeInterviewDocumentLike(payload.document) ?? parseInterviewDocument(payload.raw)
       setAnswerDrafts(savedDocument ? buildInterviewAnswerDrafts(savedDocument) : {})
@@ -259,20 +267,17 @@ export function InterviewApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-interview`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-interview'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
       })
-      const payload = await response.json()
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve interview')
-      }
+      await throwIfNotOk(response, 'Failed to approve interview')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       queryClient.invalidateQueries({ queryKey: ['interview', ticket.id] })
-      clearTicketArtifactsCache(ticket.id)
+      clearTicketArtifactsCache(queryClient, ticket.id)
       setIsEditMode(false)
       setEditTab('answers')
     } catch (error) {
@@ -391,44 +396,15 @@ export function InterviewApprovalPane({
         )}
 
         {isEditMode ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => requestTabChange('answers')}
-                className={editTab === 'answers'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Answers
-              </button>
-              <button
-                type="button"
-                onClick={() => requestTabChange('yaml')}
-                className={editTab === 'yaml'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                YAML
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <AutosaveStatus
-                state={approvalAutosave.state}
-                lastSavedAt={approvalAutosave.lastSavedAt}
-                label="Draft autosave on"
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={handleSave}
-                disabled={isSaving || !hasUnsavedChanges}
-              >
-                {isSaving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ApprovalEditToolbar
+            tabs={[{ id: 'answers', label: 'Answers' }, { id: 'yaml', label: 'YAML' }]}
+            activeTab={editTab}
+            onTabChange={requestTabChange}
+            autosave={approvalAutosave}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveDisabled={isSaving || !hasUnsavedChanges}
+          />
         ) : null}
 
         {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}
@@ -436,7 +412,21 @@ export function InterviewApprovalPane({
       </div>
 
       <div className="flex-1 min-h-0 px-4 pb-2 overflow-auto">
-        {isLoading || isPreparingStructuredInterview ? (
+        {isInterviewError && rawContent ? (
+          <QueryErrorNotice
+            title="Showing the last interview that loaded. The refresh failed."
+            error={interviewError}
+            onRetry={() => void refetchInterview()}
+          />
+        ) : null}
+        {isInterviewError && !rawContent ? (
+          <QueryErrorNotice
+            className="py-8"
+            title="The interview artifact could not be loaded."
+            error={interviewError}
+            onRetry={() => void refetchInterview()}
+          />
+        ) : isLoading || isPreparingStructuredInterview ? (
           <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
             <div className="text-center space-y-2">
               <LoadingText text={isPreparingStructuredInterview ? 'Preparing interview results' : 'Loading interview results'} className="text-sm font-medium animate-pulse" />

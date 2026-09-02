@@ -4,6 +4,7 @@ import { getApiUrl, waitForDevBackend } from '@/lib/devApi'
 import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
@@ -130,6 +131,14 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
     queueMicrotask(() => setConnectionState(ticketId ? 'connecting' : 'connected'))
   }, [ticketId])
 
+  /**
+   * Whether this subscription has already asked about the session; see `onerror`.
+   *
+   * Cleared when a stream actually opens, and when the ticket changes — not when
+   * a new `EventSource` is constructed, which happens on every retry.
+   */
+  const sessionProbedRef = useRef(false)
+
   useEffect(() => {
     if (!ticketId) {
       lastEventIdRef.current = '0'
@@ -140,6 +149,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
     const persistedLastEventId = readPersistedLastEventId(ticketId)
     lastEventIdRef.current = persistedLastEventId
     recoverOnOpenRef.current = persistedLastEventId !== '0'
+    sessionProbedRef.current = false
   }, [ticketId])
 
   const scheduleReconnect = useCallback(() => {
@@ -200,6 +210,12 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       es.addEventListener('open', () => {
         if (!isCurrentConnection()) return
         setConnectionState('connected')
+        // A stream that opened proves the session is good, so the *next* failure
+        // deserves a fresh question. Re-arming per `EventSource` instead meant
+        // every scheduled reconnect re-armed it, and a daemon that was simply
+        // down was asked about the session every three seconds for as long as
+        // the tab stayed open.
+        sessionProbedRef.current = false
         if (recoverOnOpenRef.current) {
           recoverOnOpenRef.current = false
           const tid = ticketIdRef.current
@@ -426,6 +442,15 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         eventSourceRef.current = null
         recoverOnOpenRef.current = true
         setConnectionState('reconnecting')
+        // The stream cannot report a 401 — `onerror` carries no status — so the
+        // first failure of a connection asks an ordinary route instead. Only
+        // that answer latches signed-out; a dropped connection does not. Once
+        // per connection, not per retry: the reconnect loop would otherwise ask
+        // every few seconds forever.
+        if (!sessionProbedRef.current) {
+          sessionProbedRef.current = true
+          void probeSessionAfterStreamFailure()
+        }
         const currentTicketId = ticketIdRef.current
         if (currentTicketId) {
           queryClient.invalidateQueries({ queryKey: ['ticket', currentTicketId] })

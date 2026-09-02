@@ -98,6 +98,8 @@ describe('ProjectForm', () => {
 
   it('warns and blocks adding a directory that is already attached', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -128,6 +130,8 @@ describe('ProjectForm', () => {
   it('warns and blocks duplicate project names and short names', async () => {
     mockProjectList.data = [{ name: 'Existing Project', shortname: 'EXI' }]
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
     })))
 
@@ -147,6 +151,8 @@ describe('ProjectForm', () => {
 
   it('shows the WSL mounted-drive warning returned by project path validation', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -196,6 +202,8 @@ describe('ProjectForm', () => {
 
   it('shows a non-blocking warning when GitHub write access is not detected', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -230,6 +238,8 @@ describe('ProjectForm', () => {
   describe('ignore choice', () => {
     function stubValidRepo() {
       vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        status: 200,
         json: async () => ({ isGit: true, status: 'valid', message: 'Git repository root selected' }),
       })))
     }
@@ -292,6 +302,8 @@ describe('ProjectForm', () => {
 
     it('is not offered for a folder that is not a repository', () => {
       vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true,
+        status: 200,
         json: async () => ({ isGit: false, status: 'invalid', message: 'Not a git repository' }),
       })))
       render(<ProjectForm onClose={vi.fn()} />, { wrapper: Wrapper })
@@ -344,6 +356,8 @@ describe('ProjectForm', () => {
 
   it('defaults existing state to restore and submits the restore action with saved editable settings', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -401,6 +415,8 @@ describe('ProjectForm', () => {
 
   it('shows clear-ticket impact, confirms destruction, and submits clear_tickets', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -451,6 +467,8 @@ describe('ProjectForm', () => {
 
   it('unlocks the short name for start-fresh and submits only after confirmation', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',
@@ -497,6 +515,8 @@ describe('ProjectForm', () => {
 
   it('keeps destructive confirmation open and disabled while submission is pending or fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
       json: async () => ({
         isGit: true,
         status: 'valid',

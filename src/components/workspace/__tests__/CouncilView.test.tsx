@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CouncilView } from '../CouncilView'
+import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { makeTicket, TEST } from '@/test/factories'
 
 const mockUseTicketArtifacts = vi.fn()
@@ -55,6 +56,15 @@ describe('CouncilView', () => {
     mockUseTicketPhaseAttempts.mockReturnValue({ data: [] })
   })
 
+  it('renders no source comments as visible text', () => {
+    // A `//` line placed among JSX children is *text*, not a comment, and React
+    // paints it. Nothing else here would notice: every assertion looks for text
+    // that should be present, and this one is about text that should not.
+    const { container } = render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+
+    expect(container.textContent ?? '').not.toMatch(/\/\/\s/)
+  })
+
   it('keeps the live council view visible while artifacts are still loading', () => {
     render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
 
@@ -65,11 +75,11 @@ describe('CouncilView', () => {
     expect(screen.queryByText('Loading phase data…')).not.toBeInTheDocument()
   })
 
-  it('renders with an empty council fallback when cached ticket data is partial', () => {
-    const partialTicket = {
+  it('renders with an empty council fallback when the server sent no roster', () => {
+    const partialTicket = normalizeTicketResponse({
       ...makeTicket({ status: 'COUNCIL_VOTING_INTERVIEW' }),
       lockedCouncilMembers: null,
-    } as unknown as ReturnType<typeof makeTicket>
+    })
 
     render(<CouncilView phase="COUNCIL_VOTING_INTERVIEW" ticket={partialTicket} />)
 

@@ -141,10 +141,13 @@ function resolveFiniteNumber(...values: Array<number | null | undefined>): numbe
 }
 
 function getCodingBeadProgress(ticket?: Ticket): { current: number; total: number; percent: number } | null {
-  const current = resolvePositiveNumber(ticket?.runtime?.currentBead, ticket?.currentBead)
-  const total = resolvePositiveNumber(ticket?.runtime?.totalBeads, ticket?.totalBeads)
+  // The boundary normaliser has already merged the ticket's own bead columns
+  // into `runtime`; what survives here is the display rule that a zero bead
+  // count means "no progress to show", not a second fallback chain.
+  const current = resolvePositiveNumber(ticket?.runtime.currentBead)
+  const total = resolvePositiveNumber(ticket?.runtime.totalBeads)
   if (current === null || total === null) return null
-  const percent = resolveFiniteNumber(ticket?.runtime?.percentComplete, ticket?.percentComplete)
+  const percent = resolveFiniteNumber(ticket?.runtime.percentComplete)
     ?? Math.round((Math.max(0, current - 1) / total) * 100)
   return { current, total, percent: Math.max(0, Math.min(100, Math.round(percent))) }
 }
@@ -289,7 +292,7 @@ export function PhaseTimeline({
                             ) : (
                               <span className="truncate flex-1">{phaseLabel}</span>
                             )}
-                            {phase.id === 'CODING' && isCurrent && ticket?.runtime?.eta && (
+                            {phase.id === 'CODING' && isCurrent && ticket?.runtime.eta && (
                               <EtaRange eta={ticket.runtime.eta} showTooltip={false} className="ml-auto" />
                             )}
                           </button>

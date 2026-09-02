@@ -235,13 +235,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -271,13 +271,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -318,13 +318,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -366,13 +366,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -404,13 +404,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -445,9 +445,9 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(initialTicket)
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) return createJsonResponse(initialTicket)
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
@@ -475,9 +475,9 @@ describe('TicketDashboard', () => {
     queryClient.setQueryData(['ticket', selectedTicketId], ticket)
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(ticket)
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) return createJsonResponse(ticket)
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
@@ -521,13 +521,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -573,13 +573,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -619,13 +619,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -699,13 +699,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -754,13 +754,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -809,13 +809,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         // Simulate the refetch returning a NEWER status than the SSE event
         // (the server already transitioned past SCANNING_RELEVANT_FILES).
         return createJsonResponse(makeTicket({ status: 'COUNCIL_DELIBERATING', id: selectedTicketId }))
@@ -867,9 +867,9 @@ describe('TicketDashboard', () => {
     queryClient.setQueryData(['ticket', selectedTicketId], initialTicket)
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(initialTicket)
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) return createJsonResponse([])
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) return createJsonResponse(initialTicket)
       throw new Error(`Unhandled fetch: ${url}`)
     })
 
@@ -919,13 +919,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(makeTicket({ status: 'SCANNING_RELEVANT_FILES', id: selectedTicketId }))
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -963,13 +963,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -1018,13 +1018,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -1059,13 +1059,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -1103,13 +1103,13 @@ describe('TicketDashboard', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) {
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
         return createJsonResponse([])
       }
-      if (url.endsWith(`/api/tickets/${selectedTicketId}`)) {
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
         return createJsonResponse(initialTicket)
       }
       throw new Error(`Unhandled fetch: ${url}`)
@@ -1158,9 +1158,9 @@ describe('TicketDashboard', () => {
       queryClient.setQueryData(['ticket', selectedTicketId], ticket)
       vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
         const url = String(input)
-        if (url.startsWith(`/api/files/${selectedTicketId}/logs`)) return createJsonResponse([])
-        if (url.endsWith(`/api/tickets/${selectedTicketId}/artifacts`)) return createJsonResponse([])
-        if (url.endsWith(`/api/tickets/${selectedTicketId}`)) return createJsonResponse(ticket)
+        if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) return createJsonResponse([])
+        if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) return createJsonResponse([])
+        if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) return createJsonResponse(ticket)
         throw new Error(`Unhandled fetch: ${url}`)
       })
       return ticket

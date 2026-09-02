@@ -54,6 +54,9 @@ export function buildCompiledInterviewArtifact(
     winnerDraftContent,
     maxInitialQuestions,
     losingDraftMeta,
+    // The refinement was already validated and its changes recorded before this
+    // runs; what arrives here is the canonical questions-only YAML.
+    { missingChangesPolicy: 'accounted_elsewhere' },
   )
   if (!refinement.ok) {
     throw new Error(refinement.error)

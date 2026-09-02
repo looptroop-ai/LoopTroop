@@ -16,6 +16,7 @@ import {
   updateInterviewDocumentAnswers,
 } from '../index'
 import { buildInterviewDocumentYaml, normalizeResolvedInterviewDocumentOutput } from '../interviewDocument'
+import { INTERVIEW_MISSING_CHANGES_WARNING } from '../interviewOutput'
 import { buildInterviewDocument, TEST } from '../../test/factories'
 import type {
   CoverageResultEnvelope,
@@ -597,6 +598,23 @@ describe.concurrent('structured output normalization', () => {
       '    question: "What problem are we solving?"',
     ].join('\n')
 
+    const result = normalizeInterviewRefinementOutput(winnerDraft, winnerDraft, 10)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.changes).toEqual([])
+    expect(result.normalizedContent).toContain('questions:')
+    expect(result.normalizedContent).not.toContain('changes:')
+  })
+
+  it('accounts for a refinement that rewrote a question without returning changes', () => {
+    const winnerDraft = [
+      'questions:',
+      '  - id: Q01',
+      '    phase: foundation',
+      '    question: "What problem are we solving?"',
+    ].join('\n')
+
     const result = normalizeInterviewRefinementOutput([
       'questions:',
       '  - id: Q01',
@@ -606,9 +624,35 @@ describe.concurrent('structured output normalization', () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.value.changes).toEqual([])
-    expect(result.normalizedContent).toContain('questions:')
-    expect(result.normalizedContent).not.toContain('changes:')
+    expect(result.value.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        attributionStatus: 'synthesized_unattributed',
+        before: expect.objectContaining({ question: 'What problem are we solving?' }),
+        after: expect.objectContaining({ question: 'What user problem are we solving?' }),
+      }),
+    ])
+    expect(result.repairWarnings).toContain(INTERVIEW_MISSING_CHANGES_WARNING)
+  })
+
+  it('rejects a refinement that added a question without returning changes', () => {
+    const winnerDraft = [
+      'questions:',
+      '  - id: Q01',
+      '    phase: foundation',
+      '    question: "What problem are we solving?"',
+    ].join('\n')
+
+    const result = normalizeInterviewRefinementOutput([
+      winnerDraft,
+      '  - id: Q02',
+      '    phase: structure',
+      '    question: "Which systems does it touch?"',
+    ].join('\n'), winnerDraft, 10)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('do not fully and exactly account for the differences')
   })
 
   it('preserves folded refinement questions instead of corrupting them during YAML repair', () => {

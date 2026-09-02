@@ -21,6 +21,14 @@ type PrdRefinementItemType = 'epic' | 'user_story'
 type PrdEpic = PrdDocument['epics'][number]
 type PrdUserStory = PrdEpic['user_stories'][number]
 
+export const PRD_MISSING_CHANGES_WARNING = 'PRD refinement returned no changes list while the document differed from the winning draft; accounted for the difference from the two drafts.'
+
+function prdDocumentsDiffer(winnerDocument: PrdDocument, refinedDocument: PrdDocument): boolean {
+  const winnerKeys = new Set(buildDocumentItems(winnerDocument).map(buildItemContentKey))
+  const refinedKeys = new Set(buildDocumentItems(refinedDocument).map(buildItemContentKey))
+  return winnerKeys.size !== refinedKeys.size || [...refinedKeys].some((key) => !winnerKeys.has(key))
+}
+
 interface NormalizedPrdRefinementItem extends RefinementChangeItem {
   itemType: PrdRefinementItemType
   contentFingerprint: string
@@ -544,6 +552,12 @@ export function validatePrdRefinementOutput(
     interviewContent: string
     winnerDraftContent: string
     losingDraftMeta?: Array<{ memberId: string }>
+    /**
+     * `accounted_elsewhere` skips the missing-changes policy for callers whose
+     * artifact records its edits in another field. A PRD coverage revision lists
+     * them in `gap_resolutions`, and its prompt never asks for `changes`.
+     */
+    missingChangesPolicy?: 'require' | 'accounted_elsewhere'
   },
 ): ValidatedPrdRefinement {
   const winnerResult = normalizePrdYamlOutput(options.winnerDraftContent, {
@@ -571,16 +585,28 @@ export function validatePrdRefinementOutput(
   }
 
   const { changes = [], ...refinedDocument } = refinementResult.value
+  // An empty change list used to return here even when the refined document
+  // differed from the winner, leaving the diff and the attribution empty while
+  // the canonical artifact had changed underneath them. When they differ, the
+  // accounting below runs on the empty list: synthesis covers what it can and
+  // validateChangeCoverage rejects the rest. A coverage revision accounts for
+  // its edits in gap_resolutions instead, so it opts out.
+  const missingChangesWarnings: string[] = []
   if (changes.length === 0) {
-    return {
-      document: refinedDocument,
-      metrics: getPrdDraftMetrics(refinedDocument),
-      refinedContent: refinementResult.normalizedContent,
-      winnerDraftContent: winnerResult.normalizedContent,
-      changes: [],
-      repairApplied: refinementResult.repairApplied,
-      repairWarnings: [...refinementResult.repairWarnings],
+    const documentsDiffer = options.missingChangesPolicy !== 'accounted_elsewhere'
+      && prdDocumentsDiffer(winnerResult.value, refinedDocument)
+    if (!documentsDiffer) {
+      return {
+        document: refinedDocument,
+        metrics: getPrdDraftMetrics(refinedDocument),
+        refinedContent: refinementResult.normalizedContent,
+        winnerDraftContent: winnerResult.normalizedContent,
+        changes: [],
+        repairApplied: refinementResult.repairApplied,
+        repairWarnings: [...refinementResult.repairWarnings],
+      }
     }
+    missingChangesWarnings.push(PRD_MISSING_CHANGES_WARNING)
   }
 
   const winnerDocument = winnerResult.value
@@ -601,7 +627,7 @@ export function validatePrdRefinementOutput(
   const usedAfterIdentityKeys = new Set<string>()
   const usedBeforeContentKeys = new Set<string>()
   const usedAfterContentKeys = new Set<string>()
-  const repairWarnings = [...refinementResult.repairWarnings, ...idStabilityRepair.repairWarnings]
+  const repairWarnings = [...refinementResult.repairWarnings, ...missingChangesWarnings, ...idStabilityRepair.repairWarnings]
   const preparedChanges: PreparedPrdRefinementChange[] = []
   const validatedChanges: RefinementChange[] = []
   let repairApplied = refinementResult.repairApplied || idStabilityRepair.repairApplied

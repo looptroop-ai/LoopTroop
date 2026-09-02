@@ -33,8 +33,10 @@ export {
   normalizeInterviewTurnOutput,
   normalizeInterviewQuestionsOutput,
   normalizeInterviewRefinementOutput,
+  normalizeCoverageFollowUpQuestions,
   normalizeCoverageResultOutput,
 } from './interviewOutput'
+export type { CoverageFollowUpDefaults } from './interviewOutput'
 
 export {
   normalizeInterviewDocumentOutput,

@@ -5,6 +5,7 @@ import {
   buildPrdRefinedArtifact,
   buildPrdRefinementRetryPrompt,
   parsePrdRefinedArtifact,
+  PRD_MISSING_CHANGES_WARNING,
   requirePrdRefinedArtifact,
   validatePrdRefinementOutput,
 } from '../refined'
@@ -140,6 +141,36 @@ describe.concurrent('PRD refined artifacts', () => {
     expect(result.repairApplied).toBe(true)
     expect(result.repairWarnings).toContain('Canonicalized source_interview.content_sha256 from the approved Interview Results artifact.')
     expect(result.refinedContent).not.toContain('changes:')
+  })
+
+  it('accepts an unchanged refinement with no changes list', () => {
+    const result = validatePrdRefinementOutput(buildPrdContent(), validationContext())
+
+    expect(result.changes).toEqual([])
+    expect(result.repairWarnings).not.toContain(PRD_MISSING_CHANGES_WARNING)
+  })
+
+  it('accounts for a refinement that edited an epic without returning changes', () => {
+    const result = validatePrdRefinementOutput(
+      buildPrdContent({ epicTitle: 'Prompt hardening and refinement safety' }),
+      validationContext(),
+    )
+
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        itemType: 'epic',
+        attributionStatus: 'synthesized_unattributed',
+      }),
+    ])
+    expect(result.repairWarnings).toContain(PRD_MISSING_CHANGES_WARNING)
+  })
+
+  it('rejects a refinement that added a story without returning changes', () => {
+    expect(() => validatePrdRefinementOutput(
+      buildPrdContent({ includeStoryThree: true }),
+      validationContext(),
+    )).toThrow('do not fully and exactly account for the diff')
   })
 
   it('validates refined PRDs that need both colon repair and reserved-indicator scalar quoting', () => {

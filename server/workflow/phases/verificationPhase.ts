@@ -672,16 +672,43 @@ function normalizeGaps(gaps: string[]): string[] {
   return gaps.map(gap => gap.trim()).filter((gap): gap is string => gap.length > 0)
 }
 
-function normalizePrdCoverageEnvelope(envelope: CoverageResultEnvelope): {
+interface CoverageEnvelopeNormalizationOptions {
+  /** Sentence-leading label, e.g. "PRD coverage reported status clean…". */
+  label: string
+  /** Same label as it reads mid-sentence, e.g. "…empty beads coverage gap strings". */
+  trimmedLabel: string
+  /**
+   * PRD and beads coverage are envelope-only, so follow-up questions are dropped
+   * with a warning. Interview coverage is the one phase that asks them.
+   */
+  followUps: 'ignored' | 'kept'
+  /**
+   * PRD and beads must name at least one gap when they report gaps. Interview
+   * coverage may report gaps and answer them with follow-up questions instead.
+   */
+  requireGapsWhenGapsStatus: boolean
+}
+
+/**
+ * One clean/gaps consistency check for all three coverage phases. PRD and beads
+ * each had their own copy; interview coverage had none, so an explicit
+ * `status: clean` won regardless of the gaps or follow-up questions beside it,
+ * and resolveInterviewCoverageFollowUpResolution then dropped every follow-up
+ * because the status was not `gaps`.
+ */
+function normalizeCoverageEnvelope(
+  envelope: CoverageResultEnvelope,
+  options: CoverageEnvelopeNormalizationOptions,
+): {
   envelope: CoverageResultEnvelope
   repairWarnings: string[]
   validationError?: string
 } {
   const repairWarnings: string[] = []
-  const sanitizedFollowUpQuestions: CoverageResultEnvelope['followUpQuestions'] = []
+  const followUpQuestions = options.followUps === 'kept' ? envelope.followUpQuestions : []
 
-  if (envelope.followUpQuestions.length > 0) {
-    repairWarnings.push('PRD coverage follow_up_questions were ignored because PRD coverage is envelope-only.')
+  if (options.followUps === 'ignored' && envelope.followUpQuestions.length > 0) {
+    repairWarnings.push(`${options.label} coverage follow_up_questions were ignored because ${options.trimmedLabel} coverage is envelope-only.`)
   }
 
   const sanitizedGaps = normalizeGaps(envelope.gaps)
@@ -689,113 +716,71 @@ function normalizePrdCoverageEnvelope(envelope: CoverageResultEnvelope): {
   if (envelope.status === 'clean') {
     if (sanitizedGaps.length > 0) {
       return {
-        envelope: {
-          status: 'clean',
-          gaps: sanitizedGaps,
-          followUpQuestions: sanitizedFollowUpQuestions,
-        },
+        envelope: { status: 'clean', gaps: sanitizedGaps, followUpQuestions },
         repairWarnings,
-        validationError: 'PRD coverage reported status clean but also returned gaps. Return status gaps for unresolved coverage and keep gaps empty when status is clean.',
+        validationError: `${options.label} coverage reported status clean but also returned gaps. Return status gaps for unresolved coverage and keep gaps empty when status is clean.`,
+      }
+    }
+
+    if (followUpQuestions.length > 0) {
+      return {
+        envelope: { status: 'clean', gaps: [], followUpQuestions },
+        repairWarnings,
+        validationError: `${options.label} coverage reported status clean but also returned follow-up questions. Return status gaps when follow-up questions are needed, and keep follow_up_questions empty when status is clean.`,
       }
     }
 
     return {
-      envelope: {
-        status: 'clean',
-        gaps: [],
-        followUpQuestions: sanitizedFollowUpQuestions,
-      },
+      envelope: { status: 'clean', gaps: [], followUpQuestions },
       repairWarnings,
     }
   }
 
-  if (sanitizedGaps.length === 0) {
+  if (options.requireGapsWhenGapsStatus && sanitizedGaps.length === 0) {
     return {
-      envelope: {
-        status: 'gaps',
-        gaps: [],
-        followUpQuestions: sanitizedFollowUpQuestions,
-      },
+      envelope: { status: 'gaps', gaps: [], followUpQuestions },
       repairWarnings,
-      validationError: 'PRD coverage reported status gaps but did not return any non-empty gap strings. Return at least one concrete gap string.',
+      validationError: `${options.label} coverage reported status gaps but did not return any non-empty gap strings. Return at least one concrete gap string.`,
     }
   }
 
   if (sanitizedGaps.length !== envelope.gaps.length) {
-    repairWarnings.push('Trimmed empty PRD coverage gap strings before persisting the normalized result.')
+    repairWarnings.push(`Trimmed empty ${options.trimmedLabel} coverage gap strings before persisting the normalized result.`)
   }
 
   return {
-    envelope: {
-      status: 'gaps',
-      gaps: sanitizedGaps,
-      followUpQuestions: sanitizedFollowUpQuestions,
-    },
+    envelope: { status: 'gaps', gaps: sanitizedGaps, followUpQuestions },
     repairWarnings,
   }
 }
 
-function normalizeBeadsCoverageEnvelope(envelope: CoverageResultEnvelope): {
-  envelope: CoverageResultEnvelope
-  repairWarnings: string[]
-  validationError?: string
-} {
-  const repairWarnings: string[] = []
-  const sanitizedFollowUpQuestions: CoverageResultEnvelope['followUpQuestions'] = []
+export function normalizePrdCoverageEnvelope(envelope: CoverageResultEnvelope) {
+  return normalizeCoverageEnvelope(envelope, {
+    label: 'PRD',
+    trimmedLabel: 'PRD',
+    followUps: 'ignored',
+    requireGapsWhenGapsStatus: true,
+  })
+}
 
-  if (envelope.followUpQuestions.length > 0) {
-    repairWarnings.push('Beads coverage follow_up_questions were ignored because beads coverage is envelope-only.')
-  }
+export function normalizeBeadsCoverageEnvelope(envelope: CoverageResultEnvelope) {
+  return normalizeCoverageEnvelope(envelope, {
+    label: 'Beads',
+    trimmedLabel: 'beads',
+    followUps: 'ignored',
+    requireGapsWhenGapsStatus: true,
+  })
+}
 
-  const sanitizedGaps = normalizeGaps(envelope.gaps)
-
-  if (envelope.status === 'clean') {
-    if (sanitizedGaps.length > 0) {
-      return {
-        envelope: {
-          status: 'clean',
-          gaps: sanitizedGaps,
-          followUpQuestions: sanitizedFollowUpQuestions,
-        },
-        repairWarnings,
-        validationError: 'Beads coverage reported status clean but also returned gaps. Return status gaps for unresolved coverage and keep gaps empty when status is clean.',
-      }
-    }
-
-    return {
-      envelope: {
-        status: 'clean',
-        gaps: [],
-        followUpQuestions: sanitizedFollowUpQuestions,
-      },
-      repairWarnings,
-    }
-  }
-
-  if (sanitizedGaps.length === 0) {
-    return {
-      envelope: {
-        status: 'gaps',
-        gaps: [],
-        followUpQuestions: sanitizedFollowUpQuestions,
-      },
-      repairWarnings,
-      validationError: 'Beads coverage reported status gaps but did not return any non-empty gap strings. Return at least one concrete gap string.',
-    }
-  }
-
-  if (sanitizedGaps.length !== envelope.gaps.length) {
-    repairWarnings.push('Trimmed empty beads coverage gap strings before persisting the normalized result.')
-  }
-
-  return {
-    envelope: {
-      status: 'gaps',
-      gaps: sanitizedGaps,
-      followUpQuestions: sanitizedFollowUpQuestions,
-    },
-    repairWarnings,
-  }
+export function normalizeInterviewCoverageEnvelope(envelope: CoverageResultEnvelope) {
+  return normalizeCoverageEnvelope(envelope, {
+    label: 'Interview',
+    trimmedLabel: 'interview',
+    followUps: 'kept',
+    // Interview coverage answers its gaps with follow-up questions, so a gaps
+    // status with no gap strings is normal here.
+    requireGapsWhenGapsStatus: false,
+  })
 }
 
 async function runPrdCoverageAuditPrompt(params: {
@@ -3873,6 +3858,40 @@ export async function handleCoverageVerification(
 
       // PRD coverage is handled by handlePrdCoverageVerificationLoop (returns early above)
 
+      // An explicit clean/pass status used to win regardless of the gaps or
+      // follow-up questions beside it, and the follow-up resolution below then
+      // dropped every one of them because the status was not `gaps`.
+      const interviewCoverageNormalization = phase === 'interview'
+        ? normalizeInterviewCoverageEnvelope(coverageEnvelope.value)
+        : null
+      if (interviewCoverageNormalization) {
+        coverageEnvelope = { ...coverageEnvelope, value: interviewCoverageNormalization.envelope }
+        if (interviewCoverageNormalization.repairWarnings.length > 0) {
+          structuredMeta = buildStructuredMetadata(structuredMeta, {
+            repairWarnings: interviewCoverageNormalization.repairWarnings,
+          })
+        }
+      }
+
+      const coverageConsistencyError = interviewCoverageNormalization?.validationError
+      if (coverageConsistencyError && attempt < structuredRetryCount) {
+        structuredMeta = buildStructuredMetadata(structuredMeta, {
+          autoRetryCount: attempt + 1,
+          validationError: coverageConsistencyError,
+          retryDiagnostics: [resolveStructuredRetryDiagnostic({
+            attempt: (structuredMeta.autoRetryCount ?? 0) + 1,
+            rawResponse: response,
+            validationError: coverageConsistencyError,
+          })],
+        })
+        promptParts = buildStructuredRetryPrompt([{ type: 'text', content: promptContent }], {
+          validationError: coverageConsistencyError,
+          rawResponse: response,
+          schemaReminder: promptTemplate.outputFormat,
+        })
+        continue
+      }
+
       interviewCoverageResolution = phase === 'interview' && interviewSnapshot
         ? resolveInterviewCoverageFollowUpResolution({
             status: coverageEnvelope.value.status,
@@ -3888,6 +3907,12 @@ export async function handleCoverageVerification(
       if (interviewCoverageResolution?.repairWarnings.length) {
         structuredMeta = buildStructuredMetadata(structuredMeta, {
           repairWarnings: interviewCoverageResolution.repairWarnings,
+        })
+      }
+
+      if (coverageConsistencyError) {
+        structuredMeta = buildStructuredMetadata(structuredMeta, {
+          validationError: coverageConsistencyError,
         })
       }
 

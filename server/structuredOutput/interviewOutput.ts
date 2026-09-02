@@ -942,6 +942,17 @@ function validateInterviewRefinementChangeEntry(
   return change
 }
 
+export const INTERVIEW_MISSING_CHANGES_WARNING = 'Interview refinement returned no changes list while the questions differed from the winning draft; accounted for the difference from the two drafts.'
+
+function interviewQuestionListsDiffer(
+  winnerQuestions: NormalizedInterviewQuestion[],
+  finalQuestions: NormalizedInterviewQuestion[],
+): boolean {
+  const winnerKeys = new Set(winnerQuestions.map(buildInterviewQuestionKey))
+  const finalKeys = new Set(finalQuestions.map(buildInterviewQuestionKey))
+  return winnerKeys.size !== finalKeys.size || [...finalKeys].some((key) => !winnerKeys.has(key))
+}
+
 function ensureQuestionChangeCoverage(
   winnerQuestions: NormalizedInterviewQuestion[],
   finalQuestions: NormalizedInterviewQuestion[],
@@ -1153,6 +1164,16 @@ function normalizeInterviewBatchPayload(value: unknown): {
   const normalizedQuestions = rawQuestions.map((question, index) => normalizeInterviewBatchQuestion(question, index))
   repairWarnings.push(...normalizedQuestions.flatMap((question) => question.repairWarnings))
   const questions = normalizedQuestions.map((question) => question.question)
+
+  // Two questions sharing an id in one batch meant the second overwrote the
+  // first in the session snapshot, and a prompt could inherit the other's answer.
+  const seenQuestionIds = new Set<string>()
+  for (const question of questions) {
+    if (seenQuestionIds.has(question.id)) {
+      throw new Error(`Interview batch output repeats question id ${question.id}`)
+    }
+    seenQuestionIds.add(question.id)
+  }
 
   // Enforce architecture batch size limit (1-3 questions per batch)
   if (questions.length > MAX_INTERVIEW_BATCH_SIZE) {
@@ -1438,11 +1459,21 @@ export function normalizeInterviewQuestionsOutput(
   )
 }
 
+export interface InterviewRefinementOptions {
+  /**
+   * `accounted_elsewhere` skips the missing-changes policy for a caller that is
+   * re-reading content this module already validated and accounted for — the
+   * canonical `questionsYaml` carries questions only, by design.
+   */
+  missingChangesPolicy?: 'require' | 'accounted_elsewhere'
+}
+
 export function normalizeInterviewRefinementOutput(
   rawContent: string,
   winnerDraftContent: string,
   maxInitialQuestions: number,
   losingDraftMeta?: Array<{ memberId: string; content: string }>,
+  options?: InterviewRefinementOptions,
 ): StructuredOutputResult<{
   questions: NormalizedInterviewQuestion[]
   questionCount: number
@@ -1501,8 +1532,23 @@ export function normalizeInterviewRefinementOutput(
       const winnerDraftQuestions = winnerDraftNormalized.questions
       let finalQuestions = normalizedQuestions.questions
       let changes: NormalizedInterviewRefinementChange[] = []
-      if (Array.isArray(rawChanges)) {
-        const parsedChanges = rawChanges.map((entry, index) => parseInterviewRefinementChangeEntry(
+
+      // A refinement that returned no `changes` at all used to skip change
+      // accounting entirely, so a rewritten question list shipped with an empty
+      // diff and no attribution. When the two documents actually differ, the
+      // accounting runs on an empty change list: synthesis covers what it can
+      // and ensureQuestionChangeCoverage rejects the rest.
+      const changesAreAccountable = Array.isArray(rawChanges)
+        || (options?.missingChangesPolicy !== 'accounted_elsewhere'
+          && interviewQuestionListsDiffer(winnerDraftQuestions, finalQuestions))
+      if (!Array.isArray(rawChanges) && changesAreAccountable) {
+        candidateRepairApplied = true
+        candidateWarnings.push(INTERVIEW_MISSING_CHANGES_WARNING)
+      }
+
+      if (changesAreAccountable) {
+        const rawChangeEntries = Array.isArray(rawChanges) ? rawChanges : []
+        const parsedChanges = rawChangeEntries.map((entry, index) => parseInterviewRefinementChangeEntry(
           entry,
           index,
           losingDraftMeta,
@@ -1651,7 +1697,21 @@ export function normalizeInterviewRefinementOutput(
   )
 }
 
-function normalizeCoverageFollowUpQuestions(value: unknown): {
+export interface CoverageFollowUpDefaults {
+  /** Used when the model omits `phase`. The coverage parser leaves it unset. */
+  phase?: string
+  /** Used when the model omits `priority`. */
+  priority?: string
+  /** Used when the model omits `rationale`. */
+  rationale?: string
+}
+
+/**
+ * The one semantic normaliser for coverage follow-up questions. The interview
+ * session used to carry a second, narrower copy, so the same coverage response
+ * produced different question types depending on which path read it.
+ */
+export function normalizeCoverageFollowUpQuestions(value: unknown, defaults?: CoverageFollowUpDefaults): {
   questions: CoverageFollowUpQuestion[]
   repairWarnings: string[]
 } {
@@ -1663,6 +1723,9 @@ function normalizeCoverageFollowUpQuestions(value: unknown): {
       return {
         id: `FU${index + 1}`,
         question: entry.trim(),
+        ...(defaults?.phase ? { phase: defaults.phase } : {}),
+        ...(defaults?.priority ? { priority: defaults.priority } : {}),
+        ...(defaults?.rationale ? { rationale: defaults.rationale } : {}),
       }
     }
 
@@ -1712,9 +1775,9 @@ function normalizeCoverageFollowUpQuestions(value: unknown): {
     return {
       id: questionId,
       question: question.trim(),
-      phase: typeof record.phase === 'string' ? record.phase : undefined,
-      priority: typeof record.priority === 'string' ? record.priority : undefined,
-      rationale: typeof record.rationale === 'string' ? record.rationale : undefined,
+      phase: typeof record.phase === 'string' ? record.phase : defaults?.phase,
+      priority: typeof record.priority === 'string' ? record.priority : defaults?.priority,
+      rationale: typeof record.rationale === 'string' ? record.rationale : defaults?.rationale,
       ...(finalAnswerType && finalAnswerType !== 'free_text' ? { answerType: finalAnswerType } : {}),
       ...(finalOptions && finalOptions.length > 0 ? { options: finalOptions } : {}),
     }

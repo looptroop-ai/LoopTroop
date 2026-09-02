@@ -350,8 +350,10 @@ describe('handlePrdRefine', () => {
         rawResponse: string
       }) => Array<{ type: 'text'; content: string }>,
     ) => {
+      // The raw response a rejected attempt would quote back. Validating it is
+      // covered in phases/prd/__tests__/refined.test.ts; running it here would
+      // count a retry this test is asserting did not happen.
       const invalidOutput = validOutput.replace(/\nchanges:[\s\S]*$/, '')
-      expect(validateResponse?.(invalidOutput)?.normalizedContent).toContain('artifact: prd')
 
       const retryPrompt = buildRetryPrompt?.({
         baseParts: [{ type: 'text', content: 'original prompt' }],

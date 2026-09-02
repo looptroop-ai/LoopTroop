@@ -21,6 +21,7 @@ import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import {
   buildInterviewQuestionViews,
   INTERVIEW_SESSION_ARTIFACT,
+  collectBatchSelectionErrors,
   isBatchAnswerSkipped,
   parseInterviewSessionSnapshot,
   resolveSkippedQuestionIdsForSkipAll,
@@ -246,6 +247,13 @@ export async function handleSkipTicket(c: Context) {
   if (!skipAllSession) {
     return c.json({ error: 'No interview session found' }, 404)
   }
+  const skipAllSelectionErrors = collectBatchSelectionErrors(
+    skipAllSession.currentBatch?.questions ?? [],
+    parsed.data.selectedOptions,
+  )
+  if (skipAllSelectionErrors.length > 0) {
+    return c.json({ error: 'Invalid answers payload', details: skipAllSelectionErrors }, 400)
+  }
   const skipAllSkippedIds = resolveSkippedQuestionIdsForSkipAll(
     skipAllSession,
     parsed.data.answers,
@@ -304,6 +312,16 @@ export async function handleAnswerBatch(c: Context) {
   // Determine if the batch needs a slow AI call (PROM4) or can be handled fast
   const sessionArt = getLatestPhaseArtifact(ticketId, INTERVIEW_SESSION_ARTIFACT)
   const session = parseInterviewSessionSnapshot(sessionArt?.content)
+
+  // The schema accepts any array of strings; only the question knows whether the
+  // ids in it exist, and how many of them it takes.
+  const selectionErrors = collectBatchSelectionErrors(
+    session?.currentBatch?.questions ?? [],
+    parsed.data.selectedOptions,
+  )
+  if (selectionErrors.length > 0) {
+    return c.json({ error: 'Invalid answers payload', details: selectionErrors }, 400)
+  }
 
   const batchSkippedIds = new Set(
     (session?.currentBatch?.questions ?? [])

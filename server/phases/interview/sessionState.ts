@@ -8,6 +8,8 @@ export {
   recordPreparedBatch,
   recordBatchAnswers,
   isBatchAnswerSkipped,
+  collectBatchSelectionErrors,
+  normalizeBatchSelection,
   clearInterviewSessionBatch,
   buildCoverageFollowUpBatch,
 } from './batchManagement'

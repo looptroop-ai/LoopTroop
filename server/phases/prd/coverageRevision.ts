@@ -330,6 +330,8 @@ export function validatePrdCoverageRevisionOutput(
     ticketId: options.ticketId,
     interviewContent: options.interviewContent,
     winnerDraftContent: options.currentCandidateContent,
+    // A coverage revision accounts for its edits in gap_resolutions.
+    missingChangesPolicy: 'accounted_elsewhere',
   })
   const parsedGapResolutions = parseGapResolutions(
     rawContent,

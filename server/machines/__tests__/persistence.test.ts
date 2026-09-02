@@ -5,7 +5,7 @@ import { broadcaster } from '../../sse/broadcaster'
 import { DISPLAY_ONLY_MOCK_BRANCH_NAME, patchTicket, getTicketByRef, getTicketPaths } from '../../storage/tickets'
 import { TEST, makeTicketContextFromTicket } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
-import { ensureActorForTicket, hydrateAllTickets, revertTicketToApprovalStatus, stopActor } from '../persistence'
+import { ensureActorForTicket, getTicketState, hydrateAllTickets, revertTicketToApprovalStatus, stopActor } from '../persistence'
 import { attachWorkflowRunner } from '../../workflow/runner'
 
 vi.mock('../../workflow/runner', () => ({
@@ -88,6 +88,90 @@ describe('hydrateAllTickets', () => {
       expect(recovered?.previousStatus).toBe('CODING')
       expect(recovered?.errorMessage).toContain('workflow snapshot could not be restored safely')
       expect(recovered?.errorOccurrences.at(-1)?.errorCodes).toContain('SNAPSHOT_RECOVERY_FAILED')
+    } finally {
+      stopActor(ticket.id)
+    }
+  })
+
+  it('drops invalid persisted context fields instead of restoring them', () => {
+    const { ticket } = createInitializedTestTicket(repoManager, {
+      title: 'Malformed persisted context',
+    })
+
+    const snapshot = {
+      status: 'active',
+      value: 'WAITING_PR_REVIEW',
+      historyValue: {},
+      context: {
+        ...makeTicketContextFromTicket(ticket, { status: 'WAITING_PR_REVIEW' }),
+        maxIterations: -3,
+        iterationCount: -2,
+        beadProgress: { total: 'many', completed: 1, current: null },
+        councilResults: 'not-an-object',
+        createdAt: 12345,
+        errorCodes: ['ok', 7],
+      },
+      children: {},
+    }
+
+    patchTicket(ticket.id, {
+      status: 'WAITING_PR_REVIEW',
+      xstateSnapshot: JSON.stringify(snapshot),
+    })
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(hydrateAllTickets()).toBe(1)
+      const restored = getTicketState(ticket.id)
+      expect(restored?.context.maxIterations).toBe(5)
+      expect(restored?.context.iterationCount).toBe(0)
+      expect(restored?.context.beadProgress).toEqual({ total: 0, completed: 0, current: null })
+      expect(restored?.context.councilResults).toBeNull()
+      expect(restored?.context.createdAt).toBe('')
+      expect(restored?.context.errorCodes).toEqual([])
+      // The ticket keeps running: one bad field does not discard the session.
+      expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+      stopActor(ticket.id)
+    }
+  })
+
+  it('keeps valid persisted context fields untouched', () => {
+    const { ticket } = createInitializedTestTicket(repoManager, {
+      title: 'Valid persisted context',
+    })
+
+    const snapshot = {
+      status: 'active',
+      value: 'WAITING_PR_REVIEW',
+      historyValue: {},
+      context: {
+        ...makeTicketContextFromTicket(ticket, { status: 'WAITING_PR_REVIEW' }),
+        // 0 means "no cap" to the executor, so it must survive a restore.
+        maxIterations: 0,
+        iterationCount: 3,
+        beadProgress: { total: 4, completed: 2, current: 'bead-2' },
+        councilResults: { interview: 'done' },
+        errorCodes: ['BEAD_AGENT_RESPONSE_INVALID'],
+      },
+      children: {},
+    }
+
+    patchTicket(ticket.id, {
+      status: 'WAITING_PR_REVIEW',
+      xstateSnapshot: JSON.stringify(snapshot),
+    })
+
+    try {
+      expect(hydrateAllTickets()).toBe(1)
+      const restored = getTicketState(ticket.id)
+      expect(restored?.context.maxIterations).toBe(0)
+      expect(restored?.context.iterationCount).toBe(3)
+      expect(restored?.context.beadProgress).toEqual({ total: 4, completed: 2, current: 'bead-2' })
+      expect(restored?.context.councilResults).toEqual({ interview: 'done' })
+      expect(restored?.context.errorCodes).toEqual(['BEAD_AGENT_RESPONSE_INVALID'])
     } finally {
       stopActor(ticket.id)
     }

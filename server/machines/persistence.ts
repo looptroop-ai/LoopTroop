@@ -58,6 +58,17 @@ function getSnapshotContext(snapshot: unknown): Record<string, unknown> | null {
   return isRecord(snapshot) && isRecord(snapshot.context) ? snapshot.context : null
 }
 
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function isValidBeadProgress(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return isNonNegativeInteger(value.total)
+    && isNonNegativeInteger(value.completed)
+    && (value.current === null || typeof value.current === 'string')
+}
+
 /** Exported for the field-parity test in `__tests__/ticketContext.test.ts`. */
 export function buildMachineContext(
   input: TicketActorInput,
@@ -188,13 +199,45 @@ function reconcileSnapshotForTicket(
   }
 
   context.status = dbStatus
-  if (typeof context.maxIterations !== 'number') {
-    context.maxIterations = input.maxIterations ?? PROFILE_DEFAULTS.maxIterations
+  // Restoring an actor used to check the state string, that `context` was an
+  // object and a handful of top-level shapes, then cast the rest. Each field is
+  // checked on its own here: a bad one falls back to its default and says so,
+  // rather than being dropped along with a session that is otherwise fine.
+  const dropInvalidField = (field: string, reason: string) => {
+    console.warn(`[runner] Ticket ${ticketRef} restored with an invalid ${field} (${reason}); using the default.`)
   }
-  if (!isRecord(context.beadProgress)) {
+  // Zero is a real value here: the executor reads `maxIterations > 0` and treats
+  // 0 as no cap, so only a negative or non-integer is invalid.
+  if (!isNonNegativeInteger(context.maxIterations)) {
+    if (context.maxIterations !== undefined) dropInvalidField('maxIterations', 'not a non-negative integer')
+    context.maxIterations = isNonNegativeInteger(input.maxIterations)
+      ? input.maxIterations
+      : PROFILE_DEFAULTS.maxIterations
+  }
+  if (!isNonNegativeInteger(context.iterationCount)) {
+    if (context.iterationCount !== undefined) dropInvalidField('iterationCount', 'not a non-negative integer')
+    context.iterationCount = 0
+  }
+  if (!isValidBeadProgress(context.beadProgress)) {
+    if (context.beadProgress !== undefined) dropInvalidField('beadProgress', 'malformed counters')
     context.beadProgress = { total: 0, completed: 0, current: null }
   }
-  if (!Array.isArray(context.errorCodes)) {
+  if (context.councilResults !== null && !isRecord(context.councilResults)) {
+    if (context.councilResults !== undefined) dropInvalidField('councilResults', 'not an object')
+    context.councilResults = null
+  }
+  for (const dateField of ['createdAt', 'updatedAt'] as const) {
+    if (typeof context[dateField] !== 'string') {
+      if (context[dateField] !== undefined) dropInvalidField(dateField, 'not a string')
+      context[dateField] = ''
+    }
+  }
+  if (context.error !== null && typeof context.error !== 'string') {
+    dropInvalidField('error', 'not a string')
+    context.error = null
+  }
+  if (!Array.isArray(context.errorCodes) || context.errorCodes.some((code) => typeof code !== 'string')) {
+    if (context.errorCodes !== undefined) dropInvalidField('errorCodes', 'not a list of strings')
     context.errorCodes = []
   }
   context.errorDiagnostics = normalizeBlockedErrorDiagnostics(context.errorDiagnostics)

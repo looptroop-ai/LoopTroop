@@ -53,8 +53,10 @@ describe('a repair rung records nothing when its parse fails', () => {
 
 describe('repair warnings describe only the accepted candidate', () => {
   it('does not carry a rejected candidate’s warnings into the accepted result', () => {
-    // The first candidate is the whole response, which fails on the prose line.
-    // The second is the fenced block, which validates cleanly.
+    // The first fenced block parses as JSONL, records an iteration repair, and
+    // only then fails validation on its empty acceptance criteria. The second
+    // block validates cleanly. Both have to be real candidates, or the rejected
+    // one never gets far enough to record a warning and the test proves nothing.
     const bead = {
       id: 'bead-1',
       title: 'First bead',
@@ -77,7 +79,9 @@ describe('repair warnings describe only the accepted candidate', () => {
     const rejected = { ...bead, iteration: 0, acceptanceCriteria: [] }
 
     const result = normalizeBeadsJsonlOutput([
+      '```jsonl',
       JSON.stringify(rejected),
+      '```',
       '```jsonl',
       JSON.stringify(bead),
       '```',

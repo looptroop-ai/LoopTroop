@@ -16,7 +16,7 @@ vi.mock('@/lib/ticketUiStateRevision', async () => {
   }
 })
 
-const { useTicketUIState } = await import('../useTickets')
+const { useInterviewQuestions, useTicketUIState } = await import('../useTickets')
 
 function setup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -67,5 +67,44 @@ describe('useTicketUIState', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true))
     expect(rememberSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('useInterviewQuestions', () => {
+  it('defaults to enabled when there is a ticket', async () => {
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = setup()
+
+    renderHook(() => useInterviewQuestions('1:UI-1'), { wrapper })
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/tickets/1%3AUI-1/interview')
+  })
+
+  it('stays off when the caller says it does not want an interview', async () => {
+    // The read-only approval view renders PRD and bead attempts too, and the
+    // interview endpoint says nothing about either.
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = setup()
+
+    const { result } = renderHook(() => useInterviewQuestions('1:UI-1', { enabled: false }), { wrapper })
+
+    expect(result.current.fetchStatus).toBe('idle')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('stays off without a ticket', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = setup()
+
+    renderHook(() => useInterviewQuestions(''), { wrapper })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

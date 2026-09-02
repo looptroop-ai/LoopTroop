@@ -25,6 +25,7 @@ import { TicketExternalId } from './TicketExternalId'
 import { CancelTicketDialog } from './CancelTicketDialog'
 import { describeSettingSource } from '@/lib/aiQuestionSetting'
 import { formatAiQuestionWindow } from '@shared/aiQuestions'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface DashboardHeaderProps {
   ticket: Ticket
@@ -270,7 +271,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
     setIsCalculatingSize(true)
     setSizeError(null)
     try {
-      const res = await fetch(`/api/tickets/${ticket.id}/size`)
+      const res = await fetch(apiTicketPath(ticket.id, 'size'))
       if (!res.ok) throw new Error('Failed to calculate size')
       const data = await res.json()
       setTicketSize(data.size)

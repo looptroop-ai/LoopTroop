@@ -129,7 +129,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/approve-prd` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-prd` && init?.method === 'POST') {
         return Promise.resolve(
           new Response(JSON.stringify({ success: true }), {
             status: 200,
@@ -138,7 +138,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${TEST.ticketId}/coverage/fix-gaps` && init?.method === 'POST') {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps` && init?.method === 'POST') {
         if (coverageFixRequestHandler) return coverageFixRequestHandler()
         return Promise.resolve(
           new Response(JSON.stringify({ result: { status: 'gaps', remainingGaps: [] } }), {
@@ -326,7 +326,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/approve-prd`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/approve-prd`,
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ expectedContentSha256: SAVED_CONTENT_HASH }),
@@ -420,7 +420,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/tickets/${TEST.ticketId}/coverage/fix-gaps`,
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/coverage/fix-gaps`,
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ domain: 'prd' }),

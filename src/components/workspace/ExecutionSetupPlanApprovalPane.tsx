@@ -26,6 +26,7 @@ import {
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { AutosaveStatus } from './AutosaveStatus'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -341,8 +342,8 @@ export function ExecutionSetupPlanApprovalPane({
     ? ['artifact', ticket.id, 'execution-setup-plan', phaseAttempt]
     : ['artifact', ticket.id, 'execution-setup-plan']
   const planUrl = phaseAttempt != null
-    ? `/api/tickets/${ticket.id}/execution-setup-plan?phaseAttempt=${phaseAttempt}`
-    : `/api/tickets/${ticket.id}/execution-setup-plan`
+    ? `${apiTicketPath(ticket.id, 'execution-setup-plan')}?${new URLSearchParams({ phaseAttempt: String(phaseAttempt) }).toString()}`
+    : apiTicketPath(ticket.id, 'execution-setup-plan')
   const { data: fetchedPlan, isLoading, isFetching } = useQuery({
     queryKey: planQueryKey,
     queryFn: async () => {
@@ -489,7 +490,7 @@ export function ExecutionSetupPlanApprovalPane({
     setIsSaving(true)
     setSaveError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'execution-setup-plan'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -532,7 +533,7 @@ export function ExecutionSetupPlanApprovalPane({
     setIsRegenerating(true)
     setRegenerateError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'regenerate-execution-setup-plan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -573,7 +574,7 @@ export function ExecutionSetupPlanApprovalPane({
     setIsApproving(true)
     setApproveError(null)
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-execution-setup-plan`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-execution-setup-plan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),

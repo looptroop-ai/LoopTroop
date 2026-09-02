@@ -4,6 +4,7 @@ import { Loader2, FileCode2, ChevronRight, ChevronDown } from 'lucide-react'
 import { parseDiffStats, parseFileDiffs, computeLineNumbersWithWordDiff, type FileDiff } from './diffUtils'
 import { renderUnifiedDiffLineText } from './diffWordHighlights'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface BeadDiffViewerProps {
   ticketId: string
@@ -16,7 +17,7 @@ interface DiffResponse {
 }
 
 async function fetchBeadDiff(ticketId: string, beadId: string): Promise<DiffResponse> {
-  const response = await fetch(`/api/tickets/${ticketId}/beads/${beadId}/diff`)
+  const response = await fetch(apiTicketPath(ticketId, 'beads', beadId, 'diff'))
   if (!response.ok) {
     throw new Error(`Failed to load bead diff (${response.status})`)
   }

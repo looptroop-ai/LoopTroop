@@ -35,6 +35,7 @@ import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './R
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
 import { stripAnsiSequences } from '@shared/ansi'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -339,7 +340,7 @@ function mergeBeadRuntimeOverlay(
 }
 
 async function fetchTicketBeads(ticketId: string): Promise<TicketBead[]> {
-  const response = await fetch(`/api/tickets/${ticketId}/beads`)
+  const response = await fetch(apiTicketPath(ticketId, 'beads'))
   if (!response.ok) return []
   const payload = await response.json()
   return Array.isArray(payload)

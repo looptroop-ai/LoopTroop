@@ -3,6 +3,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT, type ExecutionSetupPlan } from '@/lib/executionSetupPlan'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 function focusExecutionSetupPlanAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT, {
@@ -21,7 +22,7 @@ export function ExecutionSetupPlanNavigator({ ticketId }: { ticketId: string }) 
   const { data, isLoading } = useQuery({
     queryKey: ['artifact', ticketId, 'execution-setup-plan'],
     queryFn: async () => {
-      const response = await fetch(`/api/tickets/${ticketId}/execution-setup-plan`)
+      const response = await fetch(apiTicketPath(ticketId, 'execution-setup-plan'))
       if (!response.ok) throw new Error('Failed to load execution setup plan')
       return response.json() as Promise<{ plan?: unknown }>
     },

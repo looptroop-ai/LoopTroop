@@ -3,6 +3,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 function focusBeadAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(BEADS_APPROVAL_FOCUS_EVENT, {
@@ -32,7 +33,7 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
   const { data: beadsData, isLoading } = useQuery({
     queryKey: ['artifact', ticketId, 'beads'],
     queryFn: async () => {
-      const response = await fetch(`/api/tickets/${ticketId}/beads`)
+      const response = await fetch(apiTicketPath(ticketId, 'beads'))
       if (!response.ok) throw new Error('Failed to load beads')
       return response.json()
     },

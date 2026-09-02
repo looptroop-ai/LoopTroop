@@ -49,6 +49,7 @@ import { ArtifactTypeFilter } from './ArtifactTypeFilter'
 import { getSupplementalArtifacts } from './supplementalArtifacts'
 import { getBeadCommitsDiffStats, serializeBeadCommitsDiffContent } from './diffUtils'
 import { isRecord } from '@shared/typeGuards'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 // Re-export viewer components so existing imports from this module continue to work
 export { RawContentView, InterviewAnswersView, PrdDraftView }
@@ -115,7 +116,7 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
     if (viewingSelection?.kind !== 'supplemental' || viewingSelection.id !== 'bead-commits' || !ticketId) return
 
     let cancelled = false
-    void fetch(`/api/tickets/${ticketId}/beads`)
+    void fetch(apiTicketPath(ticketId, 'beads'))
       .then(async (response) => response.ok ? response.json() : [])
       .then((payload: unknown) => {
         if (cancelled) return

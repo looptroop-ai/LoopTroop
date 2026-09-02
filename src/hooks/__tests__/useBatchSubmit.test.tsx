@@ -183,7 +183,7 @@ describe('useBatchSubmit draft restore', () => {
 
     const puts = uiStatePuts(fetchSpy)
     expect(puts).toHaveLength(1)
-    expect(String(puts[0]?.[0])).toBe('/api/tickets/1:T-flush/ui-state')
+    expect(String(puts[0]?.[0])).toBe(`/api/tickets/${encodeURIComponent('1:T-flush')}/ui-state`)
     expect(String(puts[0]?.[1] && (puts[0][1] as RequestInit).body)).toContain('typed just before switching')
   })
 })

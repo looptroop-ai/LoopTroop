@@ -29,6 +29,7 @@ import {
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { AutosaveStatus } from './AutosaveStatus'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -204,8 +205,8 @@ export function InterviewApprovalPane({
     try {
       const response = await fetch(
         editTab === 'answers'
-          ? `/api/tickets/${ticket.id}/interview-answers`
-          : `/api/tickets/${ticket.id}/interview`,
+          ? apiTicketPath(ticket.id, 'interview-answers')
+          : apiTicketPath(ticket.id, 'interview'),
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -259,7 +260,7 @@ export function InterviewApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-interview`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-interview'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),

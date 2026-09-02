@@ -31,6 +31,7 @@ import {
 } from './approvalHooks'
 import { AutosaveStatus } from './AutosaveStatus'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -177,7 +178,7 @@ function BeadsApprovalPane({
   const { data: fetchedBeads, isLoading } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', 'approval'],
     queryFn: async () => {
-      const r = await fetch(`/api/tickets/${ticket.id}/beads`)
+      const r = await fetch(apiTicketPath(ticket.id, 'beads'))
       if (!r.ok) throw new Error('Failed to load')
       const contentSha256 = typeof r.headers?.get === 'function'
         ? r.headers.get('X-Content-Sha256')
@@ -309,7 +310,7 @@ function BeadsApprovalPane({
         ? structuredDraft.map(buildBeadForSave)
         : jsonlToBeadsArray(jsonlDraft)
 
-      const response = await fetch(`/api/tickets/${ticket.id}/beads`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'beads'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(beadsToSave),
@@ -348,7 +349,7 @@ function BeadsApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-beads`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-beads'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -381,7 +382,7 @@ function BeadsApprovalPane({
     setCoverageFixError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/coverage/fix-gaps`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'coverage', 'fix-gaps'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: 'beads' }),
@@ -662,7 +663,7 @@ function ReadOnlyApprovalAttemptView({
   const { data: beadsContent } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', archivedAttempt ? phaseAttempt : 'live'],
     queryFn: async () => {
-      const response = await fetch(`/api/tickets/${ticket.id}/beads`)
+      const response = await fetch(apiTicketPath(ticket.id, 'beads'))
       if (!response.ok) return ''
       const payload = await response.json()
       return Array.isArray(payload) ? beadsArrayToJsonl(payload) : ''

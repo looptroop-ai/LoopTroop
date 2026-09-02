@@ -300,7 +300,7 @@ function routeFetch(url: string, method: string): Promise<Response> {
   if (versionMatch?.[1]) {
     return createJsonResponse(fixture?.manualQaRounds?.[Number(versionMatch[1])] ?? null)
   }
-  if (fixture && path === `/api/tickets/${ticketId}`) {
+  if (fixture && path === `/api/tickets/${encodeURIComponent(ticketId)}`) {
     return createJsonResponse(fixture.ticket)
   }
 

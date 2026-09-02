@@ -8,6 +8,8 @@ import {
   SERVER_LOG_REFRESH_EVENT,
   type LogEntry,
 } from '@/context/logUtils'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
 
@@ -45,7 +47,7 @@ function getQuery(ticketId: string, scope: HistoricalLogScope, before?: string):
   if (scope.modelId) params.set('modelId', scope.modelId)
   if (scope.beadId) params.set('beadId', scope.beadId)
   if (before) params.set('before', before)
-  return `/api/tickets/${encodeURIComponent(ticketId)}/logs?${params.toString()}`
+  return `${apiTicketPath(ticketId, 'logs')}?${params.toString()}`
 }
 
 function normalizePage(payload: unknown, fallbackPhase?: string): HistoricalLogPage {
@@ -80,7 +82,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam, signal }) => {
       const response = await fetch(getQuery(ticketId!, scope, pageParam ?? undefined), { signal })
-      if (!response.ok) throw new Error(`Unable to load logs (${response.status})`)
+      await throwIfNotOk(response, 'Unable to load logs')
       return normalizePage(await response.json(), scope.phase)
     },
     // History is only fetched toward older cursors via fetchPreviousPage.
@@ -147,8 +149,8 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     if (typeof scope.phaseAttempt === 'number') params.set('phaseAttempt', String(scope.phaseAttempt))
     if (scope.modelId) params.set('modelId', scope.modelId)
     if (scope.beadId) params.set('beadId', scope.beadId)
-    const response = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/logs/export?${params.toString()}`, { signal })
-    if (!response.ok) throw new Error(`Unable to export logs (${response.status})`)
+    const response = await fetch(`${apiTicketPath(ticketId, 'logs', 'export')}?${params.toString()}`, { signal })
+    await throwIfNotOk(response, 'Unable to export logs')
     return response.text()
   }, [scope, ticketId])
 

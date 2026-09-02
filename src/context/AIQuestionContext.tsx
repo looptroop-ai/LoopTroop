@@ -14,6 +14,7 @@ import {
   type AiQuestionInfo,
   type AiQuestionRequest,
 } from './aiQuestionContextDef'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface AiQuestionPayload {
   type: 'opencode_question' | 'opencode_question_resolved' | 'opencode_question_updated'
@@ -273,7 +274,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   const refreshTicket = useCallback((ticketId: string) => {
     void (async () => {
       try {
-        const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions`)
+        const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
         if (!res.ok) return
         const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
         applyTicketSnapshot(ticketId, Array.isArray(body.questions) ? body.questions : [], parseTimer(body.timer))
@@ -367,7 +368,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     stoppedTimersRef.current.add(stopKey)
     void (async () => {
       try {
-        const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/opencode/question-timer/stop`, {
+        const res = await fetch(apiTicketPath(ticketId, 'opencode', 'question-timer', 'stop'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: '{}',
@@ -417,7 +418,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     submitToRoute(
       ticketId,
       requestId,
-      `/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions/${encodeURIComponent(requestId)}/reply`,
+      apiTicketPath(ticketId, 'opencode', 'questions', requestId, 'reply'),
       { answers },
       'Could not send that answer',
     )
@@ -427,7 +428,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     submitToRoute(
       ticketId,
       requestId,
-      `/api/tickets/${encodeURIComponent(ticketId)}/opencode/questions/${encodeURIComponent(requestId)}/reject`,
+      apiTicketPath(ticketId, 'opencode', 'questions', requestId, 'reject'),
       reason ? { reason } : {},
       'Could not skip that question',
     )

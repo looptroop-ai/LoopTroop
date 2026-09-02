@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
 import { createTicketUiStateActionId, getTicketUiStateRevision } from '@/lib/ticketUiStateRevision'
 import type { AutosaveStatusState } from './AutosaveStatus'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 interface SaveTicketUiStateInput<T> {
   ticketId: string
@@ -41,7 +42,7 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
 
   if (typeof fetch === 'function') {
     try {
-      void fetch(`/api/tickets/${ticketId}/ui-state`, {
+      void fetch(apiTicketPath(ticketId, 'ui-state'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: payload,
@@ -56,7 +57,7 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
       return navigator.sendBeacon(
-        `/api/tickets/${ticketId}/ui-state`,
+        apiTicketPath(ticketId, 'ui-state'),
         new Blob([payload], { type: 'application/json' }),
       )
     } catch {

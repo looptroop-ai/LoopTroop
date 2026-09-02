@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export interface TicketPhaseAttempt {
   ticketId: string
@@ -11,7 +12,7 @@ export interface TicketPhaseAttempt {
 }
 
 async function fetchTicketPhaseAttempts(ticketId: string, phase: string): Promise<TicketPhaseAttempt[]> {
-  const response = await fetch(`/api/tickets/${ticketId}/phases/${encodeURIComponent(phase)}/attempts`)
+  const response = await fetch(apiTicketPath(ticketId, 'phases', phase, 'attempts'))
   if (!response.ok) return []
   const payload = await response.json()
   return Array.isArray(payload) ? payload as TicketPhaseAttempt[] : []

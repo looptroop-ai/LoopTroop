@@ -45,6 +45,7 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { apiTicketPath } from '@/lib/apiPaths'
 
 type EditTab = 'structured' | 'yaml'
 
@@ -331,7 +332,7 @@ export function PrdApprovalPane({
     setApproveError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/approve-prd`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'approve-prd'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -364,7 +365,7 @@ export function PrdApprovalPane({
     setCoverageFixError(null)
 
     try {
-      const response = await fetch(`/api/tickets/${ticket.id}/coverage/fix-gaps`, {
+      const response = await fetch(apiTicketPath(ticket.id, 'coverage', 'fix-gaps'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: 'prd' }),

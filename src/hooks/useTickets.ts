@@ -5,7 +5,8 @@ import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCach
 import { isTerminalWorkflowStatus, type WorkflowAction } from '@shared/workflowMeta'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
-import { failedResponseError } from '@/lib/fetchError'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
   createTicketUiStateActionId,
@@ -14,21 +15,6 @@ import {
 } from '@/lib/ticketUiStateRevision'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import type { SettingSource } from '@shared/aiQuestions'
-
-async function parseErrorBody(res: Response, fallback: string): Promise<string> {
-  let message = fallback
-  try {
-    const err = await res.json() as { error?: string; message?: string }
-    const category = err.error?.trim()
-    const detail = err.message?.trim()
-    message = category && detail && category !== detail
-      ? `${category}: ${detail}`
-      : detail || category || message
-  } catch {
-    // ignore parse failure
-  }
-  return message
-}
 
 export interface TicketEta {
   bestMs: number
@@ -270,16 +256,18 @@ export function getTicketsAutoRefreshInterval(
     : false
 }
 
-async function fetchTickets(projectId?: number): Promise<Ticket[]> {
-  const url = projectId ? `/api/tickets?projectId=${projectId}` : '/api/tickets'
-  const res = await fetch(url)
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch tickets')
+async function fetchTickets(projectId?: number, signal?: AbortSignal): Promise<Ticket[]> {
+  const url = projectId
+    ? `/api/tickets?${new URLSearchParams({ projectId: String(projectId) }).toString()}`
+    : '/api/tickets'
+  const res = await fetch(url, { signal })
+  await throwIfNotOk(res, 'Failed to fetch tickets')
   return res.json()
 }
 
-async function fetchTicket(id: string): Promise<Ticket> {
-  const res = await fetch(`/api/tickets/${id}`)
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch ticket')
+async function fetchTicket(id: string, signal?: AbortSignal): Promise<Ticket> {
+  const res = await fetch(apiTicketPath(id), { signal })
+  await throwIfNotOk(res, 'Failed to fetch ticket')
   return res.json()
 }
 
@@ -289,9 +277,7 @@ async function createTicket(input: CreateTicketInput): Promise<Ticket> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to create ticket'))
-  }
+  await throwIfNotOk(res, 'Failed to create ticket')
   return res.json()
 }
 
@@ -301,25 +287,23 @@ type UpdateTicketInput = Partial<Pick<
 >>
 
 async function updateTicket(id: string, input: UpdateTicketInput): Promise<Ticket> {
-  const res = await fetch(`/api/tickets/${id}`, {
+  const res = await fetch(apiTicketPath(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to update ticket'))
-  }
+  await throwIfNotOk(res, 'Failed to update ticket')
   return res.json()
 }
 
 function getTicketActionPath(id: string, action: WorkflowAction): string {
   switch (action) {
     case 'close_unmerged':
-      return `/api/tickets/${id}/close-unmerged`
+      return apiTicketPath(id, 'close-unmerged')
     case 'edit_execution_setup_plan':
-      return `/api/tickets/${id}/edit-execution-setup-plan`
+      return apiTicketPath(id, 'edit-execution-setup-plan')
     default:
-      return `/api/tickets/${id}/${action}`
+      return apiTicketPath(id, action)
   }
 }
 
@@ -362,9 +346,7 @@ export async function ticketAction(
         }
       : {}),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, `Failed to ${action} ticket`))
-  }
+  await throwIfNotOk(res, `Failed to ${action} ticket`)
   return res.json()
 }
 
@@ -376,7 +358,7 @@ interface CancelTicketOptions {
 }
 
 async function cancelTicket(id: string, options: CancelTicketOptions = {}): Promise<TicketActionResponse> {
-  const res = await fetch(`/api/tickets/${id}/cancel`, {
+  const res = await fetch(apiTicketPath(id, 'cancel'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -386,23 +368,19 @@ async function cancelTicket(id: string, options: CancelTicketOptions = {}): Prom
       ...(options.reason?.trim() ? { reason: options.reason.trim() } : {}),
     }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to cancel ticket'))
-  }
+  await throwIfNotOk(res, 'Failed to cancel ticket')
   return res.json()
 }
 
 async function deleteTicket(id: string): Promise<{ success: boolean; ticketId: string }> {
-  const res = await fetch(`/api/tickets/${id}`, { method: 'DELETE' })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to delete ticket'))
-  }
+  const res = await fetch(apiTicketPath(id), { method: 'DELETE' })
+  await throwIfNotOk(res, 'Failed to delete ticket')
   return res.json()
 }
 
-async function fetchInterview(ticketId: string): Promise<InterviewSessionView> {
-  const res = await fetch(`/api/tickets/${ticketId}/interview`)
-  if (!res.ok) throw new Error('Failed to fetch interview data')
+async function fetchInterview(ticketId: string, signal?: AbortSignal): Promise<InterviewSessionView> {
+  const res = await fetch(apiTicketPath(ticketId, 'interview'), { signal })
+  await throwIfNotOk(res, 'Failed to fetch interview data')
   return res.json()
 }
 
@@ -438,12 +416,11 @@ const uiStateSaveQueues = new Map<string, Promise<SaveTicketUIStateResponse>>()
 async function fetchTicketUIState<T = unknown>(
   ticketId: string,
   scope: string,
+  signal?: AbortSignal,
 ): Promise<TicketUIStateResponse<T>> {
   const params = new URLSearchParams({ scope })
-  const res = await fetch(`/api/tickets/${ticketId}/ui-state?${params.toString()}`)
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to fetch ticket UI state'))
-  }
+  const res = await fetch(`${apiTicketPath(ticketId, 'ui-state')}?${params.toString()}`, { signal })
+  await throwIfNotOk(res, 'Failed to fetch ticket UI state')
   const payload = await res.json() as Omit<TicketUIStateResponse<T>, 'ticketId'>
   return { ...payload, ticketId }
 }
@@ -455,7 +432,7 @@ async function saveTicketUIState(
   fetchImpl: typeof fetch = fetch,
 ): Promise<SaveTicketUIStateResponse> {
   const expectedRevision = getTicketUiStateRevision(ticketId, scope)
-  const res = await fetchImpl(`/api/tickets/${ticketId}/ui-state`, {
+  const res = await fetchImpl(apiTicketPath(ticketId, 'ui-state'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -466,9 +443,7 @@ async function saveTicketUIState(
     }),
   })
   if (res.status === 409) return res.json()
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to save ticket UI state'))
-  }
+  await throwIfNotOk(res, 'Failed to save ticket UI state')
   return res.json()
 }
 
@@ -492,7 +467,7 @@ function enqueueTicketUIStateSave(
 export function useTickets(projectId?: number) {
   return useQuery({
     queryKey: projectId ? ['tickets', { projectId }] : ['tickets'],
-    queryFn: () => fetchTickets(projectId),
+    queryFn: ({ signal }) => fetchTickets(projectId, signal),
     refetchInterval: (query) => getTicketsAutoRefreshInterval(query.state.data as Ticket[] | undefined),
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
@@ -503,7 +478,7 @@ export function useTicket(id: string | null) {
   const queryClient = useQueryClient()
   return useQuery({
     queryKey: ['ticket', id],
-    queryFn: () => fetchTicket(id!),
+    queryFn: ({ signal }) => fetchTicket(id!, signal),
     enabled: id !== null,
     initialData: () => {
       const allTicketLists = queryClient.getQueriesData<Ticket[]>({ queryKey: ['tickets'] })
@@ -612,14 +587,14 @@ export function useDeleteTicket() {
 export function useInterviewQuestions(ticketId: string) {
   return useQuery({
     queryKey: ['interview', ticketId],
-    queryFn: () => fetchInterview(ticketId),
+    queryFn: ({ signal }) => fetchInterview(ticketId, signal),
   })
 }
 
 export function useTicketUIState<T = unknown>(ticketId: string, scope: string, enabled: boolean = true) {
   return useQuery({
     queryKey: ['ticket-ui-state', ticketId, scope],
-    queryFn: () => fetchTicketUIState<T>(ticketId, scope),
+    queryFn: ({ signal }) => fetchTicketUIState<T>(ticketId, scope, signal),
     enabled,
     select: (data) => {
       rememberTicketUiStateRevision(ticketId, scope, data.revision)
@@ -673,14 +648,12 @@ async function submitBatch(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
 ): Promise<PersistedInterviewBatch | { accepted: boolean }> {
-  const res = await fetch(`/api/tickets/${ticketId}/answer-batch`, {
+  const res = await fetch(apiTicketPath(ticketId, 'answer-batch'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers, selectedOptions, skipReasons }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to submit batch'))
-  }
+  await throwIfNotOk(res, 'Failed to submit batch')
   return res.json()
 }
 
@@ -689,14 +662,12 @@ async function editInterviewAnswer(
   questionId: string,
   answer: string,
 ): Promise<{ success: boolean; questions: unknown[] }> {
-  const res = await fetch(`/api/tickets/${ticketId}/edit-answer`, {
+  const res = await fetch(apiTicketPath(ticketId, 'edit-answer'), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ questionId, answer }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to edit answer'))
-  }
+  await throwIfNotOk(res, 'Failed to edit answer')
   return res.json()
 }
 
@@ -707,7 +678,7 @@ async function skipInterview(
   skipReasons: Record<string, string> = {},
   bulkSkipReason?: string,
 ): Promise<TicketActionResponse> {
-  const res = await fetch(`/api/tickets/${ticketId}/skip`, {
+  const res = await fetch(apiTicketPath(ticketId, 'skip'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -717,9 +688,7 @@ async function skipInterview(
       ...(bulkSkipReason ? { bulkSkipReason } : {}),
     }),
   })
-  if (!res.ok) {
-    throw new Error(await parseErrorBody(res, 'Failed to skip remaining interview questions'))
-  }
+  await throwIfNotOk(res, 'Failed to skip remaining interview questions')
   return res.json()
 }
 

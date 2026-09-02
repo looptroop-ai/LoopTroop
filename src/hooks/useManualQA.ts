@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiTicketPath } from '@/lib/apiPaths'
 
 export type ManualQaResultStatus = 'pass' | 'fail' | 'waive' | 'improvement' | 'pending'
 export type ManualQaSeverity = 'required' | 'optional'
@@ -375,10 +377,7 @@ export interface ManualQaMutationBase {
 }
 
 async function parseResponse<T>(response: Response, fallback: string): Promise<T> {
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { error?: string; message?: string } | null
-    throw new Error(payload?.error ?? payload?.message ?? fallback)
-  }
+  await throwIfNotOk(response, fallback)
   return response.json() as Promise<T>
 }
 
@@ -386,9 +385,9 @@ export function useManualQaIndex(ticketId: string, enabled = true) {
   return useQuery({
     queryKey: ['manual-qa', ticketId, 'index'],
     enabled: Boolean(ticketId) && enabled,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const value = await parseResponse<ManualQaIndex & { completedRoundCount?: number }>(
-        await fetch(`/api/tickets/${ticketId}/manual-qa`),
+        await fetch(apiTicketPath(ticketId, 'manual-qa'), { signal }),
         'Failed to load Manual QA rounds',
       )
       const raw = value as unknown as Record<string, unknown>
@@ -425,8 +424,8 @@ export function useManualQaRound(ticketId: string, version: number | null, enabl
   return useQuery({
     queryKey: ['manual-qa', ticketId, 'version', version],
     enabled: Boolean(ticketId) && version !== null && enabled,
-    queryFn: async () => normalizeManualQaRound(await parseResponse<unknown>(
-      await fetch(`/api/tickets/${ticketId}/manual-qa/versions/${version}`),
+    queryFn: async ({ signal }) => normalizeManualQaRound(await parseResponse<unknown>(
+      await fetch(apiTicketPath(ticketId, 'manual-qa', 'versions', version!), { signal }),
       'Failed to load Manual QA checklist',
     ), version!),
     refetchInterval: (query) => query.state.data?.status === 'generating' ? 3000 : false,
@@ -464,19 +463,19 @@ function useRoundMutation<TVariables extends ManualQaMutationBase, TResult = unk
 
 export function useSubmitManualQa() {
   return useRoundMutation(manualQaMutation<ManualQaMutationBase & { draft: unknown }>(
-    ({ ticketId }) => `/api/tickets/${ticketId}/manual-qa/submit`,
+    ({ ticketId }) => apiTicketPath(ticketId, 'manual-qa', 'submit'),
   ))
 }
 
 export function useSkipManualQa() {
   return useRoundMutation(manualQaMutation<ManualQaMutationBase & { reason?: string; draft: unknown }>(
-    ({ ticketId }) => `/api/tickets/${ticketId}/manual-qa/skip`,
+    ({ ticketId }) => apiTicketPath(ticketId, 'manual-qa', 'skip'),
   ))
 }
 
 export function useResolveManualQaDrift(decision: 'include' | 'discard') {
   return useRoundMutation(manualQaMutation<ManualQaMutationBase>(
-    ({ ticketId }) => `/api/tickets/${ticketId}/manual-qa/workspace-drift/${decision}`,
+    ({ ticketId }) => apiTicketPath(ticketId, 'manual-qa', 'workspace-drift', decision),
   ))
 }
 
@@ -490,7 +489,8 @@ export function useUploadManualQaEvidence() {
         expectedChecklistHash,
         expectedDraftRevision: String(expectedDraftRevision),
       })
-      const payload = await parseResponse<unknown>(await fetch(`/api/tickets/${ticketId}/manual-qa/versions/${version}/evidence?${params.toString()}`, {
+      const evidenceUrl = `${apiTicketPath(ticketId, 'manual-qa', 'versions', version, 'evidence')}?${params.toString()}`
+      const payload = await parseResponse<unknown>(await fetch(evidenceUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': file.type || 'application/octet-stream',
@@ -512,7 +512,7 @@ export function useRemoveManualQaEvidence() {
   return useMutation({
     mutationFn: async ({ ticketId, version, itemId, evidenceId, ...body }: ManualQaMutationBase & { itemId: string; evidenceId: string }) =>
       parseResponse<{ success: boolean }>(await fetch(
-        `/api/tickets/${ticketId}/manual-qa/versions/${version}/evidence/${encodeURIComponent(itemId)}/${encodeURIComponent(evidenceId)}`,
+        apiTicketPath(ticketId, 'manual-qa', 'versions', version, 'evidence', itemId, evidenceId),
         {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
@@ -526,7 +526,7 @@ export function useRemoveManualQaEvidence() {
 }
 
 export function manualQaEvidenceUrl(ticketId: string, version: number, itemId: string, evidenceId: string, inline = false) {
-  const path = `/api/tickets/${ticketId}/manual-qa/versions/${version}/evidence/${encodeURIComponent(itemId)}/${encodeURIComponent(evidenceId)}`
+  const path = apiTicketPath(ticketId, 'manual-qa', 'versions', version, 'evidence', itemId, evidenceId)
   return inline ? `${path}?inline=true` : path
 }
 

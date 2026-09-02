@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { describeQueryError, failedResponseError } from '../fetchError'
+import { describeQueryError, failedResponseError, throwIfNotOk } from '../fetchError'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -45,6 +45,57 @@ describe('failedResponseError', () => {
     expect(error.message).toContain('…')
   })
 
+  it('keeps both halves of a category-and-detail body', async () => {
+    // The mutation hooks used to compose this pair themselves and drop the
+    // status. Neither half is redundant: the category names the rule, the
+    // message names what broke it.
+    const error = await failedResponseError(
+      jsonResponse(400, { error: 'Invalid input', message: 'title is required' }),
+      'Failed to create ticket',
+    )
+
+    expect(error.message).toBe('Failed to create ticket (HTTP 400: Invalid input: title is required)')
+  })
+
+  it('prints a repeated category and detail once', async () => {
+    const error = await failedResponseError(
+      jsonResponse(400, { error: 'Ticket is locked', message: 'Ticket is locked' }),
+      'Failed to update ticket',
+    )
+
+    expect(error.message).toBe('Failed to update ticket (HTTP 400: Ticket is locked)')
+  })
+
+  it('lists a validation array, which is how prompt saves fail', async () => {
+    const error = await failedResponseError(
+      jsonResponse(400, { errors: ['unknown variable {{foo}}', 'unbalanced braces'] }),
+      'Failed to save prompt',
+    )
+
+    expect(error.message).toBe('Failed to save prompt (HTTP 400: unknown variable {{foo}}; unbalanced braces)')
+  })
+
+  it('quotes a string `details`, which the project routes send instead of `message`', async () => {
+    const error = await failedResponseError(
+      jsonResponse(400, { error: 'Invalid folder', details: 'No git repository found' }),
+      'Failed to create project',
+    )
+
+    expect(error.message).toBe('Failed to create project (HTTP 400: Invalid folder: No git repository found)')
+  })
+
+  it('never interpolates an object `details` into the banner', async () => {
+    // Some routes put a Zod field map there. Joined into a string it reads
+    // "[object Object]", which is worse than the category on its own.
+    const error = await failedResponseError(
+      jsonResponse(400, { error: 'Invalid input', details: { fieldErrors: { name: ['Required'] } } }),
+      'Failed to create project',
+    )
+
+    expect(error.message).toBe('Failed to create project (HTTP 400: Invalid input)')
+    expect(error.message).not.toContain('object Object')
+  })
+
   it('never throws while describing a failure, even on an unreadable body', async () => {
     // A response whose body already errored is exactly what an aborted request
     // leaves behind; describing the failure must not replace it with a new one.
@@ -56,6 +107,21 @@ describe('failedResponseError', () => {
     const error = await failedResponseError(unreadable, 'Failed to fetch tickets')
 
     expect(error.message).toBe('Failed to fetch tickets (HTTP 500)')
+  })
+})
+
+describe('throwIfNotOk', () => {
+  it('throws the described error for a failure', async () => {
+    await expect(throwIfNotOk(jsonResponse(404, { error: 'Ticket not found' }), 'Failed to fetch ticket'))
+      .rejects.toThrow('Failed to fetch ticket (HTTP 404: Ticket not found)')
+  })
+
+  it('leaves a successful response and its unread body alone', async () => {
+    const res = jsonResponse(200, { id: 't1' })
+
+    await expect(throwIfNotOk(res, 'Failed to fetch ticket')).resolves.toBeUndefined()
+    // The body must survive: every caller reads it on the next line.
+    expect(await res.json()).toEqual({ id: 't1' })
   })
 })
 

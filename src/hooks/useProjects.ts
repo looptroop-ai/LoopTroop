@@ -4,7 +4,8 @@ import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
-import { failedResponseError } from '@/lib/fetchError'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { apiProjectPath } from '@/lib/apiPaths'
 import { DEFAULT_IGNORE_MODE, normalizeIgnoreMode, type IgnoreMode } from '@shared/ignoreMode'
 
 interface Project {
@@ -111,9 +112,9 @@ function removeDeletedProjectTicketCaches(
   }
 }
 
-async function fetchProjects(): Promise<Project[]> {
-  const res = await fetch('/api/projects')
-  if (!res.ok) throw await failedResponseError(res, 'Failed to fetch projects')
+async function fetchProjects(signal?: AbortSignal): Promise<Project[]> {
+  const res = await fetch('/api/projects', { signal })
+  await throwIfNotOk(res, 'Failed to fetch projects')
   const projects = await res.json() as Project[]
   return projects.map((project) => ({
     ...project,
@@ -128,11 +129,7 @@ async function createProject(input: CreateProjectInput): Promise<Project> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
-    throw new Error(message || 'Failed to create project')
-  }
+  await throwIfNotOk(res, 'Failed to create project')
   const project = await res.json() as Project
   return {
     ...project,
@@ -147,16 +144,12 @@ type UpdateProjectInput = Partial<Pick<
 >>
 
 async function updateProject(id: number, input: UpdateProjectInput): Promise<Project> {
-  const res = await fetch(`/api/projects/${id}`, {
+  const res = await fetch(apiProjectPath(id), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  if (!res.ok) {
-    const err = await res.json()
-    const message = [err.error, err.message, err.details].filter(Boolean).join(' — ')
-    throw new Error(message || 'Failed to update project')
-  }
+  await throwIfNotOk(res, 'Failed to update project')
   const project = await res.json() as Project
   return {
     ...project,
@@ -168,7 +161,7 @@ async function updateProject(id: number, input: UpdateProjectInput): Promise<Pro
 export function useProjects() {
   return useQuery({
     queryKey: ['projects'],
-    queryFn: fetchProjects,
+    queryFn: ({ signal }) => fetchProjects(signal),
   })
 }
 
@@ -186,12 +179,8 @@ export function useDeleteProject() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
-      if (!res.ok) {
-        const err = await res.json()
-        const message = [err.error, err.details].filter(Boolean).join(' — ')
-        throw new Error(message || 'Failed to delete project')
-      }
+      const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
+      await throwIfNotOk(res, 'Failed to delete project')
     },
     onSuccess: (_, projectId) => {
       removeDeletedProjectTicketCaches(queryClient, projectId)
@@ -215,9 +204,9 @@ export function useUpdateProject() {
 export function useProjectWorktreesSize(projectId: number) {
   return useQuery({
     queryKey: ['project-worktrees-size', projectId],
-    queryFn: async () => {
-      const res = await fetch(`/api/projects/${projectId}/worktrees/size`)
-      if (!res.ok) throw new Error('Failed to fetch worktrees size')
+    queryFn: async ({ signal }) => {
+      const res = await fetch(apiProjectPath(projectId, 'worktrees', 'size'), { signal })
+      await throwIfNotOk(res, 'Failed to fetch worktrees size')
       return res.json() as Promise<{ bytes: number }>
     },
     enabled: false,
@@ -229,12 +218,8 @@ export function useDeleteProjectWorktrees() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/projects/${id}/worktrees`, { method: 'DELETE' })
-      if (!res.ok) {
-        const err = await res.json()
-        const message = [err.error, err.details].filter(Boolean).join(' — ')
-        throw new Error(message || 'Failed to delete worktrees')
-      }
+      const res = await fetch(apiProjectPath(id, 'worktrees'), { method: 'DELETE' })
+      await throwIfNotOk(res, 'Failed to delete worktrees')
       return res.json() as Promise<{ success: boolean; freedBytes: number }>
     },
     onSuccess: () => {

@@ -4,6 +4,7 @@ import { getApiUrl, waitForDevBackend } from '@/lib/devApi'
 import { SSE_RECONNECT_DELAY_MS } from '@/lib/constants'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
+import { probeSessionAfterStreamFailure } from '@/lib/sessionState'
 import { patchTicketStatusInCache } from './ticketStatusCache'
 import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
 import { getTicketAiDetailsQueryKey } from './useTicketAiDetails'
@@ -142,6 +143,9 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
     recoverOnOpenRef.current = persistedLastEventId !== '0'
   }, [ticketId])
 
+  /** Whether this connection has already asked about the session; see `onerror`. */
+  const sessionProbedRef = useRef(false)
+
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
     reconnectTimerRef.current = setTimeout(() => reconnectRef.current?.(), SSE_RECONNECT_DELAY_MS)
@@ -183,6 +187,7 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
       const es = new EventSource(url.toString())
       eventSourceRef.current = es
+      sessionProbedRef.current = false
 
       /**
        * Every callback below can fire after this connection stopped being the current
@@ -426,6 +431,15 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
         eventSourceRef.current = null
         recoverOnOpenRef.current = true
         setConnectionState('reconnecting')
+        // The stream cannot report a 401 — `onerror` carries no status — so the
+        // first failure of a connection asks an ordinary route instead. Only
+        // that answer latches signed-out; a dropped connection does not. Once
+        // per connection, not per retry: the reconnect loop would otherwise ask
+        // every few seconds forever.
+        if (!sessionProbedRef.current) {
+          sessionProbedRef.current = true
+          void probeSessionAfterStreamFailure()
+        }
         const currentTicketId = ticketIdRef.current
         if (currentTicketId) {
           queryClient.invalidateQueries({ queryKey: ['ticket', currentTicketId] })

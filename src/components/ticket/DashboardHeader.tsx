@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { FolderOpen, Copy, Check as CheckIcon, Pencil, HardDrive, RotateCw, ChevronDown, ChevronRight, File, Folder, ExternalLink, CircleHelp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -7,6 +7,7 @@ import { useUI } from '@/context/useUI'
 import { useTicketAction, useUpdateTicket } from '@/hooks/useTickets'
 import type { Ticket } from '@/hooks/useTickets'
 import { useProfile } from '@/hooks/useProfile'
+import { getProfileCouncil } from '@/lib/profileCouncil'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
@@ -252,6 +253,10 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
   const { isPending } = useTicketAction()
   const { mutateAsync: updateTicket } = useUpdateTicket()
   const { data: profile } = useProfile()
+  // Parsed here rather than inside the panel's render: these are JSON strings on
+  // the profile, and parsing them where they are read meant doing it on every
+  // render and asserting the result instead of checking it.
+  const profileCouncil = useMemo(() => getProfileCouncil(profile), [profile])
   const [isDetailsOpen, setIsDetailsOpen] = useState(false)
   const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false)
   const [isBottomFadeVisible, setIsBottomFadeVisible] = useState(false)
@@ -568,11 +573,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
               const mainModel = isDraft ? profile?.mainImplementer ?? null : ticket.lockedMainImplementer
               const mainVariant = isDraft ? (profile?.mainImplementerVariant ?? null) : ticket.lockedMainImplementerVariant
               const rawCouncilVariants = isDraft
-                ? (profile?.councilMemberVariants ? JSON.parse(profile.councilMemberVariants) as Record<string, string> : {})
+                ? profileCouncil.variants
                 : (ticket.lockedCouncilMemberVariants ?? {})
-              const rawMembers: string[] = isDraft
-                ? (profile?.councilMembers ? JSON.parse(profile.councilMembers) as string[] : [])
-                : lockedCouncilMembers
+              const rawMembers: string[] = isDraft ? profileCouncil.members : lockedCouncilMembers
               const otherMembers = (rawMembers.length > 0 && rawMembers[0] === mainModel) ? rawMembers.slice(1) : rawMembers
               if (!mainModel && otherMembers.length === 0) return null
               return (

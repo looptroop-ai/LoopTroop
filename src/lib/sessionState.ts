@@ -90,11 +90,56 @@ export function installSessionWatch(): void {
   watchInstalled = true
 }
 
+/**
+ * An ordinary authenticated route, cheap enough to ask on a whim.
+ *
+ * `/api/workflow/meta` answers from constants — no database, no filesystem — and
+ * sits behind the same session middleware as everything else, which is the only
+ * property that matters here.
+ */
+const SESSION_PROBE_PATH = '/api/workflow/meta'
+
+let probeInFlight: Promise<void> | null = null
+
+/**
+ * Asks whether the session is still good, after something that cannot say.
+ *
+ * `EventSource` carries no HTTP status into `onerror` — the browser event has
+ * none — so a stream refused with 401 is indistinguishable from a dropped
+ * connection, and a tab left open overnight with every ticket terminal looped on
+ * reconnect forever without ever latching signed-out. (With no active ticket the
+ * list refetch is off too, so no ordinary request was making the discovery
+ * either.)
+ *
+ * Three outcomes, kept apart on purpose: 401 means the session is gone and is
+ * latched; any other status means it is not; a thrown request means the daemon
+ * is unreachable, which says nothing about the session and must not sign anybody
+ * out. One probe at a time — a reconnect storm is one question, not twenty.
+ */
+export function probeSessionAfterStreamFailure(): Promise<void> {
+  if (signedOut) return Promise.resolve()
+  if (probeInFlight) return probeInFlight
+
+  probeInFlight = (async () => {
+    try {
+      const response = await fetch(SESSION_PROBE_PATH, { cache: 'no-store' })
+      if (response.status === 401) reportSignedOut()
+    } catch {
+      // Unreachable is not unauthenticated.
+    } finally {
+      probeInFlight = null
+    }
+  })()
+
+  return probeInFlight
+}
+
 /** Test-only: the store and the fetch wrapper both outlive a single test. */
 export const __sessionStateForTests = {
   reset(): void {
     signedOut = false
     watchInstalled = false
+    probeInFlight = null
     listeners.clear()
   },
 }

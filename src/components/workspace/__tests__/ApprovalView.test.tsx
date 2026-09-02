@@ -760,3 +760,66 @@ describe('Interview approval UI', () => {
     })
   }, 30_000)
 })
+
+describe('Read-only approval attempts', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset()
+    mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
+    mockUseTicketUIState.mockReturnValue({
+      data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null },
+    })
+    mockUseTicketArtifacts.mockReset()
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('does not ask the interview endpoint about a PRD attempt', async () => {
+    // The interview query says nothing about a PRD or a bead plan, so leaving it
+    // enabled cost a request per open and surfaced an interview failure on the
+    // wrong artifact.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`) {
+        return createJsonResponse({ content: 'problem: keep it steady' })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} artifactType="prd" readOnly />,
+    )
+
+    await waitFor(() => expect(mockUseInterviewQuestions).toHaveBeenCalled())
+    expect(mockUseInterviewQuestions).toHaveBeenCalledWith(TEST.ticketId, { enabled: false })
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/interview'))).toBe(false)
+    })
+  })
+
+  it('says the PRD request failed instead of drawing an empty artifact', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Artifact store unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderWithProviders(
+      <ApprovalView ticket={makeTicket({ status: 'WAITING_PRD_APPROVAL' })} artifactType="prd" readOnly />,
+    )
+
+    expect(await screen.findByText('This artifact could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load PRD (HTTP 503: Artifact store unavailable)')).toBeInTheDocument()
+    expect(screen.queryByText('No PRD artifact available.')).not.toBeInTheDocument()
+  })
+})

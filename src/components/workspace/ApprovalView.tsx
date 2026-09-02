@@ -31,7 +31,9 @@ import {
 } from './approvalHooks'
 import { AutosaveStatus } from './AutosaveStatus'
 import { commandSpecSchema } from '@shared/commandSpec'
-import { apiTicketPath } from '@/lib/apiPaths'
+import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -648,29 +650,55 @@ function ReadOnlyApprovalAttemptView({
     const snapshotArtifact = artifacts.find((artifact) => artifact.artifactType === snapshotArtifactType)
     return parseApprovalSnapshotRaw(snapshotArtifact?.content)
   }, [artifacts, snapshotArtifactType])
-  const { data: interviewData } = useInterviewQuestions(ticket.id)
-  const { data: prdContent } = useQuery({
+  // The interview endpoint answers for the interview artifact only. Left always
+  // enabled, opening a read-only PRD or beads attempt still called it, and its
+  // failure then surfaced against an artifact type it says nothing about.
+  const { data: interviewData, isError: isInterviewError, error: interviewError, refetch: refetchInterview } =
+    useInterviewQuestions(ticket.id, {
+      enabled: Boolean(ticket.id) && artifactType === 'interview' && !archivedAttempt,
+    })
+  const {
+    data: prdContent,
+    isError: isPrdError,
+    error: prdError,
+    refetch: refetchPrd,
+  } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', archivedAttempt ? phaseAttempt : 'live'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticket.id}/prd`)
-      if (!response.ok) return ''
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticket.id, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json() as { content?: string }
       return payload.content ?? ''
     },
     enabled: artifactType === 'prd' && !archivedAttempt,
     staleTime: QUERY_STALE_TIME_5M,
   })
-  const { data: beadsContent } = useQuery({
+  const {
+    data: beadsContent,
+    isError: isBeadsError,
+    error: beadsError,
+    refetch: refetchBeads,
+  } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', archivedAttempt ? phaseAttempt : 'live'],
-    queryFn: async () => {
-      const response = await fetch(apiTicketPath(ticket.id, 'beads'))
-      if (!response.ok) return ''
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiTicketPath(ticket.id, 'beads'), { signal })
+      await throwIfNotOk(response, 'Failed to load beads')
       const payload = await response.json()
       return Array.isArray(payload) ? beadsArrayToJsonl(payload) : ''
     },
     enabled: artifactType === 'beads' && !archivedAttempt,
     staleTime: QUERY_STALE_TIME_5M,
   })
+
+  // An archived attempt reads its content from the artifact snapshot, so only a
+  // live attempt can fail here.
+  const contentError = archivedAttempt
+    ? null
+    : artifactType === 'interview'
+      ? (isInterviewError ? { error: interviewError, retry: refetchInterview } : null)
+      : artifactType === 'prd'
+        ? (isPrdError ? { error: prdError, retry: refetchPrd } : null)
+        : (isBeadsError ? { error: beadsError, retry: refetchBeads } : null)
 
   const content = artifactType === 'interview'
     ? (archivedAttempt ? snapshotRaw : (interviewData?.raw ?? ''))
@@ -721,7 +749,14 @@ function ReadOnlyApprovalAttemptView({
       </div>
 
       <div className="flex-1 min-h-0 px-4 pb-2 overflow-auto">
-        {artifactType === 'interview' ? (
+        {contentError ? (
+          <QueryErrorNotice
+            className="py-8"
+            title="This artifact could not be loaded."
+            error={contentError.error}
+            onRetry={() => void contentError.retry()}
+          />
+        ) : artifactType === 'interview' ? (
           interviewDocument ? (
             <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
           ) : content ? (

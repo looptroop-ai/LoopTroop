@@ -4,6 +4,9 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { dispatchPrdApprovalFocus, buildPrdApprovalOutline, parsePrdDocument } from '@/lib/prdDocument'
+import { apiFilePath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 function focusPrdAnchor(ticketId: string, anchorId: string) {
   dispatchPrdApprovalFocus(ticketId, anchorId)
@@ -40,11 +43,11 @@ function OutlineCard({
 }
 
 export function PrdApprovalNavigator({ ticketId }: { ticketId: string }) {
-  const { data: fetchedContent, isLoading } = useQuery({
+  const { data: fetchedContent, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['artifact', ticketId, 'prd'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticketId}/prd`)
-      if (!response.ok) throw new Error('Failed to load PRD')
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticketId, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json()
       return typeof payload?.content === 'string' ? payload.content : ''
     },
@@ -63,6 +66,12 @@ export function PrdApprovalNavigator({ ticketId }: { ticketId: string }) {
         <div className="space-y-2 pr-2">
           {isLoading ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">Loading PRD outline…</div>
+          ) : isError ? (
+            <QueryErrorNotice
+              title="The PRD outline could not be loaded."
+              error={error}
+              onRetry={() => void refetch()}
+            />
           ) : !outline ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">The PRD approval outline will appear once the canonical artifact is ready.</div>
           ) : (

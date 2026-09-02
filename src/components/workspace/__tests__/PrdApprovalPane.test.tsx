@@ -108,7 +108,7 @@ describe('PrdApprovalPane', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
 
-      if (url === `/api/files/${TEST.ticketId}/prd` && (!init || init.method === 'GET')) {
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({ content: currentContent, contentSha256: currentContentSha256 }), {
             status: 200,
@@ -117,7 +117,7 @@ describe('PrdApprovalPane', () => {
         )
       }
 
-      if (url === `/api/files/${TEST.ticketId}/prd` && init?.method === 'PUT') {
+      if (url === `/api/files/${encodeURIComponent(TEST.ticketId)}/prd` && init?.method === 'PUT') {
         const body = JSON.parse(String(init.body)) as { content?: string; document?: ReturnType<typeof makePrdDocument> }
         currentContent = body.document ? buildPrdDocumentYaml(body.document) : body.content ?? currentContent
         currentContentSha256 = SAVED_CONTENT_HASH
@@ -313,7 +313,7 @@ describe('PrdApprovalPane', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        `/api/files/${TEST.ticketId}/prd`,
+        `/api/files/${encodeURIComponent(TEST.ticketId)}/prd`,
         expect.objectContaining({ method: 'PUT' }),
       )
     })

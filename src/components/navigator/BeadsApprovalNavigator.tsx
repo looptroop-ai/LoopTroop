@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 function focusBeadAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(BEADS_APPROVAL_FOCUS_EVENT, {
@@ -30,11 +32,11 @@ function parseBeadsOutline(data: unknown[]): BeadOutlineItem[] {
 }
 
 export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
-  const { data: beadsData, isLoading } = useQuery({
+  const { data: beadsData, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['artifact', ticketId, 'beads'],
-    queryFn: async () => {
-      const response = await fetch(apiTicketPath(ticketId, 'beads'))
-      if (!response.ok) throw new Error('Failed to load beads')
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiTicketPath(ticketId, 'beads'), { signal })
+      await throwIfNotOk(response, 'Failed to load beads')
       return response.json()
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -52,6 +54,12 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
         <div className="space-y-1 pr-2">
           {isLoading ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">Loading beads outline…</div>
+          ) : isError ? (
+            <QueryErrorNotice
+              title="The beads outline could not be loaded."
+              error={error}
+              onRetry={() => void refetch()}
+            />
           ) : outline.length === 0 ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">The beads approval outline will appear once the artifact is ready.</div>
           ) : (

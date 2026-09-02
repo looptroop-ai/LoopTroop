@@ -22,6 +22,11 @@ export function apiTicketPath(ticketId: string, ...segments: Array<string | numb
   return `/api/tickets/${encodeURIComponent(ticketId)}${tail}`
 }
 
+/** `/api/files/<ticketId>/<file>`, both segments encoded. */
+export function apiFilePath(ticketId: string, file: string): string {
+  return `/api/files/${encodeURIComponent(ticketId)}/${encodeURIComponent(file)}`
+}
+
 /** `/api/projects/<projectId>[/<segment>…]`, every segment encoded. */
 export function apiProjectPath(projectId: string | number, ...segments: Array<string | number>): string {
   const tail = segments.length > 0 ? `/${encodeSegments(segments)}` : ''

@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT, type ExecutionSetupPlan } from '@/lib/executionSetupPlan'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 function focusExecutionSetupPlanAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(EXECUTION_SETUP_PLAN_APPROVAL_FOCUS_EVENT, {
@@ -19,11 +21,11 @@ function isExecutionSetupPlan(value: unknown): value is ExecutionSetupPlan {
 }
 
 export function ExecutionSetupPlanNavigator({ ticketId }: { ticketId: string }) {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['artifact', ticketId, 'execution-setup-plan'],
-    queryFn: async () => {
-      const response = await fetch(apiTicketPath(ticketId, 'execution-setup-plan'))
-      if (!response.ok) throw new Error('Failed to load execution setup plan')
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiTicketPath(ticketId, 'execution-setup-plan'), { signal })
+      await throwIfNotOk(response, 'Failed to load execution setup plan')
       return response.json() as Promise<{ plan?: unknown }>
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -42,6 +44,12 @@ export function ExecutionSetupPlanNavigator({ ticketId }: { ticketId: string }) 
         <div className="space-y-1 pr-2">
           {isLoading ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">Loading setup plan…</div>
+          ) : isError ? (
+            <QueryErrorNotice
+              title="The setup-plan outline could not be loaded."
+              error={error}
+              onRetry={() => void refetch()}
+            />
           ) : !plan ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">The setup-plan outline will appear once the draft is ready.</div>
           ) : plan.steps.length === 0 ? (

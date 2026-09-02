@@ -584,10 +584,19 @@ export function useDeleteTicket() {
   })
 }
 
-export function useInterviewQuestions(ticketId: string) {
+/**
+ * The interview session for a ticket.
+ *
+ * `enabled` defaults to "there is a ticket", which is what the three interview
+ * surfaces want. The read-only approval view is the exception: it renders PRD
+ * and beads attempts too, and asking `/interview` for those both costs a request
+ * and puts an interview failure in front of somebody looking at a bead plan.
+ */
+export function useInterviewQuestions(ticketId: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['interview', ticketId],
     queryFn: ({ signal }) => fetchInterview(ticketId, signal),
+    enabled: options?.enabled ?? Boolean(ticketId),
   })
 }
 

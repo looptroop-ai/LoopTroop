@@ -35,7 +35,9 @@ import { CopyButton as RawCopyButton, RawDisplayPre, RawDisplayStats } from './R
 import { manualQaEvidenceUrl } from '@/hooks/useManualQA'
 import { normalizeRawAttempts, tryParseStructuredContent, type ArtifactRawAttemptData } from './phaseArtifactTypes'
 import { stripAnsiSequences } from '@shared/ansi'
-import { apiTicketPath } from '@/lib/apiPaths'
+import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface CodingViewProps {
   ticket: Ticket
@@ -339,9 +341,9 @@ function mergeBeadRuntimeOverlay(
   return merged
 }
 
-async function fetchTicketBeads(ticketId: string): Promise<TicketBead[]> {
-  const response = await fetch(apiTicketPath(ticketId, 'beads'))
-  if (!response.ok) return []
+async function fetchTicketBeads(ticketId: string, signal?: AbortSignal): Promise<TicketBead[]> {
+  const response = await fetch(apiTicketPath(ticketId, 'beads'), { signal })
+  await throwIfNotOk(response, 'Failed to load beads')
   const payload = await response.json()
   return Array.isArray(payload)
     ? payload
@@ -670,9 +672,9 @@ function selectDefaultRawAttemptKey(attempts: BeadRawAttempt[], bead: TicketBead
 function usePrdDocument(ticketId: string): { prd: PrdDocument | null; isLoading: boolean; isError: boolean } {
   const { data: fetchedContent, isLoading, isError } = useQuery({
     queryKey: ['artifact', ticketId, 'prd'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticketId}/prd`)
-      if (!response.ok) throw new Error(`PRD fetch failed: ${response.status}`)
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticketId, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json() as { content?: string }
       return payload.content ?? ''
     },
@@ -1175,9 +1177,14 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const loadLogsForPhase = logCtx?.loadLogsForPhase
   const getLogsForPhase = logCtx?.getLogsForPhase
   const { mutate: performAction, mutateAsync: performActionAsync, isPending } = useTicketAction()
-  const { data: fetchedBeads = [] } = useQuery({
+  const {
+    data: fetchedBeads = [],
+    isError: isBeadsError,
+    error: beadsError,
+    refetch: refetchBeads,
+  } = useQuery({
     queryKey: ['ticket-beads', ticket.id],
-    queryFn: () => fetchTicketBeads(ticket.id),
+    queryFn: ({ signal }) => fetchTicketBeads(ticket.id, signal),
     enabled: hasBeadControls && ticket.runtime.totalBeads > 0,
     placeholderData: hasBeadControls
       ? (ticket.runtime.beads ?? []).map((bead) => normalizeBead(bead))
@@ -1465,6 +1472,16 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
           >
             {readOnly || isCompleted ? 'Close' : 'Back to live'}
           </Button>
+        </div>
+      )}
+
+      {hasBeadControls && isBeadsError && (
+        <div className="px-4 border-b border-border shrink-0">
+          <QueryErrorNotice
+            title="The bead list could not be refreshed. Anything shown below is the last known state."
+            error={beadsError}
+            onRetry={() => void refetchBeads()}
+          />
         </div>
       )}
 

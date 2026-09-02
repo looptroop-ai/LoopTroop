@@ -45,7 +45,9 @@ import {
   mergeVoteArtifactContent,
 } from './artifactCompanionUtils'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { apiTicketPath } from '@/lib/apiPaths'
+import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 type EditTab = 'structured' | 'yaml'
 
@@ -146,13 +148,11 @@ export function PrdApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
-  const { data: fetchedPrd, isLoading, isFetching } = useQuery({
+  const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
-    queryFn: async () => {
-      const response = await fetch(`/api/files/${ticket.id}/prd`)
-      if (!response.ok) {
-        throw new Error('Failed to load PRD')
-      }
+    queryFn: async ({ signal }) => {
+      const response = await fetch(apiFilePath(ticket.id, 'prd'), { signal })
+      await throwIfNotOk(response, 'Failed to load PRD')
       const payload = await response.json() as PrdArtifactResponse
       return {
         content: payload.content ?? '',
@@ -289,7 +289,7 @@ export function PrdApprovalPane({
     setSaveError(null)
 
     try {
-      const response = await fetch(`/api/files/${ticket.id}/prd`, {
+      const response = await fetch(apiFilePath(ticket.id, 'prd'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
@@ -299,10 +299,8 @@ export function PrdApprovalPane({
         ),
       })
 
-      const payload = await response.json() as PrdArtifactResponse & { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Save failed')
-      }
+      await throwIfNotOk(response, 'Failed to save PRD')
+      const payload = await response.json() as PrdArtifactResponse
 
       const nextRaw = payload.content ?? ''
       queryClient.setQueryData(['artifact', ticket.id, 'prd', 'approval'], {
@@ -600,7 +598,14 @@ export function PrdApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
-          {isLoading || isPreparingStructuredPrd ? (
+          {isPrdError && !rawContent ? (
+            <QueryErrorNotice
+              className="py-8"
+              title="The PRD could not be loaded."
+              error={prdError}
+              onRetry={() => void refetchPrd()}
+            />
+          ) : isLoading || isPreparingStructuredPrd ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
               <div className="text-center space-y-2">
                 <LoadingText text={isPreparingStructuredPrd ? 'Preparing PRD approval view' : 'Loading PRD'} className="text-sm font-medium animate-pulse" />

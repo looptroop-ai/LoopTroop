@@ -6,7 +6,6 @@ import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
-import { getTicketCouncilMembers } from '@/lib/ticketNormalization'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import {
   findLatestArtifact,
@@ -167,7 +166,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   const artifactState = useTicketArtifactBundle(ticket.id, artifactScopes)
   const phaseArtifacts = useMemo(() => artifactState.artifacts ?? [], [artifactState.artifacts])
   const councilMemberNames = useMemo(
-    () => getTicketCouncilMembers(ticket),
+    () => ticket.lockedCouncilMembers,
     [ticket],
   )
   const councilMemberCount = councilMemberNames.length || 3

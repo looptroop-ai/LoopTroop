@@ -1781,15 +1781,31 @@ export function isTerminalWorkflowStatus(status: string | null | undefined): boo
   return typeof status === 'string' && getWorkflowPhaseMeta(status)?.terminal === true
 }
 
-export type WorkflowAction =
-  | 'start'
-  | 'approve'
-  | 'cancel'
-  | 'retry'
-  | 'edit_execution_setup_plan'
-  | 'continue'
-  | 'merge'
-  | 'close_unmerged'
+/**
+ * The actions a ticket can offer, as a runtime list.
+ *
+ * `WorkflowAction` is derived from it, so adding a name here is the only edit
+ * needed and the type follows. The list has to exist at runtime because the
+ * client validates what the server sent against it: `availableActions` arrives
+ * as untyped JSON, and casting it made an action nobody recognises into a button
+ * that dispatches a request no route answers.
+ */
+export const WORKFLOW_ACTIONS = [
+  'start',
+  'approve',
+  'cancel',
+  'retry',
+  'edit_execution_setup_plan',
+  'continue',
+  'merge',
+  'close_unmerged',
+] as const
+
+export type WorkflowAction = typeof WORKFLOW_ACTIONS[number]
+
+export function isWorkflowAction(value: unknown): value is WorkflowAction {
+  return typeof value === 'string' && (WORKFLOW_ACTIONS as readonly string[]).includes(value)
+}
 
 /** Returns `true` when `status` precedes the execution band (before PRE_FLIGHT_CHECK). Resolves BLOCKED_ERROR via `previousStatus`. */
 export function isBeforeExecution(status: string, previousStatus?: string | null, depth?: number): boolean {

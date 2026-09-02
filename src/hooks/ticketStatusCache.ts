@@ -27,18 +27,27 @@ export function patchTicketStatus<T extends TicketStatusRecord>(
 
 export function mergeTicket<T extends TicketRecord>(
   ticket: T,
-  incomingTicket: T,
+  incomingTicket: Partial<T> & TicketRecord,
 ): T {
   if (ticket.id !== incomingTicket.id) return ticket
   return { ...ticket, ...incomingTicket }
 }
 
+/**
+ * Merges a server ticket over the cached one, and only over a cached one.
+ *
+ * The incoming payload is a *patch*: it has been through the normaliser, which
+ * deliberately leaves out fields the response did not carry rather than filling
+ * them with defaults. Seeding an absent entry from it would therefore install a
+ * half-ticket; every caller invalidates `['ticket', id]` immediately after, so an
+ * entry that is not there yet is fetched whole instead.
+ */
 export function mergeTicketInCache<T extends TicketRecord>(
   queryClient: QueryClient,
-  incomingTicket: T,
+  incomingTicket: Partial<T> & TicketRecord,
 ) {
   queryClient.setQueryData<T | undefined>(['ticket', incomingTicket.id], (ticket) =>
-    ticket ? mergeTicket(ticket, incomingTicket) : incomingTicket,
+    ticket ? mergeTicket(ticket, incomingTicket) : ticket,
   )
 
   queryClient.setQueriesData<T[]>({ queryKey: ['tickets'] }, (tickets) => {

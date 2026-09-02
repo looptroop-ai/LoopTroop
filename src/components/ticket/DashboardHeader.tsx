@@ -10,7 +10,6 @@ import { useProfile } from '@/hooks/useProfile'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { getTicketAvailableActions, getTicketCouncilMembers, getTicketRuntime } from '@/lib/ticketNormalization'
 import { getWorkflowRingProgress, getStatusRingColor } from '@/components/kanban/ticketCardUtils'
 import { ProgressRing } from '@/components/kanban/ProgressRing'
 import { BeadCompletionChip } from '@/components/kanban/BeadCompletionChip'
@@ -333,9 +332,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
       requestAnimationFrame(() => handleScroll())
     })
   }, [handleScroll])
-  const runtime = getTicketRuntime(ticket)
-  const availableActions = getTicketAvailableActions(ticket)
-  const lockedCouncilMembers = getTicketCouncilMembers(ticket)
+  const runtime = ticket.runtime
+  const availableActions = ticket.availableActions
+  const lockedCouncilMembers = ticket.lockedCouncilMembers
   const canCancel = availableActions.includes('cancel')
   const canDelete = isTerminalWorkflowStatus(ticket.status)
   const isActionPending = isPending

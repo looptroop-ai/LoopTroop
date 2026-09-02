@@ -7,6 +7,12 @@ import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterview
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
+import {
+  normalizeTicketListResponse,
+  normalizeTicketPatch,
+  normalizeTicketResponse,
+  type RawTicketResponse,
+} from '@/lib/ticketNormalization'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
   createTicketUiStateActionId,
@@ -234,7 +240,8 @@ interface TicketActionResponse {
   ticketId: string
   status?: string
   state?: string
-  ticket?: Ticket
+  /** The server's own shape, not the view model — it goes through the normaliser. */
+  ticket?: RawTicketResponse
 }
 
 const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
@@ -262,13 +269,13 @@ async function fetchTickets(projectId?: number, signal?: AbortSignal): Promise<T
     : '/api/tickets'
   const res = await fetch(url, { signal })
   await throwIfNotOk(res, 'Failed to fetch tickets')
-  return res.json()
+  return normalizeTicketListResponse(await res.json())
 }
 
 async function fetchTicket(id: string, signal?: AbortSignal): Promise<Ticket> {
   const res = await fetch(apiTicketPath(id), { signal })
   await throwIfNotOk(res, 'Failed to fetch ticket')
-  return res.json()
+  return normalizeTicketResponse(await res.json())
 }
 
 async function createTicket(input: CreateTicketInput): Promise<Ticket> {
@@ -523,8 +530,9 @@ export function useTicketAction() {
     mutationFn: ({ id, action, payload }: TicketActionVariables) =>
       ticketAction(id, action, payload),
     onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
+      const incomingTicket = normalizeTicketPatch(result.ticket)
+      if (incomingTicket) {
+        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
       }
 
       const nextStatus = result.state ?? result.status
@@ -546,8 +554,9 @@ export function useCancelTicket() {
     mutationFn: ({ id, options }: { id: string; options?: CancelTicketOptions }) =>
       cancelTicket(id, options),
     onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
+      const incomingTicket = normalizeTicketPatch(result.ticket)
+      if (incomingTicket) {
+        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
       }
 
       const nextStatus = result.state ?? result.status
@@ -603,12 +612,19 @@ export function useInterviewQuestions(ticketId: string, options?: { enabled?: bo
 export function useTicketUIState<T = unknown>(ticketId: string, scope: string, enabled: boolean = true) {
   return useQuery({
     queryKey: ['ticket-ui-state', ticketId, scope],
-    queryFn: ({ signal }) => fetchTicketUIState<T>(ticketId, scope, signal),
-    enabled,
-    select: (data) => {
-      rememberTicketUiStateRevision(ticketId, scope, data.revision)
-      return data
+    // The revision is remembered where the payload is produced, not in `select`.
+    // `select` must be pure: it runs per observer and again on every re-render
+    // that changes its identity, so StrictMode's extra observer alone was enough
+    // to write the module-level revision map twice. A `useEffect` is not the
+    // alternative — it runs after the render that already queued a save, which
+    // would send the previous revision as `expectedRevision` and lose the write
+    // to a false conflict.
+    queryFn: async ({ signal }) => {
+      const payload = await fetchTicketUIState<T>(ticketId, scope, signal)
+      rememberTicketUiStateRevision(ticketId, scope, payload.revision)
+      return payload
     },
+    enabled,
   })
 }
 
@@ -742,8 +758,9 @@ export function useSkipInterview() {
       bulkSkipReason?: string
     }) => skipInterview(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
     onSuccess: (result, variables) => {
-      if (result.ticket) {
-        mergeTicketInCache<Ticket>(queryClient, result.ticket)
+      const incomingTicket = normalizeTicketPatch(result.ticket)
+      if (incomingTicket) {
+        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
       }
 
       const nextStatus = result.state ?? result.status

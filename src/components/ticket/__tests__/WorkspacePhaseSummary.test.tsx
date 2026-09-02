@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LogContextValue, LogEntry } from '@/context/logUtils'
 import { TEST, makeTicket } from '@/test/factories'
+import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { renderWithProviders, createTestQueryClient, createJsonResponse, withLogContext } from '@/test/renderHelpers'
 import { WorkspacePhaseSummary } from '../WorkspacePhaseSummary'
 
@@ -180,13 +181,13 @@ describe('WorkspacePhaseSummary', () => {
     expect(summary.textContent?.length).toBeLessThan(350)
   })
 
-  it('renders with runtime defaults when cached ticket data is partial', () => {
-    const ticket = {
+  it('renders with runtime defaults when the server sent no runtime', () => {
+    const ticket = normalizeTicketResponse({
       ...makeTicket({ status: 'CODING' }),
       runtime: undefined,
       currentBead: 2,
       totalBeads: 4,
-    } as unknown as ReturnType<typeof makeTicket>
+    })
 
     renderWithProviders(
       <WorkspacePhaseSummary phase="CODING" ticket={ticket} />,

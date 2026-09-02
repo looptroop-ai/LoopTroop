@@ -24,7 +24,6 @@ import { INTERVIEW_APPROVAL_FOCUS_EVENT } from '@/lib/interviewDocument'
 import { PRD_APPROVAL_FOCUS_EVENT } from '@/lib/prdDocument'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { WORKSPACE_PHASE_NAVIGATE_EVENT, type WorkspacePhaseNavigateDetail } from '@/lib/workspaceNavigation'
-import { normalizeTicketForRender } from '@/lib/ticketNormalization'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
@@ -317,10 +316,9 @@ export function TicketDashboard() {
       reviewCutoffStatus: reviewCutoffStatus ?? ticket.reviewCutoffStatus,
     }
   }, [currentStatus, previousStatus, reviewCutoffStatus, ticket])
-  const renderTicket = useMemo(
-    () => effectiveTicket ? normalizeTicketForRender(effectiveTicket) : null,
-    [effectiveTicket],
-  )
+  // Already normalised: `useTicket` and `useTickets` run every payload through
+  // the boundary, and `effectiveTicket` only overrides three status strings.
+  const renderTicket = effectiveTicket
   const errorSignature = renderTicket ? getErrorTicketSignature(renderTicket) : null
   const needsInputSignature = renderTicket ? getNeedsInputSignature(renderTicket) : null
   const ticketErrorOccurrences = useMemo(() => (renderTicket ? getTicketErrorOccurrences(renderTicket) : []), [renderTicket])

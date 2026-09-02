@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { CouncilView } from '../CouncilView'
+import { normalizeTicketResponse } from '@/lib/ticketNormalization'
 import { makeTicket, TEST } from '@/test/factories'
 
 const mockUseTicketArtifacts = vi.fn()
@@ -65,11 +66,11 @@ describe('CouncilView', () => {
     expect(screen.queryByText('Loading phase data…')).not.toBeInTheDocument()
   })
 
-  it('renders with an empty council fallback when cached ticket data is partial', () => {
-    const partialTicket = {
+  it('renders with an empty council fallback when the server sent no roster', () => {
+    const partialTicket = normalizeTicketResponse({
       ...makeTicket({ status: 'COUNCIL_VOTING_INTERVIEW' }),
       lockedCouncilMembers: null,
-    } as unknown as ReturnType<typeof makeTicket>
+    })
 
     render(<CouncilView phase="COUNCIL_VOTING_INTERVIEW" ticket={partialTicket} />)
 

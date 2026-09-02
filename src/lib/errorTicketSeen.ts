@@ -2,12 +2,18 @@ import { getActiveErrorOccurrence, type TicketErrorOccurrence } from './errorOcc
 
 const seenErrorTickets = new Map<string, string>()
 
+/**
+ * What a signature is built from. Every caller passes a ticket out of the query
+ * cache, which the boundary normaliser has already been through — hence a
+ * `string` occurrence id here rather than the `string | number` that used to
+ * absorb the wire's numeric form.
+ */
 interface ErrorTicketSnapshot {
   id: string
   status: string
   updatedAt: string
   errorMessage?: string | null | undefined
-  activeErrorOccurrenceId?: string | number | null
+  activeErrorOccurrenceId?: string | null
   errorOccurrences?: TicketErrorOccurrence[]
   previousStatus?: string | null
 }
@@ -22,7 +28,7 @@ export function getErrorTicketSignature(ticket: ErrorTicketSnapshot): string | n
     ...ticket,
     errorMessage: ticket.errorMessage ?? null,
     errorOccurrences: ticket.errorOccurrences ?? [],
-    activeErrorOccurrenceId: ticket.activeErrorOccurrenceId == null ? null : String(ticket.activeErrorOccurrenceId),
+    activeErrorOccurrenceId: ticket.activeErrorOccurrenceId ?? null,
   })
   if (activeOccurrence) {
     return [

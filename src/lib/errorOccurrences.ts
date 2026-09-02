@@ -118,6 +118,10 @@ export function getActiveErrorOccurrence(ticket: TicketErrorSource): TicketError
   if (occurrences.length === 0) return null
 
   if (ticket.activeErrorOccurrenceId != null) {
+    // `String(...)` although the type is now `string`: this is a lookup against a
+    // value that came off the wire, and the boundary is the only thing making it
+    // a string. A payload that reaches here another way must still match rather
+    // than silently find nothing.
     const activeOccurrenceId = String(ticket.activeErrorOccurrenceId)
     const matched = occurrences.find((occurrence) => occurrence.id === activeOccurrenceId)
     if (matched) return matched

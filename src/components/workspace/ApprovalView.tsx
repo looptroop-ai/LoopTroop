@@ -179,9 +179,9 @@ function BeadsApprovalPane({
   // Cache stores array form (matching navigator expectations)
   const { data: fetchedBeads, isLoading } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', 'approval'],
-    queryFn: async () => {
-      const r = await fetch(apiTicketPath(ticket.id, 'beads'))
-      if (!r.ok) throw new Error('Failed to load')
+    queryFn: async ({ signal }) => {
+      const r = await fetch(apiTicketPath(ticket.id, 'beads'), { signal })
+      await throwIfNotOk(r, 'Failed to load beads')
       const contentSha256 = typeof r.headers?.get === 'function'
         ? r.headers.get('X-Content-Sha256')
         : null
@@ -318,10 +318,7 @@ function BeadsApprovalPane({
         body: JSON.stringify(beadsToSave),
       })
 
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
-        throw new Error(payload.details || payload.error || 'Save failed')
-      }
+      await throwIfNotOk(response, 'Failed to save beads')
 
       // Update cache with the saved array (API returns { success: true })
       const nextContentSha256 = typeof response.headers?.get === 'function'
@@ -359,10 +356,7 @@ function BeadsApprovalPane({
           ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
         }),
       })
-      const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve beads')
-      }
+      await throwIfNotOk(response, 'Failed to approve beads')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
@@ -389,10 +383,7 @@ function BeadsApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: 'beads' }),
       })
-      const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to fix coverage gaps')
-      }
+      await throwIfNotOk(response, 'Failed to fix coverage gaps')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })

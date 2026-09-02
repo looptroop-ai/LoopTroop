@@ -387,4 +387,42 @@ describe('AIQuestionProvider', () => {
 
     await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
   })
+
+  it('reports an answer failure with its status instead of [object Object]', async () => {
+    // The question routes answer a validation failure with `details` set to a Zod
+    // field map. This provider had its own parser, which stringified that object
+    // straight into the panel and dropped the status with it.
+    const ticket = makeTicket({ status: 'CODING' })
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/reply')) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid question reply payload', details: { formErrors: [], fieldErrors: {} } }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response(JSON.stringify({ questions: [buildQuestion(ticket.id)], timers: {} }), { status: 200 })
+    }))
+
+    function Answerer({ ticketId }: { ticketId: string }) {
+      const { answerRequest, getTicketRequests } = useAIQuestions()
+      const request = getTicketRequests(ticketId)[0]
+      return (
+        <>
+          <div>error:{request?.error ?? 'none'}</div>
+          <button onClick={() => answerRequest(ticketId, 'question-1', [['Small']])}>answer</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Answerer ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('error:none')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('answer'))
+
+    await waitFor(() => expect(
+      screen.getByText('error:Could not send that answer (HTTP 400: Invalid question reply payload)'),
+    ).toBeInTheDocument())
+  })
 })

@@ -27,6 +27,7 @@ import {
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { AutosaveStatus } from './AutosaveStatus'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -346,9 +347,9 @@ export function ExecutionSetupPlanApprovalPane({
     : apiTicketPath(ticket.id, 'execution-setup-plan')
   const { data: fetchedPlan, isLoading, isFetching } = useQuery({
     queryKey: planQueryKey,
-    queryFn: async () => {
-      const response = await fetch(planUrl)
-      if (!response.ok) throw new Error('Failed to load execution setup plan')
+    queryFn: async ({ signal }) => {
+      const response = await fetch(planUrl, { signal })
+      await throwIfNotOk(response, 'Failed to load execution setup plan')
       return response.json() as Promise<ExecutionSetupPlanApprovalResponse>
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -499,10 +500,8 @@ export function ExecutionSetupPlanApprovalPane({
             : { content: rawDraft },
         ),
       })
-      const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan; error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to save execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to save execution setup plan')
+      const payload = await response.json() as { raw?: string; contentSha256?: string | null; plan?: ExecutionSetupPlan }
 
       const nextData: ExecutionSetupPlanApprovalResponse = {
         exists: Boolean(payload.plan),
@@ -542,10 +541,7 @@ export function ExecutionSetupPlanApprovalPane({
           ...(editTab === 'raw' && rawDraft.trim() ? { rawContent: rawDraft } : {}),
         }),
       })
-      const payload = await response.json() as { success?: boolean; error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to regenerate execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to regenerate execution setup plan')
 
       // Invalidate queries so old cached plan is gone, new poll will start fresh
       queryClient.removeQueries({ queryKey: ['artifact', ticket.id, 'execution-setup-plan'] })
@@ -579,10 +575,7 @@ export function ExecutionSetupPlanApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
       })
-      const payload = await response.json() as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve execution setup plan')
-      }
+      await throwIfNotOk(response, 'Failed to approve execution setup plan')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })

@@ -338,10 +338,7 @@ export function PrdApprovalPane({
           ...(gapReason.trim() ? { gapAcknowledgementReason: gapReason.trim() } : {}),
         }),
       })
-      const payload = await response.json() as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve PRD')
-      }
+      await throwIfNotOk(response, 'Failed to approve PRD')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
@@ -368,10 +365,7 @@ export function PrdApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: 'prd' }),
       })
-      const payload = await response.json().catch(() => ({})) as { error?: string; details?: string }
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to fix coverage gaps')
-      }
+      await throwIfNotOk(response, 'Failed to fix coverage gaps')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })

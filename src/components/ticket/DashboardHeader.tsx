@@ -8,6 +8,7 @@ import { useTicketAction, useUpdateTicket } from '@/hooks/useTickets'
 import type { Ticket } from '@/hooks/useTickets'
 import { useProfile } from '@/hooks/useProfile'
 import { getProfileCouncil } from '@/lib/profileCouncil'
+import { throwIfNotOk } from '@/lib/fetchError'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
@@ -79,10 +80,7 @@ function CopyablePathRow({ label, path }: { label: string; path: string }) {
         },
         body: JSON.stringify({ path }),
       })
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}))
-        console.error('Failed to open path:', data.error || response.statusText)
-      }
+      await throwIfNotOk(response, 'Failed to open path')
     } catch (err) {
       console.error('Error opening path:', err)
     } finally {
@@ -276,7 +274,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
     setSizeError(null)
     try {
       const res = await fetch(apiTicketPath(ticket.id, 'size'))
-      if (!res.ok) throw new Error('Failed to calculate size')
+      await throwIfNotOk(res, 'Failed to calculate size')
       const data = await res.json()
       setTicketSize(data.size)
       setSizeBreakdown(data.breakdown || null)

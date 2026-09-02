@@ -15,6 +15,7 @@ import {
   type AiQuestionRequest,
 } from './aiQuestionContextDef'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 interface AiQuestionPayload {
   type: 'opencode_question' | 'opencode_question_resolved' | 'opencode_question_updated'
@@ -340,7 +341,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     void (async () => {
       try {
         const res = await fetch(apiTicketPath(ticketId, 'opencode', 'questions'))
-        if (!res.ok) return
+        await throwIfNotOk(res, 'Failed to refresh questions')
         const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
         // The snapshot prunes, so applying an older one deletes questions that
         // are still live.
@@ -370,7 +371,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       if (activeIds.size === 0) return
       try {
         const res = await fetch('/api/opencode/questions')
-        if (!res.ok) return
+        await throwIfNotOk(res, 'Failed to recover questions')
         const body = await res.json() as {
           questions?: Array<Record<string, unknown>>
           timers?: Record<string, unknown>
@@ -487,6 +488,8 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           body: '{}',
         })
         if (!res.ok) {
+          // Not `throwIfNotOk`: a refused stop has to release the receipt so a
+          // later keystroke can try again, which a throw past this line skips.
           stoppedTimersRef.current.delete(stopKey)
           return
         }
@@ -516,10 +519,10 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(async (res) => {
-      if (!res.ok) {
-        const detail = await res.json().catch(() => ({})) as { error?: string; details?: string }
-        throw new Error(detail.details ?? detail.error ?? failureMessage)
-      }
+      // The success path does not read the body, so the shared reader can have
+      // it. Its own parser turned a Zod field map in `details` into
+      // "[object Object]" in the question panel, and dropped the status.
+      await throwIfNotOk(res, failureMessage)
       removeRequest(request.sessionId, requestId)
       void queryClient.invalidateQueries({ queryKey: ['tickets'] })
     }).catch((error: unknown) => {

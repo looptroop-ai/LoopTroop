@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { FullScreenModal } from '@/components/shared/FullScreenModal'
 import { cn } from '@/lib/utils'
 import { GIT_CHECK_DEBOUNCE_MS } from '@/lib/constants'
+import { describeQueryError, throwIfNotOk } from '@/lib/fetchError'
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 interface DirItem {
@@ -75,15 +76,19 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
             if (generation !== requestGenerationRef.current) return
             try {
                 const res = await fetch(`/api/projects/check-git?path=${encodeURIComponent(path)}`)
+                // A refused request is not a verdict. Reading the body regardless
+                // turned a 500 into a confident "not a git repository", which is
+                // the same wrong-answer class the generation counter closes.
+                await throwIfNotOk(res, 'Git check failed')
                 const d = await res.json() as GitCheckResponse
                 if (generation !== requestGenerationRef.current) return
                 setGitStatus(d.isGit ? 'valid' : 'invalid')
                 setGitMessage(String(d.message ?? ''))
                 setPerformanceWarning(String(d.performanceWarning ?? ''))
-            } catch {
+            } catch (err) {
                 if (generation !== requestGenerationRef.current) return
                 setGitStatus('invalid')
-                setGitMessage('Git check failed.')
+                setGitMessage(describeQueryError(err) ?? 'Git check failed.')
                 setPerformanceWarning('')
             }
         }, GIT_CHECK_DEBOUNCE_MS)
@@ -95,6 +100,7 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
         setError(null)
         try {
             const res = await fetch(`/api/projects/ls?path=${encodeURIComponent(pathStr)}`)
+            await throwIfNotOk(res, 'Failed to fetch directory contents')
             const d = await res.json()
             if (generation !== requestGenerationRef.current) return
             if (d.error) {
@@ -104,9 +110,9 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
                 setInputPath(d.currentPath)
                 checkGit(d.currentPath, generation)
             }
-        } catch {
+        } catch (err) {
             if (generation !== requestGenerationRef.current) return
-            setError('Failed to fetch directory contents.')
+            setError(describeQueryError(err) ?? 'Failed to fetch directory contents.')
         } finally {
             if (generation === requestGenerationRef.current) setIsLoading(false)
         }

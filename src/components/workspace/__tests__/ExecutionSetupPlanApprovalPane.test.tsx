@@ -240,7 +240,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
 
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init || init.method === 'GET')) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({
             exists: true,
@@ -255,7 +255,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
         )
       }
 
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan?phaseAttempt=1` && (!init || init.method === 'GET')) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan?phaseAttempt=1` && (!init?.method || init.method === 'GET')) {
         return Promise.resolve(
           new Response(JSON.stringify({
             exists: true,
@@ -397,7 +397,10 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     })
 
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith(`/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`)
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `/api/tickets/${encodeURIComponent(TEST.ticketId)}/execution-setup-plan`,
+        expect.objectContaining({ signal: expect.anything() }),
+      )
     })
 
     await waitFor(() => {

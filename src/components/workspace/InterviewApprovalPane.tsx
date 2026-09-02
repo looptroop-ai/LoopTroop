@@ -30,6 +30,7 @@ import {
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { AutosaveStatus } from './AutosaveStatus'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { throwIfNotOk } from '@/lib/fetchError'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -233,10 +234,8 @@ export function InterviewApprovalPane({
         },
       )
 
+      await throwIfNotOk(response, 'Failed to save interview')
       const payload = await response.json()
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Save failed')
-      }
 
       queryClient.setQueryData(['interview', ticket.id], payload)
       queryClient.setQueryData(['artifact', ticket.id, 'interview'], payload.raw ?? '')
@@ -265,10 +264,7 @@ export function InterviewApprovalPane({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expectedContentSha256: currentContentSha256 }),
       })
-      const payload = await response.json()
-      if (!response.ok) {
-        throw new Error(payload.details || payload.error || 'Failed to approve interview')
-      }
+      await throwIfNotOk(response, 'Failed to approve interview')
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })

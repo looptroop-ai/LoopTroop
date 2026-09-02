@@ -1,0 +1,93 @@
+import type { ReactNode } from 'react'
+import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useTicketAction, type Ticket } from '../useTickets'
+
+const ticketId = '1:ACT-1'
+
+function setup(cached?: Partial<Ticket>) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  if (cached) client.setQueryData(['ticket', ticketId], cached)
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+  return { client, wrapper }
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
+
+describe('useTicketAction cache patching', () => {
+  it('records where a status-only transition came from', async () => {
+    // `useSSE` already sets `previousStatus` on a state change. Without it here,
+    // every surface that explains what failed read a `previousStatus` left over
+    // from an earlier transition.
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      message: 'Retrying',
+      ticketId,
+      state: 'BLOCKED_ERROR',
+    })))
+    const { client, wrapper } = setup({ id: ticketId, status: 'PREPARING_EXECUTION_ENV', previousStatus: 'DRAFT' })
+    const { result } = renderHook(() => useTicketAction(), { wrapper })
+
+    result.current.mutate({ id: ticketId, action: 'retry' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryData<Ticket>(['ticket', ticketId])).toMatchObject({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'PREPARING_EXECUTION_ENV',
+    })
+  })
+
+  it('leaves previousStatus alone when the status did not move', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      message: 'Nothing changed',
+      ticketId,
+      state: 'CODING',
+    })))
+    const { client, wrapper } = setup({ id: ticketId, status: 'CODING', previousStatus: 'DRAFT' })
+    const { result } = renderHook(() => useTicketAction(), { wrapper })
+
+    result.current.mutate({ id: ticketId, action: 'retry' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryData<Ticket>(['ticket', ticketId])?.previousStatus).toBe('DRAFT')
+  })
+
+  it('takes the ticket the route returned rather than deriving a status patch', async () => {
+    // The full ticket carries its own `previousStatus`; patching on top of it
+    // would overwrite that with one derived from the cache.
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      message: 'Retrying',
+      ticketId,
+      state: 'CODING',
+      ticket: {
+        id: ticketId,
+        status: 'CODING',
+        previousStatus: 'BLOCKED_ERROR',
+        availableActions: ['cancel', 'teleport'],
+      },
+    })))
+    const { client, wrapper } = setup({ id: ticketId, status: 'WAITING_PR_REVIEW', previousStatus: 'DRAFT' })
+    const { result } = renderHook(() => useTicketAction(), { wrapper })
+
+    result.current.mutate({ id: ticketId, action: 'retry' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(client.getQueryData<Ticket>(['ticket', ticketId])).toMatchObject({
+      status: 'CODING',
+      previousStatus: 'BLOCKED_ERROR',
+      // The merged ticket goes through the normaliser like any other write.
+      availableActions: ['cancel'],
+    })
+  })
+})

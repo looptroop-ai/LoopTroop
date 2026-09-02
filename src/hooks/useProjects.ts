@@ -1,7 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { clearPersistedTicketLogs } from '@/context/logUtils'
-import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
-import { getTicketArtifactsQueryKey } from './useTicketArtifacts'
+import { clearTicketCaches } from './useTickets'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { throwIfNotOk } from '@/lib/fetchError'
@@ -83,33 +81,47 @@ function invalidateProjectQueries(queryClient: ReturnType<typeof useQueryClient>
   queryClient.invalidateQueries({ queryKey: ['tickets'] })
 }
 
-function removeDeletedProjectTicketCaches(
+/**
+ * Every ticket of this project the cache knows about.
+ *
+ * The list queries are not the whole story: opening a ticket writes
+ * `['ticket', id]`, and a list refetch that no longer includes it leaves that
+ * entry as the only record of the id. Discovering ids from the lists alone
+ * therefore left the most recently opened ticket behind — cached under an id the
+ * server can hand out again.
+ */
+function collectCachedProjectTicketIds(
+  queryClient: ReturnType<typeof useQueryClient>,
+  projectId: number,
+): Set<string> {
+  const cachedTicketIds = new Set<string>()
+
+  for (const [, tickets] of queryClient.getQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] })) {
+    for (const ticket of tickets ?? []) {
+      if (ticket.projectId === projectId) cachedTicketIds.add(ticket.id)
+    }
+  }
+
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['ticket'] })) {
+    const [, ticketId] = query.queryKey
+    const ticket = query.state.data as CachedProjectTicket | undefined
+    if (typeof ticketId === 'string' && ticket?.projectId === projectId) cachedTicketIds.add(ticketId)
+  }
+
+  return cachedTicketIds
+}
+
+async function removeDeletedProjectTicketCaches(
   queryClient: ReturnType<typeof useQueryClient>,
   projectId: number,
 ) {
-  const cachedTicketIds = new Set<string>()
-  const ticketLists = queryClient.getQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] })
-
-  for (const [, tickets] of ticketLists) {
-    for (const ticket of tickets ?? []) {
-      if (ticket.projectId === projectId) {
-        cachedTicketIds.add(ticket.id)
-      }
-    }
-  }
+  const cachedTicketIds = collectCachedProjectTicketIds(queryClient, projectId)
 
   queryClient.setQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] }, (tickets) =>
     tickets?.filter((ticket) => ticket.projectId !== projectId) ?? tickets,
   )
 
-  for (const ticketId of cachedTicketIds) {
-    queryClient.removeQueries({ queryKey: ['ticket', ticketId], exact: true })
-    queryClient.removeQueries({ queryKey: ['interview', ticketId], exact: true })
-    queryClient.removeQueries({ queryKey: ['ticket-ui-state', ticketId] })
-    queryClient.removeQueries({ queryKey: getTicketArtifactsQueryKey(ticketId), exact: true })
-    clearPersistedTicketLogs(ticketId)
-    clearErrorTicketSeen(ticketId)
-  }
+  await Promise.all([...cachedTicketIds].map((ticketId) => clearTicketCaches(queryClient, ticketId)))
 }
 
 async function fetchProjects(signal?: AbortSignal): Promise<Project[]> {
@@ -182,8 +194,8 @@ export function useDeleteProject() {
       const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
       await throwIfNotOk(res, 'Failed to delete project')
     },
-    onSuccess: (_, projectId) => {
-      removeDeletedProjectTicketCaches(queryClient, projectId)
+    onSuccess: async (_, projectId) => {
+      await removeDeletedProjectTicketCaches(queryClient, projectId)
       invalidateProjectQueries(queryClient)
     },
   })

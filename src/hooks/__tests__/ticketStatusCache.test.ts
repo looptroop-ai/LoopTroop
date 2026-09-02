@@ -93,3 +93,28 @@ describe.concurrent('mergeTicketInCache', () => {
     ])
   })
 })
+
+describe.concurrent('mergeTicketInCache with a partial payload', () => {
+  it('does not seed an absent entry from a patch', () => {
+    // The incoming payload has been through the normaliser, which leaves out
+    // fields the response did not carry. Seeding from it would install a
+    // half-ticket; the caller invalidates the key instead, so it is fetched
+    // whole.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    mergeTicketInCache<TestTicket>(queryClient, { id: '1:T-99', status: 'CODING' })
+
+    expect(queryClient.getQueryData(['ticket', '1:T-99'])).toBeUndefined()
+  })
+
+  it('merges only the keys the patch carries', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const cached: TestTicket = { id: '1:T-42', status: 'CODING', title: 'Keep me' }
+    queryClient.setQueryData(['ticket', cached.id], cached)
+
+    mergeTicketInCache<TestTicket>(queryClient, { id: cached.id, status: 'WAITING_PR_REVIEW' })
+
+    expect(queryClient.getQueryData<TestTicket>(['ticket', cached.id]))
+      .toEqual({ id: cached.id, status: 'WAITING_PR_REVIEW', title: 'Keep me' })
+  })
+})

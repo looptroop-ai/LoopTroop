@@ -330,4 +330,61 @@ describe('AIQuestionProvider', () => {
     // countdown and left the browser showing one that had already gone.
     await waitFor(() => expect(screen.getByText('key:VERIFYING:1')).toBeInTheDocument())
   })
+
+  it('drops a request the step no longer lists', async () => {
+    // `opencode_question_updated` carries the step's whole pending set, so it is
+    // also how this client learns a request went away. Only upserting left a
+    // request that was dropped without an explicit `resolved` event answerable
+    // until the 30-second poll noticed.
+    const ticket = makeTicket({ status: 'CODING' })
+    stubAggregate({
+      questions: [buildQuestion(ticket.id), buildQuestion(ticket.id, { sessionId: 'session-2', requestId: 'question-2' })],
+      timers: {},
+    })
+
+    function Pruner({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => ingestSseEvent({
+            type: 'opencode_question_updated',
+            ticketId,
+            requests: [{ sessionId: 'session-1234567890', requestId: 'question-1', questions: [{ header: 'H', question: 'Q?', options: [] }] }],
+          })}>update</button>
+          <button onClick={() => ingestSseEvent({ type: 'opencode_question_updated', ticketId })}>timer-only</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Pruner ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('update'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // An update with no `requests` array is not a statement about the set.
+    fireEvent.click(screen.getByText('timer-only'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+  })
+
+  it('lets go of a ticket that has finished', async () => {
+    // Requests were retained for the life of the tab, so a cancelled ticket kept
+    // an answer-and-skip affordance for a step nothing is waiting on.
+    const ticket = makeTicket({ status: 'CODING' })
+    stubAggregate({ questions: [buildQuestion(ticket.id)], timers: {} })
+
+    const { rerender } = renderProvider([ticket], <Counts ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('pending:1 requests:1')).toBeInTheDocument())
+
+    rerender(
+      <UIProvider>
+        <AIQuestionProvider tickets={[{ ...ticket, status: 'CANCELED' }]}>
+          <Counts ticketId={ticket.id} />
+        </AIQuestionProvider>
+      </UIProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByText('pending:0 requests:0')).toBeInTheDocument())
+  })
 })

@@ -55,7 +55,11 @@ export function readErrorTicketSeen(
   if (typeof window === 'undefined') return false
   try {
     const stored = localStorage.getItem(getErrorSeenStorageKey(ticketId))
-    const seen = stored === errorSignature || stored === '1'
+    // Compared against this exact signature and nothing else. A bare '1' used to
+    // count as "seen" for *any* signature, so a recycled `projectId:SHORT-n` id
+    // inherited the previous ticket's acknowledgment and never flashed again.
+    // Nothing writes '1' any more.
+    const seen = stored === errorSignature
     if (seen) seenErrorTickets.set(ticketId, errorSignature)
     return seen
   } catch {

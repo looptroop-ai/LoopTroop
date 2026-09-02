@@ -1,10 +1,10 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { clearPersistedTicketLogs } from '@/context/logUtils'
-import { clearTicketArtifactsCache } from './useTicketArtifacts'
 import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCache'
 import { isTerminalWorkflowStatus, type WorkflowAction } from '@shared/workflowMeta'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
+import { clearNeedsInputSeen } from '@/lib/needsInputSeen'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
 import {
@@ -471,6 +471,93 @@ function enqueueTicketUIStateSave(
   return pending
 }
 
+/**
+ * Waits out any queued UI-state save for this ticket.
+ *
+ * A save is enqueued per `ticketId\0scope` and settles well after the keystroke
+ * that started it, so deleting the ticket first left a PUT in the air for a row
+ * that no longer exists. Failures are swallowed: this is a barrier, not a
+ * checkpoint — the delete proceeds either way.
+ */
+async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
+  const prefix = `${ticketId}\u0000`
+  const pending = [...uiStateSaveQueues.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, save]) => save.catch(() => undefined))
+  if (pending.length > 0) await Promise.all(pending)
+}
+
+/** True when any part of a query key is this ticket's id. */
+function queryKeyNamesTicket(queryKey: readonly unknown[], ticketId: string): boolean {
+  return queryKey.some((part) => part === ticketId)
+}
+
+/**
+ * Drops everything cached against one ticket.
+ *
+ * Matched by predicate rather than by an enumerated list of query families: the
+ * enumerated version had grown to six of the twelve families that key on a
+ * ticket id, and the six it missed — phase attempts, Manual QA, AI details,
+ * ticket beads, bead diffs, and every `['artifact', id, …]` — stayed in memory
+ * under an id the server can hand out again. A new family added next release
+ * escapes a list silently; it cannot escape this.
+ *
+ * The ticket *list* queries are untouched: `['tickets']` does not carry a ticket
+ * id, and the list is filtered by its own caller.
+ *
+ * In-flight requests are cancelled before the keys go, so a response that was
+ * already on the wire cannot repopulate a deleted ticket.
+ */
+export async function clearTicketCaches(queryClient: QueryClient, ticketId: string): Promise<void> {
+  const predicate = (query: { queryKey: readonly unknown[] }) => queryKeyNamesTicket(query.queryKey, ticketId)
+
+  await queryClient.cancelQueries({ predicate })
+  queryClient.removeQueries({ predicate })
+
+  // Module-scope stores, which no query client owns. `clearPersistedTicketLogs`
+  // already calls `clearServerLogCache` for this ticket — calling it here too
+  // would be the second clear, and broadening it takes every other open
+  // ticket's cache with it.
+  clearPersistedTicketLogs(ticketId)
+  clearErrorTicketSeen(ticketId)
+  clearNeedsInputSeen(ticketId)
+}
+
+/**
+ * Writes a mutation's answer into the ticket cache.
+ *
+ * Two shapes, and only one of them applies. When the route returned the whole
+ * ticket, that is the truth — including its own `previousStatus` — and a
+ * status-only patch on top would overwrite it with one derived here. When it
+ * returned a status alone, `previousStatus` is set from what the cache currently
+ * holds, which is what `useSSE` already does for a `state_change`: without it,
+ * every surface that explains *what* failed (the error view's setup detection,
+ * `isBeforeExecution`) reads a `previousStatus` left over from an earlier
+ * transition.
+ */
+function applyTicketActionResult(
+  queryClient: QueryClient,
+  ticketId: string,
+  result: TicketActionResponse,
+): void {
+  const incomingTicket = normalizeTicketPatch(result.ticket)
+  if (incomingTicket) {
+    mergeTicketInCache<Ticket>(queryClient, incomingTicket)
+    return
+  }
+
+  const nextStatus = result.state ?? result.status
+  if (!nextStatus) return
+
+  const cachedStatus = queryClient.getQueryData<Ticket>(['ticket', ticketId])?.status
+  patchTicketStatusInCache<Ticket>(
+    queryClient,
+    ticketId,
+    nextStatus,
+    cachedStatus && cachedStatus !== nextStatus ? cachedStatus : undefined,
+  )
+}
+
 export function useTickets(projectId?: number) {
   return useQuery({
     queryKey: projectId ? ['tickets', { projectId }] : ['tickets'],
@@ -530,16 +617,7 @@ export function useTicketAction() {
     mutationFn: ({ id, action, payload }: TicketActionVariables) =>
       ticketAction(id, action, payload),
     onSuccess: (result, variables) => {
-      const incomingTicket = normalizeTicketPatch(result.ticket)
-      if (incomingTicket) {
-        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
-      }
-
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        const ticketId = result.ticketId || variables.id
-        patchTicketStatusInCache<Ticket>(queryClient, ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, result.ticketId || variables.id, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
@@ -554,16 +632,7 @@ export function useCancelTicket() {
     mutationFn: ({ id, options }: { id: string; options?: CancelTicketOptions }) =>
       cancelTicket(id, options),
     onSuccess: (result, variables) => {
-      const incomingTicket = normalizeTicketPatch(result.ticket)
-      if (incomingTicket) {
-        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
-      }
-
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        const ticketId = result.ticketId || variables.id
-        patchTicketStatusInCache<Ticket>(queryClient, ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, result.ticketId || variables.id, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
@@ -575,20 +644,18 @@ export function useCancelTicket() {
 export function useDeleteTicket() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: deleteTicket,
-    onSuccess: (_, ticketId) => {
+    mutationFn: async (ticketId: string) => {
+      // Before the DELETE, not after: a queued panel save otherwise reaches the
+      // server for a ticket row that is already gone.
+      await settleTicketUiStateSaves(ticketId)
+      return deleteTicket(ticketId)
+    },
+    onSuccess: async (_, ticketId) => {
       queryClient.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (tickets) =>
         tickets?.filter(ticket => ticket.id !== ticketId) ?? tickets,
       )
-      queryClient.removeQueries({ queryKey: ['ticket', ticketId], exact: true })
-      queryClient.removeQueries({ queryKey: ['interview', ticketId], exact: true })
-      queryClient.removeQueries({ queryKey: ['ticket-ui-state', ticketId] })
+      await clearTicketCaches(queryClient, ticketId)
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
-
-      clearTicketArtifactsCache(ticketId)
-      clearPersistedTicketLogs(ticketId)
-
-      clearErrorTicketSeen(ticketId)
     },
   })
 }
@@ -758,15 +825,7 @@ export function useSkipInterview() {
       bulkSkipReason?: string
     }) => skipInterview(ticketId, answers, selectedOptions ?? {}, skipReasons ?? {}, bulkSkipReason),
     onSuccess: (result, variables) => {
-      const incomingTicket = normalizeTicketPatch(result.ticket)
-      if (incomingTicket) {
-        mergeTicketInCache<Ticket>(queryClient, incomingTicket)
-      }
-
-      const nextStatus = result.state ?? result.status
-      if (nextStatus) {
-        patchTicketStatusInCache<Ticket>(queryClient, variables.ticketId, nextStatus)
-      }
+      applyTicketActionResult(queryClient, result.ticketId || variables.ticketId, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.ticketId] })

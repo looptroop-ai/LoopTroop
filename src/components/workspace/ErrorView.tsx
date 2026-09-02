@@ -90,9 +90,14 @@ function filterLogsWithinWindow(
     includeEnd = true,
   } = options
 
+  // An undated line has no place in a window defined by time. Keeping them
+  // pulled every undated row in the phase — every attempt of it — into the
+  // failure window, which is the opposite of what a window is for.
+  if (startTime === null && endTime === null) return logs
+
   return logs.filter((entry) => {
     const timestamp = readTimestamp(entry.timestamp)
-    if (timestamp === null) return true
+    if (timestamp === null) return false
     if (startTime !== null) {
       if (includeStart ? timestamp < startTime : timestamp <= startTime) return false
     }
@@ -277,7 +282,14 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
     && ticket.status === 'BLOCKED_ERROR'
     && Boolean(visibleOccurrence)
     && visibleOccurrence?.resolvedAt === null
-  const isSetupRuntimeError = isLiveError && ticket.previousStatus === 'PREPARING_EXECUTION_ENV'
+  // Gated on the occurrence, not on `ticket.previousStatus`: the surrounding copy
+  // already reads `visibleOccurrence.blockedFromStatus`, and `explainBlockedError`
+  // already treats both setup statuses as setup — so "Edit setup plan" was
+  // missing after a failure that blocked from `WAITING_EXECUTION_SETUP_APPROVAL`,
+  // and after any error whose occurrence disagreed with `previousStatus`.
+  const isSetupRuntimeError = isLiveError
+    && (visibleOccurrence?.blockedFromStatus === 'PREPARING_EXECUTION_ENV'
+      || visibleOccurrence?.blockedFromStatus === 'WAITING_EXECUTION_SETUP_APPROVAL')
   const canContinue = isLiveError && ticket.availableActions.includes('continue')
   const canRetryWithNote = isLiveError
     && (visibleOccurrence?.blockedFromStatus === 'CODING' || isSetupRuntimeError)

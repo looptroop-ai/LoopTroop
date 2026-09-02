@@ -46,26 +46,42 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
     const [gitMessage, setGitMessage] = useState('')
     const [performanceWarning, setPerformanceWarning] = useState('')
     const gitCheckRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    /**
+     * Which navigation the results on screen belong to.
+     *
+     * Both requests are debounced but neither was cancelled, so listing a large
+     * directory and then moving on left the slow answer to arrive last and
+     * overwrite the current one — including the git verdict, which is what
+     * enables "Select This Folder". The counter is bumped by every navigation
+     * and by opening the dialog; a response whose generation is no longer
+     * current is dropped rather than rendered.
+     */
+    const requestGenerationRef = useRef(0)
 
     useEffect(() => {
         return () => {
+            requestGenerationRef.current += 1
             if (gitCheckRef.current) clearTimeout(gitCheckRef.current)
         }
     }, [])
 
-    const checkGit = useCallback((path: string) => {
+    const checkGit = useCallback((path: string, generation: number) => {
         if (gitCheckRef.current) clearTimeout(gitCheckRef.current)
+        if (generation !== requestGenerationRef.current) return
         if (!path) { setGitStatus('none'); setGitMessage(''); setPerformanceWarning(''); return }
         setGitStatus('checking')
         setGitMessage('Checking repository...')
         gitCheckRef.current = setTimeout(async () => {
+            if (generation !== requestGenerationRef.current) return
             try {
                 const res = await fetch(`/api/projects/check-git?path=${encodeURIComponent(path)}`)
                 const d = await res.json() as GitCheckResponse
+                if (generation !== requestGenerationRef.current) return
                 setGitStatus(d.isGit ? 'valid' : 'invalid')
                 setGitMessage(String(d.message ?? ''))
                 setPerformanceWarning(String(d.performanceWarning ?? ''))
             } catch {
+                if (generation !== requestGenerationRef.current) return
                 setGitStatus('invalid')
                 setGitMessage('Git check failed.')
                 setPerformanceWarning('')
@@ -74,27 +90,31 @@ export function FolderPicker({ open, onClose, onSelect, initialPath }: FolderPic
     }, [])
 
     const fetchLs = useCallback(async (pathStr: string) => {
+        const generation = ++requestGenerationRef.current
         setIsLoading(true)
         setError(null)
         try {
             const res = await fetch(`/api/projects/ls?path=${encodeURIComponent(pathStr)}`)
             const d = await res.json()
+            if (generation !== requestGenerationRef.current) return
             if (d.error) {
                 setError(d.error)
             } else {
                 setData(d)
                 setInputPath(d.currentPath)
-                checkGit(d.currentPath)
+                checkGit(d.currentPath, generation)
             }
         } catch {
+            if (generation !== requestGenerationRef.current) return
             setError('Failed to fetch directory contents.')
         } finally {
-            setIsLoading(false)
+            if (generation === requestGenerationRef.current) setIsLoading(false)
         }
     }, [checkGit])
 
     useEffect(() => {
         if (open) {
+            requestGenerationRef.current += 1
             setGitStatus('none')
             setGitMessage('')
             setPerformanceWarning('')

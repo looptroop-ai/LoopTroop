@@ -31,11 +31,11 @@ import {
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
-import { AutosaveStatus } from './AutosaveStatus'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalEditToolbar } from './ApprovalEditToolbar'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -486,44 +486,15 @@ function BeadsApprovalPane({
         />
 
         {isEditMode ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => requestTabChange('structured')}
-                className={editTab === 'structured'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Structured
-              </button>
-              <button
-                type="button"
-                onClick={() => requestTabChange('jsonl')}
-                className={editTab === 'jsonl'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                JSONL
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <AutosaveStatus
-                state={approvalAutosave.state}
-                lastSavedAt={approvalAutosave.lastSavedAt}
-                label="Draft autosave on"
-              />
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={handleSave}
-                disabled={isSaving || !hasUnsavedChanges}
-              >
-                {isSaving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ApprovalEditToolbar
+            tabs={[{ id: 'structured', label: 'Structured' }, { id: 'jsonl', label: 'JSONL' }]}
+            activeTab={editTab}
+            onTabChange={requestTabChange}
+            autosave={approvalAutosave}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveDisabled={isSaving || !hasUnsavedChanges}
+          />
         ) : null}
 
         {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}

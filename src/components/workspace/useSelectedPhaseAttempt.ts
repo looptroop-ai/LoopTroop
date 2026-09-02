@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 
 /**
@@ -12,7 +12,7 @@ import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
  * because a surface that resolves the attempt differently shows a different
  * version of the same phase.
  */
-export function useSelectedPhaseAttempt(ticketId: string, phase: string) {
+export function useSelectedPhaseAttempt(ticketId?: string, phase?: string) {
   const {
     data: attempts = [],
     isError,
@@ -20,6 +20,14 @@ export function useSelectedPhaseAttempt(ticketId: string, phase: string) {
     refetch,
   } = useTicketPhaseAttempts(ticketId, phase)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
+
+  // A choice belongs to the phase it was made in. The memo below already
+  // ignores a number the current attempts do not contain, but a coincidental
+  // match across phases would silently keep it — `CodingView` changes the phase
+  // within one mount, which is where that can happen.
+  useEffect(() => {
+    setManualSelectedAttemptNumber(null)
+  }, [phase])
 
   const selectedAttemptNumber = useMemo(() => {
     if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
@@ -41,7 +49,6 @@ export function useSelectedPhaseAttempt(ticketId: string, phase: string) {
   return {
     attempts,
     selectedAttempt,
-    selectedAttemptNumber,
     setManualSelectedAttemptNumber,
     archivedAttemptNumber,
     logPhaseAttempt: attempts.length > 1 ? selectedAttempt?.attemptNumber : undefined,

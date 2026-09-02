@@ -25,10 +25,10 @@ import {
   useApprovalPaneState,
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
-import { AutosaveStatus } from './AutosaveStatus'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalEditToolbar } from './ApprovalEditToolbar'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -808,38 +808,15 @@ export function ExecutionSetupPlanApprovalPane({
         />
 
         {!readOnly && isEditMode ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="inline-flex items-center gap-1 rounded-md border border-border bg-background p-1">
-              <button
-                type="button"
-                onClick={() => requestTabChange('structured')}
-                className={editTab === 'structured'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Structured
-              </button>
-              <button
-                type="button"
-                onClick={() => requestTabChange('raw')}
-                className={editTab === 'raw'
-                  ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-                  : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-              >
-                Raw
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <AutosaveStatus
-                state={approvalAutosave.state}
-                lastSavedAt={approvalAutosave.lastSavedAt}
-                label="Draft autosave on"
-              />
-              <Button size="sm" variant="secondary" onClick={handleSave} disabled={isSaving || !hasUnsavedChanges}>
-                {isSaving ? 'Saving…' : 'Save'}
-              </Button>
-            </div>
-          </div>
+          <ApprovalEditToolbar
+            tabs={[{ id: 'structured', label: 'Structured' }, { id: 'raw', label: 'Raw' }]}
+            activeTab={editTab}
+            onTabChange={requestTabChange}
+            autosave={approvalAutosave}
+            onSave={handleSave}
+            isSaving={isSaving}
+            saveDisabled={isSaving || !hasUnsavedChanges}
+          />
         ) : null}
 
         {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}

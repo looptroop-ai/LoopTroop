@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { BeadDiffViewer } from './BeadDiffViewer'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { LogEntryRow } from './LogLine'
@@ -22,7 +23,6 @@ import { formatElapsedDuration } from './currentActivity'
 import type { BeadNoteEntry, Ticket } from '@/hooks/useTickets'
 import { useTicketAction } from '@/hooks/useTickets'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
-import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { useTicketHistoricalLogs } from '@/hooks/useTicketHistoricalLogs'
 import { cn } from '@/lib/utils'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
@@ -1072,34 +1072,19 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const viewingBeadId = hasBeadControls ? rawViewingBeadId : null
   const shouldShowPhaseVersionSelector = phaseForView !== 'CODING'
   const {
-    data: phaseAttempts = [],
+    attempts: phaseAttempts,
+    selectedAttempt,
+    setManualSelectedAttemptNumber,
+    archivedAttemptNumber,
+    logPhaseAttempt,
+    logMode,
     isError: isPhaseAttemptsError,
     error: phaseAttemptsError,
     refetch: refetchPhaseAttempts,
-  } = useTicketPhaseAttempts(
+  } = useSelectedPhaseAttempt(
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
-  const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
-  useEffect(() => {
-    setManualSelectedAttemptNumber(null)
-  }, [phaseForView])
-  const selectedAttemptNumber = useMemo(() => {
-    if (manualSelectedAttemptNumber != null && phaseAttempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
-      return manualSelectedAttemptNumber
-    }
-    return (phaseAttempts.find((attempt) => attempt.state === 'active') ?? phaseAttempts[0])?.attemptNumber ?? null
-  }, [manualSelectedAttemptNumber, phaseAttempts])
-  const selectedAttempt = useMemo(
-    () => phaseAttempts.find((attempt) => attempt.attemptNumber === selectedAttemptNumber)
-      ?? phaseAttempts.find((attempt) => attempt.state === 'active')
-      ?? phaseAttempts[0]
-      ?? null,
-    [phaseAttempts, selectedAttemptNumber],
-  )
-  const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
-  const logPhaseAttempt = phaseAttempts.length > 1 ? selectedAttempt?.attemptNumber : undefined
-  const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
   const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null

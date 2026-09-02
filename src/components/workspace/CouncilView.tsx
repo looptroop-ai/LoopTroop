@@ -212,10 +212,10 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
           </CardContent>
         </Card>
 
-        // Which attempt these belong to is unknown while the history request is
-        // failing with nothing cached, and artifacts and logs are scoped by it — so
-        // they would be shown as the live version, which may not be the one the
-        // reader selected. The notice above says why they are missing.
+        {/* Which attempt these belong to is unknown while the history request
+            is failing with nothing cached, and artifacts and logs are scoped by
+            it — they would be shown as the live version, which may not be the
+            one the reader selected. The notice above says why they are gone. */}
         {isPhaseVersionUnknown ? null : (
           <PhaseArtifactsPanel
             phase={phase}

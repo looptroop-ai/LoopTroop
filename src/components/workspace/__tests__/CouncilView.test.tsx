@@ -56,6 +56,15 @@ describe('CouncilView', () => {
     mockUseTicketPhaseAttempts.mockReturnValue({ data: [] })
   })
 
+  it('renders no source comments as visible text', () => {
+    // A `//` line placed among JSX children is *text*, not a comment, and React
+    // paints it. Nothing else here would notice: every assertion looks for text
+    // that should be present, and this one is about text that should not.
+    const { container } = render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
+
+    expect(container.textContent ?? '').not.toMatch(/\/\/\s/)
+  })
+
   it('keeps the live council view visible while artifacts are still loading', () => {
     render(<CouncilView phase="DRAFTING_PRD" ticket={makeTicket({ status: 'DRAFTING_PRD' })} />)
 

@@ -470,4 +470,54 @@ describe('AIQuestionProvider', () => {
 
     expect(screen.getByText('requests:1')).toBeInTheDocument()
   })
+
+  it('keeps a superseded snapshot\'s other questions instead of dropping it whole', async () => {
+    // A live `opencode_question` carries one request, not the step's whole set.
+    // Rejecting the in-flight snapshot outright — the first fix for the ordering
+    // problem — therefore lost every *other* question that snapshot had learned
+    // about until the next poll. What the event invalidates is the snapshot's
+    // right to prune, not its contents.
+    const ticket = makeTicket({ status: 'CODING' })
+    let releaseRefresh!: (body: unknown) => void
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/opencode/questions')) {
+        return new Promise<Response>((resolve) => {
+          releaseRefresh = (body) => resolve(new Response(JSON.stringify(body), { status: 200 }))
+        })
+      }
+      return new Response(JSON.stringify({ questions: [], timers: {} }), { status: 200 })
+    }))
+
+    function Refresher({ ticketId }: { ticketId: string }) {
+      const { getRequestCount, refreshTicket, ingestSseEvent } = useAIQuestions()
+      return (
+        <>
+          <div>requests:{getRequestCount(ticketId)}</div>
+          <button onClick={() => refreshTicket(ticketId)}>refresh</button>
+          <button onClick={() => ingestSseEvent(buildQuestion(ticketId, {
+            sessionId: 'session-live', requestId: 'question-live',
+          }))}>live</button>
+        </>
+      )
+    }
+
+    renderProvider([ticket], <Refresher ticketId={ticket.id} />)
+    await waitFor(() => expect(screen.getByText('requests:0')).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText('refresh'))
+    await waitFor(() => expect(releaseRefresh).toBeDefined())
+
+    fireEvent.click(screen.getByText('live'))
+    await waitFor(() => expect(screen.getByText('requests:1')).toBeInTheDocument())
+
+    // The snapshot knows about a different question the live event never
+    // mentioned. Its upserts still count; only its prune is refused.
+    await act(async () => releaseRefresh({
+      questions: [buildQuestion(ticket.id, { sessionId: 'session-snap', requestId: 'question-snap' })],
+      timer: null,
+    }))
+
+    await waitFor(() => expect(screen.getByText('requests:2')).toBeInTheDocument())
+  })
 })

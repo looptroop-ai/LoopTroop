@@ -177,6 +177,17 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    */
   const snapshotTokenRef = useRef(0)
   const appliedSnapshotRef = useRef(new Map<string, number>())
+  /**
+   * The last live event per ticket, kept apart from the last snapshot.
+   *
+   * The two supersede a late snapshot differently. A newer *snapshot* replaces
+   * it outright — it read the server later and its pending set is the better
+   * one. A live *event* does not: `opencode_question` carries one request, not
+   * the step's whole set, so treating it as authoritative threw away every other
+   * question the snapshot had learned about. What it does invalidate is the
+   * snapshot's right to prune.
+   */
+  const liveEventRef = useRef(new Map<string, number>())
   /** The newest timer frame accepted per ticket; see `applyTimer`. */
   const timerFreshnessRef = useRef(new Map<string, { generation: number; revision: number }>())
 
@@ -299,7 +310,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     // claims the sequence: a response that read the server before this arrived
     // must not prune what it just told us.
     if (payload.ticketId) {
-      appliedSnapshotRef.current.set(payload.ticketId, ++snapshotTokenRef.current)
+      liveEventRef.current.set(payload.ticketId, ++snapshotTokenRef.current)
     }
     if (payload.type === 'opencode_question_resolved') {
       if (payload.sessionId && payload.requestId) removeRequest(payload.sessionId, payload.requestId)
@@ -358,6 +369,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     ticketId: string,
     rawQuestions: Array<Record<string, unknown>>,
     timer: AiQuestionTimerState | null,
+    options: { prune?: boolean } = {},
   ) => {
     const live = new Set<string>()
     for (const raw of rawQuestions) {
@@ -368,10 +380,26 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     }
     // A successful fetch is authoritative for this ticket: anything it does not
     // list was resolved elsewhere, and leaving it on screen would show a
-    // question nobody can answer. A *failed* fetch prunes nothing.
-    pruneTicketRequests(setRequests, ticketId, live)
-    applyTimer(ticketId, timer)
+    // question nobody can answer. A *failed* fetch prunes nothing, and neither
+    // does one a live event has overtaken — its list is older than what the
+    // event just told us, but the requests it carries are still real.
+    if (options.prune !== false) pruneTicketRequests(setRequests, ticketId, live)
+    if (options.prune !== false) applyTimer(ticketId, timer)
   }, [applyTimer, upsertRequest])
+
+  /**
+   * Whether a snapshot that has just landed may still be applied, and how.
+   *
+   * `null` means a newer snapshot already answered for this ticket.
+   */
+  const resolveSnapshotApplication = useCallback((
+    ticketId: string,
+    generation: number,
+  ): { prune: boolean } | null => {
+    if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) return null
+    appliedSnapshotRef.current.set(ticketId, generation)
+    return { prune: generation > (liveEventRef.current.get(ticketId) ?? 0) }
+  }, [])
 
   const refreshTicket = useCallback((ticketId: string) => {
     const generation = ++snapshotTokenRef.current
@@ -382,14 +410,19 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
         const body = await res.json() as { questions?: Array<Record<string, unknown>>; timer?: unknown }
         // The snapshot prunes, so applying an older one deletes questions that
         // are still live — whether the newer thing was a poll or an SSE event.
-        if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) return
-        appliedSnapshotRef.current.set(ticketId, generation)
-        applyTicketSnapshot(ticketId, Array.isArray(body.questions) ? body.questions : [], parseTimer(body.timer))
+        const application = resolveSnapshotApplication(ticketId, generation)
+        if (!application) return
+        applyTicketSnapshot(
+          ticketId,
+          Array.isArray(body.questions) ? body.questions : [],
+          parseTimer(body.timer),
+          application,
+        )
       } catch {
         // Best-effort; the aggregate poll is the backstop.
       }
     })()
-  }, [applyTicketSnapshot])
+  }, [applyTicketSnapshot, resolveSnapshotApplication])
 
   /**
    * The aggregate poll.
@@ -431,9 +464,14 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
         for (const ticketId of activeIds) {
           // Per ticket, because a refresh or an SSE event may have overtaken
           // this poll for one ticket and not for the others.
-          if (generation <= (appliedSnapshotRef.current.get(ticketId) ?? 0)) continue
-          appliedSnapshotRef.current.set(ticketId, generation)
-          applyTicketSnapshot(ticketId, byTicket.get(ticketId) ?? [], parseTimer(body.timers?.[ticketId]))
+          const application = resolveSnapshotApplication(ticketId, generation)
+          if (!application) continue
+          applyTicketSnapshot(
+            ticketId,
+            byTicket.get(ticketId) ?? [],
+            parseTimer(body.timers?.[ticketId]),
+            application,
+          )
         }
       } catch {
         // Leave what is already known standing; an unreachable server is not
@@ -447,7 +485,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
       cancelled = true
       clearInterval(interval)
     }
-  }, [activeTicketKey, applyTicketSnapshot])
+  }, [activeTicketKey, applyTicketSnapshot, resolveSnapshotApplication])
 
   /**
    * Everything belonging to a ticket that is finished or no longer listed.
@@ -495,6 +533,8 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     for (const ticketId of timerFreshnessRef.current.keys()) {
       if (!activeIds.has(ticketId)) timerFreshnessRef.current.delete(ticketId)
     }
+    // `liveEventRef`, like `appliedSnapshotRef`, is not pruned: resetting a
+    // ticket to sequence 0 would let a response from its previous life apply.
   }, [activeTicketKey])
 
   const ticketRequests = useCallback((ticketId: string) => Object.values(requests)

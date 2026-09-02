@@ -1,7 +1,7 @@
 import { buildBeadsUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { RefinementChange } from '@shared/refinementChanges'
 import type { PromptPart } from '../../opencode/types'
-import { normalizeBeadSubsetYamlOutput, normalizeBeadRefinementOutput, getBeadDraftMetrics, type BeadDraftMetrics, type StructuredOutputMetadata } from '../../structuredOutput'
+import { normalizeBeadSubsetYamlOutput, normalizeBeadRefinementOutput, getCoverageBeadMetrics, type CoverageBeadMetrics, type StructuredOutputMetadata } from '../../structuredOutput'
 import {
   buildYamlDocument,
   collectStructuredCandidates,
@@ -34,7 +34,7 @@ export interface ValidatedBeadsCoverageRevision {
   priorCandidateContent: string
   changes: RefinementChange[]
   gapResolutions: BeadsCoverageGapResolution[]
-  draftMetrics: BeadDraftMetrics
+  draftMetrics: CoverageBeadMetrics
   repairApplied: boolean
   repairWarnings: string[]
 }
@@ -45,7 +45,7 @@ export interface BeadsCoverageRevisionArtifact {
   winnerDraftContent: string
   changes: RefinementChange[]
   gapResolutions: BeadsCoverageGapResolution[]
-  draftMetrics: BeadDraftMetrics
+  draftMetrics: CoverageBeadMetrics
   candidateVersion: number
   structuredOutput?: StructuredOutputMetadata
   uiRefinementDiff: ReturnType<typeof buildBeadsUiRefinementDiffArtifact>
@@ -295,7 +295,7 @@ export function validateBeadsCoverageRevisionOutput(
     priorCandidateContent: options.currentCandidateContent,
     changes: refinementResult.value.changes,
     gapResolutions: parsedGapResolutions.gapResolutions,
-    draftMetrics: getBeadDraftMetrics(refinementResult.value.beads),
+    draftMetrics: getCoverageBeadMetrics(refinementResult.value.beads),
     repairApplied: refinementResult.repairApplied || parsedGapResolutions.repairWarnings.length > 0,
     repairWarnings: [...refinementResult.repairWarnings, ...parsedGapResolutions.repairWarnings],
   }

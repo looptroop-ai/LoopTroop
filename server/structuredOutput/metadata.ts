@@ -54,6 +54,7 @@ export function buildStructuredOutputMetadata(
   base: Partial<StructuredOutputMetadata> | null | undefined,
   extra?: Partial<StructuredOutputMetadata>,
 ): StructuredOutputMetadata {
+  const retryDiagnostics = mergeStructuredRetryDiagnostics(base?.retryDiagnostics, extra?.retryDiagnostics)
   const merged: StructuredOutputMetadata = {
     repairApplied: Boolean(base?.repairApplied || extra?.repairApplied),
     repairWarnings: normalizeStringArray([
@@ -66,9 +67,7 @@ export function buildStructuredOutputMetadata(
       : base?.validationError
         ? { validationError: base.validationError }
         : {}),
-    ...(mergeStructuredRetryDiagnostics(base?.retryDiagnostics, extra?.retryDiagnostics).length > 0
-      ? { retryDiagnostics: mergeStructuredRetryDiagnostics(base?.retryDiagnostics, extra?.retryDiagnostics) }
-      : {}),
+    ...(retryDiagnostics.length > 0 ? { retryDiagnostics } : {}),
   }
 
   const interventions = mergeStructuredInterventions(

@@ -74,7 +74,7 @@ import {
   parseBeadsCoverageRevisionRefinedContent,
   validateBeadsCoverageRevisionOutput,
 } from '../../phases/beads/coverageRevision'
-import { BEADS_PIPELINE_STEPS, getBeadsDraftMetrics, parseBeadsRefinedArtifact } from '../../phases/beads/refined'
+import { BEADS_PIPELINE_STEPS, getRefinementBeadMetrics, parseBeadsRefinedArtifact } from '../../phases/beads/refined'
 import { hydrateExpandedBeads } from '../../phases/beads/expand'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import {
@@ -1677,7 +1677,7 @@ async function finalizeBeadsCoverageExpansion(params: {
   }
 
   const beadSubsets = normalizedBlueprint.value
-  const draftMetrics = getBeadsDraftMetrics(beadSubsets)
+  const draftMetrics = getRefinementBeadMetrics(beadSubsets)
   const streamStates = new Map<string, OpenCodeStreamState>()
 
   emitModelSystemLog(

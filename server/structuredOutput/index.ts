@@ -54,9 +54,9 @@ export {
   normalizeBeadRefinementOutput,
   normalizeBeadsJsonlOutput,
   normalizeRelevantFilesOutput,
-  getBeadDraftMetrics,
+  getCoverageBeadMetrics,
 } from './beadsOutput'
-export type { BeadDraftMetrics, ValidatedBeadRefinementResult } from './beadsOutput'
+export type { CoverageBeadMetrics, ValidatedBeadRefinementResult } from './beadsOutput'
 
 export { normalizeVoteScorecardOutput } from './voteOutput'
 

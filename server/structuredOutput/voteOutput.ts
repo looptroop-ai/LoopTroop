@@ -135,10 +135,9 @@ export function normalizeVoteScorecardOutput(
         ])
 
         const root = isRecord(parsed) ? parsed : null
+        const nestedDraftScores = root ? getValueByAliases(root, ['draftscores', 'draft_scores']) : undefined
         const draftScoresRecord = root
-          ? isRecord(getValueByAliases(root, ['draftscores', 'draft_scores']))
-            ? getValueByAliases(root, ['draftscores', 'draft_scores']) as Record<string, unknown>
-            : root
+          ? isRecord(nestedDraftScores) ? nestedDraftScores : root
           : null
 
         if (!draftScoresRecord) throw new Error('Vote scorecard is not a YAML/JSON mapping')

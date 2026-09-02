@@ -31,7 +31,6 @@ import {
   toStringArray,
   toOptionalString,
   toInteger,
-  toOrdinalInteger,
   toBoolean,
   getValueByAliases,
   getNestedRecord,
@@ -39,6 +38,7 @@ import {
   buildYamlDocument,
 } from './yamlUtils'
 import { MAX_INTERVIEW_BATCH_SIZE } from '../lib/constants'
+import { resolveLosingDraftReference } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 
@@ -363,23 +363,9 @@ function parseInterviewRefinementChangeEntry(
     inspiration = undefined
   } else if (isRecord(rawInspiration)) {
     try {
-      const rawAltDraft = getValueByAliases(rawInspiration, ['alternative_draft', 'alternativedraft', 'draft', 'draft_index'])
-      let draftIndex = -1
-
-      if (typeof rawAltDraft === 'string' && losingDraftMeta) {
-        const rawTrimmed = rawAltDraft.trim()
-        const foundIdx = losingDraftMeta.findIndex((m) => m.memberId === rawTrimmed)
-        if (foundIdx >= 0) {
-          draftIndex = foundIdx
-        }
-      }
-
-      if (draftIndex === -1) {
-        const altDraft = toOrdinalInteger(rawAltDraft)
-        if (altDraft != null) {
-          draftIndex = altDraft - 1
-        }
-      }
+      // The memberId is hydrated later, from losingDraftMeta, once the change
+      // list has been canonicalised; only the index matters here.
+      const { draftIndex } = resolveLosingDraftReference(rawInspiration, losingDraftMeta)
 
       const rawInspirationQuestion = getValueByAliases(rawInspiration, ['question', 'item'])
       if (draftIndex >= 0 && rawInspirationQuestion !== undefined) {

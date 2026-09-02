@@ -23,7 +23,7 @@ export interface BeadsPipelineStep {
   description: string
 }
 
-export interface BeadsDraftMetrics {
+export interface RefinementBeadMetrics {
   beadCount: number
   totalTestCount: number
   totalAcceptanceCriteriaCount: number
@@ -31,7 +31,7 @@ export interface BeadsDraftMetrics {
 
 export interface ValidatedBeadsRefinement {
   beadSubsets: BeadSubset[]
-  metrics: BeadsDraftMetrics
+  metrics: RefinementBeadMetrics
   refinedContent: string
   winnerDraftContent: string
   changes: RefinementChange[]
@@ -45,7 +45,7 @@ export interface BeadsRefinedArtifact {
   winnerDraftContent: string
   changes?: RefinementChange[]
   structuredOutput?: StructuredOutputMetadata
-  draftMetrics: BeadsDraftMetrics
+  draftMetrics: RefinementBeadMetrics
   pipelineSteps: BeadsPipelineStep[]
 }
 
@@ -102,7 +102,7 @@ function normalizeFingerprintList(values: string[] | undefined): string[] {
     : []
 }
 
-export function getBeadsDraftMetrics(beadSubsets: BeadSubset[]): BeadsDraftMetrics {
+export function getRefinementBeadMetrics(beadSubsets: BeadSubset[]): RefinementBeadMetrics {
   let totalTestCount = 0
   let totalAcceptanceCriteriaCount = 0
 
@@ -122,6 +122,14 @@ function buildBeadContentFingerprint(bead: BeadSubset): string {
   return JSON.stringify({
     title: bead.title.trim(),
     description: bead.description.trim(),
+    // prdRefs and contextGuidance are part of the bead's content: an edit that
+    // touched only those was dropped from `changes` while the YAML kept the new
+    // values.
+    prdRefs: normalizeFingerprintList(bead.prdRefs),
+    contextGuidance: {
+      patterns: normalizeFingerprintList(bead.contextGuidance.patterns),
+      anti_patterns: normalizeFingerprintList(bead.contextGuidance.anti_patterns),
+    },
     acceptanceCriteria: normalizeFingerprintList(bead.acceptanceCriteria),
     tests: normalizeFingerprintList(bead.tests),
     testCommands: bead.testCommands,
@@ -522,7 +530,7 @@ export function validateBeadsRefinementOutput(
   if (rawChanges.length === 0) {
     return {
       beadSubsets: refinedBeads,
-      metrics: getBeadsDraftMetrics(refinedBeads),
+      metrics: getRefinementBeadMetrics(refinedBeads),
       refinedContent: normalizedContent,
       winnerDraftContent: options.winnerDraftContent,
       changes: [],
@@ -696,7 +704,7 @@ export function validateBeadsRefinementOutput(
 
   return {
     beadSubsets: refinedBeads,
-    metrics: getBeadsDraftMetrics(refinedBeads),
+    metrics: getRefinementBeadMetrics(refinedBeads),
     refinedContent: normalizedContent,
     winnerDraftContent: options.winnerDraftContent,
     changes: validatedChanges,
@@ -742,12 +750,24 @@ function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinem
         ? rawTestCommandReason.trim()
         : ''
 
+      // prdRefs and contextGuidance were hardcoded empty here because the
+      // fingerprint did not read them. It does now, and a winner item that
+      // reported none would differ from every refined bead.
+      const rawPrdRefs = entry.prdRefs ?? entry.prd_refs
+      const rawGuidance = entry.contextGuidance ?? entry.context_guidance
+      const guidance = isRecord(rawGuidance) ? rawGuidance : {}
+
       const bead: BeadSubset = {
         id,
         title,
-        prdRefs: [],
+        prdRefs: Array.isArray(rawPrdRefs) ? normalizeFingerprintList(rawPrdRefs as string[]) : [],
         description,
-        contextGuidance: { patterns: [], anti_patterns: [] },
+        contextGuidance: {
+          patterns: Array.isArray(guidance.patterns) ? normalizeFingerprintList(guidance.patterns as string[]) : [],
+          anti_patterns: Array.isArray(guidance.anti_patterns ?? guidance.antiPatterns)
+            ? normalizeFingerprintList((guidance.anti_patterns ?? guidance.antiPatterns) as string[])
+            : [],
+        },
         acceptanceCriteria,
         tests,
         testCommands,
@@ -784,7 +804,7 @@ function resolveBeadChangeItem(
 // Artifact builders
 // ---------------------------------------------------------------------------
 
-function normalizeDraftMetrics(value: unknown): BeadsDraftMetrics | null {
+function normalizeDraftMetrics(value: unknown): RefinementBeadMetrics | null {
   if (!isRecord(value)) return null
 
   const beadCount = typeof value.beadCount === 'number' && Number.isInteger(value.beadCount)
@@ -817,7 +837,7 @@ function normalizePipelineSteps(value: unknown): BeadsPipelineStep[] {
   return steps.length > 0 ? steps : BEADS_PIPELINE_STEPS
 }
 
-function deriveDraftMetricsFromRefinedContent(content: string): BeadsDraftMetrics | null {
+function deriveDraftMetricsFromRefinedContent(content: string): RefinementBeadMetrics | null {
   try {
     const parsed = jsYaml.load(content)
     const entries = Array.isArray(parsed)

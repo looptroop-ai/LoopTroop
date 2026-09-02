@@ -369,8 +369,8 @@ function isTerminalNoiseText(text: string): boolean {
       continue
     }
 
-    if (readBracketedPasteSequence(text, cursor) !== null) {
-      const bracketEnd = readBracketedPasteSequence(text, cursor)!
+    const bracketEnd = readBracketedPasteSequence(text, cursor)
+    if (bracketEnd !== null) {
       cursor = bracketEnd
       continue
     }

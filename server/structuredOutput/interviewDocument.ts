@@ -14,7 +14,6 @@ import type {
   InterviewQuestionOption,
   InterviewQuestionSource,
 } from '@shared/interviewSession'
-import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { StructuredOutputResult } from './types'
 import { looksLikeStructuredPromptSchemaEcho } from '../lib/promptEcho'
 import {
@@ -34,8 +33,7 @@ import {
   unwrapExplicitWrapperRecord,
   collectAliasConflictWarnings,
 } from './yamlUtils'
-import { buildStructuredOutputFailure } from './failure'
-import { getErrorMessage } from '@shared/typeGuards'
+import { buildStructuredOutputFailure, createStructuredCandidateFailureTracker } from './failure'
 
 const INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR = 'Interview document output echoed the prompt instead of returning a structured interview artifact'
 
@@ -777,11 +775,7 @@ export function normalizeInterviewDocumentOutput(
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['schema_version', 'ticket_id', 'artifact', 'questions'],
   })
-  let lastError = 'No interview document content found'
-  let lastErrorCause: unknown = null
-  let lastRetryDiagnostic: StructuredRetryDiagnostic | undefined
-  let preferredPromptEchoError: string | undefined
-  let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
+  const failures = createStructuredCandidateFailureTracker('No interview document content found')
 
   for (const candidate of candidates) {
     const warnings: string[] = []
@@ -790,9 +784,7 @@ export function normalizeInterviewDocumentOutput(
       if (looksLikeStructuredPromptSchemaEcho(candidate, {
         rootKeys: ['schema_version', 'ticket_id', 'artifact', 'questions'],
       })) {
-        const failure = buildStructuredOutputFailure(candidate, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
+        failures.recordPromptEcho(candidate, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
         continue
       }
 
@@ -896,28 +888,13 @@ export function normalizeInterviewDocumentOutput(
         repairWarnings: warnings,
       }
     } catch (error) {
-      lastError = getErrorMessage(error)
-      lastErrorCause = error
-      if (isPromptEchoValidationError(lastError)) {
-        const failure = buildStructuredOutputFailure(candidate, lastError, { cause: error })
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
-      }
+      failures.recordCandidateError(candidate, error, isPromptEchoValidationError)
     } finally {
       releaseAliasConflicts()
     }
   }
 
-  if (preferredPromptEchoError) {
-    return buildStructuredOutputFailure(rawContent, preferredPromptEchoError, {
-      retryDiagnostic: preferredPromptEchoRetryDiagnostic,
-    })
-  }
-
-  return buildStructuredOutputFailure(rawContent, lastError, {
-    cause: lastErrorCause,
-    retryDiagnostic: lastRetryDiagnostic,
-  })
+  return failures.build(rawContent)
 }
 
 export function normalizeResolvedInterviewDocumentOutput(
@@ -942,19 +919,13 @@ export function normalizeResolvedInterviewDocumentOutput(
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['schema_version', 'ticket_id', 'artifact', 'questions'],
   })
-  let lastError = 'No resolved interview document content found'
-  let lastErrorCause: unknown = null
-  let lastRetryDiagnostic: StructuredRetryDiagnostic | undefined
-  let preferredPromptEchoError: string | undefined
-  let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
+  const failures = createStructuredCandidateFailureTracker('No resolved interview document content found')
 
   for (const candidateContent of candidates) {
     if (looksLikeStructuredPromptSchemaEcho(candidateContent, {
       rootKeys: ['schema_version', 'ticket_id', 'artifact', 'questions'],
     })) {
-      const failure = buildStructuredOutputFailure(candidateContent, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
-      preferredPromptEchoError ??= failure.error
-      preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
+      failures.recordPromptEcho(candidateContent, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
       continue
     }
 
@@ -970,14 +941,7 @@ export function normalizeResolvedInterviewDocumentOutput(
       if (answerOnlyCandidate) {
         candidateResult = answerOnlyCandidate
       } else {
-        if (isPromptEchoValidationError(candidateResult.error)) {
-          preferredPromptEchoError ??= candidateResult.error
-          preferredPromptEchoRetryDiagnostic ??= candidateResult.retryDiagnostic
-          continue
-        }
-        lastError = candidateResult.error
-        lastErrorCause = candidateResult.retryDiagnostic
-        lastRetryDiagnostic = candidateResult.retryDiagnostic
+        failures.recordCandidateFailure(candidateResult, isPromptEchoValidationError)
         continue
       }
     }
@@ -1145,21 +1109,11 @@ export function normalizeResolvedInterviewDocumentOutput(
         repairWarnings,
       }
     } catch (error) {
-      lastError = getErrorMessage(error)
-      lastErrorCause = error
+      failures.recordCandidateError(candidateContent, error, isPromptEchoValidationError)
     }
   }
 
-  if (preferredPromptEchoError) {
-    return buildStructuredOutputFailure(rawContent, preferredPromptEchoError, {
-      retryDiagnostic: preferredPromptEchoRetryDiagnostic,
-    })
-  }
-
-  return buildStructuredOutputFailure(rawContent, lastError, {
-    cause: lastErrorCause,
-    retryDiagnostic: lastRetryDiagnostic,
-  })
+  return failures.build(rawContent)
 }
 
 export function toDraftInterviewDocument(document: InterviewDocument): InterviewDocument {

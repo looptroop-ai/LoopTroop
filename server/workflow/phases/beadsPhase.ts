@@ -19,7 +19,7 @@ import {
   validateBeadsRefinementOutput,
   buildBeadsRefinedArtifact,
   buildBeadsRefinementRetryPrompt,
-  getBeadsDraftMetrics,
+  getRefinementBeadMetrics,
   BEADS_PIPELINE_STEPS,
   type ValidatedBeadsRefinement,
 } from '../../phases/beads/refined'
@@ -806,7 +806,7 @@ export async function handleBeadsRefine(
       })()
   const draftMetrics = refinementResult
     ? refinementResult.metrics
-    : getBeadsDraftMetrics(beadSubsets)
+    : getRefinementBeadMetrics(beadSubsets)
   emitPhaseLog(ticketId, context.externalId, 'REFINING_BEADS', 'info',
     `Substep blueprint_refine completed — ${draftMetrics.beadCount} beads, ${draftMetrics.totalTestCount} tests, ${draftMetrics.totalAcceptanceCriteriaCount} acceptance criteria.`)
 

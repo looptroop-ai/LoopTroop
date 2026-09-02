@@ -139,6 +139,33 @@ describe.concurrent('beads refinement validation', () => {
     )
   })
 
+  it.each([
+    [
+      'a prdRefs-only edit',
+      (content: string) => content.replace('    prdRefs: ["EPIC-1", "US-2"]', '    prdRefs: ["EPIC-1", "US-3"]'),
+    ],
+    [
+      'a contextGuidance-only edit',
+      (content: string) => content.replace(
+        '        - "Reuse the existing persistence path."',
+        '        - "Reuse the existing persistence path and its storage key."',
+      ),
+    ],
+  ])('accounts for %s that the model did not declare', (_label, edit) => {
+    const winnerDraftContent = buildBeadsRefinementContent()
+    const result = validateBeadsRefinementOutput(edit(buildBeadsRefinementContent()), { winnerDraftContent })
+
+    // Neither field was in the fingerprint, so the edit was dropped from
+    // `changes` while the YAML kept the new value.
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        before: expect.objectContaining({ id: 'bead-2' }),
+        after: expect.objectContaining({ id: 'bead-2' }),
+      }),
+    ])
+  })
+
   it('rejects the refinement when the winner draft cannot be parsed for cross-validation', () => {
     const refinedContent = buildBeadsRefinementContent({ includeChanges: true })
 

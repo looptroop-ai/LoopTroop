@@ -21,7 +21,7 @@ import {
   buildJsonlDocument,
   collectAliasConflictWarnings,
 } from './yamlUtils'
-import { parseRefinementChanges } from './refinementChanges'
+import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 import { normalizeCommandSpec, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
@@ -58,14 +58,14 @@ const RELEVANT_FILES_SEQUENCE_ITEM_PRIMARY_KEYS = {
   },
 } as const
 
-export interface BeadDraftMetrics {
+export interface CoverageBeadMetrics {
   beadCount: number
   totalTestCount: number
   totalTestCommandCount: number
   totalAcceptanceCriteriaCount: number
 }
 
-export function getBeadDraftMetrics(beads: BeadSubset[]): BeadDraftMetrics {
+export function getCoverageBeadMetrics(beads: BeadSubset[]): CoverageBeadMetrics {
   return {
     beadCount: beads.length,
     totalTestCount: beads.reduce((sum, b) => sum + b.tests.length, 0),
@@ -241,15 +241,8 @@ export function normalizeBeadSubsetYamlOutput(
         repairWarnings: candidateWarnings,
       })
 
-      // Extract changes before unwrapping (unwrapping would lose the changes key)
-      let rawChanges: unknown
-      if (isRecord(rawParsed)) {
-        rawChanges = getValueByAliases(rawParsed, ['changes'])
-        if (rawChanges !== undefined) {
-          delete (rawParsed as Record<string, unknown>).changes
-        }
-      }
-      const parsedRefinementChanges = parseRefinementChanges(rawChanges, losingDraftMeta)
+      // Taken before unwrapping, which would lose the changes key.
+      const parsedRefinementChanges = takeRefinementChanges(rawParsed, losingDraftMeta)
       candidateWarnings.push(...parsedRefinementChanges.repairWarnings)
 
       const parsed = maybeUnwrapRecord(rawParsed, [
@@ -260,13 +253,12 @@ export function normalizeBeadSubsetYamlOutput(
         'workitems',
         'work_items',
       ])
+      const nestedEntries = isRecord(parsed)
+        ? getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues'])
+        : undefined
       const entries = Array.isArray(parsed)
         ? parsed
-        : isRecord(parsed)
-          ? Array.isArray(getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues']))
-            ? getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues']) as unknown[]
-            : []
-          : []
+        : Array.isArray(nestedEntries) ? nestedEntries : []
 
       if (entries.length === 0) {
         throw new Error('Bead subset output is empty')
@@ -350,7 +342,21 @@ function buildBeadItemFromSubset(bead: BeadSubset): NormalizedBeadItem {
     id: bead.id,
     label,
     detail,
-    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}\x1f${bead.testCommands.map((command) => renderCommandSpec(command)).join('|')}\x1f${bead.testCommandReason ?? ''}`,
+    // prdRefs and contextGuidance are part of the bead's content: an edit that
+    // touched only those was dropped from `changes` while the YAML kept the new
+    // values.
+    contentFingerprint: [
+      bead.id,
+      label,
+      detail,
+      bead.prdRefs.join('|'),
+      bead.contextGuidance.patterns.join('|'),
+      bead.contextGuidance.anti_patterns.join('|'),
+      bead.acceptanceCriteria.join('|'),
+      bead.tests.join('|'),
+      bead.testCommands.map((command) => renderCommandSpec(command)).join('|'),
+      bead.testCommandReason ?? '',
+    ].join('\x1f'),
   }
 }
 

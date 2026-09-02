@@ -63,35 +63,49 @@ function normalizeInspirationItem(value: unknown): RefinementChangeItem | null {
   return { id, label, ...(detail ? { detail } : {}) }
 }
 
+/**
+ * Resolves which losing draft an inspiration entry points at.
+ *
+ * Interview refinement and the shared change parser each had their own copy of
+ * this, in normalisers that otherwise differ on purpose. Only the reference
+ * resolution is shared; what each does with the result is not.
+ */
+export function resolveLosingDraftReference(
+  rawReference: unknown,
+  losingDraftMeta?: Array<{ memberId: string }>,
+): { draftIndex: number; memberId: string } {
+  const rawAltDraft = isRecord(rawReference)
+    ? getValueByAliases(rawReference, ['alternative_draft', 'alternativedraft', 'draft', 'draft_index', 'draftindex'])
+    : undefined
+
+  if (typeof rawAltDraft === 'string' && losingDraftMeta) {
+    const rawTrimmed = rawAltDraft.trim()
+    const foundIndex = losingDraftMeta.findIndex((m) => m.memberId === rawTrimmed)
+    if (foundIndex >= 0) {
+      return { draftIndex: foundIndex, memberId: losingDraftMeta[foundIndex]!.memberId }
+    }
+  }
+
+  const altDraft = toOrdinalInteger(rawAltDraft)
+  if (altDraft == null) return { draftIndex: -1, memberId: '' }
+
+  const draftIndex = altDraft - 1
+  const inRange = losingDraftMeta !== undefined && draftIndex >= 0 && draftIndex < losingDraftMeta.length
+  return {
+    draftIndex,
+    memberId: inRange ? losingDraftMeta[draftIndex]!.memberId : '',
+  }
+}
+
 function normalizeRefinementInspiration(
   value: unknown,
   losingDraftMeta?: Array<{ memberId: string }>,
 ): RefinementChangeInspiration | null {
   if (!isRecord(value)) return null
 
-  const rawAltDraft = getValueByAliases(value, ['alternative_draft', 'alternativedraft', 'draft', 'draft_index', 'draftindex'])
-
-  let draftIndex = -1
-  let memberId = ''
-
-  if (typeof rawAltDraft === 'string' && losingDraftMeta) {
-    const rawTrimmed = rawAltDraft.trim()
-    const foundIndex = losingDraftMeta.findIndex((m) => m.memberId === rawTrimmed)
-    if (foundIndex >= 0) {
-      draftIndex = foundIndex
-      memberId = losingDraftMeta[foundIndex]!.memberId
-    }
-  }
-
-  if (draftIndex === -1) {
-    const altDraft = toOrdinalInteger(rawAltDraft)
-    if (altDraft != null) {
-      draftIndex = altDraft - 1
-      if (losingDraftMeta && draftIndex >= 0 && draftIndex < losingDraftMeta.length) {
-        memberId = losingDraftMeta[draftIndex]!.memberId
-      }
-    }
-  }
+  const reference = resolveLosingDraftReference(value, losingDraftMeta)
+  const draftIndex = reference.draftIndex
+  let memberId = reference.memberId
 
   if (!memberId) {
     memberId = toOptionalString(getValueByAliases(value, ['member_id', 'memberid', 'memberId'])) ?? ''
@@ -132,7 +146,7 @@ export function parseRefinementChanges(
       continue
     }
 
-    const itemType = toOptionalString(getValueByAliases(entry, ['item_type', 'itemtype', 'itemType'])) ?? undefined
+    const itemType = toOptionalString(getValueByAliases(entry, ['item_type', 'itemtype', 'itemType']))
 
     const rawBefore = getValueByAliases(entry, ['before'])
     const rawAfter = getValueByAliases(entry, ['after'])
@@ -157,12 +171,32 @@ export function parseRefinementChanges(
     changes.push({
       type,
       ...(itemType ? { itemType } : {}),
-      before: before ?? null,
-      after: after ?? null,
-      inspiration: inspiration ?? null,
+      before,
+      after,
+      inspiration,
       attributionStatus,
     })
   }
 
   return { changes, repairWarnings }
+}
+
+/**
+ * Takes `changes` off a parsed refinement record and parses it.
+ *
+ * Both the beads and PRD normalisers read the alias, deleted the key so the rest
+ * of the document could be validated against a schema that does not have it, and
+ * then parsed it — three steps written twice.
+ */
+export function takeRefinementChanges(
+  parsed: unknown,
+  losingDraftMeta?: Array<{ memberId: string }>,
+): { changes: RefinementChange[]; repairWarnings: string[] } {
+  if (!isRecord(parsed)) return { changes: [], repairWarnings: [] }
+
+  const rawChanges = getValueByAliases(parsed, ['changes'])
+  if (rawChanges !== undefined) {
+    delete parsed.changes
+  }
+  return parseRefinementChanges(rawChanges, losingDraftMeta)
 }

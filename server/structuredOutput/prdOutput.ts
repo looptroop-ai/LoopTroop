@@ -1,5 +1,4 @@
 import type { RefinementChange } from '@shared/refinementChanges'
-import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { contentSha256 } from '../lib/contentHash'
 import { looksLikePromptEcho, looksLikeStructuredPromptSchemaEcho } from '../lib/promptEcho'
 import type { PrdDocument, PrdDraftMetrics, StructuredOutputResult } from './types'
@@ -18,9 +17,8 @@ import {
   appendStructuredCandidateRecoveryWarning,
   collectAliasConflictWarnings,
 } from './yamlUtils'
-import { parseRefinementChanges } from './refinementChanges'
-import { buildStructuredOutputFailure } from './failure'
-import { getErrorMessage } from '@shared/typeGuards'
+import { takeRefinementChanges } from './refinementChanges'
+import { buildStructuredOutputFailure, createStructuredCandidateFailureTracker } from './failure'
 import { normalizeCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../lib/hostContext'
 
@@ -255,10 +253,7 @@ export function normalizePrdYamlOutput(
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['schema_version', 'artifact', 'product', 'scope', 'technical_requirements', 'epics'],
   })
-  let lastError = 'No PRD content found'
-  let lastErrorCause: unknown = null
-  let preferredPromptEchoError: string | undefined
-  let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
+  const failures = createStructuredCandidateFailureTracker('No PRD content found')
 
   for (const candidate of candidates) {
     const repairWarnings: string[] = []
@@ -268,9 +263,7 @@ export function normalizePrdYamlOutput(
       if (looksLikeStructuredPromptSchemaEcho(candidate, {
         rootKeys: ['schema_version', 'ticket_id', 'artifact', 'product', 'scope', 'technical_requirements', 'epics'],
       })) {
-        const failure = buildStructuredOutputFailure(candidate, PRD_PROMPT_ECHO_ERROR)
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
+        failures.recordPromptEcho(candidate, PRD_PROMPT_ECHO_ERROR)
         continue
       }
 
@@ -288,12 +281,8 @@ export function normalizePrdYamlOutput(
       ]))
       if (!isRecord(parsed)) throw new Error('PRD output is not a YAML/JSON object')
 
-      // Extract changes before PRD validation (changes is not part of the PRD schema)
-      const rawChanges = getValueByAliases(parsed, ['changes'])
-      if (rawChanges !== undefined) {
-        delete (parsed as Record<string, unknown>).changes
-      }
-      const parsedRefinementChanges = parseRefinementChanges(rawChanges, options.losingDraftMeta)
+      // `changes` is not part of the PRD schema, so it comes off before validation.
+      const parsedRefinementChanges = takeRefinementChanges(parsed, options.losingDraftMeta)
       repairWarnings.push(...parsedRefinementChanges.repairWarnings)
 
       const product = getNestedRecord(parsed, ['product'])
@@ -374,29 +363,13 @@ export function normalizePrdYamlOutput(
         repairWarnings,
       }
     } catch (error) {
-      lastError = getErrorMessage(error)
-      lastErrorCause = error
-      if (/echoed the prompt/i.test(lastError)) {
-        const failure = buildStructuredOutputFailure(candidate, lastError, { cause: error })
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
-      }
+      failures.recordCandidateError(candidate, error, (message) => /echoed the prompt/i.test(message))
     } finally {
       releaseAliasConflicts()
     }
   }
 
-  if (preferredPromptEchoError) {
-    return buildStructuredOutputFailure(rawContent, preferredPromptEchoError, {
-      retryDiagnostic: preferredPromptEchoRetryDiagnostic,
-    })
-  }
-
-  return buildStructuredOutputFailure(
-    rawContent,
-    looksLikePromptEcho(rawContent)
-      ? PRD_PROMPT_ECHO_ERROR
-      : lastError,
-    { cause: lastErrorCause },
-  )
+  return failures.build(rawContent, {
+    ...(looksLikePromptEcho(rawContent) ? { fallbackError: PRD_PROMPT_ECHO_ERROR } : {}),
+  })
 }

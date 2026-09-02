@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { parseRefinementChanges } from '../refinementChanges'
+import {
+  parseRefinementChanges,
+  resolveLosingDraftReference,
+  takeRefinementChanges,
+} from '../refinementChanges'
 
 const LOSING_DRAFT_META = [
   { memberId: 'openai/gpt-5-mini' },
@@ -248,4 +252,57 @@ describe.concurrent('parseRefinementChanges — inspiration item parsing', () =>
     })
   })
 
+})
+
+describe('resolveLosingDraftReference', () => {
+  it('resolves a one-based ordinal to an index and a member', () => {
+    expect(resolveLosingDraftReference({ alternative_draft: 2 }, LOSING_DRAFT_META))
+      .toEqual({ draftIndex: 1, memberId: 'anthropic/claude-sonnet-4' })
+  })
+
+  it('resolves a member id written in place of an ordinal', () => {
+    expect(resolveLosingDraftReference({ draft: 'anthropic/claude-sonnet-4' }, LOSING_DRAFT_META))
+      .toEqual({ draftIndex: 1, memberId: 'anthropic/claude-sonnet-4' })
+  })
+
+  it('reads the alias variants', () => {
+    for (const key of ['alternative_draft', 'alternativeDraft', 'draft', 'draft_index', 'draftIndex']) {
+      expect(resolveLosingDraftReference({ [key]: 1 }, LOSING_DRAFT_META).draftIndex).toBe(0)
+    }
+  })
+
+  it('keeps an out-of-range index and leaves the member empty', () => {
+    expect(resolveLosingDraftReference({ alternative_draft: 9 }, LOSING_DRAFT_META))
+      .toEqual({ draftIndex: 8, memberId: '' })
+  })
+
+  it('returns no reference for a missing or unreadable value', () => {
+    expect(resolveLosingDraftReference({}, LOSING_DRAFT_META)).toEqual({ draftIndex: -1, memberId: '' })
+    expect(resolveLosingDraftReference({ draft: 'nobody' }, LOSING_DRAFT_META)).toEqual({ draftIndex: -1, memberId: '' })
+    expect(resolveLosingDraftReference('not a record', LOSING_DRAFT_META)).toEqual({ draftIndex: -1, memberId: '' })
+  })
+
+  it('resolves an index without draft metadata', () => {
+    expect(resolveLosingDraftReference({ alternative_draft: 1 })).toEqual({ draftIndex: 0, memberId: '' })
+  })
+})
+
+describe('takeRefinementChanges', () => {
+  it('removes the changes key from the record it parses', () => {
+    const parsed: Record<string, unknown> = { beads: [], changes: [makeChange()] }
+    const result = takeRefinementChanges(parsed, LOSING_DRAFT_META)
+
+    expect(result.changes).toHaveLength(1)
+    expect('changes' in parsed).toBe(false)
+  })
+
+  it('leaves a record with no changes key alone', () => {
+    const parsed: Record<string, unknown> = { beads: [] }
+    expect(takeRefinementChanges(parsed).changes).toEqual([])
+    expect(parsed).toEqual({ beads: [] })
+  })
+
+  it('returns nothing for a value that is not a record', () => {
+    expect(takeRefinementChanges([1, 2, 3])).toEqual({ changes: [], repairWarnings: [] })
+  })
 })

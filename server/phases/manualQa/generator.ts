@@ -1,9 +1,6 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { z } from 'zod'
 import type { TicketContext, TicketEvent } from '../../machines/types'
-import type { PrdDocument } from '../../structuredOutput/types'
-import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
 import { readBeadsFile } from '../beads/beadsFile'
 import type { Bead } from '../beads/types'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, resolvePhaseAttempt } from '../../storage/tickets'
@@ -20,6 +17,7 @@ import {
 } from '../../workflow/phases/helpers'
 import { prepareManualQaCheckpoint } from './checkpoint'
 import { deriveManualQaPrdCriteria, computeManualQaCoverage } from './coverage'
+import { readManualQaPrd, type ManualQaPrd } from './prd'
 import { MANUAL_QA_CHECKLIST_TAG, parseManualQaChecklistOutput } from './parser'
 import {
   allocateNextManualQaVersion,
@@ -37,16 +35,6 @@ import {
 } from './storage'
 import { focusedDiffMetadata } from './focusedDiff'
 
-const PrdSchema = z.object({
-  epics: z.array(z.object({
-    id: z.string().trim().min(1),
-    user_stories: z.array(z.object({
-      id: z.string().trim().min(1),
-      acceptance_criteria: z.array(z.string()),
-    }).passthrough()),
-  }).passthrough()),
-}).passthrough()
-
 export function resolveManualQaGenerationVersion(ticketDir: string): number {
   const root = resolve(ticketDir, 'manual-qa')
   if (existsSync(root)) {
@@ -63,13 +51,6 @@ export function resolveManualQaGenerationVersion(ticketDir: string): number {
   return allocateNextManualQaVersion(ticketDir)
 }
 
-function readApprovedPrd(ticketDir: string): PrdDocument {
-  const path = resolve(ticketDir, 'prd.yaml')
-  if (!existsSync(path)) throw new Error('Approved PRD is required before Manual QA checklist generation.')
-  const parsed = PrdSchema.parse(parseYamlOrJsonCandidate(readFileSync(path, 'utf8')))
-  return parsed as unknown as PrdDocument
-}
-
 export function restoreManualQaGenerationArtifacts(ticketDir: string, version: number): {
   checklist: NonNullable<ReturnType<typeof readManualQaChecklist>>
   coverage: NonNullable<ReturnType<typeof readManualQaCoverage>>
@@ -78,7 +59,7 @@ export function restoreManualQaGenerationArtifacts(ticketDir: string, version: n
   if (!checklist) return null
   let coverage = readManualQaCoverage(ticketDir, version)
   if (!coverage) {
-    coverage = computeManualQaCoverage(checklist, deriveManualQaPrdCriteria(readApprovedPrd(ticketDir)))
+    coverage = computeManualQaCoverage(checklist, deriveManualQaPrdCriteria(readManualQaPrd(ticketDir)))
     persistManualQaCoverage(ticketDir, coverage)
   }
   return { checklist, coverage }
@@ -103,7 +84,7 @@ function compactBeads(beadsPath: string): Array<Pick<Bead,
 export function buildGenerationPrompt(input: {
   context: TicketContext
   ticketDescription: string
-  prd: PrdDocument
+  prd: ManualQaPrd
   beads: ReturnType<typeof compactBeads>
   finalTestReport: string
   previousQa: unknown
@@ -285,7 +266,7 @@ export async function handleManualQaChecklistGeneration(
 
   const model = context.lockedMainImplementer?.trim()
   if (!model) throw new Error('Manual QA generation requires the locked main implementer model.')
-  const prd = readApprovedPrd(paths.ticketDir)
+  const prd = readManualQaPrd(paths.ticketDir)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) throw new Error(`Ticket was not found: ${ticketId}`)
   const criteria = deriveManualQaPrdCriteria(prd)

@@ -73,24 +73,59 @@ beads:
     targetFiles: ["src/preferences/store.ts", "src/preferences/store.test.ts"]
 </MANUAL_QA_FIX_BEADS>`
 
+const PROJECT_PATH = '/repo'
+
 describe('Manual QA fix-bead generation contracts', () => {
+  const message = (
+    status: 'running' | 'completed' | 'error',
+    tool = 'read',
+    input?: Record<string, unknown>,
+  ): Message[] => [{
+    id: 'message-one',
+    role: 'assistant',
+    parts: [{
+      id: 'part-one',
+      sessionID: 'session-one',
+      messageID: 'message-one',
+      type: 'tool',
+      callID: 'call-one',
+      tool,
+      state: { status, ...(input ? { input } : {}) },
+    }],
+  }]
+
   it('accepts only a completed repository tool call as inspection evidence', () => {
-    const message = (status: 'running' | 'completed' | 'error'): Message[] => [{
-      id: 'message-one',
-      role: 'assistant',
-      parts: [{
-        id: 'part-one',
-        sessionID: 'session-one',
-        messageID: 'message-one',
-        type: 'tool',
-        callID: 'call-one',
-        tool: 'read',
-        state: { status },
-      }],
-    }]
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('running'))).toBe(false)
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('error'))).toBe(false)
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed'))).toBe(true)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('running'), PROJECT_PATH)).toBe(false)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('error'), PROJECT_PATH)).toBe(false)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed'), PROJECT_PATH)).toBe(true)
+  })
+
+  it.each(['read', 'grep', 'glob', 'list', 'codesearch', 'lsp'])('accepts %s', (tool) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool), PROJECT_PATH)).toBe(true)
+  })
+
+  it.each(['todowrite', 'todoread', 'task', 'webfetch', 'bash', 'question'])('rejects %s', (tool) => {
+    // A completed tool call of any kind used to satisfy the mandatory
+    // repository inspection.
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool), PROJECT_PATH)).toBe(false)
+  })
+
+  it.each([
+    ['a parent-relative path', { path: '../secrets' }],
+    ['a nested parent escape', { path: 'src/../../secrets' }],
+    ['an absolute path outside the repository', { path: '/etc/passwd' }],
+    ['an escaping glob', { pattern: '../*.env' }],
+  ])('rejects %s', (_label, input) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', 'read', input), PROJECT_PATH)).toBe(false)
+  })
+
+  it.each([
+    ['a repository-relative path', { path: 'src/preferences/store.ts' }],
+    ['an absolute path inside the repository', { path: '/repo/src/store.ts' }],
+    ['a repository-relative glob', { pattern: 'src/**/*.ts' }],
+    ['no arguments at all', undefined],
+  ])('accepts %s', (_label, input) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', 'read', input), PROJECT_PATH)).toBe(true)
   })
 
   it('parses complete candidates and hydrates all normal bead fields with app-owned identity', () => {
@@ -139,6 +174,42 @@ describe('Manual QA fix-bead generation contracts', () => {
       qaOrigin: { actionId: 'manual-qa-submit:one', sourceItems: [{ itemId: 'qa-v1-001' }] },
     })
     expect(bead?.id).toMatch(/^qa-v1-[a-f0-9]{12}$/)
+  })
+
+  it('drops a dependency on a merge group that does not exist', () => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    const candidates = parseManualQaFixBeadsOutput(validResponse, groups).map((candidate) => ({
+      ...candidate,
+      blockedByGroupIds: ['hallucinated-group'],
+    }))
+    const capability: ManualQaModelCapabilitySnapshot = {
+      schemaVersion: 1,
+      artifact: 'manual_qa_model_capability',
+      ticketId: 'TEST-1',
+      version: 1,
+      modelId: 'provider/model',
+      modelVariant: null,
+      capabilityLookup: 'available',
+      supportsImages: false,
+      imageEvidenceMode: 'references_only',
+      capturedAt: '2026-07-14T08:02:00.000Z',
+    }
+
+    const [bead] = hydrateManualQaFixBeads({
+      candidates,
+      groups,
+      existing: [],
+      checklist,
+      evidence: [],
+      ticketId: '1:TEST-1',
+      externalId: 'TEST-1',
+      version: 1,
+      actionId: 'manual-qa-submit:one',
+      modelCapability: capability,
+    })
+
+    // `idByGroup.get(id)!` used to persist `blocked_by: [undefined]`.
+    expect(bead?.dependencies.blocked_by).toEqual([])
   })
 
   it('accepts a zero-command fix bead with a reason and preserves it during hydration', () => {

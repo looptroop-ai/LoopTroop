@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import path, { resolve } from 'node:path'
+import path from 'node:path'
 import { z } from 'zod'
+import { isRecord } from '@shared/typeGuards'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext } from '../../machines/types'
 import type { Message, StreamEvent } from '../../opencode/types'
@@ -30,6 +31,7 @@ import type {
 import { normalizeCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../lib/hostContext'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './storage'
+import { manualQaPrdPath } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
 import { focusedDiffMetadata } from './focusedDiff'
 
@@ -163,11 +165,77 @@ export function validateManualQaFixBeadCandidates(
   }
 }
 
-export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[]): boolean {
-  return messages.some((message) => message.parts?.some((part) =>
-    part.type === 'tool'
-    && (part as { state?: { status?: string } }).state?.status === 'completed',
-  ))
+/**
+ * The tools PROM_MANUAL_QA_FIX_BEADS's read_only policy allows, which is what
+ * "a focused read-only repository inspection" can mean.
+ */
+const MANUAL_QA_REPOSITORY_INSPECTION_TOOLS: ReadonlySet<string> = new Set([
+  'read',
+  'grep',
+  'glob',
+  'list',
+  'codesearch',
+  'lsp',
+])
+
+/** Argument names any of those tools use to name a file, directory or pattern. */
+const TOOL_PATH_ARGUMENT_KEYS = [
+  'path',
+  'filepath',
+  'file_path',
+  'file',
+  'directory',
+  'dir',
+  'cwd',
+  'pattern',
+  'glob',
+  'include',
+]
+
+function isRepoScopedToolArgument(value: unknown, projectPath: string): boolean {
+  if (typeof value !== 'string') return true
+  const candidate = value.trim()
+  if (!candidate) return true
+  if (path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)) {
+    const normalizedRoot = path.resolve(projectPath)
+    const normalizedCandidate = path.resolve(candidate)
+    return normalizedCandidate === normalizedRoot
+      || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
+  }
+  const normalized = path.posix.normalize(candidate.replace(/\\/g, '/'))
+  return !normalized.startsWith('../') && !normalized.includes('/../')
+}
+
+/**
+ * Whether one tool call is the read-only repository inspection the prompt makes
+ * mandatory.
+ *
+ * This used to accept any tool part that reached `completed` — not the tool's
+ * name, not that it was read-only, not that it touched the repository — so a
+ * single `todowrite` satisfied the requirement.
+ */
+export function isManualQaRepositoryInspectionToolCall(
+  call: { tool?: unknown; status?: unknown; input?: unknown },
+  projectPath: string,
+): boolean {
+  if (call.status !== 'completed') return false
+  if (typeof call.tool !== 'string') return false
+  if (!MANUAL_QA_REPOSITORY_INSPECTION_TOOLS.has(call.tool.trim().toLowerCase())) return false
+  const input = call.input
+  if (!isRecord(input)) return true
+
+  return TOOL_PATH_ARGUMENT_KEYS.every((key) => isRepoScopedToolArgument(input[key], projectPath))
+}
+
+export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[], projectPath: string): boolean {
+  return messages.some((message) => message.parts?.some((part) => {
+    if (part.type !== 'tool') return false
+    const state = (part as { state?: { status?: string; input?: unknown } }).state
+    return isManualQaRepositoryInspectionToolCall(
+      { tool: (part as { tool?: unknown }).tool, status: state?.status, input: state?.input },
+      projectPath,
+    )
+  }))
 }
 
 function buildFixBeadsPrompt(input: {
@@ -247,7 +315,7 @@ export async function generateManualQaFixBeadCandidates(
   if (groups.length === 0) return []
   const model = input.context.lockedMainImplementer?.trim()
   if (!model) throw new Error('Manual QA fix-bead generation requires the locked main implementer model.')
-  const prdPath = resolve(paths.ticketDir, 'prd.yaml')
+  const prdPath = manualQaPrdPath(paths.ticketDir)
   if (!existsSync(prdPath)) throw new Error('Approved PRD is required for Manual QA fix-bead generation.')
   const finalTestReport = getLatestPhaseArtifact(input.ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')?.content ?? ''
   const prompt = buildFixBeadsPrompt({
@@ -295,11 +363,13 @@ export async function generateManualQaFixBeadCandidates(
       onSessionCreated: (session) => { sessionId = session.id },
       onPromptDispatched: (event) => emitOpenCodePromptLog(input.ticketId, input.context.externalId, phase, model, event),
       onStreamEvent: (event: StreamEvent) => {
-        if (event.type === 'tool' && event.status === 'completed') observedSuccessfulTool = true
+        if (event.type === 'tool' && isManualQaRepositoryInspectionToolCall(event, paths.worktreePath)) {
+          observedSuccessfulTool = true
+        }
         if (sessionId) emitOpenCodeStreamEvent(input.ticketId, input.context.externalId, phase, model, sessionId, event, streamState)
       },
     })
-    observedSuccessfulTool ||= hasSuccessfulManualQaRepositoryToolCall(result.messages)
+    observedSuccessfulTool ||= hasSuccessfulManualQaRepositoryToolCall(result.messages, paths.worktreePath)
     emitOpenCodeSessionLogs(
       input.ticketId,
       input.context.externalId,
@@ -384,9 +454,15 @@ export function hydrateManualQaFixBeads(input: {
   const maxPriority = input.existing.reduce((max, bead) => Math.max(max, bead.priority), 0)
   const now = new Date().toISOString()
   const beads = input.groups.map((group, index): Bead => {
-    const candidate = candidateByGroup.get(group.groupId)!
+    const candidate = candidateByGroup.get(group.groupId)
+    if (!candidate) {
+      throw new Error(`Manual QA fix-bead candidate is missing for merge group ${group.groupId}.`)
+    }
     const sourceItems: QaOriginSourceItem[] = group.results.map((result) => {
-      const item = itemById.get(result.itemId)!
+      const item = itemById.get(result.itemId)
+      if (!item) {
+        throw new Error(`Manual QA checklist item ${result.itemId} referenced by merge group ${group.groupId} was not found.`)
+      }
       const evidenceIds = new Set(result.evidenceIds)
       return {
         itemId: item.id,
@@ -417,7 +493,10 @@ export function hydrateManualQaFixBeads(input: {
       sourceItems,
       imageDelivery: input.modelCapability.imageEvidenceMode,
     }
-    const id = idByGroup.get(group.groupId)!
+    const id = idByGroup.get(group.groupId)
+    if (!id) {
+      throw new Error(`Manual QA fix-bead id was not allocated for merge group ${group.groupId}.`)
+    }
     return {
       id,
       title: candidate.title,
@@ -436,7 +515,12 @@ export function hydrateManualQaFixBeads(input: {
       externalRef: input.externalId,
       labels: unique(['manual-looptroop-qa', ...candidate.labels]),
       dependencies: {
-        blocked_by: candidate.blockedByGroupIds.map((groupId) => idByGroup.get(groupId)!),
+        // A hallucinated group id used to resolve to `undefined` and be
+        // persisted as `blocked_by: [undefined]`, which every later reader of
+        // the graph then had to survive.
+        blocked_by: candidate.blockedByGroupIds
+          .map((groupId) => idByGroup.get(groupId))
+          .filter((beadId): beadId is string => typeof beadId === 'string'),
         blocks: [],
       },
       targetFiles: candidate.targetFiles,

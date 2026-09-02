@@ -516,14 +516,25 @@ export function selectWinner(
     scoreMap.set(vote.draftId, current + vote.totalScore)
   }
 
-  let winnerId = members[0]?.modelId ?? ''
+  // Seeding from members[0] elected a model whose draft nobody scored whenever the
+  // main implementer was absent from the scorecard: the refine step then looked up a
+  // draft that does not exist. Only a scored draft can win.
+  const mainImplementerId = members[0]?.modelId
+  let winnerId: string | null = null
   let winnerScore = 0
 
   for (const [memberId, score] of scoreMap) {
-    if (score > winnerScore || (score === winnerScore && memberId === members[0]?.modelId)) {
+    const wins = winnerId === null
+      || score > winnerScore
+      || (score === winnerScore && memberId === mainImplementerId)
+    if (wins) {
       winnerId = memberId
       winnerScore = score
     }
+  }
+
+  if (winnerId === null) {
+    throw new Error('Council voting produced no scored draft — cannot select a winner')
   }
 
   return { winnerId, totalScore: winnerScore }

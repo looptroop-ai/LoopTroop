@@ -408,6 +408,22 @@ describe('handleBeadsRefine', () => {
     expect(runOpenCodePromptMock).not.toHaveBeenCalled()
     expect(phaseIntermediate.get(`${ticket.id}:beads`)).toBeUndefined()
     expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
+
+    // The beads-specific retry builder used to be passed as `undefined`, so a
+    // rejected refinement fell back to the generic structured-retry prompt.
+    const buildRetryPrompt = refineDraftMock.mock.calls[0]?.[14] as ((params: {
+      baseParts: Array<{ type: string; content: string }>
+      validationError: string
+      rawResponse: string
+    }) => Array<{ type: string; content: string }>) | undefined
+    expect(typeof buildRetryPrompt).toBe('function')
+    const retryPrompt = buildRetryPrompt!({
+      baseParts: [{ type: 'text', content: 'base' }],
+      validationError: 'changes must account for the diff',
+      rawResponse: 'beads: []\nchanges: []',
+    })
+    expect(retryPrompt.at(-1)?.content).toContain('Beads Refinement Structured Output Retry')
+    expect(retryPrompt.at(-1)?.content).toContain('changes must account for the diff')
   })
 
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {

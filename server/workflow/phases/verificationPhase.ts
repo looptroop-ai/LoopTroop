@@ -71,9 +71,10 @@ import {
 import {
   buildBeadsCoverageRevisionArtifact,
   buildBeadsCoverageRevisionRetryPrompt,
+  parseBeadsCoverageRevisionRefinedContent,
   validateBeadsCoverageRevisionOutput,
 } from '../../phases/beads/coverageRevision'
-import { BEADS_PIPELINE_STEPS, getBeadsDraftMetrics } from '../../phases/beads/refined'
+import { BEADS_PIPELINE_STEPS, getBeadsDraftMetrics, parseBeadsRefinedArtifact } from '../../phases/beads/refined'
 import { hydrateExpandedBeads } from '../../phases/beads/expand'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import {
@@ -279,14 +280,21 @@ function loadRecoveredPrdCoverageContent(ticketId: string) {
   }
 }
 
-function loadRecoveredBeadsCoverageContent(ticketId: string) {
-  const artifact = getLatestPhaseArtifact(ticketId, 'beads_coverage_revision', 'VERIFYING_BEADS_COVERAGE')
-    ?? getLatestPhaseArtifact(ticketId, 'beads_refined', 'REFINING_BEADS')
-  if (!artifact) return null
+/** Latest beads candidate blueprint, from the coverage revision if one exists. */
+function loadLatestBeadsCandidateContent(ticketId: string): string | null {
+  const revisionArtifact = getLatestPhaseArtifact(ticketId, 'beads_coverage_revision', 'VERIFYING_BEADS_COVERAGE')
+  if (revisionArtifact) {
+    try {
+      return parseBeadsCoverageRevisionRefinedContent(revisionArtifact.content)
+    } catch {
+      return null
+    }
+  }
 
+  const refinedArtifact = getLatestPhaseArtifact(ticketId, 'beads_refined', 'REFINING_BEADS')
+  if (!refinedArtifact) return null
   try {
-    const parsed = JSON.parse(artifact.content) as { refinedContent?: unknown }
-    return typeof parsed.refinedContent === 'string' ? parsed.refinedContent : null
+    return parseBeadsRefinedArtifact(refinedArtifact.content).refinedContent
   } catch {
     return null
   }
@@ -299,10 +307,7 @@ function loadBeadsExpansionInput(ticketId: string): { candidateContent: string; 
   const refinedArtifact = getLatestPhaseArtifact(ticketId, 'beads_refined', 'REFINING_BEADS')
   if (refinedArtifact) {
     try {
-      const parsed = JSON.parse(refinedArtifact.content) as { refinedContent?: string }
-      if (typeof parsed.refinedContent === 'string' && parsed.refinedContent) {
-        return { candidateContent: parsed.refinedContent, candidateVersion: 1 }
-      }
+      return { candidateContent: parseBeadsRefinedArtifact(refinedArtifact.content).refinedContent, candidateVersion: 1 }
     } catch { /* ignore */ }
   }
 
@@ -3524,15 +3529,12 @@ export async function handleCoverageVerification(
   // Resolve refinedContent: prefer in-memory, fall back to persisted artifact
   let refinedContent: string | undefined
   if (!refinedContent) {
-    const compiledArtifactType = phase === 'interview'
-      ? 'interview_compiled'
-      : phase === 'prd'
-        ? 'prd_refined'
-        : 'beads_refined'
+    if (phase === 'beads') {
+      refinedContent = loadLatestBeadsCandidateContent(ticketId) ?? undefined
+    }
     const compiledArtifact = phase === 'beads'
-      ? getLatestPhaseArtifact(ticketId, 'beads_coverage_revision', 'VERIFYING_BEADS_COVERAGE')
-        ?? getLatestPhaseArtifact(ticketId, 'beads_refined', 'REFINING_BEADS')
-      : getLatestPhaseArtifact(ticketId, compiledArtifactType)
+      ? null
+      : getLatestPhaseArtifact(ticketId, phase === 'interview' ? 'interview_compiled' : 'prd_refined')
     if (compiledArtifact) {
       try {
         refinedContent = phase === 'prd'
@@ -3631,7 +3633,7 @@ export async function handleCoverageVerification(
     if (refinedContent?.trim()) {
       effectiveBeadsContent = refinedContent.trim()
     } else {
-      const recoveredBeadsContent = loadRecoveredBeadsCoverageContent(ticketId)
+      const recoveredBeadsContent = loadLatestBeadsCandidateContent(ticketId)
       if (!recoveredBeadsContent) {
         const msg = 'Beads coverage requires a canonical semantic beads blueprint or recovered beads coverage revision artifact, but neither was available.'
         emitPhaseLog(ticketId, context.externalId, stateLabel, 'error', msg)

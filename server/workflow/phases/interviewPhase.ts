@@ -3,6 +3,7 @@ import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '..
 import { CancelledError, throwIfAborted, VOTING_RUBRIC_INTERVIEW } from '../../council/types'
 import { conductVoting, selectWinner } from '../../council/voter'
 import { refineDraft } from '../../council/refiner'
+import { requireWinnerDraft } from '../../council/draftUtils'
 import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { startInterviewSession, submitBatchToSession, type BatchResponse } from '../../phases/interview/qa'
@@ -837,7 +838,7 @@ export async function handleInterviewCompile(
     throw new Error('No interview vote results found — cannot refine')
   }
 
-  const winnerDraft = intermediate.drafts.find(d => d.memberId === intermediate.winnerId)!
+  const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Interview')
   const losingDrafts = intermediate.drafts.filter(d => d.memberId !== intermediate.winnerId && d.outcome === 'completed')
   const councilSettings = resolveCouncilRuntimeSettings(context)
   const interviewTicketState = intermediate.ticketState ?? (() => {

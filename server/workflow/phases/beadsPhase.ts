@@ -3,6 +3,7 @@ import type { DraftResult, MemberOutcome, Vote } from '../../council/types'
 import { CancelledError } from '../../council/types'
 import { conductVoting, selectWinner } from '../../council/voter'
 import { refineDraft } from '../../council/refiner'
+import { requireWinnerDraft } from '../../council/draftUtils'
 import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
 import { draftBeads, buildBeadsContextBuilder } from '../../phases/beads/draft'
 import { hydrateExpandedBeads, validateBeadExpansion } from '../../phases/beads/expand'
@@ -16,6 +17,7 @@ import { buildStructuredRetryPrompt, normalizeBeadSubsetYamlOutput, normalizeBea
 import {
   validateBeadsRefinementOutput,
   buildBeadsRefinedArtifact,
+  buildBeadsRefinementRetryPrompt,
   getBeadsDraftMetrics,
   BEADS_PIPELINE_STEPS,
   type ValidatedBeadsRefinement,
@@ -661,7 +663,7 @@ export async function handleBeadsRefine(
     throw new Error('No Beads vote results found — cannot refine')
   }
 
-  const winnerDraft = intermediate.drafts.find(d => d.memberId === intermediate.winnerId)!
+  const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Beads')
   const losingDrafts = intermediate.drafts.filter(d => d.memberId !== intermediate.winnerId && d.outcome === 'completed')
   const councilSettings = resolveCouncilRuntimeSettings(context)
   if (!intermediate.contextBuilder) {
@@ -768,7 +770,10 @@ export async function handleBeadsRefine(
         }
       },
       PROM22.outputFormat,
-      undefined,
+      ({ baseParts, validationError, rawResponse }) => buildBeadsRefinementRetryPrompt(baseParts, {
+        validationError,
+        rawResponse,
+      }),
       PROM22.toolPolicy,
       resolveStructuredRetryRuntimeSettings(context).structuredRetryCount,
     )

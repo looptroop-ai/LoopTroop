@@ -417,26 +417,17 @@ export function normalizeBeadRefinementOutput(
   // Step 2: Parse the winner draft
   const winnerResult = normalizeBeadSubsetYamlOutput(winnerDraftContent)
   if (!winnerResult.ok) {
-    // If winner draft can't be parsed, fall through with basic validation
-    return {
-      ok: true,
-      value: {
-        beads: refinedBeads,
-        changes: rawChanges,
-        normalizedContent: refinedResult.normalizedContent,
+    // Every consumer cross-validates the refined beads against the winner, so
+    // accepting raw changes here published an unchecked change list as valid.
+    // Fail retryably instead.
+    return buildStructuredOutputFailure(
+      rawContent,
+      `Could not parse the winner bead draft required for refinement cross-validation: ${winnerResult.error}`,
+      {
         repairApplied: refinedResult.repairApplied,
-        repairWarnings: [
-          ...refinedResult.repairWarnings,
-          'Could not parse winner draft for cross-validation — using raw changes without canonicalization.',
-        ],
+        repairWarnings: refinedResult.repairWarnings,
       },
-      normalizedContent: refinedResult.normalizedContent,
-      repairApplied: true,
-      repairWarnings: [
-        ...refinedResult.repairWarnings,
-        'Could not parse winner draft for cross-validation — using raw changes without canonicalization.',
-      ],
-    }
+    )
   }
 
   const winnerBeads: BeadSubset[] = winnerResult.value

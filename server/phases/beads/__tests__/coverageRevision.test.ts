@@ -1,6 +1,10 @@
 import * as jsYaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
-import { buildBeadsCoverageRevisionRetryPrompt, validateBeadsCoverageRevisionOutput } from '../coverageRevision'
+import {
+  buildBeadsCoverageRevisionRetryPrompt,
+  parseBeadsCoverageRevisionRefinedContent,
+  validateBeadsCoverageRevisionOutput,
+} from '../coverageRevision'
 
 function buildBeadsContent() {
   return jsYaml.dump({
@@ -115,5 +119,27 @@ describe.concurrent('beads coverage revision parsing', () => {
     expect(prompt.at(-1)?.content).toContain('internally contradictory source artifacts')
     expect(prompt.at(-1)?.content).toContain('action: left_unresolved')
     expect(prompt.at(-1)?.content).toContain('affected_items: []')
+  })
+})
+
+describe('parseBeadsCoverageRevisionRefinedContent', () => {
+  it('returns the persisted candidate blueprint', () => {
+    const content = JSON.stringify({ winnerId: 'model-a', refinedContent: 'beads:\n  - id: bead-1' })
+    expect(parseBeadsCoverageRevisionRefinedContent(content)).toBe('beads:\n  - id: bead-1')
+  })
+
+  it('rejects an artifact that is not JSON', () => {
+    expect(() => parseBeadsCoverageRevisionRefinedContent('{ truncated'))
+      .toThrow('Beads coverage revision artifact is not valid JSON')
+  })
+
+  it('rejects an artifact with no refinedContent', () => {
+    expect(() => parseBeadsCoverageRevisionRefinedContent(JSON.stringify({ winnerId: 'model-a' })))
+      .toThrow('Beads coverage revision artifact is missing refinedContent')
+  })
+
+  it('rejects an artifact whose refinedContent is blank', () => {
+    expect(() => parseBeadsCoverageRevisionRefinedContent(JSON.stringify({ refinedContent: '   ' })))
+      .toThrow('Beads coverage revision artifact is missing refinedContent')
   })
 })

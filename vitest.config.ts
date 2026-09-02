@@ -141,6 +141,7 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/integrationPhase.test.ts',
   'server/workflow/__tests__/interviewCompilePhase.test.ts',
   'server/workflow/__tests__/openCodeLogCanonicalization.test.ts',
+  'server/workflow/__tests__/phaseIntermediateRecovery.test.ts',
   'server/workflow/__tests__/pullRequestPhase.test.ts',
   'server/workflow/__tests__/prdDraftPhase.test.ts',
   'server/workflow/__tests__/prdRefinePhase.test.ts',

@@ -301,6 +301,28 @@ export function validateBeadsCoverageRevisionOutput(
   }
 }
 
+/**
+ * Reads the candidate blueprint back out of a persisted `beads_coverage_revision`
+ * artifact. Callers used to `JSON.parse(...) as { refinedContent?: string }`, which
+ * accepted a truncated or foreign artifact as an empty revision.
+ */
+export function parseBeadsCoverageRevisionRefinedContent(content: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    throw new Error('Beads coverage revision artifact is not valid JSON')
+  }
+  if (!isRecord(parsed)) {
+    throw new Error('Beads coverage revision artifact payload is invalid')
+  }
+  const refinedContent = typeof parsed.refinedContent === 'string' ? parsed.refinedContent : ''
+  if (!refinedContent.trim()) {
+    throw new Error('Beads coverage revision artifact is missing refinedContent')
+  }
+  return refinedContent
+}
+
 export function buildBeadsCoverageRevisionArtifact(
   winnerId: string,
   candidateVersion: number,

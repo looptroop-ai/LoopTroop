@@ -139,6 +139,13 @@ describe.concurrent('beads refinement validation', () => {
     )
   })
 
+  it('rejects the refinement when the winner draft cannot be parsed for cross-validation', () => {
+    const refinedContent = buildBeadsRefinementContent({ includeChanges: true })
+
+    expect(() => validateBeadsRefinementOutput(refinedContent, { winnerDraftContent: 'not: [a, bead, blueprint' }))
+      .toThrow(/winner bead draft required for refinement cross-validation/i)
+  })
+
   it('rejects a modified id change when no unique declared addition proves an id shift', () => {
     const winnerDraftContent = buildBeadsRefinementContent()
     const refinedContent = [

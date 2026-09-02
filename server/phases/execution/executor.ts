@@ -566,7 +566,7 @@ export async function executeBead(
           iterationOutput = runResult.response
           latestMessages = runResult.messages
 
-          const result = parseCompletionMarker(lastOutput)
+          const result = parseCompletionMarker(lastOutput, bead.id)
           if (result.complete && result.gatesValid) {
             recordRawAttempt({
               iteration,

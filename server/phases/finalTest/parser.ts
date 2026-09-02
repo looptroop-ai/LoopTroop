@@ -26,7 +26,11 @@ export function parseFinalTestCommands(output: string, hostContext?: HostContext
   const parsed = unwrapTaggedStructuredOutput(
     output,
     normalizeFinalTestCommandsOutput(output, hostContext),
-    { missingMarkerError: 'No final test command marker found' },
+    {
+      missingMarkerError: 'No final test command marker found',
+      markerStart: FINAL_TEST_COMMANDS_MARKER,
+      markerEnd: FINAL_TEST_COMMANDS_END,
+    },
   )
 
   if (!parsed.ok) {

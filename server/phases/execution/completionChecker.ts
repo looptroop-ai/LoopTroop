@@ -1,6 +1,7 @@
 import type { BeadChecks } from './completionSchema'
-import { REQUIRED_GATES } from './completionSchema'
+import { BEAD_STATUS_END, BEAD_STATUS_MARKER, REQUIRED_GATES } from './completionSchema'
 import { normalizeBeadCompletionMarkerOutput } from '../../structuredOutput'
+import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
 
 export interface CompletionResult {
   complete: boolean
@@ -14,25 +15,47 @@ export interface CompletionResult {
   validationError?: string
 }
 
-export function parseCompletionMarker(output: string): CompletionResult {
+export function parseCompletionMarker(output: string, expectedBeadId?: string): CompletionResult {
   const errors: string[] = []
-  const normalized = normalizeBeadCompletionMarkerOutput(output)
-  if (!normalized.ok) {
+  const parsed = unwrapTaggedStructuredOutput(output, normalizeBeadCompletionMarkerOutput(output), {
+    missingMarkerError: 'No completion marker found',
+    markerStart: BEAD_STATUS_MARKER,
+    markerEnd: BEAD_STATUS_END,
+  })
+  if (!parsed.ok) {
     return {
       complete: false,
-      markerFound: normalized.error !== 'No completion marker found',
+      markerFound: parsed.markerFound,
       gatesValid: false,
-      errors: [normalized.error],
-      repairApplied: normalized.repairApplied,
-      repairWarnings: normalized.repairWarnings,
-      validationError: normalized.error,
+      errors: parsed.errors,
+      repairApplied: parsed.repairApplied,
+      repairWarnings: parsed.repairWarnings,
+      validationError: parsed.validationError,
     }
   }
-  const isComplete = normalized.value.status === 'done'
-  const isFailed = normalized.value.status === 'error'
+
+  // A marker naming a different bead used to mark the running bead done. The id
+  // is the only thing tying the model's report to the work it was given.
+  if (expectedBeadId !== undefined && parsed.value.beadId !== expectedBeadId) {
+    const mismatchError = `Completion marker reports bead "${parsed.value.beadId}" but the running bead is "${expectedBeadId}"`
+    return {
+      complete: false,
+      markerFound: true,
+      gatesValid: false,
+      beadId: parsed.value.beadId,
+      checks: parsed.value.checks,
+      errors: [mismatchError],
+      repairApplied: parsed.repairApplied,
+      repairWarnings: parsed.repairWarnings,
+      validationError: mismatchError,
+    }
+  }
+
+  const isComplete = parsed.value.status === 'done'
+  const isFailed = parsed.value.status === 'error'
 
   // Validate quality gates
-  const checks = normalized.value.checks
+  const checks = parsed.value.checks
   let gatesValid = true
 
   for (const gate of REQUIRED_GATES) {
@@ -46,7 +69,7 @@ export function parseCompletionMarker(output: string): CompletionResult {
   }
 
   if (isFailed) {
-    errors.push(`Bead reported status: ${normalized.value.status}`)
+    errors.push(`Bead reported status: ${parsed.value.status}`)
   }
 
   // Marker says complete but gates fail → treat as incomplete per spec
@@ -58,10 +81,10 @@ export function parseCompletionMarker(output: string): CompletionResult {
     complete: isComplete && gatesValid,
     markerFound: true,
     gatesValid,
-    beadId: normalized.value.beadId,
+    beadId: parsed.value.beadId,
     checks,
     errors,
-    repairApplied: normalized.repairApplied,
-    repairWarnings: normalized.repairWarnings,
+    repairApplied: parsed.repairApplied,
+    repairWarnings: parsed.repairWarnings,
   }
 }

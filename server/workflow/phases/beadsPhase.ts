@@ -12,7 +12,8 @@ import type { CommandSpec } from '@shared/commandSpec'
 import { buildMinimalContext, clearContextCache, type TicketState } from '../../opencode/contextBuilder'
 import type { Message, PromptPart, StreamEvent } from '../../opencode/types'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, patchTicket, resolvePhaseAttempt } from '../../storage/tickets'
-import { readJsonl, writeJsonl } from '../../io/jsonl'
+import { writeJsonl } from '../../io/jsonl'
+import { readBeadsFile } from '../../phases/beads/beadsFile'
 import { buildStructuredRetryPrompt, normalizeBeadSubsetYamlOutput, normalizeBeadsJsonlOutput } from '../../structuredOutput'
 import {
   validateBeadsRefinementOutput,
@@ -873,7 +874,7 @@ export function getBeadsPath(ticketId: string): string {
 }
 
 export function readTicketBeads(ticketId: string): Bead[] {
-  return readJsonl<Bead>(getBeadsPath(ticketId))
+  return readBeadsFile(getBeadsPath(ticketId))
 }
 
 export function writeTicketBeads(ticketId: string, beads: Bead[]) {

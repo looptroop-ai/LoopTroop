@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
-import { readJsonl } from '../../io/jsonl'
+import { readBeadsFile } from '../beads/beadsFile'
 import type { Bead } from '../beads/types'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, resolvePhaseAttempt } from '../../storage/tickets'
 import { runOpenCodePrompt } from '../../workflow/runOpenCodePrompt'
@@ -87,7 +87,7 @@ export function restoreManualQaGenerationArtifacts(ticketDir: string, version: n
 function compactBeads(beadsPath: string): Array<Pick<Bead,
   'id' | 'title' | 'description' | 'prdRefs' | 'targetFiles' | 'acceptanceCriteria' | 'tests' | 'labels' | 'issueType'
 >> {
-  return readJsonl<Bead>(beadsPath).map((bead) => ({
+  return readBeadsFile(beadsPath).map((bead) => ({
     id: bead.id,
     title: bead.title,
     description: bead.description,

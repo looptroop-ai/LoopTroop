@@ -4,7 +4,8 @@ import { and, eq } from 'drizzle-orm'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { safeAtomicWrite } from '../../io/atomicWrite'
-import { writeJsonl, readJsonl } from '../../io/jsonl'
+import { writeJsonl } from '../../io/jsonl'
+import { readBeadsFile } from '../beads/beadsFile'
 import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
@@ -599,7 +600,7 @@ function createImprovementTicket(input: {
   }
   const existing = reservedTicketId ? getTicketByRef(reservedTicketId) : findExistingImprovement(input.projectId, originId)
   const sourceBeadsPath = getTicketPaths(input.sourceTicketId)?.beadsPath
-  const sourceBeads = sourceBeadsPath && existsSync(sourceBeadsPath) ? readJsonl<Bead>(sourceBeadsPath) : []
+  const sourceBeads = sourceBeadsPath && existsSync(sourceBeadsPath) ? readBeadsFile(sourceBeadsPath) : []
   const built = buildImprovementDescription({
     description: input.draft.description,
     contextOverride: input.draft.contextOverride,
@@ -884,7 +885,7 @@ function captureOperationSourceAttempts(ticketId: string, journal: ManualQaOpera
 function prepareQaFixWorkflow(ticketId: string, journal: ManualQaOperationJournal): void {
   const beadsPath = getTicketPaths(ticketId)?.beadsPath
   if (!beadsPath) throw new Error(`Ticket storage was not found: ${ticketId}`)
-  const beads = readJsonl<Bead>(beadsPath)
+  const beads = readBeadsFile(beadsPath)
   const completed = beads.filter((bead) => bead.status === 'done').length
   const currentBead = beads.length === 0 ? 0 : completed >= beads.length ? beads.length : completed + 1
   patchTicket(ticketId, {
@@ -1094,7 +1095,7 @@ export async function submitManualQa(input: {
     persistSummaryArtifact(input.ticketId, intermediate)
   }
 
-  const existingBeads = readJsonl<Bead>(paths.beadsPath)
+  const existingBeads = readBeadsFile(paths.beadsPath)
   const fixGroups = buildManualQaFixGroups(checklist, draft)
   let fixBeads: Bead[] = []
   if (fixGroups.length > 0) {

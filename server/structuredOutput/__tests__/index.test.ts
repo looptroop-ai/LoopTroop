@@ -3136,6 +3136,63 @@ describe.concurrent('structured output normalization', () => {
     ])
   })
 
+  it('merges duplicate FINAL_TEST_COMMANDS file effects and warns', () => {
+    const result = normalizeFinalTestCommandsOutput([
+      '<FINAL_TEST_COMMANDS>',
+      'commands:',
+      '  - npm run test:server',
+      'file_effects:',
+      '  - path: tmp/output.log',
+      '    intent: temporary',
+      '  - path: tmp/output.log',
+      '    intent: temporary',
+      '    reason: created by test command',
+      '</FINAL_TEST_COMMANDS>',
+    ].join('\n'))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.fileEffects).toEqual([
+      { path: 'tmp/output.log', intent: 'temporary', reason: 'created by test command' },
+    ])
+    expect(result.repairWarnings).toContain('Merged duplicate final test file effect entries for tmp/output.log.')
+  })
+
+  it('rejects FINAL_TEST_COMMANDS file effects that disagree about the same path', () => {
+    const result = normalizeFinalTestCommandsOutput([
+      '<FINAL_TEST_COMMANDS>',
+      'commands:',
+      '  - npm run test:server',
+      'file_effects:',
+      '  - path: tmp/output.log',
+      '    intent: temporary',
+      '  - path: tmp/output.log',
+      '    intent: candidate',
+      '</FINAL_TEST_COMMANDS>',
+    ].join('\n'))
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('conflicting intents')
+  })
+
+  it('lets a stated FINAL_TEST_COMMANDS intent win over a bare path for the same file', () => {
+    const result = normalizeFinalTestCommandsOutput([
+      '<FINAL_TEST_COMMANDS>',
+      'commands:',
+      '  - npm run test:server',
+      'file_effects:',
+      '  - tmp/output.log',
+      '  - path: tmp/output.log',
+      '    intent: temporary',
+      '</FINAL_TEST_COMMANDS>',
+    ].join('\n'))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.fileEffects).toEqual([{ path: 'tmp/output.log', intent: 'temporary' }])
+  })
+
   it('records a single wrapper-key warning for exact FINAL_TEST_COMMANDS envelopes with wrapper objects', () => {
     const result = normalizeFinalTestCommandsOutput([
       '<FINAL_TEST_COMMANDS>',

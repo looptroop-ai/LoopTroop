@@ -1,6 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
-import type { Bead, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
+import type { Bead, BeadStatus, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
+import { BEAD_STATUSES, BEAD_STATUS_LEGACY_ALIASES, isBeadStatus } from '../phases/beads/types'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type { StructuredOutputResult, RelevantFilesOutputEntry, RelevantFilesOutputPayload } from './types'
 import {
@@ -739,6 +740,36 @@ function normalizeNoteHistory(value: unknown): Bead['failedIterationNotes'] {
   })
 }
 
+/**
+ * The legacy aliases are kept, but anything else used to be cast straight to
+ * `Bead['status']`. A stored `complete` or `todo` then stalled the scheduler,
+ * which only runs `pending` and only finishes on `done`, with no validation error
+ * anywhere.
+ */
+function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
+  if (value === undefined || value === null) return 'pending'
+  const raw = typeof value === 'string' ? value.trim() : ''
+  const mapped = BEAD_STATUS_LEGACY_ALIASES[raw] ?? raw
+  if (!isBeadStatus(mapped)) {
+    throw new Error(`${label} has an unsupported status "${String(value)}" (expected one of ${BEAD_STATUSES.join(', ')})`)
+  }
+  return mapped
+}
+
+/**
+ * `iteration` counts execution attempts from 1. A zero, a negative or a
+ * fractional value is not a wire-format the models are told to emit, and
+ * `Number('x')` produced NaN that serialised back as null, so clamp and say so
+ * rather than rejecting the whole record.
+ */
+function normalizeBeadIteration(value: unknown, label: string, repairWarnings: string[]): number {
+  if (value === undefined || value === null) return 1
+  const parsed = Number(value)
+  if (Number.isInteger(parsed) && parsed > 0) return parsed
+  repairWarnings.push(`${label}: replaced invalid iteration ${JSON.stringify(value)} with 1.`)
+  return 1
+}
+
 function normalizeBeadRecord(value: unknown, index: number, repairWarnings: string[]): Bead {
   if (!isRecord(value)) throw new Error(`Bead JSONL entry at index ${index} is not an object`)
 
@@ -750,14 +781,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     repairWarnings,
   )
 
-  const rawStatus = typeof getValueByAliases(value, ['status']) === 'string'
-    ? String(getValueByAliases(value, ['status'])).trim()
-    : 'pending'
-  // Map legacy status values to architecture spec
-  const status = (rawStatus === 'completed' ? 'done'
-    : rawStatus === 'failed' ? 'error'
-    : rawStatus === 'skipped' ? 'done'
-    : rawStatus) as Bead['status']
+  const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`)
 
   const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands'])
   const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings)
@@ -791,7 +815,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     failedIterationNotes: normalizeNoteHistory(getValueByAliases(value, ['failediterationnotes', 'failed_iteration_notes'])),
     userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userretrynotes', 'user_retry_notes'])),
     finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationfailurenotes', 'finalization_failure_notes'])),
-    iteration: Number(getValueByAliases(value, ['iteration']) ?? 1),
+    iteration: normalizeBeadIteration(getValueByAliases(value, ['iteration']), `Bead at index ${index}`, repairWarnings),
     createdAt: typeof getValueByAliases(value, ['createdat', 'created_at']) === 'string'
       ? String(getValueByAliases(value, ['createdat', 'created_at'])).trim()
       : '',

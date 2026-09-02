@@ -19,6 +19,7 @@ import {
   getRequiredString,
   buildYamlDocument,
   buildJsonlDocument,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { parseRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
@@ -232,6 +233,7 @@ export function normalizeBeadSubsetYamlOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
 
     try {
       const rawParsed = parseYamlOrJsonCandidate(candidate, {
@@ -311,6 +313,8 @@ export function normalizeBeadSubsetYamlOutput(
       lastError = getErrorMessage(error)
       lastErrorCause = error
       repairWarnings.splice(0, repairWarnings.length, ...candidateWarnings)
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -853,17 +857,22 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
 }
 
 export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputResult<Bead[]> {
-  const repairWarnings: string[] = []
+  // One shared array reported the repairs attempted on a rejected candidate
+  // against whichever candidate eventually validated, so keep them per candidate
+  // and carry only the last one's forward for the failure message.
+  let repairWarnings: string[] = []
   const candidates = collectStructuredCandidates(rawContent)
   let lastError = 'No beads JSONL content found'
   let lastErrorCause: unknown = null
 
   for (const candidate of candidates) {
+    const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedEntries = parseJsonLines(candidate)
       if (parsedEntries.length === 0) throw new Error('Beads JSONL output is empty')
 
-      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, repairWarnings))
+      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, candidateWarnings))
       const beadIds = new Set<string>()
       for (const bead of beads) {
         if (beadIds.has(bead.id)) throw new Error(`Duplicate bead id: ${bead.id}`)
@@ -883,18 +892,21 @@ export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputR
           throw new Error(`Bead ${bead.id} contextGuidance must include both patterns and anti_patterns`)
         }
       }
-      appendStructuredCandidateRecoveryWarning(repairWarnings, rawContent, candidate)
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate)
 
       return {
         ok: true,
         value: beads,
         normalizedContent: buildJsonlDocument(beads),
-        repairApplied: candidate !== rawContent.trim() || repairWarnings.length > 0,
-        repairWarnings,
+        repairApplied: candidate !== rawContent.trim() || candidateWarnings.length > 0,
+        repairWarnings: candidateWarnings,
       }
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      repairWarnings = candidateWarnings
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -965,6 +977,7 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
 
   for (const candidate of uniqueCandidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       if (looksLikePromptEcho(candidate)) {
         throw new Error('Relevant files output echoed the prompt instead of returning a <RELEVANT_FILES_RESULT> artifact')
@@ -1066,6 +1079,8 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

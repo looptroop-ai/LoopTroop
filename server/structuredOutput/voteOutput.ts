@@ -9,9 +9,11 @@ import {
   parseYamlOrJsonCandidate,
   getValueByAliases,
   buildYamlDocument,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { MAX_VOTE_CATEGORY_SCORE } from '../council/types'
 
 function normalizeVoteDraftLabel(label: string): string | null {
   const match = label.trim().match(/draft\s*(\d+)/i)
@@ -119,8 +121,9 @@ export function normalizeVoteScorecardOutput(
       : [repairedCandidate]
 
     for (const variant of candidateVariants) {
+      const variantWarnings = [...variant.repairWarnings]
+      const releaseAliasConflicts = collectAliasConflictWarnings(variantWarnings)
       try {
-        const variantWarnings = [...variant.repairWarnings]
         const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(variant.content, {
           allowTrailingTerminalNoise: true,
           repairWarnings: variantWarnings,
@@ -168,7 +171,7 @@ export function normalizeVoteScorecardOutput(
 
           for (const category of rubricCategories) {
             const rawValue = getValueByAliases(draftRecord, [normalizeKey(category)])
-            if (typeof rawValue !== 'number' || !Number.isInteger(rawValue) || rawValue < 0 || rawValue > 20) {
+            if (typeof rawValue !== 'number' || !Number.isInteger(rawValue) || rawValue < 0 || rawValue > MAX_VOTE_CATEGORY_SCORE) {
               throw new Error(`Invalid score for ${draftLabel} / ${category}`)
             }
             scores[category] = rawValue
@@ -198,6 +201,9 @@ export function normalizeVoteScorecardOutput(
       } catch (error) {
         lastError = getErrorMessage(error)
         lastErrorCause = error
+        repairWarnings.splice(0, repairWarnings.length, ...variantWarnings)
+      } finally {
+        releaseAliasConflicts()
       }
     }
   }

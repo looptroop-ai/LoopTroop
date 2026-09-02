@@ -1855,7 +1855,7 @@ function collectMultilineSingleQuotedFreeText(
  */
 export function stripCodeFences(content: string): string {
   const trimmed = content.trim()
-  const openMatch = trimmed.match(/^```(?:yaml|yml|json|jsonl)?\s*\n/)
+  const openMatch = trimmed.match(/^```(?:yaml|yml|jsonl|json)?\s*\n/)
   if (!openMatch) return content
   const closeMatch = trimmed.match(/\n\s*```\s*$/)
   if (!closeMatch) return content

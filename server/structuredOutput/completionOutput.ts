@@ -37,6 +37,7 @@ import {
   toBoolean,
   getValueByAliases,
   getRequiredString,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -194,6 +195,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: COMPLETION_NESTED_MAPPING_CHILDREN,
@@ -247,6 +249,8 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -278,6 +282,7 @@ export function normalizeFinalTestCommandsOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, { repairWarnings: candidateWarnings })
       const parsed = unwrapExplicitWrapperRecord(parsedCandidate, [
@@ -388,6 +393,8 @@ export function normalizeFinalTestCommandsOutput(
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1142,6 +1149,7 @@ export function normalizeExecutionSetupPlanOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     let parsedCandidate: unknown
     try {
       parsedCandidate = parseYamlOrJsonCandidate(candidate, {
@@ -1184,6 +1192,8 @@ export function normalizeExecutionSetupPlanOutput(
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1212,6 +1222,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, { repairWarnings: candidateWarnings })
       const parsed = unwrapExplicitWrapperRecord(parsedCandidate, [
@@ -1270,6 +1281,8 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

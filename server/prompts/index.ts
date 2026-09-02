@@ -1,6 +1,6 @@
 import type { PromptPart } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
-import { VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../council/types'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC_BEADS, VOTING_RUBRIC_INTERVIEW, VOTING_RUBRIC_PRD } from '../council/types'
 import { getGlobalRuleText } from './globalRules'
 import { buildCompletionInstructions } from '../phases/execution/completionSchema'
 import { getCommandSpecPromptExample } from '@shared/commandSpec'
@@ -17,8 +17,6 @@ export interface PromptTemplate {
 }
 
 const DEFAULT_VOTE_CATEGORY_SCORE = 15
-const MAX_VOTE_CATEGORY_SCORE = 20
-const MAX_VOTE_TOTAL_SCORE = 100
 const EXAMPLE_DRAFT_A_SCORES = [18, 17, 16, 15, 18]
 const EXAMPLE_DRAFT_B_SCORES = [14, 15, 14, 16, 13]
 const COMMAND_SPEC_PROMPT_EXAMPLE = JSON.stringify(getCommandSpecPromptExample())
@@ -214,11 +212,11 @@ export const PROM2: PromptTemplate = {
   id: 'PROM2',
   description: 'Interview Council Voting Prompt',
   systemRole: 'You are an impartial judge on an AI Council. Your role is to evaluate multiple sets of proposed interview questions objectively.',
-  task: 'Read all provided interview question drafts. Evaluate how well each draft will extract the necessary requirements from the user without being overwhelming. Rate each draft from 0 to 100.',
+  task: `Read all provided interview question drafts. Evaluate how well each draft will extract the necessary requirements from the user without being overwhelming. Rate each draft from 0 to ${MAX_VOTE_TOTAL_SCORE}.`,
   instructions: [
     'Impartiality: Rate impartially as if all drafts are anonymous. Do not favor any draft based on its origin or style.',
     'Anti-anchoring: Drafts are presented in randomized order per evaluator. Do not assume the first draft is the baseline or best.',
-    'Scoring Rubric (minimum 0, maximum 20 points per category, total maximum 100): 1) Coverage of requirements. 2) Correctness / feasibility. 3) Testability. 4) Minimal complexity / good decomposition. 5) Risks / edge cases addressed.',
+    `Scoring Rubric (minimum 0, maximum ${MAX_VOTE_CATEGORY_SCORE} points per category, total maximum ${MAX_VOTE_TOTAL_SCORE}): 1) Coverage of requirements. 2) Correctness / feasibility. 3) Testability. 4) Minimal complexity / good decomposition. 5) Risks / edge cases addressed.`,
     buildStrictVoteOutputInstruction(VOTING_RUBRIC_INTERVIEW.map(item => item.category)),
     STRUCTURED_SELF_CHECK,
   ],
@@ -445,12 +443,12 @@ export const PROM11: PromptTemplate = {
   id: 'PROM11',
   description: 'PRD Council Voting Prompt',
   systemRole: 'You are an impartial judge on an AI Council. Your role is to evaluate multiple Product Requirements Document (PRD) drafts objectively.',
-  task: 'Read all provided PRD drafts, compare each draft against the Interview Results, and evaluate them against each other. Rate each draft from 0 to 100.',
+  task: `Read all provided PRD drafts, compare each draft against the Interview Results, and evaluate them against each other. Rate each draft from 0 to ${MAX_VOTE_TOTAL_SCORE}.`,
   instructions: [
     'Impartiality: Rate impartially as if all drafts are anonymous. Do not favor any draft based on its origin or style.',
     'Anti-anchoring: Drafts are presented in randomized order per evaluator. Do not assume the first draft is the baseline or best.',
     'Draft Provenance: Some PRD drafts may reflect model-specific AI-filled answers for questions the user originally skipped. Score the draft quality and requirement coverage as presented, not the identity of the model that filled those gaps.',
-    'Scoring Rubric (minimum 0, maximum 20 points per category, total maximum 100): 1) Coverage of requirements. 2) Correctness / feasibility. 3) Testability. 4) Minimal complexity / good decomposition. 5) Risks / edge cases addressed.',
+    `Scoring Rubric (minimum 0, maximum ${MAX_VOTE_CATEGORY_SCORE} points per category, total maximum ${MAX_VOTE_TOTAL_SCORE}): 1) Coverage of requirements. 2) Correctness / feasibility. 3) Testability. 4) Minimal complexity / good decomposition. 5) Risks / edge cases addressed.`,
     buildStrictVoteOutputInstruction(VOTING_RUBRIC_PRD.map(item => item.category)),
     STRUCTURED_SELF_CHECK,
   ],
@@ -588,12 +586,12 @@ export const PROM21: PromptTemplate = {
   id: 'PROM21',
   description: 'Beads Council Voting Prompt',
   systemRole: 'You are an impartial judge on an AI Council. Your role is to evaluate multiple Beads breakdown (architecture/task) drafts objectively.',
-  task: 'Read all provided Beads drafts, compare each draft against the final PRD, and evaluate them against each other. Rate each draft from 0 to 100.',
+  task: `Read all provided Beads drafts, compare each draft against the final PRD, and evaluate them against each other. Rate each draft from 0 to ${MAX_VOTE_TOTAL_SCORE}.`,
   instructions: [
     'Impartiality: Rate impartially as if all drafts are anonymous. Do not favor any draft based on its origin or style.',
     'Anti-anchoring: Drafts are presented in randomized order per evaluator. Do not assume the first draft is the baseline or best.',
     'Decomposition Interpretation: Different architectural approaches to the same PRD may legitimately vary in granularity, dependency handling, and sequencing. Score the decomposition quality, coverage, and test isolation as presented, not the identity of the architect.',
-    'Scoring Rubric (minimum 0, maximum 20 points per category, total maximum 100): 1) Coverage of PRD requirements. 2) Correctness / feasibility of technical approach. 3) Quality and isolation of bead-scoped tests. 4) Minimal complexity / good dependency management. 5) Risks / edge cases addressed.',
+    `Scoring Rubric (minimum 0, maximum ${MAX_VOTE_CATEGORY_SCORE} points per category, total maximum ${MAX_VOTE_TOTAL_SCORE}): 1) Coverage of PRD requirements. 2) Correctness / feasibility of technical approach. 3) Quality and isolation of bead-scoped tests. 4) Minimal complexity / good dependency management. 5) Risks / edge cases addressed.`,
     'Command Feasibility: Treat test commands that are unrelated to the bead or assume an unobserved project ecosystem as correctness defects. Reward practical, bead-scoped verification that fits the repository or the behavior the bead will create.',
     buildStrictVoteOutputInstruction(VOTING_RUBRIC_BEADS.map(item => item.category)),
     STRUCTURED_SELF_CHECK,

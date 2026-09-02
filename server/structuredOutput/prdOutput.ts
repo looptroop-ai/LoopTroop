@@ -16,6 +16,7 @@ import {
   getRequiredString,
   buildYamlDocument,
   appendStructuredCandidateRecoveryWarning,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { parseRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
@@ -261,6 +262,7 @@ export function normalizePrdYamlOutput(
 
   for (const candidate of candidates) {
     const repairWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(repairWarnings)
 
     try {
       if (looksLikeStructuredPromptSchemaEcho(candidate, {
@@ -379,6 +381,8 @@ export function normalizePrdYamlOutput(
         preferredPromptEchoError ??= failure.error
         preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
       }
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

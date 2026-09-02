@@ -32,6 +32,7 @@ import {
   toOptionalString,
   toStringArray,
   unwrapExplicitWrapperRecord,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -783,6 +784,8 @@ export function normalizeInterviewDocumentOutput(
   let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
 
   for (const candidate of candidates) {
+    const warnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(warnings)
     try {
       if (looksLikeStructuredPromptSchemaEcho(candidate, {
         rootKeys: ['schema_version', 'ticket_id', 'artifact', 'questions'],
@@ -793,7 +796,6 @@ export function normalizeInterviewDocumentOutput(
         continue
       }
 
-      const warnings: string[] = []
       const parsed = unwrapInterviewArtifactObjectWrapper(unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_DOCUMENT_NESTED_MAPPING_CHILDREN,
         allowTrailingTerminalNoise: options?.allowTrailingTerminalNoise,
@@ -901,6 +903,8 @@ export function normalizeInterviewDocumentOutput(
         preferredPromptEchoError ??= failure.error
         preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
       }
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

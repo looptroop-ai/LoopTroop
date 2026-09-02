@@ -139,8 +139,12 @@ export function getActiveErrorOccurrence(ticket: TicketErrorSource): TicketError
 
   if (ticket.status !== 'BLOCKED_ERROR') return null
 
-  const openOccurrence = [...occurrences].reverse().find((occurrence) => occurrence.resolvedAt === null)
-  return openOccurrence ?? occurrences.at(-1) ?? null
+  // Newest-first, so `find` is already the most recent unresolved error and
+  // `[0]` the most recent of any kind. Reversing first picked the *oldest* open
+  // one and offered Retry and Continue against it — reachable now that an active
+  // id naming a resolved occurrence falls through to here.
+  const openOccurrence = occurrences.find((occurrence) => occurrence.resolvedAt === null)
+  return openOccurrence ?? occurrences[0] ?? null
 }
 
 export function formatErrorOccurrenceLabel(

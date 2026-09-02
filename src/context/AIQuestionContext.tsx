@@ -164,6 +164,22 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
    * live. Only the current generation is allowed to apply.
    */
   const refreshGenerationsRef = useRef(new Map<string, number>())
+  /**
+   * One sequence for every snapshot request, per-ticket and aggregate alike.
+   *
+   * Shared so the two can be ordered against each other: a per-ticket refresh
+   * issued after a poll started holds a higher token, and the poll's older view
+   * of that ticket is skipped rather than pruning what the refresh just learned.
+   * It never restarts, which is what stops a token being handed out twice — the
+   * per-ticket entry is dropped when a ticket leaves the active set, and a
+   * counter restarting at 1 would let a response from that ticket's previous
+   * life pass the guard.
+   */
+  const snapshotTokenRef = useRef(0)
+  /** The newest aggregate poll; an older snapshot must not apply after it. */
+  const recoverGenerationRef = useRef(0)
+  /** The newest timer frame accepted per ticket; see `applyTimer`. */
+  const timerFreshnessRef = useRef(new Map<string, { generation: number; revision: number }>())
 
   const ticketsById = useMemo(() => new Map(tickets.map((ticket) => [ticket.id, ticket])), [tickets])
   const activeTickets = useMemo(() => tickets.filter((ticket) => !isTerminalWorkflowStatus(ticket.status)), [tickets])
@@ -191,7 +207,24 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   }, [])
 
   const applyTimer = useCallback((ticketId: string, timer: AiQuestionTimerState | null) => {
-    noteServerClock(timer)
+    // The clock offset is shared by every ticket, so a late frame that the state
+    // below rejects must not move it either — the countdown jumped on every open
+    // ticket when it did. Decided from a ref rather than inside the updater,
+    // which has to stay pure: React may run it twice.
+    if (timer) {
+      const seen = timerFreshnessRef.current.get(ticketId)
+      const isStale = seen !== undefined && (
+        seen.generation > timer.generation
+        || (seen.generation === timer.generation && seen.revision > timer.revision)
+      )
+      if (!isStale) {
+        timerFreshnessRef.current.set(ticketId, { generation: timer.generation, revision: timer.revision })
+        noteServerClock(timer)
+      }
+    } else {
+      timerFreshnessRef.current.delete(ticketId)
+    }
+
     setTimers((current) => {
       if (!timer) {
         if (!current[ticketId]) return current
@@ -336,7 +369,7 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
   }, [applyTimer, upsertRequest])
 
   const refreshTicket = useCallback((ticketId: string) => {
-    const generation = (refreshGenerationsRef.current.get(ticketId) ?? 0) + 1
+    const generation = ++snapshotTokenRef.current
     refreshGenerationsRef.current.set(ticketId, generation)
     void (async () => {
       try {
@@ -369,6 +402,11 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     const recover = async () => {
       const activeIds = activeTicketIdsRef.current
       if (activeIds.size === 0) return
+      // The snapshot this poll applies is authoritative — it prunes anything it
+      // does not list — so one slow poll landing after a faster later one, or
+      // after a per-ticket refresh, would delete questions that are still live.
+      const generation = ++snapshotTokenRef.current
+      recoverGenerationRef.current = generation
       try {
         const res = await fetch('/api/opencode/questions')
         await throwIfNotOk(res, 'Failed to recover questions')
@@ -376,7 +414,8 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           questions?: Array<Record<string, unknown>>
           timers?: Record<string, unknown>
         }
-        if (cancelled || !Array.isArray(body.questions)) return
+        if (cancelled || generation !== recoverGenerationRef.current) return
+        if (!Array.isArray(body.questions)) return
 
         const byTicket = new Map<string, Array<Record<string, unknown>>>()
         for (const raw of body.questions) {
@@ -387,6 +426,11 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
           byTicket.set(ticketId, bucket)
         }
         for (const ticketId of activeIds) {
+          // A per-ticket refresh issued after this poll started is the fresher
+          // authority for that ticket; applying the poll's older view of it
+          // would prune whatever the refresh has just learned.
+          const ticketRefresh = refreshGenerationsRef.current.get(ticketId)
+          if (ticketRefresh !== undefined && ticketRefresh > generation) continue
           applyTicketSnapshot(ticketId, byTicket.get(ticketId) ?? [], parseTimer(body.timers?.[ticketId]))
         }
       } catch {
@@ -444,6 +488,9 @@ export function AIQuestionProvider({ tickets, children }: { tickets: Ticket[]; c
     }
     for (const ticketId of refreshGenerationsRef.current.keys()) {
       if (!activeIds.has(ticketId)) refreshGenerationsRef.current.delete(ticketId)
+    }
+    for (const ticketId of timerFreshnessRef.current.keys()) {
+      if (!activeIds.has(ticketId)) timerFreshnessRef.current.delete(ticketId)
     }
   }, [activeTicketKey])
 

@@ -258,7 +258,15 @@ export function ErrorView({ ticket, occurrence, readOnly = false }: ErrorViewPro
 
     const allOccurrences = getTicketErrorOccurrences(ticket)
     const occurrenceIndex = allOccurrences.findIndex((candidate) => candidate.id === visibleOccurrence.id)
-    const previousOccurrence = occurrenceIndex > 0 ? allOccurrences[occurrenceIndex - 1] : null
+    // `getTicketErrorOccurrences` answers newest-first, so the chronologically
+    // *previous* error is the next index, not the one before. Reading backwards
+    // took the newer occurrence, which made `startTime` later than `endTime` and
+    // produced a window nothing could fall inside. Undated rows used to slip
+    // through that window and hide it; now that they are excluded, a historical
+    // error would render with no phase logs at all.
+    const previousOccurrence = occurrenceIndex >= 0 && occurrenceIndex < allOccurrences.length - 1
+      ? allOccurrences[occurrenceIndex + 1]
+      : null
     const previousResolutionTime = readTimestamp(previousOccurrence?.resolvedAt ?? previousOccurrence?.occurredAt ?? null)
     const blockedAt = readTimestamp(visibleOccurrence.occurredAt)
     const resolvedAt = readTimestamp(visibleOccurrence.resolvedAt)

@@ -131,6 +131,14 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
     queueMicrotask(() => setConnectionState(ticketId ? 'connecting' : 'connected'))
   }, [ticketId])
 
+  /**
+   * Whether this subscription has already asked about the session; see `onerror`.
+   *
+   * Cleared when a stream actually opens, and when the ticket changes — not when
+   * a new `EventSource` is constructed, which happens on every retry.
+   */
+  const sessionProbedRef = useRef(false)
+
   useEffect(() => {
     if (!ticketId) {
       lastEventIdRef.current = '0'
@@ -141,10 +149,8 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
     const persistedLastEventId = readPersistedLastEventId(ticketId)
     lastEventIdRef.current = persistedLastEventId
     recoverOnOpenRef.current = persistedLastEventId !== '0'
+    sessionProbedRef.current = false
   }, [ticketId])
-
-  /** Whether this connection has already asked about the session; see `onerror`. */
-  const sessionProbedRef = useRef(false)
 
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
@@ -187,7 +193,6 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
 
       const es = new EventSource(url.toString())
       eventSourceRef.current = es
-      sessionProbedRef.current = false
 
       /**
        * Every callback below can fire after this connection stopped being the current
@@ -205,6 +210,12 @@ export function useSSE({ ticketId, onEvent }: SSEOptions) {
       es.addEventListener('open', () => {
         if (!isCurrentConnection()) return
         setConnectionState('connected')
+        // A stream that opened proves the session is good, so the *next* failure
+        // deserves a fresh question. Re-arming per `EventSource` instead meant
+        // every scheduled reconnect re-armed it, and a daemon that was simply
+        // down was asked about the session every three seconds for as long as
+        // the tab stayed open.
+        sessionProbedRef.current = false
         if (recoverOnOpenRef.current) {
           recoverOnOpenRef.current = false
           const tid = ticketIdRef.current

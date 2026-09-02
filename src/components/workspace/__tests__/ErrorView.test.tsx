@@ -1,6 +1,8 @@
 import { fireEvent, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderWithProviders } from '@/test/renderHelpers'
+import type { ReactElement } from 'react'
+import type { LogContextValue, LogEntry } from '@/context/logUtils'
+import { renderWithProviders, withLogContext } from '@/test/renderHelpers'
 import { makeTicket } from '@/test/factories'
 import { ErrorView } from '../ErrorView'
 import {
@@ -807,5 +809,103 @@ describe('ErrorView', () => {
 
     const resolvedLabel = screen.getByText(/Resolved /)
     expect(resolvedLabel).not.toHaveTextContent('.456')
+  })
+})
+
+describe('ErrorView log window for a historical occurrence', () => {
+  function logEntry(line: string, timestamp: string | null): LogEntry {
+    return {
+      id: `${timestamp ?? 'undated'}:${line}`,
+      entryId: `${timestamp ?? 'undated'}:${line}`,
+      line,
+      source: 'system',
+      status: 'CODING',
+      timestamp,
+      audience: 'all',
+      kind: 'milestone',
+      streaming: false,
+      op: 'append',
+    } as unknown as LogEntry
+  }
+
+  function renderWithLogs(ui: ReactElement, logsByPhase: Record<string, LogEntry[]>) {
+    const value = {
+      logsByPhase,
+      activePhase: null,
+      isLoadingLogs: false,
+      addLog: vi.fn(),
+      addLogRecord: vi.fn(),
+      getLogsForPhase: (phase: string) => logsByPhase[phase] ?? [],
+      getAllLogs: () => Object.values(logsByPhase).flat(),
+      setActivePhase: vi.fn(),
+      clearLogs: vi.fn(),
+    } as unknown as LogContextValue
+    return renderWithProviders(withLogContext(value, ui))
+  }
+
+  function twoOccurrenceTicket() {
+    return makeTicket({
+      status: 'BLOCKED_ERROR',
+      previousStatus: 'CODING',
+      availableActions: ['retry', 'cancel'],
+      activeErrorOccurrenceId: 'second',
+      errorOccurrences: [
+        {
+          id: 'first',
+          occurrenceNumber: 1,
+          blockedFromStatus: 'CODING',
+          errorMessage: 'First failure.',
+          errorCodes: [],
+          occurredAt: '2026-01-01T10:00:00.000Z',
+          resolvedAt: '2026-01-01T10:30:00.000Z',
+          resolutionStatus: 'RETRIED',
+          resumedToStatus: 'CODING',
+        },
+        {
+          id: 'second',
+          occurrenceNumber: 2,
+          blockedFromStatus: 'CODING',
+          errorMessage: 'Second failure.',
+          errorCodes: [],
+          occurredAt: '2026-01-01T12:00:00.000Z',
+          resolvedAt: null,
+          resolutionStatus: null,
+          resumedToStatus: null,
+        },
+      ],
+    })
+  }
+
+  it('shows the older error\'s own phase logs', () => {
+    // The occurrence list is newest-first, so reading "previous" as `index - 1`
+    // took the *newer* one — making the window start later than it ended, and
+    // nothing could fall inside it. Undated rows used to leak through and mask
+    // that; excluding them turned it into an empty log panel.
+    const ticket = twoOccurrenceTicket()
+    renderWithLogs(
+      <ErrorView ticket={ticket} occurrence={ticket.errorOccurrences![0]} />,
+      { CODING: [logEntry('work before the first failure', '2026-01-01T09:30:00.000Z')] },
+    )
+
+    const calls = logSectionMock.mock.calls as unknown as Array<[{ logs?: LogEntry[] }]>
+    const logs = calls.at(-1)?.[0]
+    expect(logs?.logs?.map((entry) => entry.line)).toEqual(['work before the first failure'])
+  })
+
+  it('keeps undated lines out of a bounded window', () => {
+    const ticket = twoOccurrenceTicket()
+    renderWithLogs(
+      <ErrorView ticket={ticket} occurrence={ticket.errorOccurrences![1]} />,
+      {
+        CODING: [
+          logEntry('between the two failures', '2026-01-01T11:00:00.000Z'),
+          logEntry('from some other attempt', null),
+        ],
+      },
+    )
+
+    const calls = logSectionMock.mock.calls as unknown as Array<[{ logs?: LogEntry[] }]>
+    const logs = calls.at(-1)?.[0]
+    expect(logs?.logs?.map((entry) => entry.line)).toEqual(['between the two failures'])
   })
 })

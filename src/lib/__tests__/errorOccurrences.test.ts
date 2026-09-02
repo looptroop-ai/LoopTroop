@@ -107,3 +107,40 @@ describe('getActiveErrorOccurrence', () => {
     expect(active?.id).toBe('1')
   })
 })
+
+describe('getActiveErrorOccurrence fallthrough order', () => {
+  it('picks the newest unresolved error, not the oldest', () => {
+    // The list is newest-first, so reversing before `find` returned the *oldest*
+    // open error — and the recovery actions beside it belonged to that one.
+    // Reachable now that an active id naming a resolved occurrence falls
+    // through to here.
+    const active = getActiveErrorOccurrence(ticket({
+      activeErrorOccurrenceId: '1',
+      errorOccurrences: [
+        occurrence({
+          id: '1',
+          occurrenceNumber: 1,
+          occurredAt: '2026-09-01T10:00:00.000Z',
+          resolvedAt: '2026-09-01T10:30:00.000Z',
+          resolutionStatus: 'RETRIED',
+        }),
+        occurrence({ id: '2', occurrenceNumber: 2, occurredAt: '2026-09-01T11:00:00.000Z' }),
+        occurrence({ id: '3', occurrenceNumber: 3, occurredAt: '2026-09-01T12:00:00.000Z' }),
+      ],
+    }))
+
+    expect(active?.id).toBe('3')
+  })
+
+  it('falls back to the newest occurrence when every one is resolved', () => {
+    const active = getActiveErrorOccurrence(ticket({
+      activeErrorOccurrenceId: null,
+      errorOccurrences: [
+        occurrence({ id: '1', occurrenceNumber: 1, occurredAt: '2026-09-01T10:00:00.000Z', resolvedAt: '2026-09-01T10:30:00.000Z' }),
+        occurrence({ id: '2', occurrenceNumber: 2, occurredAt: '2026-09-01T12:00:00.000Z', resolvedAt: '2026-09-01T12:30:00.000Z' }),
+      ],
+    }))
+
+    expect(active?.id).toBe('2')
+  })
+})

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { clearTicketCaches } from './useTickets'
+import { clearTicketCaches, settleTicketUiStateSavesForDelete } from './useTickets'
 import type { GitHookPolicy } from '@/lib/executionSetupPlan'
 import { normalizeGitHookPolicySetting } from '@/lib/gitHookPolicySetting'
 import { throwIfNotOk } from '@/lib/fetchError'
@@ -82,13 +82,28 @@ function invalidateProjectQueries(queryClient: ReturnType<typeof useQueryClient>
 }
 
 /**
- * Every ticket of this project the cache knows about.
+ * Whether a ticket id belongs to this project.
+ *
+ * A ticket id is `<projectId>:<externalId>` — the server builds it that way in
+ * `buildTicketRef` and takes it apart the same way in `parseTicketRef`. Reading
+ * the project off the id is what lets a deletion find tickets the cache knows
+ * only by id: a detail query still in flight has no data to check `projectId`
+ * against, and an artifact or UI-state entry never had any.
+ */
+function ticketIdBelongsToProject(ticketId: string, projectId: number): boolean {
+  const separator = ticketId.indexOf(':')
+  return separator > 0 && Number(ticketId.slice(0, separator)) === projectId
+}
+
+/**
+ * Every ticket of this project the cache knows about, by any route.
  *
  * The list queries are not the whole story: opening a ticket writes
  * `['ticket', id]`, and a list refetch that no longer includes it leaves that
- * entry as the only record of the id. Discovering ids from the lists alone
- * therefore left the most recently opened ticket behind — cached under an id the
- * server can hand out again.
+ * entry as the only record of the id. Nor is the detail cache — a request that
+ * has not resolved yet holds no `projectId` to match on, and its response can
+ * land after the delete and reinstall the ticket. So every cached key is
+ * searched for an id this project owns.
  */
 function collectCachedProjectTicketIds(
   queryClient: ReturnType<typeof useQueryClient>,
@@ -102,10 +117,10 @@ function collectCachedProjectTicketIds(
     }
   }
 
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['ticket'] })) {
-    const [, ticketId] = query.queryKey
-    const ticket = query.state.data as CachedProjectTicket | undefined
-    if (typeof ticketId === 'string' && ticket?.projectId === projectId) cachedTicketIds.add(ticketId)
+  for (const query of queryClient.getQueryCache().getAll()) {
+    for (const part of query.queryKey) {
+      if (typeof part === 'string' && ticketIdBelongsToProject(part, projectId)) cachedTicketIds.add(part)
+    }
   }
 
   return cachedTicketIds
@@ -113,10 +128,9 @@ function collectCachedProjectTicketIds(
 
 async function removeDeletedProjectTicketCaches(
   queryClient: ReturnType<typeof useQueryClient>,
+  cachedTicketIds: Set<string>,
   projectId: number,
 ) {
-  const cachedTicketIds = collectCachedProjectTicketIds(queryClient, projectId)
-
   queryClient.setQueriesData<CachedProjectTicket[]>({ queryKey: ['tickets'] }, (tickets) =>
     tickets?.filter((ticket) => ticket.projectId !== projectId) ?? tickets,
   )
@@ -191,11 +205,18 @@ export function useDeleteProject() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (id: number) => {
+      // The same barrier the ticket delete uses, for every ticket of this
+      // project: a debounced approval autosave otherwise reaches the server for
+      // rows the project delete is about to remove.
+      const ticketIds = collectCachedProjectTicketIds(queryClient, id)
+      await Promise.all([...ticketIds].map((ticketId) => settleTicketUiStateSavesForDelete(ticketId)))
+
       const res = await fetch(apiProjectPath(id), { method: 'DELETE' })
       await throwIfNotOk(res, 'Failed to delete project')
+      return ticketIds
     },
-    onSuccess: async (_, projectId) => {
-      await removeDeletedProjectTicketCaches(queryClient, projectId)
+    onSuccess: async (ticketIds, projectId) => {
+      await removeDeletedProjectTicketCaches(queryClient, ticketIds, projectId)
       invalidateProjectQueries(queryClient)
     },
   })

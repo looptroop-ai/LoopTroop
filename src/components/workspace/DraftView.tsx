@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { LoadingText } from '@/components/ui/LoadingText'
@@ -29,6 +29,7 @@ import {
   type AiQuestionWindowOverride,
 } from '@/lib/aiQuestionSetting'
 import { AI_QUESTION_WINDOW_MAX_MS, AI_QUESTION_WINDOW_MIN_MS, formatAiQuestionWindow } from '@shared/aiQuestions'
+import { getProfileCouncil } from '@/lib/profileCouncil'
 
 const PRIORITY_LABELS: Record<number, string> = { 1: 'Very High', 2: 'High', 3: 'Normal', 4: 'Low', 5: 'Very Low' }
 const PRIORITY_COLORS: Record<number, string> = {
@@ -123,9 +124,9 @@ export function DraftView({ ticket }: DraftViewProps) {
     mainImplementer,
     project?.councilMembers ?? profile?.councilMembers ?? null,
   )
-  const councilMemberVariants: Record<string, string> = profile?.councilMemberVariants
-    ? (() => { try { return JSON.parse(profile.councilMemberVariants) as Record<string, string> } catch { return {} } })()
-    : {}
+  // The third reader of this stored JSON, and the last one still casting it. A
+  // variant that is not a string reached `<EffortBadge variant={…}>` from here.
+  const councilMemberVariants = useMemo(() => getProfileCouncil(profile).variants, [profile])
   const mainImplementerVariant = profile?.mainImplementerVariant ?? null
   const highlightedMainImplementer = mainImplementer || currentCouncilMembers[0] || ''
   const shouldShowCouncilMembers = currentCouncilMembers.length > 0 || !isProfileLoading

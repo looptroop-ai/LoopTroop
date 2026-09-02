@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tansta
 import { clearPersistedTicketLogs } from '@/context/logUtils'
 import { mergeTicketInCache, patchTicketStatusInCache } from './ticketStatusCache'
 import { isTerminalWorkflowStatus, type WorkflowAction } from '@shared/workflowMeta'
+import { isRecord } from '@shared/typeGuards'
 import type { InterviewSessionSnapshot, InterviewSessionView, PersistedInterviewBatch } from '@shared/interviewSession'
 import { clearErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { clearNeedsInputSeen } from '@/lib/needsInputSeen'
@@ -15,6 +16,7 @@ import {
 } from '@/lib/ticketNormalization'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
 import {
+  clearTicketUiStateRevisions,
   createTicketUiStateActionId,
   getTicketUiStateRevision,
   rememberTicketUiStateRevision,
@@ -285,7 +287,7 @@ async function createTicket(input: CreateTicketInput): Promise<Ticket> {
     body: JSON.stringify(input),
   })
   await throwIfNotOk(res, 'Failed to create ticket')
-  return res.json()
+  return normalizeTicketResponse(await res.json())
 }
 
 type UpdateTicketInput = Partial<Pick<
@@ -300,7 +302,7 @@ async function updateTicket(id: string, input: UpdateTicketInput): Promise<Ticke
     body: JSON.stringify(input),
   })
   await throwIfNotOk(res, 'Failed to update ticket')
-  return res.json()
+  return normalizeTicketResponse(await res.json())
 }
 
 function getTicketActionPath(id: string, action: WorkflowAction): string {
@@ -454,6 +456,23 @@ async function saveTicketUIState(
   return res.json()
 }
 
+/**
+ * Tickets whose deletion has started.
+ *
+ * Draining the queue is not enough on its own: the debounced approval autosave
+ * can enqueue a *new* save while the drain is awaiting the old one, and that PUT
+ * then lands after the DELETE. A ticket named here refuses further saves, so the
+ * barrier closes instead of merely emptying.
+ */
+const closingTickets = new Set<string>()
+
+/** How long the delete waits for a queued save before going ahead without it. */
+const UI_STATE_DRAIN_TIMEOUT_MS = 5_000
+
+export function isTicketClosing(ticketId: string): boolean {
+  return closingTickets.has(ticketId)
+}
+
 function enqueueTicketUIStateSave(
   ticketId: string,
   scope: string,
@@ -463,7 +482,12 @@ function enqueueTicketUIStateSave(
   const key = `${ticketId}\u0000${scope}`
   const previous = uiStateSaveQueues.get(key)
   const pending = (previous ? previous.catch(() => undefined) : Promise.resolve())
-    .then(() => saveTicketUIState(ticketId, scope, data, fetchImpl))
+    .then(() => {
+      // Checked here, not at call time: a save queued behind another one can
+      // reach the front after the delete has started.
+      if (closingTickets.has(ticketId)) throw new Error('Ticket is being deleted')
+      return saveTicketUIState(ticketId, scope, data, fetchImpl)
+    })
   uiStateSaveQueues.set(key, pending)
   void pending.finally(() => {
     if (uiStateSaveQueues.get(key) === pending) uiStateSaveQueues.delete(key)
@@ -472,24 +496,55 @@ function enqueueTicketUIStateSave(
 }
 
 /**
- * Waits out any queued UI-state save for this ticket.
+ * Closes the door on this ticket's queued UI-state saves, then waits them out.
  *
  * A save is enqueued per `ticketId\0scope` and settles well after the keystroke
- * that started it, so deleting the ticket first left a PUT in the air for a row
- * that no longer exists. Failures are swallowed: this is a barrier, not a
- * checkpoint — the delete proceeds either way.
+ * that started it, so deleting first left a PUT in the air for a row that no
+ * longer exists. Two things have to be true for that to stop: nothing new may be
+ * enqueued (the tombstone), and what is already in flight must finish (the
+ * drain).
+ *
+ * Bounded, because the drain is not worth blocking the delete on: a stalled PUT
+ * would otherwise hold the mutation open indefinitely and the DELETE would never
+ * be sent. Failures are swallowed — this is a barrier, not a checkpoint.
  */
 async function settleTicketUiStateSaves(ticketId: string): Promise<void> {
+  closingTickets.add(ticketId)
   const prefix = `${ticketId}\u0000`
   const pending = [...uiStateSaveQueues.entries()]
     .filter(([key]) => key.startsWith(prefix))
     .map(([, save]) => save.catch(() => undefined))
-  if (pending.length > 0) await Promise.all(pending)
+  if (pending.length === 0) return
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      Promise.all(pending),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, UI_STATE_DRAIN_TIMEOUT_MS) }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
-/** True when any part of a query key is this ticket's id. */
+/** Reopens the door after a delete that did not happen. */
+function releaseClosingTicket(ticketId: string): void {
+  closingTickets.delete(ticketId)
+}
+
+/**
+ * True when any part of a query key names this ticket.
+ *
+ * Object parts are searched one level down as well. Every family today puts the
+ * id in directly, but a future `['artifact', { ticketId }]` would slip past a
+ * flat comparison — which is the same silent escape the enumerated list this
+ * predicate replaced was built to end.
+ */
 function queryKeyNamesTicket(queryKey: readonly unknown[], ticketId: string): boolean {
-  return queryKey.some((part) => part === ticketId)
+  return queryKey.some((part) => {
+    if (part === ticketId) return true
+    return isRecord(part) && Object.values(part).some((value) => value === ticketId)
+  })
 }
 
 /**
@@ -508,6 +563,10 @@ function queryKeyNamesTicket(queryKey: readonly unknown[], ticketId: string): bo
  * In-flight requests are cancelled before the keys go, so a response that was
  * already on the wire cannot repopulate a deleted ticket.
  */
+export async function settleTicketUiStateSavesForDelete(ticketId: string): Promise<void> {
+  await settleTicketUiStateSaves(ticketId)
+}
+
 export async function clearTicketCaches(queryClient: QueryClient, ticketId: string): Promise<void> {
   const predicate = (query: { queryKey: readonly unknown[] }) => queryKeyNamesTicket(query.queryKey, ticketId)
 
@@ -521,6 +580,12 @@ export async function clearTicketCaches(queryClient: QueryClient, ticketId: stri
   clearPersistedTicketLogs(ticketId)
   clearErrorTicketSeen(ticketId)
   clearNeedsInputSeen(ticketId)
+  // The revision map only ever climbs, so carrying it past a deletion makes the
+  // next ticket issued under the same id send an `expectedRevision` from a
+  // ticket that no longer exists — and every one of its autosaves is refused as
+  // a conflict.
+  clearTicketUiStateRevisions(ticketId)
+  closingTickets.delete(ticketId)
 }
 
 /**
@@ -549,7 +614,13 @@ function applyTicketActionResult(
   const nextStatus = result.state ?? result.status
   if (!nextStatus) return
 
+  // The detail entry first, then any list that holds the ticket: a board action
+  // fires without the detail query ever having been mounted, and reading only
+  // the detail cache there left `previousStatus` stale.
   const cachedStatus = queryClient.getQueryData<Ticket>(['ticket', ticketId])?.status
+    ?? queryClient.getQueriesData<Ticket[]>({ queryKey: ['tickets'] })
+      .flatMap(([, tickets]) => tickets ?? [])
+      .find((ticket) => ticket.id === ticketId)?.status
   patchTicketStatusInCache<Ticket>(
     queryClient,
     ticketId,
@@ -629,10 +700,36 @@ export function useTicketAction() {
 export function useCancelTicket() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, options }: { id: string; options?: CancelTicketOptions }) =>
-      cancelTicket(id, options),
-    onSuccess: (result, variables) => {
-      applyTicketActionResult(queryClient, result.ticketId || variables.id, result)
+    mutationFn: async ({ id, options }: { id: string; options?: CancelTicketOptions }) => {
+      // The cancel dialog's "also delete the ticket" really deletes the row, so
+      // this request needs the same barrier the delete mutation has.
+      if (!options?.deleteTicket) return cancelTicket(id, options)
+
+      await settleTicketUiStateSaves(id)
+      try {
+        return await cancelTicket(id, options)
+      } catch (error) {
+        releaseClosingTicket(id)
+        throw error
+      }
+    },
+    onSuccess: async (result, variables) => {
+      const ticketId = result.ticketId || variables.id
+
+      if (variables.options?.deleteTicket) {
+        // A deleting cancel answers `{ success, ticketId }` and nothing else, so
+        // `applyTicketActionResult` has nothing to apply. Without this the
+        // ticket's phase attempts, Manual QA rounds, artifacts, bead diffs, logs
+        // and UI state all stayed cached under an id the server can reissue.
+        queryClient.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (tickets) =>
+          tickets?.filter(ticket => ticket.id !== ticketId) ?? tickets,
+        )
+        await clearTicketCaches(queryClient, ticketId)
+        queryClient.invalidateQueries({ queryKey: ['tickets'] })
+        return
+      }
+
+      applyTicketActionResult(queryClient, ticketId, result)
 
       queryClient.invalidateQueries({ queryKey: ['tickets'] })
       queryClient.invalidateQueries({ queryKey: ['ticket', variables.id] })
@@ -648,7 +745,13 @@ export function useDeleteTicket() {
       // Before the DELETE, not after: a queued panel save otherwise reaches the
       // server for a ticket row that is already gone.
       await settleTicketUiStateSaves(ticketId)
-      return deleteTicket(ticketId)
+      try {
+        return await deleteTicket(ticketId)
+      } catch (error) {
+        // The ticket is still there, so its panels may save again.
+        releaseClosingTicket(ticketId)
+        throw error
+      }
     },
     onSuccess: async (_, ticketId) => {
       queryClient.setQueriesData<Ticket[]>({ queryKey: ['tickets'] }, (tickets) =>

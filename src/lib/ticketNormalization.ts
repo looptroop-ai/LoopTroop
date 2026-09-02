@@ -332,12 +332,75 @@ export function normalizeTicketResponse(payload: unknown): Ticket {
   if (typeof payload.status !== 'string' || payload.status.length === 0) {
     throw new Error('Ticket response carried no status')
   }
-  return normalizeTicketForRender(payload as unknown as RawTicketResponse)
+  return {
+    ...normalizeTicketForRender(payload as unknown as RawTicketResponse),
+    ...normalizeRequiredScalars(payload),
+  }
+}
+
+/**
+ * The scalars every surface indexes without guarding.
+ *
+ * `id` and `status` throw, because a ticket without either cannot be addressed
+ * or rendered at all. These do not: a missing `title` should cost the ticket its
+ * title, not the whole board. Both halves of that trade-off are deliberate — a
+ * boundary that rejects the payload wholesale turns one drifted field into a
+ * blank screen, and one that trusts it turns a number into `undefined.trim()`
+ * three components away.
+ */
+function normalizeRequiredScalars(raw: Record<string, unknown>): Partial<Ticket> {
+  return {
+    externalId: stringOrFallback(raw.externalId, typeof raw.id === 'string' ? raw.id : ''),
+    projectId: numberOrFallback(raw.projectId, 0),
+    title: stringOrFallback(raw.title, 'Untitled ticket'),
+    priority: numberOrFallback(raw.priority, 0),
+    createdAt: stringOrFallback(raw.createdAt, ''),
+    updatedAt: stringOrFallback(raw.updatedAt, ''),
+    implementationTiming: normalizeImplementationTiming(raw.implementationTiming),
+  }
+}
+
+function normalizeImplementationTiming(value: unknown): Ticket['implementationTiming'] {
+  const raw = isRecord(value) ? value : {}
+  return {
+    activeDurationMs: numberOrFallback(raw.activeDurationMs, 0),
+    startedAt: nullableString(raw.startedAt),
+    lastPlannedBeadFinishedAt: nullableString(raw.lastPlannedBeadFinishedAt),
+    manualQaFixDurationMs: numberOrFallback(raw.manualQaFixDurationMs, 0),
+    manualQaFixStartedAt: nullableString(raw.manualQaFixStartedAt),
+    workspacePreparationDurationMs: numberOrFallback(raw.workspacePreparationDurationMs, 0),
+    workspacePreparationStartedAt: nullableString(raw.workspacePreparationStartedAt),
+    finalTestingDurationMs: numberOrFallback(raw.finalTestingDurationMs, 0),
+    finalTestingStartedAt: nullableString(raw.finalTestingStartedAt),
+    questionWaitingMs: numberOrFallback(raw.questionWaitingMs, 0),
+  }
 }
 
 export function normalizeTicketListResponse(payload: unknown): Ticket[] {
   if (!Array.isArray(payload)) throw new Error('Ticket list response was not an array')
   return payload.map(normalizeTicketResponse)
+}
+
+/** A ticket patch: only what the response carried, with a partial runtime. */
+export type TicketPatch =
+  Partial<Omit<Ticket, 'runtime'>> & { id: string; runtime?: Partial<TicketRuntime> }
+
+/**
+ * The runtime fields a response actually carried, normalised, and no others.
+ *
+ * `getTicketRuntime` always answers with a *complete* runtime — that is what
+ * makes it right for a read. Using it for a patch pushed the same defaults the
+ * patch design exists to avoid one level down: a response carrying
+ * `runtime: { totalBeads }` would replace the cached runtime wholesale and blank
+ * the bead list, the PR state and the ETA until the follow-up refetch landed.
+ */
+function normalizeRuntimePatch(rawRuntime: Record<string, unknown>): Partial<TicketRuntime> {
+  const complete = getTicketRuntime({ runtime: rawRuntime } as unknown as RawTicketResponse)
+  const patch: Partial<TicketRuntime> = {}
+  for (const key of Object.keys(rawRuntime) as Array<keyof TicketRuntime>) {
+    if (key in complete) (patch as Record<string, unknown>)[key] = complete[key]
+  }
+  return patch
 }
 
 /**
@@ -350,7 +413,7 @@ export function normalizeTicketListResponse(payload: unknown): Ticket[] {
  * is what keeps the rule "nothing reaches the ticket cache without passing the
  * normaliser" true for writes as well as reads.
  */
-export function normalizeTicketPatch(payload: unknown): (Partial<Ticket> & { id: string }) | null {
+export function normalizeTicketPatch(payload: unknown): TicketPatch | null {
   if (!isRecord(payload)) return null
   if (typeof payload.id !== 'string' || payload.id.length === 0) return null
 
@@ -360,7 +423,7 @@ export function normalizeTicketPatch(payload: unknown): (Partial<Ticket> & { id:
   return {
     ...(raw as unknown as Partial<Ticket>),
     id: payload.id,
-    ...('runtime' in raw ? { runtime: getTicketRuntime(raw as unknown as RawTicketResponse) } : {}),
+    ...(isRecord(raw.runtime) ? { runtime: normalizeRuntimePatch(raw.runtime) } : {}),
     ...('availableActions' in raw
       ? { availableActions: getTicketAvailableActions(raw as unknown as RawTicketResponse) }
       : {}),

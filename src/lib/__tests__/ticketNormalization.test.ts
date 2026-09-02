@@ -161,3 +161,64 @@ describe('normalizeTicketPatch', () => {
     expect(normalizeTicketPatch({ status: 'CODING' })).toBeNull()
   })
 })
+
+describe('normalizeTicketPatch runtime', () => {
+  it('keeps only the runtime keys the response carried', () => {
+    // `getTicketRuntime` always answers with a complete runtime, which is right
+    // for a read and wrong for a patch: merged over the cached ticket it would
+    // blank the bead list, the PR state and the ETA.
+    const patch = normalizeTicketPatch({ id: '1:NORM-1', runtime: { totalBeads: 4 } })
+
+    expect(patch?.runtime).toEqual({ totalBeads: 4 })
+    expect(patch?.runtime && 'beads' in patch.runtime).toBe(false)
+    expect(patch?.runtime && 'eta' in patch.runtime).toBe(false)
+    expect(patch?.runtime && 'prState' in patch.runtime).toBe(false)
+  })
+
+  it('still normalises the values of the keys it keeps', () => {
+    const patch = normalizeTicketPatch({
+      id: '1:NORM-1',
+      runtime: { totalBeads: 'four', beads: [{ id: 'b1', title: 'One', status: 'done', iteration: 1 }] },
+    })
+
+    expect(patch?.runtime?.totalBeads).toBe(0)
+    expect(patch?.runtime?.beads).toHaveLength(1)
+  })
+})
+
+describe('required scalars', () => {
+  it('substitutes a safe value rather than rejecting the whole ticket', () => {
+    // A drifted field costs its own widget, not the board. `id` and `status`
+    // are the two that still throw, because neither has a usable substitute.
+    const ticket = normalizeTicketResponse({
+      id: '1:NORM-1',
+      status: 'CODING',
+      externalId: 42,
+      projectId: 'one',
+      title: null,
+      createdAt: undefined,
+      implementationTiming: 'not an object',
+    })
+
+    expect(ticket.externalId).toBe('1:NORM-1')
+    expect(ticket.projectId).toBe(0)
+    expect(ticket.title).toBe('Untitled ticket')
+    expect(ticket.createdAt).toBe('')
+    expect(ticket.implementationTiming.activeDurationMs).toBe(0)
+    expect(ticket.implementationTiming.startedAt).toBeNull()
+  })
+
+  it('leaves a well-formed payload untouched', () => {
+    const ticket = normalizeTicketResponse(wirePayload({
+      externalId: 'NORM-1',
+      projectId: 3,
+      title: 'Real title',
+      implementationTiming: { activeDurationMs: 120, startedAt: '2026-09-01T10:00:00.000Z' },
+    }))
+
+    expect(ticket.externalId).toBe('NORM-1')
+    expect(ticket.projectId).toBe(3)
+    expect(ticket.title).toBe('Real title')
+    expect(ticket.implementationTiming.activeDurationMs).toBe(120)
+  })
+})

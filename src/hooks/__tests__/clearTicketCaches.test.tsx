@@ -1,6 +1,11 @@
 import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import { clearTicketCaches } from '../useTickets'
+import {
+  clearTicketUiStateRevisions,
+  getTicketUiStateRevision,
+  rememberTicketUiStateRevision,
+} from '@/lib/ticketUiStateRevision'
 
 const ticketId = '1:DEL-1'
 const otherTicketId = '1:DEL-2'
@@ -56,5 +61,35 @@ describe('clearTicketCaches', () => {
 
     expect(client.getQueryData(['tickets'])).toHaveLength(2)
     expect(client.getQueryData(['tickets', { projectId: 1 }])).toHaveLength(1)
+  })
+})
+
+describe('clearTicketCaches module-scope stores', () => {
+  it('forgets the ticket\'s UI-state revisions', async () => {
+    // The revision map only ever climbs, so a revision left behind makes the
+    // next ticket issued under the same id send an `expectedRevision` from a
+    // ticket that no longer exists — and every autosave is refused as a
+    // conflict against the new ticket's revision 0.
+    const client = new QueryClient()
+    rememberTicketUiStateRevision(ticketId, 'approval_prd', 4)
+    rememberTicketUiStateRevision(otherTicketId, 'approval_prd', 9)
+
+    await clearTicketCaches(client, ticketId)
+
+    expect(getTicketUiStateRevision(ticketId, 'approval_prd')).toBe(0)
+    expect(getTicketUiStateRevision(otherTicketId, 'approval_prd')).toBe(9)
+    clearTicketUiStateRevisions(otherTicketId)
+  })
+
+  it('matches an id nested inside an object key part', async () => {
+    // Every family names the id directly today. A future
+    // `['artifact', { ticketId }]` would slip past a flat comparison, which is
+    // the silent escape the enumerated list this predicate replaced allowed.
+    const client = new QueryClient()
+    client.setQueryData(['artifact', { ticketId }], 'content')
+
+    await clearTicketCaches(client, ticketId)
+
+    expect(client.getQueryData(['artifact', { ticketId }])).toBeUndefined()
   })
 })

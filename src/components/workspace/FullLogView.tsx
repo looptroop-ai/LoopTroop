@@ -21,6 +21,7 @@ import { CurrentActivityStrip } from './CurrentActivityStrip'
 import { BeadDelimiter } from './logGrouping'
 import { buildBeadSections, type RenderedBeadSection } from './logGroupingHelpers'
 import { useTicketHistoricalLogs, type HistoricalLogView } from '@/hooks/useTicketHistoricalLogs'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { getLogEntryIdentity, mergeEntriesBatch } from '@/context/logUtils'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useVirtualFirstItemIndex } from './logVirtualization'
@@ -919,6 +920,12 @@ export function FullLogView({ ticket }: FullLogViewProps) {
               <span className="text-muted-foreground/50 italic">
                 <LoadingText text="Loading logs" />
               </span>
+            ) : historicalLogs.isError ? (
+              <QueryErrorNotice
+                title="The log history could not be loaded."
+                error={historicalLogs.error}
+                onRetry={() => void historicalLogs.refetch()}
+              />
             ) : (
               <span className="text-muted-foreground/50 italic">
                 No log entries yet. Logs will appear here as the ticket progresses through its lifecycle.

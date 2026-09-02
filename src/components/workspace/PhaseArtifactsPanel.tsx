@@ -9,6 +9,7 @@ import { useTicketArtifacts, type TicketArtifactCollectionState } from '@/hooks/
 import { useQuery } from '@tanstack/react-query'
 import { describeQueryError, throwIfNotOk } from '@/lib/fetchError'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import {
   buildCouncilMemberArtifacts,
   buildFullAnswerMemberArtifacts,
@@ -793,6 +794,17 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
 
   return (
     <>
+      {/* Beside the list, not instead of it: the rows come from static phase
+          definitions, so they still render on a failed request and read as
+          "not produced yet". The dialog kept the only notice, and nobody opens
+          a dialog to find out why a button is empty. */}
+      {resolvedArtifactState.isError && resolvedArtifactState.artifacts === undefined ? (
+        <QueryErrorNotice
+          title="This phase's artifacts could not be loaded."
+          error={resolvedArtifactState.error}
+          onRetry={() => void resolvedArtifactState.refetch()}
+        />
+      ) : null}
       {artifactsBody}
 
       <Dialog open={!!viewingArtifact} onOpenChange={(open) => !open && setViewingSelection(null)}>

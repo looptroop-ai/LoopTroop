@@ -823,3 +823,63 @@ describe('Read-only approval attempts', () => {
     expect(screen.queryByText('No PRD artifact available.')).not.toBeInTheDocument()
   })
 })
+
+describe('Approval surfaces on a failed request', () => {
+  beforeEach(() => {
+    mockUseInterviewQuestions.mockReset()
+    mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
+    mockUseTicketUIState.mockReturnValue({
+      data: { scope: 'approval_beads', exists: false, data: null, updatedAt: null },
+    })
+    mockUseTicketArtifacts.mockReset()
+    mockUseTicketArtifacts.mockReturnValue({ artifacts: [], isLoading: false })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('says the version history failed instead of showing one attempt', async () => {
+    // Resolving to `[]` hid the selector and silently scoped every artifact and
+    // log to the live attempt — the wrong version, with nothing saying so.
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Database is locked' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The version history for this phase could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Unable to load phase attempts (HTTP 500: Database is locked)')).toBeInTheDocument()
+  })
+
+  it('says the beads request failed instead of "no beads artifact available yet"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Corrupted JSONL data' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    expect(await screen.findByText('The beads artifact could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load beads (HTTP 500: Corrupted JSONL data)')).toBeInTheDocument()
+    expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
+  })
+})

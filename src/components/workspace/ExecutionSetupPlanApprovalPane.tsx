@@ -28,6 +28,7 @@ import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { AutosaveStatus } from './AutosaveStatus'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 type EditTab = 'structured' | 'raw'
 type RuntimeRewindTarget = 'edit' | 'regenerate' | null
@@ -345,7 +346,14 @@ export function ExecutionSetupPlanApprovalPane({
   const planUrl = phaseAttempt != null
     ? `${apiTicketPath(ticket.id, 'execution-setup-plan')}?${new URLSearchParams({ phaseAttempt: String(phaseAttempt) }).toString()}`
     : apiTicketPath(ticket.id, 'execution-setup-plan')
-  const { data: fetchedPlan, isLoading, isFetching } = useQuery({
+  const {
+    data: fetchedPlan,
+    isLoading,
+    isFetching,
+    isError: isPlanError,
+    error: planError,
+    refetch: refetchPlan,
+  } = useQuery({
     queryKey: planQueryKey,
     queryFn: async ({ signal }) => {
       const response = await fetch(planUrl, { signal })
@@ -359,9 +367,14 @@ export function ExecutionSetupPlanApprovalPane({
   const currentContentSha256 = fetchedPlan?.contentSha256 ?? null
   const plan = fetchedPlan?.plan ?? null
   const isPlanLoading = !fetchedPlan && (isLoading || isFetching)
+  // A request that failed says nothing about whether generation succeeded. Left
+  // out of this condition, a 500 rendered the "generation failed" banner and
+  // offered Regenerate — a destructive action — for a plan that may well exist.
+  const planRequestFailed = isPlanError && !fetchedPlan
   const generationFailed = ticket.status === 'WAITING_EXECUTION_SETUP_APPROVAL'
     && !isArchivedAttempt
     && !isPlanLoading
+    && !planRequestFailed
     && !plan
   const executionSetupPlanReportContent = useMemo(() => {
     const matchingArtifact = [...artifacts].reverse().find((artifact) => (
@@ -867,6 +880,13 @@ export function ExecutionSetupPlanApprovalPane({
                 LoopTroop is loading the completed drafting result for review.
               </p>
             </div>
+          ) : planRequestFailed ? (
+            <QueryErrorNotice
+              className="py-8"
+              title="The setup plan could not be loaded."
+              error={planError}
+              onRetry={() => void refetchPlan()}
+            />
           ) : generationFailed ? (
             <div className="space-y-3">
               <FailedSetupPlanGenerationBanner reportContent={executionSetupPlanReportContent} />

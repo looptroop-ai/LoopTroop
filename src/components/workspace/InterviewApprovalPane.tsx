@@ -31,6 +31,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { AutosaveStatus } from './AutosaveStatus'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -92,7 +93,14 @@ export function InterviewApprovalPane({
     [ticket.status, ticket.previousStatus],
   )
   const { data: persistedUiState } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
-  const { data: interviewData, isLoading, isFetching } = useInterviewQuestions(ticket.id)
+  const {
+    data: interviewData,
+    isLoading,
+    isFetching,
+    isError: isInterviewError,
+    refetch: refetchInterview,
+    error: interviewError,
+  } = useInterviewQuestions(ticket.id)
 
   const interviewDocument = useMemo(
     () => normalizeInterviewDocumentLike(interviewData?.document) ?? parseInterviewDocument(interviewData?.raw),
@@ -433,7 +441,14 @@ export function InterviewApprovalPane({
       </div>
 
       <div className="flex-1 min-h-0 px-4 pb-2 overflow-auto">
-        {isLoading || isPreparingStructuredInterview ? (
+        {isInterviewError && !rawContent ? (
+          <QueryErrorNotice
+            className="py-8"
+            title="The interview artifact could not be loaded."
+            error={interviewError}
+            onRetry={() => void refetchInterview()}
+          />
+        ) : isLoading || isPreparingStructuredInterview ? (
           <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
             <div className="text-center space-y-2">
               <LoadingText text={isPreparingStructuredInterview ? 'Preparing interview results' : 'Loading interview results'} className="text-sm font-medium animate-pulse" />

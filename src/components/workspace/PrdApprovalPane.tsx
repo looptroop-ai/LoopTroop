@@ -592,6 +592,13 @@ export function PrdApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
+          {isPrdError && rawContent ? (
+            <QueryErrorNotice
+              title="Showing the last PRD that loaded. The refresh failed."
+              error={prdError}
+              onRetry={() => void refetchPrd()}
+            />
+          ) : null}
           {isPrdError && !rawContent ? (
             <QueryErrorNotice
               className="py-8"

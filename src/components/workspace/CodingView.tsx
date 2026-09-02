@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
-import { PhaseAttemptSelector } from './PhaseAttemptSelector'
+import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { BeadDiffViewer } from './BeadDiffViewer'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { LogEntryRow } from './LogLine'
@@ -1071,7 +1071,12 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const hasBeadControls = phaseForView === 'CODING'
   const viewingBeadId = hasBeadControls ? rawViewingBeadId : null
   const shouldShowPhaseVersionSelector = phaseForView !== 'CODING'
-  const { data: phaseAttempts = [] } = useTicketPhaseAttempts(
+  const {
+    data: phaseAttempts = [],
+    isError: isPhaseAttemptsError,
+    error: phaseAttemptsError,
+    refetch: refetchPhaseAttempts,
+  } = useTicketPhaseAttempts(
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
@@ -1434,6 +1439,15 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
           </span>
         )}
       </div>
+
+      {shouldShowPhaseVersionSelector && isPhaseAttemptsError ? (
+        <div className="px-4 border-b border-border shrink-0">
+          <PhaseAttemptsUnavailable
+            error={phaseAttemptsError}
+            onRetry={() => void refetchPhaseAttempts()}
+          />
+        </div>
+      ) : null}
 
       {shouldShowPhaseVersionSelector && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">

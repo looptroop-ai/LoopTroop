@@ -11,6 +11,7 @@ import {
   normalizeInterviewDocumentLike,
   parseInterviewDocument,
 } from '@/lib/interviewDocument'
+import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 function focusApprovalAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(INTERVIEW_APPROVAL_FOCUS_EVENT, {
@@ -19,7 +20,7 @@ function focusApprovalAnchor(ticketId: string, anchorId: string) {
 }
 
 export function InterviewApprovalNavigator({ ticketId }: { ticketId: string }) {
-  const { data, isLoading } = useInterviewQuestions(ticketId)
+  const { data, isLoading, isError, error, refetch } = useInterviewQuestions(ticketId)
   const document = normalizeInterviewDocumentLike(data?.document) ?? parseInterviewDocument(data?.raw)
   const groups = document ? groupInterviewDocumentQuestions(document) : []
   const hasSummary = hasInterviewSummaryContent(document)
@@ -33,6 +34,12 @@ export function InterviewApprovalNavigator({ ticketId }: { ticketId: string }) {
         <div className="space-y-3 pr-2">
           {isLoading ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">Loading interview results…</div>
+          ) : isError ? (
+            <QueryErrorNotice
+              title="The interview results could not be loaded."
+              error={error}
+              onRetry={() => void refetch()}
+            />
           ) : !document ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">Interview results will appear once the canonical artifact is ready.</div>
           ) : (

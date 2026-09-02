@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
-import { PhaseAttemptSelector } from './PhaseAttemptSelector'
+import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import {
@@ -136,7 +136,12 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   const isVoting = step === 'Voting'
   const isVerifying = step === 'Verifying Coverage'
   const isExpanding = step === 'Expanding'
-  const { data: attempts = [] } = useTicketPhaseAttempts(ticket.id, phase)
+  const {
+    data: attempts = [],
+    isError: isAttemptsError,
+    error: attemptsError,
+    refetch: refetchAttempts,
+  } = useTicketPhaseAttempts(ticket.id, phase)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
   const selectedAttemptNumber = useMemo(() => {
     if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
@@ -179,6 +184,9 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="px-4 py-2 space-y-1.5 shrink-0">
+        {isAttemptsError ? (
+          <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
+        ) : null}
         {attempts.length > 1 ? (
           <PhaseAttemptSelector
             attempts={attempts}

@@ -20,7 +20,7 @@ import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
-import { PhaseAttemptSelector } from './PhaseAttemptSelector'
+import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { useTicketPhaseAttempts } from '@/hooks/useTicketPhaseAttempts'
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdDocumentContent } from '@/lib/prdDocument'
@@ -177,7 +177,13 @@ function BeadsApprovalPane({
   const artifacts = useMemo(() => loadedArtifacts ?? [], [loadedArtifacts])
 
   // Cache stores array form (matching navigator expectations)
-  const { data: fetchedBeads, isLoading } = useQuery({
+  const {
+    data: fetchedBeads,
+    isLoading,
+    isError: isBeadsError,
+    error: beadsError,
+    refetch: refetchBeads,
+  } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', 'approval'],
     queryFn: async ({ signal }) => {
       const r = await fetch(apiTicketPath(ticket.id, 'beads'), { signal })
@@ -548,7 +554,14 @@ function BeadsApprovalPane({
               gapReasonDisabled={isApproving || isFixingCoverageGaps}
             />
           ) : null}
-          {isLoading ? (
+          {isBeadsError && fetchedBeads === undefined ? (
+            <QueryErrorNotice
+              className="py-8"
+              title="The beads artifact could not be loaded."
+              error={beadsError}
+              onRetry={() => void refetchBeads()}
+            />
+          ) : isLoading ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">Loading beads…</div>
           ) : isEditMode ? (
             <div className="space-y-3 rounded-2xl border border-border bg-muted/20 p-3">
@@ -797,7 +810,12 @@ function resolveApprovalPhase(artifactType: ApprovalViewProps['artifactType'], p
 
 export function ApprovalView({ ticket, phase, artifactType, readOnly }: ApprovalViewProps) {
   const resolvedPhase = resolveApprovalPhase(artifactType, phase)
-  const { data: attempts = [] } = useTicketPhaseAttempts(ticket.id, resolvedPhase)
+  const {
+    data: attempts = [],
+    isError: isAttemptsError,
+    error: attemptsError,
+    refetch: refetchAttempts,
+  } = useTicketPhaseAttempts(ticket.id, resolvedPhase)
   const [manualSelectedAttemptNumber, setManualSelectedAttemptNumber] = useState<number | null>(null)
   const selectedAttemptNumber = useMemo(() => {
     if (manualSelectedAttemptNumber != null && attempts.some((attempt) => attempt.attemptNumber === manualSelectedAttemptNumber)) {
@@ -816,7 +834,11 @@ export function ApprovalView({ ticket, phase, artifactType, readOnly }: Approval
   const archivedAttemptNumber = selectedAttempt?.state === 'archived' ? selectedAttempt.attemptNumber : undefined
   const logPhaseAttempt = attempts.length > 1 ? selectedAttemptNumber ?? undefined : undefined
   const logMode = archivedAttemptNumber != null ? 'snapshot' : 'live'
-  const selector = attempts.length > 1 ? (
+  const selector = isAttemptsError ? (
+    <div className="px-4 pt-4 shrink-0">
+      <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
+    </div>
+  ) : attempts.length > 1 ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptSelector
         attempts={attempts}

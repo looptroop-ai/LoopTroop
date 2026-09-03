@@ -132,6 +132,12 @@ describe('Manual QA fix-bead generation contracts', () => {
     // OpenCode writes this key camel-cased. An argument nobody recognises used
     // to be an argument nobody checked.
     ['a camel-cased escaping file path', 'read', { filePath: '/etc/passwd' }],
+    // A list argument used to satisfy the check without any entry being read.
+    ['a list with one escaping entry', 'grep', { include: ['src/**/*.ts', '../secrets'] }],
+    ['a list that is entirely outside', 'glob', { path: ['/etc', '/var'] }],
+    // `path.resolve` is POSIX here, so a drive-letter path resolved under the
+    // working directory and landed inside the worktree.
+    ['a Windows drive-letter path on a POSIX host', 'read', { path: 'C:\\Windows\\System32\\config' }],
   ] as [string, string, Record<string, unknown>][])('rejects %s', (_label, tool, input) => {
     expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool, input), PROJECT_PATH)).toBe(false)
   })
@@ -141,6 +147,8 @@ describe('Manual QA fix-bead generation contracts', () => {
     ['an absolute path inside the repository', 'read', { path: '/repo/src/store.ts' }],
     ['a camel-cased path inside the repository', 'read', { filePath: '/repo/src/store.ts' }],
     ['a repository-relative glob', 'glob', { pattern: 'src/**/*.ts' }],
+    ['a list whose entries are all inside', 'grep', { include: ['src/**/*.ts', 'shared/**/*.ts'] }],
+    ['an empty list', 'grep', { include: [] }],
     ['a listing of the worktree root itself', 'list', { path: '.' }],
     ['a listing with no arguments at all', 'list', undefined],
     // `grep`'s pattern is a regular expression, not a location. Searching for a

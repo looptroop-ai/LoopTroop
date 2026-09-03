@@ -204,11 +204,29 @@ function normalizeArgumentKey(key: string): string {
  * gap.
  */
 function isRepoScopedToolArgument(value: unknown, projectPath: string): boolean {
+  // These arguments are lists as often as they are single values — `grep`'s
+  // `include`, `glob`'s `path`. Passing an array used to satisfy the check
+  // without any of its entries being looked at.
+  if (Array.isArray(value)) return value.every((entry) => isRepoScopedToolArgument(entry, projectPath))
   if (typeof value !== 'string') return true
   const candidate = value.trim()
   if (!candidate) return true
+
   const normalizedRoot = path.resolve(projectPath)
-  const normalizedCandidate = path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)
+  // A drive-letter path is absolute on Windows and meaningless anywhere else.
+  // Resolving it with POSIX semantics turned `C:\Windows\System32` into
+  // `<cwd>/C:\Windows\System32`, which is inside the worktree whenever the
+  // daemon runs from it — so the check passed on the one input it should
+  // refuse hardest.
+  const looksWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(candidate)
+  if (looksWindowsAbsolute) {
+    if (path.sep !== path.win32.sep) return false
+    const winRoot = path.win32.resolve(projectPath)
+    const winCandidate = path.win32.resolve(candidate)
+    return winCandidate === winRoot || winCandidate.startsWith(`${winRoot}${path.win32.sep}`)
+  }
+
+  const normalizedCandidate = path.isAbsolute(candidate)
     ? path.resolve(candidate)
     : path.resolve(normalizedRoot, candidate.replace(/\\/g, '/'))
   return normalizedCandidate === normalizedRoot

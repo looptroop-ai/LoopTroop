@@ -129,22 +129,17 @@ async function syncWaitingPullRequestTicket(ticketId: string) {
       return getTicketByRef(ticketId) ?? current
     }
   } catch (err) {
-    const details = getErrorMessage(err)
-    const message = `PR sync failed: ${details}`
-    emitRoutePhaseLog(ticketId, 'WAITING_PR_REVIEW', 'error', message)
-    try {
-      const fresh = getTicketByRef(ticketId)
-      if (fresh && fresh.status === 'WAITING_PR_REVIEW') {
-        ensureActorForTicket(ticketId)
-        sendTicketEvent(ticketId, {
-          type: 'ERROR',
-          message,
-          codes: ['PULL_REQUEST_SYNC_FAILED'],
-        })
-      }
-    } catch {
-      // Best effort only. Return the current ticket below.
-    }
+    // Advisory only. This runs on a routine UI poll of GET /tickets/:id, and it
+    // used to dispatch ERROR here — so a transient GitHub outage, a rate limit
+    // or a slow `gh` moved the ticket to BLOCKED_ERROR. A read request could
+    // brick a ticket, and the ticket was fine: the next poll would have
+    // succeeded. The failure is worth recording and nothing more.
+    emitRoutePhaseLog(
+      ticketId,
+      'WAITING_PR_REVIEW',
+      'info',
+      `Pull request sync could not reach GitHub and will retry on the next poll: ${getErrorMessage(err)}`,
+    )
   }
 
   return getTicketByRef(ticketId) ?? current

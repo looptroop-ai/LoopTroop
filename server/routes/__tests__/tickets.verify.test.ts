@@ -189,6 +189,22 @@ describe('ticketRouter PR review routes', () => {
     })
   })
 
+  it('leaves the ticket alone when a GET cannot reach GitHub', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockRejectedValue(new Error('gh: API rate limit exceeded'))
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}`)
+
+    expect(response.status).toBe(200)
+    // A routine UI poll used to dispatch ERROR here, so a transient GitHub
+    // failure moved the ticket to BLOCKED_ERROR: a read request bricked it.
+    const after = getTicketByRef(ticket.id)
+    expect(after?.status).toBe('WAITING_PR_REVIEW')
+    expect(after?.errorMessage).toBeFalsy()
+  })
+
   it('merges the pull request and advances to cleanup', async () => {
     const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()

@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-vi.mock('../../opencode/factory', () => ({
-  getOpenCodeAdapter: () => ({}),
-  isMockOpenCodeMode: () => false,
-}))
-
+// Deliberately no `vi.mock('../../opencode/factory')` here. This file runs in
+// the `server-pure` project, which sets `isolate: false` so its files share one
+// module registry per worker. A factory mock in this file leaked into
+// `server/opencode/__tests__/providerCatalog.test.ts` whenever the two landed in
+// the same worker in that order, stubbing `isMockOpenCodeMode` to `false` and
+// failing its mock-mode test. Importing `verificationPhase` needs no mock.
 import {
   normalizeBeadsCoverageEnvelope,
   normalizeInterviewCoverageEnvelope,

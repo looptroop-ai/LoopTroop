@@ -10,8 +10,7 @@ import { emitPhaseLog } from './helpers'
 import { handleMockExecutionUnsupported } from './executionPhase'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { CancelledError } from '../../council/types'
-import { ManualQaSummarySchema } from '../../phases/manualQa/types'
-import { readManualQaDeliverySummary as readCanonicalManualQaDeliverySummary } from '../../phases/manualQa/delivery'
+import { readManualQaDeliverySummaryForTicket as readManualQaDeliverySummary } from '../../phases/manualQa/delivery'
 import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE } from '../../phases/executionSetup/types'
 import { runExplicitGitHookValidation } from '../../phases/executionSetup/hookValidation'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
@@ -42,35 +41,6 @@ function readFinalTestFilesToStage(ticketId: string): string[] {
     return [...new Set(testFiles)]
   } catch {
     return []
-  }
-}
-
-function readManualQaDeliverySummary(ticketId: string) {
-  const ticketDir = getTicketPaths(ticketId)?.ticketDir
-  const canonical = ticketDir ? readCanonicalManualQaDeliverySummary(ticketDir) : null
-  if (canonical) return canonical
-
-  const artifact = getLatestPhaseArtifact(ticketId, 'manual_qa_summary')
-  if (!artifact) return null
-  try {
-    const raw = JSON.parse(artifact.content) as unknown
-    const record = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
-    const candidate = record.value && typeof record.value === 'object' && !Array.isArray(record.value)
-      ? record.value as Record<string, unknown>
-      : record
-    const { idempotencyKey: _idempotencyKey, ...summaryValue } = candidate
-    const parsed = ManualQaSummarySchema.safeParse(summaryValue)
-    if (!parsed.success || parsed.data.outcome === 'failed') return null
-    return {
-      version: parsed.data.version,
-      outcome: parsed.data.outcome,
-      createdFixBeadIds: parsed.data.createdFixBeadIds,
-      improvementTicketIds: parsed.data.improvementTicketIds,
-      waivedItemIds: parsed.data.waivedItemIds,
-      skipReason: parsed.data.skipReason ?? null,
-    }
-  } catch {
-    return null
   }
 }
 

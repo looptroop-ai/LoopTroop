@@ -62,7 +62,7 @@ import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
 import type { RawAttempt } from '../../council/types'
-import { readManualQaDeliverySummary } from '../../phases/manualQa/delivery'
+import { readManualQaDeliverySummaryForTicket } from '../../phases/manualQa/delivery'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 const PULL_REQUEST_REPORT_ARTIFACT = 'pull_request_report'
@@ -622,27 +622,13 @@ export function buildPullRequestContext(ticketId: string, context: TicketContext
   }
 
   const finalTestArtifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
-  const canonicalManualQaSummary = readManualQaDeliverySummary(ticketDir)
-  const manualQaArtifact = canonicalManualQaSummary
-    ? null
-    : getLatestPhaseArtifact(ticketId, 'manual_qa_summary')
-  let manualQaSummary = canonicalManualQaSummary
-    ? JSON.stringify(canonicalManualQaSummary)
-    : manualQaArtifact?.content ?? ''
-  if (manualQaSummary) {
-    try {
-      const parsed = jsYaml.load(manualQaSummary)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
-        const nested = (parsed as { value?: unknown }).value
-        if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-          manualQaSummary = JSON.stringify(nested)
-        }
-      }
-    } catch {
-      // Keep malformed content unchanged so the prompt still exposes the
-      // durable artifact and the compact formatter can safely omit it.
-    }
-  }
+  // Canonical files first, then the stored artifact — through the same reader
+  // the integration phase uses. This path had its own fallback that unwrapped a
+  // `value` key and handed whatever it found to the prompt without validating
+  // it or refusing a failed outcome, so the two phases could describe the same
+  // Manual QA run differently, or describe one the other had refused.
+  const deliverySummary = readManualQaDeliverySummaryForTicket(ticketId)
+  const manualQaSummary = deliverySummary ? JSON.stringify(deliverySummary) : ''
   return {
     ticketState,
     contextParts: buildMinimalContext('pull_request', ticketState),

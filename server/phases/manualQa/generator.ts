@@ -34,6 +34,10 @@ import {
   reserveManualQaVersion,
 } from './storage'
 import { focusedDiffMetadata } from './focusedDiff'
+import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
+import type { StructuredOutputMetadata } from '../../structuredOutput/types'
+import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
+import { persistUiArtifactCompanionArtifact } from '../../workflow/artifactCompanions'
 
 export function resolveManualQaGenerationVersion(ticketDir: string): number {
   const root = resolve(ticketDir, 'manual-qa')
@@ -294,6 +298,10 @@ export async function handleManualQaChecklistGeneration(
   const maxRetries = resolveStructuredRetryRuntimeSettings(context).structuredRetryCount
   let correction = ''
   let lastError = 'Manual QA checklist generation failed.'
+  // The repair trail every other artifact-processing path records. Without it
+  // the client's notice surface showed a generic result and the operator never
+  // learned that a repair or a retry had happened at all.
+  let structuredOutput: StructuredOutputMetadata = buildStructuredOutputMetadata(null)
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     let sessionId = ''
@@ -345,11 +353,24 @@ export async function handleManualQaChecklistGeneration(
       previousResults: priorVersion ? readManualQaResults(paths.ticketDir, priorVersion) : null,
     })
     if (parsed.ok) {
+      structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
+        repairApplied: parsed.repairApplied,
+        repairWarnings: parsed.repairWarnings,
+        autoRetryCount: attempt,
+      })
       const checklistHash = persistManualQaChecklist(paths.ticketDir, parsed.value)
       const coverage = computeManualQaCoverage(parsed.value, criteria)
       persistManualQaCoverage(paths.ticketDir, coverage)
       completeManualQaReservation(paths.ticketDir, reservation, checklistHash)
       persistGenerationArtifacts(ticketId, version, parsed.normalizedContent, coverage)
+      // Rendered by the shared artifact-processing notice, so a repaired or
+      // retried checklist reads the same way as a repaired PRD or bead set.
+      persistUiArtifactCompanionArtifact(ticketId, 'GENERATING_QA_CHECKLIST', 'manual_qa_checklist', {
+        response: result.response,
+        normalizedContent: parsed.normalizedContent,
+        parsed: parsed.value,
+        structuredOutput,
+      })
       appendManualQaEvent(paths.ticketDir, {
         schemaVersion: 1,
         eventId: `checklist-v${version}-ready`,
@@ -365,6 +386,16 @@ export async function handleManualQaChecklistGeneration(
       return
     }
     lastError = parsed.error
+    structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
+      autoRetryCount: attempt + 1,
+      validationError: parsed.error,
+      retryDiagnostics: [resolveStructuredRetryDiagnostic({
+        attempt: attempt + 1,
+        rawResponse: result.response,
+        validationError: parsed.error,
+        ...(parsed.retryDiagnostic ? { retryDiagnostic: parsed.retryDiagnostic } : {}),
+      })],
+    })
     correction = [
       '\n\n## Structured-output correction',
       `The previous response was invalid: ${parsed.error}`,
@@ -373,5 +404,11 @@ export async function handleManualQaChecklistGeneration(
       result.response.slice(0, 50_000),
     ].join('\n')
   }
+  // The failed attempts are worth keeping even when nothing was produced: the
+  // operator's next move depends on knowing what the model kept getting wrong.
+  persistUiArtifactCompanionArtifact(ticketId, 'GENERATING_QA_CHECKLIST', 'manual_qa_checklist', {
+    structuredOutput,
+    validationError: lastError,
+  })
   throw new Error(lastError)
 }

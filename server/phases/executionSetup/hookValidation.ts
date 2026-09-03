@@ -1,4 +1,4 @@
-import { executeCommand } from '../../lib/commandExecutor'
+import { executeCommand, type CommandExecutionResult } from '../../lib/commandExecutor'
 import { detectHostContext } from '../../lib/hostContext'
 import { hostContextSchema } from '@shared/hostContext'
 import type { ExecutionSetupCommandReceiptPayload, GitHookPolicy } from '../../structuredOutput/types'
@@ -174,6 +174,56 @@ function readProfileValidation(content: string): {
   }
 }
 
+/**
+ * Runs one approved Git-hook validation command and scores it.
+ *
+ * Both hook-validation paths — this module's explicit validator and the
+ * execution-setup profile validator — ran their own copy of this, deriving the
+ * status and building the receipt slightly differently. What they legitimately
+ * differ on stays with them: whether to stop at the first failure, whether the
+ * worktree is snapshotted and restored, how the timeout is derived, and how a
+ * failure is worded. What they should never differ on is what "passed",
+ * "failed" and "timed out" mean for the same command.
+ */
+export interface GitHookValidationCommandOutcome {
+  status: 'passed' | 'failed' | 'timed_out'
+  outputExcerpt: string
+  receipt: ExecutionSetupCommandReceiptPayload
+  result: CommandExecutionResult
+}
+
+export async function runGitHookValidationCommand(input: {
+  id: string
+  command: CommandSpec
+  worktreePath: string
+  runtimeEnvironment?: RuntimeEnvironment | undefined
+  /** Applied only when the command does not carry one of its own. */
+  timeoutMs: number
+}): Promise<GitHookValidationCommandOutcome> {
+  const command = input.command.timeoutMs
+    ? input.command
+    : { ...input.command, timeoutMs: input.timeoutMs }
+  const result = await executeCommand(command, {
+    repoRoot: input.worktreePath,
+    ...(input.runtimeEnvironment ? { runtimeEnvironment: input.runtimeEnvironment } : {}),
+  })
+  const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
+  const status = result.timedOut ? 'timed_out' as const : result.exitCode === 0 ? 'passed' as const : 'failed' as const
+  return {
+    status,
+    outputExcerpt,
+    result,
+    receipt: {
+      id: input.id,
+      command: input.command,
+      status,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      outputExcerpt,
+    },
+  }
+}
+
 export async function runExplicitGitHookValidation(input: {
   profileContent: string
   worktreePath: string
@@ -250,23 +300,16 @@ export async function runExplicitGitHookValidation(input: {
   try {
     for (const validation of config.commands) {
       if (input.signal?.aborted) throw input.signal.reason
-      const command = validation.command.timeoutMs
-        ? validation.command
-        : { ...validation.command, timeoutMs: HOOK_VALIDATION_TIMEOUT_MS }
-      const result = await executeCommand(command, {
-        repoRoot: input.worktreePath,
-        runtimeEnvironment: config.runtimeEnvironment,
-      })
-      const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
-      const status = result.timedOut ? 'timed_out' as const : result.exitCode === 0 ? 'passed' as const : 'failed' as const
-      receipts.push({
+      // Stops at the first failure, unlike the profile validator, which runs
+      // every command and collects them. Both score a command the same way.
+      const { status, outputExcerpt, receipt } = await runGitHookValidationCommand({
         id: validation.id,
         command: validation.command,
-        status,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs,
-        outputExcerpt,
+        worktreePath: input.worktreePath,
+        runtimeEnvironment: config.runtimeEnvironment,
+        timeoutMs: HOOK_VALIDATION_TIMEOUT_MS,
       })
+      receipts.push(receipt)
       if (status !== 'passed') {
         const message = `${validation.hook} validation ${status}: ${renderCommandSpec(validation.command)}${outputExcerpt ? `\n${outputExcerpt}` : ''}`
         if (policy === 'validate_required') errors.push(message)

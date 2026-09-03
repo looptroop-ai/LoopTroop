@@ -9,6 +9,7 @@ import type { OpenCodeResponseMeta } from './assistantMessageAnalysis'
 import type { SessionOwnership } from './sessionManager'
 import { isWorkflowDeadlineTimeoutError } from '../lib/deadlineErrors'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { looksBillingFailure, looksPermanentFailure, looksTransientFailure } from './failureSignals'
 
 const CONTINUABLE_STATUS_CODES = new Set([402, 408, 429, 500, 502, 503, 504, 529])
 const NON_CONTINUABLE_STATUS_CODES = new Set([400, 401, 403, 404, 413, 422])
@@ -85,8 +86,10 @@ function hasNonContinuableSignal(input: ContinuableBlockedErrorInput): boolean {
 
   return errorCodes.includes(OPENCODE_PROVIDER_AUTH_FAILED)
     || (typeof statusCode === 'number' && NON_CONTINUABLE_STATUS_CODES.has(statusCode))
-    || /\b(invalid[_ -]?request|permission|auth|authentication|authenticated|unauthorized|forbidden|credential|api key|token|request[_ -]?too[_ -]?large|payload[_ -]?too[_ -]?large|model[_ -]?not[_ -]?found|provider[_ -]?model[_ -]?not[_ -]?found)\b/.test(haystack)
-    || (statusCode !== 402 && /\b(billing|insufficient[_ -]?quota)\b/.test(haystack))
+    || looksPermanentFailure(haystack)
+    // A 402 is a billing problem this path can still resume from once it is
+    // paid; every other billing failure is fatal here as it is for retry.
+    || (statusCode !== 402 && looksBillingFailure(haystack))
 }
 
 function hasContinuableSignal(diagnostics: BlockedErrorDiagnostics): boolean {
@@ -96,7 +99,7 @@ function hasContinuableSignal(diagnostics: BlockedErrorDiagnostics): boolean {
   if (diagnostics.kind === 'timeout' || diagnostics.kind === 'transport') return true
 
   const haystack = buildDiagnosticHaystack(diagnostics)
-  return /\b(rate[_ -]?(?:limit|limited)|too many requests|usage limit|limit (?:has been )?reached|resource exhausted|overloaded|overload|capacity|service unavailable|temporarily unavailable|timeout|timed out|deadline(?: exceeded)?|fetch failed|connection reset|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network)\b/.test(haystack)
+  return looksTransientFailure(haystack)
 }
 
 export function isContinuableBlockedError(input: ContinuableBlockedErrorInput): boolean {

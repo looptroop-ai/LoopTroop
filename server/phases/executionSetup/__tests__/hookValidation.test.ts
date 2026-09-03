@@ -2,7 +2,14 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { runExplicitGitHookValidation } from '../hookValidation'
+import { runExplicitGitHookValidation, runGitHookValidationCommand } from '../hookValidation'
+import { createShellCommandSpec } from '@shared/commandSpec'
+import { detectHostContext } from '../../../lib/hostContext'
+
+/** A command spec for whichever shell this machine actually runs. */
+function shellSpec(script: string) {
+  return createShellCommandSpec(script, detectHostContext().preferredShell)
+}
 import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tempDir'
 
 const roots: string[] = []
@@ -174,5 +181,51 @@ describe('runExplicitGitHookValidation', () => {
     expect(result.receipts).toEqual([expect.objectContaining({ status: 'skipped' })])
     expect(result.errors).toHaveLength(1)
     expect(() => readFileSync(join(root, 'ran.txt'), 'utf8')).toThrow()
+  })
+})
+
+describe('runGitHookValidationCommand', () => {
+  it('scores a passing, a failing and a timed-out command the same way for both callers', async () => {
+    const root = makeRepo()
+
+    const passed = await runGitHookValidationCommand({
+      id: 'ok',
+      command: shellSpec('node -e "process.exit(0)"'),
+      worktreePath: root,
+      timeoutMs: 30_000,
+    })
+    expect(passed.status).toBe('passed')
+    expect(passed.receipt).toMatchObject({ id: 'ok', status: 'passed', exitCode: 0 })
+
+    const failed = await runGitHookValidationCommand({
+      id: 'bad',
+      command: shellSpec('node -e "process.stderr.write(\'nope\'); process.exit(7)"'),
+      worktreePath: root,
+      timeoutMs: 30_000,
+    })
+    expect(failed.status).toBe('failed')
+    expect(failed.receipt).toMatchObject({ id: 'bad', status: 'failed', exitCode: 7 })
+    expect(failed.outputExcerpt).toContain('nope')
+
+    const timedOut = await runGitHookValidationCommand({
+      id: 'slow',
+      command: shellSpec('node -e "setTimeout(() => {}, 60000)"'),
+      worktreePath: root,
+      timeoutMs: 200,
+    })
+    expect(timedOut.status).toBe('timed_out')
+    expect(timedOut.receipt.status).toBe('timed_out')
+  })
+
+  it('leaves a command that carries its own timeout alone', async () => {
+    const root = makeRepo()
+    const outcome = await runGitHookValidationCommand({
+      id: 'own-timeout',
+      command: { ...shellSpec('node -e "process.exit(0)"'), timeoutMs: 5_000 },
+      worktreePath: root,
+      timeoutMs: 200,
+    })
+    expect(outcome.status).toBe('passed')
+    expect(outcome.receipt.command).toMatchObject({ timeoutMs: 5_000 })
   })
 })

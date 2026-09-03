@@ -68,6 +68,7 @@ import { isVersionOnlyWorkspaceProbeCommand } from '../../phases/executionSetup/
 import { materializeExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { writeExecutionSetupRuntimeLauncher } from '../../phases/executionSetup/runtimeLauncher'
+import { runGitHookValidationCommand } from '../../phases/executionSetup/hookValidation'
 
 const SETUP_PROBE_TIMEOUT_MS = 30_000
 
@@ -325,14 +326,19 @@ async function validateExecutionSetupRuntimeProfile(input: {
       throwIfAborted(input.signal, input.ticketId)
       const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'validating Git hooks')
       if (timeoutMs === null) return resultWithReceipts()
-      const result = await executeCommand({
-        ...validation.command,
-        timeoutMs: validation.command.timeoutMs ?? timeoutMs,
-      }, {
-        repoRoot: input.worktreePath,
+      // Scored by the shared runner, so "passed", "failed" and "timed out"
+      // cannot mean one thing here and another in the explicit validator. This
+      // path deliberately keeps its own semantics: every command runs, the
+      // deadline can cut the loop short, and the worktree is not snapshotted —
+      // these commands are part of setting the workspace up.
+      const { receipt, result } = await runGitHookValidationCommand({
+        id: validation.id,
+        command: validation.command,
+        worktreePath: input.worktreePath,
         runtimeEnvironment: input.profile.runtimeEnvironment,
+        timeoutMs,
       })
-      hookValidationReceipts.push(toCommandReceipt(validation.id, validation.command, result))
+      hookValidationReceipts.push(receipt)
       if (stopAfterDeadline('validating Git hooks')) return resultWithReceipts()
       if (result.exitCode !== 0 || result.timedOut) {
         const failure = summarizeSetupCommandFailure({

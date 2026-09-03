@@ -39,6 +39,15 @@ export interface ExecutionSetupWorkspaceInput {
   sourceStatus: 'ignored' | 'untracked'
   category: ExecutionSetupWorkspaceInputCategory
   allowLargeCopy?: boolean
+  /**
+   * What the generator measured about the directory it proposed copying.
+   *
+   * Absent from this type entirely before, so an edited plan saved from the UI
+   * came back without it and the size warning the operator had been shown could
+   * not be reconstructed.
+   */
+  fileCount?: number
+  totalBytes?: number
   reason: string
 }
 
@@ -235,7 +244,15 @@ function toExecutionSetupPlan(value: unknown, warnings: string[]): ExecutionSetu
           kind,
           sourceStatus,
           category: isExecutionSetupWorkspaceInputCategory(entry.category) ? entry.category : 'other_non_reproducible',
-          ...((entry.allowLargeCopy ?? entry.allow_large_copy) === true ? { allowLargeCopy: true } : {}),
+          ...(typeof (entry.allowLargeCopy ?? entry.allow_large_copy) === 'boolean'
+            ? { allowLargeCopy: (entry.allowLargeCopy ?? entry.allow_large_copy) as boolean }
+            : {}),
+          ...(typeof (entry.fileCount ?? entry.file_count) === 'number'
+            ? { fileCount: (entry.fileCount ?? entry.file_count) as number }
+            : {}),
+          ...(typeof (entry.totalBytes ?? entry.total_bytes) === 'number'
+            ? { totalBytes: (entry.totalBytes ?? entry.total_bytes) as number }
+            : {}),
           reason: typeof entry.reason === 'string' ? entry.reason : '',
         } satisfies ExecutionSetupWorkspaceInput]
       })
@@ -386,55 +403,4 @@ export function parseExecutionSetupPlanContent(content: string): ExecutionSetupP
   }
 }
 
-export function serializeExecutionSetupPlan(plan: ExecutionSetupPlan): string {
-  return JSON.stringify({
-    schema_version: plan.schemaVersion,
-    ticket_id: plan.ticketId,
-    artifact: plan.artifact,
-    status: plan.status,
-    summary: plan.summary,
-    host_context: plan.hostContext,
-    readiness: {
-      status: plan.readiness.status,
-      actions_required: plan.readiness.actionsRequired,
-      evidence: plan.readiness.evidence,
-      gaps: plan.readiness.gaps,
-    },
-    temp_roots: plan.tempRoots,
-    workspace_inputs: plan.workspaceInputs.map((input) => ({
-      path: input.path,
-      kind: input.kind,
-      source_status: input.sourceStatus,
-      category: input.category,
-      ...(input.allowLargeCopy ? { allow_large_copy: true } : {}),
-      reason: input.reason,
-    })),
-    workspace_probes: plan.workspaceProbes,
-    git_hooks: {
-      policy: plan.gitHooks.policy,
-      detected: plan.gitHooks.detected.map((hook) => ({
-        name: hook.name,
-        path: hook.path,
-        source: hook.source,
-        kind: hook.kind,
-        runnable: hook.runnable,
-        ...(hook.managerHint ? { manager_hint: hook.managerHint } : {}),
-      })),
-      validation_commands: plan.gitHooks.validationCommands,
-    },
-    steps: plan.steps,
-    project_commands: {
-      prepare: plan.projectCommands.prepare,
-      test_full: plan.projectCommands.testFull,
-      lint_full: plan.projectCommands.lintFull,
-      typecheck_full: plan.projectCommands.typecheckFull,
-    },
-    quality_gate_policy: {
-      tests: plan.qualityGatePolicy.tests,
-      lint: plan.qualityGatePolicy.lint,
-      typecheck: plan.qualityGatePolicy.typecheck,
-      full_project_fallback: plan.qualityGatePolicy.fullProjectFallback,
-    },
-    cautions: plan.cautions,
-  }, null, 2)
-}
+export { serializeExecutionSetupPlan } from '@shared/executionSetupPlanSerialization'

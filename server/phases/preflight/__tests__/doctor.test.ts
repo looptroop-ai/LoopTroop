@@ -177,6 +177,48 @@ describe('Pre-Flight Doctor', () => {
     expect(circularCheck).toBeDefined()
   })
 
+  it('rejects a blocks edge with no matching blocked_by', async () => {
+    // The scheduler runs entirely off `blocked_by`, so this pair declares a
+    // cycle that nothing enforces: both beads are runnable at once.
+    const b1 = makeBead({ id: 'b1', dependencies: { blocked_by: [], blocks: ['b2'] } })
+    const b2 = makeBead({ id: 'b2', dependencies: { blocked_by: [], blocks: ['b1'] } })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [b1, b2], defaultContext, undefined, deps)
+
+    expect(report.passed).toBe(false)
+    expect(report.criticalFailures.some((check) => check.message.includes('does not list'))).toBe(true)
+  })
+
+  it('rejects a blocked_by edge with no matching blocks', async () => {
+    const b1 = makeBead({ id: 'b1', dependencies: { blocked_by: ['b2'], blocks: [] } })
+    const b2 = makeBead({ id: 'b2', dependencies: { blocked_by: [], blocks: [] } })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [b1, b2], defaultContext, undefined, deps)
+
+    expect(report.passed).toBe(false)
+    expect(report.criticalFailures.some((check) => check.message.includes('does not list'))).toBe(true)
+  })
+
+  it('accepts a consistent pair of inverse edges', async () => {
+    const b1 = makeBead({ id: 'b1', dependencies: { blocked_by: [], blocks: ['b2'] } })
+    const b2 = makeBead({ id: 'b2', dependencies: { blocked_by: ['b1'], blocks: [] } })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [b1, b2], defaultContext, undefined, deps)
+
+    expect(report.criticalFailures.some((check) => check.message.includes('does not list'))).toBe(false)
+  })
+
+  it('still names a cycle even when its edges are one-sided', async () => {
+    const b1 = makeBead({ id: 'b1', dependencies: { blocked_by: ['b2'], blocks: [] } })
+    const b2 = makeBead({ id: 'b2', dependencies: { blocked_by: ['b1'], blocks: [] } })
+
+    const report = await runPreFlightChecks(adapter, TEST.ticketId, [b1, b2], defaultContext, undefined, deps)
+
+    // An inconsistent edge is a fault in its own right, not a reason to stop
+    // looking for the one the operator actually needs to hear about.
+    expect(report.criticalFailures.some((check) => check.message.includes('Circular'))).toBe(true)
+  })
+
   it('detects duplicate bead IDs', async () => {
     const b1 = makeBead({ id: 'dup' })
     const b2 = makeBead({ id: 'dup' })

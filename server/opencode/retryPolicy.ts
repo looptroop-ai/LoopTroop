@@ -1,6 +1,7 @@
 import { db as appDb } from '../db/index'
 import { profiles } from '../db/schema'
 import { PROFILE_DEFAULTS } from '../db/defaults'
+import { looksBillingFailure, looksPermanentFailure, looksTransientFailure } from './failureSignals'
 
 export interface OpenCodeRetryPolicy {
   limit: number
@@ -39,11 +40,17 @@ export function resolveOpenCodeRetryPolicy(input?: Partial<OpenCodeRetryPolicy> 
   }
 }
 
+/**
+ * Shares its patterns with the session-continuation check, which used to carry
+ * its own copies — so the two could disagree about a single failure, and the
+ * disagreement decided whether the session survived for the next attempt.
+ *
+ * Every billing failure is refused here, unconditionally; the continuation path
+ * makes an exception for a 402, which it can see and this cannot.
+ */
 export function isContinuableOpenCodeRetryMessage(message: string | undefined | null): boolean {
   const normalized = message?.trim().toLowerCase() ?? ''
   if (!normalized) return false
-  if (/\b(auth|authentication|authenticated|unauthorized|forbidden|credential|api key|token|billing|insufficient[_ -]?quota|invalid[_ -]?request|permission)\b/.test(normalized)) {
-    return false
-  }
-  return /\b(rate[_ -]?(?:limit|limited)|too many requests|usage limit|limit (?:has been )?reached|resource exhausted|overloaded|overload|capacity|service unavailable|temporarily unavailable|timeout|timed out|deadline(?: exceeded)?|fetch failed|connection reset|socket reset|econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|network)\b/.test(normalized)
+  if (looksPermanentFailure(normalized) || looksBillingFailure(normalized)) return false
+  return looksTransientFailure(normalized)
 }

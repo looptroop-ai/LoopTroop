@@ -793,6 +793,21 @@ export async function handlePrdRefine(
     { source: 'system', modelId: intermediate.winnerId })
 
   if (signal.aborted) throw new CancelledError(ticketId)
+
+  // Refinement cross-validates against the winning draft, so an unparseable
+  // winner fails every attempt identically: the retry prompt asks the model to
+  // rewrite its refinement, and the input that actually broke is not the one it
+  // can change. The beads phase checks this up front; so does this one.
+  const prdWinnerCheck = normalizePrdYamlOutput(winnerDraft.content, {
+    ticketId: context.externalId,
+    interviewContent: winnerFullAnswers.content,
+  })
+  if (!prdWinnerCheck.ok) {
+    throw new Error(
+      `Winning PRD draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${prdWinnerCheck.error}`,
+    )
+  }
+
   let structuredMeta = buildStructuredMetadata({ autoRetryCount: 0, repairApplied: false, repairWarnings: [] })
   let validatedRefinement: ValidatedPrdRefinement | null = null
   let refinementRun: Awaited<ReturnType<typeof refineDraft>>

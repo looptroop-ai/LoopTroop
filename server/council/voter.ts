@@ -523,10 +523,22 @@ export function selectWinner(
   let winnerId: string | null = null
   let winnerScore = 0
 
+  // Ties between two members that are both not the main implementer used to fall
+  // to `scoreMap` insertion order, which is the order the votes arrived in —
+  // parallel model calls, so the same scorecard could elect either draft on two
+  // runs. Council order is the stable answer; the main implementer still wins a
+  // tie outright.
+  const memberRank = (memberId: string) => {
+    const index = members.findIndex((member) => member.modelId === memberId)
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index
+  }
+
   for (const [memberId, score] of scoreMap) {
     const wins = winnerId === null
       || score > winnerScore
-      || (score === winnerScore && memberId === mainImplementerId)
+      || (score === winnerScore
+        && (memberId === mainImplementerId
+          || (winnerId !== mainImplementerId && memberRank(memberId) < memberRank(winnerId))))
     if (wins) {
       winnerId = memberId
       winnerScore = score

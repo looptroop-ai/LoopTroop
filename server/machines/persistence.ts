@@ -186,9 +186,13 @@ function reconcileSnapshotForTicket(
   context.lockedAiQuestionsSource = input.lockedAiQuestionsSource ?? null
   context.lockedAiQuestionWindow = input.lockedAiQuestionWindow ?? null
   context.lockedAiQuestionWindowSource = input.lockedAiQuestionWindowSource ?? null
+  // Phase-artifact ids are positive integers. A restored `0`, a negative or a
+  // fraction was kept as a real reference, and the setup-plan phase then read a
+  // row that cannot exist and threw instead of falling back to generating one.
   if (
     typeof context.pendingExecutionSetupPlanRequestArtifactId !== 'number'
-    || !Number.isFinite(context.pendingExecutionSetupPlanRequestArtifactId)
+    || !Number.isInteger(context.pendingExecutionSetupPlanRequestArtifactId)
+    || context.pendingExecutionSetupPlanRequestArtifactId <= 0
   ) {
     context.pendingExecutionSetupPlanRequestArtifactId = null
   }
@@ -234,8 +238,11 @@ function reconcileSnapshotForTicket(
   for (const dateField of ['createdAt', 'updatedAt'] as const) {
     // An empty string is not a date either, and it was what the fallback itself
     // wrote — so a bad timestamp was replaced with one nothing can render.
-    if (typeof context[dateField] !== 'string' || !context[dateField].trim()) {
-      if (context[dateField] !== undefined) dropInvalidField(dateField, 'not a timestamp')
+    // Neither is `"not-a-timestamp"`: a non-empty string check let any text
+    // through to whatever renders or serialises these next.
+    const value = context[dateField]
+    if (typeof value !== 'string' || !value.trim() || Number.isNaN(Date.parse(value))) {
+      if (value !== undefined) dropInvalidField(dateField, 'not a timestamp')
       context[dateField] = new Date().toISOString()
     }
   }

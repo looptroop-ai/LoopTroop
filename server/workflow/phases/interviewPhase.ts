@@ -33,7 +33,7 @@ import { broadcaster } from '../../sse/broadcaster'
 import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import * as jsYaml from 'js-yaml'
-import { normalizeInterviewRefinementOutput } from '../../structuredOutput'
+import { normalizeInterviewQuestionsOutput, normalizeInterviewRefinementOutput } from '../../structuredOutput'
 import type { InterviewQuestionChange } from '@shared/interviewQuestions'
 import type { InterviewSessionSnapshot } from '@shared/interviewSession'
 import {
@@ -857,6 +857,21 @@ export async function handleInterviewCompile(
     { source: 'system', modelId: intermediate.winnerId })
 
   if (signal.aborted) throw new CancelledError(ticketId)
+
+  // Refinement cross-validates against the winning draft, so an unparseable
+  // winner fails every attempt identically: the retry prompt asks the model to
+  // rewrite its refinement, and the input that actually broke is not the one it
+  // can change. The beads and PRD phases check this up front; so does this one.
+  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(
+    winnerDraft.content,
+    resolveInterviewDraftSettings(context).maxInitialQuestions,
+  )
+  if (!interviewWinnerCheck.ok) {
+    throw new Error(
+      `Winning interview draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${interviewWinnerCheck.error}`,
+    )
+  }
+
   let structuredMeta = buildStructuredMetadata({ autoRetryCount: 0, repairApplied: false, repairWarnings: [] })
   let parsedRefinementChanges: InterviewQuestionChange[] = []
   const refinementRun = await refineDraft(

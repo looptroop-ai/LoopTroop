@@ -71,9 +71,11 @@ import {
 import {
   buildBeadsCoverageRevisionArtifact,
   buildBeadsCoverageRevisionRetryPrompt,
+  parseBeadsCoverageRevisionCandidate,
   parseBeadsCoverageRevisionRefinedContent,
   validateBeadsCoverageRevisionOutput,
 } from '../../phases/beads/coverageRevision'
+import { parseCompiledInterviewArtifact } from '../../phases/interview/compiled'
 import { BEADS_PIPELINE_STEPS, getRefinementBeadMetrics, parseBeadsRefinedArtifact } from '../../phases/beads/refined'
 import { hydrateExpandedBeads } from '../../phases/beads/expand'
 import { clearContextCache } from '../../opencode/contextBuilder'
@@ -645,22 +647,17 @@ function getLatestBeadsSemanticCoverageInput(ticketId: string): { candidateConte
 
   if (revisionArtifact) {
     try {
-      const parsed = JSON.parse(revisionArtifact.content) as { refinedContent?: string; candidateVersion?: number }
-      if (typeof parsed.refinedContent === 'string' && parsed.refinedContent.trim()) {
-        return {
-          candidateContent: parsed.refinedContent,
-          candidateVersion: typeof parsed.candidateVersion === 'number' ? parsed.candidateVersion : 1,
-        }
-      }
+      const parsed = parseBeadsCoverageRevisionCandidate(revisionArtifact.content)
+      return { candidateContent: parsed.refinedContent, candidateVersion: parsed.candidateVersion }
     } catch { /* ignore */ }
   }
 
   const refinedArtifact = getLatestPhaseArtifact(ticketId, 'beads_refined', 'REFINING_BEADS')
   if (refinedArtifact) {
     try {
-      const parsed = JSON.parse(refinedArtifact.content) as { refinedContent?: string }
-      if (typeof parsed.refinedContent === 'string' && parsed.refinedContent.trim()) {
-        return { candidateContent: parsed.refinedContent, candidateVersion: 1 }
+      const { refinedContent } = parseBeadsRefinedArtifact(refinedArtifact.content)
+      if (refinedContent.trim()) {
+        return { candidateContent: refinedContent, candidateVersion: 1 }
       }
     } catch { /* ignore */ }
   }
@@ -744,6 +741,17 @@ function normalizeCoverageEnvelope(
     }
   }
 
+  // Interview coverage is exempt from the rule above because a follow-up question
+  // can stand in for a gap string. Neither one is still a `gaps` status naming
+  // nothing to resolve, which reads as unresolved coverage forever.
+  if (!options.requireGapsWhenGapsStatus && sanitizedGaps.length === 0 && followUpQuestions.length === 0) {
+    return {
+      envelope: { status: 'gaps', gaps: [], followUpQuestions },
+      repairWarnings,
+      validationError: `${options.label} coverage reported status gaps but returned neither a gap string nor a follow-up question. Return at least one concrete gap or follow-up question, or report status clean.`,
+    }
+  }
+
   if (sanitizedGaps.length !== envelope.gaps.length) {
     repairWarnings.push(`Trimmed empty ${options.trimmedLabel} coverage gap strings before persisting the normalized result.`)
   }
@@ -752,6 +760,36 @@ function normalizeCoverageEnvelope(
     envelope: { status: 'gaps', gaps: sanitizedGaps, followUpQuestions },
     repairWarnings,
   }
+}
+
+/**
+ * Makes a contradictory coverage envelope agree with itself once the structured
+ * retries are spent.
+ *
+ * The status is a label; the gaps and follow-up questions are the evidence. When
+ * the two disagree and the model will not fix it, believe the evidence: a `clean`
+ * status that lists gaps becomes `gaps` so the follow-up machinery works them,
+ * and a `gaps` status naming nothing to resolve becomes `clean`. PRD and beads
+ * fail the ticket here instead, because neither has a follow-up mechanism to
+ * route the gaps into.
+ */
+export function reconcileExhaustedCoverageEnvelope(
+  envelope: CoverageResultEnvelope,
+): { envelope: CoverageResultEnvelope; repairWarning: string } | null {
+  const hasEvidence = envelope.gaps.length > 0 || envelope.followUpQuestions.length > 0
+  if (envelope.status === 'clean' && hasEvidence) {
+    return {
+      envelope: { ...envelope, status: 'gaps' },
+      repairWarning: 'Interview coverage kept reporting status clean alongside gaps or follow-up questions; read it as status gaps so the reported work is not dropped.',
+    }
+  }
+  if (envelope.status === 'gaps' && !hasEvidence) {
+    return {
+      envelope: { ...envelope, status: 'clean' },
+      repairWarning: 'Interview coverage kept reporting status gaps without naming a gap or a follow-up question; read it as status clean.',
+    }
+  }
+  return null
 }
 
 export function normalizePrdCoverageEnvelope(envelope: CoverageResultEnvelope) {
@@ -3524,7 +3562,7 @@ export async function handleCoverageVerification(
       try {
         refinedContent = phase === 'prd'
           ? parsePrdRefinedArtifact(compiledArtifact.content).refinedContent
-          : (JSON.parse(compiledArtifact.content) as { refinedContent?: string }).refinedContent
+          : parseCompiledInterviewArtifact(compiledArtifact.content).refinedContent
       } catch {
         // Ignore malformed refinement artifacts and fall back to other sources.
       }
@@ -3890,6 +3928,20 @@ export async function handleCoverageVerification(
           schemaReminder: promptTemplate.outputFormat,
         })
         continue
+      }
+
+      // Retries are spent and the envelope still contradicts itself. Recording the
+      // error and carrying on left `status: clean` standing, so the gaps the model
+      // did report were dropped and the run emitted COVERAGE_CLEAN.
+      if (coverageConsistencyError) {
+        const reconciled = reconcileExhaustedCoverageEnvelope(coverageEnvelope.value)
+        if (reconciled) {
+          coverageEnvelope = { ...coverageEnvelope, value: reconciled.envelope }
+          structuredMeta = buildStructuredMetadata(structuredMeta, {
+            repairApplied: true,
+            repairWarnings: [reconciled.repairWarning],
+          })
+        }
       }
 
       interviewCoverageResolution = phase === 'interview' && interviewSnapshot

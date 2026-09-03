@@ -306,7 +306,14 @@ export function validateBeadsCoverageRevisionOutput(
  * artifact. Callers used to `JSON.parse(...) as { refinedContent?: string }`, which
  * accepted a truncated or foreign artifact as an empty revision.
  */
-export function parseBeadsCoverageRevisionRefinedContent(content: string): string {
+/**
+ * Reads the candidate a coverage revision produced, with the version it revised
+ * into. The version matters to the semantic-coverage input, which numbers each
+ * candidate it audits; readers that only need the YAML use the wrapper below.
+ */
+export function parseBeadsCoverageRevisionCandidate(
+  content: string,
+): { refinedContent: string; candidateVersion: number } {
   let parsed: unknown
   try {
     parsed = JSON.parse(content)
@@ -320,7 +327,16 @@ export function parseBeadsCoverageRevisionRefinedContent(content: string): strin
   if (!refinedContent.trim()) {
     throw new Error('Beads coverage revision artifact is missing refinedContent')
   }
-  return refinedContent
+  const candidateVersion = typeof parsed.candidateVersion === 'number'
+    && Number.isInteger(parsed.candidateVersion)
+    && parsed.candidateVersion > 0
+    ? parsed.candidateVersion
+    : 1
+  return { refinedContent, candidateVersion }
+}
+
+export function parseBeadsCoverageRevisionRefinedContent(content: string): string {
+  return parseBeadsCoverageRevisionCandidate(content).refinedContent
 }
 
 export function buildBeadsCoverageRevisionArtifact(

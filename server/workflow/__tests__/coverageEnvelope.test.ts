@@ -9,6 +9,7 @@ import {
   normalizeBeadsCoverageEnvelope,
   normalizeInterviewCoverageEnvelope,
   normalizePrdCoverageEnvelope,
+  reconcileExhaustedCoverageEnvelope,
 } from '../phases/verificationPhase'
 import type { CoverageResultEnvelope } from '../../structuredOutput'
 
@@ -52,6 +53,40 @@ describe('interview coverage envelope', () => {
     const result = normalizeInterviewCoverageEnvelope(envelope({ status: 'gaps', gaps: ['Real gap.', '  '] }))
     expect(result.envelope.gaps).toEqual(['Real gap.'])
     expect(result.repairWarnings).toContain('Trimmed empty interview coverage gap strings before persisting the normalized result.')
+  })
+
+  it('rejects a gaps envelope that names neither a gap nor a follow-up', () => {
+    const result = normalizeInterviewCoverageEnvelope(envelope({ status: 'gaps' }))
+    expect(result.validationError).toContain('returned neither a gap string nor a follow-up question')
+  })
+})
+
+describe('coverage envelope reconciliation once the retries are spent', () => {
+  // The retry loop used to record the validation error and carry on with
+  // `status: clean` intact, so `detectedGaps` stayed false and the run emitted
+  // COVERAGE_CLEAN over gaps the model had actually reported.
+  it('reads a clean status that lists gaps as a gaps status', () => {
+    const result = reconcileExhaustedCoverageEnvelope(envelope({ gaps: ['Nothing covers retries.'] }))
+    expect(result?.envelope.status).toBe('gaps')
+    expect(result?.envelope.gaps).toEqual(['Nothing covers retries.'])
+    expect(result?.repairWarning).toContain('read it as status gaps')
+  })
+
+  it('reads a clean status that lists follow-up questions as a gaps status', () => {
+    const result = reconcileExhaustedCoverageEnvelope(envelope({ followUpQuestions: [followUp] }))
+    expect(result?.envelope.status).toBe('gaps')
+    expect(result?.envelope.followUpQuestions).toEqual([followUp])
+  })
+
+  it('reads a gaps status naming nothing as clean', () => {
+    const result = reconcileExhaustedCoverageEnvelope(envelope({ status: 'gaps' }))
+    expect(result?.envelope.status).toBe('clean')
+    expect(result?.repairWarning).toContain('read it as status clean')
+  })
+
+  it('leaves a self-consistent envelope alone', () => {
+    expect(reconcileExhaustedCoverageEnvelope(envelope())).toBeNull()
+    expect(reconcileExhaustedCoverageEnvelope(envelope({ status: 'gaps', gaps: ['A gap.'] }))).toBeNull()
   })
 })
 

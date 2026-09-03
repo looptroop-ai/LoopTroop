@@ -8,7 +8,6 @@ export function parseExecutionSetupResult(output: string): ExecutionSetupParseRe
     output,
     normalizeExecutionSetupResultOutput(output),
     {
-      missingMarkerError: 'No execution setup result marker found',
       markerStart: EXECUTION_SETUP_RESULT_MARKER,
       markerEnd: EXECUTION_SETUP_RESULT_END,
     },

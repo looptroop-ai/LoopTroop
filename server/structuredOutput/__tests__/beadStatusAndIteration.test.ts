@@ -60,11 +60,36 @@ describe('bead status validation', () => {
     expect(result.value[0]?.status).toBe('pending')
   })
 
-  it.each(['complete', 'DONE', 'todo', 'in-progress'])('rejects the unsupported status %s', (status) => {
+  it.each(['complete', 'todo', 'in-progress'])('rejects the unsupported status %s', (status) => {
     const result = parseBead({ status })
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toContain('unsupported status')
+  })
+
+  it.each([
+    ['DONE', 'done'],
+    ['Done', 'done'],
+    ['Completed', 'done'],
+    ['IN_PROGRESS', 'in_progress'],
+    ['Failed', 'error'],
+  ])('reads %s as %s, as the read path already did', (status, expected) => {
+    // Rejecting these spent a structured retry on a capital letter, while the
+    // same value read back off disk was reconciled and accepted.
+    const result = parseBead({ status })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value[0]?.status).toBe(expected)
+  })
+
+  it('does not resolve a status the alias map inherits rather than owns', () => {
+    // The map was indexed directly, so `constructor` resolved to a function.
+    for (const status of ['constructor', 'toString', 'hasOwnProperty']) {
+      const result = parseBead({ status })
+      expect(result.ok).toBe(false)
+      if (result.ok) return
+      expect(result.error).toContain('unsupported status')
+    }
   })
 })
 
@@ -131,6 +156,33 @@ describe('readBeadsFile', () => {
       const beads = readBeadsFile(path)
       expect(beads.map((bead) => bead.status)).toEqual(['done', 'pending'])
       expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('skips a malformed line instead of throwing on the whole tracker', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // `readJsonl<Bead>` casts rather than checks, so `null` threw on `.status`
+    // and a bare string became a Bead with no id.
+    writeFileSync(path, [
+      'null',
+      '"just a string"',
+      JSON.stringify({ status: 'done' }),
+      JSON.stringify({ id: 'bead-1', status: 'done' }),
+    ].join('\n'))
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const beads = readBeadsFile(path)
+      expect(beads.map((bead) => bead.id)).toEqual(['bead-1'])
+      expect(warn).toHaveBeenCalledTimes(3)
     } finally {
       warn.mockRestore()
     }

@@ -1,7 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
 import type { Bead, BeadStatus, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
-import { BEAD_STATUSES, BEAD_STATUS_LEGACY_ALIASES, isBeadStatus } from '../phases/beads/types'
+import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from '../phases/beads/types'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type { StructuredOutputResult, RelevantFilesOutputEntry, RelevantFilesOutputPayload } from './types'
 import {
@@ -760,7 +760,11 @@ function normalizeNoteHistory(value: unknown): Bead['failedIterationNotes'] {
 function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
   if (value === undefined || value === null) return 'pending'
   const raw = typeof value === 'string' ? value.trim() : ''
-  const mapped = BEAD_STATUS_LEGACY_ALIASES[raw] ?? raw
+  // Case is folded here as it is on the read path. Rejecting `Completed` while
+  // accepting `completed` spent a structured retry on a capital letter, and the
+  // same value read back off disk was accepted anyway.
+  const folded = raw.toLowerCase()
+  const mapped = resolveBeadStatusAlias(folded) ?? folded
   if (!isBeadStatus(mapped)) {
     throw new Error(`${label} has an unsupported status "${String(value)}" (expected one of ${BEAD_STATUSES.join(', ')})`)
   }

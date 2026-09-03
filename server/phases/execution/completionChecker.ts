@@ -18,7 +18,6 @@ export interface CompletionResult {
 export function parseCompletionMarker(output: string, expectedBeadId?: string): CompletionResult {
   const errors: string[] = []
   const parsed = unwrapTaggedStructuredOutput(output, normalizeBeadCompletionMarkerOutput(output), {
-    missingMarkerError: 'No completion marker found',
     markerStart: BEAD_STATUS_MARKER,
     markerEnd: BEAD_STATUS_END,
   })
@@ -42,7 +41,9 @@ export function parseCompletionMarker(output: string, expectedBeadId?: string): 
       complete: false,
       markerFound: true,
       gatesValid: false,
-      beadId: parsed.value.beadId,
+      // The bead this result is about is the one that was running. Reporting the
+      // marker's id here would hand a diagnostic consumer the wrong bead.
+      beadId: expectedBeadId,
       checks: parsed.value.checks,
       errors: [mismatchError],
       repairApplied: parsed.repairApplied,

@@ -16,6 +16,21 @@ export const BEAD_STATUS_LEGACY_ALIASES: Readonly<Record<string, BeadStatus>> = 
   skipped: 'done',
 })
 
+/**
+ * The canonical status a legacy spelling means, or `undefined`.
+ *
+ * Indexing the map directly reads through the prototype, so a bead whose status
+ * was the string `constructor` resolved to a function rather than to nothing.
+ * Case is folded because models write `Completed` and `DONE`, and a status whose
+ * only fault is its capitalisation is a formatting problem, not a wrong answer.
+ */
+export function resolveBeadStatusAlias(value: string): BeadStatus | undefined {
+  const folded = value.trim().toLowerCase()
+  return Object.hasOwn(BEAD_STATUS_LEGACY_ALIASES, folded)
+    ? BEAD_STATUS_LEGACY_ALIASES[folded]
+    : undefined
+}
+
 export interface BeadDependencies {
   blocked_by: string[]
   blocks: string[]

@@ -1,6 +1,7 @@
+import { isRecord } from '@shared/typeGuards'
 import { readJsonl } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
-import { BEAD_STATUSES, BEAD_STATUS_LEGACY_ALIASES, isBeadStatus } from './types'
+import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from './types'
 
 /**
  * Reconciles a status read back from `beads.jsonl`.
@@ -19,7 +20,7 @@ export function reconcileStoredBeadStatus(
 
   const raw = typeof value === 'string' ? value.trim() : ''
   const folded = raw.toLowerCase()
-  const mapped: BeadStatus | undefined = BEAD_STATUS_LEGACY_ALIASES[folded]
+  const mapped: BeadStatus | undefined = resolveBeadStatusAlias(folded)
     ?? (isBeadStatus(folded) ? folded : undefined)
   if (mapped) {
     return { status: mapped, warning: `Bead "${beadId}" had stored status "${raw}"; read as "${mapped}".` }
@@ -36,10 +37,18 @@ export function reconcileStoredBeadStatus(
  * which asserts the shape rather than checking it.
  */
 export function readBeadsFile(path: string): Bead[] {
-  return readJsonl<Bead>(path).map((bead) => {
+  return readJsonl<unknown>(path).flatMap((entry, index) => {
+    // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
+    // `.status` and took the whole tracker with it, and any other non-object
+    // became a `Bead` with no id that later code compared against.
+    if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+      console.warn(`[beads] Ignored a malformed entry at line ${index + 1} of ${path}.`)
+      return []
+    }
+    const bead = entry as unknown as Bead
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
-    if (!reconciled.warning) return bead
+    if (!reconciled.warning) return [bead]
     console.warn(`[beads] ${reconciled.warning}`)
-    return { ...bead, status: reconciled.status }
+    return [{ ...bead, status: reconciled.status }]
   })
 }

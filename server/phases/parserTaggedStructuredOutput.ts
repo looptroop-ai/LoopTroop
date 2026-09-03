@@ -23,13 +23,13 @@ interface TaggedStructuredParseFailure {
  * `markerFound` used to be inferred from the error text when a caller omitted the
  * tags, so a prompt echo or any other validation error read as "the marker was
  * present". The tags are required: the only honest answer is whether they are in
- * the output.
+ * the output. `missingMarkerError` went with that inference — the body stopped
+ * reading it, so it was four call sites supplying a string nothing consumed.
  */
 export function unwrapTaggedStructuredOutput<T>(
   output: string,
   normalized: StructuredOutputResult<T>,
   options: {
-    missingMarkerError: string
     markerStart: string
     markerEnd: string
   },

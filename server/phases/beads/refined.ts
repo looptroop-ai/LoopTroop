@@ -9,6 +9,7 @@ import type { PromptPart } from '../../opencode/types'
 import type { StructuredOutputMetadata } from '../../structuredOutput'
 import { normalizeBeadRefinementOutput } from '../../structuredOutput'
 import { normalizeStructuredOutputMetadata } from '../../structuredOutput/metadata'
+import { getValueByAliases } from '../../structuredOutput/yamlUtils'
 import { attachStructuredRetryDiagnostic, buildStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import type { BeadSubset } from './types'
 import { normalizeCommandSpec } from '@shared/commandSpec'
@@ -753,8 +754,14 @@ function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinem
       // prdRefs and contextGuidance were hardcoded empty here because the
       // fingerprint did not read them. It does now, and a winner item that
       // reported none would differ from every refined bead.
-      const rawPrdRefs = entry.prdRefs ?? entry.prd_refs
-      const rawGuidance = entry.contextGuidance ?? entry.context_guidance
+      //
+      // The alias lists match the structured-output path exactly. Reading two
+      // spellings here where that side reads four meant a winner draft written
+      // as `prd_references:` came back empty against a refined document holding
+      // the same values, and the fingerprint mismatch alone produced a
+      // `modified` change for a difference in spelling.
+      const rawPrdRefs = getValueByAliases(entry, ['prdrefs', 'prd_refs', 'prdreferences', 'prd_references'])
+      const rawGuidance = getValueByAliases(entry, ['contextguidance', 'context_guidance'])
       const guidance = isRecord(rawGuidance) ? rawGuidance : {}
 
       const bead: BeadSubset = {
@@ -926,14 +933,6 @@ export function parseBeadsRefinedArtifact(content: string): BeadsRefinedArtifact
     draftMetrics,
     pipelineSteps,
   }
-}
-
-export function requireBeadsRefinedArtifact(content: string | null | undefined): BeadsRefinedArtifact {
-  if (typeof content !== 'string' || content.trim().length === 0) {
-    throw new Error('No validated refined beads found')
-  }
-
-  return parseBeadsRefinedArtifact(content)
 }
 
 // ---------------------------------------------------------------------------

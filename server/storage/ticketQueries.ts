@@ -16,6 +16,7 @@ import {
   getTicketWorktreePath,
 } from './paths'
 import { readJsonl } from '../io/jsonl'
+import { reconcileStoredBeadStatus } from '../phases/beads/beadsFile'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
 import type { ArtifactSnapshot } from '../sse/eventTypes'
@@ -1212,7 +1213,11 @@ function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: s
         return {
           id: typeof bead.id === 'string' ? bead.id : '',
           title: typeof bead.title === 'string' ? bead.title : 'Untitled',
-          status: typeof bead.status === 'string' ? bead.status : 'pending',
+          // The scheduler reads through `readBeadsFile`, which reconciles a
+          // legacy stored status. This projection feeds the board, the watch
+          // view and the public ticket payload, and used to show the raw stored
+          // string, so the same bead read as `complete` here and `done` there.
+          status: reconcileStoredBeadStatus(bead.status, typeof bead.id === 'string' ? bead.id : '').status,
           iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
           failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
           userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],

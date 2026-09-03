@@ -240,8 +240,26 @@ describe('parseInterviewSessionSnapshot', () => {
     ['a follow-up round naming the same question twice', (snapshot: InterviewSessionSnapshot) => {
       snapshot.followUpRounds.push({ roundNumber: 1, source: 'coverage', questionIds: ['Q01', 'Q01'] })
     }],
-    ['a negative round number', (snapshot: InterviewSessionSnapshot) => {
+    ['a negative round number on a follow-up round', (snapshot: InterviewSessionSnapshot) => {
       snapshot.followUpRounds.push({ roundNumber: -1, source: 'coverage', questionIds: [] })
+    }],
+    ['a negative round number on a question', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.questions[0] = { ...snapshot.questions[0]!, roundNumber: -1 }
+    }],
+    ['a negative round number on the current batch', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.currentBatch = {
+        questions: [snapshot.questions[0]!],
+        progress: { current: 1, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: '',
+        batchNumber: 1,
+        roundNumber: -1,
+        source: 'prom4',
+      }
+    }],
+    ['a negative batch number on an answer', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.answers.Q01 = { answer: 'x', skipped: false, answeredAt: null, batchNumber: -1 }
     }],
     ['a current batch with malformed progress', (snapshot: InterviewSessionSnapshot) => {
       snapshot.currentBatch = {

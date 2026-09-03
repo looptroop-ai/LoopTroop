@@ -109,6 +109,9 @@ describe('hydrateAllTickets', () => {
         // `completed > total` reads as "every bead is done" to the coding
         // guard, so a restored snapshot could skip straight to final testing.
         beadProgress: { total: 1, completed: 99, current: null },
+        // Repaired only for a blocked ticket before; anywhere else it restored
+        // as written and reached the public payload.
+        previousStatus: 'not-a-workflow-phase',
         councilResults: 'not-an-object',
         createdAt: 12345,
         errorCodes: ['ok', 7],
@@ -133,6 +136,7 @@ describe('hydrateAllTickets', () => {
       // exactly the value it was replacing.
       expect(restored?.context.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
       expect(restored?.context.errorCodes).toEqual([])
+      expect(restored?.context.previousStatus).toBeNull()
       // The ticket keeps running: one bad field does not discard the session.
       expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')
       expect(warn).toHaveBeenCalled()

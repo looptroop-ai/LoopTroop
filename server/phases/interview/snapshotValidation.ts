@@ -254,17 +254,16 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
       fail(`snapshot.currentBatch.questions[${index}].id`, `a question id not already used ("${question.id}" appears twice)`)
     }
     batchIds.add(question.id)
-    // The two lists were each checked for internal duplicates and never against
-    // each other, so canonical `Q1` and a batch `Q1` asking something else both
-    // restored. Answers are normalised against the canonical question but
-    // recorded against the batch prompt, so the answer attached to the wrong
-    // question. `recordPreparedBatch` rejects this while the session is live;
-    // the restore path has to apply the same rule.
-    // `recordPreparedBatch` adds every prepared question to `snapshot.questions`,
-    // so a batch question missing from that list is not a live shape. Accepting
-    // one let the answer route persist an answer for a question that
-    // `buildCanonicalInterviewYaml` and the question views never iterate, so the
-    // answer existed and appeared nowhere.
+    // `recordPreparedBatch` puts every prepared question into
+    // `snapshot.questions` and refuses a batch question that collides with a
+    // different existing one. The restore path applies both halves of that rule:
+    //
+    // - A batch question absent from the canonical list is not a shape the live
+    //   path can produce. Accepting one let the answer route save an answer for
+    //   a question that `buildCanonicalInterviewYaml` and the question views —
+    //   which iterate `snapshot.questions` — never show.
+    // - A batch `Q1` asking something else than canonical `Q1` meant the answer
+    //   was normalised against one question and recorded against the other.
     const canonical = questionsById.get(question.id)
     if (!canonical) {
       fail(`snapshot.currentBatch.questions[${index}].id`, `an id present in snapshot.questions ("${question.id}" is not)`)

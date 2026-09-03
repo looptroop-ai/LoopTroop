@@ -285,7 +285,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('persists a typed prd_refined artifact and captures retry/repair metadata', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager)
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const sendEvent = vi.fn()
     const winnerId = TEST.councilMembers[0]
     const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
@@ -463,8 +463,8 @@ describe('handlePrdRefine', () => {
     expect(sendEvent).toHaveBeenCalledWith({ type: 'REFINED' })
   })
 
-  function setupCoverageTest(options?: { writePrd?: boolean; diskPrdContent?: string; writeFullAnswers?: boolean }) {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager)
+  async function setupCoverageTest(options?: { writePrd?: boolean; diskPrdContent?: string; writeFullAnswers?: boolean }) {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const winnerId = TEST.councilMembers[0]
     const interviewContent = makeInterviewYaml({ ticket_id: ticket.externalId })
     const fullAnswersContent = interviewContent.replace('Implement the feature', 'Winner full answers canonical coverage source')
@@ -516,7 +516,7 @@ describe('handlePrdRefine', () => {
   }
 
   it('uses prd_winner + prd_refined artifacts during PRD coverage verification', async () => {
-    const { ticket, context, paths, refinement, fullAnswersContent } = setupCoverageTest()
+    const { ticket, context, paths, refinement, fullAnswersContent } = await setupCoverageTest()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -551,7 +551,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('fails PRD coverage clearly when the winner Full Answers artifact is unavailable', async () => {
-    const { ticket, context } = setupCoverageTest({ writeFullAnswers: false })
+    const { ticket, context } = await setupCoverageTest({ writeFullAnswers: false })
     const sendEvent = vi.fn()
 
     await handleCoverageVerification(ticket.id, context, sendEvent, 'prd', new AbortController().signal)
@@ -565,7 +565,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('attaches OpenCode usage-limit diagnostics when PRD coverage exhausts structured retries on empty output', async () => {
-    const { ticket, context, paths, winnerId } = setupCoverageTest()
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
     const sendEvent = vi.fn()
     let callNumber = 0
 
@@ -626,7 +626,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('restores a missing prd.yaml from the refined PRD artifact before PRD coverage runs', async () => {
-    const { ticket, context, paths, refinement } = setupCoverageTest({ writePrd: false })
+    const { ticket, context, paths, refinement } = await setupCoverageTest({ writePrd: false })
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockImplementationOnce(async ({ parts }: { parts: Array<{ content: string }> }) => {
@@ -665,7 +665,7 @@ describe('handlePrdRefine', () => {
       epicTitle: 'Disk PRD source of truth',
       storyOneTitle: 'Inspect the saved PRD exactly',
     })
-    const { ticket, context, paths } = setupCoverageTest({ diskPrdContent })
+    const { ticket, context, paths } = await setupCoverageTest({ diskPrdContent })
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockImplementationOnce(async ({ parts }: { parts: Array<{ content: string }> }) => {
@@ -701,7 +701,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('retries PRD coverage once when the first semantic result contradicts itself', async () => {
-    const { ticket, context, paths } = setupCoverageTest()
+    const { ticket, context, paths } = await setupCoverageTest()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock
@@ -732,7 +732,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('revises the PRD in-place during coverage and re-audits the new candidate', async () => {
-    const { ticket, context, paths, winnerId } = setupCoverageTest()
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
     const sendEvent = vi.fn()
     const coverageGap = 'Missing retry-cap approval behavior.'
 
@@ -888,7 +888,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('persists winner-owned PRD coverage SYS logs with model attribution for pass, repair, and retry milestones', async () => {
-    const { ticket, context, paths, winnerId } = setupCoverageTest()
+    const { ticket, context, paths, winnerId } = await setupCoverageTest()
     const sendEvent = vi.fn()
     const coverageGap = 'Missing retry-cap approval behavior.'
 
@@ -958,7 +958,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('supports fourth PRD coverage revision before a final clean v5 pass', async () => {
-    const { ticket, context, paths } = setupCoverageTest()
+    const { ticket, context, paths } = await setupCoverageTest()
     const sendEvent = vi.fn()
     const coverageGap = 'Missing final approval coverage guidance.'
 
@@ -1144,7 +1144,7 @@ describe('handlePrdRefine', () => {
   })
 
   it('routes unresolved PRD v5 coverage gaps to approval when the configured retry cap is reached', async () => {
-    const { ticket, context, paths } = setupCoverageTest()
+    const { ticket, context, paths } = await setupCoverageTest()
     const sendEvent = vi.fn()
     const coverageGap = 'Missing out-of-scope guidance.'
 

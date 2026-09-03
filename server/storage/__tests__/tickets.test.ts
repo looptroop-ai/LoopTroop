@@ -62,6 +62,30 @@ describe('ticket start configuration locking', () => {
     lockRepoManager.cleanup()
   })
 
+  it('does not advance the ticket counter when the insert fails', async () => {
+    const repoDir = lockRepoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
+    const { getProjectContextById } = await import('../projects')
+    const { projects, tickets } = await import('../../db/schema')
+    const { eq } = await import('drizzle-orm')
+
+    const first = createTicket({ projectId: project.id, title: 'First' })
+    expect(first.externalId).toBe('LOOP-1')
+
+    // The next id is already taken, so the insert fails after the counter has
+    // been advanced. Apart, the two statements burn a number every time.
+    const context = getProjectContextById(project.id)!
+    context.projectDb.update(tickets)
+      .set({ externalId: 'LOOP-2' })
+      .where(eq(tickets.externalId, first.externalId))
+      .run()
+
+    expect(() => createTicket({ projectId: project.id, title: 'Collides' })).toThrow()
+
+    const counterAfter = context.projectDb.select().from(projects).where(eq(projects.id, project.id)).get()?.ticketCounter
+    expect(counterAfter).toBe(1)
+  })
+
   it('persists the started model selection into ticket metadata and blocks later model changes', () => {
     const repoDir = lockRepoManager.createRepo()
     const project = attachProject({

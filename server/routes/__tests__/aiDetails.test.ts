@@ -95,8 +95,8 @@ function completionEvent(messages: Message[], latestId: string): OpenCodePromptC
 }
 
 describe('AI turn metrics', () => {
-  it('records every assistant message in the current prompt segment without backfilling continuation history', () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+  it('records every assistant message in the current prompt segment without backfilling continuation history', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
     const ownership: OpenCodeSessionOwnership = {
       ticketId: ticket.id,
       phase: 'CODING',
@@ -196,8 +196,8 @@ describe('AI turn metrics', () => {
     broadcaster.clearTicket(ticket.id)
   })
 
-  it('aggregates lifecycle and model scopes while keeping missing provider values null', () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+  it('aggregates lifecycle and model scopes while keeping missing provider values null', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
     upsertAiTurnMetric({
       ticketId: ticket.id,
       phase: 'DRAFTING_PRD',
@@ -252,7 +252,7 @@ describe('AI turn metrics', () => {
 
 describe('GET /api/tickets/:ticketId/ai-details', () => {
   it('returns phase and lifecycle summaries with the documented response shape', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     upsertAiTurnMetric({
       ticketId: ticket.id,
       phase: 'CODING',
@@ -298,7 +298,7 @@ describe('GET /api/tickets/:ticketId/ai-details', () => {
   })
 
   it('validates scope, phase, attempt, and ticket existence', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     const encoded = encodeURIComponent(ticket.id)
 
     expect((await app.request(`/api/tickets/${encoded}/ai-details?scope=other`)).status).toBe(400)

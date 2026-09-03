@@ -4,6 +4,7 @@ import type {
   CandidateFileDecision,
 } from '@shared/candidateFileAudit'
 import { parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
+import { normalizeRepoScopedPath } from '../../git/repoScopedPath'
 
 export { CANDIDATE_DIFF_ARTIFACT, CANDIDATE_FILE_AUDIT_ARTIFACT } from '@shared/candidateFileAudit'
 export type { CandidateFileAuditEntry, CandidateFileAuditReport, CandidateFileDecision } from '@shared/candidateFileAudit'
@@ -35,28 +36,7 @@ export const CANDIDATE_FILE_AUDIT_SCHEMA_REMINDER = [
   'Do not include markdown fences, prose outside YAML, or extra top-level keys.',
 ].join('\n')
 
-export function normalizeCandidateAuditPath(filePath: string): string | null {
-  const trimmed = filePath.trim().replace(/\\/g, '/')
-  if (!trimmed || trimmed.includes('\0') || trimmed.includes('\n') || trimmed.includes('\r')) return null
-  if (trimmed.startsWith('/') || /^[A-Za-z]:\//.test(trimmed)) return null
-
-  const withoutDotPrefix = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
-  const segments = withoutDotPrefix.split('/').filter(Boolean)
-  if (segments.length === 0) return null
-  if (segments.some((segment) => segment === '.' || segment === '..')) return null
-
-  const normalized = segments.join('/')
-  if (
-    normalized === '.ticket'
-    || normalized.startsWith('.ticket/')
-    || normalized === '.looptroop'
-    || normalized.startsWith('.looptroop/')
-  ) {
-    return null
-  }
-
-  return normalized
-}
+export const normalizeCandidateAuditPath = normalizeRepoScopedPath
 
 export function parseCandidateChangedFiles(nameStatus: string): CandidateChangedFile[] {
   const files: CandidateChangedFile[] = []

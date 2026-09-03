@@ -70,7 +70,7 @@ describe('ticketRouter DELETE /tickets/:id', () => {
       description: 'Regression coverage for lifecycle cleanup.',
     })
 
-    const init = initializeTicket({
+    const init = await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })
@@ -129,7 +129,7 @@ describe('ticketRouter DELETE /tickets/:id', () => {
       description: 'Ensure ticket_phase_attempts rows are deleted before the ticket row.',
     })
 
-    initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+    await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
 
     // Create a phase attempt row (the child that previously caused FK constraint failures).
     ensureActivePhaseAttempt(ticket.id, 'WAITING_INTERVIEW_APPROVAL')

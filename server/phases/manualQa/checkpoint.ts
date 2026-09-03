@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process'
+import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { runGitSync } from '../../git/runCommand'
 import { createHash } from 'node:crypto'
 import {
   cpSync,
@@ -57,8 +58,6 @@ interface ManualQaDriftReceipt {
  */
 const RECEIPT_FILE_MODE = 0o600
 
-const EXCLUDED_PATHSPECS = ['.', ':(top,exclude).ticket', ':(top,exclude).looptroop'] as const
-
 function normalizeProjectPath(filePath: string): string | null {
   const trimmed = filePath.trim().replace(/\\/g, '/')
   const normalized = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
@@ -89,21 +88,13 @@ function literalPathspec(filePath: string): string {
 }
 
 function runGit(worktreePath: string, args: string[], allowEmpty = false): string {
-  const result = spawnSync('git', ['-C', worktreePath, ...args], {
-    encoding: 'utf8',
-    timeout: 30_000,
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_ASKPASS: 'echo',
-    },
-  })
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message
-      ?? ((result.stderr ?? '').trim() || `exit code ${result.status ?? '?'}`)
-    throw new Error(`git ${args[0] ?? ''} failed: ${detail}`)
+  // Never trimmed: several callers read NUL-delimited output, where the first
+  // byte can legitimately be a space.
+  const result = runGitSync(worktreePath, args, { trimOutput: false })
+  if (!result.ok) {
+    throw new Error(`git ${args[0] ?? ''} failed: ${result.errorDetail}`)
   }
-  const output = (result.stdout ?? '').trim()
+  const output = result.stdout.trim()
   if (!allowEmpty && !output && args[0] === 'rev-parse') {
     throw new Error(`git ${args.join(' ')} returned no result`)
   }
@@ -237,7 +228,7 @@ function captureCommittedDrift(worktreePath: string, baselineHead: string, curre
     '-z',
     `${baselineHead}..${currentHead}`,
     '--',
-    ...EXCLUDED_PATHSPECS,
+    ...REPO_SCOPE_PATHSPECS,
   ], true)
   const fields = output.split('\0').filter(Boolean)
   const drift = new Map<string, string>()

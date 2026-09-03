@@ -47,8 +47,8 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     resetTestDb()
   })
 
-  it('recovers a winner that has a completed draft', () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+  it('recovers a winner that has a completed draft', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)
     seedInterviewVotes(ticket.id, JSON.stringify({ isFinal: true, winnerId: WINNER_ID }))
 
@@ -56,8 +56,8 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(phaseIntermediate.get(`${ticket.id}:interview`)?.winnerId).toBe(WINNER_ID)
   })
 
-  it('refuses a vote artifact whose winnerId is not a string', () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+  it('refuses a vote artifact whose winnerId is not a string', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)
     seedInterviewVotes(ticket.id, JSON.stringify({ isFinal: true, winnerId: { modelId: WINNER_ID } }))
 
@@ -65,8 +65,8 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(phaseIntermediate.has(`${ticket.id}:interview`)).toBe(false)
   })
 
-  it('refuses a winnerId with no matching draft', () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+  it('refuses a winnerId with no matching draft', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)
     seedInterviewVotes(ticket.id, JSON.stringify({ isFinal: true, winnerId: 'test-vendor/never-drafted' }))
 
@@ -74,8 +74,8 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(phaseIntermediate.has(`${ticket.id}:interview`)).toBe(false)
   })
 
-  it('refuses a winner whose draft did not complete', () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+  it('refuses a winner whose draft did not complete', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     insertPhaseArtifact(ticket.id, {
       phase: 'COUNCIL_DELIBERATING',
       artifactType: 'interview_drafts',
@@ -92,10 +92,10 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', true)).toBe(false)
   })
 
-  it('refuses a winner whose draft is nothing but whitespace', () => {
+  it('refuses a winner whose draft is nothing but whitespace', async () => {
     // `Boolean(draft.content)` was true for `'   '`, so recovery succeeded and
     // refinement then ran against an empty winning draft.
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     insertPhaseArtifact(ticket.id, {
       phase: 'COUNCIL_DELIBERATING',
       artifactType: 'interview_drafts',
@@ -112,8 +112,8 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', true)).toBe(false)
   })
 
-  it('still recovers drafts when votes are not needed', () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+  it('still recovers drafts when votes are not needed', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)
 
     expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', false)).toBe(true)

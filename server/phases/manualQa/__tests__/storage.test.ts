@@ -246,9 +246,60 @@ describe('Manual QA canonical storage', () => {
       body: byteStream(new TextEncoder().encode('remove me')),
     })
     expect(persistManualQaEvidenceActionReceipt(ticketDir, 1, 'remove:restart', 'remove', evidence, 'staged').state).toBe('staged')
-    removeManualQaEvidence({ ticketDir, version: 1, itemId: evidence.itemId, evidenceId: evidence.id })
+    await removeManualQaEvidence({ ticketDir, version: 1, itemId: evidence.itemId, evidenceId: evidence.id })
     expect(persistManualQaEvidenceActionReceipt(ticketDir, 1, 'remove:restart', 'remove', evidence, 'complete').state).toBe('complete')
     expect(() => resolveManualQaEvidence({ ticketDir, version: 1, itemId: evidence.itemId, evidenceId: evidence.id })).toThrow('not found')
+  })
+
+  it('keeps every concurrent upload in the index', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+
+    const uploads = ['a', 'b', 'c', 'd'].map((id) => streamManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: 'qa-v1-001',
+      evidenceId: `concurrent-${id}`,
+      originalName: `${id}.txt`,
+      mediaType: 'text/plain',
+      body: byteStream(new TextEncoder().encode(id)),
+    }))
+    await Promise.all(uploads)
+
+    // Each upload read the index, did filesystem work, then wrote a full
+    // replacement list; run together they overwrote one another's entries.
+    expect(readManualQaEvidenceIndex(ticketDir, 1).map((entry) => entry.id).sort())
+      .toEqual(['concurrent-a', 'concurrent-b', 'concurrent-c', 'concurrent-d'])
+  })
+
+  it('applies every concurrent removal instead of letting the last writer win', async () => {
+    const ticketDir = root()
+    persistChecklist(ticketDir)
+    const ids = ['w', 'x', 'y', 'z']
+    const uploaded = []
+    for (const id of ids) {
+      uploaded.push(await streamManualQaEvidence({
+        ticketDir,
+        version: 1,
+        itemId: 'qa-v1-001',
+        evidenceId: `bulk-${id}`,
+        originalName: `${id}.txt`,
+        mediaType: 'text/plain',
+        body: byteStream(new TextEncoder().encode(id)),
+      }))
+    }
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toHaveLength(4)
+
+    await Promise.all(uploaded.map((evidence) => removeManualQaEvidence({
+      ticketDir,
+      version: 1,
+      itemId: evidence.itemId,
+      evidenceId: evidence.id,
+    })))
+
+    // Each removal used to write the list it read minus one entry, so four
+    // overlapping removals committed one removal and restored the other three.
+    expect(readManualQaEvidenceIndex(ticketDir, 1)).toEqual([])
   })
 
   it('repairs a staged removal interrupted after unlink but before index persistence', async () => {
@@ -272,7 +323,7 @@ describe('Manual QA canonical storage', () => {
     }).path
     removeTempDir(dirname(storedPath))
 
-    expect(removeManualQaEvidence({
+    expect(await removeManualQaEvidence({
       ticketDir,
       version: 1,
       itemId: evidence.itemId,
@@ -304,7 +355,7 @@ describe('Manual QA canonical storage', () => {
       .find((entry) => entry.id === evidence.id && entry.itemId === evidence.itemId)!
 
     persistManualQaEvidenceActionReceipt(ticketDir, 1, 'remove:new-after-reload', 'remove', canonical, 'staged')
-    removeManualQaEvidence({
+    await removeManualQaEvidence({
       ticketDir,
       version: 1,
       itemId: canonical.itemId,

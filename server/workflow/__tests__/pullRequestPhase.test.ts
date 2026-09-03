@@ -103,8 +103,8 @@ describe('pull request drafting context', () => {
     repoManager.cleanup()
   })
 
-  function createPullRequestReadyTicket(overrides: { structuredRetryCount?: number } = {}) {
-    const setup = createInitializedTestTicket(repoManager, {
+  async function createPullRequestReadyTicket(overrides: { structuredRetryCount?: number } = {}) {
+    const setup = await createInitializedTestTicket(repoManager, {
       title: 'Draft concise PR',
       description: 'Explain the implementation without replaying planning context.',
     })
@@ -147,9 +147,9 @@ describe('pull request drafting context', () => {
     ].join('\n')
   }
 
-  it('uses only ticket details and PRD as context while appending reports and diff sections explicitly', () => {
+  it('uses only ticket details and PRD as context while appending reports and diff sections explicitly', async () => {
     resetTestDb()
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Draft concise PR',
       description: 'Explain the implementation without replaying planning context.',
     })
@@ -231,7 +231,7 @@ describe('pull request drafting context', () => {
 
   it('retries malformed PR drafts before push and PR side effects', async () => {
     resetTestDb()
-    const { ticket, context, project, paths } = createPullRequestReadyTicket({ structuredRetryCount: 1 })
+    const { ticket, context, project, paths } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })
     const sendEvent = vi.fn()
     updateProject(project.id, { councilResponseTimeout: 456_000 })
 
@@ -308,7 +308,7 @@ describe('pull request drafting context', () => {
 
   it('uses fallback PR text after parse retry exhaustion without blocking', async () => {
     resetTestDb()
-    const { ticket, context } = createPullRequestReadyTicket({ structuredRetryCount: 0 })
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 0 })
     const sendEvent = vi.fn()
 
     mocks.runOpenCodePrompt.mockResolvedValueOnce({
@@ -339,7 +339,7 @@ describe('pull request drafting context', () => {
 
   it('does not retry git push side effects after a valid PR draft', async () => {
     resetTestDb()
-    const { ticket, context } = createPullRequestReadyTicket({ structuredRetryCount: 1 })
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })
 
     mocks.runOpenCodePrompt.mockResolvedValueOnce({
       session: { id: 'candidate-audit-valid' },
@@ -379,7 +379,7 @@ describe('pull request drafting context', () => {
 
   it('accepts wrapped colon-containing prose in PR draft lists without a retry', async () => {
     resetTestDb()
-    const { ticket, context } = createPullRequestReadyTicket({ structuredRetryCount: 1 })
+    const { ticket, context } = await createPullRequestReadyTicket({ structuredRetryCount: 1 })
 
     mocks.runOpenCodePrompt.mockResolvedValueOnce({
       session: { id: 'candidate-audit-wrapped-prose' },
@@ -412,9 +412,9 @@ describe('pull request drafting context', () => {
     }))
   })
 
-  it('completes a merged PR by verifying the remote base without syncing the user checkout', () => {
+  it('completes a merged PR by verifying the remote base without syncing the user checkout', async () => {
     resetTestDb()
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Remote merge verification',
     })
     const prInfo = {
@@ -438,7 +438,7 @@ describe('pull request drafting context', () => {
       mergedAt: '2026-01-01T00:05:00.000Z',
     })
 
-    completeMergedPullRequest({
+    await completeMergedPullRequest({
       ticketId: ticket.id,
       externalId: ticket.externalId,
       projectPath: context.externalId,
@@ -483,9 +483,9 @@ describe('pull request drafting context', () => {
     })
   })
 
-  it('blocks before merge when the pull request head does not match the candidate commit', () => {
+  it('blocks before merge when the pull request head does not match the candidate commit', async () => {
     resetTestDb()
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Candidate mismatch',
     })
     const prInfo = {
@@ -504,7 +504,7 @@ describe('pull request drafting context', () => {
     }
     mocks.getPullRequestForBranch.mockReturnValue(prInfo)
 
-    expect(() => completeMergedPullRequest({
+    await expect(completeMergedPullRequest({
       ticketId: ticket.id,
       externalId: ticket.externalId,
       projectPath: context.externalId,
@@ -529,15 +529,15 @@ describe('pull request drafting context', () => {
         closedAt: null,
         message: 'Draft PR ready.',
       },
-    })).toThrow('does not match candidate candidate123')
+    })).rejects.toThrow('does not match candidate candidate123')
 
     expect(mocks.mergePullRequest).not.toHaveBeenCalled()
     expect(mocks.verifyRemoteBaseContainsCommit).not.toHaveBeenCalled()
   })
 
-  it('fails after merge if the remote base does not contain the candidate commit', () => {
+  it('fails after merge if the remote base does not contain the candidate commit', async () => {
     resetTestDb()
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Remote verification failure',
     })
     const prInfo = {
@@ -559,7 +559,7 @@ describe('pull request drafting context', () => {
       throw new Error('Remote origin/main does not contain commit candidate123.')
     })
 
-    expect(() => completeMergedPullRequest({
+    await expect(completeMergedPullRequest({
       ticketId: ticket.id,
       externalId: ticket.externalId,
       projectPath: context.externalId,
@@ -585,7 +585,7 @@ describe('pull request drafting context', () => {
         message: 'Draft PR ready.',
       },
       skipRemoteMerge: true,
-    })).toThrow('Remote origin/main does not contain commit candidate123')
+    })).rejects.toThrow('Remote origin/main does not contain commit candidate123')
 
     expect(mocks.mergePullRequest).not.toHaveBeenCalled()
     expect(mocks.tryDeleteRemoteBranch).not.toHaveBeenCalled()

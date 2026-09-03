@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -114,6 +114,43 @@ describe('createRuntime port allocation', () => {
     cleanups.push(() => new Promise<void>((done) => server.close(() => done())))
     return (server.address() as { port: number }).port
   }
+
+  it('stops the timers the startup sequence started when the bind fails', async () => {
+    const taken = await occupyPort()
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+
+    const runtime = createRuntime({
+      skipStartupSequence: true,
+      hostname: '127.0.0.1',
+      settings: resolveSettings({ env: {}, file: { port: taken } }),
+    })
+
+    const stopAutoCleanup = vi.spyOn(broadcaster, 'stopAutoCleanup')
+    try {
+      await expect(runtime.start()).rejects.toThrow(`Port ${taken} is already in use`)
+      // close() is the only teardown, and it is only reachable once a caller
+      // holds a started runtime — so a failed bind used to leave the
+      // broadcaster's cleanup timer and the WAL checkpoint running with nothing
+      // able to stop them.
+      expect(stopAutoCleanup).toHaveBeenCalled()
+    } finally {
+      stopAutoCleanup.mockRestore()
+    }
+  })
+
+  it('runs the startup sequence once for overlapping start() calls', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+    cleanups.push(() => runtime.close())
+
+    const [first, second] = await Promise.all([runtime.start(), runtime.start()])
+
+    // Without a `starting` guard both calls saw a null address, both ran the
+    // startup sequence, and each allocated its own timers.
+    expect(first).toEqual(second)
+  })
 
   it('rejects with the requested port and its origin when an explicit port is taken', async () => {
     const taken = await occupyPort()

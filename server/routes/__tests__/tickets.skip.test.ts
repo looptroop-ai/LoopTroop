@@ -87,7 +87,7 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       description: 'Verify interview skip route.',
     })
 
-    const init = initializeTicket({
+    const init = await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })
@@ -191,7 +191,7 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       description: 'A reason only means something attached to a skip.',
     })
 
-    const init = initializeTicket({
+    const init = await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })
@@ -259,7 +259,7 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
       description: 'The bulk reason fills gaps only.',
     })
 
-    const init = initializeTicket({
+    const init = await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })

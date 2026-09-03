@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
+import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { runGitSync } from '../../git/runCommand'
 import { and, eq } from 'drizzle-orm'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -105,15 +106,15 @@ interface ManualQaOperationJournal {
 }
 
 function runGitHead(worktreePath: string): string {
-  const result = spawnSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 30_000 })
-  if (result.status !== 0 || result.error) throw new Error('Unable to read Manual QA workspace HEAD.')
-  return (result.stdout ?? '').trim()
+  const result = runGitSync(worktreePath, ['rev-parse', 'HEAD'])
+  if (!result.ok) throw new Error('Unable to read Manual QA workspace HEAD.')
+  return result.stdout
 }
 
 function runGitText(worktreePath: string, args: string[]): string {
-  const result = spawnSync('git', ['-C', worktreePath, ...args], { encoding: 'utf8', timeout: 30_000 })
-  if (result.status !== 0 || result.error) throw new Error(`Unable to audit Manual QA workspace: git ${args[0] ?? ''} failed.`)
-  return (result.stdout ?? '').trim()
+  const result = runGitSync(worktreePath, args)
+  if (!result.ok) throw new Error(`Unable to audit Manual QA workspace: git ${args[0] ?? ''} failed.`)
+  return result.stdout
 }
 
 export function detectManualQaWorkspaceDrift(ticketId: string, version: number): ManualQaWorkspaceDrift {
@@ -148,7 +149,7 @@ export function detectManualQaWorkspaceDrift(ticketId: string, version: number):
     if ((baseline.trackedSignatures ?? {})[path] !== currentSignatures[path]) committedPaths.add(path)
   }
   if (baseline.head !== currentHead) {
-    for (const line of runGitText(paths.worktreePath, ['diff', '--name-status', baseline.head, currentHead, '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop']).split('\n')) {
+    for (const line of runGitText(paths.worktreePath, ['diff', '--name-status', baseline.head, currentHead, '--', ...REPO_SCOPE_PATHSPECS]).split('\n')) {
       const fields = line.split('\t')
       for (const path of fields.slice(1)) if (path) committedPaths.add(path)
     }

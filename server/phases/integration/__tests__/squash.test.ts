@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createFixtureRepoManager } from '../../../test/fixtureRepo'
 import { prepareSquashCandidate, pushSquashedCandidate, rewriteCandidateCommitWithFiles } from '../squash'
@@ -135,6 +135,34 @@ describe('prepareSquashCandidate', () => {
     expect(showFiles).not.toContain('.ticket/prd.yaml')
   })
 
+  it('refuses to rewrite over a dirty worktree instead of resetting it away', () => {
+    const repoDir = repoManager.createRepo()
+
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+    git(repoDir, ['add', 'src.ts'])
+    git(repoDir, ['commit', '-m', 'candidate'])
+    const candidate = git(repoDir, ['rev-parse', 'HEAD'])
+    const mergeBase = git(repoDir, ['merge-base', 'HEAD', 'main'])
+
+    // Uncommitted work the rewrite's `reset --hard` would destroy.
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = "edited by hand"\n')
+
+    const result = rewriteCandidateCommitWithFiles(
+      repoDir,
+      mergeBase,
+      candidate,
+      'Filtered candidate',
+      BRANCH,
+      ['src.ts'],
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('uncommitted changes')
+    expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toContain('edited by hand')
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
+  })
+
   it('rewrites a candidate commit with only AI-audited included files', () => {
     const repoDir = repoManager.createRepo()
 
@@ -169,10 +197,10 @@ describe('prepareSquashCandidate', () => {
 })
 
 describe('pushSquashedCandidate', () => {
-  it('returns failure when no remote is configured', () => {
+  it('returns failure when no remote is configured', async () => {
     const repoDir = repoManager.createRepo()
 
-    const result = pushSquashedCandidate(repoDir)
+    const result = await pushSquashedCandidate(repoDir)
 
     expect(result.pushed).toBe(false)
     expect(result.error).toMatch(/push failed/i)

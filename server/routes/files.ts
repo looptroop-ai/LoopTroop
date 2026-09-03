@@ -4,11 +4,11 @@ import * as path from 'node:path'
 import * as readline from 'node:readline'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { extractLogFingerprint } from '@shared/logIdentity'
 import { getTicketByRef, getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { foldPersistedLogEntries } from '../log/readDedupe'
+import { normalizePersistedLogEntry } from '../log/view'
 import { handlePutInterview, handlePutPrd } from './ticketHandlers'
 import { contentSha256 } from '../lib/contentHash'
 import { readOpenCodeNativeLogs } from '../opencode/logDiagnostics'
@@ -35,53 +35,16 @@ function normalizeLogChannel(channel?: string): LogChannel {
   return 'normal'
 }
 
+/**
+ * The route's view of a persisted row.
+ *
+ * One canonical normaliser, shared with the durable projection index, so a row
+ * cannot be classified one way when it is indexed and another when it is read
+ * back. The endpoints fill in `audience` and `kind` where a row omits them;
+ * the index stores them absent.
+ */
 function normalizeLogEntry(entry: unknown): Record<string, unknown> | null {
-  if (!entry || typeof entry !== 'object') return null
-  const record = entry as Record<string, unknown>
-  const fingerprint = extractLogFingerprint(record)
-  const phase = typeof record.phase === 'string'
-    ? record.phase
-    : (typeof record.status === 'string' ? record.status : 'unknown')
-  const phaseAttempt = typeof record.phaseAttempt === 'number' && Number.isFinite(record.phaseAttempt)
-    ? record.phaseAttempt
-    : (Number.isFinite(Number(record.phaseAttempt)) ? Number(record.phaseAttempt) : 1)
-  const status = typeof record.status === 'string' ? record.status : phase
-  const content = typeof record.content === 'string'
-    ? record.content
-    : (typeof record.message === 'string' ? record.message : '')
-  const type = typeof record.type === 'string' ? record.type : 'info'
-  const audience = typeof record.audience === 'string'
-    ? record.audience
-    : record.source === 'debug' || type === 'debug'
-      ? 'debug'
-      : (record.source === 'opencode'
-        || (typeof record.source === 'string' && record.source.startsWith('model:'))
-        || type === 'model_output')
-        ? 'ai'
-        : 'all'
-  const kind = typeof record.kind === 'string'
-    ? record.kind
-    : type === 'test_result'
-      ? 'test'
-      : type === 'error'
-        ? 'error'
-        : type === 'model_output'
-          ? 'text'
-          : 'milestone'
-  const op = typeof record.op === 'string' ? record.op : 'append'
-  return {
-    ...record,
-    phase,
-    phaseAttempt,
-    status,
-    message: typeof record.message === 'string' ? record.message : content,
-    content,
-    type,
-    ...(audience ? { audience } : {}),
-    ...(kind ? { kind } : {}),
-    ...(op ? { op } : {}),
-    ...(fingerprint ? { fingerprint } : {}),
-  }
+  return normalizePersistedLogEntry(entry, { audienceAndKind: 'infer' })
 }
 
 function getEntryPhaseAttempt(entry: Record<string, unknown>): number | null {
@@ -131,6 +94,25 @@ async function extractTicketSessionIds(logPath: string): Promise<string[]> {
     }
   }
   return Array.from(ids)
+}
+
+/**
+ * Orders a merged log view by time.
+ *
+ * A row whose timestamp could not be read has no place on the timeline, so it
+ * goes to the end rather than being treated as epoch zero — which would float
+ * it above every dated row in the view.
+ */
+function sortByTimestamp(entries: Record<string, unknown>[]): Record<string, unknown>[] {
+  const dated: { entry: Record<string, unknown>; at: number }[] = []
+  const undated: Record<string, unknown>[] = []
+  for (const entry of entries) {
+    const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : Number.NaN
+    if (Number.isFinite(at)) dated.push({ entry, at })
+    else undated.push(entry)
+  }
+  dated.sort((a, b) => a.at - b.at)
+  return [...dated.map((row) => row.entry), ...undated]
 }
 
 async function readLogFileEntries(logPath: string, filters: {
@@ -191,15 +173,16 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
       readLogFileEntries(paths.aiLogPath, filters),
     ])
     const sessionIds = await extractTicketSessionIds(paths.aiLogPath)
-    const ocNativeEntries = readOpenCodeNativeLogs(sessionIds) as unknown as Record<string, unknown>[]
+    // Native rows go through the same normalise-and-filter path as the files
+    // beside them. Appended raw, a request scoped to one phase or attempt still
+    // came back carrying every native row for the ticket's sessions.
+    const ocNativeEntries = readOpenCodeNativeLogs(sessionIds)
+      .flatMap((entry) => {
+        const normalized = normalizeLogEntry(entry)
+        return normalized && logEntryMatchesFilters(normalized, filters) ? [normalized] : []
+      })
     const allEntries = [...normalEntries, ...debugEntries, ...aiEntries, ...ocNativeEntries]
-    const foldedEntries = foldPersistedLogEntries(allEntries)
-    foldedEntries.sort((a, b) => {
-      const at = typeof a.timestamp === 'string' ? Date.parse(a.timestamp) : 0
-      const bt = typeof b.timestamp === 'string' ? Date.parse(b.timestamp) : 0
-      return at - bt
-    })
-    return c.json(foldedEntries)
+    return c.json(sortByTimestamp(foldPersistedLogEntries(allEntries)))
   }
 
   const logPath = channel === 'debug'
@@ -207,35 +190,17 @@ filesRouter.get('/files/:ticketId/logs', async (c) => {
     : channel === 'ai'
       ? paths.aiLogPath
       : paths.executionLogPath
+
+  // Kept ahead of the read: a ticket with no log file at all answers with an
+  // empty list rather than the synthetic "status is active" row below.
   try {
     await fs.promises.access(logPath)
   } catch {
     return c.json([])
   }
 
-  const entries: Record<string, unknown>[] = []
-  const rl = readline.createInterface({
-    input: fs.createReadStream(logPath, { encoding: 'utf-8' }),
-    crlfDelay: Infinity,
-  })
-  for await (const line of rl) {
-    if (!line.trim()) continue
-    try {
-      const normalized = normalizeLogEntry(JSON.parse(line))
-      if (normalized && logEntryMatchesFilters(normalized, filters)) {
-        entries.push(normalized)
-      }
-    } catch {
-      // Skip malformed lines.
-    }
-  }
-
-  const foldedEntries = foldPersistedLogEntries(entries)
-  foldedEntries.sort((a, b) => {
-    const at = typeof a.timestamp === 'string' ? Date.parse(a.timestamp) : 0
-    const bt = typeof b.timestamp === 'string' ? Date.parse(b.timestamp) : 0
-    return at - bt
-  })
+  const entries = await readLogFileEntries(logPath, filters)
+  const foldedEntries = sortByTimestamp(foldPersistedLogEntries(entries))
 
   const isAuxiliaryChannel = channel === 'debug' || channel === 'ai'
   const hasCurrentStatusEntry = foldedEntries.some(entry => entry.status === ticket.status)

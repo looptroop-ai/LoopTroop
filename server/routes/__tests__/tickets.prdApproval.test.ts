@@ -60,7 +60,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function setupPrdApprovalTicket() {
+async function setupPrdApprovalTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -73,7 +73,7 @@ function setupPrdApprovalTicket() {
     description: 'Verify the PRD approval routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -127,7 +127,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('approves the PRD, stamps approval metadata, and advances the ticket', async () => {
-    const { app, ticket, paths, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
       method: 'POST',
@@ -152,7 +152,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('validates raw PRD YAML, canonicalizes it, and forces draft status on save', async () => {
-    const { app, ticket, paths } = setupPrdApprovalTicket()
+    const { app, ticket, paths } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
       method: 'PUT',
@@ -224,7 +224,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('accepts structured PRD saves, canonicalizes them, and clears approval metadata', async () => {
-    const { app, ticket, paths } = setupPrdApprovalTicket()
+    const { app, ticket, paths } = await setupPrdApprovalTicket()
 
     const structuredDocument: PrdDocument = {
       ...buildPrdDocument(ticket.externalId, '0000000000000000000000000000000000000000000000000000000000000000'),
@@ -260,7 +260,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects invalid raw PRD YAML without overwriting the current artifact', async () => {
-    const { app, ticket, prdRaw, paths } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw, paths } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
       method: 'PUT',
@@ -276,7 +276,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects invalid structured PRD documents without overwriting the current artifact', async () => {
-    const { app, ticket, prdRaw, paths } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw, paths } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
       method: 'PUT',
@@ -292,7 +292,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects raw PRD edits at pre-flight or later', async () => {
-    const { app, ticket, prdRaw, paths } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw, paths } = await setupPrdApprovalTicket()
     patchTicket(ticket.id, { status: 'PRE_FLIGHT_CHECK' })
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
@@ -309,7 +309,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects structured PRD edits at pre-flight or later', async () => {
-    const { app, ticket, prdRaw, paths } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw, paths } = await setupPrdApprovalTicket()
     patchTicket(ticket.id, { status: 'PRE_FLIGHT_CHECK' })
 
     const response = await app.request(`/api/files/${ticket.id}/prd`, {
@@ -326,7 +326,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('clears downstream beads artifacts and writes an edit receipt when PRD is edited', async () => {
-    const { app, ticket, paths, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
 
     // Create beads/ directory and a beads artifact in the DB
     const beadsDir = resolve(paths.ticketDir, 'beads')
@@ -415,7 +415,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('archives approval and beads attempts, approves the edit, and starts beads drafting when PRD is edited from a later phase', async () => {
-    const { app, ticket, paths, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'approval_snapshot:prd',
@@ -541,7 +541,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('does not archive attempts when a post-approval PRD edit is invalid', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
     patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
     createFreshPhaseAttempts(ticket.id, PRD_EDIT_RESTART_PHASES)
 
@@ -566,7 +566,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('stamps PRD approval metadata through the generic approve route', async () => {
-    const { app, ticket, paths, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, paths, prdRaw } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
       method: 'POST',
@@ -585,7 +585,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects approval when ticket is not in WAITING_PRD_APPROVAL status', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
 
     patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
 
@@ -600,7 +600,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('requires expectedContentSha256 for PRD approval', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
       method: 'POST',
@@ -612,7 +612,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('requires expectedContentSha256 for generic approval', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
       method: 'POST',
@@ -624,7 +624,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects stale PRD approval hashes with 409', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
     const expectedContentSha256 = '0'.repeat(64)
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
@@ -643,7 +643,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('rejects stale PRD approval hashes through the generic approve route with 409', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
     const expectedContentSha256 = '1'.repeat(64)
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
@@ -662,7 +662,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('records why the PRD was approved with known coverage gaps', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
       method: 'POST',
@@ -690,7 +690,7 @@ describe('ticketRouter PRD approval routes', () => {
   })
 
   it('leaves the approval receipt alone when no gap reason was given', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-prd`, {
       method: 'POST',

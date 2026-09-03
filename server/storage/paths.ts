@@ -1,19 +1,7 @@
-import { spawnSync } from 'child_process'
 import { existsSync, mkdirSync, realpathSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import { resolveBaseBranch } from '../git/repository'
-import { logCommand } from '../log/commandLogger'
-
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  logCommand(bin, args, result)
-}
-
+import { runGitSync } from '../git/runCommand'
 export function normalizeFolderPath(input: string): string {
   let output = input.trim().replace(/[\\/]+$/, '')
   output = output.replace(/\\/g, '/')
@@ -45,21 +33,9 @@ export function normalizeFolderPath(input: string): string {
 export function resolveGitRepoRoot(folderPath: string): string | null {
   const normalized = normalizeFolderPath(folderPath)
   if (!existsSync(normalized)) return null
-  const fullArgs = ['-C', normalized, 'rev-parse', '--show-toplevel']
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (result.status !== 0 || result.error) {
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    return null
-  }
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  return normalizeFolderPath(stdout)
+  const result = runGitSync(normalized, ['rev-parse', '--show-toplevel'])
+  if (!result.ok) return null
+  return normalizeFolderPath(result.stdout)
 }
 
 export function detectGitBaseBranch(projectRoot: string): string {

@@ -15,17 +15,12 @@ import { readManualQaDeliverySummary as readCanonicalManualQaDeliverySummary } f
 import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE } from '../../phases/executionSetup/types'
 import { runExplicitGitHookValidation } from '../../phases/executionSetup/hookValidation'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
-import { discoverGitHooks } from '../../git/hookDiscovery'
-
-function readApprovedHookEvidence(profileContent: string): unknown[] {
-  try {
-    const profile = JSON.parse(profileContent) as Record<string, unknown>
-    const hooks = (profile.git_hooks ?? profile.gitHooks) as Record<string, unknown> | undefined
-    return Array.isArray(hooks?.detected) ? hooks.detected : []
-  } catch {
-    return []
-  }
-}
+import {
+  discoverGitHooks,
+  gitHookEvidenceMatches,
+  normalizeGitHookEvidence,
+  readApprovedGitHookEvidence,
+} from '../../git/hookDiscovery'
 
 function readFinalTestFilesToStage(ticketId: string): string[] {
   const artifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
@@ -105,12 +100,14 @@ export async function handleIntegration(
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
-  const currentHookEvidence = discoverGitHooks(paths.worktreePath).detected
+  // Both sides go through the canonical reader, so equivalent hook sets compare
+  // equal regardless of the order they were discovered or serialised in.
+  const currentHookEvidence = normalizeGitHookEvidence(discoverGitHooks(paths.worktreePath).detected)
   const approvedHookEvidence = setupProfileArtifact
-    ? readApprovedHookEvidence(setupProfileArtifact.content)
+    ? readApprovedGitHookEvidence(setupProfileArtifact.content)
     : []
   const hookEvidenceDrift = {
-    changed: JSON.stringify(approvedHookEvidence) !== JSON.stringify(currentHookEvidence),
+    changed: !gitHookEvidenceMatches(approvedHookEvidence, currentHookEvidence),
     approved: approvedHookEvidence,
     current: currentHookEvidence,
   }

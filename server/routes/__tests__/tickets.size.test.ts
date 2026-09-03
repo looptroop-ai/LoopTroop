@@ -68,7 +68,7 @@ describe('ticketRouter GET /tickets/:id/size', () => {
       description: 'Checks size reporting.',
     })
 
-    const init = initializeTicket({
+    const init = await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })

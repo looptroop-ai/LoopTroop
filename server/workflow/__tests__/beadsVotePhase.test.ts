@@ -83,7 +83,7 @@ describe('beads voting workflow', () => {
   })
 
   it('votes on beads with PROM21 context, live artifact updates, and structured output metadata', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Harden beads voting',
       description: 'Keep the architecture vote parity strict.',
     })
@@ -434,7 +434,7 @@ describe('beads voting workflow', () => {
   })
 
   it('persists mock beads votes with canonical bead drafts and realistic vote scores', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Mock beads parity',
       description: 'Keep mock beads voting structured.',
     })

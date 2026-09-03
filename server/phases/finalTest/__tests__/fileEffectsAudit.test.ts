@@ -42,6 +42,52 @@ describe('buildFinalTestFileEffectsAudit', () => {
     }
   })
 
+  it('audits both halves of a rename, not just where the file landed', () => {
+    const repo = makeTempDir('final-test-rename-')
+    try {
+      spawnSync('git', ['init', '-q', repo])
+      pinGitLineEndings(repo)
+      spawnSync('git', ['-C', repo, 'config', 'user.name', 'Test'])
+      spawnSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'])
+      writeFileSync(join(repo, 'original.ts'), 'export const value = 1\n')
+      spawnSync('git', ['-C', repo, 'add', '.'])
+      spawnSync('git', ['-C', repo, 'commit', '-m', 'initial'])
+      spawnSync('git', ['-C', repo, 'mv', 'original.ts', 'moved.ts'])
+
+      // git -z reports a rename as one record carrying two paths. Reading only
+      // the first left the file's disappearance out of the audit entirely.
+      const audited = captureFinalTestDirtyFiles(repo)
+      expect(audited.map((file) => file.path).sort()).toEqual(['moved.ts', 'original.ts'])
+      expect(audited.find((file) => file.path === 'original.ts')?.indexStatus).toBe('D')
+    } finally {
+      removeTempDir(repo)
+    }
+  })
+
+  it('does not report the source of a copy as deleted', () => {
+    const repo = makeTempDir('final-test-copy-')
+    try {
+      spawnSync('git', ['init', '-q', repo])
+      pinGitLineEndings(repo)
+      spawnSync('git', ['-C', repo, 'config', 'user.name', 'Test'])
+      spawnSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'])
+      spawnSync('git', ['-C', repo, 'config', 'status.renames', 'copies'])
+      writeFileSync(join(repo, 'source.ts'), 'export const value = 1\n')
+      spawnSync('git', ['-C', repo, 'add', '.'])
+      spawnSync('git', ['-C', repo, 'commit', '-m', 'initial'])
+      writeFileSync(join(repo, 'copy.ts'), 'export const value = 1\n')
+      spawnSync('git', ['-C', repo, 'add', '.'])
+
+      const audited = captureFinalTestDirtyFiles(repo)
+      expect(audited.map((file) => file.path)).toContain('copy.ts')
+      // The source is untouched; recording it as deleted would stage a removal
+      // nobody asked for.
+      expect(audited.some((file) => file.path === 'source.ts' && file.indexStatus === 'D')).toBe(false)
+    } finally {
+      removeTempDir(repo)
+    }
+  })
+
   it('restores tracked local-only mutations without removing untracked local outputs', () => {
     const repo = makeTempDir('final-test-tracked-local-')
     try {

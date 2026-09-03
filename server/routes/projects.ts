@@ -138,7 +138,7 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   const repoRoot = await resolveGitRepoRootAsync(resolved)
   if (!repoRoot) return { isGit: false }
   const githubRepo = parseGitHubRemoteUrl(await readOriginRemoteUrlAsync(repoRoot))
-  const writeAccess = githubRepo ? getGitHubRepoWriteAccess(repoRoot) : null
+  const writeAccess = githubRepo ? await getGitHubRepoWriteAccess(repoRoot) : null
 
   const state = resolveProjectState(repoRoot)
   const attachedProject = getAttachedProjectByRoot(repoRoot)

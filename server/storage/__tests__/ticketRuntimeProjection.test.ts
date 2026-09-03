@@ -50,8 +50,8 @@ describe('ticket runtime projection', () => {
     repoManager.cleanup()
   })
 
-  it('writes a rebuildable state.yaml projection from authoritative ticket and bead state', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('writes a rebuildable state.yaml projection from authoritative ticket and bead state', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Projection state',
     })
     patchTicket(ticket.id, {
@@ -96,8 +96,8 @@ describe('ticket runtime projection', () => {
     ])
   })
 
-  it('removes state.yaml for terminal tickets', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('removes state.yaml for terminal tickets', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Terminal projection',
     })
     syncTicketRuntimeProjection(ticket.id)

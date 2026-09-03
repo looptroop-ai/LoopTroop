@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { spawnFromSyncResult } from '../../test/childProcess'
 
 const spawnSyncMock = vi.fn()
+// Async commands run through `spawn`; both stubs answer from one description.
+const spawnMock = vi.fn((...args: unknown[]) => spawnFromSyncResult(
+  spawnSyncMock(...args) as ReturnType<typeof import('node:child_process').spawnSync>,
+))
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   return {
     ...actual,
     spawnSync: spawnSyncMock,
+    spawn: spawnMock,
   }
 })
 
@@ -31,6 +37,7 @@ describe('server/git/github', () => {
   beforeEach(() => {
     vi.resetModules()
     spawnSyncMock.mockReset()
+    spawnMock.mockClear()
   })
 
   it('accepts a direct github.com remote without SSH alias resolution', async () => {
@@ -93,7 +100,7 @@ describe('server/git/github', () => {
 
     const github = await import('../github')
 
-    expect(github.getGhAuthStatus()).toEqual({ ok: true })
+    expect(await github.getGhAuthStatus()).toEqual({ ok: true })
   })
 
   it('surfaces a useful auth error when there is no active successful GitHub account', async () => {
@@ -108,7 +115,7 @@ describe('server/git/github', () => {
     }))
 
     const github = await import('../github')
-    const result = github.getGhAuthStatus()
+    const result = await github.getGhAuthStatus()
 
     expect(result.ok).toBe(false)
     expect(result).toEqual({
@@ -127,7 +134,7 @@ describe('server/git/github', () => {
 
     const github = await import('../github')
 
-    expect(github.getGhAuthStatus()).toEqual({ ok: true })
+    expect(await github.getGhAuthStatus()).toEqual({ ok: true })
     expect(spawnSyncMock.mock.calls).toEqual([
       ['gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'], expect.any(Object)],
       ['gh', ['auth', 'status', '--hostname', 'github.com'], expect.any(Object)],
@@ -146,14 +153,16 @@ describe('server/git/github', () => {
 
       const github = await import('../github')
 
-      expect(github.getGitHubRepoWriteAccess('/repo')).toEqual({
+      expect(await github.getGitHubRepoWriteAccess('/repo')).toEqual({
         status: 'writable',
         permission,
       })
-      expect(spawnSyncMock.mock.calls.at(-1)).toEqual([
+      // The permission probe's 5s budget is enforced by the shared runner, so
+      // it is covered there; what matters here is the command and its cwd.
+      expect(spawnMock.mock.calls.at(-1)).toEqual([
         'gh',
         ['repo', 'view', 'looptroop-ai/LoopTroop', '--json', 'viewerPermission'],
-        expect.objectContaining({ cwd: '/repo', timeout: 5_000 }),
+        expect.objectContaining({ cwd: '/repo' }),
       ])
     },
   )
@@ -170,7 +179,7 @@ describe('server/git/github', () => {
 
       const github = await import('../github')
 
-      expect(github.getGitHubRepoWriteAccess('/repo')).toEqual({
+      expect(await github.getGitHubRepoWriteAccess('/repo')).toEqual({
         status: 'read_only',
         permission,
       })
@@ -186,7 +195,7 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-    const result = github.getGitHubRepoWriteAccess('/repo')
+    const result = await github.getGitHubRepoWriteAccess('/repo')
 
     expect(result.status).toBe('unknown')
     expect(result.permission).toBeNull()
@@ -235,7 +244,7 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-    const result = github.syncLocalBaseBranch('/repo', 'main')
+    const result = await github.syncLocalBaseBranch('/repo', 'main')
 
     expect(result).toEqual({
       originalBranch: 'main',
@@ -270,7 +279,7 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-    const result = github.syncLocalBaseBranch('/repo', 'main')
+    const result = await github.syncLocalBaseBranch('/repo', 'main')
 
     expect(result.remoteBaseHead).toBe('remote-sha')
     expect(spawnSyncMock.mock.calls.some(([, args]) => (
@@ -311,7 +320,7 @@ describe('server/git/github', () => {
     })
 
     const github = await import('../github')
-    const result = github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')
+    const result = await github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')
 
     expect(result).toEqual({
       baseBranch: 'main',
@@ -338,7 +347,7 @@ describe('server/git/github', () => {
 
     const github = await import('../github')
 
-    expect(() => github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).toThrow(
+    await expect(github.verifyRemoteBaseContainsCommit('/repo', 'main', 'candidate123')).rejects.toThrow(
       'Remote origin/main does not contain commit candidate123. Latest remote base is remote-base-sha.',
     )
   })

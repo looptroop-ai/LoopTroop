@@ -199,7 +199,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function setupExecutionSetupPlanTicket() {
+async function setupExecutionSetupPlanTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -212,7 +212,7 @@ function setupExecutionSetupPlanTicket() {
     description: 'Verify the execution setup plan approval routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -280,7 +280,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('reads the current execution setup plan draft', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'execution_setup_plan',
@@ -297,7 +297,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('saves a structured execution setup plan draft', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
       method: 'PUT',
@@ -333,7 +333,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('reimposes the project hook policy on structured and raw saves while preserving validation commands', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     const validationCommand = {
       id: 'validate-pre-commit',
       hook: 'pre-commit',
@@ -388,7 +388,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('saves a no-op execution setup plan when the workspace is already ready', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
       method: 'PUT',
@@ -424,7 +424,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('derives readiness from structured setup work instead of trusting an inconsistent edit', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
       method: 'PUT',
@@ -469,7 +469,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('starts durable background regeneration with the submitted commentary', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'execution_setup_plan',
@@ -503,7 +503,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('archives the current attempt and creates a new one on regenerate', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'execution_setup_plan',
@@ -555,7 +555,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('reads an archived execution setup plan by phase attempt number', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'execution_setup_plan',
@@ -586,7 +586,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('rewinds from runtime setup when saving an edited setup plan', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     await moveTicketToRuntimeSetup(app, ticket, 'Approved plan handed to runtime.')
     const paths = getTicketPaths(ticket.id)
     expect(paths).toBeDefined()
@@ -650,7 +650,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('rewinds from runtime setup before regenerating the setup plan', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     await moveTicketToRuntimeSetup(app, ticket, 'Approved plan before regenerate rewind.')
 
     const response = await app.request(`/api/tickets/${ticket.id}/regenerate-execution-setup-plan`, {
@@ -688,7 +688,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('archives a blocked workspace runtime attempt and returns to setup plan approval for editing', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     await moveTicketToRuntimeSetup(app, ticket, 'Approved plan before blocked runtime setup.')
     patchTicket(ticket.id, {
       status: 'BLOCKED_ERROR',
@@ -716,7 +716,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('rejects setup-plan edits and regenerations after runtime setup has advanced', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     patchTicket(ticket.id, { status: 'CODING' })
 
     const editResponse = await app.request(`/api/tickets/${ticket.id}/execution-setup-plan`, {
@@ -737,7 +737,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('approves setup commands without requiring an ecosystem manifest', async () => {
-    const { app, ticket, paths } = setupExecutionSetupPlanTicket()
+    const { app, ticket, paths } = await setupExecutionSetupPlanTicket()
     expect(existsSync(join(paths.worktreePath, 'package.json'))).toBe(false)
     const raw = serializePlan(ticket.externalId)
     upsertLatestPhaseArtifact(
@@ -767,7 +767,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('does not repeatedly report drift after backend hook evidence was already stored', async () => {
-    const { app, ticket, paths } = setupExecutionSetupPlanTicket()
+    const { app, ticket, paths } = await setupExecutionSetupPlanTicket()
     writeFileSync(join(paths.worktreePath, '.pre-commit-config.yaml'), 'repos: []\n')
     const stored = saveExecutionSetupPlan(
       ticket.id,
@@ -787,7 +787,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('dispatches execution setup plan approval through the generic approve route', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     const raw = serializePlan(ticket.externalId)
     upsertLatestPhaseArtifact(
       ticket.id,
@@ -808,7 +808,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('requires expectedContentSha256 for execution setup plan approval', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'execution_setup_plan',
@@ -826,7 +826,7 @@ describe('ticketRouter execution setup plan approval routes', () => {
   })
 
   it('rejects stale execution setup plan approval hashes with 409', async () => {
-    const { app, ticket } = setupExecutionSetupPlanTicket()
+    const { app, ticket } = await setupExecutionSetupPlanTicket()
     const raw = serializePlan(ticket.externalId)
     const expectedContentSha256 = '0'.repeat(64)
     upsertLatestPhaseArtifact(

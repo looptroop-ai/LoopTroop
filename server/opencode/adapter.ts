@@ -861,7 +861,10 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (!paths || !existsSync(paths.beadsPath)) return []
     let bead: Bead | undefined
     try {
-      bead = readBeadsFile(paths.beadsPath).find((entry) => entry.id === beadId)
+      // Authoritative read: this manifest decides which evidence images the
+      // prompt carries, so a dropped line has to be an error rather than an
+      // image that quietly does not arrive.
+      bead = readBeadsFile(paths.beadsPath, { malformedEntries: 'fail' }).find((entry) => entry.id === beadId)
     } catch (error) {
       throw new Error(`Failed to load Manual QA evidence manifest for bead ${beadId}: ${getErrorMessage(error)}`)
     }

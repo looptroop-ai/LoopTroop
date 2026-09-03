@@ -9,7 +9,7 @@ import { abortTicketSessions } from '../../opencode/sessionManager'
 import { clearContextCache } from '../../opencode/contextBuilder'
 import { broadcaster } from '../../sse/broadcaster'
 import { cancelTicket } from '../../workflow/runner'
-import { withCommandLogging } from '../../log/commandLogger'
+import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { getProjectContextById } from '../../storage/projects'
 import {
   createTicket as createTicketRecord,
@@ -50,7 +50,7 @@ export function handleListTickets(c: Context) {
 function updatePullRequestReportFromLiveState(
   ticketId: string,
   existing: PullRequestReport,
-  pr: NonNullable<ReturnType<typeof refreshPullRequestState>>,
+  pr: NonNullable<Awaited<ReturnType<typeof refreshPullRequestState>>>,
 ) {
   refreshPullRequestReport(ticketId, {
     ...existing,
@@ -69,7 +69,7 @@ function updatePullRequestReportFromLiveState(
   })
 }
 
-function syncWaitingPullRequestTicket(ticketId: string) {
+async function syncWaitingPullRequestTicket(ticketId: string) {
   const current = getTicketByRef(ticketId)
   if (!current || current.status !== 'WAITING_PR_REVIEW') return current
 
@@ -81,7 +81,7 @@ function syncWaitingPullRequestTicket(ticketId: string) {
   const baseBranch = current.runtime.baseBranch
 
   try {
-    const livePr = refreshPullRequestState(ticketContext.projectRoot, headBranch, baseBranch)
+    const livePr = await refreshPullRequestState(ticketContext.projectRoot, headBranch, baseBranch)
     if (!livePr) return current
 
     if (livePr.state !== prReport.prState || livePr.headRefOid !== prReport.prHeadSha) {
@@ -89,7 +89,7 @@ function syncWaitingPullRequestTicket(ticketId: string) {
     }
 
     if (livePr.state === 'merged') {
-      const mergeReport = withCommandLogging(
+      const mergeReport = await withCommandLoggingAsync(
         ticketId,
         current.externalId,
         'WAITING_PR_REVIEW',
@@ -150,9 +150,9 @@ function syncWaitingPullRequestTicket(ticketId: string) {
   return getTicketByRef(ticketId) ?? current
 }
 
-export function handleGetTicket(c: Context) {
+export async function handleGetTicket(c: Context) {
   const ticketId = getRequiredRouteParam(c, 'id')
-  const ticket = syncWaitingPullRequestTicket(ticketId) ?? getTicketByRef(ticketId)
+  const ticket = await syncWaitingPullRequestTicket(ticketId) ?? getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
   return c.json(ticket)
 }

@@ -109,6 +109,10 @@ export {
 let checkpointInterval: ReturnType<typeof setInterval> | null = null
 
 export function startWalCheckpoint() {
+  // Called twice — by two overlapping starts, or a start after a failed one —
+  // this used to allocate a second interval and lose the handle to the first,
+  // leaving a timer nothing could ever stop.
+  if (checkpointInterval) return
   checkpointInterval = setInterval(() => {
     try {
       sqlite.pragma('wal_checkpoint(PASSIVE)')
@@ -117,6 +121,8 @@ export function startWalCheckpoint() {
       console.error(`[db] WAL checkpoint failed: ${message}`)
     }
   }, 30000)
+  // Housekeeping should never be the reason the process stays alive.
+  checkpointInterval.unref?.()
 }
 
 export function stopWalCheckpoint() {

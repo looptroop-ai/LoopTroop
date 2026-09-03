@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { runGitSync } from './runCommand'
 import type { DetectedGitHookPayload, GitHookValidationCommandPayload } from '../structuredOutput/types'
 
 const STANDARD_HOOKS = new Set([
@@ -10,10 +10,10 @@ const STANDARD_HOOKS = new Set([
   'prepare-commit-msg', 'push-to-checkout', 'reference-transaction', 'update',
 ])
 
+/** Local plumbing; a non-zero exit is an expected answer here, hence `null`. */
 function runGit(worktreePath: string, args: string[]): string | null {
-  const result = spawnSync('git', ['-C', worktreePath, ...args], { encoding: 'utf8' })
-  if (result.status !== 0 || result.error) return null
-  return (result.stdout ?? '').trim() || null
+  const result = runGitSync(worktreePath, args)
+  return result.ok ? result.stdout || null : null
 }
 
 function displayPath(worktreePath: string, path: string): string {
@@ -54,6 +54,61 @@ export interface GitHookDiscoveryResult {
   configuredHooksPath: string | null
   detected: DetectedGitHookPayload[]
   suggestedValidationCommands: GitHookValidationCommandPayload[]
+}
+
+/**
+ * Reads the hook evidence recorded on an approved execution-setup profile.
+ *
+ * The integration boundary compared its own ad-hoc read of this list against a
+ * fresh discovery with `JSON.stringify`, which makes the comparison depend on
+ * array order and on the order the keys happen to be serialised in. Two runs
+ * that found exactly the same hooks could therefore be reported as drift.
+ */
+export function readApprovedGitHookEvidence(profileContent: string): DetectedGitHookPayload[] {
+  try {
+    const profile = JSON.parse(profileContent) as Record<string, unknown>
+    const hooks = (profile.git_hooks ?? profile.gitHooks) as Record<string, unknown> | undefined
+    return normalizeGitHookEvidence(hooks?.detected)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * A stable projection of hook evidence: known fields only, in a fixed key
+ * order, sorted by the identity of the hook. Malformed entries are dropped
+ * rather than compared, so a legacy or hand-edited profile cannot register as
+ * drift purely by being unreadable.
+ */
+export function normalizeGitHookEvidence(value: unknown): DetectedGitHookPayload[] {
+  if (!Array.isArray(value)) return []
+  const entries = value.flatMap((entry): DetectedGitHookPayload[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+    const record = entry as Record<string, unknown>
+    const name = typeof record.name === 'string' ? record.name : ''
+    const path = typeof record.path === 'string' ? record.path : ''
+    if (!name || !path) return []
+    const kind = record.kind === 'manager_config' ? 'manager_config' as const : 'hook' as const
+    const runnableValue = record.runnable
+    const managerHint = typeof record.managerHint === 'string' ? record.managerHint : undefined
+    return [{
+      name,
+      path,
+      source: typeof record.source === 'string' ? record.source : '',
+      kind,
+      runnable: runnableValue === 'yes' || runnableValue === 'no' ? runnableValue : 'unknown',
+      ...(managerHint ? { managerHint } : {}),
+    }]
+  })
+  return entries.sort((left, right) => (
+    left.path.localeCompare(right.path) || left.name.localeCompare(right.name)
+  ))
+}
+
+/** True when two hook-evidence lists describe the same hooks. */
+export function gitHookEvidenceMatches(approved: unknown, current: unknown): boolean {
+  return JSON.stringify(normalizeGitHookEvidence(approved))
+    === JSON.stringify(normalizeGitHookEvidence(current))
 }
 
 /** Read-only, language-agnostic audit of Git hooks and common hook-manager manifests. */

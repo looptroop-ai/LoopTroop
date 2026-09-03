@@ -17,7 +17,7 @@ import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { isGitHookPolicy } from '../../git/hookPolicy'
 import { cancelTicket } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
-import { withCommandLogging } from '../../log/commandLogger'
+import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
 import { registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
 import { refreshProviderCatalog } from '../../opencode/providerCatalog'
@@ -157,9 +157,9 @@ export async function handleStartTicket(c: Context) {
   }
 
   emitRoutePhaseLog(ticketId, startPhase, 'info', 'Initializing workspace and ticket directories.')
-  let init: ReturnType<typeof initializeTicket>
+  let init: Awaited<ReturnType<typeof initializeTicket>>
   try {
-    init = withCommandLogging(
+    init = await withCommandLoggingAsync(
       ticketId,
       ticketContext.externalId,
       startPhase,
@@ -473,7 +473,7 @@ export async function handleCancelTicket(c: Context) {
   return respondWithState(c, ticketId, 'Cancel action accepted')
 }
 
-export function handleMergeTicket(c: Context) {
+export async function handleMergeTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -493,7 +493,7 @@ export function handleMergeTicket(c: Context) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    const mergeReport = withCommandLogging(
+    const mergeReport = await withCommandLoggingAsync(
       ticketId,
       ticket.externalId,
       phase,

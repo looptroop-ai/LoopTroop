@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process'
 import {
   cpSync,
   existsSync,
@@ -24,18 +23,7 @@ import { getTicketBeadsDir, updateTicketMeta } from './metadata'
 import { ensureWorktreeOwnerMarker } from '../storage/worktreeOwnership'
 import { safeAtomicWrite } from '../io/atomicWrite'
 import { getErrorMessage } from '@shared/typeGuards'
-import * as commandLogger from '../log/commandLogger'
-
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
+import { gitSyncSucceeds, runGitSync } from '../git/runCommand'
 
 interface InitializeOptions {
   externalId: string
@@ -77,41 +65,13 @@ export function getTicketDir(projectRoot: string, externalId: string): string {
 }
 
 function runGit(args: string[], cwd: string, code: string, message: string): string {
-  const fullArgs = ['-C', cwd, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new TicketInitializationError(code, `${message}: ${detail}`)
-  }
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  return stdout
+  const result = runGitSync(cwd, args)
+  if (!result.ok) throw new TicketInitializationError(code, `${message}: ${result.errorDetail}`)
+  return result.stdout
 }
 
 function gitCommandSucceeds(args: string[], cwd: string): boolean {
-  const fullArgs = ['-C', cwd, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-  const ok = result.status === 0 && !result.error
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (ok) {
-    logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  } else {
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-  }
-  return ok
+  return gitSyncSucceeds(cwd, args)
 }
 
 function resolveGitPath(basePath: string, gitPath: string): string {
@@ -383,13 +343,18 @@ function materializeWorktree(
   }
 }
 
-export function initializeTicket(options: InitializeOptions): InitializeTicketResult {
+/**
+ * Asynchronous for one reason: the origin fetch below reaches the network, and
+ * this runs on the ticket-start request. Everything else here is local git
+ * plumbing and stays synchronous.
+ */
+export async function initializeTicket(options: InitializeOptions): Promise<InitializeTicketResult> {
   const branchName = options.externalId
   // Callers may pass an uncanonicalised folder; normalising here keeps every
   // derived path byte-identical to the project root stored at attach time.
   const projectFolder = normalizeFolderPath(options.projectFolder)
   ensureGitRepo(projectFolder)
-  tryFetchOrigin(projectFolder)
+  await tryFetchOrigin(projectFolder)
   const baseBranch = detectGitBaseBranch(projectFolder)
   const baseBranchRef = ensureBaseBranch(projectFolder, baseBranch)
   const worktreePath = getTicketWorktreePath(projectFolder, options.externalId)

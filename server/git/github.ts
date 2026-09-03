@@ -1,110 +1,70 @@
-import { spawnSync } from 'node:child_process'
 import { getCurrentBranch } from './repository'
-import * as commandLogger from '../log/commandLogger'
+import {
+  runCommand,
+  runCommandSync,
+  runGitSync,
+  runGitSyncOrThrow,
+  type RunCommandOptions,
+  type RunCommandResult,
+} from './runCommand'
 
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
-
-const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 const GIT_PATCH_MAX_BUFFER_BYTES = 2 * 1024 * 1024
 const GITHUB_PERMISSION_CHECK_TIMEOUT_MS = 5_000
 
-function runCommand(
-  bin: string,
-  args: string[],
-  options?: {
-    cwd?: string
-    input?: string
-    env?: NodeJS.ProcessEnv
-    maxBuffer?: number
-  },
-): string {
-  const result = spawnSync(bin, args, {
-    cwd: options?.cwd,
-    input: options?.input,
-    encoding: 'utf8',
-    env: options?.env,
-    maxBuffer: options?.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
+/**
+ * Ceiling for a `gh` call, which had none at all before.
+ *
+ * Longer than the 30s local-git default because these are round trips to the
+ * GitHub API — a merge on a busy repository is measured in seconds, not
+ * milliseconds — and short enough that a hung request cannot hold a phase open.
+ */
+const GITHUB_COMMAND_TIMEOUT_MS = 60_000
 
-  if (result.status !== 0 || result.error) {
-    const error = result.error?.message ?? `exit code ${result.status ?? '?'}`
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd(bin, args, {
-      ok: false,
-      error,
-      stdin: options?.input?.trim() || undefined,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
+type CommandAttempt =
+  | { ok: true; stdout: string; stderr: string }
+  | { ok: false; error: string }
 
-  logCmd(bin, args, {
-    ok: true,
-    stdin: options?.input?.trim() || undefined,
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-  })
-  return stdout
+function toAttempt(result: RunCommandResult): CommandAttempt {
+  return result.ok
+    ? { ok: true, stdout: result.stdout, stderr: result.stderr }
+    : { ok: false, error: result.errorDetail ?? `exit code ${result.status ?? '?'}` }
 }
 
-function tryCommand(
-  bin: string,
-  args: string[],
-  options?: {
-    cwd?: string
-    input?: string
-    env?: NodeJS.ProcessEnv
-    maxBuffer?: number
-    timeout?: number
-  },
-): { ok: true; stdout: string; stderr: string } | { ok: false; error: string } {
-  const result = spawnSync(bin, args, {
-    cwd: options?.cwd,
-    input: options?.input,
-    encoding: 'utf8',
-    env: options?.env,
-    maxBuffer: options?.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
-    timeout: options?.timeout,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
+/**
+ * `gh` talks to github.com on every call, so all of them are asynchronous;
+ * the plain git reads in this module are local and stay synchronous.
+ */
+async function runGh(args: string[], options?: RunCommandOptions): Promise<string> {
+  const result = await runCommand('gh', args, { timeoutMs: GITHUB_COMMAND_TIMEOUT_MS, ...options })
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
+}
 
-  if (result.status !== 0 || result.error) {
-    const error = result.error?.message ?? `exit code ${result.status ?? '?'}`
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd(bin, args, {
-      ok: false,
-      error,
-      stdin: options?.input?.trim() || undefined,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    return { ok: false, error: detail }
-  }
+async function tryGh(args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
+  return toAttempt(await runCommand('gh', args, { timeoutMs: GITHUB_COMMAND_TIMEOUT_MS, ...options }))
+}
 
-  logCmd(bin, args, {
-    ok: true,
-    stdin: options?.input?.trim() || undefined,
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-  })
-  return { ok: true, stdout, stderr }
+function trySyncCommand(bin: string, args: string[], options?: RunCommandOptions): CommandAttempt {
+  return toAttempt(runCommandSync(bin, args, options))
 }
 
 function runGit(projectPath: string, args: string[]): string {
-  return runCommand('git', ['-C', projectPath, ...args])
+  return runGitSyncOrThrow(projectPath, args)
+}
+
+function tryGit(projectPath: string, args: string[], options?: RunCommandOptions): CommandAttempt {
+  return toAttempt(runGitSync(projectPath, args, options))
+}
+
+/** Reaches the remote, so it is asynchronous unlike the other git helpers here. */
+async function tryRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
+  return toAttempt(await runCommand('git', ['-C', projectPath, ...args], options))
+}
+
+async function runRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
+  const result = await runCommand('git', ['-C', projectPath, ...args], options)
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
 }
 
 export interface GitHubRepoRef {
@@ -230,7 +190,7 @@ function resolveSshHostname(host: string): string | null {
     return SSH_HOSTNAME_CACHE.get(normalizedHost) ?? null
   }
 
-  const result = tryCommand('ssh', ['-G', host])
+  const result = trySyncCommand('ssh', ['-G', host])
   if (!result.ok) {
     SSH_HOSTNAME_CACHE.set(normalizedHost, null)
     return null
@@ -354,15 +314,16 @@ export function assertGitHubOrigin(projectPath: string): GitHubRepoRef {
   return repo
 }
 
+/** `gh --version` answers from disk, so this one probe stays synchronous. */
 export function isGhInstalled(): boolean {
-  return tryCommand('gh', ['--version']).ok
+  return trySyncCommand('gh', ['--version'], { timeoutMs: GITHUB_PERMISSION_CHECK_TIMEOUT_MS }).ok
 }
 
-export function getGhAuthStatus(): { ok: true } | { ok: false; error: string } {
-  const result = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
+export async function getGhAuthStatus(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const result = await tryGh(['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
   if (!result.ok) {
     if (isUnsupportedGhAuthStatusJsonFlag(result.error)) {
-      const fallback = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com'])
+      const fallback = await tryGh(['auth', 'status', '--hostname', 'github.com'])
       return fallback.ok ? { ok: true } : { ok: false, error: fallback.error }
     }
     return { ok: false, error: result.error }
@@ -402,15 +363,15 @@ function isUnsupportedGhAuthStatusJsonFlag(error: string): boolean {
   return /unknown flag:\s*--json/i.test(error)
 }
 
-export function getGitHubRepoAccess(projectPath: string): { ok: true; repo: GitHubRepoRef } | { ok: false; error: string } {
+export async function getGitHubRepoAccess(projectPath: string): Promise<{ ok: true; repo: GitHubRepoRef } | { ok: false; error: string }> {
   const repo = assertGitHubOrigin(projectPath)
-  const result = tryCommand('gh', ['repo', 'view', repo.slug, '--json', 'nameWithOwner'], { cwd: projectPath })
+  const result = await tryGh(['repo', 'view', repo.slug, '--json', 'nameWithOwner'], { cwd: projectPath })
   return result.ok
     ? { ok: true, repo }
     : { ok: false, error: result.error }
 }
 
-export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAccess {
+export async function getGitHubRepoWriteAccess(projectPath: string): Promise<GitHubRepoWriteAccess> {
   let repo: GitHubRepoRef
   try {
     repo = assertGitHubOrigin(projectPath)
@@ -422,9 +383,9 @@ export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAc
     }
   }
 
-  const result = tryCommand('gh', ['repo', 'view', repo.slug, '--json', 'viewerPermission'], {
+  const result = await tryGh(['repo', 'view', repo.slug, '--json', 'viewerPermission'], {
     cwd: projectPath,
-    timeout: GITHUB_PERMISSION_CHECK_TIMEOUT_MS,
+    timeoutMs: GITHUB_PERMISSION_CHECK_TIMEOUT_MS,
   })
   if (!result.ok) {
     return { status: 'unknown', permission: null, error: result.error }
@@ -455,12 +416,12 @@ export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAc
   }
 }
 
-function runGhJson<T>(
+async function runGhJson<T>(
   projectPath: string,
   args: string[],
   options?: { input?: string; env?: NodeJS.ProcessEnv },
-): T {
-  const stdout = runCommand('gh', args, {
+): Promise<T> {
+  const stdout = await runGh(args, {
     cwd: projectPath,
     input: options?.input,
     env: options?.env,
@@ -473,8 +434,8 @@ function runGhJson<T>(
   return JSON.parse(stdout) as T
 }
 
-function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): PullRequestInfo[] {
-  const pulls = runGhJson<GitHubPullRecord[]>(projectPath, [
+async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): Promise<PullRequestInfo[]> {
+  const pulls = await runGhJson<GitHubPullRecord[]>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls`,
     '--method',
@@ -494,23 +455,23 @@ function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: 
     .sort((left, right) => right.number - left.number)
 }
 
-export function getPullRequestForBranch(projectPath: string, branchName: string, baseBranch: string): PullRequestInfo | null {
+export async function getPullRequestForBranch(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
   const repo = assertGitHubOrigin(projectPath)
-  return listPullRequests(projectPath, repo, branchName, baseBranch)[0] ?? null
+  return (await listPullRequests(projectPath, repo, branchName, baseBranch))[0] ?? null
 }
 
-export function createOrUpdateDraftPullRequest(params: {
+export async function createOrUpdateDraftPullRequest(params: {
   projectPath: string
   branchName: string
   baseBranch: string
   title: string
   body: string
-}): PullRequestInfo {
+}): Promise<PullRequestInfo> {
   const repo = assertGitHubOrigin(params.projectPath)
-  const existing = listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch)[0] ?? null
+  const existing = (await listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch))[0] ?? null
 
   if (existing) {
-    const updated = runGhJson<GitHubPullRecord>(params.projectPath, [
+    const updated = await runGhJson<GitHubPullRecord>(params.projectPath, [
       'api',
       `repos/${repo.slug}/pulls/${existing.number}`,
       '--method',
@@ -523,7 +484,7 @@ export function createOrUpdateDraftPullRequest(params: {
     return toPullRequestInfo(updated) ?? existing
   }
 
-  const created = runGhJson<GitHubPullRecord>(params.projectPath, [
+  const created = await runGhJson<GitHubPullRecord>(params.projectPath, [
     'api',
     `repos/${repo.slug}/pulls`,
     '--method',
@@ -547,10 +508,10 @@ export function createOrUpdateDraftPullRequest(params: {
   return info
 }
 
-export function markPullRequestReady(projectPath: string, prNumber: number): PullRequestInfo {
-  runCommand('gh', ['pr', 'ready', String(prNumber)], { cwd: projectPath })
+export async function markPullRequestReady(projectPath: string, prNumber: number): Promise<PullRequestInfo> {
+  await runGh(['pr', 'ready', String(prNumber)], { cwd: projectPath })
   const repo = assertGitHubOrigin(projectPath)
-  const refreshed = runGhJson<GitHubPullRecord>(projectPath, [
+  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}`,
     '--method',
@@ -563,9 +524,9 @@ export function markPullRequestReady(projectPath: string, prNumber: number): Pul
   return info
 }
 
-export function mergePullRequest(projectPath: string, prNumber: number, title: string): PullRequestInfo {
+export async function mergePullRequest(projectPath: string, prNumber: number, title: string): Promise<PullRequestInfo> {
   const repo = assertGitHubOrigin(projectPath)
-  runGhJson<{ merged?: unknown; message?: unknown }>(projectPath, [
+  await runGhJson<{ merged?: unknown; message?: unknown }>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}/merge`,
     '--method',
@@ -576,7 +537,7 @@ export function mergePullRequest(projectPath: string, prNumber: number, title: s
     `commit_title=${title}`,
   ])
 
-  const refreshed = runGhJson<GitHubPullRecord>(projectPath, [
+  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}`,
     '--method',
@@ -594,9 +555,9 @@ export function readGitDiff(projectPath: string, fromRef: string, toRef: string)
   const looptroopExclusion = ':(top,exclude).looptroop'
   const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
   const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
-  const patchResult = tryCommand(
-    'git',
-    ['-C', projectPath, 'diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion],
+  const patchResult = tryGit(
+    projectPath,
+    ['diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion],
     { maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES },
   )
 
@@ -785,12 +746,12 @@ function ensureNoTrackedWorktreeChanges(projectPath: string): void {
   }
 }
 
-export function syncLocalBaseBranch(projectPath: string, baseBranch: string): {
+export async function syncLocalBaseBranch(projectPath: string, baseBranch: string): Promise<{
   originalBranch: string | null
   localBaseHead: string
   remoteBaseHead: string
-} {
-  runGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+}> {
+  await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
   ensureNoTrackedWorktreeChanges(projectPath)
 
   const originalBranch = getCurrentBranch(projectPath)
@@ -815,17 +776,17 @@ export function syncLocalBaseBranch(projectPath: string, baseBranch: string): {
   }
 }
 
-export function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: string, commitSha: string): RemoteBaseVerification {
+export async function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: string, commitSha: string): Promise<RemoteBaseVerification> {
   const verifiedCommitSha = normalizeString(commitSha)
   if (!verifiedCommitSha) {
     throw new Error('Cannot verify remote merge without a pull request head or candidate commit SHA.')
   }
 
-  runGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+  await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
 
   const remoteBaseRef = `refs/remotes/origin/${baseBranch}`
   const remoteBaseHead = runGit(projectPath, ['rev-parse', remoteBaseRef])
-  const ancestor = tryCommand('git', ['-C', projectPath, 'merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
+  const ancestor = tryGit(projectPath, ['merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
   if (!ancestor.ok) {
     throw new Error(`Remote origin/${baseBranch} does not contain commit ${verifiedCommitSha}. Latest remote base is ${remoteBaseHead}.`)
   }
@@ -837,8 +798,8 @@ export function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: 
   }
 }
 
-export function tryDeleteRemoteBranch(projectPath: string, branchName: string): { deleted: boolean; warning: string | null } {
-  const result = tryCommand('git', ['-C', projectPath, 'push', 'origin', '--delete', branchName])
+export async function tryDeleteRemoteBranch(projectPath: string, branchName: string): Promise<{ deleted: boolean; warning: string | null }> {
+  const result = await tryRemoteGit(projectPath, ['push', 'origin', '--delete', branchName])
   return result.ok
     ? { deleted: true, warning: null }
     : { deleted: false, warning: result.error }

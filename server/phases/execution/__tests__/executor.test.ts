@@ -387,7 +387,7 @@ describe('executeBead', () => {
 
   it('creates allow-all sessions for owned coding attempts', async () => {
     resetTestDb()
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Owned coding session permissions',
     })
     patchTicket(ticket.id, { status: 'CODING' })
@@ -420,7 +420,7 @@ describe('executeBead', () => {
 
   it('recreates allow-all sessions on fresh owned coding retries', async () => {
     resetTestDb()
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Owned coding session retries',
     })
     patchTicket(ticket.id, { status: 'CODING' })
@@ -650,7 +650,7 @@ describe('executeBead', () => {
 
   it('treats owned coding iteration timeout as context wipe instead of continuable session preservation', async () => {
     resetTestDb()
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Owned coding timeout reset',
     })
     patchTicket(ticket.id, { status: 'CODING' })

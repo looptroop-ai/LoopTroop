@@ -33,8 +33,8 @@ describe('runtime Manual QA bead origin projection', () => {
     runtimeRepoManager.cleanup()
   })
 
-  it('projects a validated typed origin and drops malformed or unsafe origins', () => {
-    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime QA origin' })
+  it('projects a validated typed origin and drops malformed or unsafe origins', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime QA origin' })
     const origin = {
       schemaVersion: 1,
       actionId: 'manual-qa-submit-one',
@@ -81,8 +81,8 @@ describe('runtime Manual QA bead origin projection', () => {
     expect(runtimeBeads?.[1]?.qaOrigin).toBeNull()
   })
 
-  it('preserves the bead update timestamp used to time the active iteration', () => {
-    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime bead timestamp' })
+  it('preserves the bead update timestamp used to time the active iteration', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Runtime bead timestamp' })
     writeJsonl(setup.paths.beadsPath, [{
       id: 'active-bead',
       title: 'Active bead',
@@ -98,8 +98,8 @@ describe('runtime Manual QA bead origin projection', () => {
     })
   })
 
-  it('projects active implementation time without blocked retry pauses and includes setup/testing breakdowns', () => {
-    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Implementation timing' })
+  it('projects active implementation time without blocked retry pauses and includes setup/testing breakdowns', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Implementation timing' })
     const context = getTicketContext(setup.ticket.id)
     if (!context) throw new Error('Expected ticket context')
 
@@ -171,8 +171,8 @@ describe('runtime Manual QA bead origin projection', () => {
     })
   })
 
-  it('bills a question wait to waiting time rather than to coding', () => {
-    const setup = createInitializedTestTicket(runtimeRepoManager, { title: 'Question wait timing' })
+  it('bills a question wait to waiting time rather than to coding', async () => {
+    const setup = await createInitializedTestTicket(runtimeRepoManager, { title: 'Question wait timing' })
     const context = getTicketContext(setup.ticket.id)
     if (!context) throw new Error('Expected ticket context')
 

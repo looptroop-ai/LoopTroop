@@ -176,8 +176,22 @@ function readLogfmtValue(line: string, key: string): string | undefined {
   return readField(line, key)
 }
 
+/** An ISO timestamp, or null when the value is missing or not a date. */
+function readIsoTimestamp(value: string | null | undefined): string | null {
+  if (!value) return null
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString()
+}
+
 export interface OpenCodeNativeLogEntry {
-  timestamp: string
+  /**
+   * Null when the line carried no usable time.
+   *
+   * Substituting `Date.now()` was worse than admitting ignorance: it invents
+   * ordering data, and in the merged `channel=all` view it floats an entry from
+   * hours ago above everything current.
+   */
+  timestamp: string | null
   type: 'debug'
   source: 'debug'
   audience: 'debug'
@@ -190,6 +204,50 @@ export interface OpenCodeNativeLogEntry {
   content: string
   sessionId: string
   data: Record<string, unknown>
+}
+
+/**
+ * One native log line, or null when it belongs to another session.
+ *
+ * `timestampUnreadable` says the line carried a time this could not parse, so
+ * the caller can count it without turning each one into its own warning.
+ */
+function parseNativeLogLine(
+  line: string,
+  sessionIdSet: Set<string>,
+): { record: OpenCodeNativeLogEntry; timestampUnreadable: boolean } | null {
+  const rawSessionId = readField(line, 'session.id')
+  if (!rawSessionId || !sessionIdSet.has(rawSessionId)) return null
+
+  // Read like every other field: a quoted timestamp read raw came back with its
+  // quotes and threw on `new Date(...).toISOString()`.
+  const time = readLogfmtValue(line, 'time')
+  const level = readLogfmtValue(line, 'level') ?? 'INFO'
+  const service = readField(line, 'service')
+  const msg = readLogfmtValue(line, 'msg') ?? readLogfmtValue(line, 'message') ?? line.trim()
+
+  const timestamp = readIsoTimestamp(time)
+  const serviceTag = service ? `[opencode:${service}]` : '[opencode]'
+  const content = `[DEBUG] [${level}] ${serviceTag} ${msg}`
+
+  return {
+    timestampUnreadable: Boolean(time) && timestamp === null,
+    record: {
+      timestamp,
+      type: 'debug',
+      source: 'debug',
+      audience: 'debug',
+      kind: 'session',
+      op: 'append',
+      phase: 'opencode_native',
+      phaseAttempt: 1,
+      status: 'opencode_native',
+      message: content,
+      content,
+      sessionId: rawSessionId,
+      data: { level, service: service ?? null, ocNativeLog: true },
+    },
+  }
 }
 
 export function readOpenCodeNativeLogs(
@@ -208,35 +266,24 @@ export function readOpenCodeNativeLogs(
       continue
     }
 
+    let unreadableLines = 0
     for (const line of content.split('\n')) {
       if (!line.trim()) continue
-      const rawSessionId = readField(line, 'session.id')
-      if (!rawSessionId || !sessionIdSet.has(rawSessionId)) continue
-
-      const time = readField(line, 'time')
-      const level = readLogfmtValue(line, 'level') ?? 'INFO'
-      const service = readField(line, 'service')
-      const msg = readLogfmtValue(line, 'msg') ?? readLogfmtValue(line, 'message') ?? line.trim()
-
-      const timestamp = time ? (new Date(time).toISOString()) : new Date().toISOString()
-      const serviceTag = service ? `[opencode:${service}]` : '[opencode]'
-      const content = `[DEBUG] [${level}] ${serviceTag} ${msg}`
-
-      results.push({
-        timestamp,
-        type: 'debug',
-        source: 'debug',
-        audience: 'debug',
-        kind: 'session',
-        op: 'append',
-        phase: 'opencode_native',
-        phaseAttempt: 1,
-        status: 'opencode_native',
-        message: content,
-        content,
-        sessionId: rawSessionId,
-        data: { level, service: service ?? null, ocNativeLog: true },
-      })
+      // Per line, because one unreadable row used to abort the rest of the
+      // file — and with it the merged log channel, which 500s on the throw.
+      try {
+        const entry = parseNativeLogLine(line, sessionIdSet)
+        if (entry) {
+          results.push(entry.record)
+          if (entry.timestampUnreadable) unreadableLines += 1
+        }
+      } catch {
+        unreadableLines += 1
+      }
+    }
+    if (unreadableLines > 0) {
+      // Bounded: one line per file, not one per bad row.
+      console.warn(`[opencode] Skipped or de-timestamped ${unreadableLines} unreadable line(s) in ${filePath}.`)
     }
   }
 

@@ -587,7 +587,7 @@ describe('runOpenCodePrompt', () => {
 
   it('classifies setup-plan drafting prompt metadata as AI response timeout by default', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'AI response timeout metadata',
     })
     patchTicket(ticket.id, { status: 'GENERATING_EXECUTION_SETUP_PLAN' })
@@ -617,7 +617,7 @@ describe('runOpenCodePrompt', () => {
 
   it('blocks after 10 continuable OpenCode retry events by default and preserves the session for Continue', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Default OpenCode retry budget',
     })
     patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
@@ -759,7 +759,7 @@ describe('runOpenCodePrompt', () => {
 
   it('creates allow-all sessions for workflow phases', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Execution-band session permissions',
     })
     patchTicket(ticket.id, { status: 'CODING' })
@@ -781,7 +781,7 @@ describe('runOpenCodePrompt', () => {
 
   it('also creates allow-all sessions for non-execution workflow phases', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Non execution session permissions',
     })
     patchTicket(ticket.id, { status: 'DRAFTING_PRD' })
@@ -833,7 +833,7 @@ describe('runOpenCodePrompt', () => {
     vi.useFakeTimers()
     try {
       resetTestDb()
-      const { ticket } = createInitializedTestTicket(repoManager, {
+      const { ticket } = await createInitializedTestTicket(repoManager, {
         title: 'Owned session retry',
       })
       patchTicket(ticket.id, { status: 'CODING' })
@@ -914,7 +914,7 @@ describe('runOpenCodePrompt', () => {
 
   it('prompts a newly-created owned session without requiring it to appear in the remote session list first', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Owned session immediate prompt',
     })
     patchTicket(ticket.id, { status: 'COUNCIL_DELIBERATING' })
@@ -943,7 +943,7 @@ describe('runOpenCodePrompt', () => {
 
   it('abandons an existing owned active session when forceFresh is requested', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Fresh PR session',
     })
     patchTicket(ticket.id, { status: 'CREATING_PULL_REQUEST' })
@@ -985,7 +985,7 @@ describe('runOpenCodePrompt', () => {
 
   it('preserves an owned same-session prompt after a resumable transport interruption', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Same session prompt continuation',
     })
     patchTicket(ticket.id, { status: 'CODING' })
@@ -1023,7 +1023,7 @@ describe('runOpenCodePrompt', () => {
 
   it('abandons an owned same-session prompt after a non-continuable auth failure', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Same session auth cleanup',
     })
     patchTicket(ticket.id, { status: 'CODING' })
@@ -1060,7 +1060,7 @@ describe('runOpenCodePrompt', () => {
   it('replaces a pending continuation prompt with the bare PROM54 text in the owned active session', async () => {
     resetTestDb()
     clearAllPendingSessionContinuationsForTests()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Same session continuation prompt',
     })
     patchTicket(ticket.id, { status: 'PREPARING_EXECUTION_ENV' })
@@ -1101,7 +1101,7 @@ describe('runOpenCodePrompt', () => {
   it('sends a custom continuation prompt to the preserved session across setup attempt numbers', async () => {
     resetTestDb()
     clearAllPendingSessionContinuationsForTests()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Workspace setup note continuation',
     })
     patchTicket(ticket.id, { status: 'PREPARING_EXECUTION_ENV' })
@@ -1147,7 +1147,7 @@ describe('runOpenCodePrompt', () => {
     vi.useFakeTimers()
     try {
       resetTestDb()
-      const { ticket } = createInitializedTestTicket(repoManager, {
+      const { ticket } = await createInitializedTestTicket(repoManager, {
         title: 'Execution permission rejection',
       })
       patchTicket(ticket.id, { status: 'CODING' })

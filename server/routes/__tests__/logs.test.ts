@@ -39,7 +39,7 @@ describe('ticket log projection API', () => {
    * whole project, and rather than retrying a test that is not flaky.
    */
   it('defaults to the newest 20 projected rows without reading the complete history', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     for (let index = 0; index < 300; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z` }, 'system', 'CODING')
     }
@@ -63,7 +63,7 @@ describe('ticket log projection API', () => {
   }, 60_000)
 
   it('filters command chatter before paginating the overview', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'visible milestone', {}, 'system', 'CODING')
     for (let index = 0; index < 25; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `[CMD] $ command-${index}`, {}, 'system', 'CODING')
@@ -83,7 +83,7 @@ describe('ticket log projection API', () => {
   })
 
   it('filters historical rows by bead id so completed bead transcripts remain addressable', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'model_output', 'CODING', 'older bead output', {
       audience: 'ai',
       kind: 'text',
@@ -108,7 +108,7 @@ describe('ticket log projection API', () => {
   })
 
   it('filters AI detail-only rows before paginating the overview', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     for (let index = 0; index < 25; index += 1) {
       appendLogEvent(ticket.id, 'model_output', 'CODING', `tool detail ${index}`, {
         audience: 'ai',
@@ -128,7 +128,7 @@ describe('ticket log projection API', () => {
   })
 
   it('keeps health responsive and deduplicates readers during a cold projection catch-up', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     const paths = getTicketPaths(ticket.id)
     expect(paths).not.toBeNull()
     const lines = Array.from({ length: 2_000 }, (_, index) => JSON.stringify({
@@ -159,7 +159,7 @@ describe('ticket log projection API', () => {
   })
 
   it('returns newest matching rows first, pages older rows, and exports complete history', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     for (let index = 0; index < 4; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:0${index}.000Z` }, 'system', 'CODING')
     }
@@ -194,7 +194,7 @@ describe('ticket log projection API', () => {
   })
 
   it('exports the same complete history whether it fits one page or five', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     for (let index = 0; index < 5; index += 1) {
       appendLogEvent(ticket.id, 'info', 'CODING', `row-${index}`, { timestamp: `2026-01-01T00:00:0${index}.000Z` }, 'system', 'CODING')
     }
@@ -215,7 +215,7 @@ describe('ticket log projection API', () => {
   })
 
   it('counts logical text lines for the complete filtered result without applying the page cursor', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', 'first\nsecond\nthird', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ ignored-overview\nsecond-command-line', {}, 'system', 'CODING')
@@ -250,7 +250,7 @@ describe('ticket log projection API', () => {
   })
 
   it('uses the shared classification for command, error, AI, and debug views', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     appendLogEvent(ticket.id, 'info', 'CODING', '[CMD] $ npm test', {}, 'system', 'CODING')
     appendLogEvent(ticket.id, 'error', 'CODING', 'failed', {}, 'error', 'CODING')
     appendLogEvent(ticket.id, 'model_output', 'CODING', 'thinking', { audience: 'ai', modelId: 'test/model' }, 'opencode', 'CODING')
@@ -264,7 +264,7 @@ describe('ticket log projection API', () => {
   })
 
   it('shows one AI provider error in both the model transcript and ERROR history', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+    const { ticket } = await createInitializedTestTicket(repoManager)
     appendLogEvent(
       ticket.id,
       'error',

@@ -67,7 +67,7 @@ describe('interview workflow phases', () => {
   })
 
   it('persists live interview draft parser metadata for the Council Drafting Questions status', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Show live interview parser notices',
     })
     const sendEvent = vi.fn()

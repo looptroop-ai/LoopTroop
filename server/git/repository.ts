@@ -1,76 +1,18 @@
-import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import * as commandLogger from '../log/commandLogger'
 import { DEFAULT_IGNORE_MODE, type IgnoreMode } from '@shared/ignoreMode'
+import { gitSucceeds, gitSyncSucceeds, runGitSyncOrThrow } from './runCommand'
 
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
-
-const GIT_TIMEOUT_MS = 30_000
-
-const GIT_ENV = {
-  ...process.env,
-  // Prevent git from blocking on credential prompts or interactive input
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_ASKPASS: 'echo',
-}
-
-function runGit(
-  projectPath: string,
-  args: string[],
-): string {
-  const fullArgs = ['-C', projectPath, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env: GIT_ENV })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (result.signal === 'SIGTERM') {
-    const detail = `git command timed out after ${GIT_TIMEOUT_MS / 1000}s: git ${args.join(' ')}`
-    logCmd('git', fullArgs, { ok: false, error: detail })
-    throw new Error(detail)
-  }
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  return stdout
+/**
+ * Every command here is local plumbing except `tryFetchOrigin`, which contacts
+ * the remote and is therefore the one asynchronous export in this module.
+ */
+function runGit(projectPath: string, args: string[]): string {
+  return runGitSyncOrThrow(projectPath, args)
 }
 
 function gitCommandSucceeds(projectPath: string, args: string[]) {
-  const fullArgs = ['-C', projectPath, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env: GIT_ENV })
-  const ok = result.status === 0 && !result.error && result.signal !== 'SIGTERM'
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (ok) {
-    logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  } else {
-    const error = result.signal === 'SIGTERM'
-      ? `git command timed out after ${GIT_TIMEOUT_MS / 1000}s`
-      : result.error?.message ?? `exit code ${result.status ?? '?'}`
-    logCmd('git', fullArgs, {
-      ok: false,
-      error,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-  }
-  return ok
+  return gitSyncSucceeds(projectPath, args)
 }
 
 const LOOP_TROOP_EXCLUDE_RULES = [
@@ -131,8 +73,12 @@ export function resolveBaseBranchRef(projectPath: string, baseBranch: string): s
   throw new Error(`Base branch ${baseBranch} does not exist in ${projectPath}`)
 }
 
-export function tryFetchOrigin(projectPath: string): boolean {
-  return gitCommandSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+/**
+ * Asynchronous because it reaches the remote: an unreachable or slow origin
+ * would otherwise hold the daemon thread for the whole timeout.
+ */
+export function tryFetchOrigin(projectPath: string): Promise<boolean> {
+  return gitSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
 }
 
 /**

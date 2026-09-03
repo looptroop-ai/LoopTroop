@@ -435,7 +435,7 @@ export async function runPreFlightChecks(
     })
 
     // 12. GitHub auth
-    const authStatus = ghInstalled ? deps.getGhAuthStatus() : { ok: false as const, error: 'gh CLI is not installed' }
+    const authStatus = ghInstalled ? await deps.getGhAuthStatus() : { ok: false as const, error: 'gh CLI is not installed' }
     checks.push({
       name: 'GitHub Auth',
       category: 'connectivity',
@@ -445,7 +445,7 @@ export async function runPreFlightChecks(
 
     // 13. GitHub repository access
     const repoAccess = ghInstalled && authStatus.ok
-      ? deps.getGitHubRepoAccess(paths.worktreePath)
+      ? await deps.getGitHubRepoAccess(paths.worktreePath)
       : { ok: false as const, error: 'GitHub auth is not ready' }
     checks.push({
       name: 'GitHub Repo Access',

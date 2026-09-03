@@ -161,6 +161,38 @@ describe('readBeadsFile', () => {
     }
   })
 
+  it('fails closed on a malformed line when the caller says the read is authoritative', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    writeFileSync(path, [
+      JSON.stringify({ id: 'bead-1', status: 'done' }),
+      '{ not json',
+    ].join('\n'))
+
+    // The Manual QA evidence manifest decides which images reach a prompt, so a
+    // line that quietly disappears becomes evidence that silently never arrives.
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' })).toThrow('unparseable JSON at line')
+    expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['bead-1'])
+  })
+
+  it('fails closed on an entry with no id when the read is authoritative', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    writeFileSync(path, [JSON.stringify({ status: 'done' })].join('\n'))
+
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' })).toThrow('no usable id')
+  })
+
   it('skips a malformed line instead of throwing on the whole tracker', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')

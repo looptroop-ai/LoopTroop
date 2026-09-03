@@ -40,7 +40,7 @@ describe('handleBeadsDraft', () => {
   })
 
   it('loads PRD and relevant-files context, then persists structured draft metrics in the companion artifact', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Harden DRAFTING_BEADS',
       description: 'Keep beads draft context and companion artifacts strict.',
     })

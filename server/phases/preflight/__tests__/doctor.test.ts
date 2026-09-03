@@ -114,9 +114,9 @@ describe('Pre-Flight Doctor', () => {
         remoteUrl: 'git@github.com:test/looptroop.git',
       }),
       isGhInstalled: () => true,
-      getGhAuthStatus: () => ({ ok: true }),
-      getGitHubRepoAccess: () => ({
-        ok: true,
+      getGhAuthStatus: async () => ({ ok: true as const }),
+      getGitHubRepoAccess: async () => ({
+        ok: true as const,
         repo: {
           owner: 'test',
           repo: 'looptroop',

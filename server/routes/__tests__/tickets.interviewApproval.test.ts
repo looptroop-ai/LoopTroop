@@ -62,7 +62,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function setupApprovalTicket() {
+async function setupApprovalTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -75,7 +75,7 @@ function setupApprovalTicket() {
     description: 'Verify the interview approval routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -120,7 +120,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('saves answer-only edits, rewrites canonical YAML, writes an edit receipt, and clears downstream planning artifacts', async () => {
-    const { app, ticket, paths, raw } = setupApprovalTicket()
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
 
     safeAtomicWrite(`${paths.ticketDir}/prd.yaml`, 'artifact: prd\n')
     upsertLatestPhaseArtifact(ticket.id, 'prd', 'WAITING_PRD_APPROVAL', 'artifact: prd\n')
@@ -196,7 +196,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('archives approval and PRD attempts, clears stale PRD state, approves the edit, and starts PRD drafting', async () => {
-    const { app, ticket, paths, raw } = setupApprovalTicket()
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       'approval_snapshot:interview',
@@ -301,7 +301,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('does not archive attempts when a post-approval interview edit is invalid', async () => {
-    const { app, ticket } = setupApprovalTicket()
+    const { app, ticket } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'REFINING_PRD' })
     createFreshPhaseAttempts(ticket.id, INTERVIEW_EDIT_RESTART_PHASES)
 
@@ -325,7 +325,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects interview answer edits at pre-flight or later', async () => {
-    const { app, ticket } = setupApprovalTicket()
+    const { app, ticket } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'PRE_FLIGHT_CHECK' })
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
@@ -349,7 +349,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects raw interview edits at pre-flight or later', async () => {
-    const { app, ticket, raw } = setupApprovalTicket()
+    const { app, ticket, raw } = await setupApprovalTicket()
     patchTicket(ticket.id, { status: 'PRE_FLIGHT_CHECK' })
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
@@ -364,7 +364,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects invalid answer-only payloads', async () => {
-    const { app, ticket, raw, paths } = setupApprovalTicket()
+    const { app, ticket, raw, paths } = await setupApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
@@ -390,7 +390,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('validates raw interview YAML, canonicalizes it, and forces draft status', async () => {
-    const { app, ticket, paths } = setupApprovalTicket()
+    const { app, ticket, paths } = await setupApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
@@ -460,7 +460,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects invalid raw interview YAML without overwriting the current artifact', async () => {
-    const { app, ticket, raw, paths } = setupApprovalTicket()
+    const { app, ticket, raw, paths } = await setupApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/interview`, {
       method: 'PUT',
@@ -476,7 +476,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('approves the interview, stamps approval metadata, and advances the ticket', async () => {
-    const { app, ticket, paths, raw } = setupApprovalTicket()
+    const { app, ticket, paths, raw } = await setupApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-interview`, {
       method: 'POST',
@@ -501,7 +501,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('requires expectedContentSha256 for interview approval', async () => {
-    const { app, ticket } = setupApprovalTicket()
+    const { app, ticket } = await setupApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-interview`, {
       method: 'POST',
@@ -513,7 +513,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('rejects stale interview approval hashes with 409', async () => {
-    const { app, ticket, raw } = setupApprovalTicket()
+    const { app, ticket, raw } = await setupApprovalTicket()
     const expectedContentSha256 = '0'.repeat(64)
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-interview`, {
@@ -532,7 +532,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('records a reason when an answer is marked skipped at approval, and again only when it changes', async () => {
-    const { app, ticket, paths } = setupApprovalTicket()
+    const { app, ticket, paths } = await setupApprovalTicket()
 
     const markSkipped = (reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',
@@ -587,7 +587,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('records a skip introduced through the raw YAML tab', async () => {
-    const { app, ticket, document } = setupApprovalTicket()
+    const { app, ticket, document } = await setupApprovalTicket()
 
     const skippedDocument: InterviewDocument = {
       ...document,
@@ -625,7 +625,7 @@ describe('ticketRouter interview approval routes', () => {
   })
 
   it('records a resolution when a skipped answer is answered after all', async () => {
-    const { app, ticket } = setupApprovalTicket()
+    const { app, ticket } = await setupApprovalTicket()
 
     const save = (skipped: boolean, reason: string | null) => app.request(`/api/tickets/${ticket.id}/interview-answers`, {
       method: 'PUT',

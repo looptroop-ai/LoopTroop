@@ -13,7 +13,8 @@ import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, relative, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { runGitBinarySync, runGitSync } from '../../git/runCommand'
 import { getExecutionSetupCommitExcludedRoots, summarizeWorktreeChanges } from '../../git/worktreeChanges'
 
 const HOOK_VALIDATION_TIMEOUT_MS = 30_000
@@ -38,11 +39,11 @@ export interface GitHookValidationFileAudit {
 }
 
 function worktreeFingerprint(worktreePath: string): string {
-  const status = spawnSync('git', ['-C', worktreePath, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { encoding: 'buffer' })
-  const diff = spawnSync('git', ['-C', worktreePath, 'diff', 'HEAD', '--binary', '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop'], { encoding: 'buffer' })
+  const status = runGitBinarySync(worktreePath, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])
+  const diff = runGitBinarySync(worktreePath, ['diff', 'HEAD', '--binary', '--', ...REPO_SCOPE_PATHSPECS])
   return createHash('sha256')
-    .update(status.stdout ?? Buffer.alloc(0))
-    .update(diff.stdout ?? Buffer.alloc(0))
+    .update(status.stdout)
+    .update(diff.stdout)
     .digest('hex')
 }
 
@@ -63,41 +64,29 @@ function buildFileAudit(worktreePath: string, beforeFingerprint: string): GitHoo
 }
 
 function listUntrackedPaths(worktreePath: string): Set<string> {
-  const result = spawnSync(
-    'git',
-    ['-C', worktreePath, 'ls-files', '--others', '--exclude-standard', '-z'],
-    { encoding: 'buffer' },
-  )
-  if (result.status !== 0 || result.error) return new Set()
-  return new Set((result.stdout ?? Buffer.alloc(0)).toString('utf8').split('\0').filter(Boolean))
+  const result = runGitBinarySync(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'])
+  if (!result.ok) return new Set()
+  return new Set(result.stdout.toString('utf8').split('\0').filter(Boolean))
 }
 
 function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
-  const gitDirectoryResult = spawnSync(
-    'git',
-    ['-C', worktreePath, 'rev-parse', '--absolute-git-dir'],
-    { encoding: 'utf8' },
-  )
-  if (gitDirectoryResult.status !== 0 || gitDirectoryResult.error) return null
+  const gitDirectoryResult = runGitSync(worktreePath, ['rev-parse', '--absolute-git-dir'])
+  if (!gitDirectoryResult.ok) return null
 
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-hook-snapshot-'))
   const temporaryIndex = resolve(temporaryDirectory, 'index')
-  const gitDirectory = (gitDirectoryResult.stdout ?? '').trim()
-  const sourceIndex = resolve(gitDirectory, 'index')
+  const sourceIndex = resolve(gitDirectoryResult.stdout, 'index')
   if (existsSync(sourceIndex)) copyFileSync(sourceIndex, temporaryIndex)
-  const env = { ...process.env, GIT_INDEX_FILE: temporaryIndex }
+  const env = { GIT_INDEX_FILE: temporaryIndex }
   if (!existsSync(temporaryIndex)) {
-    const empty = spawnSync('git', ['-C', worktreePath, 'read-tree', '--empty'], { env })
-    if (empty.status !== 0 || empty.error) {
+    if (!runGitSync(worktreePath, ['read-tree', '--empty'], { env }).ok) {
       rmSync(temporaryDirectory, { recursive: true, force: true })
       return null
     }
   }
-  const staged = spawnSync('git', ['-C', worktreePath, 'add', '-A', '--', '.'], { env })
-  const tree = staged.status === 0 && !staged.error
-    ? spawnSync('git', ['-C', worktreePath, 'write-tree'], { env, encoding: 'utf8' })
-    : null
-  const treeId = tree?.status === 0 && !tree.error ? (tree.stdout ?? '').trim() : ''
+  const staged = runGitSync(worktreePath, ['add', '-A', '--', '.'], { env })
+  const tree = staged.ok ? runGitSync(worktreePath, ['write-tree'], { env }) : null
+  const treeId = tree?.ok ? tree.stdout : ''
   if (!treeId) {
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
@@ -107,7 +96,7 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
 
 function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): void {
   try {
-    spawnSync('git', ['-C', worktreePath, 'restore', '--source', snapshot.tree, '--worktree', '--', '.'])
+    runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
     for (const path of listUntrackedPaths(worktreePath)) {
       if (snapshot.untrackedPaths.has(path)) continue
       const absolutePath = resolve(worktreePath, path)

@@ -1,5 +1,5 @@
 import { isRecord } from '@shared/typeGuards'
-import { readJsonl } from '../../io/jsonl'
+import { readJsonlWithDiagnostics } from '../../io/jsonl'
 import type { Bead, BeadStatus } from './types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from './types'
 
@@ -36,12 +36,34 @@ export function reconcileStoredBeadStatus(
  * Reads a ticket's bead tracker. Every caller used to `readJsonl<Bead>(path)`,
  * which asserts the shape rather than checking it.
  */
-export function readBeadsFile(path: string): Bead[] {
-  return readJsonl<unknown>(path).flatMap((entry, index) => {
+export interface ReadBeadsFileOptions {
+  /**
+   * What a line that does not parse, or does not describe a bead, means.
+   *
+   * `skip` (the default) is for the diagnostic reads — prompt context, progress
+   * counts — where losing one bead is better than losing the whole file.
+   * `fail` is for the authoritative reads, where a silently dropped bead would
+   * be reported as an absence: the Manual QA evidence manifest is the one that
+   * matters, because a missing line there attaches partial evidence to a prompt
+   * and tells nobody.
+   */
+  malformedEntries?: 'skip' | 'fail'
+}
+
+export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
+  const failClosed = options.malformedEntries === 'fail'
+  const { items, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
+  if (failClosed && malformedLines.length > 0) {
+    throw new Error(`Bead file ${path} has unparseable JSON at line(s) ${malformedLines.join(', ')}.`)
+  }
+  return items.flatMap((entry, index) => {
     // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
     // `.status` and took the whole tracker with it, and any other non-object
     // became a `Bead` with no id that later code compared against.
     if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+      if (failClosed) {
+        throw new Error(`Bead file ${path} has an entry at line ${index + 1} with no usable id.`)
+      }
       console.warn(`[beads] Ignored a malformed entry at line ${index + 1} of ${path}.`)
       return []
     }

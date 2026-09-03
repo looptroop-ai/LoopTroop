@@ -25,8 +25,8 @@ function git(worktreePath: string, ...args: string[]): string {
   return (result.stdout ?? '').trim()
 }
 
-function prepareFixture() {
-  const setup = createInitializedTestTicket(repoManager, { title: 'Manual QA checkpoint' })
+async function prepareFixture() {
+  const setup = await createInitializedTestTicket(repoManager, { title: 'Manual QA checkpoint' })
   const baseline = captureFinalTestDirtyFiles(setup.paths.worktreePath)
   writeFileSync(resolve(setup.paths.worktreePath, 'README.md'), '# Candidate after final tests\n')
   writeFileSync(resolve(setup.paths.worktreePath, 'final-test.tmp'), 'temporary runtime output\n')
@@ -54,8 +54,8 @@ describe('Manual QA workspace checkpoints', () => {
     repoManager.cleanup()
   })
 
-  it('commits accepted final-test effects, keeps local-only residue, and records a delivery-clean baseline', () => {
-    const setup = prepareFixture()
+  it('commits accepted final-test effects, keeps local-only residue, and records a delivery-clean baseline', async () => {
+    const setup = await prepareFixture()
     const result = prepareManualQaCheckpoint(setup.ticket.id, 1)
 
     expect(result.checkpointCommit).toMatch(/^[0-9a-f]{40}$/)
@@ -71,8 +71,8 @@ describe('Manual QA workspace checkpoints', () => {
     expect(result.baseline.trackedSignatures['README.md']).toMatch(/^[0-9a-f]{40}$/)
   })
 
-  it('does not include unrelated pre-staged residue in the candidate checkpoint', () => {
-    const setup = prepareFixture()
+  it('does not include unrelated pre-staged residue in the candidate checkpoint', async () => {
+    const setup = await prepareFixture()
     git(setup.paths.worktreePath, 'add', 'final-test.tmp')
 
     const result = prepareManualQaCheckpoint(setup.ticket.id, 1)
@@ -84,8 +84,8 @@ describe('Manual QA workspace checkpoints', () => {
     expect(git(setup.paths.worktreePath, 'status', '--porcelain')).toContain('final-test.tmp')
   })
 
-  it('includes dirty drift in a checkpoint and discards only explicitly audited drift', () => {
-    const setup = prepareFixture()
+  it('includes dirty drift in a checkpoint and discards only explicitly audited drift', async () => {
+    const setup = await prepareFixture()
     prepareManualQaCheckpoint(setup.ticket.id, 1)
 
     writeFileSync(resolve(setup.paths.worktreePath, 'README.md'), '# User accepted application change\n')
@@ -104,8 +104,8 @@ describe('Manual QA workspace checkpoints', () => {
       .toEqual(['drift_included', 'drift_discarded'])
   })
 
-  it('reverts an explicitly audited committed drift path instead of accepting a changed HEAD silently', () => {
-    const setup = prepareFixture()
+  it('reverts an explicitly audited committed drift path instead of accepting a changed HEAD silently', async () => {
+    const setup = await prepareFixture()
     prepareManualQaCheckpoint(setup.ticket.id, 1)
 
     writeFileSync(resolve(setup.paths.worktreePath, 'app-runtime.txt'), 'committed application residue\n')

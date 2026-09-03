@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { runGitSync } from '../../git/runCommand'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../structuredOutput/types'
 
 const INTERNAL_ROOTS = ['.git', '.ticket', '.looptroop'] as const
@@ -48,11 +48,11 @@ function assertSafeWorkspaceInputPath(path: string): string {
 }
 
 function runGit(projectRoot: string, args: string[]): { status: number | null; stdout: string; error?: Error } {
-  const result = spawnSync('git', ['-C', projectRoot, ...args], { encoding: 'utf8' })
+  const result = runGitSync(projectRoot, args)
   return {
     status: result.status,
-    stdout: result.stdout ?? '',
-    ...(result.error ? { error: result.error } : {}),
+    stdout: result.stdout,
+    ...(result.spawnError ? { error: result.spawnError } : {}),
   }
 }
 

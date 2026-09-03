@@ -231,7 +231,7 @@ describe('generateFinalTests', () => {
 
   it('creates allow-all sessions for owned final-test attempts and fresh retries', async () => {
     resetTestDb()
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Owned final test session permissions',
     })
     patchTicket(ticket.id, { status: 'RUNNING_FINAL_TEST' })
@@ -266,7 +266,7 @@ describe('generateFinalTests', () => {
 
   it('dispatches final-test generation prompts with AI response timeout metadata', async () => {
     resetTestDb()
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Final test AI timeout metadata',
     })
     patchTicket(ticket.id, { status: 'RUNNING_FINAL_TEST' })

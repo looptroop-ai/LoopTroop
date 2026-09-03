@@ -1006,7 +1006,7 @@ export async function handleCreatePullRequest(
       let currentStep = 'push_candidate_branch'
 
       try {
-        const pushResult = pushBranchRef({
+        const pushResult = await pushBranchRef({
           projectPath: worktreePath,
           destinationBranch: headBranch,
           sourceRef: candidateCommitSha,
@@ -1027,7 +1027,7 @@ export async function handleCreatePullRequest(
         )
 
         currentStep = 'create_or_update_pull_request'
-        pullRequest = createOrUpdateDraftPullRequest({
+        pullRequest = await createOrUpdateDraftPullRequest({
           projectPath: worktreePath,
           branchName: headBranch,
           baseBranch,
@@ -1101,7 +1101,7 @@ export function refreshPullRequestReport(ticketId: string, report: PullRequestRe
   upsertLatestPhaseArtifact(ticketId, PULL_REQUEST_REPORT_ARTIFACT, 'CREATING_PULL_REQUEST', JSON.stringify(report))
 }
 
-export function refreshPullRequestState(projectPath: string, branchName: string, baseBranch: string): PullRequestInfo | null {
+export function refreshPullRequestState(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
   return getPullRequestForBranch(projectPath, branchName, baseBranch)
 }
 
@@ -1132,7 +1132,7 @@ function verifyTicketWorktreeClean(ticketId: string) {
   ensureWorktreeClean(paths.worktreePath)
 }
 
-export function completeMergedPullRequest(input: {
+export async function completeMergedPullRequest(input: {
   ticketId: string
   externalId: string
   projectPath: string
@@ -1141,8 +1141,8 @@ export function completeMergedPullRequest(input: {
   candidateCommitSha: string | null
   prReport: PullRequestReport
   skipRemoteMerge?: boolean
-}): MergeCompletionReport {
-  const existingPullRequest = getPullRequestForBranch(input.projectPath, input.headBranch, input.baseBranch)
+}): Promise<MergeCompletionReport> {
+  const existingPullRequest = await getPullRequestForBranch(input.projectPath, input.headBranch, input.baseBranch)
   if (!existingPullRequest) {
     throw new Error(`No pull request found for branch ${input.headBranch}.`)
   }
@@ -1162,7 +1162,7 @@ export function completeMergedPullRequest(input: {
     if (!input.skipRemoteMerge && pr.state !== 'merged') {
       if (pr.state === 'draft') {
         currentStep = 'mark_pull_request_ready'
-        pr = markPullRequestReady(input.projectPath, pr.number)
+        pr = await markPullRequestReady(input.projectPath, pr.number)
         currentStep = 'verify_pull_request_candidate'
         assertPullRequestMatchesExpected({
           pr,
@@ -1173,7 +1173,7 @@ export function completeMergedPullRequest(input: {
       }
 
       currentStep = 'merge_pull_request'
-      pr = mergePullRequest(input.projectPath, pr.number, pr.title)
+      pr = await mergePullRequest(input.projectPath, pr.number, pr.title)
     }
 
     if (pr.state !== 'merged') {
@@ -1182,9 +1182,9 @@ export function completeMergedPullRequest(input: {
 
     currentStep = 'verify_remote_merge'
     const verificationSha = input.candidateCommitSha ?? pr.headRefOid
-    const remoteVerification = verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, verificationSha ?? '')
+    const remoteVerification = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, verificationSha ?? '')
     const remoteBranchDelete = pr.state === 'merged'
-      ? tryDeleteRemoteBranch(input.projectPath, input.headBranch)
+      ? await tryDeleteRemoteBranch(input.projectPath, input.headBranch)
       : { deleted: false, warning: null as string | null }
 
     const report: MergeCompletionReport = {

@@ -260,9 +260,17 @@ describe('captureBeadDiff', () => {
     for (const dir of repoDirs) removeTempDir(dir)
   })
 
-  it('returns empty string when there are no changes since the start commit', () => {
+  it('reports an empty diff when there are no changes since the start commit', () => {
     const [dir, sha] = makeFreshRepo()
-    expect(captureBeadDiff(dir, sha)).toBe('')
+    expect(captureBeadDiff(dir, sha)).toEqual({ ok: true, diff: '' })
+  })
+
+  it('reports a git failure as an error rather than as an empty diff', () => {
+    const [dir] = makeFreshRepo()
+    const result = captureBeadDiff(dir, 'not-a-commit')
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('Expected the bogus start commit to fail')
+    expect(result.error).toBeTruthy()
   })
 
   it('returns non-empty diff when files are changed and committed after the start commit', () => {
@@ -270,12 +278,13 @@ describe('captureBeadDiff', () => {
     writeFileSync(join(dir, 'hello.ts'), 'const x = 2\n')
     execFileSync('git', ['-C', dir, 'add', '.'], { stdio: 'pipe' })
     execFileSync('git', ['-C', dir, 'commit', '-m', 'update hello'], { stdio: 'pipe' })
-    const diff = captureBeadDiff(dir, sha)
-    expect(diff.length).toBeGreaterThan(0)
-    expect(diff).toContain('hello.ts')
+    const result = captureBeadDiff(dir, sha)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.diff.length).toBeGreaterThan(0)
+    expect(result.diff).toContain('hello.ts')
   })
 
-  it('excludes .ticket/ paths from the diff (pathspec :!.ticket)', () => {
+  it('excludes both LoopTroop control directories from the diff', () => {
     const [dir, sha] = makeFreshRepo()
     // Commit a regular file change
     writeFileSync(join(dir, 'feature.ts'), 'export const f = true\n')
@@ -286,9 +295,15 @@ describe('captureBeadDiff', () => {
     writeFileSync(join(dir, '.ticket', 'prd.yaml'), 'title: test\n')
     execFileSync('git', ['-C', dir, 'add', '.'], { stdio: 'pipe' })
     execFileSync('git', ['-C', dir, 'commit', '-m', 'add ticket artifact'], { stdio: 'pipe' })
-    const diff = captureBeadDiff(dir, sha)
-    expect(diff).toContain('feature.ts')
-    expect(diff).not.toContain('.ticket')
+    mkdirSync(join(dir, '.looptroop'), { recursive: true })
+    writeFileSync(join(dir, '.looptroop', 'state.json'), '{}\n')
+    execFileSync('git', ['-C', dir, 'add', '.'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', dir, 'commit', '-m', 'add looptroop state'], { stdio: 'pipe' })
+    const result = captureBeadDiff(dir, sha)
+    if (!result.ok) throw new Error(result.error)
+    expect(result.diff).toContain('feature.ts')
+    expect(result.diff).not.toContain('.ticket')
+    expect(result.diff).not.toContain('.looptroop')
   })
 })
 
@@ -309,24 +324,72 @@ describe('commitBeadChanges', () => {
     for (const dir of repoDirs) removeTempDir(dir)
   })
 
-  it('returns { committed: false, pushed: false } when there are no changes', () => {
+  function status(dir: string): string {
+    return execFileSync('git', ['-C', dir, 'status', '--porcelain=v1'], { encoding: 'utf8' }).trim()
+  }
+
+  it('leaves nothing staged when the commit fails', async () => {
     const dir = makeFreshRepo()
-    expect(commitBeadChanges(dir, 'bead-1', 'No changes')).toEqual({
+    writeFileSync(join(dir, 'feature.ts'), 'export const feature = true\n')
+    const before = status(dir)
+    // Signing with a program that does not exist fails the commit after the
+    // index has already been written by `git add`.
+    execFileSync('git', ['-C', dir, 'config', 'commit.gpgSign', 'true'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', dir, 'config', 'gpg.program', join(dir, 'no-such-gpg')], { stdio: 'pipe' })
+
+    const result = await commitBeadChanges(dir, 'bead-fail', 'Failing commit')
+
+    expect(result.committed).toBe(false)
+    expect(result.error).toContain('git commit failed')
+    // Byte for byte what it was before the attempt. A failed commit used to
+    // leave `feature.ts` staged, where it distorted the next bead's own
+    // staged-changes probe.
+    expect(status(dir)).toBe(before)
+  })
+
+  it('leaves a clean status after a successful commit', async () => {
+    const dir = makeFreshRepo()
+    writeFileSync(join(dir, 'feature.ts'), 'export const feature = true\n')
+
+    expect((await commitBeadChanges(dir, 'bead-clean', 'Add feature')).committed).toBe(true)
+
+    // Committing from a throwaway index would produce the same commit and leave
+    // the real index describing the state before it, so git would report the
+    // freshly committed file as a staged reversal.
+    expect(status(dir)).toBe('')
+  })
+
+  it('commits a staged rename as a move rather than leaving both copies', async () => {
+    const dir = makeFreshRepo()
+    execFileSync('git', ['-C', dir, 'mv', 'hello.ts', 'renamed.ts'], { stdio: 'pipe' })
+
+    const result = await commitBeadChanges(dir, 'bead-rename', 'Rename a file')
+
+    expect(result.committed).toBe(true)
+    expect(status(dir)).toBe('')
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' }).trim().split('\n')
+    expect(tracked).toContain('renamed.ts')
+    expect(tracked).not.toContain('hello.ts')
+  })
+
+  it('returns { committed: false, pushed: false } when there are no changes', async () => {
+    const dir = makeFreshRepo()
+    expect(await commitBeadChanges(dir, 'bead-1', 'No changes')).toEqual({
       committed: false,
       pushed: false,
     })
   })
 
-  it('commits allowed files and reports committed:true, pushed:false when no remote', () => {
+  it('commits allowed files and reports committed:true, pushed:false when no remote', async () => {
     const dir = makeFreshRepo()
     writeFileSync(join(dir, 'feature.ts'), 'export const feature = true\n')
-    const result = commitBeadChanges(dir, 'bead-2', 'Add feature')
+    const result = await commitBeadChanges(dir, 'bead-2', 'Add feature')
     expect(result.committed).toBe(true)
     expect(result.pushed).toBe(false)
     expect(result.error).toMatch(/push failed/)
   })
 
-  it.each(['observe_only', 'validate_advisory', 'validate_required'] as const)('bypasses failing internal hooks for %s', (policy) => {
+  it.each(['observe_only', 'validate_advisory', 'validate_required'] as const)('bypasses failing internal hooks for %s', async (policy) => {
     const dir = makeFreshRepo()
     const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
     writeFileSync(hookPath, '#!/bin/sh\nexit 7\n')
@@ -335,10 +398,10 @@ describe('commitBeadChanges', () => {
     writeFileSync(join(dir, '.ticket/runtime/execution-setup-profile.json'), JSON.stringify({ git_hooks: { policy } }))
     writeFileSync(join(dir, 'feature.ts'), `export const policy = '${policy}'\n`)
 
-    expect(commitBeadChanges(dir, 'bead-hook', 'Hook policy')).toMatchObject({ committed: true })
+    expect(await commitBeadChanges(dir, 'bead-hook', 'Hook policy')).toMatchObject({ committed: true })
   })
 
-  it('runs failing internal hooks for use_native_hooks', () => {
+  it('runs failing internal hooks for use_native_hooks', async () => {
     const dir = makeFreshRepo()
     const hookPath = join(dir, '.git', 'hooks', 'pre-commit')
     writeFileSync(hookPath, '#!/bin/sh\nexit 7\n')
@@ -349,12 +412,12 @@ describe('commitBeadChanges', () => {
     }))
     writeFileSync(join(dir, 'feature.ts'), 'export const policy = true\n')
 
-    const result = commitBeadChanges(dir, 'bead-hook', 'Hook policy')
+    const result = await commitBeadChanges(dir, 'bead-hook', 'Hook policy')
     expect(result).toMatchObject({ committed: false, pushed: false })
     expect(result.error).toContain('git commit failed')
   })
 
-  it('pushes the current ticket branch explicitly to origin without an upstream', () => {
+  it('pushes the current ticket branch explicitly to origin without an upstream', async () => {
     const dir = makeFreshRepo()
     const remoteDir = createBareRemote()
     repoDirs.push(remoteDir)
@@ -365,7 +428,7 @@ describe('commitBeadChanges', () => {
     execFileSync('git', ['-C', dir, 'checkout', '-b', BRANCH], { stdio: 'pipe' })
     writeFileSync(join(dir, 'feature.ts'), 'export const feature = 42\n')
 
-    const result = commitBeadChanges(dir, 'bead-remote', 'Push explicitly')
+    const result = await commitBeadChanges(dir, 'bead-remote', 'Push explicitly')
 
     expect(result).toMatchObject({ committed: true, pushed: true })
     const remoteSha = execFileSync('git', ['-C', dir, 'ls-remote', '--heads', 'origin', `refs/heads/${BRANCH}`], {
@@ -374,12 +437,12 @@ describe('commitBeadChanges', () => {
     expect(remoteSha).toBe(headSha(dir))
   })
 
-  it('returns no commit and records skipped files when only generated noise exists', () => {
+  it('returns no commit and records skipped files when only generated noise exists', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, 'node_modules', 'pkg'), { recursive: true })
     writeFileSync(join(dir, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
 
-    const result = commitBeadChanges(dir, 'bead-3', 'Generated only')
+    const result = await commitBeadChanges(dir, 'bead-3', 'Generated only')
 
     expect(result).toMatchObject({
       committed: false,
@@ -389,7 +452,7 @@ describe('commitBeadChanges', () => {
     expect(result.generatedNoiseWarning).toContain('Suggested .gitignore entries: node_modules/')
   })
 
-  it('returns { committed: false, pushed: false } when only .ticket files changed', () => {
+  it('returns { committed: false, pushed: false } when only .ticket files changed', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'beads', 'master', '.beads'), { recursive: true })
     mkdirSync(join(dir, '.ticket', 'ui', 'artifact-companions'), { recursive: true })
@@ -397,7 +460,7 @@ describe('commitBeadChanges', () => {
     writeFileSync(join(dir, '.ticket', 'prd.yaml'), 'artifact: prd\n')
     writeFileSync(join(dir, '.ticket', 'ui', 'artifact-companions', 'beads_expanded.json'), '{"ok":true}\n')
 
-    const result = commitBeadChanges(dir, 'bead-ticket-only', 'Skip ticket state')
+    const result = await commitBeadChanges(dir, 'bead-ticket-only', 'Skip ticket state')
 
     expect(result).toMatchObject({
       committed: false,
@@ -413,22 +476,22 @@ describe('commitBeadChanges', () => {
     expect(status).toContain('.ticket/')
   })
 
-  it('formats the commit message as bead(<beadId>): <beadTitle>', () => {
+  it('formats the commit message as bead(<beadId>): <beadTitle>', async () => {
     const dir = makeFreshRepo()
     writeFileSync(join(dir, 'msg-test.ts'), 'export const m = 1\n')
-    commitBeadChanges(dir, 'bead-42', 'My Feature Title')
+    await commitBeadChanges(dir, 'bead-42', 'My Feature Title')
     const log = execFileSync('git', ['-C', dir, 'log', '--oneline', '-1'], {
       encoding: 'utf8',
     }).trim()
     expect(log).toContain('bead(bead-42): My Feature Title')
   })
 
-  it('stages only committable files, leaving untracked generated noise alone', () => {
+  it('stages only committable files, leaving untracked generated noise alone', async () => {
     const dir = makeFreshRepo()
     writeFileSync(join(dir, 'app.ts'), 'export const app = 1\n')
     mkdirSync(join(dir, 'node_modules'), { recursive: true })
     writeFileSync(join(dir, 'node_modules', 'generated.js'), 'module.exports = true\n')
-    const result = commitBeadChanges(dir, 'bead-5', 'Mixed files')
+    const result = await commitBeadChanges(dir, 'bead-5', 'Mixed files')
 
     expect(result.skippedFiles).toEqual(['node_modules/generated.js'])
     // app.ts should be in the commit
@@ -441,13 +504,13 @@ describe('commitBeadChanges', () => {
     expect(untrackedFiles).toContain('node_modules/generated.js')
   })
 
-  it('commits code changes while leaving .ticket files untracked', () => {
+  it('commits code changes while leaving .ticket files untracked', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'beads', 'master', '.beads'), { recursive: true })
     writeFileSync(join(dir, 'app.ts'), 'export const app = 1\n')
     writeFileSync(join(dir, '.ticket', 'beads', 'master', '.beads', 'issues.jsonl'), '{"id":"bead-1"}\n')
 
-    const result = commitBeadChanges(dir, 'bead-mixed-ticket', 'Commit code only')
+    const result = await commitBeadChanges(dir, 'bead-mixed-ticket', 'Commit code only')
 
     expect(result.committed).toBe(true)
     const committedFiles = execFileSync('git', [
@@ -465,14 +528,14 @@ describe('commitBeadChanges', () => {
     expect(status).toContain('.ticket/')
   })
 
-  it('does not commit pre-staged LoopTroop files alongside project changes', () => {
+  it('does not commit pre-staged LoopTroop files alongside project changes', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'runtime'), { recursive: true })
     writeFileSync(join(dir, '.ticket', 'runtime', 'secret.bin'), 'do not commit\n')
     execFileSync('git', ['-C', dir, 'add', '.ticket/runtime/secret.bin'], { stdio: 'pipe' })
     writeFileSync(join(dir, 'app.ts'), 'export const app = 1\n')
 
-    const result = commitBeadChanges(dir, 'bead-6', 'Skip staged LoopTroop file')
+    const result = await commitBeadChanges(dir, 'bead-6', 'Skip staged LoopTroop file')
 
     expect(result.committed).toBe(true)
     const committedFiles = execFileSync('git', [
@@ -496,12 +559,12 @@ describe('commitBeadChanges', () => {
     expect(status).toContain('.ticket/runtime/secret.bin')
   })
 
-  it('commits arbitrary project file extensions and extensionless files', () => {
+  it('commits arbitrary project file extensions and extensionless files', async () => {
     const dir = makeFreshRepo()
     writeFileSync(join(dir, 'asset.bin'), 'binary data\n')
     writeFileSync(join(dir, 'Makefile'), 'test:\n\t@echo ok\n')
 
-    const result = commitBeadChanges(dir, 'bead-any-file', 'Commit arbitrary project files')
+    const result = await commitBeadChanges(dir, 'bead-any-file', 'Commit arbitrary project files')
 
     expect(result.committed).toBe(true)
     const committedFiles = execFileSync('git', [
@@ -516,7 +579,7 @@ describe('commitBeadChanges', () => {
     expect(committedFiles).toEqual(expect.arrayContaining(['asset.bin', 'Makefile']))
   })
 
-  it('commits tracked generated-output changes but skips untracked generated noise', () => {
+  it('commits tracked generated-output changes but skips untracked generated noise', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, 'dist'), { recursive: true })
     writeFileSync(join(dir, 'dist', 'bundle.js'), 'tracked baseline\n')
@@ -526,7 +589,7 @@ describe('commitBeadChanges', () => {
     writeFileSync(join(dir, 'dist', 'bundle.js'), 'tracked change\n')
     writeFileSync(join(dir, 'dist', 'scratch.js'), 'untracked scratch\n')
 
-    const result = commitBeadChanges(dir, 'bead-tracked-generated', 'Commit tracked generated file')
+    const result = await commitBeadChanges(dir, 'bead-tracked-generated', 'Commit tracked generated file')
 
     expect(result.committed).toBe(true)
     expect(result.skippedFiles).toEqual(['dist/scratch.js'])
@@ -542,11 +605,11 @@ describe('commitBeadChanges', () => {
     expect(committedFiles).toEqual(['dist/bundle.js'])
   })
 
-  it('commits deleted project files', () => {
+  it('commits deleted project files', async () => {
     const dir = makeFreshRepo()
     rmSync(join(dir, 'hello.ts'))
 
-    const result = commitBeadChanges(dir, 'bead-delete', 'Delete file')
+    const result = await commitBeadChanges(dir, 'bead-delete', 'Delete file')
 
     expect(result.committed).toBe(true)
     const committedFiles = execFileSync('git', [
@@ -561,7 +624,7 @@ describe('commitBeadChanges', () => {
     expect(committedFiles).toContain('D\thello.ts')
   })
 
-  it('does not commit files under execution setup profile temp roots or reusable artifacts', () => {
+  it('does not commit files under execution setup profile temp roots or reusable artifacts', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'runtime'), { recursive: true })
     mkdirSync(join(dir, '.ticket', 'runtime', 'execution-setup', 'tool-cache', 'go', 'src'), { recursive: true })
@@ -601,7 +664,7 @@ describe('commitBeadChanges', () => {
       '.repo-tool-cache',
     ]))
 
-    const result = commitBeadChanges(dir, 'bead-setup-roots', 'Skip setup roots')
+    const result = await commitBeadChanges(dir, 'bead-setup-roots', 'Skip setup roots')
 
     expect(result.committed).toBe(true)
     const committedFiles = execFileSync('git', [
@@ -620,7 +683,7 @@ describe('commitBeadChanges', () => {
     expect(untrackedFiles).toContain('.ticket/runtime/execution-setup-profile.json')
   })
 
-  it('classifies approved workspace inputs as setup-only and excludes them from commits', () => {
+  it('classifies approved workspace inputs as setup-only and excludes them from commits', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.ticket', 'runtime'), { recursive: true })
     mkdirSync(join(dir, 'local-config'), { recursive: true })
@@ -660,7 +723,7 @@ describe('commitBeadChanges', () => {
 
     expect(getExecutionSetupCommitExcludedRoots(dir)).toContain('local-config')
 
-    const result = commitBeadChanges(dir, 'bead-workspace-inputs', 'Skip approved workspace inputs')
+    const result = await commitBeadChanges(dir, 'bead-workspace-inputs', 'Skip approved workspace inputs')
 
     expect(result.committed).toBe(true)
     expect(result.skippedFiles).toContain('local-config/project.json')
@@ -678,12 +741,12 @@ describe('commitBeadChanges', () => {
       .toContain('local-config/project.json')
   })
 
-  it('does not commit legacy .cache/project-tooling files even without a setup profile', () => {
+  it('does not commit legacy .cache/project-tooling files even without a setup profile', async () => {
     const dir = makeFreshRepo()
     mkdirSync(join(dir, '.cache', 'project-tooling', 'go', 'src'), { recursive: true })
     writeFileSync(join(dir, '.cache', 'project-tooling', 'go', 'src', 'runtime.go'), 'package runtime\n')
 
-    const result = commitBeadChanges(dir, 'bead-cache', 'Skip legacy cache')
+    const result = await commitBeadChanges(dir, 'bead-cache', 'Skip legacy cache')
 
     expect(result).toMatchObject({
       committed: false,

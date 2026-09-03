@@ -62,6 +62,10 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
   let handle: ReturnType<typeof serve> | null = null
   let address: RuntimeAddress | null = null
   let closing: Promise<void> | null = null
+  // `address` alone cannot say "starting": it is only set once listen succeeds,
+  // so two concurrent start() calls both saw null and both ran the startup
+  // sequence, each allocating its own timers.
+  let starting: Promise<RuntimeAddress> | null = null
 
   function listen(port: number, hostname: string): Promise<RuntimeAddress> {
     return new Promise<RuntimeAddress>((resolveAddress, rejectAddress) => {
@@ -85,7 +89,19 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
 
   async function start(): Promise<RuntimeAddress> {
     if (address) return address
+    if (starting) return starting
+    starting = runStart().finally(() => { starting = null })
+    return starting
+  }
 
+  /** Undoes everything `runStart` may have started, without touching `handle`. */
+  function teardownStartedResources(): void {
+    broadcaster.stopAutoCleanup()
+    clearProjectDatabaseCache()
+    closeDatabase()
+  }
+
+  async function runStart(): Promise<RuntimeAddress> {
     const settings = config.settings ?? resolveSettings()
 
     // Before the startup sequence, which health-checks OpenCode through the
@@ -113,15 +129,24 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
     const portIsExplicit = config.port !== undefined || settings.portIsExplicit
 
     try {
-      address = await listen(requestedPort, hostname)
-    } catch (error) {
-      if (portIsExplicit || !isAddressInUse(error)) {
-        throw describeBindFailure(error, requestedPort, config.port !== undefined ? 'flag' : settings.sources.port)
+      try {
+        address = await listen(requestedPort, hostname)
+      } catch (error) {
+        if (portIsExplicit || !isAddressInUse(error)) {
+          throw describeBindFailure(error, requestedPort, config.port !== undefined ? 'flag' : settings.sources.port)
+        }
+        // Binding 0 asks the OS for a free port. Probing first and binding after
+        // would race against anything claiming the port in between.
+        address = await listen(0, hostname)
+        console.warn(`[server] Port ${requestedPort} is in use; listening on ${address.port} instead.`)
       }
-      // Binding 0 asks the OS for a free port. Probing first and binding after
-      // would race against anything claiming the port in between.
-      address = await listen(0, hostname)
-      console.warn(`[server] Port ${requestedPort} is in use; listening on ${address.port} instead.`)
+    } catch (error) {
+      // The startup sequence has already started the WAL checkpoint and the
+      // broadcaster's cleanup timer. A bind that fails now leaves both running
+      // with no handle to stop them, because close() is only reachable once a
+      // caller holds a started runtime.
+      teardownStartedResources()
+      throw error
     }
 
     return address
@@ -136,9 +161,7 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
       }
       handle = null
       address = null
-      broadcaster.stopAutoCleanup()
-      clearProjectDatabaseCache()
-      closeDatabase()
+      teardownStartedResources()
     })()
 
     return closing

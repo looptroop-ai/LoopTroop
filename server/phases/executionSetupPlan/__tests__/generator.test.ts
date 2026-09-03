@@ -150,7 +150,7 @@ describe('generateExecutionSetupPlan', () => {
 
   it('completes owned setup-plan sessions after a ready plan is parsed', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Complete setup plan session',
     })
     patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
@@ -186,7 +186,7 @@ describe('generateExecutionSetupPlan', () => {
 
   it('abandons owned setup-plan sessions after an invalid terminal result', async () => {
     resetTestDb()
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Abandon setup plan session',
     })
     patchTicket(ticket.id, { status: 'WAITING_EXECUTION_SETUP_APPROVAL' })

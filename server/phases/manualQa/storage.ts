@@ -15,6 +15,7 @@ import { open } from 'node:fs/promises'
 import { basename, dirname, extname, relative, resolve, sep } from 'node:path'
 import * as jsYaml from 'js-yaml'
 import { safeAtomicWrite } from '../../io/atomicWrite'
+import { withFileLock } from '../../io/fileLock'
 import { appendJsonl, readJsonl } from '../../io/jsonl'
 import { buildYamlDocument } from '../../structuredOutput/yamlUtils'
 import { contentSha256 } from '../../lib/contentHash'
@@ -338,6 +339,51 @@ export function persistManualQaEvidenceActionReceipt(
   return receipt
 }
 
+/**
+ * Serialises a read-modify-write of the evidence index.
+ *
+ * Upload and removal each read the index, do filesystem work, and then write a
+ * full replacement list. Run concurrently they lost each other's entries — a
+ * removal could commit a list built before an upload finished, erasing it.
+ *
+ * The lock covers both processes and both operations. The fingerprint check is
+ * the second half: a lock reclaimed as stale while its holder was merely slow
+ * would let two writers into the section, and comparing what the index held
+ * when the section started against what it holds at commit time catches that
+ * rather than overwriting blind.
+ *
+ * The Manual QA *version* is the generation token the plan asks for: a restarted
+ * run allocates a new version and therefore a different index, so a late
+ * completion from an earlier run cannot reach a newly started one.
+ */
+function evidenceIndexFingerprint(indexPath: string): string {
+  try {
+    return contentSha256(readFileSync(indexPath, 'utf8'))
+  } catch {
+    return 'absent'
+  }
+}
+
+async function withEvidenceIndexLock<T>(
+  ticketDir: string,
+  version: number,
+  run: (current: ManualQaEvidenceRef[]) => { entries: ManualQaEvidenceRef[]; value: T },
+): Promise<T> {
+  const paths = getManualQaStoragePaths(ticketDir, version)
+  return withFileLock(`${paths.evidenceIndexPath}.lock`, () => {
+    const before = evidenceIndexFingerprint(paths.evidenceIndexPath)
+    // Re-read inside the lock: whatever the caller saw before waiting for it
+    // may be several commits old by now.
+    const current = readManualQaEvidenceIndex(ticketDir, version)
+    const outcome = run(current)
+    if (evidenceIndexFingerprint(paths.evidenceIndexPath) !== before) {
+      throw new Error('Manual QA evidence index changed while it was being updated; retry the operation.')
+    }
+    writeEvidenceIndex(ticketDir, version, outcome.entries)
+    return outcome.value
+  })
+}
+
 function writeEvidenceIndex(ticketDir: string, version: number, entries: ManualQaEvidenceRef[]): void {
   const paths = getManualQaStoragePaths(ticketDir, version)
   resolveContainedEvidencePath(paths.root, paths.evidenceDir, 'index.json', { allowMissing: true })
@@ -599,22 +645,23 @@ export async function streamManualQaEvidence(input: {
     inlinePreview,
     createdAt: new Date().toISOString(),
   })
-  // Re-read in the synchronous commit section because other uploads may have
-  // completed while this request streamed its body.
-  const current = readManualQaEvidenceIndex(input.ticketDir, input.version)
-  const concurrent = current.find((entry) => entry.id === evidenceId)
-  if (concurrent) {
-    if (
-      concurrent.itemId !== metadata.itemId
-      || concurrent.storedName !== metadata.storedName
-      || concurrent.mediaType !== metadata.mediaType
-      || concurrent.size !== metadata.size
-      || concurrent.sha256 !== metadata.sha256
-    ) throw new Error(`Evidence ID already exists: ${evidenceId}`)
-    return concurrent
-  }
-  writeEvidenceIndex(input.ticketDir, input.version, [...current, metadata])
-  return metadata
+  // The index is re-read under the lock because other uploads and removals may
+  // have committed while this request streamed its body.
+  return withEvidenceIndexLock(input.ticketDir, input.version, (current) => {
+    const concurrent = current.find((entry) => entry.id === evidenceId)
+    if (concurrent) {
+      if (
+        concurrent.itemId !== metadata.itemId
+        || concurrent.storedName !== metadata.storedName
+        || concurrent.mediaType !== metadata.mediaType
+        || concurrent.size !== metadata.size
+        || concurrent.sha256 !== metadata.sha256
+      ) throw new Error(`Evidence ID already exists: ${evidenceId}`)
+      // Already committed by an identical retry: leave the list untouched.
+      return { entries: current, value: concurrent }
+    }
+    return { entries: [...current, metadata], value: metadata }
+  })
 }
 
 export function resolveManualQaEvidence(input: {
@@ -642,27 +689,33 @@ export function removeManualQaEvidence(input: {
   itemId: string
   evidenceId: string
   evidence?: ManualQaEvidenceRef
-}): ManualQaEvidenceRef {
-  const index = readManualQaEvidenceIndex(input.ticketDir, input.version)
-  const indexed = index.find((entry) => entry.id === input.evidenceId && entry.itemId === input.itemId)
-  const metadata = indexed ?? (input.evidence ? ManualQaEvidenceRefSchema.parse(input.evidence) : null)
-  if (!metadata || metadata.id !== input.evidenceId || metadata.itemId !== input.itemId) {
-    throw new Error('Evidence was not found.')
-  }
-  if (indexed && input.evidence && (
-    indexed.sha256 !== input.evidence.sha256
-    || indexed.storedName !== input.evidence.storedName
-  )) throw new Error('Evidence removal receipt does not match the canonical evidence metadata.')
-  const paths = getManualQaStoragePaths(input.ticketDir, input.version)
-  const path = resolveContainedEvidencePath(paths.root, paths.evidenceDir, metadata.storedName, {
-    allowMissing: true,
-    allowMissingParents: true,
+}): Promise<ManualQaEvidenceRef> {
+  // Removal reads the index, deletes a file and writes a replacement list, so
+  // it takes the same lock an upload does; it used to commit a list captured
+  // before any concurrent upload had finished.
+  return withEvidenceIndexLock(input.ticketDir, input.version, (index) => {
+    const indexed = index.find((entry) => entry.id === input.evidenceId && entry.itemId === input.itemId)
+    const metadata = indexed ?? (input.evidence ? ManualQaEvidenceRefSchema.parse(input.evidence) : null)
+    if (!metadata || metadata.id !== input.evidenceId || metadata.itemId !== input.itemId) {
+      throw new Error('Evidence was not found.')
+    }
+    if (indexed && input.evidence && (
+      indexed.sha256 !== input.evidence.sha256
+      || indexed.storedName !== input.evidence.storedName
+    )) throw new Error('Evidence removal receipt does not match the canonical evidence metadata.')
+    const paths = getManualQaStoragePaths(input.ticketDir, input.version)
+    const path = resolveContainedEvidencePath(paths.root, paths.evidenceDir, metadata.storedName, {
+      allowMissing: true,
+      allowMissingParents: true,
+    })
+    // Removing the file before the list is what makes an interrupted removal
+    // idempotent: a retry finds no file, and `allowMissing` keeps that quiet.
+    rmSync(path, { force: true })
+    return {
+      entries: index.filter((entry) => entry.id !== input.evidenceId),
+      value: metadata,
+    }
   })
-  rmSync(path, { force: true })
-  const remaining = index
-    .filter((entry) => entry.id !== input.evidenceId)
-  writeEvidenceIndex(input.ticketDir, input.version, remaining)
-  return metadata
 }
 
 export interface ManualQaVersionDetail {

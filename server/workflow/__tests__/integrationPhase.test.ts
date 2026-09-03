@@ -59,6 +59,9 @@ vi.mock('../phases/executionPhase', () => ({
 
 vi.mock('../../log/commandLogger', () => ({
   withCommandLoggingAsync: async (_tid: string, _eid: string, _phase: string, fn: () => Promise<unknown>) => fn(),
+  // Every git command now goes through the shared runner, which logs; a mock
+  // that omits this export makes the runner throw rather than stay quiet.
+  logCommand: vi.fn(),
 }))
 
 import { handleIntegration } from '../phases/integrationPhase'

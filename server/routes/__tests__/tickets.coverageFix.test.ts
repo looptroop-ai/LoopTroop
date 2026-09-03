@@ -60,7 +60,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function setupPrdApprovalTicket() {
+async function setupPrdApprovalTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -73,7 +73,7 @@ function setupPrdApprovalTicket() {
     description: 'Verify coverage fix routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -120,7 +120,7 @@ describe('ticketRouter coverage gap fix route', () => {
   })
 
   it('rejects fix requests outside the matching approval status', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
     patchTicket(ticket.id, { status: 'DRAFTING_BEADS' })
 
     const response = await app.request(`/api/tickets/${ticket.id}/coverage/fix-gaps`, coverageFixPayload('prd'))
@@ -130,7 +130,7 @@ describe('ticketRouter coverage gap fix route', () => {
   })
 
   it('returns no-op success when the worker reports no open gaps', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
     performCoverageExtraFixMock.mockResolvedValue({
       domain: 'prd',
       status: 'clean',
@@ -150,7 +150,7 @@ describe('ticketRouter coverage gap fix route', () => {
   })
 
   it('ignores stale browser gap text and sends only server-owned context to the worker', async () => {
-    const { app, ticket } = setupPrdApprovalTicket()
+    const { app, ticket } = await setupPrdApprovalTicket()
     performCoverageExtraFixMock.mockResolvedValue({
       domain: 'prd',
       status: 'gaps',
@@ -180,7 +180,7 @@ describe('ticketRouter coverage gap fix route', () => {
   })
 
   it('prevents concurrent fixes and blocks approval while a fix is running', async () => {
-    const { app, ticket, prdRaw } = setupPrdApprovalTicket()
+    const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
     let resolveFix!: (value: unknown) => void
     const fixPromise = new Promise<unknown>((resolve) => {
       resolveFix = resolve

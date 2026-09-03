@@ -7,13 +7,10 @@ import type {
 import { isRecord } from '@shared/typeGuards'
 import type { PromptPart } from '../../opencode/types'
 import type { StructuredOutputMetadata } from '../../structuredOutput'
-import { getCommonBeadCounts, normalizeBeadRefinementOutput } from '../../structuredOutput'
+import { getCommonBeadCounts, normalizeBeadRefinementOutput, normalizeBeadSubsetYamlOutput } from '../../structuredOutput'
 import { normalizeStructuredOutputMetadata } from '../../structuredOutput/metadata'
-import { getValueByAliases } from '../../structuredOutput/yamlUtils'
 import { attachStructuredRetryDiagnostic, buildStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import type { BeadSubset } from './types'
-import { normalizeCommandSpec } from '@shared/commandSpec'
-import { detectHostContext } from '../../lib/hostContext'
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -710,76 +707,22 @@ export function validateBeadsRefinementOutput(
 // Internal: parse winner draft into canonical items
 // ---------------------------------------------------------------------------
 
+/**
+ * The winner draft's beads, as comparable items.
+ *
+ * This used to hand-roll its own YAML read: `jsYaml.load` directly (so a fenced
+ * or wrapped winner came back empty), and a narrower alias set than
+ * `normalizeBeadSubsetYamlOutput` accepts. A winner spelling a field one of the
+ * ways the canonical parser allows was fingerprinted with that field missing,
+ * and the mismatch alone produced a change for a bead nobody had touched.
+ * Round 1 widened two of those alias lists; using the canonical parser removes
+ * the whole class. `handleBeadsRefine` has already accepted this content
+ * through the same parser by the time we get here.
+ */
 function parseWinnerBeadItems(winnerDraftContent: string): NormalizedBeadRefinementItem[] {
-  try {
-    const parsed = jsYaml.load(winnerDraftContent)
-    if (!parsed) return []
-
-    const entries = Array.isArray(parsed)
-      ? parsed
-      : isRecord(parsed) && Array.isArray((parsed as Record<string, unknown>).beads)
-        ? (parsed as Record<string, unknown>).beads as unknown[]
-        : []
-
-    const items: NormalizedBeadRefinementItem[] = []
-    for (const entry of entries) {
-      if (!isRecord(entry)) continue
-      const id = typeof entry.id === 'string' ? entry.id : ''
-      const title = typeof entry.title === 'string' ? entry.title : ''
-      if (!id || !title) continue
-
-      const description = typeof entry.description === 'string' ? entry.description : ''
-      const acceptanceCriteria = Array.isArray(entry.acceptanceCriteria) || Array.isArray(entry.acceptance_criteria)
-        ? normalizeFingerprintList((entry.acceptanceCriteria ?? entry.acceptance_criteria) as string[])
-        : []
-      const tests = Array.isArray(entry.tests) ? normalizeFingerprintList(entry.tests as string[]) : []
-      const testCommands = Array.isArray(entry.testCommands) || Array.isArray(entry.test_commands)
-        ? ((entry.testCommands ?? entry.test_commands) as unknown[]).map(
-            (command) => normalizeCommandSpec(command, detectHostContext()).command,
-          )
-        : []
-      const rawTestCommandReason = entry.testCommandReason ?? entry.test_command_reason
-      const testCommandReason = typeof rawTestCommandReason === 'string'
-        ? rawTestCommandReason.trim()
-        : ''
-
-      // prdRefs and contextGuidance were hardcoded empty here because the
-      // fingerprint did not read them. It does now, and a winner item that
-      // reported none would differ from every refined bead.
-      //
-      // The alias lists match the structured-output path exactly. Reading two
-      // spellings here where that side reads four meant a winner draft written
-      // as `prd_references:` came back empty against a refined document holding
-      // the same values, and the fingerprint mismatch alone produced a
-      // `modified` change for a difference in spelling.
-      const rawPrdRefs = getValueByAliases(entry, ['prdrefs', 'prd_refs', 'prdreferences', 'prd_references'])
-      const rawGuidance = getValueByAliases(entry, ['contextguidance', 'context_guidance'])
-      const guidance = isRecord(rawGuidance) ? rawGuidance : {}
-
-      const bead: BeadSubset = {
-        id,
-        title,
-        prdRefs: Array.isArray(rawPrdRefs) ? normalizeFingerprintList(rawPrdRefs as string[]) : [],
-        description,
-        contextGuidance: {
-          patterns: Array.isArray(guidance.patterns) ? normalizeFingerprintList(guidance.patterns as string[]) : [],
-          anti_patterns: Array.isArray(guidance.anti_patterns ?? guidance.antiPatterns)
-            ? normalizeFingerprintList((guidance.anti_patterns ?? guidance.antiPatterns) as string[])
-            : [],
-        },
-        acceptanceCriteria,
-        tests,
-        testCommands,
-        ...(testCommandReason ? { testCommandReason } : {}),
-      }
-
-      items.push(buildBeadItemFromSubset(bead))
-    }
-
-    return items
-  } catch {
-    return []
-  }
+  const parsed = normalizeBeadSubsetYamlOutput(winnerDraftContent)
+  if (!parsed.ok) return []
+  return parsed.value.map(buildBeadItemFromSubset)
 }
 
 function resolveBeadChangeItem(

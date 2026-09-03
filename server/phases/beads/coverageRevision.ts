@@ -288,13 +288,16 @@ function validateBeadsCoverageRevisionRecord(
     throw new Error('Beads coverage revision output must include a top-level beads list')
   }
 
-  // A rebuilt `{ beads }` document dropped any `changes` block the model wrote
-  // beside them, so declared attribution and inspiration never reached
-  // refinement validation and every change came back synthesized_unattributed.
-  const rawChanges = getValueByAliases(parsed, ['changes'])
-  const beadsYaml = buildYamlDocument(
-    rawChanges === undefined ? { beads: rawBeads } : { beads: rawBeads, changes: rawChanges },
-  )
+  // Deliberately `{ beads }` only, without the model's `changes` block.
+  //
+  // PROM24 asks for `{type, id, title, summary}` change entries — summary-level
+  // metadata, no `before`/`after` item records — because a coverage revision
+  // accounts for its edits in `gap_resolutions`. `parseRefinementChanges` needs
+  // before/after records, so forwarding these would skip every entry with a
+  // "summary metadata only" repair warning and then synthesize the same diff
+  // anyway: identical result, one spurious warning per declared change. A round
+  // of review talked me into forwarding them; the prompt is the reason not to.
+  const beadsYaml = buildYamlDocument({ beads: rawBeads })
   const refinementResult = normalizeBeadRefinementOutput(beadsYaml, options.currentCandidateContent)
   if (!refinementResult.ok) {
     throw new Error(refinementResult.error)
@@ -347,12 +350,17 @@ export function parseBeadsCoverageRevisionCandidate(
   if (!refinedContent.trim()) {
     throw new Error('Beads coverage revision artifact is missing refinedContent')
   }
-  const candidateVersion = typeof parsed.candidateVersion === 'number'
-    && Number.isInteger(parsed.candidateVersion)
-    && parsed.candidateVersion > 0
-    ? parsed.candidateVersion
-    : 1
-  return { refinedContent, candidateVersion }
+  // Absent means "the first candidate". A present but impossible value — 0, a
+  // negative, a fraction — is a corrupt artifact, and silently reading it as
+  // version 1 made the semantic coverage loop audit a later revision under the
+  // first candidate's identity.
+  if (parsed.candidateVersion !== undefined
+    && !(typeof parsed.candidateVersion === 'number'
+      && Number.isInteger(parsed.candidateVersion)
+      && parsed.candidateVersion > 0)) {
+    throw new Error('Beads coverage revision artifact has an invalid candidateVersion')
+  }
+  return { refinedContent, candidateVersion: (parsed.candidateVersion as number | undefined) ?? 1 }
 }
 
 export function parseBeadsCoverageRevisionRefinedContent(content: string): string {

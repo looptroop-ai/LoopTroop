@@ -122,6 +122,41 @@ describe.concurrent('beads coverage revision parsing', () => {
   })
 })
 
+describe('the model\'s own changes block', () => {
+  it('is not forwarded to refinement validation, so no change is skipped as summary-only', () => {
+    // PROM24 asks for `{type, id, title, summary}` entries. Forwarding those to
+    // `parseRefinementChanges`, which needs before/after item records, skipped
+    // every one with a repair warning and then synthesized the same diff anyway.
+    const coverageGap = 'Nothing covers the revised description.'
+    const currentCandidateContent = buildBeadsContent()
+    const revised = jsYaml.load(currentCandidateContent) as Record<string, unknown>
+    const beads = revised.beads as Array<Record<string, unknown>>
+    beads[0]!.description = 'Preserve explicit inspiration and cover the rollout gap.'
+    revised.changes = [{
+      type: 'modified',
+      id: 'bead-1',
+      title: 'Validate refinement attribution',
+      summary: 'Covered the rollout gap.',
+    }]
+    revised.gap_resolutions = [{
+      gap: coverageGap,
+      action: 'updated_beads',
+      rationale: 'Extended the bead to cover rollout.',
+      affected_items: [{ item_type: 'bead', id: 'bead-1', label: 'Validate refinement attribution' }],
+    }]
+
+    const result = validateBeadsCoverageRevisionOutput(
+      jsYaml.dump(revised, { lineWidth: 120, noRefs: true }) as string,
+      { currentCandidateContent, coverageGaps: [coverageGap] },
+    )
+
+    expect(result.repairWarnings.some((warning) => warning.includes('summary metadata only'))).toBe(false)
+    expect(result.changes).toEqual([
+      expect.objectContaining({ type: 'modified', itemType: 'bead' }),
+    ])
+  })
+})
+
 describe('parseBeadsCoverageRevisionRefinedContent', () => {
   it('returns the persisted candidate blueprint', () => {
     const content = JSON.stringify({ winnerId: 'model-a', refinedContent: 'beads:\n  - id: bead-1' })

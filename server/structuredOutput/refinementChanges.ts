@@ -87,8 +87,12 @@ export function resolveLosingDraftReference(
     }
   }
 
+  // Draft references are 1-based ordinals. `toOrdinalInteger` will hand back a
+  // zero or a negative, which became `draftIndex: -1` or `-2`;
+  // `normalizeRefinementInspiration` only rejects `-1`, so `-2` was accepted as
+  // a real reference to a draft that does not exist.
   const altDraft = toOrdinalInteger(rawAltDraft)
-  if (altDraft == null) return { draftIndex: -1, memberId: '' }
+  if (altDraft == null || altDraft < 1) return { draftIndex: -1, memberId: '' }
 
   // A `draftIndex` outside the list still travels back to the caller, which
   // reports it; only the member name it could not resolve is blank.

@@ -36,7 +36,7 @@ import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -1207,7 +1207,13 @@ function buildRuntime(
 
 function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: string) {
   try {
-    return readJsonl<Record<string, unknown>>(getTicketBeadsPath(projectRoot, externalId, baseBranch))
+    return readJsonl<unknown>(getTicketBeadsPath(projectRoot, externalId, baseBranch))
+      // `JSON.parse('null')` succeeds, so a `null` line survives `readJsonl` and
+      // then threw on the first property read below. The throw was caught by the
+      // function's own handler, which returns `[]`, so one malformed line blanked
+      // every bead on the board while the scheduler — reading the same file
+      // through `readBeadsFile` — carried on with them.
+      .filter((bead): bead is Record<string, unknown> => isRecord(bead))
       .map((bead) => {
         const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
         return {

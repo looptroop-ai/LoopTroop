@@ -8,7 +8,9 @@ import type { PrdDraftMetrics, StructuredOutputMetadata } from '../../structured
 import { normalizePrdYamlOutput } from '../../structuredOutput'
 import {
   collectStructuredCandidates,
+  collectAliasConflictWarnings,
   getValueByAliases,
+  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
@@ -206,16 +208,12 @@ function parseGapResolutions(
       throw new Error(`PRD coverage gap_resolutions entry at index ${index} is not an object`)
     }
 
-    const gap = typeof getValueByAliases(value, ['gap']) === 'string'
-      ? String(getValueByAliases(value, ['gap'])).trim()
-      : ''
+    const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
     if (!gap) {
       throw new Error(`PRD coverage gap_resolutions entry at index ${index} is missing gap`)
     }
 
-    const rawAction = typeof getValueByAliases(value, ['action']) === 'string'
-      ? String(getValueByAliases(value, ['action'])).trim()
-      : ''
+    const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
     const normalizedAction = normalizeKey(rawAction)
     let action: PrdCoverageGapResolutionAction | null = null
     if (normalizedAction === 'updatedprd') action = 'updated_prd'
@@ -225,9 +223,7 @@ function parseGapResolutions(
       throw new Error(`PRD coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
     }
 
-    const rationale = typeof getValueByAliases(value, ['rationale']) === 'string'
-      ? String(getValueByAliases(value, ['rationale'])).trim()
-      : ''
+    const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
     if (!rationale) {
       throw new Error(`PRD coverage gap_resolutions entry for "${gap}" is missing rationale`)
     }
@@ -238,12 +234,8 @@ function parseGapResolutions(
           if (!isRecord(item)) {
             throw new Error(`PRD coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
           }
-          const id = typeof getValueByAliases(item, ['id']) === 'string'
-            ? String(getValueByAliases(item, ['id'])).trim()
-            : ''
-          const label = typeof getValueByAliases(item, ['label', 'title']) === 'string'
-            ? String(getValueByAliases(item, ['label', 'title'])).trim()
-            : ''
+          const id = getStringByAliases(item, ['id'])?.trim() ?? ''
+          const label = getStringByAliases(item, ['label', 'title'])?.trim() ?? ''
           const rawItemType = getValueByAliases(item, ['item_type', 'itemtype'])
           let itemType = normalizeAffectedItemType(rawItemType)
           if (!itemType) {
@@ -326,6 +318,28 @@ export function validatePrdCoverageRevisionOutput(
     coverageGaps: string[]
   },
 ): ValidatedPrdCoverageRevision {
+  // `validatePrdRefinementOutput` installs a sink per candidate, but the
+  // gap-resolution reads below resolve aliases with none in scope, so their
+  // conflicts went nowhere.
+  const aliasWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(aliasWarnings)
+  try {
+    return validatePrdCoverageRevisionRecord(rawContent, options, aliasWarnings)
+  } finally {
+    releaseAliasConflicts()
+  }
+}
+
+function validatePrdCoverageRevisionRecord(
+  rawContent: string,
+  options: {
+    ticketId: string
+    interviewContent: string
+    currentCandidateContent: string
+    coverageGaps: string[]
+  },
+  aliasWarnings: string[],
+): ValidatedPrdCoverageRevision {
   const validatedRefinement = validatePrdRefinementOutput(rawContent, {
     ticketId: options.ticketId,
     interviewContent: options.interviewContent,
@@ -346,8 +360,10 @@ export function validatePrdCoverageRevisionOutput(
     changes: validatedRefinement.changes,
     gapResolutions: parsedGapResolutions.gapResolutions,
     metrics: validatedRefinement.metrics,
-    repairApplied: validatedRefinement.repairApplied || parsedGapResolutions.repairWarnings.length > 0,
-    repairWarnings: [...validatedRefinement.repairWarnings, ...parsedGapResolutions.repairWarnings],
+    repairApplied: validatedRefinement.repairApplied
+      || parsedGapResolutions.repairWarnings.length > 0
+      || aliasWarnings.length > 0,
+    repairWarnings: [...validatedRefinement.repairWarnings, ...parsedGapResolutions.repairWarnings, ...aliasWarnings],
   }
 }
 

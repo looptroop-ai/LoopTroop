@@ -1236,9 +1236,17 @@ export function getValueByAliases(record: Record<string, unknown>, aliases: stri
 
   let resolved: { key: string; value: unknown } | undefined
   const conflicting: string[] = []
+  // Several alias lists carry two spellings of one token — `actionsrequired`
+  // and `actions_required` both normalise to `actionsrequired` — which visited
+  // the same record entries once per spelling and named each disagreement
+  // twice in the warning.
+  const visitedAliases = new Set<string>()
 
   for (const alias of aliases) {
-    for (const match of matchesByAlias.get(normalizeKey(alias)) ?? []) {
+    const normalizedAlias = normalizeKey(alias)
+    if (visitedAliases.has(normalizedAlias)) continue
+    visitedAliases.add(normalizedAlias)
+    for (const match of matchesByAlias.get(normalizedAlias) ?? []) {
       if (!resolved) {
         resolved = match
         continue
@@ -1256,6 +1264,22 @@ export function getValueByAliases(record: Record<string, unknown>, aliases: stri
   }
 
   return resolved?.value
+}
+
+/**
+ * The string an alias holds, or `undefined` when it holds anything else.
+ *
+ * Two dozen call sites wrote `typeof getValueByAliases(x, a) === 'string' ?
+ * String(getValueByAliases(x, a)) : fallback`, which resolves the same aliases
+ * twice. That was only wasteful until the lookup started reporting conflicting
+ * aliases: the second pass reports the same disagreement again, so one malformed
+ * payload produced two identical repair warnings and could raise an intervention
+ * twice. Unlike `toOptionalString` this keeps a whitespace-only string, because
+ * the callers decide for themselves whether to trim.
+ */
+export function getStringByAliases(record: Record<string, unknown>, aliases: string[]): string | undefined {
+  const value = getValueByAliases(record, aliases)
+  return typeof value === 'string' ? value : undefined
 }
 
 export function getNestedRecord(record: Record<string, unknown>, aliases: string[]): Record<string, unknown> {

@@ -4,8 +4,10 @@ import type { PromptPart } from '../../opencode/types'
 import { normalizeBeadSubsetYamlOutput, normalizeBeadRefinementOutput, getCoverageBeadMetrics, type CoverageBeadMetrics, type StructuredOutputMetadata } from '../../structuredOutput'
 import {
   buildYamlDocument,
+  collectAliasConflictWarnings,
   collectStructuredCandidates,
   getValueByAliases,
+  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
@@ -158,16 +160,12 @@ function parseGapResolutions(
       throw new Error(`Beads coverage gap_resolutions entry at index ${index} is not an object`)
     }
 
-    const gap = typeof getValueByAliases(value, ['gap']) === 'string'
-      ? String(getValueByAliases(value, ['gap'])).trim()
-      : ''
+    const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
     if (!gap) {
       throw new Error(`Beads coverage gap_resolutions entry at index ${index} is missing gap`)
     }
 
-    const rawAction = typeof getValueByAliases(value, ['action']) === 'string'
-      ? String(getValueByAliases(value, ['action'])).trim()
-      : ''
+    const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
     const normalizedAction = normalizeKey(rawAction)
     let action: BeadsCoverageGapResolutionAction | null = null
     if (normalizedAction === 'updatedbeads' || normalizedAction === 'updatedplan') action = 'updated_beads'
@@ -177,9 +175,7 @@ function parseGapResolutions(
       throw new Error(`Beads coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
     }
 
-    const rationale = typeof getValueByAliases(value, ['rationale']) === 'string'
-      ? String(getValueByAliases(value, ['rationale'])).trim()
-      : ''
+    const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
     if (!rationale) {
       throw new Error(`Beads coverage gap_resolutions entry for "${gap}" is missing rationale`)
     }
@@ -190,12 +186,8 @@ function parseGapResolutions(
           if (!isRecord(item)) {
             throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
           }
-          const id = typeof getValueByAliases(item, ['id']) === 'string'
-            ? String(getValueByAliases(item, ['id'])).trim()
-            : ''
-          const label = typeof getValueByAliases(item, ['label', 'title']) === 'string'
-            ? String(getValueByAliases(item, ['label', 'title'])).trim()
-            : ''
+          const id = getStringByAliases(item, ['id'])?.trim() ?? ''
+          const label = getStringByAliases(item, ['label', 'title'])?.trim() ?? ''
           let itemType = normalizeBeadsAffectedItemType(getValueByAliases(item, ['item_type', 'itemtype']))
           if (!itemType) {
             const inferredItemType = inferBeadsAffectedItemType(id, label, priorLookup, revisedLookup)
@@ -269,6 +261,26 @@ export function validateBeadsCoverageRevisionOutput(
     coverageGaps: string[]
   },
 ): ValidatedBeadsCoverageRevision {
+  // Every alias this function and its helpers resolve is model output, so the
+  // conflict warnings belong on the revision's own repair record. Without a sink
+  // installed they went nowhere.
+  const aliasWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(aliasWarnings)
+  try {
+    return validateBeadsCoverageRevisionRecord(rawContent, options, aliasWarnings)
+  } finally {
+    releaseAliasConflicts()
+  }
+}
+
+function validateBeadsCoverageRevisionRecord(
+  rawContent: string,
+  options: {
+    currentCandidateContent: string
+    coverageGaps: string[]
+  },
+  aliasWarnings: string[],
+): ValidatedBeadsCoverageRevision {
   const parsed = parseCoverageRevisionRecord(rawContent)
   const currentCandidateBeads = parseBeadSubsetYaml(options.currentCandidateContent)
   const rawBeads = getValueByAliases(parsed, ['beads'])
@@ -276,7 +288,13 @@ export function validateBeadsCoverageRevisionOutput(
     throw new Error('Beads coverage revision output must include a top-level beads list')
   }
 
-  const beadsYaml = buildYamlDocument({ beads: rawBeads })
+  // A rebuilt `{ beads }` document dropped any `changes` block the model wrote
+  // beside them, so declared attribution and inspiration never reached
+  // refinement validation and every change came back synthesized_unattributed.
+  const rawChanges = getValueByAliases(parsed, ['changes'])
+  const beadsYaml = buildYamlDocument(
+    rawChanges === undefined ? { beads: rawBeads } : { beads: rawBeads, changes: rawChanges },
+  )
   const refinementResult = normalizeBeadRefinementOutput(beadsYaml, options.currentCandidateContent)
   if (!refinementResult.ok) {
     throw new Error(refinementResult.error)
@@ -296,8 +314,10 @@ export function validateBeadsCoverageRevisionOutput(
     changes: refinementResult.value.changes,
     gapResolutions: parsedGapResolutions.gapResolutions,
     draftMetrics: getCoverageBeadMetrics(refinementResult.value.beads),
-    repairApplied: refinementResult.repairApplied || parsedGapResolutions.repairWarnings.length > 0,
-    repairWarnings: [...refinementResult.repairWarnings, ...parsedGapResolutions.repairWarnings],
+    repairApplied: refinementResult.repairApplied
+      || parsedGapResolutions.repairWarnings.length > 0
+      || aliasWarnings.length > 0,
+    repairWarnings: [...refinementResult.repairWarnings, ...parsedGapResolutions.repairWarnings, ...aliasWarnings],
   }
 }
 

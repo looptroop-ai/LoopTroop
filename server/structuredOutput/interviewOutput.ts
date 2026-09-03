@@ -33,6 +33,7 @@ import {
   toInteger,
   toBoolean,
   getValueByAliases,
+  getStringByAliases,
   getNestedRecord,
   getRequiredString,
   buildYamlDocument,
@@ -1419,7 +1420,10 @@ export function normalizeInterviewQuestionsOutput(
           questionCount: questions.length,
         },
         normalizedContent: buildYamlDocument({ questions }),
-        repairApplied: candidateRepairApplied || candidate !== rawContent.trim(),
+        // `candidateWarnings` also collects what the shared parser and the alias
+        // sink recorded, neither of which touches `candidateRepairApplied`, so a
+        // repair could be reported in the warnings while the flag said none ran.
+        repairApplied: candidateRepairApplied || candidateWarnings.length > 0 || candidate !== rawContent.trim(),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1482,7 +1486,9 @@ export function normalizeInterviewRefinementOutput(
     let candidateRepairApplied = false
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate), [
+      const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate, {
+        repairWarnings: candidateWarnings,
+      }), [
         'interviewrefinement',
         'interview_refinement',
         'refinement',
@@ -1657,7 +1663,10 @@ export function normalizeInterviewRefinementOutput(
           questionsYaml,
         },
         normalizedContent: questionsYaml,
-        repairApplied: candidateRepairApplied || candidate !== rawContent.trim(),
+        // `candidateWarnings` also collects what the shared parser and the alias
+        // sink recorded, neither of which touches `candidateRepairApplied`, so a
+        // repair could be reported in the warnings while the flag said none ran.
+        repairApplied: candidateRepairApplied || candidateWarnings.length > 0 || candidate !== rawContent.trim(),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1800,9 +1809,7 @@ function parseCoverageResultCandidateFields(candidate: string, parseRepairWarnin
   ])
   if (!isRecord(parsed)) throw new Error('Coverage output is not a YAML/JSON object')
 
-  const rawStatus = typeof getValueByAliases(parsed, ['status']) === 'string'
-    ? String(getValueByAliases(parsed, ['status'])).trim().toLowerCase()
-    : ''
+  const rawStatus = getStringByAliases(parsed, ['status'])?.trim().toLowerCase() ?? ''
   const gaps = toStringArray(getValueByAliases(parsed, ['gaps', 'issues']))
   const normalizedFollowUps = normalizeCoverageFollowUpQuestions(
     getValueByAliases(parsed, ['followupquestions', 'follow_up_questions']),

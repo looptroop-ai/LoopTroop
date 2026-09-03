@@ -4,6 +4,7 @@ import {
   getValueByAliases,
   withAliasConflictWarnings,
 } from '../yamlUtils'
+import { getValueByExactAlias } from '@shared/typeGuards'
 import { normalizeFinalTestCommandsOutput } from '../index'
 
 describe('getValueByAliases precedence', () => {
@@ -67,6 +68,39 @@ describe('getValueByAliases precedence', () => {
 
   it('says nothing when no sink is installed', () => {
     expect(() => getValueByAliases({ name: 'a', legacy_name: 'b' }, ['name', 'legacy_name'])).not.toThrow()
+  })
+
+  it('names an ignored alias once when the list carries two spellings of it', () => {
+    // Several live alias lists do this — `actionsrequired` and
+    // `actions_required` normalise to one token — so the same record entries
+    // were visited once per spelling and the disagreement reported twice.
+    const warnings: string[] = []
+    withAliasConflictWarnings(warnings, () => {
+      expect(getValueByAliases(
+        { actionsRequired: 'a', actions_required: 'b' },
+        ['actionsrequired', 'actions_required'],
+      )).toBe('a')
+    })
+    expect(warnings).toEqual(['Resolved "actionsRequired" and ignored the conflicting value in "actions_required".'])
+  })
+})
+
+describe('getValueByExactAlias', () => {
+  it('matches only the exact spelling', () => {
+    expect(getValueByExactAlias({ generated_at: 'x' }, ['generatedAt'])).toBeUndefined()
+    expect(getValueByExactAlias({ generated_at: 'x' }, ['generatedAt', 'generated_at'])).toBe('x')
+  })
+
+  it('takes the first listed alias that is present', () => {
+    expect(getValueByExactAlias({ generated_at: 'legacy', generatedAt: 'canonical' }, ['generatedAt', 'generated_at']))
+      .toBe('canonical')
+  })
+
+  it('does not answer to an inherited key', () => {
+    // The two local copies this replaced used `alias in record`, which walks the
+    // prototype, so a record with no `constructor` of its own still had one.
+    expect(getValueByExactAlias({}, ['constructor'])).toBeUndefined()
+    expect(getValueByExactAlias({}, ['toString'])).toBeUndefined()
   })
 })
 

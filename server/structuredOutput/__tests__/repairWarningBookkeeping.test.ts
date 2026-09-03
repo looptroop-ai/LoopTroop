@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseYamlOrJsonCandidate } from '../yamlUtils'
-import { normalizeBeadsJsonlOutput } from '../index'
+import { normalizeBeadsJsonlOutput, normalizeInterviewRefinementOutput } from '../index'
 
 describe('pre-parse repairs are recorded', () => {
   it('reports a missing space after a list dash', () => {
@@ -26,6 +26,32 @@ describe('pre-parse repairs are recorded', () => {
 
     expect(parsed).toEqual({ options: ['first'] })
     expect(repairWarnings).toContain('Removed duplicate YAML mapping keys before parsing.')
+  })
+})
+
+describe('a normaliser carries its candidate repairs into the result', () => {
+  const winnerDraft = [
+    'questions:',
+    '  - id: Q01',
+    '    phase: foundation',
+    '    question: "What problem are we solving?"',
+  ].join('\n')
+
+  it('reports a pre-parse repair that the interview refinement needed', () => {
+    // This loop allocated a warnings array and installed the alias sink, then
+    // called the parser without handing it the array, so a refinement that only
+    // parsed after a repair was accepted with `repairApplied: false`.
+    const result = normalizeInterviewRefinementOutput([
+      'questions:',
+      '  -id: Q01',
+      '   phase: foundation',
+      '   question: "What problem are we solving?"',
+    ].join('\n'), winnerDraft, 10)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.repairWarnings).toContain('Inserted the missing space after a YAML list dash before parsing.')
+    expect(result.repairApplied).toBe(true)
   })
 })
 

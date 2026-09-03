@@ -16,6 +16,7 @@ import {
   shouldRecordStructuredCandidateRecovery,
   toStringArray,
   getValueByAliases,
+  getStringByAliases,
   getRequiredString,
   buildYamlDocument,
   buildJsonlDocument,
@@ -813,12 +814,8 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     ...(testCommandReason ? { testCommandReason } : {}),
     priority: Number(getValueByAliases(value, ['priority']) ?? index + 1),
     status,
-    issueType: typeof getValueByAliases(value, ['issuetype', 'issue_type']) === 'string'
-      ? String(getValueByAliases(value, ['issuetype', 'issue_type'])).trim()
-      : 'task',
-    externalRef: typeof getValueByAliases(value, ['externalref', 'external_ref']) === 'string'
-      ? String(getValueByAliases(value, ['externalref', 'external_ref'])).trim()
-      : '',
+    issueType: getStringByAliases(value, ['issuetype', 'issue_type'])?.trim() ?? 'task',
+    externalRef: getStringByAliases(value, ['externalref', 'external_ref'])?.trim() ?? '',
     labels: toStringArray(getValueByAliases(value, ['labels'])),
     dependencies,
     targetFiles: toStringArray(getValueByAliases(value, ['targetfiles', 'target_files'])),
@@ -826,21 +823,11 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userretrynotes', 'user_retry_notes'])),
     finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationfailurenotes', 'finalization_failure_notes'])),
     iteration: normalizeBeadIteration(getValueByAliases(value, ['iteration']), `Bead at index ${index}`, repairWarnings),
-    createdAt: typeof getValueByAliases(value, ['createdat', 'created_at']) === 'string'
-      ? String(getValueByAliases(value, ['createdat', 'created_at'])).trim()
-      : '',
-    updatedAt: typeof getValueByAliases(value, ['updatedat', 'updated_at']) === 'string'
-      ? String(getValueByAliases(value, ['updatedat', 'updated_at'])).trim()
-      : '',
-    completedAt: typeof getValueByAliases(value, ['completedat', 'completed_at']) === 'string'
-      ? String(getValueByAliases(value, ['completedat', 'completed_at'])).trim()
-      : '',
-    startedAt: typeof getValueByAliases(value, ['startedat', 'started_at']) === 'string'
-      ? String(getValueByAliases(value, ['startedat', 'started_at'])).trim()
-      : '',
-    beadStartCommit: typeof getValueByAliases(value, ['beadstartcommit', 'bead_start_commit']) === 'string'
-      ? String(getValueByAliases(value, ['beadstartcommit', 'bead_start_commit'])).trim() || null
-      : null,
+    createdAt: getStringByAliases(value, ['createdat', 'created_at'])?.trim() ?? '',
+    updatedAt: getStringByAliases(value, ['updatedat', 'updated_at'])?.trim() ?? '',
+    completedAt: getStringByAliases(value, ['completedat', 'completed_at'])?.trim() ?? '',
+    startedAt: getStringByAliases(value, ['startedat', 'started_at'])?.trim() ?? '',
+    beadStartCommit: getStringByAliases(value, ['beadstartcommit', 'bead_start_commit'])?.trim() || null,
   }
 
   if (!Number.isInteger(bead.priority) || bead.priority <= 0) {
@@ -1048,21 +1035,11 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
         if (!isRecord(entry)) throw new Error(`Relevant file at index ${index} is not an object`)
 
         const path = getRequiredString(entry, ['path', 'filepath', 'file_path', 'file'], `file path at index ${index}`)
-        const rationale = typeof getValueByAliases(entry, ['rationale', 'reason', 'why']) === 'string'
-          ? String(getValueByAliases(entry, ['rationale', 'reason', 'why'])).trim()
-          : ''
-        const relevance = typeof getValueByAliases(entry, ['relevance']) === 'string'
-          ? String(getValueByAliases(entry, ['relevance'])).trim().toLowerCase()
-          : 'medium'
-        const likelyAction = typeof getValueByAliases(entry, ['likelyaction', 'likely_action', 'action']) === 'string'
-          ? String(getValueByAliases(entry, ['likelyaction', 'likely_action', 'action'])).trim().toLowerCase()
-          : 'read'
-        const content = typeof getValueByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']) === 'string'
-          ? String(getValueByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']))
-          : ''
-        const contentPreview = typeof getValueByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']) === 'string'
-          ? String(getValueByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']))
-          : ''
+        const rationale = getStringByAliases(entry, ['rationale', 'reason', 'why'])?.trim() ?? ''
+        const relevance = getStringByAliases(entry, ['relevance'])?.trim().toLowerCase() ?? 'medium'
+        const likelyAction = getStringByAliases(entry, ['likelyaction', 'likely_action', 'action'])?.trim().toLowerCase() ?? 'read'
+        const content = getStringByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']) ?? ''
+        const contentPreview = getStringByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']) ?? ''
 
         return { path, rationale, relevance, likely_action: likelyAction, content, content_preview: contentPreview || content }
       })

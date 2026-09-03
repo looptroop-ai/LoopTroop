@@ -10,7 +10,7 @@ import type { InterviewDocument, InterviewDocumentAnswer, InterviewDocumentQuest
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { calculateFollowUpLimit } from './followUpBudget'
 import { buildInterviewDocumentYaml, normalizeCoverageFollowUpQuestions } from '../../structuredOutput'
-import { getValueByAliases, isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
+import { collectAliasConflictWarnings, getValueByAliases, isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
 import { nowIso, normalizeQuestion, cloneSnapshot } from './interviewUtils'
 import { validateInterviewSessionSnapshot } from './snapshotValidation'
 
@@ -261,8 +261,13 @@ function parseCoverageYamlQuestions(response: string): {
   questions: BatchQuestion[]
   repairWarnings: string[]
 } {
+  // Every alias below is resolved outside a candidate loop, so without a sink of
+  // its own a payload carrying both spellings of `follow_up_questions` resolved
+  // one of them silently.
+  const repairWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(repairWarnings)
   try {
-    const parsed = parseYamlOrJsonCandidate(response)
+    const parsed = parseYamlOrJsonCandidate(response, { repairWarnings })
     if (!isRecord(parsed)) return { questions: [], repairWarnings: [] }
 
     // One semantic normaliser, so a coverage response cannot yield a different
@@ -283,10 +288,12 @@ function parseCoverageYamlQuestions(response: string): {
         ...(question.answerType ? { answerType: question.answerType } : {}),
         ...(question.options && question.options.length > 0 ? { options: question.options } : {}),
       })),
-      repairWarnings: normalized.repairWarnings,
+      repairWarnings: [...repairWarnings, ...normalized.repairWarnings],
     }
   } catch {
     return { questions: [], repairWarnings: [] }
+  } finally {
+    releaseAliasConflicts()
   }
 }
 

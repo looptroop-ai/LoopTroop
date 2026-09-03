@@ -23,6 +23,7 @@ import {
   getNestedRecord,
   getRequiredString,
   getValueByAliases,
+  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
@@ -32,6 +33,7 @@ import {
   toStringArray,
   unwrapExplicitWrapperRecord,
   collectAliasConflictWarnings,
+  withAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure, createStructuredCandidateFailureTracker } from './failure'
 
@@ -140,9 +142,7 @@ function normalizeQuestionAnswer(
   const selectedOptionIds = Array.from(new Set(toStringArray(
     getValueByAliases(value, ['selectedoptionids', 'selected_option_ids', 'selected']),
   )))
-  const freeText = typeof getValueByAliases(value, ['freetext', 'free_text', 'text']) === 'string'
-    ? String(getValueByAliases(value, ['freetext', 'free_text', 'text']))
-    : ''
+  const freeText = getStringByAliases(value, ['freetext', 'free_text', 'text']) ?? ''
   const explicitSkipped = toBoolean(getValueByAliases(value, ['skipped']))
 
   let nextSelectedOptionIds = selectedOptionIds
@@ -532,6 +532,21 @@ function buildAnswerOnlyResolvedInterviewCandidate(
   },
 ): StructuredOutputResult<InterviewDocument> | null {
   const repairWarnings: string[] = []
+  // This fallback resolves its own aliases rather than going through
+  // `normalizeInterviewDocumentOutput`, which installs the sink itself, so
+  // without one here a payload spelling `questions` two ways resolved silently.
+  return withAliasConflictWarnings(repairWarnings, () =>
+    buildAnswerOnlyResolvedInterviewCandidateInner(candidateContent, canonical, options, repairWarnings))
+}
+
+function buildAnswerOnlyResolvedInterviewCandidateInner(
+  candidateContent: string,
+  canonical: InterviewDocument,
+  options: {
+    memberId?: string
+  },
+  repairWarnings: string[],
+): StructuredOutputResult<InterviewDocument> | null {
   let parsed: unknown
 
   for (const parseOptions of [
@@ -869,9 +884,7 @@ export function normalizeInterviewDocumentOutput(
           goals: toStringArray(getValueByAliases(summary, ['goals'])),
           constraints: toStringArray(getValueByAliases(summary, ['constraints'])),
           non_goals: toStringArray(getValueByAliases(summary, ['nongoals', 'non_goals'])),
-          final_free_form_answer: typeof getValueByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']) === 'string'
-            ? String(getValueByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']))
-            : '',
+          final_free_form_answer: getStringByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']) ?? '',
         },
         approval: {
           approved_by: toOptionalString(getValueByAliases(approval, ['approvedby', 'approved_by'])) ?? '',

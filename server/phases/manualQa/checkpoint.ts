@@ -1,4 +1,6 @@
+import { withGitIndexRollback } from '../../git/indexSnapshot'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
 import { runGitSync } from '../../git/runCommand'
 import { createHash } from 'node:crypto'
 import {
@@ -58,30 +60,11 @@ interface ManualQaDriftReceipt {
  */
 const RECEIPT_FILE_MODE = 0o600
 
-function normalizeProjectPath(filePath: string): string | null {
-  const trimmed = filePath.trim().replace(/\\/g, '/')
-  const normalized = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
-  if (
-    !normalized
-    || normalized === '.'
-    || normalized === '..'
-    || normalized.startsWith('/')
-    || /^[A-Za-z]:\//.test(normalized)
-    || normalized.split('/').some(part => !part || part === '.' || part === '..')
-    || normalized === '.ticket'
-    || normalized.startsWith('.ticket/')
-    || normalized === '.looptroop'
-    || normalized.startsWith('.looptroop/')
-    || normalized.includes('\0')
-    || normalized.includes('\n')
-    || normalized.includes('\r')
-  ) return null
-  return normalized
-}
-
-function uniqueProjectPaths(files: string[]): string[] {
-  return [...new Set(files.map(normalizeProjectPath).filter((file): file is string => file !== null))]
-}
+// The fourth copy of this rule, now shared with the two audits and the squash
+// filter. It accepts one thing the local copy rejected — a doubled separator,
+// which it collapses rather than refuses — and is otherwise identical.
+const normalizeProjectPath = normalizeRepoScopedPath
+const uniqueProjectPaths = uniqueRepoScopedPaths
 
 function literalPathspec(filePath: string): string {
   return `:(literal)${filePath}`
@@ -286,25 +269,32 @@ function commitExactFiles(worktreePath: string, files: string[], message: string
   const normalizedFiles = uniqueProjectPaths(files)
   if (normalizedFiles.length === 0) return null
   const pathspecs = normalizedFiles.map(literalPathspec)
-  runGit(worktreePath, ['add', '-f', '-A', '--', ...pathspecs], true)
-  const staged = runGit(worktreePath, ['diff', '--cached', '--name-only', '--', ...pathspecs], true)
-  if (!staged) return null
-  // `git commit` normally includes every path already staged in the worktree.
-  // Restrict the commit itself so unrelated staged application/runtime residue
-  // cannot leak into the clean Manual QA checkpoint before it is quarantined.
-  runGit(worktreePath, [
-    '-c',
-    'user.name=LoopTroop',
-    '-c',
-    'user.email=looptroop@local',
-    'commit',
-    '--no-verify',
-    '-m',
-    message,
-    '--only',
-    '--',
-    ...pathspecs,
-  ], true)
+  // Staged and committed under an index snapshot, like the bead commit. `git
+  // add` here writes the worktree's own index, and a commit that then threw
+  // used to leave these paths staged for whatever committed next.
+  const committed = withGitIndexRollback(worktreePath, () => {
+    runGit(worktreePath, ['add', '-f', '-A', '--', ...pathspecs], true)
+    const staged = runGit(worktreePath, ['diff', '--cached', '--name-only', '--', ...pathspecs], true)
+    if (!staged) return { keepIndex: false, value: false }
+    // `git commit` normally includes every path already staged in the worktree.
+    // Restrict the commit itself so unrelated staged application/runtime residue
+    // cannot leak into the clean Manual QA checkpoint before it is quarantined.
+    runGit(worktreePath, [
+      '-c',
+      'user.name=LoopTroop',
+      '-c',
+      'user.email=looptroop@local',
+      'commit',
+      '--no-verify',
+      '-m',
+      message,
+      '--only',
+      '--',
+      ...pathspecs,
+    ], true)
+    return { keepIndex: true, value: true }
+  })
+  if (!committed) return null
   return runGit(worktreePath, ['rev-parse', 'HEAD'])
 }
 

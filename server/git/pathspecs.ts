@@ -13,10 +13,16 @@
  * name".
  */
 
+/** Excludes the orchestrator's own state directory. */
+export const EXCLUDE_LOOPTROOP_DIR = ':(top,exclude).looptroop'
+
+/** Excludes the ticket's own artifact directory. */
+export const EXCLUDE_TICKET_DIR = ':(top,exclude).ticket'
+
 /** Excludes both control directories, anchored at the repository root. */
 export const LOOPTROOP_EXCLUDE_PATHSPECS = [
-  ':(top,exclude).ticket',
-  ':(top,exclude).looptroop',
+  EXCLUDE_TICKET_DIR,
+  EXCLUDE_LOOPTROOP_DIR,
 ] as const
 
 /**

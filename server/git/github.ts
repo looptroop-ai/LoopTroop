@@ -1,4 +1,5 @@
 import { getCurrentBranch } from './repository'
+import { EXCLUDE_LOOPTROOP_DIR, REPO_SCOPE_PATHSPECS } from './pathspecs'
 import {
   runCommand,
   runCommandSync,
@@ -161,7 +162,9 @@ interface GhAuthStatusPayload {
   hosts?: Record<string, unknown>
 }
 
-const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '--untracked-files=all', '--', '.', ':(top,exclude).looptroop']
+// Deliberately excludes only `.looptroop`: this is the "is the worktree clean"
+// probe, and a change under `.ticket` is a change the delivery flow must see.
+const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '--untracked-files=all', '--', '.', EXCLUDE_LOOPTROOP_DIR]
 const SSH_HOSTNAME_CACHE = new Map<string, string | null>()
 
 function normalizeString(value: unknown): string | null {
@@ -551,13 +554,11 @@ export async function mergePullRequest(projectPath: string, prNumber: number, ti
 }
 
 export function readGitDiff(projectPath: string, fromRef: string, toRef: string): GitDiffSummary {
-  const exclusion = ':(top,exclude).ticket'
-  const looptroopExclusion = ':(top,exclude).looptroop'
-  const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
-  const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
+  const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
+  const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
   const patchResult = tryGit(
     projectPath,
-    ['diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion],
+    ['diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS],
     { maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES },
   )
 

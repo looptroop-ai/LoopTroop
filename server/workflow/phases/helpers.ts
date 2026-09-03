@@ -2328,7 +2328,10 @@ export function tryRecoverPhaseIntermediate(
       const hasCompletedWinnerDraft = recoveredDrafts.some((draft) =>
         draft.memberId === recoveredWinnerId
         && draft.outcome === 'completed'
-        && Boolean(draft.content),
+        // `Boolean(content)` accepted a draft that is nothing but whitespace,
+        // and refinement then ran against an empty winning draft.
+        && typeof draft.content === 'string'
+        && draft.content.trim().length > 0,
       )
       if (!recoveredWinnerId || !hasCompletedWinnerDraft) return false
       data.winnerId = recoveredWinnerId

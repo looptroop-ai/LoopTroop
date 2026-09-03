@@ -175,6 +175,25 @@ describe('parseInterviewSessionSnapshot', () => {
     ['a follow-up round with a non-integer round number', (snapshot: InterviewSessionSnapshot) => {
       snapshot.followUpRounds.push({ roundNumber: 1.5, source: 'coverage', questionIds: [] })
     }],
+    ['an empty winner id', (snapshot: InterviewSessionSnapshot) => { snapshot.winnerId = '  ' }],
+    ['a negative question budget', (snapshot: InterviewSessionSnapshot) => { snapshot.maxInitialQuestions = -1 }],
+    ['a negative follow-up budget', (snapshot: InterviewSessionSnapshot) => { snapshot.maxFollowUps = -2 }],
+    // Answers are written by question id, so the second of a duplicate pair
+    // silently replaced the first once the restored batch was submitted.
+    ['two questions sharing an id', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.questions.push({ ...snapshot.questions[0]! })
+    }],
+    ['a current batch repeating a question id', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.currentBatch = {
+        questions: [snapshot.questions[0]!, { ...snapshot.questions[0]! }],
+        progress: { current: 1, total: 2 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: '',
+        batchNumber: 1,
+        source: 'prom4',
+      }
+    }],
     ['a current batch with malformed progress', (snapshot: InterviewSessionSnapshot) => {
       snapshot.currentBatch = {
         questions: [],
@@ -196,6 +215,63 @@ describe('parseInterviewSessionSnapshot', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+
+  it('drops an answer filed under a question that does not exist', () => {
+    // `countAnsweredQuestions` counted it, so a restored session could report
+    // more answers than it had questions and skip ahead.
+    const snapshot = baseSnapshot()
+    snapshot.answers.GHOST = { answer: 'orphan', skipped: false, answeredAt: null, batchNumber: null }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const restored = parseInterviewSessionSnapshot(JSON.stringify(snapshot))
+      expect(restored).not.toBeNull()
+      expect(Object.keys(restored!.answers)).toEqual([])
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it.each([
+    ['deduplicates a repeated selection', ['opt-a', 'opt-a'], 'single_choice', ['opt-a']],
+    ['clears two options on a single-choice question', ['opt-a', 'opt-b'], 'single_choice', []],
+    ['clears an option the question does not offer', ['opt-z'], 'multiple_choice', []],
+    ['clears a selection on a free-text question', ['opt-a'], 'free_text', []],
+  ] as [string, string[], 'single_choice' | 'multiple_choice' | 'free_text', string[]][])(
+    '%s after a restart',
+    (_label, selectedOptionIds, answerType, expected) => {
+      // The restore path only checked that this was an array of strings, so a
+      // selection the batch route would have rejected reached the canonical
+      // interview document unchanged.
+      const snapshot = baseSnapshot()
+      snapshot.questions[0] = {
+        ...snapshot.questions[0]!,
+        answerType,
+        options: answerType === 'free_text' ? undefined : [{ id: 'opt-a', label: 'A' }, { id: 'opt-b', label: 'B' }],
+      }
+      snapshot.answers.Q01 = { answer: '', skipped: false, answeredAt: null, batchNumber: 1, selectedOptionIds }
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const restored = parseInterviewSessionSnapshot(JSON.stringify(snapshot))
+        expect(restored?.answers.Q01?.selectedOptionIds).toEqual(expected)
+      } finally {
+        warn.mockRestore()
+      }
+    },
+  )
+
+  it('keeps a valid selection intact', () => {
+    const snapshot = baseSnapshot()
+    snapshot.questions[0] = {
+      ...snapshot.questions[0]!,
+      answerType: 'multiple_choice',
+      options: [{ id: 'opt-a', label: 'A' }, { id: 'opt-b', label: 'B' }],
+    }
+    snapshot.answers.Q01 = { answer: '', skipped: false, answeredAt: null, batchNumber: 1, selectedOptionIds: ['opt-a', 'opt-b'] }
+    expect(parseInterviewSessionSnapshot(JSON.stringify(snapshot))?.answers.Q01?.selectedOptionIds)
+      .toEqual(['opt-a', 'opt-b'])
   })
 
   it('returns null for content that is not JSON', () => {

@@ -106,7 +106,9 @@ describe('hydrateAllTickets', () => {
         ...makeTicketContextFromTicket(ticket, { status: 'WAITING_PR_REVIEW' }),
         maxIterations: -3,
         iterationCount: -2,
-        beadProgress: { total: 'many', completed: 1, current: null },
+        // `completed > total` reads as "every bead is done" to the coding
+        // guard, so a restored snapshot could skip straight to final testing.
+        beadProgress: { total: 1, completed: 99, current: null },
         councilResults: 'not-an-object',
         createdAt: 12345,
         errorCodes: ['ok', 7],
@@ -127,7 +129,9 @@ describe('hydrateAllTickets', () => {
       expect(restored?.context.iterationCount).toBe(0)
       expect(restored?.context.beadProgress).toEqual({ total: 0, completed: 0, current: null })
       expect(restored?.context.councilResults).toBeNull()
-      expect(restored?.context.createdAt).toBe('')
+      // The fallback used to write `''`, which is not a timestamp either and is
+      // exactly the value it was replacing.
+      expect(restored?.context.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
       expect(restored?.context.errorCodes).toEqual([])
       // The ticket keeps running: one bad field does not discard the session.
       expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_PR_REVIEW')

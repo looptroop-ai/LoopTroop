@@ -66,6 +66,11 @@ function isValidBeadProgress(value: unknown): boolean {
   if (!isRecord(value)) return false
   return isNonNegativeInteger(value.total)
     && isNonNegativeInteger(value.completed)
+    // The coding guard reads `completed >= total && total > 0` as "every bead is
+    // done", so a restored `{ total: 1, completed: 99 }` skipped straight to
+    // final testing. Counters that cannot both be true are not a snapshot to
+    // restore from.
+    && (value.completed as number) <= (value.total as number)
     && (value.current === null || typeof value.current === 'string')
 }
 
@@ -227,13 +232,20 @@ function reconcileSnapshotForTicket(
     context.councilResults = null
   }
   for (const dateField of ['createdAt', 'updatedAt'] as const) {
-    if (typeof context[dateField] !== 'string') {
-      if (context[dateField] !== undefined) dropInvalidField(dateField, 'not a string')
-      context[dateField] = ''
+    // An empty string is not a date either, and it was what the fallback itself
+    // wrote — so a bad timestamp was replaced with one nothing can render.
+    if (typeof context[dateField] !== 'string' || !context[dateField].trim()) {
+      if (context[dateField] !== undefined) dropInvalidField(dateField, 'not a timestamp')
+      context[dateField] = new Date().toISOString()
     }
   }
-  if (context.error !== null && typeof context.error !== 'string') {
+  // Every neighbour guards on `!== undefined` first. This one did not, so a
+  // snapshot that simply lacks the field — which xstate hydration produces —
+  // logged a warning saying its error was not a string.
+  if (context.error !== undefined && context.error !== null && typeof context.error !== 'string') {
     dropInvalidField('error', 'not a string')
+  }
+  if (typeof context.error !== 'string') {
     context.error = null
   }
   if (!Array.isArray(context.errorCodes) || context.errorCodes.some((code) => typeof code !== 'string')) {

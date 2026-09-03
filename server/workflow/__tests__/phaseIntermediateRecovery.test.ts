@@ -92,6 +92,26 @@ describe('tryRecoverPhaseIntermediate validates the persisted winner', () => {
     expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', true)).toBe(false)
   })
 
+  it('refuses a winner whose draft is nothing but whitespace', () => {
+    // `Boolean(draft.content)` was true for `'   '`, so recovery succeeded and
+    // refinement then ran against an empty winning draft.
+    const { ticket, context } = createInitializedTestTicket(repoManager)
+    insertPhaseArtifact(ticket.id, {
+      phase: 'COUNCIL_DELIBERATING',
+      artifactType: 'interview_drafts',
+      content: JSON.stringify({
+        isFinal: true,
+        drafts: [
+          { memberId: WINNER_ID, outcome: 'completed', content: '   \n  ' },
+          { memberId: LOSER_ID, outcome: 'completed', content: 'questions: []' },
+        ],
+      }),
+    })
+    seedInterviewVotes(ticket.id, JSON.stringify({ isFinal: true, winnerId: WINNER_ID }))
+
+    expect(tryRecoverPhaseIntermediate(ticket.id, context, 'interview', true)).toBe(false)
+  })
+
   it('still recovers drafts when votes are not needed', () => {
     const { ticket, context } = createInitializedTestTicket(repoManager)
     seedInterviewDrafts(ticket.id)

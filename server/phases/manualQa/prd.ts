@@ -52,11 +52,22 @@ export function manualQaPrdPath(ticketDir: string): string {
   return resolve(ticketDir, 'prd.yaml')
 }
 
-/** Reads the approved PRD, or throws when it is missing or does not fit the shape. */
-export function readManualQaPrd(ticketDir: string): ManualQaPrd {
+/**
+ * Reads the approved PRD, or throws when it is missing or does not fit the shape.
+ *
+ * `raw` is the file's own text, for the callers that put the PRD in front of a
+ * model: they want the document the user approved, not a re-serialisation of the
+ * subset this schema keeps. Reading it through here is what makes a malformed
+ * PRD fail the same way for all of them.
+ */
+export function readManualQaPrd(
+  ticketDir: string,
+  purpose = 'Manual QA checklist generation',
+): ManualQaPrd & { raw: string } {
   const path = manualQaPrdPath(ticketDir)
-  if (!existsSync(path)) throw new Error('Approved PRD is required before Manual QA checklist generation.')
-  return manualQaPrdSchema.parse(parseYamlOrJsonCandidate(readFileSync(path, 'utf8')))
+  if (!existsSync(path)) throw new Error(`Approved PRD is required before ${purpose}.`)
+  const raw = readFileSync(path, 'utf8')
+  return { ...manualQaPrdSchema.parse(parseYamlOrJsonCandidate(raw)), raw }
 }
 
 /**

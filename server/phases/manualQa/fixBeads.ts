@@ -31,7 +31,7 @@ import type {
 import { normalizeCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../lib/hostContext'
 import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './storage'
-import { manualQaPrdPath } from './prd'
+import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
 import { focusedDiffMetadata } from './focusedDiff'
 
@@ -165,45 +165,54 @@ export function validateManualQaFixBeadCandidates(
   }
 }
 
+// The tool names below are exactly PROM_MANUAL_QA_FIX_BEADS's read_only policy
+// allowlist (`server/opencode/toolPolicy.ts`), which is what "a focused
+// read-only repository inspection" can mean. `bash` is denied by that policy, so
+// a `bash: git diff` does not qualify and is not listed here.
+
 /**
- * The tools PROM_MANUAL_QA_FIX_BEADS's read_only policy allows, which is what
- * "a focused read-only repository inspection" can mean.
+ * Which of each tool's arguments name a location, and which are query text.
+ *
+ * The distinction matters in both directions. `grep`'s `pattern` is a regular
+ * expression, so path-scoping it fails a genuine inspection that searches for
+ * the literal `../` — while `glob`'s `pattern` really is a path and has to be
+ * scoped. Keys are compared in normalised form, because OpenCode writes
+ * `filePath` where the schema calls it `file_path`, and an argument nobody
+ * recognises is an argument nobody checks.
  */
-const MANUAL_QA_REPOSITORY_INSPECTION_TOOLS: ReadonlySet<string> = new Set([
-  'read',
-  'grep',
-  'glob',
-  'list',
-  'codesearch',
-  'lsp',
+const TOOL_ARGUMENT_ROLES = new Map<string, { paths: readonly string[]; requiresPath?: boolean }>([
+  ['read', { paths: ['path', 'filepath', 'file'], requiresPath: true }],
+  ['grep', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
+  ['glob', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob', 'pattern'] }],
+  ['list', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
+  ['codesearch', { paths: ['path', 'directory', 'dir', 'cwd', 'include', 'glob'] }],
+  ['lsp', { paths: ['path', 'filepath', 'file'] }],
 ])
 
-/** Argument names any of those tools use to name a file, directory or pattern. */
-const TOOL_PATH_ARGUMENT_KEYS = [
-  'path',
-  'filepath',
-  'file_path',
-  'file',
-  'directory',
-  'dir',
-  'cwd',
-  'pattern',
-  'glob',
-  'include',
-]
+function normalizeArgumentKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
 
+/**
+ * Whether one argument names a location inside the ticket worktree.
+ *
+ * The relative branch used to test the normalised string for a `../` prefix or
+ * an embedded `/../`. `path.posix.normalize` collapses the embedded form, so
+ * that half was dead, and a candidate that normalises to exactly `..` — plain
+ * `..`, or `src/../..` — has no prefix to match and was accepted. Resolving
+ * against the worktree and reusing the absolute containment test has no such
+ * gap.
+ */
 function isRepoScopedToolArgument(value: unknown, projectPath: string): boolean {
   if (typeof value !== 'string') return true
   const candidate = value.trim()
   if (!candidate) return true
-  if (path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)) {
-    const normalizedRoot = path.resolve(projectPath)
-    const normalizedCandidate = path.resolve(candidate)
-    return normalizedCandidate === normalizedRoot
-      || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
-  }
-  const normalized = path.posix.normalize(candidate.replace(/\\/g, '/'))
-  return !normalized.startsWith('../') && !normalized.includes('/../')
+  const normalizedRoot = path.resolve(projectPath)
+  const normalizedCandidate = path.isAbsolute(candidate) || /^[A-Za-z]:[\\/]/.test(candidate)
+    ? path.resolve(candidate)
+    : path.resolve(normalizedRoot, candidate.replace(/\\/g, '/'))
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
 }
 
 /**
@@ -220,11 +229,21 @@ export function isManualQaRepositoryInspectionToolCall(
 ): boolean {
   if (call.status !== 'completed') return false
   if (typeof call.tool !== 'string') return false
-  if (!MANUAL_QA_REPOSITORY_INSPECTION_TOOLS.has(call.tool.trim().toLowerCase())) return false
+  const roles = TOOL_ARGUMENT_ROLES.get(call.tool.trim().toLowerCase())
+  if (!roles) return false
   const input = call.input
-  if (!isRecord(input)) return true
+  if (!isRecord(input)) return !roles.requiresPath
 
-  return TOOL_PATH_ARGUMENT_KEYS.every((key) => isRepoScopedToolArgument(input[key], projectPath))
+  let namedAPath = false
+  for (const [key, value] of Object.entries(input)) {
+    if (!roles.paths.includes(normalizeArgumentKey(key))) continue
+    if (typeof value === 'string' && value.trim()) namedAPath = true
+    if (!isRepoScopedToolArgument(value, projectPath)) return false
+  }
+
+  // `list` on the worktree root is a real inspection; a `read` that names no
+  // file read nothing at all.
+  return roles.requiresPath ? namedAPath : true
 }
 
 export function hasSuccessfulManualQaRepositoryToolCall(messages: Message[], projectPath: string): boolean {
@@ -315,13 +334,14 @@ export async function generateManualQaFixBeadCandidates(
   if (groups.length === 0) return []
   const model = input.context.lockedMainImplementer?.trim()
   if (!model) throw new Error('Manual QA fix-bead generation requires the locked main implementer model.')
-  const prdPath = manualQaPrdPath(paths.ticketDir)
-  if (!existsSync(prdPath)) throw new Error('Approved PRD is required for Manual QA fix-bead generation.')
+  // Checklist generation rejects a malformed PRD and operations omit it; this
+  // consumer used to accept whatever text was on disk and put it in a prompt.
+  const prd = readManualQaPrd(paths.ticketDir, 'Manual QA fix-bead generation')
   const finalTestReport = getLatestPhaseArtifact(input.ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')?.content ?? ''
   const prompt = buildFixBeadsPrompt({
     context: input.context,
     ticketDescription: ticket.description ?? '',
-    prd: readFileSync(prdPath, 'utf8'),
+    prd: prd.raw,
     existingBeads: input.existingBeads,
     checklist: input.checklist,
     draft: input.draft,

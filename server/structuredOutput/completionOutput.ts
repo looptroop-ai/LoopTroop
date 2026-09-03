@@ -1,6 +1,7 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import { detectHostContext } from '../lib/hostContext'
+import type { HostContext } from '@shared/hostContext'
 import { hostContextSchema } from '@shared/hostContext'
 import { normalizeCommandSpec, runtimeEnvironmentSchema } from '@shared/commandSpec'
 import type {
@@ -442,12 +443,23 @@ function normalizeExecutionSetupPlanReadinessStatus(value: unknown): 'ready' | '
   throw new Error(`Invalid execution setup readiness status: ${raw}`)
 }
 
+/**
+ * Normalises a command against the host the plan was written for.
+ *
+ * `detectHostContext()` describes whatever machine is running *now*. Reading a
+ * stored, already-approved plan through it rewrote its commands for the current
+ * host instead of the one recorded on the plan — so a plan approved on Windows
+ * came back with POSIX shell quoting, and vice versa. The live host stays as
+ * the fallback for a plan that carries none, which is the case when the model's
+ * fresh output is being parsed.
+ */
 function normalizeExecutionSetupCommand(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
+  hostContext?: HostContext,
 ) {
-  const normalized = normalizeCommandSpec(value, detectHostContext())
+  const normalized = normalizeCommandSpec(value, hostContext ?? detectHostContext())
   if (normalized.warning) repairWarnings?.push(`${fieldLabel}: ${normalized.warning}`)
   return normalized.command
 }
@@ -456,11 +468,12 @@ function normalizeExecutionSetupCommands(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
+  hostContext?: HostContext,
 ) {
   if (value === undefined || value === null) return []
   const entries = Array.isArray(value) ? value : [value]
   return entries.map((entry, index) =>
-    normalizeExecutionSetupCommand(entry, `${fieldLabel}[${index}]`, repairWarnings),
+    normalizeExecutionSetupCommand(entry, `${fieldLabel}[${index}]`, repairWarnings, hostContext),
   )
 }
 
@@ -482,6 +495,7 @@ function normalizeExecutionSetupCommandProbes(
   value: unknown,
   label: string,
   repairWarnings?: string[],
+  hostContext?: HostContext,
 ): ExecutionSetupCommandProbePayload[] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value)) throw new Error(`${label} must be a list`)
@@ -493,6 +507,7 @@ function normalizeExecutionSetupCommandProbes(
         getValueByAliases(entry, ['command']),
         `${label}[${index}].command`,
         repairWarnings,
+        hostContext,
       ),
       purpose: getRequiredString(entry, ['purpose'], `${label}[${index}].purpose`),
     }
@@ -545,6 +560,7 @@ function normalizeExecutionSetupGitHooks(
   value: unknown,
   repairWarnings?: string[],
   preserveBackendFields = false,
+  hostContext?: HostContext,
 ): ExecutionSetupGitHooksPayload {
   if (value === undefined || value === null) {
     return { policy: DEFAULT_GIT_HOOK_POLICY, detected: [], validationCommands: [] }
@@ -596,6 +612,7 @@ function normalizeExecutionSetupGitHooks(
               getValueByAliases(entry, ['command']),
               `git_hooks.validation_commands[${index}].command`,
               repairWarnings,
+              hostContext,
             ),
             purpose: getRequiredString(entry, ['purpose'], `git_hooks.validation_commands[${index}].purpose`),
           }
@@ -657,6 +674,7 @@ function normalizeExecutionSetupPlanStep(
   entry: Record<string, unknown>,
   index: number,
   repairWarnings?: string[],
+  hostContext?: HostContext,
 ): ExecutionSetupPlanPayload['steps'][number] {
   const explicitId = toOptionalString(getValueByAliases(entry, ['id']))
   const derivedOrdinal = index + 1
@@ -686,6 +704,7 @@ function normalizeExecutionSetupPlanStep(
       getValueByAliases(entry, ['commands', 'command']),
       `steps[${index}].commands`,
       repairWarnings,
+      hostContext,
     ),
     required: normalizeExecutionSetupPlanStepRequired(
       getValueByAliases(entry, ['required', 'isrequired']),
@@ -719,13 +738,21 @@ function normalizeExecutionSetupPlan(
   }
   const summary = getRequiredString(value, ['summary', 'reason'], 'summary')
 
+  // Resolved before anything is normalised, because everything below has to be
+  // normalised against the host the plan records rather than the one running.
+  const rawHostContext = getValueByAliases(value, ['hostcontext'])
+  const parsedHostContext = hostContextSchema.safeParse(rawHostContext)
+  const hostContext = preserveBackendFields && parsedHostContext.success
+    ? parsedHostContext.data
+    : detectHostContext()
+
   const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
     getValueByAliases(value, ['workspaceinputs']),
   )
   const rawSteps = getValueByAliases(value, ['steps', 'plansteps'])
   const steps = Array.isArray(rawSteps) ? rawSteps.map((entry, index) => {
     if (!isRecord(entry)) throw new Error(`steps[${index}] must be an object`)
-    return normalizeExecutionSetupPlanStep(entry, index, repairWarnings)
+    return normalizeExecutionSetupPlanStep(entry, index, repairWarnings, hostContext)
   }) : []
 
   const proposedReadiness = normalizeExecutionSetupPlanReadiness(
@@ -768,17 +795,14 @@ function normalizeExecutionSetupPlan(
     getValueByAliases(value, ['workspaceprobes']),
     'workspace_probes',
     repairWarnings,
+    hostContext,
   )
   const gitHooks = normalizeExecutionSetupGitHooks(
     getValueByAliases(value, ['githooks']),
     repairWarnings,
     preserveBackendFields,
+    hostContext,
   )
-  const rawHostContext = getValueByAliases(value, ['hostcontext'])
-  const parsedHostContext = hostContextSchema.safeParse(rawHostContext)
-  const hostContext = preserveBackendFields && parsedHostContext.success
-    ? parsedHostContext.data
-    : detectHostContext()
   const schemaVersion = preserveBackendFields
     ? toInteger(getValueByAliases(value, ['schemaversion'])) ?? 1
     : 1

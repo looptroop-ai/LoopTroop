@@ -34,6 +34,18 @@ describe('Interview Q&A', () => {
     expect(calculateFollowUpLimit(5)).toBe(1)
     expect(calculateFollowUpLimit(1)).toBe(1)
   })
+
+  it('yields no follow-ups at all when the budget is zero', () => {
+    // The profile accepts 0-100, and `Math.max(1, …)` turned a deliberate 0%
+    // into one question — so an operator who had switched coverage follow-ups
+    // off still got asked one.
+    expect(calculateFollowUpLimit(50, 0)).toBe(0)
+    expect(calculateFollowUpLimit(1, 0)).toBe(0)
+    // The floor of one still applies to a small positive budget, which is a
+    // rounding guard rather than an override of "off".
+    expect(calculateFollowUpLimit(1, 1)).toBe(1)
+    expect(calculateFollowUpLimit(100, 1)).toBe(1)
+  })
 })
 
 describe('Beads Expansion', () => {

@@ -545,6 +545,23 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
     return created
   }, [round?.operation?.actionId, round?.operation?.operationType, round?.operation?.status, version])
 
+  /**
+   * Typing a skip reason edits the draft, so the autosave carries it.
+   *
+   * It used to live only in component state and reach the draft at the moment
+   * Skip was confirmed. Anyone who typed a reason and then reloaded, or whose
+   * tab was closed by the keepalive path, lost it — while the restore already
+   * read `restored.skipReason`, expecting it to have been saved.
+   */
+  const handleSkipReasonChange = (value: string) => {
+    setSkipReason(value)
+    setDraft((current) => ({
+      ...current,
+      ...(value.trim() ? { skipReason: value } : { skipReason: undefined }),
+    }))
+    setDirty(true)
+  }
+
   const reloadConflictingDraft = async () => {
     const refreshed = await uiState.refetch()
     const restored = extractSavedDraft(refreshed.data?.data) ?? round?.draft ?? emptyDraft()
@@ -864,7 +881,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
           <DialogHeader><DialogTitle>Skip Manual QA?</DialogTitle><DialogDescription>Your entered results, notes, links, and files will be saved in the archived draft and cannot be edited later. No fix bead or improvement ticket will be created, and the workflow will continue to integration.</DialogDescription></DialogHeader>
           <SkipReasonField
             value={skipReason}
-            onChange={setSkipReason}
+            onChange={handleSkipReasonChange}
             help="Saved with the ticket. Nobody is blocked if you leave it empty."
           />
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setSkipOpen(false)}>Cancel</Button><Button variant="destructive" onClick={handleSkip} disabled={skip.isPending || saveState === 'conflict' || evidenceMutationInProgress}>{skip.isPending ? <LoadingText text="Skipping" /> : 'Skip and integrate'}</Button></div>

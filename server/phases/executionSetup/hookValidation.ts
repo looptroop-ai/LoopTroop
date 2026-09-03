@@ -1,5 +1,6 @@
 import { executeCommand } from '../../lib/commandExecutor'
 import { detectHostContext } from '../../lib/hostContext'
+import { hostContextSchema } from '@shared/hostContext'
 import type { ExecutionSetupCommandReceiptPayload, GitHookPolicy } from '../../structuredOutput/types'
 import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy } from '@shared/gitHookPolicy'
 import {
@@ -13,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { snapshotGitIndex, type GitIndexSnapshot } from '../../git/indexSnapshot'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitBinarySync, runGitSync } from '../../git/runCommand'
 import { getExecutionSetupCommitExcludedRoots, summarizeWorktreeChanges } from '../../git/worktreeChanges'
@@ -29,6 +31,13 @@ interface WorktreeSnapshot {
   tree: string
   temporaryDirectory: string
   untrackedPaths: Set<string>
+  /**
+   * The worktree's own index, restored alongside the files.
+   *
+   * Restoring the worktree alone left a hook that ran `git add` with its paths
+   * still staged — the validation was undone on disk and not in the index.
+   */
+  index: GitIndexSnapshot | null
 }
 
 export interface GitHookValidationFileAudit {
@@ -91,11 +100,17 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
   }
-  return { tree: treeId, temporaryDirectory, untrackedPaths: listUntrackedPaths(worktreePath) }
+  return {
+    tree: treeId,
+    temporaryDirectory,
+    untrackedPaths: listUntrackedPaths(worktreePath),
+    index: snapshotGitIndex(worktreePath),
+  }
 }
 
 function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): void {
   try {
+    snapshot.index?.restore()
     runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
     for (const path of listUntrackedPaths(worktreePath)) {
       if (snapshot.untrackedPaths.has(path)) continue
@@ -110,6 +125,7 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
       rmSync(absolutePath, { recursive: true, force: true })
     }
   } finally {
+    snapshot.index?.dispose()
     rmSync(snapshot.temporaryDirectory, { recursive: true, force: true })
   }
 }
@@ -124,6 +140,12 @@ function readProfileValidation(content: string): {
     const hooks = (value.git_hooks ?? value.gitHooks) as Record<string, unknown> | undefined
     const policy = hooks?.policy
     if (!isGitHookPolicy(policy)) return null
+    // The host the profile was written and approved on, not whatever is running
+    // now. Re-detecting rewrote an approved hook command's quoting for the
+    // current platform, so a command approved on one host ran as something else
+    // on another.
+    const parsedHost = hostContextSchema.safeParse(value.host_context ?? value.hostContext)
+    const hostContext = parsedHost.success ? parsedHost.data : detectHostContext()
     const rawCommands = hooks?.validation_commands ?? hooks?.validationCommands
     const commands = Array.isArray(rawCommands) ? rawCommands.flatMap((entry) => {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
@@ -133,7 +155,7 @@ function readProfileValidation(content: string): {
         return [{
           id: command.id,
           hook: command.hook,
-          command: normalizeCommandSpec(command.command, detectHostContext()).command,
+          command: normalizeCommandSpec(command.command, hostContext).command,
         }]
       } catch {
         return []
@@ -195,42 +217,80 @@ export async function runExplicitGitHookValidation(input: {
   const warnings: string[] = []
   const beforeFingerprint = worktreeFingerprint(input.worktreePath)
   const snapshot = snapshotWorktree(input.worktreePath)
-  for (const validation of config.commands) {
-    if (input.signal?.aborted) throw input.signal.reason
-    const command = validation.command.timeoutMs
-      ? validation.command
-      : { ...validation.command, timeoutMs: HOOK_VALIDATION_TIMEOUT_MS }
-    const result = await executeCommand(command, {
-      repoRoot: input.worktreePath,
-      runtimeEnvironment: config.runtimeEnvironment,
-    })
-    const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
-    const status = result.timedOut ? 'timed_out' as const : result.exitCode === 0 ? 'passed' as const : 'failed' as const
-    receipts.push({
-      id: validation.id,
-      command: validation.command,
-      status,
-      exitCode: result.exitCode,
-      durationMs: result.durationMs,
-      outputExcerpt,
-    })
-    if (status !== 'passed') {
-      const message = `${validation.hook} validation ${status}: ${renderCommandSpec(validation.command)}${outputExcerpt ? `\n${outputExcerpt}` : ''}`
-      if (policy === 'validate_required') errors.push(message)
-      else warnings.push(message)
-      break
+  if (!snapshot) {
+    // Validation runs arbitrary approved commands and is only safe because
+    // whatever they touch is put back. Without a snapshot it used to run
+    // anyway, so a hook that writes files left them in the worktree with
+    // nothing able to undo it.
+    return {
+      policy,
+      receipts: [{
+        id: 'git-hook-policy',
+        status: 'skipped',
+        exitCode: null,
+        durationMs: 0,
+        outputExcerpt: 'Explicit validation was skipped: the worktree could not be snapshotted, so hook side effects could not be undone.',
+      }],
+      errors: policy === 'validate_required'
+        ? ['Explicit Git hook validation could not run: the worktree could not be snapshotted.']
+        : [],
+      warnings: policy === 'validate_required'
+        ? []
+        : ['Explicit Git hook validation was skipped because the worktree could not be snapshotted.'],
+      fileAudit: noMutation,
     }
   }
-  if (receipts.length === 0) {
-    receipts.push({
-      id: 'git-hook-policy',
-      status: 'skipped',
-      exitCode: null,
-      durationMs: 0,
-      outputExcerpt: 'No explicit Git hook validation commands were approved.',
-    })
+
+  // The audit is captured before restoration — it is a record of what the hooks
+  // did, which restoring erases — and the restore itself runs in `finally`, so
+  // an abort or a rejected command cannot leave hook output behind. The original
+  // failure is rethrown; a failure to restore is reported beside it rather than
+  // replacing it.
+  let fileAudit: GitHookValidationFileAudit = noMutation
+  try {
+    for (const validation of config.commands) {
+      if (input.signal?.aborted) throw input.signal.reason
+      const command = validation.command.timeoutMs
+        ? validation.command
+        : { ...validation.command, timeoutMs: HOOK_VALIDATION_TIMEOUT_MS }
+      const result = await executeCommand(command, {
+        repoRoot: input.worktreePath,
+        runtimeEnvironment: config.runtimeEnvironment,
+      })
+      const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
+      const status = result.timedOut ? 'timed_out' as const : result.exitCode === 0 ? 'passed' as const : 'failed' as const
+      receipts.push({
+        id: validation.id,
+        command: validation.command,
+        status,
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        outputExcerpt,
+      })
+      if (status !== 'passed') {
+        const message = `${validation.hook} validation ${status}: ${renderCommandSpec(validation.command)}${outputExcerpt ? `\n${outputExcerpt}` : ''}`
+        if (policy === 'validate_required') errors.push(message)
+        else warnings.push(message)
+        break
+      }
+    }
+    if (receipts.length === 0) {
+      receipts.push({
+        id: 'git-hook-policy',
+        status: 'skipped',
+        exitCode: null,
+        durationMs: 0,
+        outputExcerpt: 'No explicit Git hook validation commands were approved.',
+      })
+    }
+  } finally {
+    try {
+      fileAudit = buildFileAudit(input.worktreePath, beforeFingerprint)
+    } catch {
+      // A failed audit must not stop the restore, which is the part that
+      // leaves the worktree usable.
+    }
+    restoreWorktreeSnapshot(input.worktreePath, snapshot)
   }
-  const fileAudit = buildFileAudit(input.worktreePath, beforeFingerprint)
-  if (snapshot) restoreWorktreeSnapshot(input.worktreePath, snapshot)
   return { policy, receipts, errors, warnings, fileAudit }
 }

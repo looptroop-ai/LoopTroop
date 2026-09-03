@@ -32,6 +32,48 @@ function determinePromptQuestionSource(
   return { source: 'prompt_follow_up', roundNumber: nextRoundNumber }
 }
 
+function sameQuestionOptions(
+  left: NonNullable<InterviewSessionQuestion['options']>,
+  right: NonNullable<InterviewSessionQuestion['options']>,
+): boolean {
+  return left.length === right.length
+    && left.every((option, index) => option.id === right[index]?.id && option.label === right[index]?.label)
+}
+
+/**
+ * Whether a repeated id names the same question.
+ *
+ * Matching source and round used to be enough, so a new prompt reusing an
+ * earlier id silently replaced that question while its answer stayed behind
+ * under the same key — a new question wearing an old answer.
+ *
+ * A batch may still fill in a field the stored question does not have: a
+ * compiled question carries only its id, phase and text, and the batch that
+ * presents it adds the priority, rationale and answer type. What it may not do
+ * is contradict a field that is already set, because that is what makes the
+ * stored answer mean something else.
+ */
+export function isSameSessionQuestion(
+  existing: InterviewSessionQuestion,
+  incoming: InterviewSessionQuestion,
+): boolean {
+  const compatible = <T>(before: T | undefined, after: T | undefined, equals: (a: T, b: T) => boolean) =>
+    before === undefined || after === undefined || equals(before, after)
+
+  return existing.source === incoming.source
+    && (existing.roundNumber ?? null) === (incoming.roundNumber ?? null)
+    && existing.question === incoming.question
+    && existing.phase === incoming.phase
+    && compatible(existing.priority, incoming.priority, (a, b) => a === b)
+    && compatible(existing.rationale, incoming.rationale, (a, b) => a === b)
+    && compatible(existing.answerType, incoming.answerType, (a, b) => a === b)
+    && compatible(existing.options, incoming.options, sameQuestionOptions)
+}
+
+function describeQuestionRound(question: InterviewSessionQuestion): string {
+  return question.roundNumber === undefined ? '' : ` (round ${question.roundNumber})`
+}
+
 function upsertQuestion(
   snapshot: InterviewSessionSnapshot,
   question: InterviewSessionQuestion,
@@ -39,14 +81,12 @@ function upsertQuestion(
   const existingIndex = snapshot.questions.findIndex((entry) => entry.id === question.id)
   if (existingIndex >= 0) {
     const existing = snapshot.questions[existingIndex]!
-    const existingRound = existing.roundNumber ?? null
-    const incomingRound = question.roundNumber ?? null
-    if (existing.source !== question.source || existingRound !== incomingRound) {
+    if (!isSameSessionQuestion(existing, question)) {
       throw new Error(
         `Interview session question id collision for ${question.id}: cannot replace existing ${existing.source} question`
-        + `${existingRound === null ? '' : ` (round ${existingRound})`}`
-        + ` with ${question.source} question`
-        + `${incomingRound === null ? '' : ` (round ${incomingRound})`}.`,
+        + `${describeQuestionRound(existing)}`
+        + ` with a different ${question.source} question`
+        + `${describeQuestionRound(question)}.`,
       )
     }
     snapshot.questions[existingIndex] = {
@@ -119,7 +159,12 @@ export function recordPreparedBatch(
   const next = cloneSnapshot(snapshot)
 
   const followUpIds: string[] = []
+  const batchIds = new Set<string>()
   for (const question of batch.questions) {
+    if (batchIds.has(question.id)) {
+      throw new Error(`Interview batch repeats question id ${question.id}.`)
+    }
+    batchIds.add(question.id)
     upsertQuestion(next, question)
     if (question.source === 'prompt_follow_up' || question.source === 'coverage_follow_up') {
       followUpIds.push(question.id)
@@ -154,6 +199,62 @@ export function recordPreparedBatch(
   return next
 }
 
+export interface NormalizedBatchSelection {
+  selectedOptionIds: string[]
+  error: string | null
+}
+
+/**
+ * Checks a submitted selection against the question it answers.
+ *
+ * The route schema accepts any array of strings, and the selection used to be
+ * stored exactly as sent: a single-choice question could keep several ids, a
+ * free-text question could keep selections at all, and an id naming no option
+ * reached the model later as a fallback label. Skip detection and persistence
+ * both read the result of this, so they cannot disagree.
+ */
+export function normalizeBatchSelection(
+  question: Pick<InterviewSessionQuestion, 'id' | 'answerType' | 'options'>,
+  selectedIds: string[],
+): NormalizedBatchSelection {
+  const deduped = [...new Set(selectedIds.map((id) => id.trim()).filter((id) => id.length > 0))]
+  const answerType = question.answerType ?? 'free_text'
+
+  if (answerType === 'free_text') {
+    return deduped.length > 0
+      ? { selectedOptionIds: [], error: `Question ${question.id} is free text and cannot carry selected options.` }
+      : { selectedOptionIds: [], error: null }
+  }
+
+  const knownIds = new Set((question.options ?? []).map((option) => option.id))
+  const unknown = deduped.filter((id) => !knownIds.has(id))
+  if (unknown.length > 0) {
+    return {
+      selectedOptionIds: [],
+      error: `Question ${question.id} has no option ${unknown.map((id) => `"${id}"`).join(', ')}.`,
+    }
+  }
+
+  if (answerType === 'single_choice' && deduped.length > 1) {
+    return {
+      selectedOptionIds: [],
+      error: `Question ${question.id} is single choice and accepts one option, received ${deduped.length}.`,
+    }
+  }
+
+  return { selectedOptionIds: deduped, error: null }
+}
+
+/** Every selection error in a submitted batch, in question order. */
+export function collectBatchSelectionErrors(
+  questions: Array<Pick<InterviewSessionQuestion, 'id' | 'answerType' | 'options'>>,
+  selectedOptions: Record<string, string[]>,
+): string[] {
+  return questions
+    .map((question) => normalizeBatchSelection(question, selectedOptions[question.id] ?? []).error)
+    .filter((error): error is string => error !== null)
+}
+
 /**
  * Whether a submitted batch answer counts as a skip.
  *
@@ -162,12 +263,12 @@ export function recordPreparedBatch(
  * answered. Two copies of this rule would disagree the first time either moved.
  */
 export function isBatchAnswerSkipped(
-  question: Pick<InterviewSessionQuestion, 'answerType'>,
+  question: Pick<InterviewSessionQuestion, 'id' | 'answerType' | 'options'>,
   rawAnswer: string,
   selectedIds: string[],
 ): boolean {
   const isChoiceQuestion = question.answerType === 'single_choice' || question.answerType === 'multiple_choice'
-  const hasSelection = selectedIds.length > 0
+  const hasSelection = normalizeBatchSelection(question, selectedIds).selectedOptionIds.length > 0
   const hasText = rawAnswer.trim().length > 0
   return isChoiceQuestion ? (!hasSelection && !hasText) : !hasText
 }
@@ -185,8 +286,10 @@ export function recordBatchAnswers(
   const submittedAt = nowIso()
   for (const question of currentBatch.questions) {
     const rawAnswer = batchAnswers[question.id] ?? ''
-    const selectedIds = selectedOptions[question.id] ?? []
-    const skipped = isBatchAnswerSkipped(question, rawAnswer, selectedIds)
+    // The same normalised selection decides the skip and what is persisted, so a
+    // rejected selection cannot count as an answer and then vanish on write.
+    const { selectedOptionIds } = normalizeBatchSelection(question, selectedOptions[question.id] ?? [])
+    const skipped = isBatchAnswerSkipped(question, rawAnswer, selectedOptionIds)
     const skipReason = skipped ? (skipReasons[question.id] ?? '').trim() : ''
     next.answers[question.id] = {
       answer: rawAnswer,
@@ -196,7 +299,7 @@ export function recordBatchAnswers(
       // "skipped at" and "answered at" collapsing into the same empty string.
       skippedAt: skipped ? submittedAt : null,
       batchNumber: currentBatch.batchNumber,
-      ...(selectedIds.length > 0 ? { selectedOptionIds: selectedIds } : {}),
+      ...(selectedOptionIds.length > 0 ? { selectedOptionIds } : {}),
       ...(skipReason ? { skipReason } : {}),
     }
   }

@@ -9,9 +9,11 @@ import {
   parseYamlOrJsonCandidate,
   getValueByAliases,
   buildYamlDocument,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE } from '../council/types'
 
 function normalizeVoteDraftLabel(label: string): string | null {
   const match = label.trim().match(/draft\s*(\d+)/i)
@@ -119,8 +121,9 @@ export function normalizeVoteScorecardOutput(
       : [repairedCandidate]
 
     for (const variant of candidateVariants) {
+      const variantWarnings = [...variant.repairWarnings]
+      const releaseAliasConflicts = collectAliasConflictWarnings(variantWarnings)
       try {
-        const variantWarnings = [...variant.repairWarnings]
         const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(variant.content, {
           allowTrailingTerminalNoise: true,
           repairWarnings: variantWarnings,
@@ -132,10 +135,9 @@ export function normalizeVoteScorecardOutput(
         ])
 
         const root = isRecord(parsed) ? parsed : null
+        const nestedDraftScores = root ? getValueByAliases(root, ['draftscores', 'draft_scores']) : undefined
         const draftScoresRecord = root
-          ? isRecord(getValueByAliases(root, ['draftscores', 'draft_scores']))
-            ? getValueByAliases(root, ['draftscores', 'draft_scores']) as Record<string, unknown>
-            : root
+          ? isRecord(nestedDraftScores) ? nestedDraftScores : root
           : null
 
         if (!draftScoresRecord) throw new Error('Vote scorecard is not a YAML/JSON mapping')
@@ -168,7 +170,7 @@ export function normalizeVoteScorecardOutput(
 
           for (const category of rubricCategories) {
             const rawValue = getValueByAliases(draftRecord, [normalizeKey(category)])
-            if (typeof rawValue !== 'number' || !Number.isInteger(rawValue) || rawValue < 0 || rawValue > 20) {
+            if (typeof rawValue !== 'number' || !Number.isInteger(rawValue) || rawValue < 0 || rawValue > MAX_VOTE_CATEGORY_SCORE) {
               throw new Error(`Invalid score for ${draftLabel} / ${category}`)
             }
             scores[category] = rawValue
@@ -182,6 +184,13 @@ export function normalizeVoteScorecardOutput(
             throw new Error(`Invalid total_score for ${draftLabel}`)
           } else if (totalScore !== total) {
             variantWarnings.push(`Recomputed total_score for ${draftLabel}: expected ${total}, received ${totalScore}.`)
+          }
+          // The per-category cap alone keeps the sum under the total cap only
+          // while the rubric has exactly five categories. The prompts promise a
+          // 0-100 total, so the parser holds the same bound rather than
+          // inferring it from a rubric length that could change.
+          if (total > MAX_VOTE_TOTAL_SCORE) {
+            throw new Error(`Total score for ${draftLabel} is ${total}, above the maximum of ${MAX_VOTE_TOTAL_SCORE}`)
           }
           scores.total_score = total
           normalized[draftLabel] = scores
@@ -198,6 +207,9 @@ export function normalizeVoteScorecardOutput(
       } catch (error) {
         lastError = getErrorMessage(error)
         lastErrorCause = error
+        repairWarnings.splice(0, repairWarnings.length, ...variantWarnings)
+      } finally {
+        releaseAliasConflicts()
       }
     }
   }

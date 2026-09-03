@@ -37,6 +37,50 @@ function buildPlanWithSteps(steps: unknown[]): string {
   return wrapPlan(JSON.stringify(buildPlanPayload(steps)))
 }
 
+describe('execution setup plan step required flag', () => {
+  it.each<[string, boolean]>([
+    ['false', false],
+    ['"false"', false],
+    ['"no"', false],
+    ['"true"', true],
+    ['0', false],
+    ['1', true],
+  ])('reads %s as %s', (literal, expected) => {
+    const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([
+      {
+        purpose: 'Install locked dependencies.',
+        commands: ['project bootstrap'],
+        required: JSON.parse(literal),
+      },
+    ]))
+
+    expect(parsed.errors).toEqual([])
+    expect(parsed.plan?.steps[0]?.required).toBe(expected)
+  })
+
+  it('defaults a missing required flag to false', () => {
+    const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([
+      { purpose: 'Install locked dependencies.', commands: ['project bootstrap'] },
+    ]))
+
+    expect(parsed.errors).toEqual([])
+    expect(parsed.plan?.steps[0]?.required).toBe(false)
+  })
+
+  it('rejects a required flag it cannot read rather than guessing', () => {
+    const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([
+      {
+        purpose: 'Install locked dependencies.',
+        commands: ['project bootstrap'],
+        required: 'maybe',
+      },
+    ]))
+
+    expect(parsed.plan).toBeNull()
+    expect(parsed.errors.join(' ')).toContain('steps[0].required must be a boolean')
+  })
+})
+
 describe('parseExecutionSetupPlanResult', () => {
   it('repairs setup steps that omitted metadata fields but provided purpose text', () => {
     const parsed = parseExecutionSetupPlanResult(buildPlanWithSteps([

@@ -5,6 +5,7 @@ import type { Message, PromptPart } from '../opencode/types'
 import { generateDrafts } from './drafter'
 import { conductVoting, selectWinner } from './voter'
 import { refineDraft } from './refiner'
+import { requireWinnerDraft } from './draftUtils'
 import { checkMemberResponseQuorum, checkQuorum } from './quorum'
 import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../lib/constants'
 
@@ -95,7 +96,7 @@ export async function runCouncilPipeline(
   // Step 4: Select winner
   throwIfAborted(signal)
   const { winnerId } = selectWinner(voteRun.votes, members)
-  const winnerDraft = draftRun.drafts.find(d => d.memberId === winnerId)!
+  const winnerDraft = requireWinnerDraft(draftRun.drafts, winnerId, `Council ${phase}`)
   const losingDrafts = draftRun.drafts.filter(d => d.memberId !== winnerId && d.outcome === 'completed')
 
   // Step 5: Refine — sequential

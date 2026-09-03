@@ -4,7 +4,7 @@ import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnosti
 import type { CommandSpec } from '@shared/commandSpec'
 import { normalizeStructuredRetryDiagnostics } from '@shared/structuredRetryDiagnostics'
 import { normalizeStructuredInterventions } from '@shared/structuredInterventions'
-import { isRecord } from '@shared/typeGuards'
+import { getValueByExactAlias, isRecord } from '@shared/typeGuards'
 import { DEFAULT_GIT_HOOK_POLICY, isGitHookPolicy, type GitHookPolicy } from '@shared/gitHookPolicy'
 import {
   isExecutionSetupWorkspaceInputCategory,
@@ -750,21 +750,21 @@ export function normalizeRawAttempts(value: unknown): ArtifactRawAttemptData[] |
   const attempts = value
     .filter((entry): entry is Record<string, unknown> => isRecord(entry))
     .map((entry) => ({
-      attempt: normalizeNumber(getValueByAliases(entry, ['attempt', 'attemptNumber', 'attempt_number'])),
-      iteration: normalizeNumber(getValueByAliases(entry, ['iteration', 'beadIteration', 'bead_iteration'])),
-      label: normalizeOptionalString(getValueByAliases(entry, ['label', 'name'])),
-      status: normalizeOptionalString(getValueByAliases(entry, ['status', 'outcome'])),
-      outcome: normalizeOptionalString(getValueByAliases(entry, ['outcome', 'status'])),
-      stage: normalizeOptionalString(getValueByAliases(entry, ['stage', 'step'])),
-      initialInput: normalizeOptionalString(getValueByAliases(entry, ['initialInput', 'initial_input'])),
-      rawResponse: normalizeOptionalString(getValueByAliases(entry, ['rawResponse', 'raw_response'])),
-      modelOutput: normalizeOptionalString(getValueByAliases(entry, ['modelOutput', 'model_output'])),
-      content: normalizeOptionalString(getValueByAliases(entry, ['content', 'output'])),
-      error: normalizeOptionalString(getValueByAliases(entry, ['error', 'message'])),
-      validationError: normalizeOptionalString(getValueByAliases(entry, ['validationError', 'validation_error'])),
-      failureClass: normalizeOptionalString(getValueByAliases(entry, ['failureClass', 'failure_class'])),
-      modelId: normalizeOptionalString(getValueByAliases(entry, ['modelId', 'model_id', 'model'])),
-      sessionId: normalizeOptionalString(getValueByAliases(entry, ['sessionId', 'session_id'])),
+      attempt: normalizeNumber(getValueByExactAlias(entry, ['attempt', 'attemptNumber', 'attempt_number'])),
+      iteration: normalizeNumber(getValueByExactAlias(entry, ['iteration', 'beadIteration', 'bead_iteration'])),
+      label: normalizeOptionalString(getValueByExactAlias(entry, ['label', 'name'])),
+      status: normalizeOptionalString(getValueByExactAlias(entry, ['status', 'outcome'])),
+      outcome: normalizeOptionalString(getValueByExactAlias(entry, ['outcome', 'status'])),
+      stage: normalizeOptionalString(getValueByExactAlias(entry, ['stage', 'step'])),
+      initialInput: normalizeOptionalString(getValueByExactAlias(entry, ['initialInput', 'initial_input'])),
+      rawResponse: normalizeOptionalString(getValueByExactAlias(entry, ['rawResponse', 'raw_response'])),
+      modelOutput: normalizeOptionalString(getValueByExactAlias(entry, ['modelOutput', 'model_output'])),
+      content: normalizeOptionalString(getValueByExactAlias(entry, ['content', 'output'])),
+      error: normalizeOptionalString(getValueByExactAlias(entry, ['error', 'message'])),
+      validationError: normalizeOptionalString(getValueByExactAlias(entry, ['validationError', 'validation_error'])),
+      failureClass: normalizeOptionalString(getValueByExactAlias(entry, ['failureClass', 'failure_class'])),
+      modelId: normalizeOptionalString(getValueByExactAlias(entry, ['modelId', 'model_id', 'model'])),
+      sessionId: normalizeOptionalString(getValueByExactAlias(entry, ['sessionId', 'session_id'])),
     }))
     .filter((entry) => entry.initialInput || entry.rawResponse || entry.modelOutput || entry.content || entry.error || entry.validationError)
 
@@ -843,7 +843,7 @@ function normalizeCandidateAuditPath(value: unknown): string | undefined {
     return trimmed ? trimmed : undefined
   }
   if (!isRecord(value)) return undefined
-  return normalizeOptionalString(getValueByAliases(value, ['path', 'file', 'filePath', 'file_path']))
+  return normalizeOptionalString(getValueByExactAlias(value, ['path', 'file', 'filePath', 'file_path']))
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -885,9 +885,9 @@ function normalizeCandidateAuditEntries(
         }
       }
 
-      const decision = normalizeOptionalString(getValueByAliases(entry, ['decision', 'intent', 'classification', 'status']))
+      const decision = normalizeOptionalString(getValueByExactAlias(entry, ['decision', 'intent', 'classification', 'status']))
         ?? fallbackDecision
-      const reason = normalizeOptionalString(getValueByAliases(entry, ['reason', 'rationale', 'explanation', 'message']))
+      const reason = normalizeOptionalString(getValueByExactAlias(entry, ['reason', 'rationale', 'explanation', 'message']))
         ?? readCandidateAuditReason(reasonMaps, path)
 
       return {
@@ -902,10 +902,10 @@ function normalizeCandidateAuditEntries(
 function normalizeCandidateAuditStats(value: unknown): PullRequestCandidateFileAuditStats | undefined {
   if (!isRecord(value)) return undefined
   const stats: PullRequestCandidateFileAuditStats = {}
-  const totalFiles = normalizeNumber(getValueByAliases(value, ['totalFiles', 'total_files']))
-  const includedFiles = normalizeNumber(getValueByAliases(value, ['includedFiles', 'included_files']))
-  const excludedFiles = normalizeNumber(getValueByAliases(value, ['excludedFiles', 'excluded_files']))
-  const reviewedFiles = normalizeNumber(getValueByAliases(value, ['reviewedFiles', 'reviewed_files']))
+  const totalFiles = normalizeNumber(getValueByExactAlias(value, ['totalFiles', 'total_files']))
+  const includedFiles = normalizeNumber(getValueByExactAlias(value, ['includedFiles', 'included_files']))
+  const excludedFiles = normalizeNumber(getValueByExactAlias(value, ['excludedFiles', 'excluded_files']))
+  const reviewedFiles = normalizeNumber(getValueByExactAlias(value, ['reviewedFiles', 'reviewed_files']))
 
   if (totalFiles != null) stats.totalFiles = totalFiles
   if (includedFiles != null) stats.includedFiles = includedFiles
@@ -934,25 +934,25 @@ function normalizeCandidateFileAudit(value: unknown): PullRequestCandidateFileAu
   if (!isRecord(value)) return undefined
 
   const ignoredReasonMaps = [
-    getValueByAliases(value, ['ignoredReasons', 'ignored_reasons']),
-    getValueByAliases(value, ['excludedReasons', 'excluded_reasons']),
+    getValueByExactAlias(value, ['ignoredReasons', 'ignored_reasons']),
+    getValueByExactAlias(value, ['excludedReasons', 'excluded_reasons']),
   ]
   const includedEntries = normalizeCandidateAuditEntries(
-    getValueByAliases(value, ['includedFiles', 'included_files', 'candidateFiles', 'candidate_files']),
+    getValueByExactAlias(value, ['includedFiles', 'included_files', 'candidateFiles', 'candidate_files']),
     'include',
   )
   const excludedEntries = normalizeCandidateAuditEntries(
-    getValueByAliases(value, ['excludedFiles', 'excluded_files', 'excludedCandidateFiles', 'excluded_candidate_files']),
+    getValueByExactAlias(value, ['excludedFiles', 'excluded_files', 'excludedCandidateFiles', 'excluded_candidate_files']),
     'exclude',
     ignoredReasonMaps,
   )
   const ignoredEntries = normalizeCandidateAuditEntries(
-    getValueByAliases(value, ['ignoredFiles', 'ignored_files', 'ignoredCandidateFiles', 'ignored_candidate_files']),
+    getValueByExactAlias(value, ['ignoredFiles', 'ignored_files', 'ignoredCandidateFiles', 'ignored_candidate_files']),
     'ignored',
     ignoredReasonMaps,
   )
   const reviewedEntries = normalizeCandidateAuditEntries(
-    getValueByAliases(value, ['reviewedFiles', 'reviewed_files']),
+    getValueByExactAlias(value, ['reviewedFiles', 'reviewed_files']),
     'review',
   )
   const recordedEntries = normalizeCandidateAuditEntries(value.entries, 'review', ignoredReasonMaps)
@@ -967,33 +967,33 @@ function normalizeCandidateFileAudit(value: unknown): PullRequestCandidateFileAu
   }
 
   const includedFiles = uniqueStrings([
-    ...normalizeCandidateAuditPathList(getValueByAliases(value, ['includedFiles', 'included_files', 'candidateFiles', 'candidate_files'])),
+    ...normalizeCandidateAuditPathList(getValueByExactAlias(value, ['includedFiles', 'included_files', 'candidateFiles', 'candidate_files'])),
     ...entries.filter((entry) => isIncludedCandidateAuditDecision(entry.decision)).map((entry) => entry.path),
   ])
   const ignoredFiles = uniqueStrings([
-    ...normalizeCandidateAuditPathList(getValueByAliases(value, ['ignoredFiles', 'ignored_files', 'ignoredCandidateFiles', 'ignored_candidate_files'])),
+    ...normalizeCandidateAuditPathList(getValueByExactAlias(value, ['ignoredFiles', 'ignored_files', 'ignoredCandidateFiles', 'ignored_candidate_files'])),
     ...entries.filter((entry) => {
       const normalized = entry.decision.toLowerCase()
       return normalized === 'ignore' || normalized === 'ignored'
     }).map((entry) => entry.path),
   ])
   const excludedFiles = uniqueStrings([
-    ...normalizeCandidateAuditPathList(getValueByAliases(value, ['excludedFiles', 'excluded_files', 'excludedCandidateFiles', 'excluded_candidate_files'])),
+    ...normalizeCandidateAuditPathList(getValueByExactAlias(value, ['excludedFiles', 'excluded_files', 'excludedCandidateFiles', 'excluded_candidate_files'])),
     ...ignoredFiles,
     ...entries.filter((entry) => isExcludedCandidateAuditDecision(entry.decision)).map((entry) => entry.path),
   ])
   const reviewedFiles = uniqueStrings([
-    ...normalizeCandidateAuditPathList(getValueByAliases(value, ['reviewedFiles', 'reviewed_files'])),
+    ...normalizeCandidateAuditPathList(getValueByExactAlias(value, ['reviewedFiles', 'reviewed_files'])),
     ...entries.filter((entry) => isReviewedCandidateAuditDecision(entry.decision)).map((entry) => entry.path),
   ])
   const stats = normalizeCandidateAuditStats(value.stats)
-  const candidateCommitSha = normalizeNullableString(getValueByAliases(value, ['candidateCommitSha', 'candidate_commit_sha']))
+  const candidateCommitSha = normalizeNullableString(getValueByExactAlias(value, ['candidateCommitSha', 'candidate_commit_sha']))
 
   return {
     status: normalizeOptionalString(value.status),
-    auditedAt: normalizeOptionalString(getValueByAliases(value, ['auditedAt', 'audited_at', 'capturedAt', 'captured_at'])),
-    baseCommit: normalizeOptionalString(getValueByAliases(value, ['baseCommit', 'base_commit'])),
-    originalCandidateCommitSha: normalizeOptionalString(getValueByAliases(value, ['originalCandidateCommitSha', 'original_candidate_commit_sha'])),
+    auditedAt: normalizeOptionalString(getValueByExactAlias(value, ['auditedAt', 'audited_at', 'capturedAt', 'captured_at'])),
+    baseCommit: normalizeOptionalString(getValueByExactAlias(value, ['baseCommit', 'base_commit'])),
+    originalCandidateCommitSha: normalizeOptionalString(getValueByExactAlias(value, ['originalCandidateCommitSha', 'original_candidate_commit_sha'])),
     ...(candidateCommitSha !== undefined ? { candidateCommitSha } : {}),
     includedFiles,
     excludedFiles,
@@ -1109,19 +1109,12 @@ export function parseExecutionSetupPlanReport(content: string): ExecutionSetupPl
     generatedBy: normalizeOptionalString(parsed.generatedBy),
     summary: normalizeOptionalString(parsed.summary),
     modelOutput: normalizeOptionalString(parsed.modelOutput),
-    rawAttempts: normalizeRawAttempts(getValueByAliases(parsed, ['rawAttempts', 'raw_attempts'])),
+    rawAttempts: normalizeRawAttempts(getValueByExactAlias(parsed, ['rawAttempts', 'raw_attempts'])),
     errors: normalizeStringArray(parsed.errors),
     structuredOutput: normalizeArtifactStructuredOutput(parsed.structuredOutput),
     notes: normalizeStringArray(parsed.notes),
     source: normalizeOptionalString(parsed.source),
   }
-}
-
-function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
-  for (const alias of aliases) {
-    if (alias in record) return record[alias]
-  }
-  return undefined
 }
 
 function normalizeNumber(value: unknown): number | undefined {
@@ -1130,10 +1123,10 @@ function normalizeNumber(value: unknown): number | undefined {
 }
 
 function parseExecutionSetupProfileRecord(record: Record<string, unknown>): ExecutionSetupProfileData | null {
-  const artifact = normalizeOptionalString(getValueByAliases(record, ['artifact']))
-  const tempRoots = normalizeStringArray(getValueByAliases(record, ['tempRoots', 'temp_roots']))
-  const bootstrapCommands = normalizeStringArray(getValueByAliases(record, ['bootstrapCommands', 'bootstrap_commands']))
-  const toolingProbeCommands = normalizeStringArray(getValueByAliases(record, [
+  const artifact = normalizeOptionalString(getValueByExactAlias(record, ['artifact']))
+  const tempRoots = normalizeStringArray(getValueByExactAlias(record, ['tempRoots', 'temp_roots']))
+  const bootstrapCommands = normalizeStringArray(getValueByExactAlias(record, ['bootstrapCommands', 'bootstrap_commands']))
+  const toolingProbeCommands = normalizeStringArray(getValueByExactAlias(record, [
     'toolingProbeCommands',
     'tooling_probe_commands',
     'toolingProbes',
@@ -1143,13 +1136,13 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
     'verificationCommands',
     'verification_commands',
   ]))
-  const reusableArtifactsRaw = getValueByAliases(record, ['reusableArtifacts', 'reusable_artifacts'])
-  const workspaceInputsRaw = getValueByAliases(record, ['workspaceInputs', 'workspace_inputs'])
-  const projectCommandsRaw = getValueByAliases(record, ['projectCommands', 'project_commands'])
-  const qualityGatePolicyRaw = getValueByAliases(record, ['qualityGatePolicy', 'quality_gate_policy'])
-  const workspaceProbesRaw = getValueByAliases(record, ['workspaceProbes', 'workspace_probes'])
-  const gitHooksRaw = getValueByAliases(record, ['gitHooks', 'git_hooks'])
-  const workspaceProbeReceiptsRaw = getValueByAliases(record, ['workspaceProbeReceipts', 'workspace_probe_receipts'])
+  const reusableArtifactsRaw = getValueByExactAlias(record, ['reusableArtifacts', 'reusable_artifacts'])
+  const workspaceInputsRaw = getValueByExactAlias(record, ['workspaceInputs', 'workspace_inputs'])
+  const projectCommandsRaw = getValueByExactAlias(record, ['projectCommands', 'project_commands'])
+  const qualityGatePolicyRaw = getValueByExactAlias(record, ['qualityGatePolicy', 'quality_gate_policy'])
+  const workspaceProbesRaw = getValueByExactAlias(record, ['workspaceProbes', 'workspace_probes'])
+  const gitHooksRaw = getValueByExactAlias(record, ['gitHooks', 'git_hooks'])
+  const workspaceProbeReceiptsRaw = getValueByExactAlias(record, ['workspaceProbeReceipts', 'workspace_probe_receipts'])
 
   if (
     artifact !== 'execution_setup_profile'
@@ -1170,27 +1163,27 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
 
   const workspaceProbes = Array.isArray(workspaceProbesRaw)
     ? workspaceProbesRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
-        id: normalizeOptionalString(getValueByAliases(entry, ['id'])) ?? '',
-        command: normalizeOptionalString(getValueByAliases(entry, ['command'])) ?? '',
-        purpose: normalizeOptionalString(getValueByAliases(entry, ['purpose'])) ?? '',
+        id: normalizeOptionalString(getValueByExactAlias(entry, ['id'])) ?? '',
+        command: normalizeOptionalString(getValueByExactAlias(entry, ['command'])) ?? '',
+        purpose: normalizeOptionalString(getValueByExactAlias(entry, ['purpose'])) ?? '',
       }))
     : []
-  const gitHooksPolicy = getValueByAliases(gitHooks, ['policy'])
-  const detectedRaw = getValueByAliases(gitHooks, ['detected'])
-  const validationCommandsRaw = getValueByAliases(gitHooks, ['validationCommands', 'validation_commands'])
-  const validationReceiptsRaw = getValueByAliases(gitHooks, ['validationReceipts', 'validation_receipts'])
+  const gitHooksPolicy = getValueByExactAlias(gitHooks, ['policy'])
+  const detectedRaw = getValueByExactAlias(gitHooks, ['detected'])
+  const validationCommandsRaw = getValueByExactAlias(gitHooks, ['validationCommands', 'validation_commands'])
+  const validationReceiptsRaw = getValueByExactAlias(gitHooks, ['validationReceipts', 'validation_receipts'])
   const parseReceipts = (value: unknown): ExecutionSetupCommandReceiptData[] => Array.isArray(value)
     ? value.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => {
-        const rawStatus = getValueByAliases(entry, ['status'])
+        const rawStatus = getValueByExactAlias(entry, ['status'])
         const status: ExecutionSetupCommandReceiptData['status'] = rawStatus === 'failed' || rawStatus === 'timed_out' || rawStatus === 'skipped' ? rawStatus : 'passed'
-        const exitCodeRaw = getValueByAliases(entry, ['exitCode', 'exit_code'])
+        const exitCodeRaw = getValueByExactAlias(entry, ['exitCode', 'exit_code'])
         return {
-          id: normalizeOptionalString(getValueByAliases(entry, ['id'])) ?? '',
-          command: normalizeOptionalString(getValueByAliases(entry, ['command'])) ?? '',
+          id: normalizeOptionalString(getValueByExactAlias(entry, ['id'])) ?? '',
+          command: normalizeOptionalString(getValueByExactAlias(entry, ['command'])) ?? '',
           status,
           exitCode: typeof exitCodeRaw === 'number' && Number.isFinite(exitCodeRaw) ? exitCodeRaw : null,
-          durationMs: normalizeNumber(getValueByAliases(entry, ['durationMs', 'duration_ms'])) ?? 0,
-          outputExcerpt: normalizeOptionalString(getValueByAliases(entry, ['outputExcerpt', 'output_excerpt'])) ?? '',
+          durationMs: normalizeNumber(getValueByExactAlias(entry, ['durationMs', 'duration_ms'])) ?? 0,
+          outputExcerpt: normalizeOptionalString(getValueByExactAlias(entry, ['outputExcerpt', 'output_excerpt'])) ?? '',
         }
       })
     : []
@@ -1199,30 +1192,30 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
     ? reusableArtifactsRaw
         .filter((entry): entry is Record<string, unknown> => isRecord(entry))
         .map((entry) => ({
-          path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
-          kind: normalizeOptionalString(getValueByAliases(entry, ['kind', 'type'])) ?? '',
-          purpose: normalizeOptionalString(getValueByAliases(entry, ['purpose', 'reason', 'summary'])) ?? '',
+          path: normalizeOptionalString(getValueByExactAlias(entry, ['path'])) ?? '',
+          kind: normalizeOptionalString(getValueByExactAlias(entry, ['kind', 'type'])) ?? '',
+          purpose: normalizeOptionalString(getValueByExactAlias(entry, ['purpose', 'reason', 'summary'])) ?? '',
         }))
         .filter((entry) => entry.path || entry.kind || entry.purpose)
     : []
 
   return {
-    schemaVersion: normalizeNumber(getValueByAliases(record, ['schemaVersion', 'schema_version'])),
-    ticketId: normalizeOptionalString(getValueByAliases(record, ['ticketId', 'ticket_id'])),
+    schemaVersion: normalizeNumber(getValueByExactAlias(record, ['schemaVersion', 'schema_version'])),
+    ticketId: normalizeOptionalString(getValueByExactAlias(record, ['ticketId', 'ticket_id'])),
     artifact,
-    status: normalizeOptionalString(getValueByAliases(record, ['status'])),
-    summary: normalizeOptionalString(getValueByAliases(record, ['summary'])),
+    status: normalizeOptionalString(getValueByExactAlias(record, ['status'])),
+    summary: normalizeOptionalString(getValueByExactAlias(record, ['summary'])),
     tempRoots,
     workspaceInputs: Array.isArray(workspaceInputsRaw)
       ? workspaceInputsRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => {
-          const category = getValueByAliases(entry, ['category'])
+          const category = getValueByExactAlias(entry, ['category'])
           return {
-            path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
-            kind: getValueByAliases(entry, ['kind']) === 'directory' ? 'directory' : 'file',
-            sourceStatus: getValueByAliases(entry, ['sourceStatus', 'source_status']) === 'untracked' ? 'untracked' : 'ignored',
+            path: normalizeOptionalString(getValueByExactAlias(entry, ['path'])) ?? '',
+            kind: getValueByExactAlias(entry, ['kind']) === 'directory' ? 'directory' : 'file',
+            sourceStatus: getValueByExactAlias(entry, ['sourceStatus', 'source_status']) === 'untracked' ? 'untracked' : 'ignored',
             category: isExecutionSetupWorkspaceInputCategory(category) ? category : 'other_non_reproducible',
-            ...(getValueByAliases(entry, ['allowLargeCopy', 'allow_large_copy']) === true ? { allowLargeCopy: true } : {}),
-            reason: normalizeOptionalString(getValueByAliases(entry, ['reason'])) ?? '',
+            ...(getValueByExactAlias(entry, ['allowLargeCopy', 'allow_large_copy']) === true ? { allowLargeCopy: true } : {}),
+            reason: normalizeOptionalString(getValueByExactAlias(entry, ['reason'])) ?? '',
           }
         })
       : [],
@@ -1234,42 +1227,42 @@ function parseExecutionSetupProfileRecord(record: Record<string, unknown>): Exec
       policy: isGitHookPolicy(gitHooksPolicy) ? gitHooksPolicy : DEFAULT_GIT_HOOK_POLICY,
       detected: Array.isArray(detectedRaw)
         ? detectedRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
-            name: normalizeOptionalString(getValueByAliases(entry, ['name'])) ?? '',
-            path: normalizeOptionalString(getValueByAliases(entry, ['path'])) ?? '',
-            source: normalizeOptionalString(getValueByAliases(entry, ['source'])) ?? '',
-            kind: getValueByAliases(entry, ['kind']) === 'manager_config' ? 'manager_config' : 'hook',
-            runnable: getValueByAliases(entry, ['runnable']) === 'yes' || getValueByAliases(entry, ['runnable']) === 'no'
-              ? getValueByAliases(entry, ['runnable']) as 'yes' | 'no'
+            name: normalizeOptionalString(getValueByExactAlias(entry, ['name'])) ?? '',
+            path: normalizeOptionalString(getValueByExactAlias(entry, ['path'])) ?? '',
+            source: normalizeOptionalString(getValueByExactAlias(entry, ['source'])) ?? '',
+            kind: getValueByExactAlias(entry, ['kind']) === 'manager_config' ? 'manager_config' : 'hook',
+            runnable: getValueByExactAlias(entry, ['runnable']) === 'yes' || getValueByExactAlias(entry, ['runnable']) === 'no'
+              ? getValueByExactAlias(entry, ['runnable']) as 'yes' | 'no'
               : 'unknown',
-            ...(normalizeOptionalString(getValueByAliases(entry, ['managerHint', 'manager_hint']))
-              ? { managerHint: normalizeOptionalString(getValueByAliases(entry, ['managerHint', 'manager_hint']))! }
+            ...(normalizeOptionalString(getValueByExactAlias(entry, ['managerHint', 'manager_hint']))
+              ? { managerHint: normalizeOptionalString(getValueByExactAlias(entry, ['managerHint', 'manager_hint']))! }
               : {}),
           }))
         : [],
       validationCommands: Array.isArray(validationCommandsRaw)
         ? validationCommandsRaw.filter((entry): entry is Record<string, unknown> => isRecord(entry)).map((entry) => ({
-            id: normalizeOptionalString(getValueByAliases(entry, ['id'])) ?? '',
-            hook: normalizeOptionalString(getValueByAliases(entry, ['hook'])) ?? '',
-            command: normalizeOptionalString(getValueByAliases(entry, ['command'])) ?? '',
-            purpose: normalizeOptionalString(getValueByAliases(entry, ['purpose'])) ?? '',
+            id: normalizeOptionalString(getValueByExactAlias(entry, ['id'])) ?? '',
+            hook: normalizeOptionalString(getValueByExactAlias(entry, ['hook'])) ?? '',
+            command: normalizeOptionalString(getValueByExactAlias(entry, ['command'])) ?? '',
+            purpose: normalizeOptionalString(getValueByExactAlias(entry, ['purpose'])) ?? '',
           }))
         : [],
       validationReceipts: parseReceipts(validationReceiptsRaw),
     },
     reusableArtifacts,
     projectCommands: {
-      prepare: normalizeStringArray(getValueByAliases(projectCommands, ['prepare'])),
-      testFull: normalizeStringArray(getValueByAliases(projectCommands, ['testFull', 'test_full'])),
-      lintFull: normalizeStringArray(getValueByAliases(projectCommands, ['lintFull', 'lint_full'])),
-      typecheckFull: normalizeStringArray(getValueByAliases(projectCommands, ['typecheckFull', 'typecheck_full'])),
+      prepare: normalizeStringArray(getValueByExactAlias(projectCommands, ['prepare'])),
+      testFull: normalizeStringArray(getValueByExactAlias(projectCommands, ['testFull', 'test_full'])),
+      lintFull: normalizeStringArray(getValueByExactAlias(projectCommands, ['lintFull', 'lint_full'])),
+      typecheckFull: normalizeStringArray(getValueByExactAlias(projectCommands, ['typecheckFull', 'typecheck_full'])),
     },
     qualityGatePolicy: {
-      tests: normalizeOptionalString(getValueByAliases(qualityGatePolicy, ['tests'])) ?? '',
-      lint: normalizeOptionalString(getValueByAliases(qualityGatePolicy, ['lint'])) ?? '',
-      typecheck: normalizeOptionalString(getValueByAliases(qualityGatePolicy, ['typecheck'])) ?? '',
-      fullProjectFallback: normalizeOptionalString(getValueByAliases(qualityGatePolicy, ['fullProjectFallback', 'full_project_fallback'])) ?? '',
+      tests: normalizeOptionalString(getValueByExactAlias(qualityGatePolicy, ['tests'])) ?? '',
+      lint: normalizeOptionalString(getValueByExactAlias(qualityGatePolicy, ['lint'])) ?? '',
+      typecheck: normalizeOptionalString(getValueByExactAlias(qualityGatePolicy, ['typecheck'])) ?? '',
+      fullProjectFallback: normalizeOptionalString(getValueByExactAlias(qualityGatePolicy, ['fullProjectFallback', 'full_project_fallback'])) ?? '',
     },
-    cautions: normalizeStringArray(getValueByAliases(record, ['cautions', 'warnings', 'notes'])),
+    cautions: normalizeStringArray(getValueByExactAlias(record, ['cautions', 'warnings', 'notes'])),
   }
 }
 
@@ -1281,10 +1274,10 @@ export function parseExecutionSetupProfile(content: string): ExecutionSetupProfi
 
 function parseExecutionSetupChecks(value: unknown): ExecutionSetupRuntimeReportData['checks'] {
   if (!isRecord(value)) return null
-  const workspace = normalizeOptionalString(getValueByAliases(value, ['workspace']))
-  const tooling = normalizeOptionalString(getValueByAliases(value, ['tooling']))
-  const tempScope = normalizeOptionalString(getValueByAliases(value, ['tempScope', 'temp_scope']))
-  const policy = normalizeOptionalString(getValueByAliases(value, ['policy']))
+  const workspace = normalizeOptionalString(getValueByExactAlias(value, ['workspace']))
+  const tooling = normalizeOptionalString(getValueByExactAlias(value, ['tooling']))
+  const tempScope = normalizeOptionalString(getValueByExactAlias(value, ['tempScope', 'temp_scope']))
+  const policy = normalizeOptionalString(getValueByExactAlias(value, ['policy']))
   if (!workspace && !tooling && !tempScope && !policy) return null
   return {
     workspace: workspace ?? '',
@@ -1299,16 +1292,16 @@ function parseExecutionSetupAttemptHistory(value: unknown): ExecutionSetupAttemp
   return value
     .filter((entry): entry is Record<string, unknown> => isRecord(entry))
     .map((entry, index) => ({
-      attempt: normalizeNumber(getValueByAliases(entry, ['attempt'])) ?? index + 1,
-      status: normalizeOptionalString(getValueByAliases(entry, ['status'])) ?? 'unknown',
-      checkedAt: normalizeOptionalString(getValueByAliases(entry, ['checkedAt', 'checked_at'])),
-      summary: normalizeOptionalString(getValueByAliases(entry, ['summary'])),
-      tempRoots: normalizeStringArray(getValueByAliases(entry, ['tempRoots', 'temp_roots'])),
-      bootstrapCommands: normalizeStringArray(getValueByAliases(entry, ['bootstrapCommands', 'bootstrap_commands'])),
-      toolingProbeCommands: normalizeStringArray(getValueByAliases(entry, ['toolingProbeCommands', 'tooling_probe_commands'])),
-      errors: normalizeStringArray(getValueByAliases(entry, ['errors'])),
-      failureReason: normalizeOptionalString(getValueByAliases(entry, ['failureReason', 'failure_reason'])),
-      noteAppended: normalizeOptionalString(getValueByAliases(entry, ['noteAppended', 'note_appended'])),
+      attempt: normalizeNumber(getValueByExactAlias(entry, ['attempt'])) ?? index + 1,
+      status: normalizeOptionalString(getValueByExactAlias(entry, ['status'])) ?? 'unknown',
+      checkedAt: normalizeOptionalString(getValueByExactAlias(entry, ['checkedAt', 'checked_at'])),
+      summary: normalizeOptionalString(getValueByExactAlias(entry, ['summary'])),
+      tempRoots: normalizeStringArray(getValueByExactAlias(entry, ['tempRoots', 'temp_roots'])),
+      bootstrapCommands: normalizeStringArray(getValueByExactAlias(entry, ['bootstrapCommands', 'bootstrap_commands'])),
+      toolingProbeCommands: normalizeStringArray(getValueByExactAlias(entry, ['toolingProbeCommands', 'tooling_probe_commands'])),
+      errors: normalizeStringArray(getValueByExactAlias(entry, ['errors'])),
+      failureReason: normalizeOptionalString(getValueByExactAlias(entry, ['failureReason', 'failure_reason'])),
+      noteAppended: normalizeOptionalString(getValueByExactAlias(entry, ['noteAppended', 'note_appended'])),
     }))
 }
 
@@ -1316,16 +1309,16 @@ export function parseExecutionSetupRuntimeReport(content: string): ExecutionSetu
   const parsed = tryParseStructuredContent(content)
   if (!isRecord(parsed)) return null
 
-  const profileRaw = getValueByAliases(parsed, ['profile'])
+  const profileRaw = getValueByExactAlias(parsed, ['profile'])
   const profile = isRecord(profileRaw) ? parseExecutionSetupProfileRecord(profileRaw) : null
-  const checks = parseExecutionSetupChecks(getValueByAliases(parsed, ['checks']))
-  const status = normalizeOptionalString(getValueByAliases(parsed, ['status']))
-  const readyRaw = getValueByAliases(parsed, ['ready'])
-  const modelOutput = normalizeOptionalString(getValueByAliases(parsed, ['modelOutput', 'model_output']))
-  const rawAttempts = normalizeRawAttempts(getValueByAliases(parsed, ['rawAttempts', 'raw_attempts']))
-  const errors = normalizeStringArray(getValueByAliases(parsed, ['errors']))
-  const worktreeWarnings = normalizeStringArray(getValueByAliases(parsed, ['worktreeWarnings', 'worktree_warnings']))
-  const attemptHistory = parseExecutionSetupAttemptHistory(getValueByAliases(parsed, ['attemptHistory', 'attempt_history']))
+  const checks = parseExecutionSetupChecks(getValueByExactAlias(parsed, ['checks']))
+  const status = normalizeOptionalString(getValueByExactAlias(parsed, ['status']))
+  const readyRaw = getValueByExactAlias(parsed, ['ready'])
+  const modelOutput = normalizeOptionalString(getValueByExactAlias(parsed, ['modelOutput', 'model_output']))
+  const rawAttempts = normalizeRawAttempts(getValueByExactAlias(parsed, ['rawAttempts', 'raw_attempts']))
+  const errors = normalizeStringArray(getValueByExactAlias(parsed, ['errors']))
+  const worktreeWarnings = normalizeStringArray(getValueByExactAlias(parsed, ['worktreeWarnings', 'worktree_warnings']))
+  const attemptHistory = parseExecutionSetupAttemptHistory(getValueByExactAlias(parsed, ['attemptHistory', 'attempt_history']))
 
   if (
     !status
@@ -1341,26 +1334,26 @@ export function parseExecutionSetupRuntimeReport(content: string): ExecutionSetu
     return null
   }
 
-  const maxIterationsRaw = getValueByAliases(parsed, ['maxIterations', 'max_iterations'])
+  const maxIterationsRaw = getValueByExactAlias(parsed, ['maxIterations', 'max_iterations'])
   return {
     status,
     ready: typeof readyRaw === 'boolean' ? readyRaw : undefined,
-    checkedAt: normalizeOptionalString(getValueByAliases(parsed, ['checkedAt', 'checked_at'])),
-    preparedBy: normalizeOptionalString(getValueByAliases(parsed, ['preparedBy', 'prepared_by'])),
-    summary: normalizeOptionalString(getValueByAliases(parsed, ['summary'])),
+    checkedAt: normalizeOptionalString(getValueByExactAlias(parsed, ['checkedAt', 'checked_at'])),
+    preparedBy: normalizeOptionalString(getValueByExactAlias(parsed, ['preparedBy', 'prepared_by'])),
+    summary: normalizeOptionalString(getValueByExactAlias(parsed, ['summary'])),
     profile,
     checks,
     modelOutput,
     rawAttempts,
     errors,
     worktreeWarnings,
-    structuredOutput: normalizeArtifactStructuredOutput(getValueByAliases(parsed, ['structuredOutput', 'structured_output'])),
-    attempt: normalizeNumber(getValueByAliases(parsed, ['attempt'])),
+    structuredOutput: normalizeArtifactStructuredOutput(getValueByExactAlias(parsed, ['structuredOutput', 'structured_output'])),
+    attempt: normalizeNumber(getValueByExactAlias(parsed, ['attempt'])),
     maxIterations: maxIterationsRaw === null ? null : normalizeNumber(maxIterationsRaw),
     attemptHistory,
-    retryNotes: normalizeStringArray(getValueByAliases(parsed, ['retryNotes', 'retry_notes'])),
-    approvedPlanCommands: normalizeStringArray(getValueByAliases(parsed, ['approvedPlanCommands', 'approved_plan_commands'])),
-    executionAddedCommands: normalizeStringArray(getValueByAliases(parsed, ['executionAddedCommands', 'execution_added_commands'])),
+    retryNotes: normalizeStringArray(getValueByExactAlias(parsed, ['retryNotes', 'retry_notes'])),
+    approvedPlanCommands: normalizeStringArray(getValueByExactAlias(parsed, ['approvedPlanCommands', 'approved_plan_commands'])),
+    executionAddedCommands: normalizeStringArray(getValueByExactAlias(parsed, ['executionAddedCommands', 'execution_added_commands'])),
   }
 }
 
@@ -1521,7 +1514,7 @@ export function parseRefinementArtifact(content: string): RefinementDiffArtifact
     structuredOutput: normalizeArtifactStructuredOutput(parsed.structuredOutput),
     candidateVersion: normalizeCandidateVersion(parsed.candidateVersion),
     gapResolutions: normalizeCoverageGapResolutions(parsed.gapResolutions ?? parsed.gap_resolutions),
-    rawAttempts: normalizeRawAttempts(getValueByAliases(parsed, ['rawAttempts', 'raw_attempts'])),
+    rawAttempts: normalizeRawAttempts(getValueByExactAlias(parsed, ['rawAttempts', 'raw_attempts'])),
   }
 }
 
@@ -1793,7 +1786,7 @@ export function buildFinalRefinementArtifactContent(
         ? coverageRecord.candidateVersion
         : sourceArtifact?.candidateVersion,
       rawAttempts: sourceArtifact?.rawAttempts
-        ?? normalizeRawAttempts(getValueByAliases(refinedCompanion ?? {}, ['rawAttempts', 'raw_attempts']))
+        ?? normalizeRawAttempts(getValueByExactAlias(refinedCompanion ?? {}, ['rawAttempts', 'raw_attempts']))
         ?? undefined,
     }
 
@@ -1825,7 +1818,7 @@ export function buildFinalRefinementArtifactContent(
       ?? normalizeArtifactStructuredOutput(refinedCompanion?.structuredOutput)
       ?? coverageArtifact?.structuredOutput,
     rawAttempts: sourceArtifact?.rawAttempts
-      ?? normalizeRawAttempts(getValueByAliases(refinedCompanion ?? {}, ['rawAttempts', 'raw_attempts']))
+      ?? normalizeRawAttempts(getValueByExactAlias(refinedCompanion ?? {}, ['rawAttempts', 'raw_attempts']))
       ?? undefined,
     candidateVersion: coverageArtifact?.finalCandidateVersion
       ?? latestRevisionArtifact?.candidateVersion
@@ -1931,7 +1924,7 @@ export function parseCoverageArtifact(content: string): CoverageArtifactData | n
             response: typeof attempt.response === 'string' ? attempt.response : undefined,
             normalizedContent: typeof attempt.normalizedContent === 'string' ? attempt.normalizedContent : undefined,
             structuredOutput: normalizeArtifactStructuredOutput(attempt.structuredOutput),
-            rawAttempts: normalizeRawAttempts(getValueByAliases(attempt, ['rawAttempts', 'raw_attempts'])),
+            rawAttempts: normalizeRawAttempts(getValueByExactAlias(attempt, ['rawAttempts', 'raw_attempts'])),
             coverageRunNumber: typeof attempt.coverageRunNumber === 'number' ? attempt.coverageRunNumber : undefined,
             maxCoveragePasses: typeof attempt.maxCoveragePasses === 'number' ? attempt.maxCoveragePasses : undefined,
             limitReached: typeof attempt.limitReached === 'boolean' ? attempt.limitReached : undefined,
@@ -1967,7 +1960,7 @@ export function parseCoverageArtifact(content: string): CoverageArtifactData | n
               : [],
             uiRefinementDiff: normalizeUiRefinementDiff(transition.uiRefinementDiff) ?? undefined,
             structuredOutput: normalizeArtifactStructuredOutput(transition.structuredOutput),
-            rawAttempts: normalizeRawAttempts(getValueByAliases(transition, ['rawAttempts', 'raw_attempts'])),
+            rawAttempts: normalizeRawAttempts(getValueByExactAlias(transition, ['rawAttempts', 'raw_attempts'])),
             source: typeof transition.source === 'string' ? transition.source : undefined,
             extraFixNumber: typeof transition.extraFixNumber === 'number' ? transition.extraFixNumber : undefined,
             noChange: typeof transition.noChange === 'boolean' ? transition.noChange : undefined,
@@ -1982,7 +1975,7 @@ export function parseCoverageArtifact(content: string): CoverageArtifactData | n
     latestExtraFixSummary: typeof result.latestExtraFixSummary === 'string' ? result.latestExtraFixSummary : null,
     parsed: parsedCoverage,
     structuredOutput: normalizeArtifactStructuredOutput(result.structuredOutput),
-    rawAttempts: normalizeRawAttempts(getValueByAliases(result, ['rawAttempts', 'raw_attempts'])),
+    rawAttempts: normalizeRawAttempts(getValueByExactAlias(result, ['rawAttempts', 'raw_attempts'])),
   }
 }
 

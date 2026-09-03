@@ -14,7 +14,6 @@ import type {
   InterviewQuestionOption,
   InterviewQuestionSource,
 } from '@shared/interviewSession'
-import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { StructuredOutputResult } from './types'
 import { looksLikeStructuredPromptSchemaEcho } from '../lib/promptEcho'
 import {
@@ -24,6 +23,7 @@ import {
   getNestedRecord,
   getRequiredString,
   getValueByAliases,
+  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
@@ -32,9 +32,10 @@ import {
   toOptionalString,
   toStringArray,
   unwrapExplicitWrapperRecord,
+  collectAliasConflictWarnings,
+  withAliasConflictWarnings,
 } from './yamlUtils'
-import { buildStructuredOutputFailure } from './failure'
-import { getErrorMessage } from '@shared/typeGuards'
+import { buildStructuredOutputFailure, createStructuredCandidateFailureTracker } from './failure'
 
 const INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR = 'Interview document output echoed the prompt instead of returning a structured interview artifact'
 
@@ -141,9 +142,7 @@ function normalizeQuestionAnswer(
   const selectedOptionIds = Array.from(new Set(toStringArray(
     getValueByAliases(value, ['selectedoptionids', 'selected_option_ids', 'selected']),
   )))
-  const freeText = typeof getValueByAliases(value, ['freetext', 'free_text', 'text']) === 'string'
-    ? String(getValueByAliases(value, ['freetext', 'free_text', 'text']))
-    : ''
+  const freeText = getStringByAliases(value, ['freetext', 'free_text', 'text']) ?? ''
   const explicitSkipped = toBoolean(getValueByAliases(value, ['skipped']))
 
   let nextSelectedOptionIds = selectedOptionIds
@@ -533,6 +532,21 @@ function buildAnswerOnlyResolvedInterviewCandidate(
   },
 ): StructuredOutputResult<InterviewDocument> | null {
   const repairWarnings: string[] = []
+  // This fallback resolves its own aliases rather than going through
+  // `normalizeInterviewDocumentOutput`, which installs the sink itself, so
+  // without one here a payload spelling `questions` two ways resolved silently.
+  return withAliasConflictWarnings(repairWarnings, () =>
+    buildAnswerOnlyResolvedInterviewCandidateInner(candidateContent, canonical, options, repairWarnings))
+}
+
+function buildAnswerOnlyResolvedInterviewCandidateInner(
+  candidateContent: string,
+  canonical: InterviewDocument,
+  options: {
+    memberId?: string
+  },
+  repairWarnings: string[],
+): StructuredOutputResult<InterviewDocument> | null {
   let parsed: unknown
 
   for (const parseOptions of [
@@ -776,24 +790,19 @@ export function normalizeInterviewDocumentOutput(
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['schema_version', 'ticket_id', 'artifact', 'questions'],
   })
-  let lastError = 'No interview document content found'
-  let lastErrorCause: unknown = null
-  let lastRetryDiagnostic: StructuredRetryDiagnostic | undefined
-  let preferredPromptEchoError: string | undefined
-  let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
+  const failures = createStructuredCandidateFailureTracker('No interview document content found')
 
   for (const candidate of candidates) {
+    const warnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(warnings)
     try {
       if (looksLikeStructuredPromptSchemaEcho(candidate, {
         rootKeys: ['schema_version', 'ticket_id', 'artifact', 'questions'],
       })) {
-        const failure = buildStructuredOutputFailure(candidate, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
+        failures.recordPromptEcho(candidate, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
         continue
       }
 
-      const warnings: string[] = []
       const parsed = unwrapInterviewArtifactObjectWrapper(unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_DOCUMENT_NESTED_MAPPING_CHILDREN,
         allowTrailingTerminalNoise: options?.allowTrailingTerminalNoise,
@@ -814,11 +823,14 @@ export function normalizeInterviewDocumentOutput(
       }
 
       const schemaVersion = toInteger(getValueByAliases(parsed, ['schemaversion', 'schema_version'])) ?? 1
-      const ticketId = toOptionalString(getValueByAliases(parsed, ['ticketid', 'ticket_id'])) ?? options?.ticketId ?? ''
+      // Bound once: the lookup reports a canonical/legacy disagreement, so
+      // resolving the same aliases twice reported it twice.
+      const rawTicketId = getStringByAliases(parsed, ['ticketid', 'ticket_id'])?.trim()
+      const ticketId = rawTicketId || options?.ticketId || ''
       if (!ticketId) {
         throw new Error('Interview document is missing ticket_id')
       }
-      if (!toOptionalString(getValueByAliases(parsed, ['ticketid', 'ticket_id'])) && options?.ticketId) {
+      if (!rawTicketId && options?.ticketId) {
         warnings.push('Filled missing ticket_id from runtime context.')
       }
 
@@ -875,9 +887,7 @@ export function normalizeInterviewDocumentOutput(
           goals: toStringArray(getValueByAliases(summary, ['goals'])),
           constraints: toStringArray(getValueByAliases(summary, ['constraints'])),
           non_goals: toStringArray(getValueByAliases(summary, ['nongoals', 'non_goals'])),
-          final_free_form_answer: typeof getValueByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']) === 'string'
-            ? String(getValueByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']))
-            : '',
+          final_free_form_answer: getStringByAliases(summary, ['finalfreeformanswer', 'final_free_form_answer']) ?? '',
         },
         approval: {
           approved_by: toOptionalString(getValueByAliases(approval, ['approvedby', 'approved_by'])) ?? '',
@@ -894,26 +904,13 @@ export function normalizeInterviewDocumentOutput(
         repairWarnings: warnings,
       }
     } catch (error) {
-      lastError = getErrorMessage(error)
-      lastErrorCause = error
-      if (isPromptEchoValidationError(lastError)) {
-        const failure = buildStructuredOutputFailure(candidate, lastError, { cause: error })
-        preferredPromptEchoError ??= failure.error
-        preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
-      }
+      failures.recordCandidateError(candidate, error, isPromptEchoValidationError)
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
-  if (preferredPromptEchoError) {
-    return buildStructuredOutputFailure(rawContent, preferredPromptEchoError, {
-      retryDiagnostic: preferredPromptEchoRetryDiagnostic,
-    })
-  }
-
-  return buildStructuredOutputFailure(rawContent, lastError, {
-    cause: lastErrorCause,
-    retryDiagnostic: lastRetryDiagnostic,
-  })
+  return failures.build(rawContent)
 }
 
 export function normalizeResolvedInterviewDocumentOutput(
@@ -938,19 +935,13 @@ export function normalizeResolvedInterviewDocumentOutput(
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['schema_version', 'ticket_id', 'artifact', 'questions'],
   })
-  let lastError = 'No resolved interview document content found'
-  let lastErrorCause: unknown = null
-  let lastRetryDiagnostic: StructuredRetryDiagnostic | undefined
-  let preferredPromptEchoError: string | undefined
-  let preferredPromptEchoRetryDiagnostic: StructuredRetryDiagnostic | undefined
+  const failures = createStructuredCandidateFailureTracker('No resolved interview document content found')
 
   for (const candidateContent of candidates) {
     if (looksLikeStructuredPromptSchemaEcho(candidateContent, {
       rootKeys: ['schema_version', 'ticket_id', 'artifact', 'questions'],
     })) {
-      const failure = buildStructuredOutputFailure(candidateContent, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
-      preferredPromptEchoError ??= failure.error
-      preferredPromptEchoRetryDiagnostic ??= failure.retryDiagnostic
+      failures.recordPromptEcho(candidateContent, INTERVIEW_DOCUMENT_PROMPT_ECHO_ERROR)
       continue
     }
 
@@ -966,14 +957,7 @@ export function normalizeResolvedInterviewDocumentOutput(
       if (answerOnlyCandidate) {
         candidateResult = answerOnlyCandidate
       } else {
-        if (isPromptEchoValidationError(candidateResult.error)) {
-          preferredPromptEchoError ??= candidateResult.error
-          preferredPromptEchoRetryDiagnostic ??= candidateResult.retryDiagnostic
-          continue
-        }
-        lastError = candidateResult.error
-        lastErrorCause = candidateResult.retryDiagnostic
-        lastRetryDiagnostic = candidateResult.retryDiagnostic
+        failures.recordCandidateFailure(candidateResult, isPromptEchoValidationError)
         continue
       }
     }
@@ -1141,21 +1125,11 @@ export function normalizeResolvedInterviewDocumentOutput(
         repairWarnings,
       }
     } catch (error) {
-      lastError = getErrorMessage(error)
-      lastErrorCause = error
+      failures.recordCandidateError(candidateContent, error, isPromptEchoValidationError)
     }
   }
 
-  if (preferredPromptEchoError) {
-    return buildStructuredOutputFailure(rawContent, preferredPromptEchoError, {
-      retryDiagnostic: preferredPromptEchoRetryDiagnostic,
-    })
-  }
-
-  return buildStructuredOutputFailure(rawContent, lastError, {
-    cause: lastErrorCause,
-    retryDiagnostic: lastRetryDiagnostic,
-  })
+  return failures.build(rawContent)
 }
 
 export function toDraftInterviewDocument(document: InterviewDocument): InterviewDocument {

@@ -19,19 +19,23 @@ interface TaggedStructuredParseFailure {
   retryDiagnostic?: StructuredRetryDiagnostic
 }
 
+/**
+ * `markerFound` used to be inferred from the error text when a caller omitted the
+ * tags, so a prompt echo or any other validation error read as "the marker was
+ * present". The tags are required: the only honest answer is whether they are in
+ * the output. `missingMarkerError` went with that inference — the body stopped
+ * reading it, so it was four call sites supplying a string nothing consumed.
+ */
 export function unwrapTaggedStructuredOutput<T>(
   output: string,
   normalized: StructuredOutputResult<T>,
   options: {
-    missingMarkerError: string
-    markerStart?: string
-    markerEnd?: string
+    markerStart: string
+    markerEnd: string
   },
 ): TaggedStructuredParseSuccess<T> | TaggedStructuredParseFailure {
   if (!normalized.ok) {
-    const markerFound = options.markerStart && options.markerEnd
-      ? output.includes(options.markerStart) && output.includes(options.markerEnd)
-      : normalized.error !== options.missingMarkerError
+    const markerFound = output.includes(options.markerStart) && output.includes(options.markerEnd)
 
     return {
       ok: false,

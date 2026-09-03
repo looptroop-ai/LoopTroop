@@ -8,7 +8,6 @@ export function parseExecutionSetupPlanResult(output: string): ExecutionSetupPla
     output,
     normalizeExecutionSetupPlanOutput(output),
     {
-      missingMarkerError: 'No execution setup plan marker found',
       markerStart: EXECUTION_SETUP_PLAN_RESULT_MARKER,
       markerEnd: EXECUTION_SETUP_PLAN_RESULT_END,
     },

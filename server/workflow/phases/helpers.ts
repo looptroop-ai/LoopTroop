@@ -2317,11 +2317,24 @@ export function tryRecoverPhaseIntermediate(
       const voteArtifact = getLatestPhaseArtifact(ticketId, `${pipeline}_votes`, voteStatus, voteAttempt ?? undefined)
       if (!voteArtifact) return false
       const voteResult = JSON.parse(voteArtifact.content) as {
-        winnerId: string
+        winnerId?: unknown
         isFinal?: boolean
       }
       if (voteResult.isFinal !== true) return false
-      data.winnerId = voteResult.winnerId
+      // A corrupt or partial vote artifact used to be assigned unchecked and then
+      // blew up inside the refine handler. Fail the recovery instead, so the
+      // caller takes its INTERMEDIATE_DATA_LOST retry path.
+      const recoveredWinnerId = typeof voteResult.winnerId === 'string' ? voteResult.winnerId.trim() : ''
+      const hasCompletedWinnerDraft = recoveredDrafts.some((draft) =>
+        draft.memberId === recoveredWinnerId
+        && draft.outcome === 'completed'
+        // `Boolean(content)` accepted a draft that is nothing but whitespace,
+        // and refinement then ran against an empty winning draft.
+        && typeof draft.content === 'string'
+        && draft.content.trim().length > 0,
+      )
+      if (!recoveredWinnerId || !hasCompletedWinnerDraft) return false
+      data.winnerId = recoveredWinnerId
     }
 
     phaseIntermediate.set(key, data)

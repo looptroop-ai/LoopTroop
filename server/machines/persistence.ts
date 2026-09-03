@@ -58,6 +58,22 @@ function getSnapshotContext(snapshot: unknown): Record<string, unknown> | null {
   return isRecord(snapshot) && isRecord(snapshot.context) ? snapshot.context : null
 }
 
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function isValidBeadProgress(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return isNonNegativeInteger(value.total)
+    && isNonNegativeInteger(value.completed)
+    // The coding guard reads `completed >= total && total > 0` as "every bead is
+    // done", so a restored `{ total: 1, completed: 99 }` skipped straight to
+    // final testing. Counters that cannot both be true are not a snapshot to
+    // restore from.
+    && (value.completed as number) <= (value.total as number)
+    && (value.current === null || typeof value.current === 'string')
+}
+
 /** Exported for the field-parity test in `__tests__/ticketContext.test.ts`. */
 export function buildMachineContext(
   input: TicketActorInput,
@@ -170,9 +186,13 @@ function reconcileSnapshotForTicket(
   context.lockedAiQuestionsSource = input.lockedAiQuestionsSource ?? null
   context.lockedAiQuestionWindow = input.lockedAiQuestionWindow ?? null
   context.lockedAiQuestionWindowSource = input.lockedAiQuestionWindowSource ?? null
+  // Phase-artifact ids are positive integers. A restored `0`, a negative or a
+  // fraction was kept as a real reference, and the setup-plan phase then read a
+  // row that cannot exist and threw instead of falling back to generating one.
   if (
     typeof context.pendingExecutionSetupPlanRequestArtifactId !== 'number'
-    || !Number.isFinite(context.pendingExecutionSetupPlanRequestArtifactId)
+    || !Number.isInteger(context.pendingExecutionSetupPlanRequestArtifactId)
+    || context.pendingExecutionSetupPlanRequestArtifactId <= 0
   ) {
     context.pendingExecutionSetupPlanRequestArtifactId = null
   }
@@ -188,13 +208,67 @@ function reconcileSnapshotForTicket(
   }
 
   context.status = dbStatus
-  if (typeof context.maxIterations !== 'number') {
-    context.maxIterations = input.maxIterations ?? PROFILE_DEFAULTS.maxIterations
+  // Restoring an actor used to check the state string, that `context` was an
+  // object and a handful of top-level shapes, then cast the rest. Each field is
+  // checked on its own here: a bad one falls back to its default and says so,
+  // rather than being dropped along with a session that is otherwise fine.
+  const dropInvalidField = (field: string, reason: string) => {
+    console.warn(`[runner] Ticket ${ticketRef} restored with an invalid ${field} (${reason}); using the default.`)
   }
-  if (!isRecord(context.beadProgress)) {
+  // Zero is a real value here: the executor reads `maxIterations > 0` and treats
+  // 0 as no cap, so only a negative or non-integer is invalid.
+  // A `previousStatus` that is not a workflow phase was only repaired for a
+  // blocked ticket. Anywhere else it was restored as written and reached the
+  // public ticket payload, and if the ticket blocked later there was no durable
+  // fallback left to resume from.
+  if (
+    context.previousStatus !== null
+    && context.previousStatus !== undefined
+    && (typeof context.previousStatus !== 'string' || !isWorkflowPhaseId(context.previousStatus))
+  ) {
+    dropInvalidField('previousStatus', 'not a workflow phase')
+    context.previousStatus = null
+  }
+  if (!isNonNegativeInteger(context.maxIterations)) {
+    if (context.maxIterations !== undefined) dropInvalidField('maxIterations', 'not a non-negative integer')
+    context.maxIterations = isNonNegativeInteger(input.maxIterations)
+      ? input.maxIterations
+      : PROFILE_DEFAULTS.maxIterations
+  }
+  if (!isNonNegativeInteger(context.iterationCount)) {
+    if (context.iterationCount !== undefined) dropInvalidField('iterationCount', 'not a non-negative integer')
+    context.iterationCount = 0
+  }
+  if (!isValidBeadProgress(context.beadProgress)) {
+    if (context.beadProgress !== undefined) dropInvalidField('beadProgress', 'malformed counters')
     context.beadProgress = { total: 0, completed: 0, current: null }
   }
-  if (!Array.isArray(context.errorCodes)) {
+  if (context.councilResults !== null && !isRecord(context.councilResults)) {
+    if (context.councilResults !== undefined) dropInvalidField('councilResults', 'not an object')
+    context.councilResults = null
+  }
+  for (const dateField of ['createdAt', 'updatedAt'] as const) {
+    // An empty string is not a date either, and it was what the fallback itself
+    // wrote — so a bad timestamp was replaced with one nothing can render.
+    // Neither is `"not-a-timestamp"`: a non-empty string check let any text
+    // through to whatever renders or serialises these next.
+    const value = context[dateField]
+    if (typeof value !== 'string' || !value.trim() || Number.isNaN(Date.parse(value))) {
+      if (value !== undefined) dropInvalidField(dateField, 'not a timestamp')
+      context[dateField] = new Date().toISOString()
+    }
+  }
+  // Every neighbour guards on `!== undefined` first. This one did not, so a
+  // snapshot that simply lacks the field — which xstate hydration produces —
+  // logged a warning saying its error was not a string.
+  if (context.error !== undefined && context.error !== null && typeof context.error !== 'string') {
+    dropInvalidField('error', 'not a string')
+  }
+  if (typeof context.error !== 'string') {
+    context.error = null
+  }
+  if (!Array.isArray(context.errorCodes) || context.errorCodes.some((code) => typeof code !== 'string')) {
+    if (context.errorCodes !== undefined) dropInvalidField('errorCodes', 'not a list of strings')
     context.errorCodes = []
   }
   context.errorDiagnostics = normalizeBlockedErrorDiagnostics(context.errorDiagnostics)

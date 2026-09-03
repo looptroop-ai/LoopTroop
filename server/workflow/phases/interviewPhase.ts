@@ -3,6 +3,7 @@ import type { DraftResult, MemberOutcome, Vote, VotePresentationOrder } from '..
 import { CancelledError, throwIfAborted, VOTING_RUBRIC_INTERVIEW } from '../../council/types'
 import { conductVoting, selectWinner } from '../../council/voter'
 import { refineDraft } from '../../council/refiner'
+import { requireWinnerDraft } from '../../council/draftUtils'
 import { checkMemberResponseQuorum, checkQuorum } from '../../council/quorum'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { startInterviewSession, submitBatchToSession, type BatchResponse } from '../../phases/interview/qa'
@@ -32,7 +33,7 @@ import { broadcaster } from '../../sse/broadcaster'
 import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import * as jsYaml from 'js-yaml'
-import { normalizeInterviewRefinementOutput } from '../../structuredOutput'
+import { normalizeInterviewQuestionsOutput, normalizeInterviewRefinementOutput } from '../../structuredOutput'
 import type { InterviewQuestionChange } from '@shared/interviewQuestions'
 import type { InterviewSessionSnapshot } from '@shared/interviewSession'
 import {
@@ -837,7 +838,7 @@ export async function handleInterviewCompile(
     throw new Error('No interview vote results found — cannot refine')
   }
 
-  const winnerDraft = intermediate.drafts.find(d => d.memberId === intermediate.winnerId)!
+  const winnerDraft = requireWinnerDraft(intermediate.drafts, intermediate.winnerId, 'Interview')
   const losingDrafts = intermediate.drafts.filter(d => d.memberId !== intermediate.winnerId && d.outcome === 'completed')
   const councilSettings = resolveCouncilRuntimeSettings(context)
   const interviewTicketState = intermediate.ticketState ?? (() => {
@@ -856,6 +857,22 @@ export async function handleInterviewCompile(
     { source: 'system', modelId: intermediate.winnerId })
 
   if (signal.aborted) throw new CancelledError(ticketId)
+
+  // Refinement cross-validates against the winning draft, so an unparseable
+  // winner fails every attempt identically: the retry prompt asks the model to
+  // rewrite its refinement, and the input that actually broke is not the one it
+  // can change. The beads and PRD phases check this up front; so does this one.
+  // Cap of 0 — uncapped — because that is what the refinement validator parses
+  // the same winner with. Passing the live cap here made the pre-check stricter
+  // than the guard it stands in front of, so a winner the refinement would have
+  // accepted could be refused as unparseable.
+  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(winnerDraft.content, 0)
+  if (!interviewWinnerCheck.ok) {
+    throw new Error(
+      `Winning interview draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${interviewWinnerCheck.error}`,
+    )
+  }
+
   let structuredMeta = buildStructuredMetadata({ autoRetryCount: 0, repairApplied: false, repairWarnings: [] })
   let parsedRefinementChanges: InterviewQuestionChange[] = []
   const refinementRun = await refineDraft(

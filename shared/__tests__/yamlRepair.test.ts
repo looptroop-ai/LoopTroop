@@ -690,6 +690,43 @@ describe('repairYamlFreeTextScalars', () => {
   })
 })
 
+describe('repaired scalars keep their trailing comment out of the value', () => {
+  it.each([
+    [
+      'a free_text answer',
+      'free_text: answer # reviewer note',
+      'free_text: "answer" # reviewer note',
+    ],
+    [
+      'a free_text answer with inner double quotes',
+      'free_text: he said "hi" # reviewer note',
+      'free_text: "he said \\"hi\\"" # reviewer note',
+    ],
+  ])('splits the comment off %s', (_label, input, expected) => {
+    expect(repairYamlFreeTextScalars(input)).toBe(expected)
+  })
+
+  it.each([
+    ['a mapping value', 'summary: outcome: green # note', 'summary: "outcome: green" # note'],
+    ['a list scalar', '  - EPIC-1: covered # done', '  - "EPIC-1: covered" # done'],
+  ])('splits the comment off %s', (_label, input, expected) => {
+    expect(repairYamlPlainScalarColons(input)).toBe(expected)
+  })
+
+  it('keeps a hash inside quotes as part of the value', () => {
+    expect(repairYamlFreeTextScalars("free_text: it said 'hi # there'"))
+      .toBe('free_text: "it said \'hi # there\'"')
+  })
+
+  it('leaves a value that is only a comment alone', () => {
+    expect(repairYamlFreeTextScalars('free_text: # only a comment')).toBe('free_text: # only a comment')
+  })
+
+  it('stops quoting a value whose colon-space lives in the comment', () => {
+    expect(repairYamlPlainScalarColons('summary: plain # note: thing')).toBe('summary: plain # note: thing')
+  })
+})
+
 describe('repairYamlQuotedScalarFragments', () => {
   it('repairs list scalars with a leading quoted fragment and trailing text', () => {
     const input = [

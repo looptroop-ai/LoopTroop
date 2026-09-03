@@ -16,6 +16,7 @@ import {
   getTicketWorktreePath,
 } from './paths'
 import { readJsonl } from '../io/jsonl'
+import { reconcileStoredBeadStatus } from '../phases/beads/beadsFile'
 import { getAvailableWorkflowActions, isTerminalWorkflowStatus } from '@shared/workflowMeta'
 import { getTicketBeadsPath, resolveTicketBaseBranch } from '../ticket/metadata'
 import type { ArtifactSnapshot } from '../sse/eventTypes'
@@ -35,7 +36,7 @@ import type { GitHookPolicy } from '../structuredOutput/types'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { questionWaitOverlapMs } from './questionWaits'
 import { getPendingQuestionSummary } from '../workflow/questionWindows'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 
 type LocalTicketRow = typeof tickets.$inferSelect
 type LocalProjectRow = typeof projects.$inferSelect
@@ -1206,13 +1207,23 @@ function buildRuntime(
 
 function readRuntimeBeads(projectRoot: string, externalId: string, baseBranch: string) {
   try {
-    return readJsonl<Record<string, unknown>>(getTicketBeadsPath(projectRoot, externalId, baseBranch))
+    return readJsonl<unknown>(getTicketBeadsPath(projectRoot, externalId, baseBranch))
+      // `JSON.parse('null')` succeeds, so a `null` line survives `readJsonl` and
+      // then threw on the first property read below. The throw was caught by the
+      // function's own handler, which returns `[]`, so one malformed line blanked
+      // every bead on the board while the scheduler — reading the same file
+      // through `readBeadsFile` — carried on with them.
+      .filter((bead): bead is Record<string, unknown> => isRecord(bead))
       .map((bead) => {
         const qaOrigin = RuntimeQaOriginSchema.safeParse(bead.qaOrigin)
         return {
           id: typeof bead.id === 'string' ? bead.id : '',
           title: typeof bead.title === 'string' ? bead.title : 'Untitled',
-          status: typeof bead.status === 'string' ? bead.status : 'pending',
+          // The scheduler reads through `readBeadsFile`, which reconciles a
+          // legacy stored status. This projection feeds the board, the watch
+          // view and the public ticket payload, and used to show the raw stored
+          // string, so the same bead read as `complete` here and `done` there.
+          status: reconcileStoredBeadStatus(bead.status, typeof bead.id === 'string' ? bead.id : '').status,
           iteration: typeof bead.iteration === 'number' ? bead.iteration : 0,
           failedIterationNotes: Array.isArray(bead.failedIterationNotes) ? bead.failedIterationNotes : [],
           userRetryNotes: Array.isArray(bead.userRetryNotes) ? bead.userRetryNotes : [],

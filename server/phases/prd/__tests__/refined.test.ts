@@ -5,6 +5,7 @@ import {
   buildPrdRefinedArtifact,
   buildPrdRefinementRetryPrompt,
   parsePrdRefinedArtifact,
+  PRD_MISSING_CHANGES_WARNING,
   requirePrdRefinedArtifact,
   validatePrdRefinementOutput,
 } from '../refined'
@@ -28,6 +29,8 @@ function buildPrdContent(options: {
   storyOneSteps?: string[]
   includeStoryTwo?: boolean
   includeStoryThree?: boolean
+  problemStatement?: string
+  risks?: string[]
   changes?: unknown[]
 } = {}): string {
   const document: Record<string, unknown> = {
@@ -36,7 +39,10 @@ function buildPrdContent(options: {
     artifact: 'prd',
     status: 'draft',
     source_interview: { content_sha256: 'stale-hash' },
-    product: { problem_statement: 'Keep PRD refinement strict and restart-safe.', target_users: ['LoopTroop maintainers'] },
+    product: {
+      problem_statement: options.problemStatement ?? 'Keep PRD refinement strict and restart-safe.',
+      target_users: ['LoopTroop maintainers'],
+    },
     scope: { in_scope: ['PRD refinement validation', 'artifact parsing'], out_of_scope: ['Execution pipeline changes'] },
     technical_requirements: {
       architecture_constraints: ['Preserve the winner-only refinement flow.'],
@@ -66,7 +72,7 @@ function buildPrdContent(options: {
         ] : []),
       ],
     }],
-    risks: ['Loose parsing could hide real refinement mistakes.'],
+    risks: options.risks ?? ['Loose parsing could hide real refinement mistakes.'],
     approval: { approved_by: '', approved_at: '' },
   }
 
@@ -140,6 +146,50 @@ describe.concurrent('PRD refined artifacts', () => {
     expect(result.repairApplied).toBe(true)
     expect(result.repairWarnings).toContain('Canonicalized source_interview.content_sha256 from the approved Interview Results artifact.')
     expect(result.refinedContent).not.toContain('changes:')
+  })
+
+  it('accepts an unchanged refinement with no changes list', () => {
+    const result = validatePrdRefinementOutput(buildPrdContent(), validationContext())
+
+    expect(result.changes).toEqual([])
+    expect(result.repairWarnings).not.toContain(PRD_MISSING_CHANGES_WARNING)
+  })
+
+  it('accounts for a refinement that edited an epic without returning changes', () => {
+    const result = validatePrdRefinementOutput(
+      buildPrdContent({ epicTitle: 'Prompt hardening and refinement safety' }),
+      validationContext(),
+    )
+
+    expect(result.changes).toEqual([
+      expect.objectContaining({
+        type: 'modified',
+        itemType: 'epic',
+        attributionStatus: 'synthesized_unattributed',
+      }),
+    ])
+    expect(result.repairWarnings).toContain(PRD_MISSING_CHANGES_WARNING)
+  })
+
+  it.each([
+    ['the problem statement', { problemStatement: 'Keep PRD refinement strict, restart-safe and auditable.' }],
+    ['the risk list', { risks: ['Loose parsing could hide real refinement mistakes.', 'A silent rewrite loses its diff.'] }],
+  ])('reports a refinement that rewrote %s without returning changes', (_label, edit) => {
+    // The check compared epic and story fingerprints only, so a refinement that
+    // touched `product`, `scope`, `technical_requirements` or `risks` looked
+    // identical to its winner and reported nothing at all. `RefinementChange`
+    // can only name an epic or a story, so there is no change to synthesize for
+    // a document-level edit — but the artifact now says one was made.
+    const result = validatePrdRefinementOutput(buildPrdContent(edit), validationContext())
+    expect(result.repairWarnings).toContain(PRD_MISSING_CHANGES_WARNING)
+    expect(result.repairApplied).toBe(true)
+  })
+
+  it('rejects a refinement that added a story without returning changes', () => {
+    expect(() => validatePrdRefinementOutput(
+      buildPrdContent({ includeStoryThree: true }),
+      validationContext(),
+    )).toThrow('do not fully and exactly account for the diff')
   })
 
   it('validates refined PRDs that need both colon repair and reserved-indicator scalar quoting', () => {

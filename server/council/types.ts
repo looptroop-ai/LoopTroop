@@ -15,6 +15,13 @@ export function throwIfAborted(signal?: AbortSignal, ticketId?: number | string)
   if (signal?.aborted) throw new CancelledError(ticketId)
 }
 
+/**
+ * Vote score bounds. The parser, the voter's prompt copy and the strict output
+ * instruction all state these numbers, so they are stated once here.
+ */
+export const MAX_VOTE_CATEGORY_SCORE = 20
+export const MAX_VOTE_TOTAL_SCORE = 100
+
 export type MemberOutcome = 'pending' | 'completed' | 'timed_out' | 'invalid_output' | 'failed'
 
 export type RawAttemptOutcome = 'rejected' | 'accepted'

@@ -34,8 +34,10 @@ import {
   toStringArray,
   toOptionalString,
   toInteger,
+  toBoolean,
   getValueByAliases,
   getRequiredString,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -115,18 +117,51 @@ function normalizeFinalTestFileEffectIntent(value: unknown): FinalTestFileEffect
   throw new Error(`Invalid final test file effect intent: ${value}`)
 }
 
-function normalizeFinalTestFileEffects(value: unknown): FinalTestFileEffect[] {
+/**
+ * Keeping the first occurrence of a path and dropping the rest hid the case that
+ * matters: the same file listed twice with different intents, where one of them
+ * says the file is a temporary artifact and the other says it should be
+ * committed. Identical duplicates merge; a real disagreement is a validation
+ * error.
+ *
+ * A bare string carries no intent of its own, so it defers to any entry that
+ * states one instead of competing with it.
+ */
+function normalizeFinalTestFileEffects(value: unknown, repairWarnings?: string[]): FinalTestFileEffect[] {
   if (value === undefined || value === null) return []
   const rawEffects = Array.isArray(value) ? value : [value]
-  const effects: FinalTestFileEffect[] = []
-  const seen = new Set<string>()
+  const byPath = new Map<string, { effect: FinalTestFileEffect; explicitIntent: boolean }>()
+
+  const record = (
+    path: string,
+    effect: FinalTestFileEffect,
+    explicitIntent: boolean,
+  ) => {
+    const existing = byPath.get(path)
+    if (!existing) {
+      byPath.set(path, { effect, explicitIntent })
+      return
+    }
+    if (existing.explicitIntent && explicitIntent && existing.effect.intent !== effect.intent) {
+      throw new Error(`Final test file effect for ${path} declares conflicting intents "${existing.effect.intent}" and "${effect.intent}"`)
+    }
+    if (existing.effect.reason && effect.reason && existing.effect.reason !== effect.reason) {
+      throw new Error(`Final test file effect for ${path} declares conflicting reasons`)
+    }
+    const winner = explicitIntent && !existing.explicitIntent ? effect : existing.effect
+    const reason = winner.reason ?? existing.effect.reason ?? effect.reason
+    byPath.set(path, {
+      effect: { path, intent: winner.intent, ...(reason ? { reason } : {}) },
+      explicitIntent: existing.explicitIntent || explicitIntent,
+    })
+    repairWarnings?.push(`Merged duplicate final test file effect entries for ${path}.`)
+  }
 
   for (const rawEffect of rawEffects) {
     if (typeof rawEffect === 'string') {
       const path = rawEffect.trim()
-      if (!path || seen.has(path)) continue
-      seen.add(path)
-      effects.push({ path, intent: 'candidate' })
+      if (!path) continue
+      record(path, { path, intent: 'candidate' }, false)
       continue
     }
     if (!isRecord(rawEffect)) {
@@ -138,16 +173,10 @@ function normalizeFinalTestFileEffects(value: unknown): FinalTestFileEffect[] {
     }
     const intent = normalizeFinalTestFileEffectIntent(getValueByAliases(rawEffect, ['intent', 'kind', 'type', 'action']))
     const reason = toOptionalString(getValueByAliases(rawEffect, ['reason', 'why', 'notes', 'summary']))
-    if (seen.has(path)) continue
-    seen.add(path)
-    effects.push({
-      path,
-      intent,
-      ...(reason ? { reason } : {}),
-    })
+    record(path, { path, intent, ...(reason ? { reason } : {}) }, true)
   }
 
-  return effects
+  return [...byPath.values()].map((entry) => entry.effect)
 }
 
 export function normalizeBeadCompletionMarkerOutput(rawContent: string): StructuredOutputResult<BeadCompletionPayload> {
@@ -166,6 +195,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: COMPLETION_NESTED_MAPPING_CHILDREN,
@@ -219,6 +249,8 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -250,6 +282,7 @@ export function normalizeFinalTestCommandsOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, { repairWarnings: candidateWarnings })
       const parsed = unwrapExplicitWrapperRecord(parsedCandidate, [
@@ -326,7 +359,7 @@ export function normalizeFinalTestCommandsOutput(
         'fileeffect',
         'effects',
       ])
-      const explicitFileEffects = normalizeFinalTestFileEffects(rawFileEffects)
+      const explicitFileEffects = normalizeFinalTestFileEffects(rawFileEffects, candidateWarnings)
       const fileEffects = explicitFileEffects.length > 0
         ? explicitFileEffects
         : dedupedModifiedFiles.map((path) => ({ path, intent: 'candidate' as const }))
@@ -360,6 +393,8 @@ export function normalizeFinalTestCommandsOutput(
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -603,6 +638,21 @@ function normalizeExecutionSetupPlanReadiness(
   }
 }
 
+/**
+ * `Boolean(value)` made every non-empty string true, and serialisers quote
+ * scalars often enough that `required: "false"` turned an optional setup command
+ * into a mandatory one. Anything the boolean parser cannot read is a validation
+ * error rather than a guess.
+ */
+function normalizeExecutionSetupPlanStepRequired(value: unknown, label: string): boolean {
+  if (value === undefined || value === null) return false
+  const parsed = toBoolean(value)
+  if (parsed === null) {
+    throw new Error(`${label} must be a boolean, received ${JSON.stringify(value)}`)
+  }
+  return parsed
+}
+
 function normalizeExecutionSetupPlanStep(
   entry: Record<string, unknown>,
   index: number,
@@ -637,7 +687,10 @@ function normalizeExecutionSetupPlanStep(
       `steps[${index}].commands`,
       repairWarnings,
     ),
-    required: Boolean(getValueByAliases(entry, ['required', 'isrequired']) ?? false),
+    required: normalizeExecutionSetupPlanStepRequired(
+      getValueByAliases(entry, ['required', 'isrequired']),
+      `steps[${index}].required`,
+    ),
     rationale,
     cautions: toStringArray(getValueByAliases(entry, ['cautions', 'warnings', 'notes'])),
   }
@@ -1096,6 +1149,7 @@ export function normalizeExecutionSetupPlanOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     let parsedCandidate: unknown
     try {
       parsedCandidate = parseYamlOrJsonCandidate(candidate, {
@@ -1138,6 +1192,8 @@ export function normalizeExecutionSetupPlanOutput(
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1166,6 +1222,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, { repairWarnings: candidateWarnings })
       const parsed = unwrapExplicitWrapperRecord(parsedCandidate, [
@@ -1224,6 +1281,8 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

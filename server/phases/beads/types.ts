@@ -1,5 +1,36 @@
 import type { CommandSpec } from '@shared/commandSpec'
 
+/** Field 4. The scheduler only runs `pending` and only finishes on `done`. */
+export const BEAD_STATUSES = ['pending', 'in_progress', 'done', 'error'] as const
+
+export type BeadStatus = (typeof BEAD_STATUSES)[number]
+
+export function isBeadStatus(value: unknown): value is BeadStatus {
+  return typeof value === 'string' && (BEAD_STATUSES as readonly string[]).includes(value)
+}
+
+/** Status spellings earlier releases and some models still emit. */
+export const BEAD_STATUS_LEGACY_ALIASES: Readonly<Record<string, BeadStatus>> = Object.freeze({
+  completed: 'done',
+  failed: 'error',
+  skipped: 'done',
+})
+
+/**
+ * The canonical status a legacy spelling means, or `undefined`.
+ *
+ * Indexing the map directly reads through the prototype, so a bead whose status
+ * was the string `constructor` resolved to a function rather than to nothing.
+ * Case is folded because models write `Completed` and `DONE`, and a status whose
+ * only fault is its capitalisation is a formatting problem, not a wrong answer.
+ */
+export function resolveBeadStatusAlias(value: string): BeadStatus | undefined {
+  const folded = value.trim().toLowerCase()
+  return Object.hasOwn(BEAD_STATUS_LEGACY_ALIASES, folded)
+    ? BEAD_STATUS_LEGACY_ALIASES[folded]
+    : undefined
+}
+
 export interface BeadDependencies {
   blocked_by: string[]
   blocks: string[]
@@ -59,7 +90,7 @@ export interface Bead {
 
   // Expanded fields (terminal expansion phase — PROM25)
   priority: number                        // Field 3 — sequential execution order
-  status: 'pending' | 'in_progress' | 'done' | 'error'  // Field 4
+  status: BeadStatus                      // Field 4
   issueType: string                       // Field 5 — "task", "bug", "chore", etc.
   externalRef: string                     // Field 6 — parent ticket ID
   labels: string[]                        // Field 8 — must map to at least one epic and story

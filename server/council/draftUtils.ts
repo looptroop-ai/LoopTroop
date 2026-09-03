@@ -1,4 +1,4 @@
-import type { MemberOutcome } from './types'
+import type { DraftResult, MemberOutcome } from './types'
 import type { StructuredFailureClass } from '../lib/structuredOutputRetry'
 import { classifyStructuredFailureFromError } from '../lib/structuredOutputRetry'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -12,6 +12,23 @@ export function isPhaseDeadlineError(error: unknown): boolean {
 
 export function isAiResponseTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.message === AI_RESPONSE_TIMEOUT_ERROR
+}
+
+/**
+ * Resolves the draft the refine step is about to rewrite. The winner id comes from
+ * the vote scorecard or from a persisted artifact, so a mismatch is recoverable
+ * state rather than a programming error — say so instead of refining `undefined`.
+ */
+export function requireWinnerDraft(
+  drafts: DraftResult[],
+  winnerId: string,
+  label: string,
+): DraftResult {
+  const winnerDraft = drafts.find((draft) => draft.memberId === winnerId)
+  if (!winnerDraft) {
+    throw new Error(`${label} winner ${winnerId} has no matching draft — cannot refine`)
+  }
+  return winnerDraft
 }
 
 export function classifyDraftFailure(

@@ -39,7 +39,7 @@ export function collectStructuredCandidates(
   addCandidate(candidates, seen, stripped)
 
   for (const source of [raw, stripped]) {
-    for (const match of source.matchAll(/```(?:yaml|yml|json|jsonl)?\s*([\s\S]*?)\s*```/gi)) {
+    for (const match of source.matchAll(/```(?:yaml|yml|jsonl|json)?\s*([\s\S]*?)\s*```/gi)) {
       addCandidate(candidates, seen, stripTranscriptPrefixes(match[1] ?? ''))
       addCandidate(candidates, seen, match[1] ?? '')
     }
@@ -184,6 +184,8 @@ const UNBALANCED_QUOTE_WARNING = 'Fixed unbalanced YAML quote before reparsing.'
 const RESERVED_INDICATOR_SCALAR_WARNING = 'Quoted plain YAML scalars that began with reserved indicator characters (` or @) before reparsing.'
 const DOUBLE_QUOTED_ESCAPE_WARNING = 'Escaped invalid YAML double-quoted scalar backslash sequences before reparsing.'
 const FREE_TEXT_SCALAR_WARNING = 'Repaired YAML free_text scalar formatting before parsing.'
+const LIST_DASH_SPACE_WARNING = 'Inserted the missing space after a YAML list dash before parsing.'
+const DUPLICATE_KEYS_WARNING = 'Removed duplicate YAML mapping keys before parsing.'
 
 function appendRepairWarningOnce(repairWarnings: string[] | undefined, warning: string) {
   if (!repairWarnings?.includes(warning)) {
@@ -367,8 +369,8 @@ function isTerminalNoiseText(text: string): boolean {
       continue
     }
 
-    if (readBracketedPasteSequence(text, cursor) !== null) {
-      const bracketEnd = readBracketedPasteSequence(text, cursor)!
+    const bracketEnd = readBracketedPasteSequence(text, cursor)
+    if (bracketEnd !== null) {
       cursor = bracketEnd
       continue
     }
@@ -545,7 +547,7 @@ function stripTrailingClosingCodeFenceLine(content: string): string | null {
   if (!/^```$/.test(lastLine)) return null
 
   for (let index = 0; index < end - 1; index += 1) {
-    if (/^```(?:yaml|yml|json|jsonl)?\s*$/i.test(lines[index]?.trim() ?? '')) {
+    if (/^```(?:yaml|yml|jsonl|json)?\s*$/i.test(lines[index]?.trim() ?? '')) {
       return null
     }
   }
@@ -576,6 +578,8 @@ export function parseYamlOrJsonCandidate(
         plainScalarColon?: boolean
         sequenceItemPrimaryKey?: YamlSequenceItemPrimaryKeyRepair[]
         freeTextScalar?: boolean
+        listDashSpace?: boolean
+        duplicateKeys?: boolean
         xmlStyleTags?: string[]
       },
     ): unknown => {
@@ -602,6 +606,12 @@ export function parseYamlOrJsonCandidate(
       }
       if (appliedRepairs?.freeTextScalar) {
         appendRepairWarningOnce(options?.repairWarnings, FREE_TEXT_SCALAR_WARNING)
+      }
+      if (appliedRepairs?.listDashSpace) {
+        appendRepairWarningOnce(options?.repairWarnings, LIST_DASH_SPACE_WARNING)
+      }
+      if (appliedRepairs?.duplicateKeys) {
+        appendRepairWarningOnce(options?.repairWarnings, DUPLICATE_KEYS_WARNING)
       }
       if (appliedRepairs?.xmlStyleTags && appliedRepairs.xmlStyleTags.length > 0) {
         appendRepairWarningOnce(options?.repairWarnings, buildXmlStyleTagsWarning(appliedRepairs.xmlStyleTags))
@@ -722,6 +732,10 @@ export function parseYamlOrJsonCandidate(
           sequenceItemPrimaryKey: sequenceItemPrimaryKeyInlineRepaired.repairs,
           wrappedPlainListScalar: wrappedPlainListScalarRepaired !== xmlStripped,
           freeTextScalar: freeTextQuoted !== wrappedPlainListScalarRepaired,
+          // These two were applied but never recorded, so a payload rescued by
+          // them reported no repair at all.
+          listDashSpace: dashFixed !== freeTextQuoted,
+          duplicateKeys: deduped !== dashFixed,
           xmlStyleTags: xmlTags,
         }
 
@@ -789,17 +803,19 @@ export function parseYamlOrJsonCandidate(
         }
         if (quoteRepaired !== doubleQuotedScalarBase) {
           try {
+            const parsed = jsYaml.load(quoteRepaired)
             appendDoubleQuotedEscapeRepairWarning()
             appendDoubleQuotedInnerQuoteRepairWarning()
             appendUnbalancedQuoteRepairWarning()
-            return finalizeParsedCandidate(jsYaml.load(quoteRepaired), appliedPreParseRepairs)
+            return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
           } catch {
             // Try combined: unclosed-quote + indentation repair
             try {
+              const parsed = jsYaml.load(repairYamlIndentation(quoteRepaired))
               appendDoubleQuotedEscapeRepairWarning()
               appendDoubleQuotedInnerQuoteRepairWarning()
               appendUnbalancedQuoteRepairWarning()
-              return finalizeParsedCandidate(jsYaml.load(repairYamlIndentation(quoteRepaired)), appliedPreParseRepairs)
+              return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
             } catch { /* fall through */ }
           }
         }
@@ -833,16 +849,18 @@ export function parseYamlOrJsonCandidate(
         const unionRepaired = repairYamlTypeUnionScalars(postQuotedScalarBase)
         if (unionRepaired !== postQuotedScalarBase) {
           try {
+            const parsed = jsYaml.load(unionRepaired)
             appendDoubleQuotedEscapeRepairWarning()
             appendDoubleQuotedInnerQuoteRepairWarning()
             appendQuotedScalarRepairWarning()
-            return finalizeParsedCandidate(jsYaml.load(unionRepaired), appliedPreParseRepairs)
+            return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
           } catch {
             try {
+              const parsed = jsYaml.load(repairYamlIndentation(unionRepaired))
               appendDoubleQuotedEscapeRepairWarning()
               appendDoubleQuotedInnerQuoteRepairWarning()
               appendQuotedScalarRepairWarning()
-              return finalizeParsedCandidate(jsYaml.load(repairYamlIndentation(unionRepaired)), appliedPreParseRepairs)
+              return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
             } catch { /* fall through */ }
           }
         }
@@ -856,19 +874,21 @@ export function parseYamlOrJsonCandidate(
         }
         if (colonRepaired !== postQuotedScalarBase) {
           try {
+            const parsed = jsYaml.load(colonRepaired)
             appendDoubleQuotedEscapeRepairWarning()
             appendDoubleQuotedInnerQuoteRepairWarning()
             appendQuotedScalarRepairWarning()
             appendPlainScalarColonRepairWarning()
-            return finalizeParsedCandidate(jsYaml.load(colonRepaired), appliedPreParseRepairs)
+            return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
           } catch {
             // Try combined: colon repair + indentation repair
             try {
+              const parsed = jsYaml.load(repairYamlIndentation(colonRepaired))
               appendDoubleQuotedEscapeRepairWarning()
               appendDoubleQuotedInnerQuoteRepairWarning()
               appendQuotedScalarRepairWarning()
               appendPlainScalarColonRepairWarning()
-              return finalizeParsedCandidate(jsYaml.load(repairYamlIndentation(colonRepaired)), appliedPreParseRepairs)
+              return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
             } catch { /* fall through */ }
           }
         }
@@ -901,30 +921,33 @@ export function parseYamlOrJsonCandidate(
         const seqRepaired = repairYamlSequenceEntryIndent(postQuotedScalarBase)
         if (seqRepaired !== postQuotedScalarBase) {
           try {
+            const parsed = jsYaml.load(seqRepaired)
             appendDoubleQuotedEscapeRepairWarning()
             appendDoubleQuotedInnerQuoteRepairWarning()
             appendQuotedScalarRepairWarning()
-            return finalizeParsedCandidate(jsYaml.load(seqRepaired), appliedPreParseRepairs)
+            return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
           } catch {
             // Try combined: sequence entry + property indentation repair
             try {
+              const parsed = jsYaml.load(repairYamlIndentation(seqRepaired))
               appendDoubleQuotedEscapeRepairWarning()
               appendDoubleQuotedInnerQuoteRepairWarning()
               appendQuotedScalarRepairWarning()
-              return finalizeParsedCandidate(jsYaml.load(repairYamlIndentation(seqRepaired)), appliedPreParseRepairs)
+              return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
             } catch { /* fall through */ }
           }
         }
 
         const finalQuoteRepaired = repairYamlUnclosedQuotes(postQuotedScalarBase)
         const repaired = repairYamlIndentation(finalQuoteRepaired)
+        const parsed = jsYaml.load(repaired)
         appendDoubleQuotedEscapeRepairWarning()
         appendDoubleQuotedInnerQuoteRepairWarning()
         appendQuotedScalarRepairWarning()
         if (finalQuoteRepaired !== postQuotedScalarBase) {
           appendRepairWarningOnce(options?.repairWarnings, UNBALANCED_QUOTE_WARNING)
         }
-        return finalizeParsedCandidate(jsYaml.load(repaired), appliedPreParseRepairs)
+        return finalizeParsedCandidate(parsed, appliedPreParseRepairs)
       }
     }
   }
@@ -1142,12 +1165,121 @@ export function toBoolean(value: unknown): boolean | null {
   return null
 }
 
-export function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
-  const normalizedAliases = new Set(aliases.map((alias) => normalizeKey(alias)))
-  for (const [key, value] of Object.entries(record)) {
-    if (normalizedAliases.has(normalizeKey(key))) return value
+/**
+ * Where alias-conflict warnings go while a candidate is being parsed.
+ *
+ * `getValueByAliases` has close to three hundred call sites, nearly none of which
+ * hold a warnings array, so the sink is installed once per candidate by
+ * `withAliasConflictWarnings` and every nested lookup inherits it. Parsing is
+ * synchronous, so the value is only ever set for the duration of one call.
+ */
+let activeAliasConflictWarnings: string[] | null = null
+
+/**
+ * Routes alias conflicts found from here on into `repairWarnings`, until the
+ * returned release function runs. Call it from a `finally`: the sinks nest, so a
+ * normaliser invoked from inside another gets its own and hands the outer one
+ * back on the way out.
+ */
+export function collectAliasConflictWarnings(repairWarnings: string[]): () => void {
+  const previous = activeAliasConflictWarnings
+  activeAliasConflictWarnings = repairWarnings
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    activeAliasConflictWarnings = previous
   }
-  return undefined
+}
+
+/** `collectAliasConflictWarnings` for a block that can be expressed as a callback. */
+export function withAliasConflictWarnings<T>(repairWarnings: string[], run: () => T): T {
+  const release = collectAliasConflictWarnings(repairWarnings)
+  try {
+    return run()
+  } finally {
+    release()
+  }
+}
+
+function isSameAliasValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true
+  if (left instanceof Date && right instanceof Date) return left.getTime() === right.getTime()
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((entry, index) => isSameAliasValue(entry, right[index]))
+  }
+  if (isRecord(left) && isRecord(right)) {
+    const leftKeys = Object.keys(left)
+    const rightKeys = Object.keys(right)
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every((key) => Object.hasOwn(right, key) && isSameAliasValue(left[key], right[key]))
+  }
+  return false
+}
+
+/**
+ * Resolves a field by alias, canonical name first.
+ *
+ * This used to iterate the record's own insertion order and return the first
+ * match, so a payload carrying both the canonical name and a legacy alias with
+ * different values resolved by whichever the model happened to write first. The
+ * alias list is the precedence order now, and a disagreement is reported.
+ */
+export function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
+  const matchesByAlias = new Map<string, Array<{ key: string; value: unknown }>>()
+  for (const [key, value] of Object.entries(record)) {
+    const normalizedKey = normalizeKey(key)
+    const existing = matchesByAlias.get(normalizedKey)
+    if (existing) existing.push({ key, value })
+    else matchesByAlias.set(normalizedKey, [{ key, value }])
+  }
+
+  let resolved: { key: string; value: unknown } | undefined
+  const conflicting: string[] = []
+  // Several alias lists carry two spellings of one token — `actionsrequired`
+  // and `actions_required` both normalise to `actionsrequired` — which visited
+  // the same record entries once per spelling and named each disagreement
+  // twice in the warning.
+  const visitedAliases = new Set<string>()
+
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeKey(alias)
+    if (visitedAliases.has(normalizedAlias)) continue
+    visitedAliases.add(normalizedAlias)
+    for (const match of matchesByAlias.get(normalizedAlias) ?? []) {
+      if (!resolved) {
+        resolved = match
+        continue
+      }
+      if (!isSameAliasValue(resolved.value, match.value)) {
+        conflicting.push(match.key)
+      }
+    }
+  }
+
+  if (resolved && conflicting.length > 0) {
+    activeAliasConflictWarnings?.push(
+      `Resolved "${resolved.key}" and ignored the conflicting ${conflicting.length === 1 ? 'value' : 'values'} in ${conflicting.map((key) => `"${key}"`).join(', ')}.`,
+    )
+  }
+
+  return resolved?.value
+}
+
+/**
+ * The string an alias holds, or `undefined` when it holds anything else.
+ *
+ * Two dozen call sites wrote `typeof getValueByAliases(x, a) === 'string' ?
+ * String(getValueByAliases(x, a)) : fallback`, which resolves the same aliases
+ * twice. That was only wasteful until the lookup started reporting conflicting
+ * aliases: the second pass reports the same disagreement again, so one malformed
+ * payload produced two identical repair warnings and could raise an intervention
+ * twice. Unlike `toOptionalString` this keeps a whitespace-only string, because
+ * the callers decide for themselves whether to trim.
+ */
+export function getStringByAliases(record: Record<string, unknown>, aliases: string[]): string | undefined {
+  const value = getValueByAliases(record, aliases)
+  return typeof value === 'string' ? value : undefined
 }
 
 export function getNestedRecord(record: Record<string, unknown>, aliases: string[]): Record<string, unknown> {

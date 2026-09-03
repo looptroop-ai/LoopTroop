@@ -1,4 +1,4 @@
-import type { PrdDocument } from '../../structuredOutput/types'
+import type { ManualQaPrd } from './prd'
 import type {
   ManualQaChecklist,
   ManualQaCoverage,
@@ -7,7 +7,7 @@ import type {
 import { MANUAL_QA_SCHEMA_VERSION } from './types'
 
 export function deriveManualQaPrdCriteria(
-  prd: Pick<PrdDocument, 'epics'>,
+  prd: ManualQaPrd,
 ): ManualQaPrdCriterion[] {
   return prd.epics.flatMap((epic) => epic.user_stories.flatMap((story) =>
     story.acceptance_criteria.map((criterion, index) => ({

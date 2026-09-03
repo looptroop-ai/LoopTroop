@@ -73,24 +73,100 @@ beads:
     targetFiles: ["src/preferences/store.ts", "src/preferences/store.test.ts"]
 </MANUAL_QA_FIX_BEADS>`
 
+const PROJECT_PATH = '/repo'
+
 describe('Manual QA fix-bead generation contracts', () => {
+  const message = (
+    status: 'running' | 'completed' | 'error',
+    tool = 'read',
+    input?: Record<string, unknown>,
+  ): Message[] => [{
+    id: 'message-one',
+    role: 'assistant',
+    parts: [{
+      id: 'part-one',
+      sessionID: 'session-one',
+      messageID: 'message-one',
+      type: 'tool',
+      callID: 'call-one',
+      tool,
+      state: { status, ...(input ? { input } : {}) },
+    }],
+  }]
+
   it('accepts only a completed repository tool call as inspection evidence', () => {
-    const message = (status: 'running' | 'completed' | 'error'): Message[] => [{
-      id: 'message-one',
-      role: 'assistant',
-      parts: [{
-        id: 'part-one',
-        sessionID: 'session-one',
-        messageID: 'message-one',
-        type: 'tool',
-        callID: 'call-one',
-        tool: 'read',
-        state: { status },
-      }],
-    }]
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('running'))).toBe(false)
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('error'))).toBe(false)
-    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed'))).toBe(true)
+    const read = { path: 'src/store.ts' }
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('running', 'read', read), PROJECT_PATH)).toBe(false)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('error', 'read', read), PROJECT_PATH)).toBe(false)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', 'read', read), PROJECT_PATH)).toBe(true)
+  })
+
+  it.each([
+    ['read', { path: 'src/store.ts' }],
+    ['grep', { pattern: 'useStore' }],
+    ['glob', { pattern: 'src/**/*.ts' }],
+    ['list', { path: 'src' }],
+    ['codesearch', { query: 'useStore' }],
+    ['lsp', { filePath: 'src/store.ts' }],
+  ] as [string, Record<string, unknown>][])('accepts %s', (tool, input) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool, input), PROJECT_PATH)).toBe(true)
+  })
+
+  it.each(['todowrite', 'todoread', 'task', 'webfetch', 'bash', 'question'])('rejects %s', (tool) => {
+    // A completed tool call of any kind used to satisfy the mandatory
+    // repository inspection.
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool), PROJECT_PATH)).toBe(false)
+  })
+
+  it.each([
+    ['a parent-relative path', 'read', { path: '../secrets' }],
+    ['a nested parent escape', 'read', { path: 'src/../../secrets' }],
+    ['an absolute path outside the repository', 'read', { path: '/etc/passwd' }],
+    ['an escaping glob', 'glob', { pattern: '../*.env' }],
+    // `posix.normalize` collapses an embedded `/../`, so the old guard's
+    // `includes('/../')` half was dead and its `startsWith('../')` half never
+    // saw a candidate that normalises to exactly `..`.
+    ['the bare parent directory', 'list', { path: '..' }],
+    ['a path that normalises to the parent', 'list', { path: 'src/../..' }],
+    ['an escaping working directory', 'grep', { cwd: '..' }],
+    // OpenCode writes this key camel-cased. An argument nobody recognises used
+    // to be an argument nobody checked.
+    ['a camel-cased escaping file path', 'read', { filePath: '/etc/passwd' }],
+    // A list argument used to satisfy the check without any entry being read.
+    ['a list with one escaping entry', 'grep', { include: ['src/**/*.ts', '../secrets'] }],
+    ['a list that is entirely outside', 'glob', { path: ['/etc', '/var'] }],
+    // `path.resolve` is POSIX here, so a drive-letter path resolved under the
+    // working directory and landed inside the worktree.
+    ['a Windows drive-letter path on a POSIX host', 'read', { path: 'C:\\Windows\\System32\\config' }],
+  ] as [string, string, Record<string, unknown>][])('rejects %s', (_label, tool, input) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool, input), PROJECT_PATH)).toBe(false)
+  })
+
+  it.each([
+    ['a repository-relative path', 'read', { path: 'src/preferences/store.ts' }],
+    ['an absolute path inside the repository', 'read', { path: '/repo/src/store.ts' }],
+    ['a camel-cased path inside the repository', 'read', { filePath: '/repo/src/store.ts' }],
+    ['a repository-relative glob', 'glob', { pattern: 'src/**/*.ts' }],
+    ['a list whose entries are all inside', 'grep', { include: ['src/**/*.ts', 'shared/**/*.ts'] }],
+    ['an empty list', 'grep', { include: [] }],
+    // Teaching the containment check to walk arrays without teaching the
+    // "named a path" flag about them refused a `read` whose every entry it had
+    // just checked and accepted.
+    ['a read naming its file in a list', 'read', { path: ['src/store.ts'] }],
+    ['a listing of the worktree root itself', 'list', { path: '.' }],
+    ['a listing with no arguments at all', 'list', undefined],
+    // `grep`'s pattern is a regular expression, not a location. Searching for a
+    // literal relative import is a genuine inspection.
+    ['a grep for a literal parent-relative import', 'grep', { pattern: '../' }],
+  ] as [string, string, Record<string, unknown> | undefined][])('accepts %s', (_label, tool, input) => {
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', tool, input), PROJECT_PATH)).toBe(true)
+  })
+
+  it('does not accept a read that names no file', () => {
+    // `list` with no path lists the worktree root; a `read` with no path read
+    // nothing at all, so it is not evidence of an inspection.
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', 'read'), PROJECT_PATH)).toBe(false)
+    expect(hasSuccessfulManualQaRepositoryToolCall(message('completed', 'read', { limit: 20 }), PROJECT_PATH)).toBe(false)
   })
 
   it('parses complete candidates and hydrates all normal bead fields with app-owned identity', () => {
@@ -139,6 +215,42 @@ describe('Manual QA fix-bead generation contracts', () => {
       qaOrigin: { actionId: 'manual-qa-submit:one', sourceItems: [{ itemId: 'qa-v1-001' }] },
     })
     expect(bead?.id).toMatch(/^qa-v1-[a-f0-9]{12}$/)
+  })
+
+  it('drops a dependency on a merge group that does not exist', () => {
+    const groups = buildManualQaFixGroups(checklist, draft)
+    const candidates = parseManualQaFixBeadsOutput(validResponse, groups).map((candidate) => ({
+      ...candidate,
+      blockedByGroupIds: ['hallucinated-group'],
+    }))
+    const capability: ManualQaModelCapabilitySnapshot = {
+      schemaVersion: 1,
+      artifact: 'manual_qa_model_capability',
+      ticketId: 'TEST-1',
+      version: 1,
+      modelId: 'provider/model',
+      modelVariant: null,
+      capabilityLookup: 'available',
+      supportsImages: false,
+      imageEvidenceMode: 'references_only',
+      capturedAt: '2026-07-14T08:02:00.000Z',
+    }
+
+    const [bead] = hydrateManualQaFixBeads({
+      candidates,
+      groups,
+      existing: [],
+      checklist,
+      evidence: [],
+      ticketId: '1:TEST-1',
+      externalId: 'TEST-1',
+      version: 1,
+      actionId: 'manual-qa-submit:one',
+      modelCapability: capability,
+    })
+
+    // `idByGroup.get(id)!` used to persist `blocked_by: [undefined]`.
+    expect(bead?.dependencies.blocked_by).toEqual([])
   })
 
   it('accepts a zero-command fix bead with a reason and preserves it during hydration', () => {

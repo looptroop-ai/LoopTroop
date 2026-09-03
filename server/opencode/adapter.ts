@@ -25,11 +25,12 @@ import { isPermissionDeniedByRules } from './toolPolicy'
 import type { TicketState } from './contextBuilder'
 import { resolve } from 'path'
 import { relative, sep } from 'path'
-import { existsSync, lstatSync, readFileSync } from 'fs'
+import { existsSync, lstatSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { logIfVerbose, warnIfVerbose } from '../runtime'
 import { getOpenCodeBaseUrl } from './runtimeConfig'
 import type { Bead } from '../phases/beads/types'
+import { readBeadsFile } from '../phases/beads/beadsFile'
 import { parseExecutionSetupPlanNotes } from '../phases/executionSetupPlan/types'
 import { parseExecutionSetupRetryNotes } from '../phases/executionSetup/types'
 import { renderCommandSpec } from '@shared/commandSpec'
@@ -725,12 +726,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
         state.beads = beadFile
 
         if (beadId) {
-          const bead = beadFile
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line) => JSON.parse(line) as Bead)
-            .find((entry) => entry.id === beadId)
+          // The raw file text above is what the prompt shows; the bead itself is
+          // read through the reconciler, so a legacy stored status does not reach
+          // `formatBeadContext` unrecognised and a malformed line does not abort
+          // the whole read.
+          const bead = readBeadsFile(beadsPath).find((entry) => entry.id === beadId)
 
           if (bead) {
             state.beadData = formatBeadContext(bead)
@@ -861,12 +861,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     if (!paths || !existsSync(paths.beadsPath)) return []
     let bead: Bead | undefined
     try {
-      bead = readFileSync(paths.beadsPath, 'utf8')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as Bead)
-        .find((entry) => entry.id === beadId)
+      bead = readBeadsFile(paths.beadsPath).find((entry) => entry.id === beadId)
     } catch (error) {
       throw new Error(`Failed to load Manual QA evidence manifest for bead ${beadId}: ${getErrorMessage(error)}`)
     }

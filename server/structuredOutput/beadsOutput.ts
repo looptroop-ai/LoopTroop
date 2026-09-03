@@ -1,6 +1,7 @@
 import * as jsYaml from 'js-yaml'
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
-import type { Bead, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
+import type { Bead, BeadStatus, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
+import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from '../phases/beads/types'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type { StructuredOutputResult, RelevantFilesOutputEntry, RelevantFilesOutputPayload } from './types'
 import {
@@ -15,11 +16,13 @@ import {
   shouldRecordStructuredCandidateRecovery,
   toStringArray,
   getValueByAliases,
+  getStringByAliases,
   getRequiredString,
   buildYamlDocument,
   buildJsonlDocument,
+  collectAliasConflictWarnings,
 } from './yamlUtils'
-import { parseRefinementChanges } from './refinementChanges'
+import { takeRefinementChanges } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 import { normalizeCommandSpec, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
@@ -56,19 +59,34 @@ const RELEVANT_FILES_SEQUENCE_ITEM_PRIMARY_KEYS = {
   },
 } as const
 
-export interface BeadDraftMetrics {
+export interface CoverageBeadMetrics {
   beadCount: number
   totalTestCount: number
   totalTestCommandCount: number
   totalAcceptanceCriteriaCount: number
 }
 
-export function getBeadDraftMetrics(beads: BeadSubset[]): BeadDraftMetrics {
+/**
+ * The counts both metric shapes report. Coverage adds the test-command count to
+ * these; refinement is exactly these. Keeping the sums in one place is what lets
+ * the two shapes stay deliberately different without the arithmetic drifting.
+ */
+export function getCommonBeadCounts(beads: BeadSubset[]): {
+  beadCount: number
+  totalTestCount: number
+  totalAcceptanceCriteriaCount: number
+} {
   return {
     beadCount: beads.length,
     totalTestCount: beads.reduce((sum, b) => sum + b.tests.length, 0),
-    totalTestCommandCount: beads.reduce((sum, b) => sum + b.testCommands.length, 0),
     totalAcceptanceCriteriaCount: beads.reduce((sum, b) => sum + b.acceptanceCriteria.length, 0),
+  }
+}
+
+export function getCoverageBeadMetrics(beads: BeadSubset[]): CoverageBeadMetrics {
+  return {
+    ...getCommonBeadCounts(beads),
+    totalTestCommandCount: beads.reduce((sum, b) => sum + b.testCommands.length, 0),
   }
 }
 
@@ -231,6 +249,7 @@ export function normalizeBeadSubsetYamlOutput(
 
   for (const candidate of candidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
 
     try {
       const rawParsed = parseYamlOrJsonCandidate(candidate, {
@@ -238,15 +257,8 @@ export function normalizeBeadSubsetYamlOutput(
         repairWarnings: candidateWarnings,
       })
 
-      // Extract changes before unwrapping (unwrapping would lose the changes key)
-      let rawChanges: unknown
-      if (isRecord(rawParsed)) {
-        rawChanges = getValueByAliases(rawParsed, ['changes'])
-        if (rawChanges !== undefined) {
-          delete (rawParsed as Record<string, unknown>).changes
-        }
-      }
-      const parsedRefinementChanges = parseRefinementChanges(rawChanges, losingDraftMeta)
+      // Taken before unwrapping, which would lose the changes key.
+      const parsedRefinementChanges = takeRefinementChanges(rawParsed, losingDraftMeta)
       candidateWarnings.push(...parsedRefinementChanges.repairWarnings)
 
       const parsed = maybeUnwrapRecord(rawParsed, [
@@ -257,13 +269,12 @@ export function normalizeBeadSubsetYamlOutput(
         'workitems',
         'work_items',
       ])
+      const nestedEntries = isRecord(parsed)
+        ? getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues'])
+        : undefined
       const entries = Array.isArray(parsed)
         ? parsed
-        : isRecord(parsed)
-          ? Array.isArray(getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues']))
-            ? getValueByAliases(parsed, ['beads', 'tasks', 'items', 'issues']) as unknown[]
-            : []
-          : []
+        : Array.isArray(nestedEntries) ? nestedEntries : []
 
       if (entries.length === 0) {
         throw new Error('Bead subset output is empty')
@@ -310,6 +321,8 @@ export function normalizeBeadSubsetYamlOutput(
       lastError = getErrorMessage(error)
       lastErrorCause = error
       repairWarnings.splice(0, repairWarnings.length, ...candidateWarnings)
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -345,7 +358,21 @@ function buildBeadItemFromSubset(bead: BeadSubset): NormalizedBeadItem {
     id: bead.id,
     label,
     detail,
-    contentFingerprint: `${bead.id}\x1f${label}\x1f${detail}\x1f${bead.acceptanceCriteria.join('|')}\x1f${bead.tests.join('|')}\x1f${bead.testCommands.map((command) => renderCommandSpec(command)).join('|')}\x1f${bead.testCommandReason ?? ''}`,
+    // prdRefs and contextGuidance are part of the bead's content: an edit that
+    // touched only those was dropped from `changes` while the YAML kept the new
+    // values.
+    contentFingerprint: [
+      bead.id,
+      label,
+      detail,
+      bead.prdRefs.join('|'),
+      bead.contextGuidance.patterns.join('|'),
+      bead.contextGuidance.anti_patterns.join('|'),
+      bead.acceptanceCriteria.join('|'),
+      bead.tests.join('|'),
+      bead.testCommands.map((command) => renderCommandSpec(command)).join('|'),
+      bead.testCommandReason ?? '',
+    ].join('\x1f'),
   }
 }
 
@@ -417,26 +444,17 @@ export function normalizeBeadRefinementOutput(
   // Step 2: Parse the winner draft
   const winnerResult = normalizeBeadSubsetYamlOutput(winnerDraftContent)
   if (!winnerResult.ok) {
-    // If winner draft can't be parsed, fall through with basic validation
-    return {
-      ok: true,
-      value: {
-        beads: refinedBeads,
-        changes: rawChanges,
-        normalizedContent: refinedResult.normalizedContent,
+    // Every consumer cross-validates the refined beads against the winner, so
+    // accepting raw changes here published an unchecked change list as valid.
+    // Fail retryably instead.
+    return buildStructuredOutputFailure(
+      rawContent,
+      `Could not parse the winner bead draft required for refinement cross-validation: ${winnerResult.error}`,
+      {
         repairApplied: refinedResult.repairApplied,
-        repairWarnings: [
-          ...refinedResult.repairWarnings,
-          'Could not parse winner draft for cross-validation — using raw changes without canonicalization.',
-        ],
+        repairWarnings: refinedResult.repairWarnings,
       },
-      normalizedContent: refinedResult.normalizedContent,
-      repairApplied: true,
-      repairWarnings: [
-        ...refinedResult.repairWarnings,
-        'Could not parse winner draft for cross-validation — using raw changes without canonicalization.',
-      ],
-    }
+    )
   }
 
   const winnerBeads: BeadSubset[] = winnerResult.value
@@ -748,6 +766,45 @@ function normalizeNoteHistory(value: unknown): Bead['failedIterationNotes'] {
   })
 }
 
+/**
+ * The legacy aliases are kept, but anything else used to be cast straight to
+ * `Bead['status']`. A stored `complete` or `todo` then stalled the scheduler,
+ * which only runs `pending` and only finishes on `done`, with no validation error
+ * anywhere.
+ */
+function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
+  if (value === undefined || value === null) return 'pending'
+  const raw = typeof value === 'string' ? value.trim() : ''
+  // Case is folded here as it is on the read path. Rejecting `Completed` while
+  // accepting `completed` spent a structured retry on a capital letter, and the
+  // same value read back off disk was accepted anyway.
+  const folded = raw.toLowerCase()
+  const mapped = resolveBeadStatusAlias(folded) ?? folded
+  if (!isBeadStatus(mapped)) {
+    throw new Error(`${label} has an unsupported status "${String(value)}" (expected one of ${BEAD_STATUSES.join(', ')})`)
+  }
+  return mapped
+}
+
+/**
+ * `iteration` counts execution attempts from 1. A zero, a negative or a
+ * fractional value is not a wire-format the models are told to emit, and
+ * `Number('x')` produced NaN that serialised back as null, so clamp and say so
+ * rather than rejecting the whole record.
+ *
+ * The plan called this field non-negative; 1 is the floor because attempts are
+ * counted from 1 and every reader assumes it. The ticket's `maxIterations` is a
+ * different field with a similar name, and there 0 is meaningful — it means no
+ * cap.
+ */
+function normalizeBeadIteration(value: unknown, label: string, repairWarnings: string[]): number {
+  if (value === undefined || value === null) return 1
+  const parsed = Number(value)
+  if (Number.isInteger(parsed) && parsed > 0) return parsed
+  repairWarnings.push(`${label}: replaced invalid iteration ${JSON.stringify(value)} with 1.`)
+  return 1
+}
+
 function normalizeBeadRecord(value: unknown, index: number, repairWarnings: string[]): Bead {
   if (!isRecord(value)) throw new Error(`Bead JSONL entry at index ${index} is not an object`)
 
@@ -759,14 +816,7 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     repairWarnings,
   )
 
-  const rawStatus = typeof getValueByAliases(value, ['status']) === 'string'
-    ? String(getValueByAliases(value, ['status'])).trim()
-    : 'pending'
-  // Map legacy status values to architecture spec
-  const status = (rawStatus === 'completed' ? 'done'
-    : rawStatus === 'failed' ? 'error'
-    : rawStatus === 'skipped' ? 'done'
-    : rawStatus) as Bead['status']
+  const status = normalizeBeadStatus(getValueByAliases(value, ['status']), `Bead at index ${index}`)
 
   const testCommandsValue = getValueByAliases(value, ['testcommands', 'test_commands'])
   const testCommands = normalizeCommandSpecs(testCommandsValue, `Bead at index ${index}`, repairWarnings)
@@ -788,34 +838,20 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
     ...(testCommandReason ? { testCommandReason } : {}),
     priority: Number(getValueByAliases(value, ['priority']) ?? index + 1),
     status,
-    issueType: typeof getValueByAliases(value, ['issuetype', 'issue_type']) === 'string'
-      ? String(getValueByAliases(value, ['issuetype', 'issue_type'])).trim()
-      : 'task',
-    externalRef: typeof getValueByAliases(value, ['externalref', 'external_ref']) === 'string'
-      ? String(getValueByAliases(value, ['externalref', 'external_ref'])).trim()
-      : '',
+    issueType: getStringByAliases(value, ['issuetype', 'issue_type'])?.trim() ?? 'task',
+    externalRef: getStringByAliases(value, ['externalref', 'external_ref'])?.trim() ?? '',
     labels: toStringArray(getValueByAliases(value, ['labels'])),
     dependencies,
     targetFiles: toStringArray(getValueByAliases(value, ['targetfiles', 'target_files'])),
     failedIterationNotes: normalizeNoteHistory(getValueByAliases(value, ['failediterationnotes', 'failed_iteration_notes'])),
     userRetryNotes: normalizeNoteHistory(getValueByAliases(value, ['userretrynotes', 'user_retry_notes'])),
     finalizationFailureNotes: normalizeNoteHistory(getValueByAliases(value, ['finalizationfailurenotes', 'finalization_failure_notes'])),
-    iteration: Number(getValueByAliases(value, ['iteration']) ?? 1),
-    createdAt: typeof getValueByAliases(value, ['createdat', 'created_at']) === 'string'
-      ? String(getValueByAliases(value, ['createdat', 'created_at'])).trim()
-      : '',
-    updatedAt: typeof getValueByAliases(value, ['updatedat', 'updated_at']) === 'string'
-      ? String(getValueByAliases(value, ['updatedat', 'updated_at'])).trim()
-      : '',
-    completedAt: typeof getValueByAliases(value, ['completedat', 'completed_at']) === 'string'
-      ? String(getValueByAliases(value, ['completedat', 'completed_at'])).trim()
-      : '',
-    startedAt: typeof getValueByAliases(value, ['startedat', 'started_at']) === 'string'
-      ? String(getValueByAliases(value, ['startedat', 'started_at'])).trim()
-      : '',
-    beadStartCommit: typeof getValueByAliases(value, ['beadstartcommit', 'bead_start_commit']) === 'string'
-      ? String(getValueByAliases(value, ['beadstartcommit', 'bead_start_commit'])).trim() || null
-      : null,
+    iteration: normalizeBeadIteration(getValueByAliases(value, ['iteration']), `Bead at index ${index}`, repairWarnings),
+    createdAt: getStringByAliases(value, ['createdat', 'created_at'])?.trim() ?? '',
+    updatedAt: getStringByAliases(value, ['updatedat', 'updated_at'])?.trim() ?? '',
+    completedAt: getStringByAliases(value, ['completedat', 'completed_at'])?.trim() ?? '',
+    startedAt: getStringByAliases(value, ['startedat', 'started_at'])?.trim() ?? '',
+    beadStartCommit: getStringByAliases(value, ['beadstartcommit', 'bead_start_commit'])?.trim() || null,
   }
 
   if (!Number.isInteger(bead.priority) || bead.priority <= 0) {
@@ -838,17 +874,22 @@ function normalizeBeadRecord(value: unknown, index: number, repairWarnings: stri
 }
 
 export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputResult<Bead[]> {
-  const repairWarnings: string[] = []
+  // One shared array reported the repairs attempted on a rejected candidate
+  // against whichever candidate eventually validated, so keep them per candidate
+  // and carry only the last one's forward for the failure message.
+  let repairWarnings: string[] = []
   const candidates = collectStructuredCandidates(rawContent)
   let lastError = 'No beads JSONL content found'
   let lastErrorCause: unknown = null
 
   for (const candidate of candidates) {
+    const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedEntries = parseJsonLines(candidate)
       if (parsedEntries.length === 0) throw new Error('Beads JSONL output is empty')
 
-      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, repairWarnings))
+      const beads = parsedEntries.map((entry, index) => normalizeBeadRecord(entry, index, candidateWarnings))
       const beadIds = new Set<string>()
       for (const bead of beads) {
         if (beadIds.has(bead.id)) throw new Error(`Duplicate bead id: ${bead.id}`)
@@ -868,18 +909,21 @@ export function normalizeBeadsJsonlOutput(rawContent: string): StructuredOutputR
           throw new Error(`Bead ${bead.id} contextGuidance must include both patterns and anti_patterns`)
         }
       }
-      appendStructuredCandidateRecoveryWarning(repairWarnings, rawContent, candidate)
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate)
 
       return {
         ok: true,
         value: beads,
         normalizedContent: buildJsonlDocument(beads),
-        repairApplied: candidate !== rawContent.trim() || repairWarnings.length > 0,
-        repairWarnings,
+        repairApplied: candidate !== rawContent.trim() || candidateWarnings.length > 0,
+        repairWarnings: candidateWarnings,
       }
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      repairWarnings = candidateWarnings
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -950,6 +994,7 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
 
   for (const candidate of uniqueCandidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       if (looksLikePromptEcho(candidate)) {
         throw new Error('Relevant files output echoed the prompt instead of returning a <RELEVANT_FILES_RESULT> artifact')
@@ -1014,21 +1059,11 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
         if (!isRecord(entry)) throw new Error(`Relevant file at index ${index} is not an object`)
 
         const path = getRequiredString(entry, ['path', 'filepath', 'file_path', 'file'], `file path at index ${index}`)
-        const rationale = typeof getValueByAliases(entry, ['rationale', 'reason', 'why']) === 'string'
-          ? String(getValueByAliases(entry, ['rationale', 'reason', 'why'])).trim()
-          : ''
-        const relevance = typeof getValueByAliases(entry, ['relevance']) === 'string'
-          ? String(getValueByAliases(entry, ['relevance'])).trim().toLowerCase()
-          : 'medium'
-        const likelyAction = typeof getValueByAliases(entry, ['likelyaction', 'likely_action', 'action']) === 'string'
-          ? String(getValueByAliases(entry, ['likelyaction', 'likely_action', 'action'])).trim().toLowerCase()
-          : 'read'
-        const content = typeof getValueByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']) === 'string'
-          ? String(getValueByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']))
-          : ''
-        const contentPreview = typeof getValueByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']) === 'string'
-          ? String(getValueByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']))
-          : ''
+        const rationale = getStringByAliases(entry, ['rationale', 'reason', 'why'])?.trim() ?? ''
+        const relevance = getStringByAliases(entry, ['relevance'])?.trim().toLowerCase() ?? 'medium'
+        const likelyAction = getStringByAliases(entry, ['likelyaction', 'likely_action', 'action'])?.trim().toLowerCase() ?? 'read'
+        const content = getStringByAliases(entry, ['content', 'contents', 'code', 'source', 'snippet', 'excerpt']) ?? ''
+        const contentPreview = getStringByAliases(entry, ['content_preview', 'contentpreview', 'preview', 'signatures']) ?? ''
 
         return { path, rationale, relevance, likely_action: likelyAction, content, content_preview: contentPreview || content }
       })
@@ -1051,6 +1086,8 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
   }
 

@@ -4,7 +4,9 @@ import { and, eq } from 'drizzle-orm'
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { safeAtomicWrite } from '../../io/atomicWrite'
-import { writeJsonl, readJsonl } from '../../io/jsonl'
+import { writeJsonl } from '../../io/jsonl'
+import { readBeadsFile } from '../beads/beadsFile'
+import { tryReadManualQaPrd } from './prd'
 import {
   archiveActivePhaseAttempts,
   createFreshPhaseAttempts,
@@ -462,29 +464,25 @@ function humanReadableExcerpt(value: unknown, maxLength = 600): string | null {
 
 function resolvePrdRequirements(ticketDir: string, refs: Array<{ ref: string }>): string[] {
   if (refs.length === 0) return []
-  try {
-    const raw = parseYamlOrJsonCandidate(readFileSync(resolve(ticketDir, 'prd.yaml'), 'utf8')) as {
-      epics?: Array<{
-        id?: unknown
-        user_stories?: Array<{ id?: unknown; title?: unknown; acceptance_criteria?: unknown[] }>
-      }>
-    }
-    const requirements: string[] = []
-    for (const { ref } of refs) {
-      const [epicId, storyId, criterionId] = ref.split('/')
-      const epic = raw.epics?.find((entry) => entry.id === epicId)
-      const story = epic?.user_stories?.find((entry) => entry.id === storyId)
-      const criterionIndex = criterionId?.match(/^AC-(\d+)$/i)?.[1]
-      const criterion = criterionIndex && story?.acceptance_criteria
-        ? story.acceptance_criteria[Number(criterionIndex) - 1]
-        : undefined
-      const readable = humanReadableExcerpt(criterion) ?? humanReadableExcerpt(story?.title)
-      if (readable && !requirements.includes(readable)) requirements.push(readable)
-    }
-    return requirements
-  } catch {
-    return []
+  // This used to be a third ad-hoc reading of prd.yaml. It only decorates the
+  // output with readable text, so a PRD it cannot read costs a label, not the
+  // operation.
+  const prd = tryReadManualQaPrd(ticketDir)
+  if (!prd) return []
+
+  const requirements: string[] = []
+  for (const { ref } of refs) {
+    const [epicId, storyId, criterionId] = ref.split('/')
+    const epic = prd.epics.find((entry) => entry.id === epicId)
+    const story = epic?.user_stories.find((entry) => entry.id === storyId)
+    const criterionIndex = criterionId?.match(/^AC-(\d+)$/i)?.[1]
+    const criterion = criterionIndex && story
+      ? story.acceptance_criteria[Number(criterionIndex) - 1]
+      : undefined
+    const readable = humanReadableExcerpt(criterion) ?? humanReadableExcerpt(story?.title)
+    if (readable && !requirements.includes(readable)) requirements.push(readable)
   }
+  return requirements
 }
 
 function resolveBeadWorkAreas(beads: Bead[], refs: string[]): string[] {
@@ -599,7 +597,7 @@ function createImprovementTicket(input: {
   }
   const existing = reservedTicketId ? getTicketByRef(reservedTicketId) : findExistingImprovement(input.projectId, originId)
   const sourceBeadsPath = getTicketPaths(input.sourceTicketId)?.beadsPath
-  const sourceBeads = sourceBeadsPath && existsSync(sourceBeadsPath) ? readJsonl<Bead>(sourceBeadsPath) : []
+  const sourceBeads = sourceBeadsPath && existsSync(sourceBeadsPath) ? readBeadsFile(sourceBeadsPath) : []
   const built = buildImprovementDescription({
     description: input.draft.description,
     contextOverride: input.draft.contextOverride,
@@ -884,7 +882,7 @@ function captureOperationSourceAttempts(ticketId: string, journal: ManualQaOpera
 function prepareQaFixWorkflow(ticketId: string, journal: ManualQaOperationJournal): void {
   const beadsPath = getTicketPaths(ticketId)?.beadsPath
   if (!beadsPath) throw new Error(`Ticket storage was not found: ${ticketId}`)
-  const beads = readJsonl<Bead>(beadsPath)
+  const beads = readBeadsFile(beadsPath)
   const completed = beads.filter((bead) => bead.status === 'done').length
   const currentBead = beads.length === 0 ? 0 : completed >= beads.length ? beads.length : completed + 1
   patchTicket(ticketId, {
@@ -1094,7 +1092,7 @@ export async function submitManualQa(input: {
     persistSummaryArtifact(input.ticketId, intermediate)
   }
 
-  const existingBeads = readJsonl<Bead>(paths.beadsPath)
+  const existingBeads = readBeadsFile(paths.beadsPath)
   const fixGroups = buildManualQaFixGroups(checklist, draft)
   let fixBeads: Bead[] = []
   if (fixGroups.length > 0) {

@@ -3,7 +3,7 @@ import { EXECUTION_SETUP_RUNTIME_DIR } from './types'
 import { accessSync, constants, lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
-import { isRecord } from '@shared/typeGuards'
+import { getValueByExactAlias, isRecord } from '@shared/typeGuards'
 
 export const EXECUTION_SETUP_RUN_WRAPPER = `${EXECUTION_SETUP_RUNTIME_DIR}/run`
 
@@ -130,26 +130,19 @@ export function hasExecutionSetupProjectCommands(profile: ExecutionSetupProfile 
   ].some((commands) => commands.length > 0)
 }
 
-function getValueByAliases(record: Record<string, unknown>, aliases: string[]): unknown {
-  for (const alias of aliases) {
-    if (alias in record) return record[alias]
-  }
-  return undefined
-}
-
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
 }
 
 function getRawProjectCommands(record: Record<string, unknown>): string[] {
-  const rawProjectCommands = getValueByAliases(record, ['projectCommands', 'project_commands'])
+  const rawProjectCommands = getValueByExactAlias(record, ['projectCommands', 'project_commands'])
   if (!isRecord(rawProjectCommands)) return []
   return [
-    ...toStringArray(getValueByAliases(rawProjectCommands, ['prepare'])),
-    ...toStringArray(getValueByAliases(rawProjectCommands, ['testFull', 'test_full'])),
-    ...toStringArray(getValueByAliases(rawProjectCommands, ['lintFull', 'lint_full'])),
-    ...toStringArray(getValueByAliases(rawProjectCommands, ['typecheckFull', 'typecheck_full'])),
+    ...toStringArray(getValueByExactAlias(rawProjectCommands, ['prepare'])),
+    ...toStringArray(getValueByExactAlias(rawProjectCommands, ['testFull', 'test_full'])),
+    ...toStringArray(getValueByExactAlias(rawProjectCommands, ['lintFull', 'lint_full'])),
+    ...toStringArray(getValueByExactAlias(rawProjectCommands, ['typecheckFull', 'typecheck_full'])),
   ]
 }
 
@@ -157,10 +150,10 @@ export function getExecutionSetupCommandWrapperFromRecord(
   record: Record<string, unknown>,
   worktreePath?: string,
 ): string | null {
-  const profileRecord = isRecord(getValueByAliases(record, ['profile']))
-    ? getValueByAliases(record, ['profile']) as Record<string, unknown>
+  const profileRecord = isRecord(getValueByExactAlias(record, ['profile']))
+    ? getValueByExactAlias(record, ['profile']) as Record<string, unknown>
     : record
-  const artifacts = getValueByAliases(profileRecord, ['reusableArtifacts', 'reusable_artifacts'])
+  const artifacts = getValueByExactAlias(profileRecord, ['reusableArtifacts', 'reusable_artifacts'])
   if (Array.isArray(artifacts)) {
     for (const artifact of artifacts) {
       if (!isRecord(artifact)) continue

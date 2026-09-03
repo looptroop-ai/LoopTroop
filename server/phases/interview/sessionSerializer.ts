@@ -9,9 +9,10 @@ import type {
 import type { InterviewDocument, InterviewDocumentAnswer, InterviewDocumentQuestion } from '@shared/interviewArtifact'
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { calculateFollowUpLimit } from './followUpBudget'
-import { buildInterviewDocumentYaml } from '../../structuredOutput'
-import { isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
+import { buildInterviewDocumentYaml, normalizeCoverageFollowUpQuestions } from '../../structuredOutput'
+import { collectAliasConflictWarnings, getValueByAliases, isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
 import { nowIso, normalizeQuestion, cloneSnapshot } from './interviewUtils'
+import { validateInterviewSessionSnapshot } from './snapshotValidation'
 
 const INTERVIEW_SESSION_NESTED_MAPPING_CHILDREN = {
   generated_by: ['winner_model', 'generated_at', 'canonicalization'],
@@ -54,14 +55,22 @@ export function createInterviewSessionSnapshot(input: {
 export function parseInterviewSessionSnapshot(content: string | null | undefined): InterviewSessionSnapshot | null {
   if (!content?.trim()) return null
 
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(content) as InterviewSessionSnapshot
-    if (parsed.schemaVersion !== 1 || typeof parsed.winnerId !== 'string') return null
-    if (!Array.isArray(parsed.questions) || !parsed.answers || typeof parsed.answers !== 'object') return null
-    return cloneSnapshot(parsed)
+    parsed = JSON.parse(content)
   } catch {
     return null
   }
+
+  // The old check read four top-level fields and asserted the rest, so a
+  // malformed artifact came back as a typed snapshot holding whatever had been
+  // written into it.
+  const validated = validateInterviewSessionSnapshot(parsed)
+  if (!validated.snapshot) {
+    console.warn(`[interview] Ignored a malformed interview session snapshot: ${validated.error}`)
+    return null
+  }
+  return cloneSnapshot(validated.snapshot)
 }
 
 export function serializeInterviewSessionSnapshot(snapshot: InterviewSessionSnapshot): string {
@@ -242,87 +251,49 @@ function normalizeCoverageFollowUpQuestionIds(
   }
 }
 
-function parseCoverageYamlQuestions(response: string): BatchQuestion[] {
+const COVERAGE_SESSION_DEFAULTS = {
+  phase: 'Structure',
+  priority: 'high',
+  rationale: 'Coverage follow-up required to close interview gaps.',
+} as const
+
+function parseCoverageYamlQuestions(response: string): {
+  questions: BatchQuestion[]
+  repairWarnings: string[]
+} {
+  // Every alias below is resolved outside a candidate loop, so without a sink of
+  // its own a payload carrying both spellings of `follow_up_questions` resolved
+  // one of them silently.
+  const repairWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(repairWarnings)
   try {
-    const parsed = parseYamlOrJsonCandidate(response)
-    if (!isRecord(parsed)) return []
+    const parsed = parseYamlOrJsonCandidate(response, { repairWarnings })
+    if (!isRecord(parsed)) return { questions: [], repairWarnings: [] }
 
-    const rawFollowUps = Array.isArray(parsed.follow_up_questions)
-      ? parsed.follow_up_questions
-      : Array.isArray(parsed.followUpQuestions)
-        ? parsed.followUpQuestions
-        : []
+    // One semantic normaliser, so a coverage response cannot yield a different
+    // question type depending on whether the structured envelope or the raw
+    // response was the thing that carried it.
+    const normalized = normalizeCoverageFollowUpQuestions(
+      getValueByAliases(parsed, ['followupquestions', 'follow_up_questions']),
+      COVERAGE_SESSION_DEFAULTS,
+    )
 
-    if (rawFollowUps.length === 0) return []
-    return rawFollowUps.map((entry, index) => {
-      if (typeof entry === 'string') {
-        return {
-          id: `FU${index + 1}`,
-          question: entry.trim(),
-          phase: 'Structure',
-          priority: 'high',
-          rationale: 'Coverage follow-up required to close interview gaps.',
-        }
-      }
-
-      const record = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {}
-
-      // Extract answer type
-      const rawAnswerType = record.answer_type ?? record.answerType ?? record.type
-      let answerType: 'single_choice' | 'multiple_choice' | undefined
-      if (typeof rawAnswerType === 'string') {
-        const at = rawAnswerType.toLowerCase().replace(/[\s_-]/g, '')
-        if (at === 'yesno' || at === 'boolean' || at === 'bool') {
-          answerType = 'single_choice'
-        } else if (at === 'singlechoice' || at === 'radio' || at === 'single') {
-          answerType = 'single_choice'
-        } else if (at === 'multiplechoice' || at === 'multi' || at === 'checkbox' || at === 'multichoice') {
-          answerType = 'multiple_choice'
-        }
-      }
-
-      // Extract options (auto-generate for yes_no)
-      const isYesNo = typeof rawAnswerType === 'string' && ['yes_no', 'yesno', 'boolean', 'bool'].includes(rawAnswerType.toLowerCase().replace(/[\s_-]/g, ''))
-      let options: Array<{ id: string; label: string }> | undefined
-      if (isYesNo) {
-        options = [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }]
-      } else if (answerType && Array.isArray(record.options)) {
-        options = record.options
-          .map((opt: unknown, i: number) => {
-            if (typeof opt === 'string') return { id: `opt${i + 1}`, label: opt.trim() }
-            if (opt && typeof opt === 'object') {
-              const o = opt as Record<string, unknown>
-              const label = typeof o.label === 'string' ? o.label : typeof o.text === 'string' ? o.text : undefined
-              if (!label) return null
-              return { id: typeof o.id === 'string' ? o.id : `opt${i + 1}`, label: label.trim() }
-            }
-            return null
-          })
-          .filter((opt: { id: string; label: string } | null): opt is { id: string; label: string } => opt !== null)
-      }
-
-      // Downgrade if choice type but no options
-      if (answerType && (!options || options.length === 0) && !isYesNo) {
-        answerType = undefined
-        options = undefined
-      }
-
-      return {
-        id: typeof record.id === 'string' ? record.id : `FU${index + 1}`,
-        question: typeof record.question === 'string'
-          ? record.question
-          : typeof record.prompt === 'string'
-            ? record.prompt
-            : String(record.text ?? ''),
-        phase: typeof record.phase === 'string' ? record.phase : 'Structure',
-        priority: typeof record.priority === 'string' ? record.priority : 'high',
-        rationale: typeof record.rationale === 'string' ? record.rationale : 'Coverage follow-up required to close interview gaps.',
-        ...(answerType ? { answerType } : {}),
-        ...(options && options.length > 0 ? { options } : {}),
-      }
-    }).filter((question) => question.question.trim().length > 0)
+    return {
+      questions: normalized.questions.map((question, index): BatchQuestion => ({
+        id: question.id ?? `FU${index + 1}`,
+        question: question.question,
+        phase: question.phase ?? COVERAGE_SESSION_DEFAULTS.phase,
+        priority: question.priority ?? COVERAGE_SESSION_DEFAULTS.priority,
+        rationale: question.rationale ?? COVERAGE_SESSION_DEFAULTS.rationale,
+        ...(question.answerType ? { answerType: question.answerType } : {}),
+        ...(question.options && question.options.length > 0 ? { options: question.options } : {}),
+      })),
+      repairWarnings: [...repairWarnings, ...normalized.repairWarnings],
+    }
   } catch {
-    return []
+    return { questions: [], repairWarnings: [] }
+  } finally {
+    releaseAliasConflicts()
   }
 }
 
@@ -334,12 +305,16 @@ export function extractCoverageFollowUpQuestionsWithMetadata(
     .filter((round) => round.source === 'coverage')
     .reduce((max, round) => Math.max(max, round.roundNumber), 0) + 1
 
-  const parsedYamlQuestions = parseCoverageYamlQuestions(response)
-  if (parsedYamlQuestions.length > 0) {
-    return normalizeCoverageFollowUpQuestionIds(
-      parsedYamlQuestions.map((question) => normalizeCoverageQuestion(question, roundNumber)),
+  const parsedYaml = parseCoverageYamlQuestions(response)
+  if (parsedYaml.questions.length > 0) {
+    const normalized = normalizeCoverageFollowUpQuestionIds(
+      parsedYaml.questions.map((question) => normalizeCoverageQuestion(question, roundNumber)),
       snapshot,
     )
+    return {
+      questions: normalized.questions,
+      repairWarnings: [...parsedYaml.repairWarnings, ...normalized.repairWarnings],
+    }
   }
 
   try {

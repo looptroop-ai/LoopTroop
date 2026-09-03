@@ -33,8 +33,10 @@ export {
   normalizeInterviewTurnOutput,
   normalizeInterviewQuestionsOutput,
   normalizeInterviewRefinementOutput,
+  normalizeCoverageFollowUpQuestions,
   normalizeCoverageResultOutput,
 } from './interviewOutput'
+export type { CoverageFollowUpDefaults } from './interviewOutput'
 
 export {
   normalizeInterviewDocumentOutput,
@@ -52,9 +54,10 @@ export {
   normalizeBeadRefinementOutput,
   normalizeBeadsJsonlOutput,
   normalizeRelevantFilesOutput,
-  getBeadDraftMetrics,
+  getCommonBeadCounts,
+  getCoverageBeadMetrics,
 } from './beadsOutput'
-export type { BeadDraftMetrics, ValidatedBeadRefinementResult } from './beadsOutput'
+export type { CoverageBeadMetrics, ValidatedBeadRefinementResult } from './beadsOutput'
 
 export { normalizeVoteScorecardOutput } from './voteOutput'
 

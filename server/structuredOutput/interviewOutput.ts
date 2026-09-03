@@ -4,7 +4,6 @@ import type {
   InterviewQuestionChangeType,
   InterviewQuestionPreview,
 } from '@shared/interviewQuestions'
-import { repairYamlInlineKeys, repairYamlInlineSequenceParents } from '@shared/yamlRepair'
 import { MAX_SINGLE_CHOICE_OPTIONS, MAX_MULTIPLE_CHOICE_OPTIONS } from '../lib/constants'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type {
@@ -16,6 +15,7 @@ import type {
   StructuredOutputResult,
 } from './types'
 import {
+  collectAliasConflictWarnings,
   isRecord,
   normalizeKey,
   collectStructuredCandidates,
@@ -31,14 +31,15 @@ import {
   toStringArray,
   toOptionalString,
   toInteger,
-  toOrdinalInteger,
   toBoolean,
   getValueByAliases,
+  getStringByAliases,
   getNestedRecord,
   getRequiredString,
   buildYamlDocument,
 } from './yamlUtils'
 import { MAX_INTERVIEW_BATCH_SIZE } from '../lib/constants'
+import { resolveLosingDraftReference } from './refinementChanges'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
 
@@ -363,23 +364,9 @@ function parseInterviewRefinementChangeEntry(
     inspiration = undefined
   } else if (isRecord(rawInspiration)) {
     try {
-      const rawAltDraft = getValueByAliases(rawInspiration, ['alternative_draft', 'alternativedraft', 'draft', 'draft_index'])
-      let draftIndex = -1
-
-      if (typeof rawAltDraft === 'string' && losingDraftMeta) {
-        const rawTrimmed = rawAltDraft.trim()
-        const foundIdx = losingDraftMeta.findIndex((m) => m.memberId === rawTrimmed)
-        if (foundIdx >= 0) {
-          draftIndex = foundIdx
-        }
-      }
-
-      if (draftIndex === -1) {
-        const altDraft = toOrdinalInteger(rawAltDraft)
-        if (altDraft != null) {
-          draftIndex = altDraft - 1
-        }
-      }
+      // The memberId is hydrated later, from losingDraftMeta, once the change
+      // list has been canonicalised; only the index matters here.
+      const { draftIndex } = resolveLosingDraftReference(rawInspiration, losingDraftMeta)
 
       const rawInspirationQuestion = getValueByAliases(rawInspiration, ['question', 'item'])
       if (draftIndex >= 0 && rawInspirationQuestion !== undefined) {
@@ -942,6 +929,17 @@ function validateInterviewRefinementChangeEntry(
   return change
 }
 
+export const INTERVIEW_MISSING_CHANGES_WARNING = 'Interview refinement returned no changes list while the questions differed from the winning draft; accounted for the difference from the two drafts.'
+
+function interviewQuestionListsDiffer(
+  winnerQuestions: NormalizedInterviewQuestion[],
+  finalQuestions: NormalizedInterviewQuestion[],
+): boolean {
+  const winnerKeys = new Set(winnerQuestions.map(buildInterviewQuestionKey))
+  const finalKeys = new Set(finalQuestions.map(buildInterviewQuestionKey))
+  return winnerKeys.size !== finalKeys.size || [...finalKeys].some((key) => !winnerKeys.has(key))
+}
+
 function ensureQuestionChangeCoverage(
   winnerQuestions: NormalizedInterviewQuestion[],
   finalQuestions: NormalizedInterviewQuestion[],
@@ -987,7 +985,7 @@ function normalizeInterviewBatchAnswerType(value: unknown): 'free_text' | 'singl
   if (typeof value !== 'string') return undefined
   const normalized = normalizeKey(value)
   if (normalized === 'yesno' || normalized === 'yes_no' || normalized === 'boolean' || normalized === 'bool') return 'yes_no'
-  if (normalized === 'singlechoice' || normalized === 'singlechoice' || normalized === 'radio' || normalized === 'single') return 'single_choice'
+  if (normalized === 'singlechoice' || normalized === 'radio' || normalized === 'single') return 'single_choice'
   if (normalized === 'multiplechoice' || normalized === 'multchoice' || normalized === 'multi' || normalized === 'checkbox' || normalized === 'multichoice') return 'multiple_choice'
   if (normalized === 'freetext' || normalized === 'free' || normalized === 'text' || normalized === 'open') return 'free_text'
   return undefined
@@ -1159,6 +1157,20 @@ function normalizeInterviewBatchPayload(value: unknown): {
     questions.length = MAX_INTERVIEW_BATCH_SIZE
   }
 
+  // Two questions sharing an id in one batch meant the second overwrote the
+  // first in the session snapshot, and a prompt could inherit the other's answer.
+  //
+  // Checked after the size limit, not before: the invariant belongs to the batch
+  // that reaches the snapshot, and a repeat in a question that is about to be
+  // discarded used to reject a payload whose kept part was perfectly valid.
+  const seenQuestionIds = new Set<string>()
+  for (const question of questions) {
+    if (seenQuestionIds.has(question.id)) {
+      throw new Error(`Interview batch output repeats question id ${question.id}`)
+    }
+    seenQuestionIds.add(question.id)
+  }
+
   return {
     batch: {
       batchNumber,
@@ -1219,10 +1231,12 @@ function normalizeInterviewCompletePayload(value: unknown, shouldAllowQuestionsO
 export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutputResult<InterviewTurnOutput> {
   let lastError = 'No interview batch or completion content found'
   let lastErrorCause: unknown = null
+  let lastCandidateWarnings: string[] = []
 
   const completeCandidates = collectTaggedCandidates(rawContent, 'INTERVIEW_COMPLETE')
   for (const candidate of completeCandidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const parsedCandidate = parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
@@ -1244,12 +1258,16 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
   const batchCandidates = collectTaggedCandidates(rawContent, 'INTERVIEW_BATCH')
   for (const candidate of batchCandidates) {
     const candidateWarnings: string[] = []
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       const normalizedBatch = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
@@ -1276,6 +1294,9 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1284,8 +1305,9 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
   })
 
   for (const candidate of fallbackCandidates) {
+    const candidateWarnings: string[] = []
+    let releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const candidateWarnings: string[] = []
       const parsed = parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
         repairWarnings: candidateWarnings,
@@ -1306,16 +1328,19 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+    } finally {
+      releaseAliasConflicts()
     }
 
+    const batchCandidateWarnings: string[] = []
+    releaseAliasConflicts = collectAliasConflictWarnings(batchCandidateWarnings)
     try {
-      const candidateWarnings: string[] = []
       const normalizedBatch = normalizeInterviewBatchPayload(parseYamlOrJsonCandidate(candidate, {
         nestedMappingChildren: INTERVIEW_TURN_NESTED_MAPPING_CHILDREN,
-        repairWarnings: candidateWarnings,
+        repairWarnings: batchCandidateWarnings,
       }))
-      candidateWarnings.push(...normalizedBatch.repairWarnings)
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate)
+      batchCandidateWarnings.push(...normalizedBatch.repairWarnings)
+      appendStructuredCandidateRecoveryWarning(batchCandidateWarnings, rawContent, candidate)
       return {
         ok: true,
         value: {
@@ -1329,12 +1354,15 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
           ai_commentary: normalizedBatch.batch.aiCommentary,
           questions: normalizedBatch.batch.questions,
         }),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate),
-        repairWarnings: candidateWarnings,
+        repairApplied: batchCandidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate),
+        repairWarnings: batchCandidateWarnings,
       }
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1343,7 +1371,15 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     looksLikePromptEcho(rawContent)
       ? 'Interview output echoed the prompt instead of returning an <INTERVIEW_BATCH> or <INTERVIEW_COMPLETE> artifact'
       : lastError,
-    { cause: lastErrorCause },
+    {
+      cause: lastErrorCause,
+      // The sibling normalisers in this file carry the last rejected
+      // candidate's repair record into their failures, and so do beadsOutput
+      // and voteOutput. This one built the per-candidate arrays and dropped
+      // them, so a failure could not say what had been attempted.
+      repairApplied: lastCandidateWarnings.length > 0,
+      repairWarnings: lastCandidateWarnings,
+    },
   )
 }
 
@@ -1354,7 +1390,7 @@ export function normalizeInterviewQuestionsOutput(
   questions: NormalizedInterviewQuestion[]
   questionCount: number
 }> {
-  const repairWarnings: string[] = []
+  let repairWarnings: string[] = []
   let repairApplied = false
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['questions'],
@@ -1364,27 +1400,35 @@ export function normalizeInterviewQuestionsOutput(
   let lastErrorCause: unknown = null
 
   for (const candidate of candidates) {
+    const candidateWarnings: string[] = []
+    let candidateRepairApplied = false
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const inlineSequenceRepaired = repairYamlInlineSequenceParents(candidate)
-      const inlineKeyRepaired = repairYamlInlineKeys(inlineSequenceRepaired)
-      const parsed = parseInterviewQuestions(candidate)
+      // The two inline repairs used to be computed here, discarded, and reported
+      // as applied. `parseInterviewQuestions` runs `repairInterviewCandidate`
+      // first for every candidate, and that begins with the same two repairs
+      // followed by more, so this pair only ever described work the parser was
+      // already doing — on a string the parser never saw. Ask the parser which
+      // variant it actually used instead.
+      const parsed = parseInterviewQuestions(candidate, {
+        onCandidateRepairApplied: () => {
+          candidateRepairApplied = true
+          candidateWarnings.push('Repaired inline YAML sequence or mapping syntax before parsing.')
+        },
+      })
       const normalized = normalizeParsedInterviewQuestionList(parsed, maxInitialQuestions)
 
-      if (inlineKeyRepaired !== candidate) {
-        repairApplied = true
-        repairWarnings.push('Repaired inline YAML sequence or mapping syntax before parsing.')
-      }
       if (normalized.repairApplied) {
-        repairApplied = true
-        repairWarnings.push(...normalized.repairWarnings)
+        candidateRepairApplied = true
+        candidateWarnings.push(...normalized.repairWarnings)
       }
       if (normalized.reordered) {
-        repairApplied = true
-        repairWarnings.push('Applied stable interview phase reordering (foundation -> structure -> assembly).')
+        candidateRepairApplied = true
+        candidateWarnings.push('Applied stable interview phase reordering (foundation -> structure -> assembly).')
       }
 
       const questions = normalized.questions
-      appendStructuredCandidateRecoveryWarning(repairWarnings, rawContent, candidate)
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate)
       return {
         ok: true,
         value: {
@@ -1392,12 +1436,19 @@ export function normalizeInterviewQuestionsOutput(
           questionCount: questions.length,
         },
         normalizedContent: buildYamlDocument({ questions }),
-        repairApplied: repairApplied || candidate !== rawContent.trim(),
-        repairWarnings,
+        // `candidateWarnings` also collects what the shared parser and the alias
+        // sink recorded, neither of which touches `candidateRepairApplied`, so a
+        // repair could be reported in the warnings while the flag said none ran.
+        repairApplied: candidateRepairApplied || candidateWarnings.length > 0 || candidate !== rawContent.trim(),
+        repairWarnings: candidateWarnings,
       }
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      repairWarnings = candidateWarnings
+      repairApplied = candidateRepairApplied
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1414,18 +1465,30 @@ export function normalizeInterviewQuestionsOutput(
   )
 }
 
+export interface InterviewRefinementOptions {
+  /**
+   * `accounted_elsewhere` skips the missing-changes policy for a caller that is
+   * re-reading content this module already validated and accounted for — the
+   * canonical `questionsYaml` carries questions only, by design.
+   */
+  missingChangesPolicy?: 'require' | 'accounted_elsewhere'
+}
+
 export function normalizeInterviewRefinementOutput(
   rawContent: string,
   winnerDraftContent: string,
   maxInitialQuestions: number,
   losingDraftMeta?: Array<{ memberId: string; content: string }>,
+  options?: InterviewRefinementOptions,
 ): StructuredOutputResult<{
   questions: NormalizedInterviewQuestion[]
   questionCount: number
   changes: NormalizedInterviewRefinementChange[]
   questionsYaml: string
 }> {
-  const repairWarnings: string[] = []
+  // Per candidate, so a repair attempted on a candidate that was rejected is not
+  // reported against the one that validated.
+  let repairWarnings: string[] = []
   let repairApplied = false
   const candidates = collectStructuredCandidates(rawContent, {
     topLevelHints: ['questions', 'changes'],
@@ -1435,8 +1498,13 @@ export function normalizeInterviewRefinementOutput(
   let lastErrorCause: unknown = null
 
   for (const candidate of candidates) {
+    const candidateWarnings: string[] = []
+    let candidateRepairApplied = false
+    const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
-      const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate), [
+      const parsed = unwrapExplicitWrapperRecord(parseYamlOrJsonCandidate(candidate, {
+        repairWarnings: candidateWarnings,
+      }), [
         'interviewrefinement',
         'interview_refinement',
         'refinement',
@@ -1456,24 +1524,39 @@ export function normalizeInterviewRefinementOutput(
 
       const normalizedQuestions = normalizeStructuredInterviewQuestionList(rawQuestions, maxInitialQuestions)
       if (normalizedQuestions.repairApplied) {
-        repairApplied = true
-        repairWarnings.push(...normalizedQuestions.repairWarnings)
+        candidateRepairApplied = true
+        candidateWarnings.push(...normalizedQuestions.repairWarnings)
       }
       if (normalizedQuestions.reordered) {
-        repairApplied = true
-        repairWarnings.push('Applied stable interview phase reordering (foundation -> structure -> assembly).')
+        candidateRepairApplied = true
+        candidateWarnings.push('Applied stable interview phase reordering (foundation -> structure -> assembly).')
       }
 
       const winnerDraftNormalized = normalizeParsedInterviewQuestionList(parseInterviewQuestions(winnerDraftContent), 0)
       if (winnerDraftNormalized.repairApplied) {
-        repairApplied = true
-        repairWarnings.push(...winnerDraftNormalized.repairWarnings)
+        candidateRepairApplied = true
+        candidateWarnings.push(...winnerDraftNormalized.repairWarnings)
       }
       const winnerDraftQuestions = winnerDraftNormalized.questions
       let finalQuestions = normalizedQuestions.questions
       let changes: NormalizedInterviewRefinementChange[] = []
-      if (Array.isArray(rawChanges)) {
-        const parsedChanges = rawChanges.map((entry, index) => parseInterviewRefinementChangeEntry(
+
+      // A refinement that returned no `changes` at all used to skip change
+      // accounting entirely, so a rewritten question list shipped with an empty
+      // diff and no attribution. When the two documents actually differ, the
+      // accounting runs on an empty change list: synthesis covers what it can
+      // and ensureQuestionChangeCoverage rejects the rest.
+      const changesAreAccountable = Array.isArray(rawChanges)
+        || (options?.missingChangesPolicy !== 'accounted_elsewhere'
+          && interviewQuestionListsDiffer(winnerDraftQuestions, finalQuestions))
+      if (!Array.isArray(rawChanges) && changesAreAccountable) {
+        candidateRepairApplied = true
+        candidateWarnings.push(INTERVIEW_MISSING_CHANGES_WARNING)
+      }
+
+      if (changesAreAccountable) {
+        const rawChangeEntries = Array.isArray(rawChanges) ? rawChanges : []
+        const parsedChanges = rawChangeEntries.map((entry, index) => parseInterviewRefinementChangeEntry(
           entry,
           index,
           losingDraftMeta,
@@ -1483,8 +1566,8 @@ export function normalizeInterviewRefinementOutput(
           parsedChanges,
         )
         if (repairedFinalQuestions.repairApplied) {
-          repairApplied = true
-          repairWarnings.push(...repairedFinalQuestions.repairWarnings)
+          candidateRepairApplied = true
+          candidateWarnings.push(...repairedFinalQuestions.repairWarnings)
           finalQuestions = repairedFinalQuestions.questions
         }
 
@@ -1498,8 +1581,8 @@ export function normalizeInterviewRefinementOutput(
           finalQuestions,
         )
         if (canonicalizedChanges.repairApplied) {
-          repairApplied = true
-          repairWarnings.push(...canonicalizedChanges.repairWarnings)
+          candidateRepairApplied = true
+          candidateWarnings.push(...canonicalizedChanges.repairWarnings)
         }
 
         const synthesizedChanges = synthesizeOmittedSameIdentityInterviewRefinementChanges(
@@ -1508,8 +1591,8 @@ export function normalizeInterviewRefinementOutput(
           finalQuestions,
         )
         if (synthesizedChanges.repairApplied) {
-          repairApplied = true
-          repairWarnings.push(...synthesizedChanges.repairWarnings)
+          candidateRepairApplied = true
+          candidateWarnings.push(...synthesizedChanges.repairWarnings)
         }
 
         const prunedPartialChanges = dropRedundantPartialInterviewRefinementChanges(
@@ -1517,8 +1600,8 @@ export function normalizeInterviewRefinementOutput(
           synthesizedChanges.synthesizedChanges,
         )
         if (prunedPartialChanges.repairApplied) {
-          repairApplied = true
-          repairWarnings.push(...prunedPartialChanges.repairWarnings)
+          candidateRepairApplied = true
+          candidateWarnings.push(...prunedPartialChanges.repairWarnings)
         }
 
         const repairedPartialChanges = repairPartialInterviewRefinementChanges(
@@ -1527,8 +1610,8 @@ export function normalizeInterviewRefinementOutput(
           finalQuestions,
         )
         if (repairedPartialChanges.repairApplied) {
-          repairApplied = true
-          repairWarnings.push(...repairedPartialChanges.repairWarnings)
+          candidateRepairApplied = true
+          candidateWarnings.push(...repairedPartialChanges.repairWarnings)
         }
 
         assertNoPartialInterviewRefinementChanges(repairedPartialChanges.changes)
@@ -1566,8 +1649,8 @@ export function normalizeInterviewRefinementOutput(
                 normalizedLosingDraftQuestions.get(losingDraftIndex) ?? [],
               )
             } else if (change.inspiration && change.inspiration.draftIndex >= 0) {
-              repairApplied = true
-              repairWarnings.push(
+              candidateRepairApplied = true
+              candidateWarnings.push(
                 `Inspiration draftIndex ${change.inspiration.draftIndex} is out of bounds (${losingDraftMeta.length} alternatives). Setting inspiration to null.`,
               )
               ;(change as { inspiration: NormalizedInspirationSource | null }).inspiration = null
@@ -1585,7 +1668,7 @@ export function normalizeInterviewRefinementOutput(
       }
 
       const questionsYaml = buildYamlDocument({ questions: finalQuestions })
-      appendStructuredCandidateRecoveryWarning(repairWarnings, rawContent, candidate)
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate)
 
       return {
         ok: true,
@@ -1596,12 +1679,19 @@ export function normalizeInterviewRefinementOutput(
           questionsYaml,
         },
         normalizedContent: questionsYaml,
-        repairApplied: repairApplied || candidate !== rawContent.trim(),
-        repairWarnings,
+        // `candidateWarnings` also collects what the shared parser and the alias
+        // sink recorded, neither of which touches `candidateRepairApplied`, so a
+        // repair could be reported in the warnings while the flag said none ran.
+        repairApplied: candidateRepairApplied || candidateWarnings.length > 0 || candidate !== rawContent.trim(),
+        repairWarnings: candidateWarnings,
       }
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      repairWarnings = candidateWarnings
+      repairApplied = candidateRepairApplied
+    } finally {
+      releaseAliasConflicts()
     }
   }
 
@@ -1618,7 +1708,21 @@ export function normalizeInterviewRefinementOutput(
   )
 }
 
-function normalizeCoverageFollowUpQuestions(value: unknown): {
+export interface CoverageFollowUpDefaults {
+  /** Used when the model omits `phase`. The coverage parser leaves it unset. */
+  phase?: string
+  /** Used when the model omits `priority`. */
+  priority?: string
+  /** Used when the model omits `rationale`. */
+  rationale?: string
+}
+
+/**
+ * The one semantic normaliser for coverage follow-up questions. The interview
+ * session used to carry a second, narrower copy, so the same coverage response
+ * produced different question types depending on which path read it.
+ */
+export function normalizeCoverageFollowUpQuestions(value: unknown, defaults?: CoverageFollowUpDefaults): {
   questions: CoverageFollowUpQuestion[]
   repairWarnings: string[]
 } {
@@ -1630,6 +1734,9 @@ function normalizeCoverageFollowUpQuestions(value: unknown): {
       return {
         id: `FU${index + 1}`,
         question: entry.trim(),
+        ...(defaults?.phase ? { phase: defaults.phase } : {}),
+        ...(defaults?.priority ? { priority: defaults.priority } : {}),
+        ...(defaults?.rationale ? { rationale: defaults.rationale } : {}),
       }
     }
 
@@ -1679,9 +1786,9 @@ function normalizeCoverageFollowUpQuestions(value: unknown): {
     return {
       id: questionId,
       question: question.trim(),
-      phase: typeof record.phase === 'string' ? record.phase : undefined,
-      priority: typeof record.priority === 'string' ? record.priority : undefined,
-      rationale: typeof record.rationale === 'string' ? record.rationale : undefined,
+      phase: typeof record.phase === 'string' ? record.phase : defaults?.phase,
+      priority: typeof record.priority === 'string' ? record.priority : defaults?.priority,
+      rationale: typeof record.rationale === 'string' ? record.rationale : defaults?.rationale,
       ...(finalAnswerType && finalAnswerType !== 'free_text' ? { answerType: finalAnswerType } : {}),
       ...(finalOptions && finalOptions.length > 0 ? { options: finalOptions } : {}),
     }
@@ -1695,6 +1802,18 @@ function parseCoverageResultCandidate(candidate: string): {
   repairWarnings: string[]
 } {
   const parseRepairWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(parseRepairWarnings)
+  try {
+    return parseCoverageResultCandidateFields(candidate, parseRepairWarnings)
+  } finally {
+    releaseAliasConflicts()
+  }
+}
+
+function parseCoverageResultCandidateFields(candidate: string, parseRepairWarnings: string[]): {
+  value: CoverageResultEnvelope
+  repairWarnings: string[]
+} {
   const parsed = maybeUnwrapRecord(parseYamlOrJsonCandidate(candidate, {
     allowTrailingTerminalNoise: true,
     repairWarnings: parseRepairWarnings,
@@ -1706,9 +1825,7 @@ function parseCoverageResultCandidate(candidate: string): {
   ])
   if (!isRecord(parsed)) throw new Error('Coverage output is not a YAML/JSON object')
 
-  const rawStatus = typeof getValueByAliases(parsed, ['status']) === 'string'
-    ? String(getValueByAliases(parsed, ['status'])).trim().toLowerCase()
-    : ''
+  const rawStatus = getStringByAliases(parsed, ['status'])?.trim().toLowerCase() ?? ''
   const gaps = toStringArray(getValueByAliases(parsed, ['gaps', 'issues']))
   const normalizedFollowUps = normalizeCoverageFollowUpQuestions(
     getValueByAliases(parsed, ['followupquestions', 'follow_up_questions']),
@@ -1753,7 +1870,7 @@ function extractCoverageArtifactBeforeOrphanFence(rawContent: string): string | 
   if (fenceIndex <= 0) return null
 
   const prefix = lines.slice(0, fenceIndex)
-  if (prefix.some((line) => /^```(?:yaml|yml|json|jsonl)?\s*$/i.test(line.trim()))) {
+  if (prefix.some((line) => /^```(?:yaml|yml|jsonl|json)?\s*$/i.test(line.trim()))) {
     return null
   }
 

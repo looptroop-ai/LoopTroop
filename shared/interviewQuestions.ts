@@ -38,6 +38,13 @@ export interface InterviewQuestionChange {
 
 export interface ParseInterviewQuestionsOptions {
   allowTopLevelArray?: boolean
+  /**
+   * Called when the candidate only parsed after `repairInterviewCandidate` ran.
+   * Callers report a repair to the operator; without this they had to guess by
+   * running the same repairs themselves and comparing strings, which reported a
+   * repair whether or not the parser needed it.
+   */
+  onCandidateRepairApplied?: () => void
 }
 
 interface StructuredQuestionExtractionOptions extends ParseInterviewQuestionsOptions {
@@ -328,6 +335,7 @@ function extractStructuredQuestionPreviews(
 
   for (const candidate of candidates) {
     for (const parseCandidate of [repairInterviewCandidate(candidate), candidate]) {
+      const repairFedTheParser = parseCandidate !== candidate
       let parsedYaml: unknown
 
       try {
@@ -360,7 +368,10 @@ function extractStructuredQuestionPreviews(
         throw err
       }
 
-      if (normalized.length > 0) return normalized
+      if (normalized.length > 0) {
+        if (repairFedTheParser) options.onCandidateRepairApplied?.()
+        return normalized
+      }
     }
   }
 

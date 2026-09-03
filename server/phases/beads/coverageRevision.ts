@@ -1,11 +1,13 @@
 import { buildBeadsUiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import type { RefinementChange } from '@shared/refinementChanges'
 import type { PromptPart } from '../../opencode/types'
-import { normalizeBeadSubsetYamlOutput, normalizeBeadRefinementOutput, getBeadDraftMetrics, type BeadDraftMetrics, type StructuredOutputMetadata } from '../../structuredOutput'
+import { normalizeBeadSubsetYamlOutput, normalizeBeadRefinementOutput, getCoverageBeadMetrics, type CoverageBeadMetrics, type StructuredOutputMetadata } from '../../structuredOutput'
 import {
   buildYamlDocument,
+  collectAliasConflictWarnings,
   collectStructuredCandidates,
   getValueByAliases,
+  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
@@ -34,7 +36,7 @@ export interface ValidatedBeadsCoverageRevision {
   priorCandidateContent: string
   changes: RefinementChange[]
   gapResolutions: BeadsCoverageGapResolution[]
-  draftMetrics: BeadDraftMetrics
+  draftMetrics: CoverageBeadMetrics
   repairApplied: boolean
   repairWarnings: string[]
 }
@@ -45,7 +47,7 @@ export interface BeadsCoverageRevisionArtifact {
   winnerDraftContent: string
   changes: RefinementChange[]
   gapResolutions: BeadsCoverageGapResolution[]
-  draftMetrics: BeadDraftMetrics
+  draftMetrics: CoverageBeadMetrics
   candidateVersion: number
   structuredOutput?: StructuredOutputMetadata
   uiRefinementDiff: ReturnType<typeof buildBeadsUiRefinementDiffArtifact>
@@ -158,16 +160,12 @@ function parseGapResolutions(
       throw new Error(`Beads coverage gap_resolutions entry at index ${index} is not an object`)
     }
 
-    const gap = typeof getValueByAliases(value, ['gap']) === 'string'
-      ? String(getValueByAliases(value, ['gap'])).trim()
-      : ''
+    const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
     if (!gap) {
       throw new Error(`Beads coverage gap_resolutions entry at index ${index} is missing gap`)
     }
 
-    const rawAction = typeof getValueByAliases(value, ['action']) === 'string'
-      ? String(getValueByAliases(value, ['action'])).trim()
-      : ''
+    const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
     const normalizedAction = normalizeKey(rawAction)
     let action: BeadsCoverageGapResolutionAction | null = null
     if (normalizedAction === 'updatedbeads' || normalizedAction === 'updatedplan') action = 'updated_beads'
@@ -177,9 +175,7 @@ function parseGapResolutions(
       throw new Error(`Beads coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
     }
 
-    const rationale = typeof getValueByAliases(value, ['rationale']) === 'string'
-      ? String(getValueByAliases(value, ['rationale'])).trim()
-      : ''
+    const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
     if (!rationale) {
       throw new Error(`Beads coverage gap_resolutions entry for "${gap}" is missing rationale`)
     }
@@ -190,12 +186,8 @@ function parseGapResolutions(
           if (!isRecord(item)) {
             throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
           }
-          const id = typeof getValueByAliases(item, ['id']) === 'string'
-            ? String(getValueByAliases(item, ['id'])).trim()
-            : ''
-          const label = typeof getValueByAliases(item, ['label', 'title']) === 'string'
-            ? String(getValueByAliases(item, ['label', 'title'])).trim()
-            : ''
+          const id = getStringByAliases(item, ['id'])?.trim() ?? ''
+          const label = getStringByAliases(item, ['label', 'title'])?.trim() ?? ''
           let itemType = normalizeBeadsAffectedItemType(getValueByAliases(item, ['item_type', 'itemtype']))
           if (!itemType) {
             const inferredItemType = inferBeadsAffectedItemType(id, label, priorLookup, revisedLookup)
@@ -269,6 +261,26 @@ export function validateBeadsCoverageRevisionOutput(
     coverageGaps: string[]
   },
 ): ValidatedBeadsCoverageRevision {
+  // Every alias this function and its helpers resolve is model output, so the
+  // conflict warnings belong on the revision's own repair record. Without a sink
+  // installed they went nowhere.
+  const aliasWarnings: string[] = []
+  const releaseAliasConflicts = collectAliasConflictWarnings(aliasWarnings)
+  try {
+    return validateBeadsCoverageRevisionRecord(rawContent, options, aliasWarnings)
+  } finally {
+    releaseAliasConflicts()
+  }
+}
+
+function validateBeadsCoverageRevisionRecord(
+  rawContent: string,
+  options: {
+    currentCandidateContent: string
+    coverageGaps: string[]
+  },
+  aliasWarnings: string[],
+): ValidatedBeadsCoverageRevision {
   const parsed = parseCoverageRevisionRecord(rawContent)
   const currentCandidateBeads = parseBeadSubsetYaml(options.currentCandidateContent)
   const rawBeads = getValueByAliases(parsed, ['beads'])
@@ -276,6 +288,15 @@ export function validateBeadsCoverageRevisionOutput(
     throw new Error('Beads coverage revision output must include a top-level beads list')
   }
 
+  // Deliberately `{ beads }` only, without the model's `changes` block.
+  //
+  // PROM24 asks for `{type, id, title, summary}` change entries — summary-level
+  // metadata, no `before`/`after` item records — because a coverage revision
+  // accounts for its edits in `gap_resolutions`. `parseRefinementChanges` needs
+  // before/after records, so forwarding these would skip every entry with a
+  // "summary metadata only" repair warning and then synthesize the same diff
+  // anyway: identical result, one spurious warning per declared change. A round
+  // of review talked me into forwarding them; the prompt is the reason not to.
   const beadsYaml = buildYamlDocument({ beads: rawBeads })
   const refinementResult = normalizeBeadRefinementOutput(beadsYaml, options.currentCandidateContent)
   if (!refinementResult.ok) {
@@ -295,10 +316,55 @@ export function validateBeadsCoverageRevisionOutput(
     priorCandidateContent: options.currentCandidateContent,
     changes: refinementResult.value.changes,
     gapResolutions: parsedGapResolutions.gapResolutions,
-    draftMetrics: getBeadDraftMetrics(refinementResult.value.beads),
-    repairApplied: refinementResult.repairApplied || parsedGapResolutions.repairWarnings.length > 0,
-    repairWarnings: [...refinementResult.repairWarnings, ...parsedGapResolutions.repairWarnings],
+    draftMetrics: getCoverageBeadMetrics(refinementResult.value.beads),
+    repairApplied: refinementResult.repairApplied
+      || parsedGapResolutions.repairWarnings.length > 0
+      || aliasWarnings.length > 0,
+    repairWarnings: [...refinementResult.repairWarnings, ...parsedGapResolutions.repairWarnings, ...aliasWarnings],
   }
+}
+
+/**
+ * Reads the candidate blueprint back out of a persisted `beads_coverage_revision`
+ * artifact. Callers used to `JSON.parse(...) as { refinedContent?: string }`, which
+ * accepted a truncated or foreign artifact as an empty revision.
+ */
+/**
+ * Reads the candidate a coverage revision produced, with the version it revised
+ * into. The version matters to the semantic-coverage input, which numbers each
+ * candidate it audits; readers that only need the YAML use the wrapper below.
+ */
+export function parseBeadsCoverageRevisionCandidate(
+  content: string,
+): { refinedContent: string; candidateVersion: number } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    throw new Error('Beads coverage revision artifact is not valid JSON')
+  }
+  if (!isRecord(parsed)) {
+    throw new Error('Beads coverage revision artifact payload is invalid')
+  }
+  const refinedContent = typeof parsed.refinedContent === 'string' ? parsed.refinedContent : ''
+  if (!refinedContent.trim()) {
+    throw new Error('Beads coverage revision artifact is missing refinedContent')
+  }
+  // Absent means "the first candidate". A present but impossible value — 0, a
+  // negative, a fraction — is a corrupt artifact, and silently reading it as
+  // version 1 made the semantic coverage loop audit a later revision under the
+  // first candidate's identity.
+  if (parsed.candidateVersion !== undefined
+    && !(typeof parsed.candidateVersion === 'number'
+      && Number.isInteger(parsed.candidateVersion)
+      && parsed.candidateVersion > 0)) {
+    throw new Error('Beads coverage revision artifact has an invalid candidateVersion')
+  }
+  return { refinedContent, candidateVersion: (parsed.candidateVersion as number | undefined) ?? 1 }
+}
+
+export function parseBeadsCoverageRevisionRefinedContent(content: string): string {
+  return parseBeadsCoverageRevisionCandidate(content).refinedContent
 }
 
 export function buildBeadsCoverageRevisionArtifact(

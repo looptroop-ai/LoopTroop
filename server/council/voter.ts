@@ -15,7 +15,7 @@ import type {
 import { CancelledError } from './types'
 import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
-import { VOTING_RUBRIC, getVotingRubricForPhase } from './types'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC, getVotingRubricForPhase } from './types'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
 import { createWorkBudget } from '../workflow/workBudget'
 import { buildStructuredRetryPrompt, normalizeVoteScorecardOutput } from '../structuredOutput'
@@ -33,7 +33,7 @@ function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
   return [
     'Output strict machine-readable YAML with top-level `draft_scores` keyed by the exact presented draft labels (`Draft 1`, `Draft 2`, etc.).',
     `For each draft, include only these integer fields: ${rubric.map(item => `\`${item.category}\``).join(', ')}, and \`total_score\`.`,
-    'Each rubric score must be an integer from 0 to 20. `total_score` must equal the sum of the rubric scores for that draft.',
+    `Each rubric score must be an integer from 0 to ${MAX_VOTE_CATEGORY_SCORE}. \`total_score\` must be an integer from 0 to ${MAX_VOTE_TOTAL_SCORE} and must equal the sum of the rubric scores for that draft.`,
     'Do not output prose, markdown fences, rankings, winners, comments, or extra keys.',
   ].join('\n')
 }
@@ -255,7 +255,7 @@ export async function conductVoting(
             {
               type: 'text' as const,
               content: [
-                'Score each draft on these categories (0-20 points each):',
+                `Score each draft on these categories (0-${MAX_VOTE_CATEGORY_SCORE} points each):`,
                 ...rubric.map(r => `- ${r.category} (${r.weight}pts): ${r.description}`),
                 '',
                 ...anonymized.map(d => d.content),
@@ -516,14 +516,37 @@ export function selectWinner(
     scoreMap.set(vote.draftId, current + vote.totalScore)
   }
 
-  let winnerId = members[0]?.modelId ?? ''
+  // Seeding from members[0] elected a model whose draft nobody scored whenever the
+  // main implementer was absent from the scorecard: the refine step then looked up a
+  // draft that does not exist. Only a scored draft can win.
+  const mainImplementerId = members[0]?.modelId
+  let winnerId: string | null = null
   let winnerScore = 0
 
+  // Ties between two members that are both not the main implementer used to fall
+  // to `scoreMap` insertion order, which is the order the votes arrived in —
+  // parallel model calls, so the same scorecard could elect either draft on two
+  // runs. Council order is the stable answer; the main implementer still wins a
+  // tie outright.
+  const memberRank = (memberId: string) => {
+    const index = members.findIndex((member) => member.modelId === memberId)
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index
+  }
+
   for (const [memberId, score] of scoreMap) {
-    if (score > winnerScore || (score === winnerScore && memberId === members[0]?.modelId)) {
+    const wins = winnerId === null
+      || score > winnerScore
+      || (score === winnerScore
+        && (memberId === mainImplementerId
+          || (winnerId !== mainImplementerId && memberRank(memberId) < memberRank(winnerId))))
+    if (wins) {
       winnerId = memberId
       winnerScore = score
     }
+  }
+
+  if (winnerId === null) {
+    throw new Error('Council voting produced no scored draft — cannot select a winner')
   }
 
   return { winnerId, totalScore: winnerScore }

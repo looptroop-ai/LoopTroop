@@ -1287,7 +1287,11 @@ export function repairYamlFreeTextScalars(yaml: string): string {
       continue
     }
 
-    result.push(`${prefix}${JSON.stringify(value)}`)
+    // Quoting the whole captured value made `free_text: answer # note` store the
+    // comment as part of the answer, and made this path disagree with every
+    // document that parses without repair, where js-yaml drops the comment.
+    const { value: scalarValue, comment } = splitYamlValueAndComment(value)
+    result.push(`${prefix}${JSON.stringify(scalarValue)}${comment ? ` ${comment}` : ''}`)
   }
 
   return result.join('\n')
@@ -1855,7 +1859,7 @@ function collectMultilineSingleQuotedFreeText(
  */
 export function stripCodeFences(content: string): string {
   const trimmed = content.trim()
-  const openMatch = trimmed.match(/^```(?:yaml|yml|json|jsonl)?\s*\n/)
+  const openMatch = trimmed.match(/^```(?:yaml|yml|jsonl|json)?\s*\n/)
   if (!openMatch) return content
   const closeMatch = trimmed.match(/\n\s*```\s*$/)
   if (!closeMatch) return content
@@ -2479,9 +2483,13 @@ export function repairYamlPlainScalarColons(yaml: string): string {
         continue
       }
 
+      // A trailing comment is not part of the scalar, and cannot be what broke
+      // the parse, so split it off before quoting and put it back unchanged.
+      const { value: scalarValue, comment } = splitYamlValueAndComment(value)
+
       // Check if the value contains a problematic `: ` or ends with `:`
-      if (/:\s/.test(value) || value.endsWith(':')) {
-        result.push(`${prefix}${quoteYamlPlainScalar(value)}`)
+      if (/:\s/.test(scalarValue) || scalarValue.endsWith(':')) {
+        result.push(`${prefix}${quoteYamlPlainScalar(scalarValue)}${comment ? ` ${comment}` : ''}`)
         continue
       }
     }
@@ -2497,11 +2505,13 @@ export function repairYamlPlainScalarColons(yaml: string): string {
         continue
       }
 
+      const { value: scalarValue, comment } = splitYamlValueAndComment(value)
+
       if (
-        looksLikeHeaderStyleListScalar(value)
-        || (!looksLikeListItemMapping && (/:\s/.test(value) || value.endsWith(':')))
+        looksLikeHeaderStyleListScalar(scalarValue)
+        || (!looksLikeListItemMapping && (/:\s/.test(scalarValue) || scalarValue.endsWith(':')))
       ) {
-        result.push(`${prefix}${quoteYamlPlainScalar(value)}`)
+        result.push(`${prefix}${quoteYamlPlainScalar(scalarValue)}${comment ? ` ${comment}` : ''}`)
         continue
       }
 

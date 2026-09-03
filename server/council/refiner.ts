@@ -22,6 +22,8 @@ export interface RefineDraftResult {
 
 const RAW_ATTEMPTS_ERROR_KEY = '__loopTroopRawAttempts'
 
+export const EMPTY_REFINEMENT_RESPONSE_ERROR = 'Refinement returned an empty response'
+
 export function getRawAttemptsFromRefinementError(error: unknown): RawAttempt[] {
   if (!error || typeof error !== 'object') return []
   const rawAttempts = (error as Record<string, unknown>)[RAW_ATTEMPTS_ERROR_KEY]
@@ -166,7 +168,9 @@ export async function refineDraft(
       })
       throwWithRawAttempts(error, rawAttempts)
     }
-    const refined = result.response || winnerDraft.content
+    // Substituting the winner draft for an empty reply made a model that said
+    // nothing look like a successful refine with no changes, so the retry never ran.
+    const refined = result.response
     const messages: Message[] = result.messages
 
     onOpenCodeSessionLog?.({
@@ -177,60 +181,71 @@ export async function refineDraft(
       messages,
     })
 
-    if (!validateResponse) {
+    const validation = ((): { ok: true; content: string } | { ok: false; error: unknown } => {
+      if (!refined.trim()) {
+        return { ok: false, error: new Error(EMPTY_REFINEMENT_RESPONSE_ERROR) }
+      }
+      if (!validateResponse) return { ok: true, content: refined }
+      try {
+        const validated = validateResponse(refined)
+        return { ok: true, content: validated.normalizedContent ?? refined }
+      } catch (error) {
+        return { ok: false, error }
+      }
+    })()
+
+    if (validation.ok) {
       appendAcceptedRawAttempt(rawAttempts, {
         stage: 'refine',
         rawResponse: refined,
         initialInput,
       })
-      return { content: refined, rawAttempts }
+      return { content: validation.content, rawAttempts }
     }
 
-    try {
-      const validation = validateResponse(refined)
-      appendAcceptedRawAttempt(rawAttempts, {
-        stage: 'refine',
-        rawResponse: refined,
-        initialInput,
-      })
-      return { content: validation.normalizedContent ?? refined, rawAttempts }
-    } catch (error) {
-      const validationError = getErrorMessage(error)
-      const retryDecision = getStructuredRetryDecision(refined, result.responseMeta)
-      appendRejectedRawAttempt(rawAttempts, {
-        stage: 'refine',
-        rawResponse: refined,
-        initialInput,
-        validationError,
-        failureClass: retryDecision.failureClass,
-      })
-      if (!shouldRetryStructuredOutput(attemptCount, normalizedMaxStructuredRetries)) {
-        const enrichedError = (() => {
-          if (!(error instanceof Error) || retryDecision.failureClass !== 'output_truncated') return error
-          const finishReason = result.responseMeta.latestStepFinishReason
-          const tokens = result.responseMeta.latestStepFinishTokens
-          return attachOpenCodeBlockedErrorDiagnostics(
-            error,
-            buildOutputTruncatedBlockedErrorDiagnostics({
-              modelId: winnerDraft.memberId,
-              sessionId: result.session.id,
-              ...(finishReason ? { finishReason } : {}),
-              ...(tokens ? { tokens } : {}),
-            }),
-          )
-        })()
-        throwWithRawAttempts(enrichedError, rawAttempts)
-      }
-      attemptCount += 1
-      promptParts = buildRetryPrompt?.({
-        baseParts: refineParts,
-        validationError,
-        rawResponse: refined,
-      }) ?? buildStructuredRetryPrompt(refineParts, {
-        validationError,
-        rawResponse: refined,
-        schemaReminder,
-      })
+    const error = validation.error
+    const validationError = getErrorMessage(error)
+    const retryDecision = getStructuredRetryDecision(refined, result.responseMeta)
+    appendRejectedRawAttempt(rawAttempts, {
+      stage: 'refine',
+      rawResponse: refined,
+      initialInput,
+      validationError,
+      failureClass: retryDecision.failureClass,
+    })
+    if (!shouldRetryStructuredOutput(attemptCount, normalizedMaxStructuredRetries)) {
+      const enrichedError = (() => {
+        if (!(error instanceof Error) || retryDecision.failureClass !== 'output_truncated') return error
+        const finishReason = result.responseMeta.latestStepFinishReason
+        const tokens = result.responseMeta.latestStepFinishTokens
+        return attachOpenCodeBlockedErrorDiagnostics(
+          error,
+          buildOutputTruncatedBlockedErrorDiagnostics({
+            modelId: winnerDraft.memberId,
+            sessionId: result.session.id,
+            ...(finishReason ? { finishReason } : {}),
+            ...(tokens ? { tokens } : {}),
+          }),
+        )
+      })()
+      throwWithRawAttempts(enrichedError, rawAttempts)
     }
+    attemptCount += 1
+    // `getStructuredRetryDecision` clears this flag for a truncated response,
+    // because a correction prompt built around output that was cut off mid-token
+    // asks the model to fix a schema error it did not make. The drafter has
+    // honoured that since it was introduced; this path did not, and quoted the
+    // truncated text back as an invalid attempt.
+    promptParts = retryDecision.useStructuredRetryPrompt
+      ? buildRetryPrompt?.({
+          baseParts: refineParts,
+          validationError,
+          rawResponse: refined,
+        }) ?? buildStructuredRetryPrompt(refineParts, {
+          validationError,
+          rawResponse: refined,
+          schemaReminder,
+        })
+      : refineParts
   }
 }

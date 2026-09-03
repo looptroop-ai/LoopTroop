@@ -310,9 +310,6 @@ export const ticketMachine = setup({
       ],
       on: {
         COVERAGE_CLEAN: { target: 'WAITING_PRD_APPROVAL' },
-        // Dead transition — PRD coverage loops internally via handlePrdCoverageVerificationLoop
-        // and only emits COVERAGE_CLEAN or COVERAGE_LIMIT_REACHED. Kept for defensive safety.
-        GAPS_FOUND: { target: 'REFINING_PRD' },
         COVERAGE_LIMIT_REACHED: { target: 'WAITING_PRD_APPROVAL' },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         CANCEL: { target: 'CANCELED' },
@@ -367,9 +364,6 @@ export const ticketMachine = setup({
       ],
       on: {
         COVERAGE_CLEAN: { target: 'EXPANDING_BEADS' },
-        // Dead transition — beads coverage loops internally via handleBeadsCoverageVerificationLoop
-        // and only emits COVERAGE_CLEAN or COVERAGE_LIMIT_REACHED. Kept for defensive safety.
-        GAPS_FOUND: { target: 'REFINING_BEADS' },
         COVERAGE_LIMIT_REACHED: { target: 'EXPANDING_BEADS' },
         ERROR: { target: 'BLOCKED_ERROR', actions: ['recordError'] },
         CANCEL: { target: 'CANCELED' },

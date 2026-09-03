@@ -50,6 +50,7 @@ import {
 import { summarizeModelErrorForLog } from './errorDetails'
 import { enrichGenericOpenCodeProviderError } from './logDiagnostics'
 import { getErrorMessage } from '@shared/typeGuards'
+import { isAbortError } from '../lib/abort'
 
 interface RawEvent {
   type: string
@@ -86,7 +87,7 @@ export interface OpenCodeAdapter {
   abortSession(sessionId: string): Promise<boolean>
   assembleBeadContext(ticketId: string, beadId: string): Promise<PromptPart[]>
   assembleCouncilContext(ticketId: string, phase: string): Promise<PromptPart[]>
-  checkHealth(): Promise<HealthStatus>
+  checkHealth(signal?: AbortSignal): Promise<HealthStatus>
 }
 
 function formatContextGuidance(guidance: Bead['contextGuidance']): string {
@@ -455,7 +456,14 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       }
       return responseText
     } catch (err) {
-      if (err instanceof Error && (err.name === 'AbortError' || promptOptions.signal?.aborted)) throw err
+      // Checked before the AbortError branch. A permission reply that failed
+      // aborts the SDK prompt itself, so the rejection arrives as an
+      // AbortError — and rethrowing that made `isCancellationError` read a real
+      // permission failure as a clean user cancel: no blocked-error
+      // diagnostics, no retry, no sign anything had gone wrong.
+      if (permissionReplyFailure) throw permissionReplyFailure
+      if (err instanceof Error && (err.name === 'AbortError' && promptOptions.signal?.aborted)) throw err
+      if (err instanceof Error && promptOptions.signal?.aborted) throw err
       if (err instanceof Error && err.name === 'OpenCodeSessionError') throw err
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId)
       if (enriched) {
@@ -523,8 +531,14 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       return Array.isArray(res.data)
         ? res.data.map((entry) => this.mapMessageRecord(entry, sessionId))
         : []
-    } catch {
-      return []
+    } catch (err) {
+      // `[]` has to mean "the list succeeded and was empty". Swallowing a
+      // cancellation or a 5xx here made a failed read look like a completed
+      // turn with no output, and `readAssistantSnapshotWithRetry` then retried
+      // three more times and returned an empty snapshot as if it were real.
+      if (signal?.aborted || isAbortError(err)) throw err
+      warnIfVerbose(`[adapter] getSessionMessages failed for session=${sessionId}`, err)
+      throw err
     }
   }
 
@@ -760,9 +774,15 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     return state
   }
 
-  async checkHealth(): Promise<HealthStatus> {
+  async checkHealth(signal?: AbortSignal): Promise<HealthStatus> {
+    // The caller's signal reaches the request itself. Racing it outside only
+    // stopped the waiting; the probe carried on against an unreachable server
+    // for its full timeout after the ticket had already been cancelled.
+    const withTimeout = () => (signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
+      : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS))
     try {
-      const health = await this.client.global.health(this.requestOptions(AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)))
+      const health = await this.client.global.health(this.requestOptions(withTimeout()))
       const version = health.data?.version ? String(health.data.version) : 'unknown'
       const providers = await this.withSdkPromiseTimeout(this.client.config.providers())
       return {
@@ -774,7 +794,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       // fall through to session fallback
     }
     try {
-      await this.client.session.status(undefined, this.requestOptions(AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)))
+      await this.client.session.status(undefined, this.requestOptions(withTimeout()))
       return { available: true, version: 'unknown', models: [] }
     } catch (err) {
       return {
@@ -904,8 +924,22 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     maxAttempts = 4,
     delayMs = 75,
   ): Promise<ReturnType<typeof analyzeAssistantMessages>> {
+    // A read that fails is retried like an empty one, but if every attempt
+    // fails the failure is surfaced rather than reported as a completed turn
+    // with no output.
+    let lastReadError: unknown = null
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const messages = await this.getSessionMessages(sessionId)
+      let messages: Message[]
+      try {
+        messages = await this.getSessionMessages(sessionId)
+        lastReadError = null
+      } catch (err) {
+        if (isAbortError(err)) throw err
+        lastReadError = err
+        if (attempt >= maxAttempts) break
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+        continue
+      }
       const analysis = analyzeAssistantMessages(messages, preferredMessageId)
       if (analysis.responseText || analysis.responseMeta.latestAssistantHasError || analysis.responseMeta.latestAssistantWasStale) {
         return analysis
@@ -913,6 +947,7 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       if (attempt >= maxAttempts) break
       await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
     }
+    if (lastReadError) throw lastReadError
 
     return {
       responseText: '',
@@ -1274,6 +1309,11 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     }
 
     if (this.isToolPart(part)) {
+      // `isToolPart` only checks the discriminator, and a tool part can arrive
+      // before its state exists. Reading through the missing state threw inside
+      // `subscribeToEvents`, which is not wrapped — so one malformed part turned
+      // into a single `session_error` and the event loop stopped reading.
+      if (!this.getRecord(part.state)) return null
       const input = this.getRecord(part.state.input)
       const time = this.getRecord(part.state.time)
       const start = typeof time?.start === 'number' ? time.start : undefined

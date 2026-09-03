@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { OPENCODE_PROVIDER_AUTH_FAILED } from '@shared/errorCodes'
 import type { BlockedErrorDiagnostics } from '@shared/errorDiagnostics'
-import { isContinuableBlockedError, shouldPreserveSessionForContinuation } from '../sessionContinuation'
+import {
+  clearTicketSessionContinuations,
+  getPendingSessionContinuationForTicketPhase,
+  isContinuableBlockedError,
+  requestSessionContinuation,
+  shouldPreserveSessionForContinuation,
+} from '../sessionContinuation'
 import { WorkflowDeadlineTimeoutError } from '../../lib/deadlineErrors'
 
 function diagnostics(input: Partial<BlockedErrorDiagnostics>): BlockedErrorDiagnostics {
@@ -82,5 +88,27 @@ describe('session continuation eligibility', () => {
         keepActive: true,
       },
     })).toBe(false)
+  })
+})
+
+describe('clearTicketSessionContinuations', () => {
+  it('drops every continuation a ticket holds and leaves other tickets alone', () => {
+    requestSessionContinuation({ ticketId: 'T-1', phase: 'CODING', sessionId: 'ses-a', additionalRetryAttempts: 2 })
+    requestSessionContinuation({ ticketId: 'T-1', phase: 'RUNNING_FINAL_TEST', sessionId: 'ses-b' })
+    requestSessionContinuation({ ticketId: 'T-2', phase: 'CODING', sessionId: 'ses-c' })
+
+    expect(clearTicketSessionContinuations('T-1')).toBe(2)
+
+    // A continuation stays valid for thirty minutes, so one left behind by an
+    // abort was picked up by the ticket's *next* run and reapplied the
+    // abandoned run's extra retry attempts.
+    expect(getPendingSessionContinuationForTicketPhase('T-1', 'CODING')).toBeNull()
+    expect(getPendingSessionContinuationForTicketPhase('T-1', 'RUNNING_FINAL_TEST')).toBeNull()
+    expect(getPendingSessionContinuationForTicketPhase('T-2', 'CODING')).not.toBeNull()
+    clearTicketSessionContinuations('T-2')
+  })
+
+  it('is a no-op for a ticket with nothing pending', () => {
+    expect(clearTicketSessionContinuations('T-nothing')).toBe(0)
   })
 })

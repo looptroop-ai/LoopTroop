@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { opencodeSessions, tickets } from '../db/schema'
 import type { OpenCodeAdapter } from './adapter'
 import type { OpenCodeSessionCreateOptions, Session } from './types'
@@ -8,6 +8,7 @@ import { buildTicketRef, getTicketByRef, getTicketContext } from '../storage/tic
 import { emitOpenCodeSessionEnded } from './sessionEvents'
 import { createOpenCodeSessionWithRetry } from './sessionCreation'
 import {
+  clearTicketSessionContinuations,
   getPendingSessionContinuationForTicketPhase,
   isContinuableBlockedError,
 } from './sessionContinuation'
@@ -55,12 +56,15 @@ function resolveSessionTicketRef(found: NonNullable<ReturnType<typeof findSessio
 export function listOpenCodeSessionsForTicket(ticketId: string, states: string[] = ['active']): OpenCodeSessionRecord[] {
   const context = getTicketContext(ticketId)
   if (!context) return []
+  // Filtered by the database rather than in JavaScript: every session row a
+  // ticket ever had was selected and most were then thrown away.
   return context.projectDb
     .select()
     .from(opencodeSessions)
-    .where(eq(opencodeSessions.ticketId, context.localTicketId))
+    .where(states.length > 0
+      ? and(eq(opencodeSessions.ticketId, context.localTicketId), inArray(opencodeSessions.state, states))
+      : eq(opencodeSessions.ticketId, context.localTicketId))
     .all()
-    .filter((session) => states.length === 0 || states.includes(session.state))
 }
 
 /**
@@ -344,6 +348,11 @@ export async function abortTicketSessions(ticketId: string): Promise<void> {
     .from(opencodeSessions)
     .where(and(eq(opencodeSessions.ticketId, context.localTicketId), eq(opencodeSessions.state, 'active')))
     .all()
+
+  // Before the early return: a ticket whose sessions are already abandoned can
+  // still hold pending continuations, and those are exactly what the next run
+  // would reapply.
+  clearTicketSessionContinuations(ticketId)
 
   if (activeSessions.length === 0) return
 

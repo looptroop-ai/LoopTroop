@@ -325,6 +325,19 @@ function initializeProjectSqlite(sqlite: Database) {
   `)
 }
 
+/**
+ * Deletes rows whose ticket is gone, before `foreign_keys=ON` is turned on.
+ *
+ * The list below is every table in `schema.ts` carrying a foreign key to
+ * `tickets.id`, re-derived rather than extended by name — two were missing, and
+ * the rows that survived init were not inert: an orphaned `question_waits` row
+ * distorts ETA wait accounting, and an orphaned
+ * `manual_qa_improvement_tickets` row maps an origin to a ticket that no longer
+ * exists, so the next improvement for that origin resolves to nothing.
+ *
+ * `opencode_sessions` is the one exception: its key is `onDelete: 'set null'`,
+ * so its orphans are detached rather than deleted.
+ */
 function cleanupProjectForeignKeyOrphans(sqlite: Database) {
   sqlite.exec(`
     DELETE FROM phase_artifacts
@@ -362,6 +375,14 @@ function cleanupProjectForeignKeyOrphans(sqlite: Database) {
     DELETE FROM ticket_ai_turn_metrics
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
+
+    DELETE FROM question_waits
+    WHERE ticket_id NOT IN (SELECT id FROM tickets)
+      OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
+
+    DELETE FROM manual_qa_improvement_tickets
+    WHERE destination_ticket_id NOT IN (SELECT id FROM tickets)
+      OR destination_ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 
     DELETE FROM tickets
     WHERE project_id NOT IN (SELECT id FROM projects);

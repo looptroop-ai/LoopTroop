@@ -67,8 +67,8 @@ import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { clearTicketWindows } from '../../workflow/questionWindows'
-import { clearTicketWorkBudget } from '../../workflow/workBudget'
 import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
+import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -268,11 +268,14 @@ export async function handleStartTicket(c: Context) {
   let lockedCouncilMemberVariants: Record<string, string> | null = null
   if (profile?.councilMemberVariants) {
     if (typeof profile.councilMemberVariants === 'string') {
-      try {
-        lockedCouncilMemberVariants = JSON.parse(profile.councilMemberVariants)
-      } catch (err) {
-        console.warn(`[tickets] Invalid councilMemberVariants configuration for ticket ${ticketId}:`, err)
-        return c.json({ error: 'Invalid configuration: malformed councilMemberVariants' }, 500)
+      // The canonical parser, not a bare JSON.parse. An array, a number or an
+      // empty key used to be locked here and then read back as `null` by
+      // `parseLockedCouncilMemberVariants`, so the ticket's variants silently
+      // disappeared for the rest of its life. A shape this cannot lock is a
+      // configuration error the caller should hear about at start.
+      lockedCouncilMemberVariants = parseLockedCouncilMemberVariants(profile.councilMemberVariants)
+      if (!lockedCouncilMemberVariants) {
+        return c.json({ error: 'Invalid configuration: malformed councilMemberVariants' }, 400)
       }
     } else {
       lockedCouncilMemberVariants = profile.councilMemberVariants
@@ -419,9 +422,6 @@ export async function handleCancelTicket(c: Context) {
       // true but tells a later reader nothing about why.
       await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
       await abortTicketSessions(ticketId)
-      // A suspension surviving the cancel would hold the clocks of whatever
-      // runs next on this ticket.
-      clearTicketWorkBudget(ticketId)
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)

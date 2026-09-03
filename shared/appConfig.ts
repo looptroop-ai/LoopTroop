@@ -36,13 +36,38 @@ export function getBackendHost(): string {
   return process.env.LOOPTROOP_BACKEND_HOST?.trim() || DEFAULT_BACKEND_HOST
 }
 
+/**
+ * True for a dotted-quad IPv4 address, each octet 0-255 with no leading zeros.
+ *
+ * `startsWith('127.')` is not an address test. It accepts `127.999.0.1`, and it
+ * accepts the *hostname* `127.attacker.example`, which resolves to whatever its
+ * owner points it at — so a name under someone else's control passed the
+ * loopback check the host guard relies on.
+ */
+function parseIPv4(value: string): [number, number, number, number] | null {
+  const parts = value.split('.')
+  if (parts.length !== 4) return null
+  const octets: number[] = []
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null
+    if (part.length > 1 && part.startsWith('0')) return null
+    const octet = Number(part)
+    if (octet > 255) return null
+    octets.push(octet)
+  }
+  return octets as [number, number, number, number]
+}
+
 export function isLoopbackHost(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
-  return normalized === 'localhost'
+  if (
+    normalized === 'localhost'
     || normalized === '::1'
     || normalized === '::ffff:127.0.0.1'
     || normalized === '::ffff:7f00:1'
-    || normalized.startsWith('127.')
+  ) return true
+  // The whole 127.0.0.0/8 block is loopback, but only as an address.
+  return parseIPv4(normalized)?.[0] === 127
 }
 
 /**

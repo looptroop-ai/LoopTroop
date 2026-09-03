@@ -1,4 +1,7 @@
 import type { Context } from 'hono'
+
+/** Room for the bookkeeping around the AI call itself, not for the call. */
+const BATCH_PROCESSING_MARGIN_MS = 60_000
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
@@ -6,11 +9,17 @@ import { abortTicketSessions } from '../../opencode/sessionManager'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { broadcaster } from '../../sse/broadcaster'
 import {
+  claimInterviewBatch,
   handleInterviewQABatch,
   processInterviewBatchAsync,
+  releaseInterviewBatch,
   skipAllInterviewQuestionsToApproval,
 } from '../../workflow/runner'
 import { abortTicketWork } from '../../workflow/phases/state'
+import {
+  resolveAiResponseTimeoutForTicket,
+  resolveStructuredRetryCountForTicket,
+} from '../../workflow/phases/helpers'
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
@@ -348,6 +357,14 @@ export async function handleAnswerBatch(c: Context) {
       if (!session) {
         return c.json({ error: 'No interview session found' }, 404)
       }
+      // Claimed before anything is dispatched. A session existing is not the
+      // same as a batch being available: the first request clears
+      // `currentBatch`, and a second one accepted after that used to delete the
+      // first request's skip-receipt entry on its way to failing.
+      if (!claimInterviewBatch(ticketId)) {
+        return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+      }
+
       // ASYNC path: return 202 immediately, process AI call in background.
       // handleInterviewQABatch persists the intermediate state (answers saved,
       // currentBatch cleared) synchronously before its first await, so the
@@ -355,7 +372,14 @@ export async function handleAnswerBatch(c: Context) {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
-      const batchTimeoutMs = 10 * 60 * 1000
+      // Derived from the ticket's own budget rather than a flat ten minutes.
+      // The configured AI response timeout is 20 minutes by default, so a turn
+      // that was slow but well inside its budget was aborted here and surfaced
+      // to the operator as `interview_error`. One attempt plus its structured
+      // retries, and a margin for the surrounding bookkeeping.
+      const aiTimeoutMs = resolveAiResponseTimeoutForTicket(ticketId)
+      const structuredRetries = resolveStructuredRetryCountForTicket(ticketId)
+      const batchTimeoutMs = aiTimeoutMs * (1 + Math.max(0, structuredRetries)) + BATCH_PROCESSING_MARGIN_MS
       let timeoutId: ReturnType<typeof setTimeout> | null = null
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -415,6 +439,9 @@ export async function handleAnswerBatch(c: Context) {
       ...('roundNumber' in result && typeof result.roundNumber === 'number' ? { roundNumber: result.roundNumber } : {}),
     })
   } catch (err) {
+    // The claim is normally released when the background work settles. If
+    // anything threw between taking it and dispatching, nothing would.
+    releaseInterviewBatch(ticketId)
     logTicketOperationError(ticketId, 'Failed to process answer-batch for ticket', err)
     return c.json({ error: 'Failed to process batch', details: getErrorMessage(err) }, 500)
   }

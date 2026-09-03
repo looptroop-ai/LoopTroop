@@ -1,6 +1,8 @@
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PhaseIntermediateData } from './types'
+import { clearTicketWorkBudget } from '../workBudget'
+import { forgetTicketQuestionMemory } from '../questionWindows'
 
 export const runningPhases = new Set<string>()
 
@@ -56,6 +58,17 @@ export function cleanupTicketState(ticketId: string) {
 
   // Clean up interview QA session
   interviewQASessions.delete(ticketId)
+
+  // Every cancel, completion and restart passes through here. The ledger used
+  // to be dropped from the cancel route alone, so a restart — which cancels and
+  // then continues the *same* ticket id — carried a leftover depth or
+  // suspension into the next run and held its clocks still.
+  clearTicketWorkBudget(ticketId)
+
+  // Per-ticket question bookkeeping outlives the timers themselves, and a
+  // ticket that completed without an open question never reached the window
+  // teardown that used to be its only clear.
+  forgetTicketQuestionMemory(ticketId)
 }
 
 /**

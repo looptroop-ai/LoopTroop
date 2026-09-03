@@ -77,14 +77,14 @@ function buildMockCatalog(): OpenCodeCatalogResponse {
   }
 }
 
-export async function fetchProviderCatalog(): Promise<OpenCodeCatalogResponse> {
+export async function fetchProviderCatalog(signal?: AbortSignal): Promise<OpenCodeCatalogResponse> {
   if (isMockOpenCodeMode()) {
     return buildMockCatalog()
   }
 
-  let response = await fetchCatalogEndpoint('/provider')
+  let response = await fetchCatalogEndpoint('/provider', {}, signal)
   if (response.status === 404) {
-    response = await fetchCatalogEndpoint('/config/providers')
+    response = await fetchCatalogEndpoint('/config/providers', {}, signal)
   }
   if (!response.ok) {
     throw new Error(`OpenCode provider catalog request failed with ${response.status}`)
@@ -133,8 +133,8 @@ export function flattenCatalogModels(
   )
 }
 
-export async function fetchConnectedModelIds(): Promise<string[]> {
-  const catalog = await fetchProviderCatalog()
+export async function fetchConnectedModelIds(signal?: AbortSignal): Promise<string[]> {
+  const catalog = await fetchProviderCatalog(signal)
   return flattenCatalogModels(catalog, 'connected').map((model) => model.fullId)
 }
 
@@ -149,11 +149,16 @@ export async function refreshProviderCatalog(): Promise<OpenCodeCatalogResponse>
   return fetchProviderCatalog()
 }
 
-function fetchCatalogEndpoint(path: string, init: RequestInit = {}) {
+function fetchCatalogEndpoint(path: string, init: RequestInit = {}, signal?: AbortSignal) {
   const authHeader = getOpenCodeBasicAuthHeader()
   return fetch(`${getOpenCodeBaseUrl()}${path}`, {
     ...init,
-    signal: AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS),
+    // Combined rather than replaced: the operation timeout still applies, and
+    // the caller's cancellation now actually reaches the request instead of
+    // only abandoning the wait for it.
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS)])
+      : AbortSignal.timeout(SDK_OPERATION_TIMEOUT_MS),
     ...(authHeader
       ? { headers: { ...Object.fromEntries(new Headers(init.headers).entries()), Authorization: authHeader } }
       : {}),

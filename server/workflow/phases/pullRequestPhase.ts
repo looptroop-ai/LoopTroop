@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import {
+  getActivePhaseAttempt,
   getLatestPhaseArtifact,
   getTicketPaths,
   insertPhaseArtifact,
@@ -501,7 +502,10 @@ async function runCandidateFileAudit(input: {
       sessionOwnership: {
         ticketId: input.ticketId,
         phase: 'CREATING_PULL_REQUEST',
-        phaseAttempt: 1,
+        // CREATING_PULL_REQUEST is attempt-tracked, and a restart archives
+        // attempt 1 — the literal made every later attempt's session claim
+        // ownership of the archived one, as every other phase avoids doing.
+        phaseAttempt: getActivePhaseAttempt(input.ticketId, 'CREATING_PULL_REQUEST') ?? 1,
         forceFresh: true,
         memberId: input.model,
         step: 'candidate_file_audit',
@@ -783,7 +787,7 @@ export async function handleCreatePullRequest(
         sessionOwnership: {
           ticketId,
           phase: 'CREATING_PULL_REQUEST',
-          phaseAttempt: 1,
+          phaseAttempt: getActivePhaseAttempt(ticketId, 'CREATING_PULL_REQUEST') ?? 1,
           keepActive: true,
           forceFresh: true,
           memberId: mainImplementer,

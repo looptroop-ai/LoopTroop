@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createApp } from '../server/app'
-import { createSessionCredentials, SESSION_COOKIE_NAME, type SessionCredentials } from '../server/middleware/sessionAuth'
+import { createSessionCredentials, readCookie, SESSION_COOKIE_NAME, type SessionCredentials } from '../server/middleware/sessionAuth'
 import type { Hono } from 'hono'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -49,6 +49,24 @@ describe('daemon session auth', () => {
   it('rejects a request with no credentials', async () => {
     const response = await makeApp().request('/api/projects')
     expect(response.status).toBe(401)
+  })
+
+  it('answers a malformed cookie with the ordinary 401, not a 500', async () => {
+    // `decodeURIComponent` on bad percent-encoding threw before authentication
+    // could return its normal refusal, so a broken Cookie header told an
+    // unauthenticated caller that something had gone wrong inside the daemon.
+    const response = await makeApp().request('/api/projects', {
+      headers: { Cookie: `${SESSION_COOKIE_NAME}=%E0%A4%A` },
+    })
+    expect(response.status).toBe(401)
+  })
+
+  it('reads a malformed cookie as absent rather than throwing', () => {
+    // The host guard calls this too, on the request path, so a throw here would
+    // 500 before any handler ran.
+    expect(readCookie(`${SESSION_COOKIE_NAME}=%zz`, SESSION_COOKIE_NAME)).toBeNull()
+    expect(readCookie(`${SESSION_COOKIE_NAME}=%E0%A4%A`, SESSION_COOKIE_NAME)).toBeNull()
+    expect(readCookie(`other=%zz; ${SESSION_COOKIE_NAME}=fine`, SESSION_COOKIE_NAME)).toBe('fine')
   })
 
   it('accepts the bearer API token', async () => {

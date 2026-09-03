@@ -233,6 +233,33 @@ function recordInterviewSkipReceipts(input: {
  */
 const pendingBatchSkipActions = new Map<string, string>()
 
+/**
+ * Tickets whose async answer batch is still being processed.
+ *
+ * The route accepted a second submission whenever a session existed, even after
+ * the first had cleared `currentBatch`. The second then deleted the first's
+ * skip-receipt entry, failed with no active batch, and left the first's
+ * rollback with nothing to remove — so a failed AI call reverted the snapshot
+ * while its receipts stayed behind, describing skips the ticket no longer had.
+ */
+const inFlightBatches = new Set<string>()
+
+/** True when this ticket already has an async batch in flight. */
+export function hasInFlightInterviewBatch(ticketId: string): boolean {
+  return inFlightBatches.has(ticketId)
+}
+
+/** Claims the batch for this ticket. False when one is already in flight. */
+export function claimInterviewBatch(ticketId: string): boolean {
+  if (inFlightBatches.has(ticketId)) return false
+  inFlightBatches.add(ticketId)
+  return true
+}
+
+export function releaseInterviewBatch(ticketId: string): void {
+  inFlightBatches.delete(ticketId)
+}
+
 export function skipAllInterviewQuestionsToApproval(
   ticketId: string,
   batchAnswers: Record<string, string>,
@@ -1514,6 +1541,9 @@ export function processInterviewBatchAsync(
         pendingBatchSkipActions.delete(ticketId)
       }
       throw err
+    })
+    .finally(() => {
+      releaseInterviewBatch(ticketId)
     })
 }
 

@@ -276,6 +276,11 @@ describe('SessionManager', () => {
 
     expect(listOpenCodeSessionsForTicket(ticket.id, ['active']).map((session) => session.sessionId)).toEqual([])
     expect(listOpenCodeSessionsForTicket(ticket.id, ['abandoned']).map((session) => session.sessionId)).toEqual([created.id])
+    // The state filter moved into the query. An empty list still means "every
+    // state", which is what the callers that pass one rely on.
+    expect(listOpenCodeSessionsForTicket(ticket.id, []).map((session) => session.sessionId)).toEqual([created.id])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['active', 'abandoned']).map((session) => session.sessionId)).toEqual([created.id])
+    expect(listOpenCodeSessionsForTicket(ticket.id, ['nonexistent-state'])).toEqual([])
   })
 
   it('retries session creation and stores only the successful owned session', async () => {

@@ -260,7 +260,16 @@ export class OpenCodeSupervisor {
     // paths escalate to `killProcessTree`, which is `taskkill /T` and reaches
     // through the wrapper. Only `status` is affected, where it is the pid of the
     // process LoopTroop actually started.
-    return { kind: 'managed', baseUrl: this.options.baseUrl, pid: child.pid ?? 0 }
+    // A child with no pid never started. Recording 0 produced a status that
+    // claimed a live managed server, while `isProcessAlive(0)` is false and no
+    // stop path could ever reach it.
+    if (child.pid === undefined) {
+      this.child = null
+      child.kill('SIGKILL')
+      throw new Error('OpenCode process was started but reported no process id.')
+    }
+
+    return { kind: 'managed', baseUrl: this.options.baseUrl, pid: child.pid }
   }
 
   private async waitForHealth(): Promise<void> {

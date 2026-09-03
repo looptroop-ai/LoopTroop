@@ -661,6 +661,23 @@ describe('ticketRouter PRD approval routes', () => {
     })
   })
 
+  it('refuses the generic approve route on a status that cannot be approved', async () => {
+    const { app, ticket } = await setupPrdApprovalTicket()
+    patchTicket(ticket.id, { status: 'CODING' })
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+
+    // Refused, not accepted. Whichever of the handler's two checks answers, the
+    // contract is the same: an approve on a status that cannot be approved is a
+    // 409, never a 200 reporting an action the machine ignored.
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: 'Ticket is not in an approval state' })
+  })
+
   it('records why the PRD was approved with known coverage gaps', async () => {
     const { app, ticket, prdRaw } = await setupPrdApprovalTicket()
 

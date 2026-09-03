@@ -413,6 +413,19 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
  * server reports no version of its own, and the two can differ: a server that
  * was already up may predate an upgrade of the CLI on PATH.
  */
+/**
+ * Whether `looptroop start` could launch OpenCode.
+ *
+ * "Not missing", not "ok". The version probe reports `warn` both when the
+ * binary is absent and when it timed out, and treating the timeout as
+ * unavailable made doctor report that `opencode` cannot be launched — about a
+ * CLI that is installed and merely slow to answer. Only a binary that is
+ * genuinely absent makes launching impossible.
+ */
+export function isOpenCodeCliLaunchable(check: Check): boolean {
+  return check.missing !== true
+}
+
 function checkOpenCodeVersion(latest: string | null = null): Check {
   if (resolveSettings().opencodeMode === 'mock') {
     return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
@@ -826,7 +839,7 @@ export async function runChecks(): Promise<Check[]> {
     await checkLastStart(),
     await checkProjectIgnores(),
     opencodeCli,
-    await checkOpenCode(daemon, opencodeCli.status === 'ok'),
+    await checkOpenCode(daemon, isOpenCodeCliLaunchable(opencodeCli)),
     await checkPort(daemon),
     await checkDaemon(daemon),
   ]

@@ -8,13 +8,43 @@ export interface LogsOptions {
 
 const DEFAULT_LINES = 50
 
+const TAIL_CHUNK_BYTES = 64 * 1024
+
+/**
+ * The last `lines` lines, read backwards from the end of the file.
+ *
+ * Reading the whole file and slicing loaded a long-running daemon's entire log
+ * into memory to print fifty lines of it.
+ */
 async function readTail(logPath: string, lines: number): Promise<string> {
-  const { readFile } = await import('node:fs/promises')
-  const content = await readFile(logPath, 'utf8')
-  const all = content.split('\n')
-  // A trailing newline yields an empty final element that would print as a blank line.
-  if (all.at(-1) === '') all.pop()
-  return all.slice(-lines).join('\n')
+  const { open } = await import('node:fs/promises')
+  const handle = await open(logPath, 'r')
+  try {
+    const size = (await handle.stat()).size
+    let position = size
+    let collected = ''
+    // One more newline than lines requested: the first is the end of the line
+    // *before* the window, which is what makes the count exact.
+    while (position > 0 && countNewlines(collected) <= lines) {
+      const length = Math.min(TAIL_CHUNK_BYTES, position)
+      position -= length
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, position)
+      collected = buffer.toString('utf8') + collected
+    }
+    const all = collected.split('\n')
+    // A trailing newline yields an empty final element that would print as a blank line.
+    if (all.at(-1) === '') all.pop()
+    return all.slice(-lines).join('\n')
+  } finally {
+    await handle.close()
+  }
+}
+
+function countNewlines(value: string): number {
+  let count = 0
+  for (let index = value.indexOf('\n'); index !== -1; index = value.indexOf('\n', index + 1)) count += 1
+  return count
 }
 
 export async function logsCommand(options: LogsOptions): Promise<number> {
@@ -74,6 +104,10 @@ function followLog(logPath: string): Promise<void> {
 
     const stop = (): void => {
       watcher.close()
+      // Removed with the watcher. Left installed, these accumulated one pair
+      // per follow and kept the process referenced after it had stopped.
+      process.off('SIGINT', stop)
+      process.off('SIGTERM', stop)
       resolveFollow()
     }
     process.on('SIGINT', stop)

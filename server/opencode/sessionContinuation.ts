@@ -196,6 +196,24 @@ export function clearSessionContinuation(sessionId: string): void {
   pendingSessionContinuations.delete(sessionId)
 }
 
+/**
+ * Drops every pending continuation for a ticket.
+ *
+ * Aborting a ticket's sessions marked them abandoned but left their
+ * continuations in place, and a continuation stays valid for thirty minutes —
+ * long enough for the *next* run of the same ticket to pick one up and reapply
+ * the abandoned run's extra retry attempts.
+ */
+export function clearTicketSessionContinuations(ticketId: string): number {
+  let cleared = 0
+  for (const [sessionId, pending] of pendingSessionContinuations) {
+    if (pending.ticketId !== ticketId) continue
+    pendingSessionContinuations.delete(sessionId)
+    cleared += 1
+  }
+  return cleared
+}
+
 export function hasPendingSessionContinuationForTicketPhase(ticketId: string, phase: string): boolean {
   return getPendingSessionContinuationForTicketPhase(ticketId, phase) !== null
 }

@@ -100,6 +100,23 @@ describe('skip receipts', () => {
     expect(listSkipEvents(ticket.id)).toHaveLength(1)
   })
 
+  it('matches an action by its recorded field, not by a pattern in the row', () => {
+    const ticket = makeTicket()
+    writeSkipReceipts({
+      ticketId: ticket.id,
+      surface: 'interview_question' as const,
+      itemType: 'interview_question' as const,
+      phase: 'WAITING_INTERVIEW_ANSWERS' as const,
+      ticketStatusBefore: 'WAITING_INTERVIEW_ANSWERS',
+      actionId: 'action-first',
+      items: [{ itemId: 'Q01', reason: 'See the note about "action_id":"action-second" in the ticket.' }],
+    })
+
+    expect(hasSkipReceiptsForAction(ticket.id, 'action-first')).toBe(true)
+    expect(hasSkipReceiptsForAction(ticket.id, 'action-second')).toBe(false)
+    expect(hasSkipReceiptsForAction(ticket.id, 'action-firs')).toBe(false)
+  })
+
   it('normalizes a blank reason to null rather than an empty string', () => {
     const ticket = makeTicket()
     writeSkipReceipts({

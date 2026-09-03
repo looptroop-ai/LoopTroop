@@ -26,7 +26,7 @@ import { lockExecutionSetupPlanDetectedHooks } from '../../phases/executionSetup
 import type { ExecutionSetupPlan } from '../../phases/executionSetupPlan/types'
 import type { PrdDocument } from '../../structuredOutput/types'
 import { isBeforeExecution, isStatusAtOrPast } from '@shared/workflowMeta'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 import { assertExpectedContentSha256, StaleArtifactApprovalError } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { writeUserEditReceipt } from '../../workflow/artifactEditReceipts'
@@ -97,15 +97,13 @@ export async function handleApproveTicket(c: Context) {
     return approveExecutionSetupPlanForRoute(c, ticketId, expectedContentSha256)
   }
 
-  try {
-    ensureActorForTicket(ticketId)
-    sendTicketEvent(ticketId, { type: 'APPROVE' })
-  } catch (err) {
-    logTicketOperationError(ticketId, 'Failed to send APPROVE to ticket', err)
-    return c.json({ error: 'Failed to approve ticket', details: getErrorMessage(err) }, 500)
-  }
-
-  return respondWithState(c, ticketId, 'Approve action accepted')
+  // Unreachable today: the four branches above cover exactly `approvalStates`,
+  // which the guard at the top of this handler already enforces. It used to
+  // fall through to a bare APPROVE — an event the machine only handles on three
+  // of those states and ignores everywhere else — and answer "Approve action
+  // accepted" for an action that did nothing. Answering the same way the guard
+  // does means the two lists drifting apart cannot resurrect that.
+  return c.json({ error: 'Ticket is not in an approval state' }, 409)
 }
 
 export async function handlePutPrd(c: Context) {
@@ -311,7 +309,13 @@ function recordGapAcknowledgement(input: {
   const receipt = getLatestPhaseArtifact(input.ticketId, 'approval_receipt', input.phase)
   if (receipt) {
     try {
-      const parsed = JSON.parse(receipt.content) as Record<string, unknown>
+      // Validated rather than asserted: an array or a primitive spread into an
+      // object silently produces a receipt with numeric keys, or none at all.
+      const parsed: unknown = JSON.parse(receipt.content)
+      if (!isRecord(parsed)) {
+        console.warn(`[approvals] Approval receipt for ${input.ticketId} is not an object; leaving it unchanged.`)
+        return
+      }
       upsertLatestPhaseArtifact(input.ticketId, 'approval_receipt', input.phase, JSON.stringify({
         ...parsed,
         gap_acknowledgement: { reason },

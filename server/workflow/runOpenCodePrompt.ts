@@ -52,6 +52,7 @@ export interface OpenCodeRunCallbacks {
 
 import type { PromptTimeoutKind } from '@shared/promptTimeout'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { throwIfCancelled } from '../lib/abort'
 export type { PromptTimeoutKind }
 
 export interface OpenCodePromptDispatchEvent {
@@ -881,7 +882,9 @@ export async function runOpenCodeSessionPrompt({
     const latestAssistant = analyzeAssistantMessages(messages)
     latestAssistantResponse = latestAssistant.responseText
     responseMeta = latestAssistant.responseMeta
-  } catch {
+  } catch (err) {
+    // A cancellation is not a transcript that happened to be unreadable.
+    throwIfCancelled(err, signal)
     messages = []
   }
   responseMeta = mergeSessionErrorIntoResponseMeta(responseMeta, sessionErrorEvent)

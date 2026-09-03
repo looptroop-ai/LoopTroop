@@ -272,12 +272,21 @@ function readSkipReceiptRows(ticketRef: string): Array<{
     }))
 }
 
-/** True when this exact user action already left receipts on this ticket. */
+/**
+ * True when this exact user action already left receipts on this ticket.
+ *
+ * Parsed rather than pattern-matched. The substring test this replaces looked
+ * for `"action_id":"<id>"` anywhere in the serialised row — which, checked
+ * against the schema, no reason or question context can actually produce: the
+ * only unescaped `action_id` key is the receipt's own, and a reason quoting
+ * that text is escaped by `JSON.stringify`. So this is not a bug fix; it is a
+ * check that holds because of what it reads rather than because of what the
+ * schema currently happens to allow.
+ */
 export function hasSkipReceiptsForAction(ticketRef: string, actionId: string): boolean {
-  const needle = JSON.stringify(actionId)
   return readSkipReceiptRows(ticketRef).some((row) => (
     SKIP_RECEIPT_ARTIFACT_TYPES.includes(row.artifactType)
-    && row.content.includes(`"action_id":${needle}`)
+    && parseStoredReceipt(row.content)?.action_id === actionId
   ))
 }
 
@@ -368,7 +377,17 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
   }
 
   const now = new Date().toISOString()
-  const inserted = context.projectDb.transaction((tx) => receipts.map((receipt) => tx
+  // The idempotency check runs again inside the write transaction, where the
+  // read and the insert cannot be separated. Outside it — as it was — two
+  // submissions of the same action could both see "not yet recorded" and both
+  // write a full set of receipts.
+  //
+  // A unique index on (ticket_id, action_id) would enforce this in the database
+  // instead, but that needs a migration; recorded as a follow-up rather than
+  // shipped here.
+  const inserted = context.projectDb.transaction((tx) => {
+    if (hasSkipReceiptsForAction(input.ticketId, input.actionId)) return []
+    return receipts.map((receipt) => tx
     .insert(phaseArtifacts)
     .values({
       ticketId: context.localTicketId,
@@ -380,7 +399,9 @@ export function writeSkipReceipts(input: WriteSkipReceiptsInput): SkipReceipt[] 
       updatedAt: now,
     })
     .returning()
-    .get()))
+    .get())
+  })
+  if (inserted.length === 0) return []
 
   // One broadcast per action, after the transaction commits. Never inside it: a
   // subscriber that refetched mid-write would see a half-recorded bulk skip.

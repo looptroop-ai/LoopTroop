@@ -823,11 +823,14 @@ export function normalizeInterviewDocumentOutput(
       }
 
       const schemaVersion = toInteger(getValueByAliases(parsed, ['schemaversion', 'schema_version'])) ?? 1
-      const ticketId = toOptionalString(getValueByAliases(parsed, ['ticketid', 'ticket_id'])) ?? options?.ticketId ?? ''
+      // Bound once: the lookup reports a canonical/legacy disagreement, so
+      // resolving the same aliases twice reported it twice.
+      const rawTicketId = getStringByAliases(parsed, ['ticketid', 'ticket_id'])?.trim()
+      const ticketId = rawTicketId || options?.ticketId || ''
       if (!ticketId) {
         throw new Error('Interview document is missing ticket_id')
       }
-      if (!toOptionalString(getValueByAliases(parsed, ['ticketid', 'ticket_id'])) && options?.ticketId) {
+      if (!rawTicketId && options?.ticketId) {
         warnings.push('Filled missing ticket_id from runtime context.')
       }
 

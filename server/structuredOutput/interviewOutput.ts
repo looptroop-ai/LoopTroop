@@ -1231,6 +1231,7 @@ function normalizeInterviewCompletePayload(value: unknown, shouldAllowQuestionsO
 export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutputResult<InterviewTurnOutput> {
   let lastError = 'No interview batch or completion content found'
   let lastErrorCause: unknown = null
+  let lastCandidateWarnings: string[] = []
 
   const completeCandidates = collectTaggedCandidates(rawContent, 'INTERVIEW_COMPLETE')
   for (const candidate of completeCandidates) {
@@ -1257,6 +1258,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
     } finally {
       releaseAliasConflicts()
     }
@@ -1292,6 +1294,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
     } finally {
       releaseAliasConflicts()
     }
@@ -1357,6 +1360,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     } catch (error) {
       lastError = getErrorMessage(error)
       lastErrorCause = error
+      lastCandidateWarnings = candidateWarnings
     } finally {
       releaseAliasConflicts()
     }
@@ -1367,7 +1371,15 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     looksLikePromptEcho(rawContent)
       ? 'Interview output echoed the prompt instead of returning an <INTERVIEW_BATCH> or <INTERVIEW_COMPLETE> artifact'
       : lastError,
-    { cause: lastErrorCause },
+    {
+      cause: lastErrorCause,
+      // The sibling normalisers in this file carry the last rejected
+      // candidate's repair record into their failures, and so do beadsOutput
+      // and voteOutput. This one built the per-candidate arrays and dropped
+      // them, so a failure could not say what had been attempted.
+      repairApplied: lastCandidateWarnings.length > 0,
+      repairWarnings: lastCandidateWarnings,
+    },
   )
 }
 

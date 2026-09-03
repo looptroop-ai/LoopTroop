@@ -11,7 +11,7 @@ import type {
   InterviewSessionSnapshot,
   PersistedInterviewBatch,
 } from '@shared/interviewSession'
-import { normalizeBatchSelection } from './batchManagement'
+import { isBatchAnswerSkipped, isSameSessionQuestion, normalizeBatchSelection } from './batchManagement'
 
 /**
  * Validates a persisted interview session before it is restored.
@@ -109,6 +109,13 @@ function requireMember<T extends string>(value: unknown, allowed: readonly T[], 
   return text as T
 }
 
+function requireProgress(record: Record<string, unknown>, path: string): { current: number; total: number } {
+  const current = requireNonNegativeInteger(record.current, `${path}.current`)
+  const total = requireNonNegativeInteger(record.total, `${path}.total`)
+  if (current > total) fail(path, `a current no greater than its total (${current} of ${total})`)
+  return { current, total }
+}
+
 function requireOptions(value: unknown, path: string): InterviewQuestionOption[] {
   return requireArray(value, path).map((entry, index) => {
     const option = requireRecord(entry, `${path}[${index}]`)
@@ -178,14 +185,14 @@ function requireBatch(value: unknown, path: string): PersistedInterviewBatch {
   return {
     questions: requireArray(record.questions, `${path}.questions`)
       .map((question, index) => requireQuestion(question, `${path}.questions[${index}]`)),
-    progress: {
-      current: requireInteger(progress.current, `${path}.progress.current`),
-      total: requireInteger(progress.total, `${path}.progress.total`),
-    },
+    // Same shape as `beadProgress` in the actor snapshot: two individually
+    // well-formed counters that cannot both be true. The UI does arithmetic on
+    // these.
+    progress: requireProgress(progress, `${path}.progress`),
     isComplete: requireBoolean(record.isComplete, `${path}.isComplete`),
     isFinalFreeForm: requireBoolean(record.isFinalFreeForm, `${path}.isFinalFreeForm`),
     aiCommentary: requireString(record.aiCommentary, `${path}.aiCommentary`),
-    batchNumber: requireInteger(record.batchNumber, `${path}.batchNumber`),
+    batchNumber: requireNonNegativeInteger(record.batchNumber, `${path}.batchNumber`),
     source: requireMember(record.source, BATCH_SOURCES, `${path}.source`),
     ...(finalYaml !== undefined ? { finalYaml } : {}),
     ...(roundNumber !== undefined ? { roundNumber } : {}),
@@ -196,10 +203,10 @@ function requireBatchHistoryEntry(value: unknown, path: string): InterviewBatchH
   const record = requireRecord(value, path)
   const roundNumber = record.roundNumber === undefined
     ? undefined
-    : requireInteger(record.roundNumber, `${path}.roundNumber`)
+    : requireNonNegativeInteger(record.roundNumber, `${path}.roundNumber`)
 
   return {
-    batchNumber: requireInteger(record.batchNumber, `${path}.batchNumber`),
+    batchNumber: requireNonNegativeInteger(record.batchNumber, `${path}.batchNumber`),
     source: requireMember(record.source, BATCH_SOURCES, `${path}.source`),
     questionIds: requireStringArray(record.questionIds, `${path}.questionIds`),
     isFinalFreeForm: requireBoolean(record.isFinalFreeForm, `${path}.isFinalFreeForm`),
@@ -211,7 +218,7 @@ function requireBatchHistoryEntry(value: unknown, path: string): InterviewBatchH
 function requireFollowUpRound(value: unknown, path: string): InterviewFollowUpRound {
   const record = requireRecord(value, path)
   return {
-    roundNumber: requireInteger(record.roundNumber, `${path}.roundNumber`),
+    roundNumber: requireNonNegativeInteger(record.roundNumber, `${path}.roundNumber`),
     source: requireMember(record.source, BATCH_SOURCES, `${path}.source`),
     questionIds: requireStringArray(record.questionIds, `${path}.questionIds`),
   }
@@ -247,6 +254,33 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
       fail(`snapshot.currentBatch.questions[${index}].id`, `a question id not already used ("${question.id}" appears twice)`)
     }
     batchIds.add(question.id)
+    // The two lists were each checked for internal duplicates and never against
+    // each other, so canonical `Q1` and a batch `Q1` asking something else both
+    // restored. Answers are normalised against the canonical question but
+    // recorded against the batch prompt, so the answer attached to the wrong
+    // question. `recordPreparedBatch` rejects this while the session is live;
+    // the restore path has to apply the same rule.
+    const canonical = questionsById.get(question.id)
+    if (canonical && !isSameSessionQuestion(canonical, question)) {
+      fail(
+        `snapshot.currentBatch.questions[${index}]`,
+        `the same question as snapshot.questions "${question.id}", not a different one reusing its id`,
+      )
+    }
+  }
+
+  // A history or follow-up round naming a question that does not exist counts
+  // towards the follow-up budget and is emitted into the canonical document.
+  const knownIds = new Set([...questionsById.keys(), ...batchIds])
+  for (const [index, entry] of snapshot.batchHistory.entries()) {
+    for (const id of entry.questionIds) {
+      if (!knownIds.has(id)) fail(`snapshot.batchHistory[${index}].questionIds`, `ids of known questions ("${id}" is not one)`)
+    }
+  }
+  for (const [index, round] of snapshot.followUpRounds.entries()) {
+    for (const id of round.questionIds) {
+      if (!knownIds.has(id)) fail(`snapshot.followUpRounds[${index}].questionIds`, `ids of known questions ("${id}" is not one)`)
+    }
   }
 
   for (const [id, answer] of Object.entries(snapshot.answers)) {
@@ -262,6 +296,10 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
       console.warn(`[interview] Cleared an invalid restored selection: ${normalized.error}`)
     }
     answer.selectedOptionIds = normalized.selectedOptionIds
+    // Clearing the selection can turn an answer into a skip. Leaving `skipped`
+    // as it was left an answer that is empty by every other measure counted as
+    // answered, and emitted into the canonical document as an unskipped blank.
+    answer.skipped = isBatchAnswerSkipped(question, answer.answer, normalized.selectedOptionIds)
   }
 }
 

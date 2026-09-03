@@ -792,6 +792,20 @@ export function reconcileExhaustedCoverageEnvelope(
   return null
 }
 
+/**
+ * The envelope's own YAML. PRD and beads rebuild this whenever they replace the
+ * parsed value; interview replaced the value and left the parser's original
+ * text, so a companion artifact could carry `status: clean` in its serialized
+ * form beside `status: gaps` in its parsed one.
+ */
+function buildCoverageEnvelopeYaml(envelope: CoverageResultEnvelope): string {
+  return buildYamlDocument({
+    status: envelope.status,
+    gaps: envelope.gaps,
+    follow_up_questions: envelope.followUpQuestions,
+  })
+}
+
 export function normalizePrdCoverageEnvelope(envelope: CoverageResultEnvelope) {
   return normalizeCoverageEnvelope(envelope, {
     label: 'PRD',
@@ -3903,7 +3917,11 @@ export async function handleCoverageVerification(
         ? normalizeInterviewCoverageEnvelope(coverageEnvelope.value)
         : null
       if (interviewCoverageNormalization) {
-        coverageEnvelope = { ...coverageEnvelope, value: interviewCoverageNormalization.envelope }
+        coverageEnvelope = {
+          ...coverageEnvelope,
+          value: interviewCoverageNormalization.envelope,
+          normalizedContent: buildCoverageEnvelopeYaml(interviewCoverageNormalization.envelope),
+        }
         if (interviewCoverageNormalization.repairWarnings.length > 0) {
           structuredMeta = buildStructuredMetadata(structuredMeta, {
             repairWarnings: interviewCoverageNormalization.repairWarnings,
@@ -3933,10 +3951,16 @@ export async function handleCoverageVerification(
       // Retries are spent and the envelope still contradicts itself. Recording the
       // error and carrying on left `status: clean` standing, so the gaps the model
       // did report were dropped and the run emitted COVERAGE_CLEAN.
+      let coverageConsistencyReconciled = false
       if (coverageConsistencyError) {
         const reconciled = reconcileExhaustedCoverageEnvelope(coverageEnvelope.value)
         if (reconciled) {
-          coverageEnvelope = { ...coverageEnvelope, value: reconciled.envelope }
+          coverageConsistencyReconciled = true
+          coverageEnvelope = {
+            ...coverageEnvelope,
+            value: reconciled.envelope,
+            normalizedContent: buildCoverageEnvelopeYaml(reconciled.envelope),
+          }
           structuredMeta = buildStructuredMetadata(structuredMeta, {
             repairApplied: true,
             repairWarnings: [reconciled.repairWarning],
@@ -3962,7 +3986,11 @@ export async function handleCoverageVerification(
         })
       }
 
-      if (coverageConsistencyError) {
+      // Only when the contradiction was left standing. Once it has been
+      // reconciled the run accepts the result, and a `validationError` on an
+      // accepted artifact reads as a rejection that never happened — the repair
+      // warning recorded above is what actually describes it.
+      if (coverageConsistencyError && !coverageConsistencyReconciled) {
         structuredMeta = buildStructuredMetadata(structuredMeta, {
           validationError: coverageConsistencyError,
         })

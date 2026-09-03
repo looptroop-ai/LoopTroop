@@ -53,7 +53,7 @@ function sameQuestionOptions(
  * is contradict a field that is already set, because that is what makes the
  * stored answer mean something else.
  */
-function isSameSessionQuestion(
+export function isSameSessionQuestion(
   existing: InterviewSessionQuestion,
   incoming: InterviewSessionQuestion,
 ): boolean {

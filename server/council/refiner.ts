@@ -231,14 +231,21 @@ export async function refineDraft(
       throwWithRawAttempts(enrichedError, rawAttempts)
     }
     attemptCount += 1
-    promptParts = buildRetryPrompt?.({
-      baseParts: refineParts,
-      validationError,
-      rawResponse: refined,
-    }) ?? buildStructuredRetryPrompt(refineParts, {
-      validationError,
-      rawResponse: refined,
-      schemaReminder,
-    })
+    // `getStructuredRetryDecision` clears this flag for a truncated response,
+    // because a correction prompt built around output that was cut off mid-token
+    // asks the model to fix a schema error it did not make. The drafter has
+    // honoured that since it was introduced; this path did not, and quoted the
+    // truncated text back as an invalid attempt.
+    promptParts = retryDecision.useStructuredRetryPrompt
+      ? buildRetryPrompt?.({
+          baseParts: refineParts,
+          validationError,
+          rawResponse: refined,
+        }) ?? buildStructuredRetryPrompt(refineParts, {
+          validationError,
+          rawResponse: refined,
+          schemaReminder,
+        })
+      : refineParts
   }
 }

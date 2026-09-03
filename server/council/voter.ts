@@ -15,7 +15,7 @@ import type {
 import { CancelledError } from './types'
 import type { Message, PromptPart, StreamEvent } from '../opencode/types'
 import type { OpenCodeToolPolicy } from '../opencode/toolPolicy'
-import { MAX_VOTE_CATEGORY_SCORE, VOTING_RUBRIC, getVotingRubricForPhase } from './types'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC, getVotingRubricForPhase } from './types'
 import { formatPromptText, runOpenCodePrompt, type OpenCodePromptDispatchEvent } from '../workflow/runOpenCodePrompt'
 import { createWorkBudget } from '../workflow/workBudget'
 import { buildStructuredRetryPrompt, normalizeVoteScorecardOutput } from '../structuredOutput'
@@ -33,7 +33,7 @@ function buildStrictVoteSchemaReminder(rubric: typeof VOTING_RUBRIC): string {
   return [
     'Output strict machine-readable YAML with top-level `draft_scores` keyed by the exact presented draft labels (`Draft 1`, `Draft 2`, etc.).',
     `For each draft, include only these integer fields: ${rubric.map(item => `\`${item.category}\``).join(', ')}, and \`total_score\`.`,
-    `Each rubric score must be an integer from 0 to ${MAX_VOTE_CATEGORY_SCORE}. \`total_score\` must equal the sum of the rubric scores for that draft.`,
+    `Each rubric score must be an integer from 0 to ${MAX_VOTE_CATEGORY_SCORE}. \`total_score\` must be an integer from 0 to ${MAX_VOTE_TOTAL_SCORE} and must equal the sum of the rubric scores for that draft.`,
     'Do not output prose, markdown fences, rankings, winners, comments, or extra keys.',
   ].join('\n')
 }

@@ -54,6 +54,7 @@ export {
   normalizeBeadRefinementOutput,
   normalizeBeadsJsonlOutput,
   normalizeRelevantFilesOutput,
+  getCommonBeadCounts,
   getCoverageBeadMetrics,
 } from './beadsOutput'
 export type { CoverageBeadMetrics, ValidatedBeadRefinementResult } from './beadsOutput'

@@ -1152,19 +1152,23 @@ function normalizeInterviewBatchPayload(value: unknown): {
   repairWarnings.push(...normalizedQuestions.flatMap((question) => question.repairWarnings))
   const questions = normalizedQuestions.map((question) => question.question)
 
+  // Enforce architecture batch size limit (1-3 questions per batch)
+  if (questions.length > MAX_INTERVIEW_BATCH_SIZE) {
+    questions.length = MAX_INTERVIEW_BATCH_SIZE
+  }
+
   // Two questions sharing an id in one batch meant the second overwrote the
   // first in the session snapshot, and a prompt could inherit the other's answer.
+  //
+  // Checked after the size limit, not before: the invariant belongs to the batch
+  // that reaches the snapshot, and a repeat in a question that is about to be
+  // discarded used to reject a payload whose kept part was perfectly valid.
   const seenQuestionIds = new Set<string>()
   for (const question of questions) {
     if (seenQuestionIds.has(question.id)) {
       throw new Error(`Interview batch output repeats question id ${question.id}`)
     }
     seenQuestionIds.add(question.id)
-  }
-
-  // Enforce architecture batch size limit (1-3 questions per batch)
-  if (questions.length > MAX_INTERVIEW_BATCH_SIZE) {
-    questions.length = MAX_INTERVIEW_BATCH_SIZE
   }
 
   return {

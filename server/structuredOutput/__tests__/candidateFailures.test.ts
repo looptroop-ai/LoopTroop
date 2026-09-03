@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createStructuredCandidateFailureTracker } from '../failure'
 import { normalizeInterviewDocumentOutput } from '../interviewDocument'
+import { normalizePrdYamlOutput } from '../prdOutput'
 
 const isPromptEcho = (message: string) => /echoed the prompt/i.test(message)
 
@@ -48,14 +49,40 @@ describe('createStructuredCandidateFailureTracker', () => {
   })
 })
 
-describe('interview document failures carry a diagnostic', () => {
-  it('quotes the failing candidate rather than dropping the diagnostic', () => {
+describe('document failures carry a diagnostic', () => {
+  // Leading prose, so the excerpt has something to isolate the candidate from.
+  // With the raw response and the candidate identical, the old fallback
+  // diagnostic satisfied these assertions just as well.
+  const withProse = (candidate: string) => [
+    'Sure — here is the artifact you asked for.',
+    '',
+    candidate,
+  ].join('\n')
+
+  it('quotes the failing interview candidate rather than dropping the diagnostic', () => {
     // `lastRetryDiagnostic` was declared and read but never assigned.
-    const result = normalizeInterviewDocumentOutput('questions: []', { ticketId: 'TEST-1' })
+    const result = normalizeInterviewDocumentOutput(withProse('questions: []'), { ticketId: 'TEST-1' })
 
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.retryDiagnostic).toBeDefined()
     expect(result.retryDiagnostic?.validationError).toBe(result.error)
+    expect(result.retryDiagnostic?.excerpt).toContain('questions: []')
+    expect(result.retryDiagnostic?.excerpt).not.toContain('here is the artifact')
+  })
+
+  it('quotes the failing PRD candidate too', () => {
+    // §8.18 asked for both document types; only the interview one was covered.
+    const result = normalizePrdYamlOutput(withProse('epics: []'), {
+      ticketId: 'TEST-1',
+      interviewContent: 'questions: []',
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.retryDiagnostic).toBeDefined()
+    expect(result.retryDiagnostic?.validationError).toBe(result.error)
+    expect(result.retryDiagnostic?.excerpt).toContain('epics: []')
+    expect(result.retryDiagnostic?.excerpt).not.toContain('here is the artifact')
   })
 })

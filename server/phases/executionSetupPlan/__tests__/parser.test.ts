@@ -38,7 +38,7 @@ function buildPlanWithSteps(steps: unknown[]): string {
 }
 
 describe('execution setup plan step required flag', () => {
-  it.each([
+  it.each<[string, boolean]>([
     ['false', false],
     ['"false"', false],
     ['"no"', false],

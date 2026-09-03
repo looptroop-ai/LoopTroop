@@ -78,7 +78,11 @@ export function createStructuredCandidateFailureTracker(initialError: string): S
         return
       }
       lastError = failure.error
-      lastErrorCause = failure.retryDiagnostic
+      // The two recorders used to leave different things here: a thrown Error
+      // from one, a retry diagnostic from the other, so what a consumer read as
+      // the cause depended on which had run. The diagnostic has its own slot
+      // below; a pre-built failure carries no original error to put here.
+      lastErrorCause = undefined
       lastRetryDiagnostic = failure.retryDiagnostic
     },
     build(rawContent, options) {

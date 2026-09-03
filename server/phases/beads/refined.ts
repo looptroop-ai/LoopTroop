@@ -7,7 +7,7 @@ import type {
 import { isRecord } from '@shared/typeGuards'
 import type { PromptPart } from '../../opencode/types'
 import type { StructuredOutputMetadata } from '../../structuredOutput'
-import { normalizeBeadRefinementOutput } from '../../structuredOutput'
+import { getCommonBeadCounts, normalizeBeadRefinementOutput } from '../../structuredOutput'
 import { normalizeStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import { getValueByAliases } from '../../structuredOutput/yamlUtils'
 import { attachStructuredRetryDiagnostic, buildStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
@@ -103,20 +103,12 @@ function normalizeFingerprintList(values: string[] | undefined): string[] {
     : []
 }
 
+/**
+ * Deliberately the common counts and nothing else: refinement does not report a
+ * test-command count, and the interface never renders one.
+ */
 export function getRefinementBeadMetrics(beadSubsets: BeadSubset[]): RefinementBeadMetrics {
-  let totalTestCount = 0
-  let totalAcceptanceCriteriaCount = 0
-
-  for (const bead of beadSubsets) {
-    totalTestCount += bead.tests.length
-    totalAcceptanceCriteriaCount += bead.acceptanceCriteria.length
-  }
-
-  return {
-    beadCount: beadSubsets.length,
-    totalTestCount,
-    totalAcceptanceCriteriaCount,
-  }
+  return getCommonBeadCounts(beadSubsets)
 }
 
 function buildBeadContentFingerprint(bead: BeadSubset): string {

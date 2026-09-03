@@ -13,7 +13,7 @@ import {
 } from './yamlUtils'
 import { buildStructuredOutputFailure } from './failure'
 import { getErrorMessage } from '@shared/typeGuards'
-import { MAX_VOTE_CATEGORY_SCORE } from '../council/types'
+import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE } from '../council/types'
 
 function normalizeVoteDraftLabel(label: string): string | null {
   const match = label.trim().match(/draft\s*(\d+)/i)
@@ -184,6 +184,13 @@ export function normalizeVoteScorecardOutput(
             throw new Error(`Invalid total_score for ${draftLabel}`)
           } else if (totalScore !== total) {
             variantWarnings.push(`Recomputed total_score for ${draftLabel}: expected ${total}, received ${totalScore}.`)
+          }
+          // The per-category cap alone keeps the sum under the total cap only
+          // while the rubric has exactly five categories. The prompts promise a
+          // 0-100 total, so the parser holds the same bound rather than
+          // inferring it from a rubric length that could change.
+          if (total > MAX_VOTE_TOTAL_SCORE) {
+            throw new Error(`Total score for ${draftLabel} is ${total}, above the maximum of ${MAX_VOTE_TOTAL_SCORE}`)
           }
           scores.total_score = total
           normalized[draftLabel] = scores

@@ -66,12 +66,27 @@ export interface CoverageBeadMetrics {
   totalAcceptanceCriteriaCount: number
 }
 
-export function getCoverageBeadMetrics(beads: BeadSubset[]): CoverageBeadMetrics {
+/**
+ * The counts both metric shapes report. Coverage adds the test-command count to
+ * these; refinement is exactly these. Keeping the sums in one place is what lets
+ * the two shapes stay deliberately different without the arithmetic drifting.
+ */
+export function getCommonBeadCounts(beads: BeadSubset[]): {
+  beadCount: number
+  totalTestCount: number
+  totalAcceptanceCriteriaCount: number
+} {
   return {
     beadCount: beads.length,
     totalTestCount: beads.reduce((sum, b) => sum + b.tests.length, 0),
-    totalTestCommandCount: beads.reduce((sum, b) => sum + b.testCommands.length, 0),
     totalAcceptanceCriteriaCount: beads.reduce((sum, b) => sum + b.acceptanceCriteria.length, 0),
+  }
+}
+
+export function getCoverageBeadMetrics(beads: BeadSubset[]): CoverageBeadMetrics {
+  return {
+    ...getCommonBeadCounts(beads),
+    totalTestCommandCount: beads.reduce((sum, b) => sum + b.testCommands.length, 0),
   }
 }
 
@@ -776,6 +791,11 @@ function normalizeBeadStatus(value: unknown, label: string): BeadStatus {
  * fractional value is not a wire-format the models are told to emit, and
  * `Number('x')` produced NaN that serialised back as null, so clamp and say so
  * rather than rejecting the whole record.
+ *
+ * The plan called this field non-negative; 1 is the floor because attempts are
+ * counted from 1 and every reader assumes it. The ticket's `maxIterations` is a
+ * different field with a similar name, and there 0 is meaningful — it means no
+ * cap.
  */
 function normalizeBeadIteration(value: unknown, label: string, repairWarnings: string[]): number {
   if (value === undefined || value === null) return 1

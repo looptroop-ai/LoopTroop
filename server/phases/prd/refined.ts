@@ -23,10 +23,30 @@ type PrdUserStory = PrdEpic['user_stories'][number]
 
 export const PRD_MISSING_CHANGES_WARNING = 'PRD refinement returned no changes list while the document differed from the winning draft; accounted for the difference from the two drafts.'
 
+/**
+ * Everything a refinement is allowed to author, in one comparable form.
+ *
+ * This used to compare epic and story fingerprints only, so a refinement that
+ * rewrote `product`, `scope`, `technical_requirements` or `risks` and reported
+ * no `changes` looked identical to its winner and shipped an empty diff for a
+ * document that had changed. `ticket_id` and `source_interview` are equal on
+ * both sides by construction, and `approval` is a signature rather than content.
+ *
+ * Both documents come out of the same normaliser, so key order matches and a
+ * plain stringify is a stable comparison.
+ */
+function buildPrdDocumentComparisonKey(document: PrdDocument): string {
+  return JSON.stringify({
+    product: document.product,
+    scope: document.scope,
+    technical_requirements: document.technical_requirements,
+    risks: document.risks,
+    epics: document.epics,
+  })
+}
+
 function prdDocumentsDiffer(winnerDocument: PrdDocument, refinedDocument: PrdDocument): boolean {
-  const winnerKeys = new Set(buildDocumentItems(winnerDocument).map(buildItemContentKey))
-  const refinedKeys = new Set(buildDocumentItems(refinedDocument).map(buildItemContentKey))
-  return winnerKeys.size !== refinedKeys.size || [...refinedKeys].some((key) => !winnerKeys.has(key))
+  return buildPrdDocumentComparisonKey(winnerDocument) !== buildPrdDocumentComparisonKey(refinedDocument)
 }
 
 interface NormalizedPrdRefinementItem extends RefinementChangeItem {

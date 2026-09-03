@@ -81,19 +81,21 @@ export function resolveLosingDraftReference(
   if (typeof rawAltDraft === 'string' && losingDraftMeta) {
     const rawTrimmed = rawAltDraft.trim()
     const foundIndex = losingDraftMeta.findIndex((m) => m.memberId === rawTrimmed)
+    // The match is on `memberId`, so the found entry's is the string we matched.
     if (foundIndex >= 0) {
-      return { draftIndex: foundIndex, memberId: losingDraftMeta[foundIndex]!.memberId }
+      return { draftIndex: foundIndex, memberId: rawTrimmed }
     }
   }
 
   const altDraft = toOrdinalInteger(rawAltDraft)
   if (altDraft == null) return { draftIndex: -1, memberId: '' }
 
+  // A `draftIndex` outside the list still travels back to the caller, which
+  // reports it; only the member name it could not resolve is blank.
   const draftIndex = altDraft - 1
-  const inRange = losingDraftMeta !== undefined && draftIndex >= 0 && draftIndex < losingDraftMeta.length
   return {
     draftIndex,
-    memberId: inRange ? losingDraftMeta[draftIndex]!.memberId : '',
+    memberId: draftIndex >= 0 ? losingDraftMeta?.[draftIndex]?.memberId ?? '' : '',
   }
 }
 
@@ -196,7 +198,12 @@ export function takeRefinementChanges(
 
   const rawChanges = getValueByAliases(parsed, ['changes'])
   if (rawChanges !== undefined) {
-    delete parsed.changes
+    // The lookup normalises keys, so a document writing `Changes:` is found
+    // here but was not the key being deleted, and it survived into a schema
+    // validation that does not expect it.
+    for (const key of Object.keys(parsed)) {
+      if (normalizeKey(key) === 'changes') delete parsed[key]
+    }
   }
   return parseRefinementChanges(rawChanges, losingDraftMeta)
 }

@@ -19,8 +19,6 @@ import {
   validateBeadsRefinementOutput,
   buildBeadsRefinedArtifact,
   buildBeadsRefinementRetryPrompt,
-  getRefinementBeadMetrics,
-  BEADS_PIPELINE_STEPS,
   type ValidatedBeadsRefinement,
 } from '../../phases/beads/refined'
 import { buildPromptFromTemplate, PROM21, PROM22, PROM25 } from '../../prompts/index'
@@ -692,6 +690,18 @@ export async function handleBeadsRefine(
   let refinementResult = null as ValidatedBeadsRefinement | null
   let refinedContent: string
   let refinementRawAttempts: Awaited<ReturnType<typeof refineDraft>>['rawAttempts'] = []
+
+  // Refinement cross-validates against the winning draft, so an unparseable
+  // winner fails every attempt identically: the model is asked to rewrite its
+  // refinement, and the input that actually broke is not the one it can change.
+  // Checking here spends no model call on a failure that cannot be retried away.
+  const winnerDraftCheck = normalizeBeadSubsetYamlOutput(winnerDraft.content)
+  if (!winnerDraftCheck.ok) {
+    throw new Error(
+      `Winning bead draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${winnerDraftCheck.error}`,
+    )
+  }
+
   try {
     const refinementRun = await refineDraft(
       adapter,
@@ -791,22 +801,18 @@ export async function handleBeadsRefine(
     throw error
   }
 
+  // `refineDraft` only returns once the validator above has accepted a response,
+  // so this should be unreachable. It used to fall through to a hand-built
+  // artifact that skipped the builder's own checks — a weaker record than the
+  // parser would have allowed. PRD throws here; so does this now.
+  if (!refinementResult) {
+    throw new Error('Beads refinement returned without a validated result — refusing to persist an unvalidated blueprint')
+  }
+
   // Clean up intermediate data
   phaseIntermediate.delete(`${ticketId}:beads`)
 
-  // Use validated beadSubsets from the refinement result (already parsed & validated)
-  const beadSubsets: BeadSubset[] = refinementResult
-    ? refinementResult.beadSubsets
-    : (() => {
-        const beadSubsetResult = normalizeBeadSubsetYamlOutput(refinedContent)
-        if (!beadSubsetResult.ok) {
-          throw new Error(`PROM22 refinement output failed validation: ${beadSubsetResult.error}`)
-        }
-        return beadSubsetResult.value
-      })()
-  const draftMetrics = refinementResult
-    ? refinementResult.metrics
-    : getRefinementBeadMetrics(beadSubsets)
+  const draftMetrics = refinementResult.metrics
   emitPhaseLog(ticketId, context.externalId, 'REFINING_BEADS', 'info',
     `Substep blueprint_refine completed — ${draftMetrics.beadCount} beads, ${draftMetrics.totalTestCount} tests, ${draftMetrics.totalAcceptanceCriteriaCount} acceptance criteria.`)
 
@@ -827,20 +833,12 @@ export async function handleBeadsRefine(
         ...(prd ? { prdContent: prd } : {}),
       })
 
-  const beadsRefinedArtifact = refinementResult
-    ? buildBeadsRefinedArtifact(
-        intermediate.winnerId,
-        winnerDraft.content,
-        refinementResult,
-        refineStructuredMeta,
-      )
-    : {
-        winnerId: intermediate.winnerId,
-        refinedContent,
-        winnerDraftContent: winnerDraft.content,
-        draftMetrics,
-        pipelineSteps: BEADS_PIPELINE_STEPS,
-      }
+  const beadsRefinedArtifact = buildBeadsRefinedArtifact(
+    intermediate.winnerId,
+    winnerDraft.content,
+    refinementResult,
+    refineStructuredMeta,
+  )
   insertPhaseArtifact(ticketId, {
     phase: 'REFINING_BEADS',
     artifactType: 'beads_refined',

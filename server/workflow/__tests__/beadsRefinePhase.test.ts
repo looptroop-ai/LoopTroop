@@ -416,14 +416,43 @@ describe('handleBeadsRefine', () => {
       validationError: string
       rawResponse: string
     }) => Array<{ type: string; content: string }>) | undefined
-    expect(typeof buildRetryPrompt).toBe('function')
-    const retryPrompt = buildRetryPrompt!({
+    if (!buildRetryPrompt) throw new Error('refineDraft was not given a retry-prompt builder')
+    const retryPrompt = buildRetryPrompt({
       baseParts: [{ type: 'text', content: 'base' }],
       validationError: 'changes must account for the diff',
       rawResponse: 'beads: []\nchanges: []',
     })
     expect(retryPrompt.at(-1)?.content).toContain('Beads Refinement Structured Output Retry')
     expect(retryPrompt.at(-1)?.content).toContain('changes must account for the diff')
+  })
+
+  it('refuses to refine against an unparseable winning draft without spending a model call', async () => {
+    // Refinement cross-validates against the winner, and the winner is not what
+    // the retry prompt asks the model to rewrite, so every attempt failed on the
+    // same unchanged input.
+    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+      title: 'Reject an unusable winning bead draft',
+      description: 'Refinement cannot cross-validate against a draft that does not parse.',
+    })
+    const sendEvent = vi.fn()
+    const winnerId = TEST.councilMembers[0]
+
+    writeFileSync(resolve(paths.ticketDir, 'prd.yaml'), buildPrdContent(), 'utf-8')
+
+    phaseIntermediate.set(`${ticket.id}:beads`, {
+      phase: 'beads',
+      worktreePath: paths.worktreePath,
+      winnerId,
+      drafts: [
+        { memberId: winnerId, outcome: 'completed', content: 'not: [a, bead, blueprint', duration: 1 },
+      ],
+      memberOutcomes: { [winnerId]: 'completed' },
+      contextBuilder: () => [],
+    })
+
+    await expect(handleBeadsRefine(ticket.id, context, sendEvent, new AbortController().signal))
+      .rejects.toThrow('could not be parsed')
+    expect(refineDraftMock).not.toHaveBeenCalled()
   })
 
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {

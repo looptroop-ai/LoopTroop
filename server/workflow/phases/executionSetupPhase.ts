@@ -60,7 +60,8 @@ import {
 } from '../../git/worktreeChanges'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { executeCommand } from '../../lib/commandExecutor'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { readBeadsFile } from '../../phases/beads/beadsFile'
 import { discoverGitHooks } from '../../git/hookDiscovery'
 import type { ExecutionSetupCommandReceiptPayload } from '../../structuredOutput/types'
 import { isVersionOnlyWorkspaceProbeCommand } from '../../phases/executionSetup/workspaceProbe'
@@ -183,10 +184,12 @@ function summarizeSetupCommandFailure(input: {
 function hasDeclaredBeadTestCommands(beadsPath: string): boolean {
   if (!existsSync(beadsPath)) return false
   try {
-    return readFileSync(beadsPath, 'utf8').split('\n').filter(Boolean).some((line) => {
-      const bead = JSON.parse(line) as { testCommands?: unknown }
-      return Array.isArray(bead.testCommands) && bead.testCommands.length > 0
-    })
+    // Per line, not one `.some` around a throwing parse: an unreadable line
+    // earlier in the file used to abort the whole scan and answer "no bead
+    // declares test commands", which lets execution setup accept a profile with
+    // only version probes while a later bead does declare them.
+    return readBeadsFile(beadsPath).some((bead) =>
+      Array.isArray(bead.testCommands) && bead.testCommands.length > 0)
   } catch {
     return false
   }

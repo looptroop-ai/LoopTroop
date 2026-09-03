@@ -81,7 +81,7 @@ function requireNullableString(value: unknown, path: string): string | null {
 
 function requireNullableInteger(value: unknown, path: string): number | null {
   if (value === null) return null
-  return requireInteger(value, path)
+  return requireNonNegativeInteger(value, path)
 }
 
 function requireArray(value: unknown, path: string): unknown[] {
@@ -132,7 +132,7 @@ function requireQuestion(value: unknown, path: string): InterviewSessionQuestion
   const rationale = optionalString(record.rationale, `${path}.rationale`)
   const roundNumber = record.roundNumber === undefined
     ? undefined
-    : requireInteger(record.roundNumber, `${path}.roundNumber`)
+    : requireNonNegativeInteger(record.roundNumber, `${path}.roundNumber`)
   const answerType = record.answerType === undefined
     ? undefined
     : requireMember(record.answerType, ANSWER_TYPES, `${path}.answerType`)
@@ -180,7 +180,7 @@ function requireBatch(value: unknown, path: string): PersistedInterviewBatch {
   const finalYaml = optionalString(record.finalYaml, `${path}.finalYaml`)
   const roundNumber = record.roundNumber === undefined
     ? undefined
-    : requireInteger(record.roundNumber, `${path}.roundNumber`)
+    : requireNonNegativeInteger(record.roundNumber, `${path}.roundNumber`)
 
   return {
     questions: requireArray(record.questions, `${path}.questions`)
@@ -260,8 +260,16 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
     // recorded against the batch prompt, so the answer attached to the wrong
     // question. `recordPreparedBatch` rejects this while the session is live;
     // the restore path has to apply the same rule.
+    // `recordPreparedBatch` adds every prepared question to `snapshot.questions`,
+    // so a batch question missing from that list is not a live shape. Accepting
+    // one let the answer route persist an answer for a question that
+    // `buildCanonicalInterviewYaml` and the question views never iterate, so the
+    // answer existed and appeared nowhere.
     const canonical = questionsById.get(question.id)
-    if (canonical && !isSameSessionQuestion(canonical, question)) {
+    if (!canonical) {
+      fail(`snapshot.currentBatch.questions[${index}].id`, `an id present in snapshot.questions ("${question.id}" is not)`)
+    }
+    if (!isSameSessionQuestion(canonical, question)) {
       fail(
         `snapshot.currentBatch.questions[${index}]`,
         `the same question as snapshot.questions "${question.id}", not a different one reusing its id`,
@@ -271,16 +279,21 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
 
   // A history or follow-up round naming a question that does not exist counts
   // towards the follow-up budget and is emitted into the canonical document.
-  const knownIds = new Set([...questionsById.keys(), ...batchIds])
-  for (const [index, entry] of snapshot.batchHistory.entries()) {
-    for (const id of entry.questionIds) {
-      if (!knownIds.has(id)) fail(`snapshot.batchHistory[${index}].questionIds`, `ids of known questions ("${id}" is not one)`)
+  // Naming one twice does the same, so uniqueness is part of the same rule.
+  const knownIds = new Set(questionsById.keys())
+  const requireKnownUniqueIds = (ids: string[], path: string) => {
+    const seen = new Set<string>()
+    for (const id of ids) {
+      if (!knownIds.has(id)) fail(path, `ids of known questions ("${id}" is not one)`)
+      if (seen.has(id)) fail(path, `ids used once each ("${id}" appears twice)`)
+      seen.add(id)
     }
   }
+  for (const [index, entry] of snapshot.batchHistory.entries()) {
+    requireKnownUniqueIds(entry.questionIds, `snapshot.batchHistory[${index}].questionIds`)
+  }
   for (const [index, round] of snapshot.followUpRounds.entries()) {
-    for (const id of round.questionIds) {
-      if (!knownIds.has(id)) fail(`snapshot.followUpRounds[${index}].questionIds`, `ids of known questions ("${id}" is not one)`)
-    }
+    requireKnownUniqueIds(round.questionIds, `snapshot.followUpRounds[${index}].questionIds`)
   }
 
   for (const [id, answer] of Object.entries(snapshot.answers)) {
@@ -290,16 +303,31 @@ function checkSnapshotConsistency(snapshot: InterviewSessionSnapshot): void {
       delete snapshot.answers[id]
       continue
     }
-    if (!answer.selectedOptionIds?.length) continue
-    const normalized = normalizeBatchSelection(question, answer.selectedOptionIds)
-    if (normalized.error) {
-      console.warn(`[interview] Cleared an invalid restored selection: ${normalized.error}`)
+    if (answer.selectedOptionIds?.length) {
+      const normalized = normalizeBatchSelection(question, answer.selectedOptionIds)
+      if (normalized.error) {
+        console.warn(`[interview] Cleared an invalid restored selection: ${normalized.error}`)
+      }
+      answer.selectedOptionIds = normalized.selectedOptionIds
     }
-    answer.selectedOptionIds = normalized.selectedOptionIds
-    // Clearing the selection can turn an answer into a skip. Leaving `skipped`
-    // as it was left an answer that is empty by every other measure counted as
-    // answered, and emitted into the canonical document as an unskipped blank.
-    answer.skipped = isBatchAnswerSkipped(question, answer.answer, normalized.selectedOptionIds)
+
+    // Derived for every answer, not only the ones whose selection needed
+    // clearing: `recordBatchAnswers` derives it for every question it records,
+    // so a persisted `{ answer: '', skipped: false }` was answered by its own
+    // account and blank by every other, inflating the answered count and
+    // canonicalising as an unskipped blank.
+    const skipped = isBatchAnswerSkipped(question, answer.answer, answer.selectedOptionIds ?? [])
+    if (skipped !== answer.skipped) {
+      // The serializer reads `skippedAt` for a skip and `answeredAt` otherwise,
+      // so flipping the flag without moving the timestamp loses it.
+      if (skipped) {
+        answer.skippedAt = answer.skippedAt ?? answer.answeredAt ?? snapshot.updatedAt
+        answer.answeredAt = null
+      } else {
+        answer.answeredAt = answer.answeredAt ?? answer.skippedAt ?? snapshot.updatedAt
+      }
+      answer.skipped = skipped
+    }
   }
 }
 

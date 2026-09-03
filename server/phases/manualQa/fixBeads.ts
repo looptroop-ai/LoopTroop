@@ -252,10 +252,18 @@ export function isManualQaRepositoryInspectionToolCall(
   const input = call.input
   if (!isRecord(input)) return !roles.requiresPath
 
+  // A list counts as naming a path too. Teaching the containment check to walk
+  // arrays without teaching this flag about them turned `read({ path: ['a.ts'] })`
+  // — every entry of which is checked and inside the worktree — into a call that
+  // named no file at all.
+  const namesAPath = (value: unknown): boolean => Array.isArray(value)
+    ? value.some(namesAPath)
+    : typeof value === 'string' && value.trim().length > 0
+
   let namedAPath = false
   for (const [key, value] of Object.entries(input)) {
     if (!roles.paths.includes(normalizeArgumentKey(key))) continue
-    if (typeof value === 'string' && value.trim()) namedAPath = true
+    if (namesAPath(value)) namedAPath = true
     if (!isRepoScopedToolArgument(value, projectPath)) return false
   }
 

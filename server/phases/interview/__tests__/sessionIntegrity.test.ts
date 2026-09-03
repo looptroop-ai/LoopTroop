@@ -194,6 +194,55 @@ describe('parseInterviewSessionSnapshot', () => {
         source: 'prom4',
       }
     }],
+    // The two lists were checked for internal duplicates and never against each
+    // other, so answers normalised against one question were recorded against
+    // another asking something else.
+    ['a batch question reusing a canonical id for a different question', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.currentBatch = {
+        questions: [{ ...snapshot.questions[0]!, question: 'Something else entirely?' }],
+        progress: { current: 1, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: '',
+        batchNumber: 1,
+        source: 'prom4',
+      }
+    }],
+    // A batch question absent from the canonical list can be answered, and then
+    // appears in neither the canonical artifact nor the question views.
+    ['a batch question that is in no canonical list', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.currentBatch = {
+        questions: [{ ...snapshot.questions[0]!, id: 'GHOST' }],
+        progress: { current: 1, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: '',
+        batchNumber: 1,
+        source: 'prom4',
+      }
+    }],
+    ['batch progress claiming more done than exist', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.currentBatch = {
+        questions: [snapshot.questions[0]!],
+        progress: { current: 99, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: '',
+        batchNumber: 1,
+        source: 'prom4',
+      }
+    }],
+    ['a history entry naming a question that does not exist', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.batchHistory.push({
+        batchNumber: 1, source: 'prom4', questionIds: ['GHOST'], isFinalFreeForm: false, submittedAt: '',
+      })
+    }],
+    ['a follow-up round naming the same question twice', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.followUpRounds.push({ roundNumber: 1, source: 'coverage', questionIds: ['Q01', 'Q01'] })
+    }],
+    ['a negative round number', (snapshot: InterviewSessionSnapshot) => {
+      snapshot.followUpRounds.push({ roundNumber: -1, source: 'coverage', questionIds: [] })
+    }],
     ['a current batch with malformed progress', (snapshot: InterviewSessionSnapshot) => {
       snapshot.currentBatch = {
         questions: [],
@@ -261,6 +310,30 @@ describe('parseInterviewSessionSnapshot', () => {
       }
     },
   )
+
+  it('re-reads a blank answer as a skip even when it never had a selection', () => {
+    // `recordBatchAnswers` derives `skipped` for every question it records, so a
+    // persisted `{ answer: '', skipped: false }` was answered by its own account
+    // and blank by every other, inflating the answered count.
+    const snapshot = baseSnapshot()
+    snapshot.answers.Q01 = { answer: '   ', skipped: false, answeredAt: '2026-09-01T00:00:00.000Z', batchNumber: 1 }
+
+    const restored = parseInterviewSessionSnapshot(JSON.stringify(snapshot))
+    expect(restored?.answers.Q01?.skipped).toBe(true)
+    // The serializer reads `skippedAt` for a skip, so flipping the flag without
+    // moving the timestamp would have lost it.
+    expect(restored?.answers.Q01?.skippedAt).toBe('2026-09-01T00:00:00.000Z')
+    expect(restored?.answers.Q01?.answeredAt).toBeNull()
+  })
+
+  it('leaves a real answer answered', () => {
+    const snapshot = baseSnapshot()
+    snapshot.answers.Q01 = { answer: 'A real answer.', skipped: false, answeredAt: '2026-09-01T00:00:00.000Z', batchNumber: 1 }
+
+    const restored = parseInterviewSessionSnapshot(JSON.stringify(snapshot))
+    expect(restored?.answers.Q01?.skipped).toBe(false)
+    expect(restored?.answers.Q01?.answeredAt).toBe('2026-09-01T00:00:00.000Z')
+  })
 
   it('keeps a valid selection intact', () => {
     const snapshot = baseSnapshot()

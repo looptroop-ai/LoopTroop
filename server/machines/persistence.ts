@@ -217,6 +217,18 @@ function reconcileSnapshotForTicket(
   }
   // Zero is a real value here: the executor reads `maxIterations > 0` and treats
   // 0 as no cap, so only a negative or non-integer is invalid.
+  // A `previousStatus` that is not a workflow phase was only repaired for a
+  // blocked ticket. Anywhere else it was restored as written and reached the
+  // public ticket payload, and if the ticket blocked later there was no durable
+  // fallback left to resume from.
+  if (
+    context.previousStatus !== null
+    && context.previousStatus !== undefined
+    && (typeof context.previousStatus !== 'string' || !isWorkflowPhaseId(context.previousStatus))
+  ) {
+    dropInvalidField('previousStatus', 'not a workflow phase')
+    context.previousStatus = null
+  }
   if (!isNonNegativeInteger(context.maxIterations)) {
     if (context.maxIterations !== undefined) dropInvalidField('maxIterations', 'not a non-negative integer')
     context.maxIterations = isNonNegativeInteger(input.maxIterations)

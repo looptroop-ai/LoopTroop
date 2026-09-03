@@ -862,10 +862,11 @@ export async function handleInterviewCompile(
   // winner fails every attempt identically: the retry prompt asks the model to
   // rewrite its refinement, and the input that actually broke is not the one it
   // can change. The beads and PRD phases check this up front; so does this one.
-  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(
-    winnerDraft.content,
-    resolveInterviewDraftSettings(context).maxInitialQuestions,
-  )
+  // Cap of 0 — uncapped — because that is what the refinement validator parses
+  // the same winner with. Passing the live cap here made the pre-check stricter
+  // than the guard it stands in front of, so a winner the refinement would have
+  // accepted could be refused as unparseable.
+  const interviewWinnerCheck = normalizeInterviewQuestionsOutput(winnerDraft.content, 0)
   if (!interviewWinnerCheck.ok) {
     throw new Error(
       `Winning interview draft from ${winnerDraft.memberId} could not be parsed, so refinement cannot cross-validate against it: ${interviewWinnerCheck.error}`,

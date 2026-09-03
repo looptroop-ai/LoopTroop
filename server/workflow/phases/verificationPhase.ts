@@ -493,7 +493,15 @@ function loadCoverageHistorySnapshot(
   return {
     attempts: Array.isArray(parsed.attempts) ? parsed.attempts as CoverageAttemptHistoryEntry[] : [],
     transitions: Array.isArray(parsed.transitions) ? parsed.transitions as CoverageTransitionHistoryEntry[] : [],
-    finalCandidateVersion: typeof parsed.finalCandidateVersion === 'number' ? parsed.finalCandidateVersion : undefined,
+    // Candidate versions are positive integers, as `parseBeadsCoverageRevisionCandidate`
+    // now insists. A `0`, a negative or a fraction accepted here became
+    // `currentCandidateVersion`, and the coverage loop then numbered every
+    // later revision from it.
+    finalCandidateVersion: typeof parsed.finalCandidateVersion === 'number'
+      && Number.isInteger(parsed.finalCandidateVersion)
+      && parsed.finalCandidateVersion > 0
+      ? parsed.finalCandidateVersion
+      : undefined,
   }
 }
 

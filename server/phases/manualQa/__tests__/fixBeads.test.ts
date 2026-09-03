@@ -149,6 +149,10 @@ describe('Manual QA fix-bead generation contracts', () => {
     ['a repository-relative glob', 'glob', { pattern: 'src/**/*.ts' }],
     ['a list whose entries are all inside', 'grep', { include: ['src/**/*.ts', 'shared/**/*.ts'] }],
     ['an empty list', 'grep', { include: [] }],
+    // Teaching the containment check to walk arrays without teaching the
+    // "named a path" flag about them refused a `read` whose every entry it had
+    // just checked and accepted.
+    ['a read naming its file in a list', 'read', { path: ['src/store.ts'] }],
     ['a listing of the worktree root itself', 'list', { path: '.' }],
     ['a listing with no arguments at all', 'list', undefined],
     // `grep`'s pattern is a regular expression, not a location. Searching for a

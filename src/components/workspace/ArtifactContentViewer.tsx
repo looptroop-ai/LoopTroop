@@ -1289,7 +1289,13 @@ function ArtifactInterventionOwnerBreakdown({
   )
 }
 
-function ArtifactProcessingNotice({
+/**
+ * Exported so the Manual QA view can show the same notice the artifact view
+ * shows. The checklist artifact and the surface an operator actually works on
+ * during Manual QA are two different screens, and only one of them was showing
+ * that the checklist had been repaired.
+ */
+export function ArtifactProcessingNotice({
   structuredOutput,
   kind,
   context,

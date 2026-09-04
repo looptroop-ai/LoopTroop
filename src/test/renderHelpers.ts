@@ -24,13 +24,25 @@ export function renderWithProviders(
   const queryClient = options?.queryClient ?? createTestQueryClient()
   const withTooltip = options?.withTooltip ?? true
 
-  let wrapped = ui
-  if (withTooltip) {
-    wrapped = React.createElement(TooltipProvider, null, wrapped)
+  const wrap = (element: React.ReactElement) => {
+    let wrapped = element
+    if (withTooltip) {
+      wrapped = React.createElement(TooltipProvider, null, wrapped)
+    }
+    return React.createElement(QueryClientProvider, { client: queryClient }, wrapped)
   }
-  wrapped = React.createElement(QueryClientProvider, { client: queryClient }, wrapped)
 
-  return { ...render(wrapped), queryClient }
+  const result = render(wrap(ui))
+
+  // Testing Library's own `rerender` replaces the whole tree with what it is
+  // given, so a caller passing the bare component dropped every provider — the
+  // component then rendered without a QueryClient and threw. Re-wrapping keeps
+  // a rerender equivalent to the first render.
+  return {
+    ...result,
+    rerender: (next: React.ReactElement) => { result.rerender(wrap(next)) },
+    queryClient,
+  }
 }
 
 /**

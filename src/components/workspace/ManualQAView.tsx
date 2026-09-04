@@ -27,7 +27,10 @@ import {
 } from '@/hooks/useManualQA'
 import { cn } from '@/lib/utils'
 import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
-import { CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
+import { ArtifactProcessingNotice, CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
+import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
+import { findLatestCompanionArtifact, parseArtifactCompanionPayload } from '@/components/workspace/artifactCompanionUtils'
+import type { ArtifactStructuredOutputData } from '@/components/workspace/phaseArtifactTypes'
 import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePhaseLogSection'
 import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
@@ -187,6 +190,18 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   // A generation reservation exposes its version before checklist.yaml exists.
   // Do not cache that expected pre-artifact 404; historical rounds remain selectable.
   const roundQuery = useManualQaRound(ticket.id, version, !isGenerating || selectedVersion !== null || versionIsArtifactBacked)
+  // Generation records its repairs in a companion artifact on its own phase.
+  // Reading it here is what puts the trail in front of the person running the
+  // checks, rather than only behind the past phase's artifact chip.
+  const generationArtifacts = useTicketArtifacts(ticket.id, { phase: 'GENERATING_QA_CHECKLIST' })
+  const generationStructuredOutput = useMemo((): ArtifactStructuredOutputData | undefined => {
+    const companion = findLatestCompanionArtifact(generationArtifacts.artifacts ?? [], 'manual_qa_checklist')
+    const payload = parseArtifactCompanionPayload(companion?.content, 'manual_qa_checklist')
+    const structuredOutput = payload?.structuredOutput
+    return structuredOutput && typeof structuredOutput === 'object'
+      ? structuredOutput as ArtifactStructuredOutputData
+      : undefined
+  }, [generationArtifacts.artifacts])
   const { data: round, isLoading: roundLoading, error: roundError } = roundQuery
   const scope = version === null ? 'manual_qa_draft:none' : `manual_qa_draft:v${version}`
   const uiState = useTicketUIState<ManualQaDraft>(ticket.id, scope, version !== null)
@@ -685,6 +700,12 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
 
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-4xl space-y-4">
+          {/* Only against the round the latest generation produced: the
+              companion belongs to that generation, and pinning it to an older
+              round would describe a repair that round never had. */}
+          {!historical && version === activeVersion && (
+            <ArtifactProcessingNotice structuredOutput={generationStructuredOutput} />
+          )}
           {round.workspaceDrift?.detected && (
             <Card className="border-amber-500/60 bg-amber-500/5">
               <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><AlertTriangle className="h-4 w-4 text-amber-500" />Application use changed project files</CardTitle></CardHeader>

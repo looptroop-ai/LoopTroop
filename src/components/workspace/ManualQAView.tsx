@@ -31,6 +31,7 @@ import { ArtifactProcessingNotice, CollapsibleSection } from '@/components/works
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { findLatestCompanionArtifact, parseArtifactCompanionPayload } from '@/components/workspace/artifactCompanionUtils'
 import type { ArtifactStructuredOutputData } from '@/components/workspace/phaseArtifactTypes'
+import type { ArtifactProcessingStatus } from '@/components/workspace/artifactProcessingNotice'
 import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePhaseLogSection'
 import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
@@ -194,13 +195,22 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   // Reading it here is what puts the trail in front of the person running the
   // checks, rather than only behind the past phase's artifact chip.
   const generationArtifacts = useTicketArtifacts(ticket.id, { phase: 'GENERATING_QA_CHECKLIST' })
-  const generationStructuredOutput = useMemo((): ArtifactStructuredOutputData | undefined => {
+  const generation = useMemo((): {
+    structuredOutput?: ArtifactStructuredOutputData
+    status: ArtifactProcessingStatus
+  } => {
     const companion = findLatestCompanionArtifact(generationArtifacts.artifacts ?? [], 'manual_qa_checklist')
     const payload = parseArtifactCompanionPayload(companion?.content, 'manual_qa_checklist')
     const structuredOutput = payload?.structuredOutput
-    return structuredOutput && typeof structuredOutput === 'object'
-      ? structuredOutput as ArtifactStructuredOutputData
-      : undefined
+    return {
+      ...(structuredOutput && typeof structuredOutput === 'object'
+        ? { structuredOutput: structuredOutput as ArtifactStructuredOutputData }
+        : {}),
+      // The companion carries `validationError` when generation gave up. Without
+      // reading it the notice defaults to "completed", so this screen and the
+      // artifact chip described the same generation two different ways.
+      status: typeof payload?.validationError === 'string' ? 'failed' : 'completed',
+    }
   }, [generationArtifacts.artifacts])
   const { data: round, isLoading: roundLoading, error: roundError } = roundQuery
   const scope = version === null ? 'manual_qa_draft:none' : `manual_qa_draft:v${version}`
@@ -655,7 +665,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
           {/* A generation that used up its retries writes the repair trail and
               no checklist, so this is the one screen it can appear on — and the
               run whose failed attempts the operator's next move depends on. */}
-          <ArtifactProcessingNotice structuredOutput={generationStructuredOutput} status="failed" />
+          <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
           <div>
             <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
             <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
@@ -710,7 +720,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
               companion belongs to that generation, and pinning it to an older
               round would describe a repair that round never had. */}
           {!historical && version === activeVersion && (
-            <ArtifactProcessingNotice structuredOutput={generationStructuredOutput} />
+            <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
           )}
           {round.workspaceDrift?.detected && (
             <Card className="border-amber-500/60 bg-amber-500/5">

@@ -898,7 +898,11 @@ describe('ManualQAView recovery behavior', () => {
         content: JSON.stringify({
           baseArtifactType: 'manual_qa_checklist',
           generatedAt: '2026-07-14T10:00:00.000Z',
+          // Both fields, as the give-up path writes them: the top-level one is
+          // what says the generation itself failed, rather than an attempt
+          // within a generation that went on to succeed.
           payload: {
+            validationError: 'Manual QA checklist generation failed.',
             structuredOutput: {
               repairApplied: false,
               repairWarnings: [],
@@ -922,7 +926,51 @@ describe('ManualQAView recovery behavior', () => {
     renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
 
     expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    // "Intervention details", not "LoopTroop adjusted" — the companion carries
+    // a validationError, and describing a generation that gave up as completed
+    // is what this screen and the artifact chip used to disagree about.
     expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+  })
+
+  it('does not describe a failed generation as a completed one', () => {
+    // Same companion, but a checklist exists — a repair that succeeded on a
+    // later attempt. This is the success tree, which omitted the status
+    // entirely and so defaulted every generation to "completed".
+    mocks.artifacts.mockReturnValue({
+      artifacts: [{
+        id: 1,
+        phase: 'GENERATING_QA_CHECKLIST',
+        phaseAttempt: 1,
+        artifactType: 'ui_artifact_companion:manual_qa_checklist',
+        content: JSON.stringify({
+          baseArtifactType: 'manual_qa_checklist',
+          generatedAt: '2026-07-14T10:00:00.000Z',
+          payload: {
+            validationError: 'Manual QA checklist generation failed.',
+            structuredOutput: {
+              repairApplied: false,
+              repairWarnings: [],
+              autoRetryCount: 2,
+              validationError: 'Manual QA checklist generation failed.',
+            },
+          },
+        }),
+        filePath: null,
+        createdAt: '2026-07-14T10:00:00.000Z',
+        updatedAt: '2026-07-14T10:00:00.000Z',
+      }],
+      status: 'success',
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+    expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
   })
 
   it('says nothing when the checklist generated first time', () => {

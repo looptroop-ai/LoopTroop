@@ -17,11 +17,16 @@ export function spawnFromSyncResult(result: SpawnSyncReturns<string | Buffer>): 
     stderr: EventEmitter
     stdin: { end: (chunk?: unknown) => void; on: () => void }
     kill: (signal?: string) => boolean
+    unref: () => void
   }
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
   child.stdin = { end: () => {}, on: () => {} }
   child.kill = () => true
+  // The abandon path calls this on a child it has given up reaping. A stub
+  // without it turns that path into `child.unref is not a function` for
+  // whoever tests it next, which is a worse first impression than a no-op.
+  child.unref = () => {}
 
   const toBuffer = (value: string | Buffer | null | undefined): Buffer => {
     if (value === null || value === undefined) return Buffer.alloc(0)

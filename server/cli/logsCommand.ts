@@ -111,6 +111,12 @@ function followLog(logPath: string): Promise<void> {
       stream.on('end', () => {
         offset = size
         reading = false
+        // Watch events that arrived while this read was in flight were dropped
+        // by the guard above, so without this the bytes they were about to
+        // report wait for the *next* write — and on a daemon that has gone
+        // quiet, forever. Terminates: a drain with nothing new returns at the
+        // `size === offset` check.
+        drain()
       })
       stream.on('error', () => { reading = false })
     }

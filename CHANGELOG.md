@@ -55,6 +55,9 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Two answers submitted for the same ticket at once can no longer overwrite one another's bookkeeping, whichever way they arrive. The second is refused outright.
 - A bead tracker with a damaged line now loses that line, with the file's own line number, instead of crashing a step somewhere else entirely. The line number it reports is the one in the file, not a count of the lines that survived.
 - Git hook validation now says when it could not put the worktree back, instead of losing the validation result to an error about the cleanup.
+- A command that runs out of time is now always reported as timed out. Where the operating system would not kill the process it had started, the step waited for it forever instead.
+- Packaging a ticket for delivery no longer writes over local files it was not asked to touch. A leftover file sharing a name with one the branch deleted was silently replaced.
+- The Manual QA screen now tells you when the checklist you are working through had to be repaired. It was only ever shown on the artifact panel of the step that generated it.
 
 ### Added
 - Every skip surface now takes an optional reason. Interview questions can be skipped individually with their own reason, or all at once with a single reason for the action. An answer marked skipped at the interview approval screen takes one, as does approving a PRD or bead plan with unresolved coverage gaps, skipping a Manual QA round, finishing a ticket without merging, and cancelling. Reasons are always optional; nothing is blocked for lack of one, and no screen nags about a skip that has none.
@@ -352,6 +355,15 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a coverage follow-up budget inventing one follow-up for an interview with no questions to follow up on.
 - Fixed repository-relative paths accepting a Windows drive qualifier without a slash. `C:notes.txt` is relative to the current directory on that drive, which is not the worktree, and it reached the filter that stands in front of `git add` and `git checkout`.
 - Fixed the Manual QA checklist view showing nothing about the retries and repairs that produced it. Generation records them; the view now reads them, including for a generation that gave up and produced no checklist at all.
+- Fixed a command that outlives its timeout hanging its caller when the process tree survives the kill. Both command runners waited for the child's `close` event, which only fires once every pipe is closed, so a surviving grandchild meant the promise never settled — Windows, where the kill is delegated to `taskkill` and its failure is invisible, is where it showed. They now give up shortly after the force-kill and report the timeout with whatever output arrived. This is the same bound the git runner already had; it was fixed there and not here.
+- Fixed the candidate rewrite overwriting untracked local files. Relaxing its pre-reset check to tracked changes was right — Manual QA and the final-test audit deliberately leave local-only output — but `git reset --hard` writes over an untracked file whenever the target commit tracks that path, with no warning and nothing to recover from. The rewrite now names those files and refuses.
+- Fixed the Manual QA repair notice appearing only on the artifact panel of the generating step, which is not the screen anyone is on while running the checks. It now appears on the Manual QA screen itself, for the round the latest generation produced.
+- Fixed the Manual QA retry count reading one too high after a generation gave up.
+- Fixed an answer batch that never finishes locking a ticket out of every later submission. The claim was released only when the background work settled, so work that ignored the cancellation held it for the life of the process.
+- Fixed a bead tracker row whose field is present but half-formed being accepted and then crashing a later step: an empty `dependencies` object still broke the scheduler, and a Manual QA provenance record without its source items still broke the evidence loader. A field that is there is now checked as far as its readers go into it.
+- Fixed a repository whose approved profile lists the same Git hook twice always reporting hook drift at integration.
+- Fixed council loading throwing on a malformed stored model-variant value instead of falling back.
+- Fixed a startup failure before the network bind leaving the write-ahead checkpoint and the live-event cleanup timer running with nothing able to stop them. Only the bind itself was guarded.
 - Fixed the shared status lookup answering for names it does not know. A handful of them — `toString`, `constructor`, `__proto__` — came back with a member inherited from every JavaScript object instead of nothing, and callers check the answer for presence and then read a phase's fields out of it. Every lookup now goes through the same "is this a real status" check.
 
 ## 0.5.9 (2026-08-26)

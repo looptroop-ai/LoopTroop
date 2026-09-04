@@ -111,24 +111,32 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
     configureOpenCodeRuntime(settings)
     resetOpenCodeAdapter()
 
-    ensureStorageDirs()
-
-    if (!config.skipStartupSequence) {
-      await startupSequence()
-    }
-
-    broadcaster.startAutoCleanup()
-
-    const hostname = config.hostname === undefined
-      ? getAllowedBackendHost()
-      : assertAllowedBackendHost(config.hostname)
-
-    const requestedPort = config.port ?? settings.port
-    // A port the user named must fail loudly rather than move somewhere they
-    // are not pointing at. Only the untouched default may relocate.
-    const portIsExplicit = config.port !== undefined || settings.portIsExplicit
-
+    // Everything that acquires a resource is inside this try, not just the
+    // bind. The startup sequence starts the WAL checkpoint and
+    // `startAutoCleanup` starts the broadcaster's timer, and a throw between
+    // either of those and `listen` — a rejected hydration, a hostname the host
+    // policy refuses — left them running with no handle to stop them, because
+    // `close()` is only reachable once a caller holds a started runtime.
+    // Verified: a runtime configured with a non-loopback hostname rejected as
+    // expected and left `broadcaster.cleanupInterval` alive behind it.
     try {
+      ensureStorageDirs()
+
+      if (!config.skipStartupSequence) {
+        await startupSequence()
+      }
+
+      broadcaster.startAutoCleanup()
+
+      const hostname = config.hostname === undefined
+        ? getAllowedBackendHost()
+        : assertAllowedBackendHost(config.hostname)
+
+      const requestedPort = config.port ?? settings.port
+      // A port the user named must fail loudly rather than move somewhere they
+      // are not pointing at. Only the untouched default may relocate.
+      const portIsExplicit = config.port !== undefined || settings.portIsExplicit
+
       try {
         address = await listen(requestedPort, hostname)
       } catch (error) {
@@ -141,10 +149,6 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
         console.warn(`[server] Port ${requestedPort} is in use; listening on ${address.port} instead.`)
       }
     } catch (error) {
-      // The startup sequence has already started the WAL checkpoint and the
-      // broadcaster's cleanup timer. A bind that fails now leaves both running
-      // with no handle to stop them, because close() is only reachable once a
-      // caller holds a started runtime.
       teardownStartedResources()
       throw error
     }

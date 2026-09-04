@@ -140,6 +140,26 @@ describe('createRuntime port allocation', () => {
     }
   })
 
+  it('stops them for a failure before the bind, too', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+
+    // A hostname the host policy refuses throws after the cleanup timer has
+    // started and before `listen` is reached. Only the bind was guarded, so
+    // this path left the timer running with nothing able to stop it.
+    const runtime = createRuntime({ skipStartupSequence: true, hostname: '0.0.0.0' })
+
+    const stopAutoCleanup = vi.spyOn(broadcaster, 'stopAutoCleanup')
+    try {
+      await expect(runtime.start()).rejects.toThrow('non-loopback host')
+      expect(stopAutoCleanup).toHaveBeenCalled()
+      expect((broadcaster as unknown as { cleanupInterval: unknown }).cleanupInterval).toBeNull()
+    } finally {
+      stopAutoCleanup.mockRestore()
+      broadcaster.stopAutoCleanup()
+    }
+  })
+
   it('runs the startup sequence once for overlapping start() calls', async () => {
     const { createRuntime } = await import('../server/createRuntime')
     const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })

@@ -42,7 +42,7 @@ describe('skipAllInterviewQuestionsToApproval', () => {
     repoManager.cleanup()
   })
 
-  it('writes canonical interview output and synthetic clean coverage artifacts', () => {
+  it('writes canonical interview output and synthetic clean coverage artifacts', async () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({
       folderPath: repoDir,
@@ -55,7 +55,7 @@ describe('skipAllInterviewQuestionsToApproval', () => {
       description: 'Restore interview skip-all shortcut.',
     })
 
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })

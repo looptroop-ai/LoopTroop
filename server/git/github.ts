@@ -776,6 +776,9 @@ export function ensureNoTrackedWorktreeChanges(projectPath: string, operation = 
   }
 }
 
+/** Enough paths per `ls-tree` to keep the argument list well inside every shell's limit. */
+const UNTRACKED_PROBE_BATCH_SIZE = 200
+
 /**
  * The path that would be in the way of writing `repoPath`, or null.
  *
@@ -844,15 +847,70 @@ export function ensureNoUntrackedPathsClobberedBy(
     const blocking = findBlockingPath(projectPath, repoPath)
     if (blocking) collisions.add(blocking)
   }
-  if (collisions.size === 0) return
+  refuseCollisions(collisions, operation, `${commitish} carries these paths and HEAD does not, so resetting to it writes over what is on disk.`)
+}
 
+/**
+ * Fails when a file on disk sits where a checkout is about to write.
+ *
+ * The reset is only half of what a rewrite writes. `git checkout <sha> -- <p>`
+ * replaces an untracked file at `p` just as silently and exits 0 — verified —
+ * and those paths are the ones the *candidate adds*, which a merge-base
+ * comparison never names.
+ *
+ * A path HEAD already tracks is not local-only output: the tracked-changes
+ * check ahead of this one owns it, and overwriting it is the operation's whole
+ * purpose. So this must be asked **before** anything moves HEAD, while HEAD is
+ * still the commit whose tracked set answers that question.
+ */
+export function ensureNoUntrackedPathsOverwrittenBy(
+  projectPath: string,
+  repoPaths: readonly string[],
+  operation: string,
+): void {
+  const blocked = new Map<string, string>()
+  for (const repoPath of repoPaths) {
+    const blocking = findBlockingPath(projectPath, repoPath)
+    if (blocking) blocked.set(repoPath, blocking)
+  }
+  if (blocked.size === 0) return
+
+  const tracked = new Set(listPathsInTree(projectPath, 'HEAD', [...blocked.keys()], operation))
+  const collisions = new Set(
+    [...blocked.entries()].filter(([repoPath]) => !tracked.has(repoPath)).map(([, blocking]) => blocking),
+  )
+  refuseCollisions(collisions, operation, 'HEAD does not track these paths, so writing them replaces what is on disk.')
+}
+
+/** The subset of `repoPaths` that `commitish` carries, batched to bound the argv. */
+function listPathsInTree(
+  projectPath: string,
+  commitish: string,
+  repoPaths: readonly string[],
+  operation: string,
+): string[] {
+  const found: string[] = []
+  for (let index = 0; index < repoPaths.length; index += UNTRACKED_PROBE_BATCH_SIZE) {
+    const batch = repoPaths.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
+    const tree = runGitSync(
+      projectPath,
+      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map((path) => `:(literal)${path}`)],
+      { trimOutput: false },
+    )
+    if (!tree.ok) {
+      throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
+    }
+    found.push(...tree.stdout.split('\0').filter(Boolean))
+  }
+  return found
+}
+
+function refuseCollisions(collisions: ReadonlySet<string>, operation: string, why: string): void {
+  if (collisions.size === 0) return
   const colliding = [...collisions]
   const shown = colliding.slice(0, 10).join(', ')
   const rest = colliding.length > 10 ? ` (and ${colliding.length - 10} more)` : ''
-  throw new Error(
-    `Local files would be overwritten by ${operation}: ${shown}${rest}. `
-    + `${commitish} carries these paths and HEAD does not, so resetting to it writes over what is on disk.`,
-  )
+  throw new Error(`Local files would be overwritten by ${operation}: ${shown}${rest}. ${why}`)
 }
 
 export async function syncLocalBaseBranch(projectPath: string, baseBranch: string): Promise<{

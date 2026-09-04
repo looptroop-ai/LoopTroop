@@ -289,6 +289,26 @@ describe('prepareSquashCandidate', () => {
     expect(readFileSync(resolve(repoDir, 'sub'), 'utf8')).toBe('LOCAL OUTPUT\n')
   })
 
+  it('refuses when local output sits on a path the candidate adds', () => {
+    const repoDir = repoManager.createRepo()
+    const { candidate, mergeBase } = makeCandidate(repoDir)
+
+    // The reset is only half of what the rewrite writes: it then checks out
+    // every file the candidate *added*, and `git checkout <sha> -- <path>`
+    // replaces an untracked file silently and exits 0 — verified. A merge-base
+    // comparison never names those paths, so the first guard cannot see this.
+    // Reachable when HEAD is not the candidate, which a rollback that itself
+    // failed leaves behind.
+    git(repoDir, ['reset', '--hard', mergeBase])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('src.ts')
+    expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toBe('LOCAL OUTPUT\n')
+  })
+
   it('rewrites a candidate commit with only AI-audited included files', () => {
     const repoDir = repoManager.createRepo()
 

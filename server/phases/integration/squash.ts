@@ -1,4 +1,4 @@
-import { ensureNoTrackedWorktreeChanges, ensureNoUntrackedPathsClobberedBy } from '../../git/github'
+import { ensureNoTrackedWorktreeChanges, ensureNoUntrackedPathsClobberedBy, ensureNoUntrackedPathsOverwrittenBy } from '../../git/github'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
@@ -226,6 +226,12 @@ export function rewriteCandidateCommitWithFiles(
     // check: where the merge base tracks a path, the reset writes its content
     // over whatever untracked file is sitting there.
     ensureNoUntrackedPathsClobberedBy(worktreePath, mergeBase, 'the candidate rewrite')
+    // The reset is only half of what this writes: the checkouts below restore
+    // every file the candidate *adds*, and `git checkout <sha> -- <path>`
+    // replaces an untracked file just as silently. Asked here, before the reset
+    // moves HEAD, because "does HEAD track this?" is what separates a file the
+    // rewrite is meant to write from local-only output standing in its way.
+    ensureNoUntrackedPathsOverwrittenBy(worktreePath, presentFiles, 'the candidate rewrite')
 
     runGit(['reset', '--hard', mergeBase])
     resetForRewrite = true

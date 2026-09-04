@@ -884,6 +884,47 @@ describe('ManualQAView recovery behavior', () => {
     expect(screen.getByText(/LoopTroop adjusted this artifact/i)).toBeInTheDocument()
   })
 
+  it('shows the repair trail when generation produced no checklist at all', () => {
+    // The run that used up its retries writes the companion and no checklist,
+    // so the view takes its "not available yet" branch — which is exactly the
+    // run whose failed attempts the operator's next move depends on.
+    mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+    mocks.artifacts.mockReturnValue({
+      artifacts: [{
+        id: 1,
+        phase: 'GENERATING_QA_CHECKLIST',
+        phaseAttempt: 1,
+        artifactType: 'ui_artifact_companion:manual_qa_checklist',
+        content: JSON.stringify({
+          baseArtifactType: 'manual_qa_checklist',
+          generatedAt: '2026-07-14T10:00:00.000Z',
+          payload: {
+            structuredOutput: {
+              repairApplied: false,
+              repairWarnings: [],
+              autoRetryCount: 2,
+              validationError: 'Manual QA checklist generation failed.',
+            },
+          },
+        }),
+        filePath: null,
+        createdAt: '2026-07-14T10:00:00.000Z',
+        updatedAt: '2026-07-14T10:00:00.000Z',
+      }],
+      status: 'success',
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+  })
+
   it('says nothing when the checklist generated first time', () => {
     mocks.artifacts.mockReturnValue({
       artifacts: [], status: 'success', isLoading: false, isFetching: false, isError: false, error: null, refetch: vi.fn(),

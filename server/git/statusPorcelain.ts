@@ -39,9 +39,16 @@ export function parseGitStatusPorcelainZ(output: string): GitStatusRecord[] {
     const indexStatus = field[0] ?? ' '
     const worktreeStatus = field[1] ?? ' '
     const path = field.slice(3)
-    const isRenameOrCopy = indexStatus === 'R' || indexStatus === 'C'
-    const originalPath = isRenameOrCopy && index + 1 < fields.length ? fields[index + 1] : undefined
-    if (isRenameOrCopy && index + 1 < fields.length) index += 1
+    // Either column, not just the index one. Git emits the second NUL field
+    // whenever *either* status is R or C — an intent-to-add rename reports
+    // ` R new.ts\0old.ts\0` — and reading only `indexStatus` made the parser
+    // take `old.ts` as the next record's status-and-path, so the rename source
+    // was neither staged by the bead commit nor seen by the file-effects audit.
+    // That is the same failure §9.2 was raised about, one column over.
+    const isRenameOrCopy = (status: string) => status === 'R' || status === 'C'
+    const hasOriginalPath = isRenameOrCopy(indexStatus) || isRenameOrCopy(worktreeStatus)
+    const originalPath = hasOriginalPath && index + 1 < fields.length ? fields[index + 1] : undefined
+    if (hasOriginalPath && index + 1 < fields.length) index += 1
 
     records.push({
       indexStatus,
@@ -50,7 +57,8 @@ export function parseGitStatusPorcelainZ(output: string): GitStatusRecord[] {
       ...(originalPath ? { originalPath } : {}),
     })
 
-    if (indexStatus === 'R' && originalPath) {
+    // A rename leaves its source behind as a deletion; a copy does not touch it.
+    if ((indexStatus === 'R' || worktreeStatus === 'R') && originalPath) {
       records.push({ indexStatus: 'D', worktreeStatus: ' ', path: originalPath })
     }
   }

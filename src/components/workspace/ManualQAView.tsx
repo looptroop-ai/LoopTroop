@@ -651,10 +651,16 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   if (error || !round || !checklist || version === null) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center">
-        <div>
-          <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
-          <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
-          <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
+        <div className="max-w-2xl space-y-4">
+          {/* A generation that used up its retries writes the repair trail and
+              no checklist, so this is the one screen it can appear on — and the
+              run whose failed attempts the operator's next move depends on. */}
+          <ArtifactProcessingNotice structuredOutput={generationStructuredOutput} status="failed" />
+          <div>
+            <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
+            <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
+            <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
+          </div>
         </div>
       </div>
     )

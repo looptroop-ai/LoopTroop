@@ -21,6 +21,22 @@ describe('parseGitStatusPorcelainZ', () => {
     ])
   })
 
+  it('reads a rename reported in the worktree column, not just the index one', () => {
+    // `git mv` followed by `git add -N` reports ` R new.ts\0old.ts\0`. Reading
+    // only the index column took `old.ts` as the next record's own status and
+    // path, so the source was neither staged nor audited.
+    expect(parseGitStatusPorcelainZ(` R new.ts${NUL}old.ts${NUL}`)).toEqual([
+      { indexStatus: ' ', worktreeStatus: 'R', path: 'new.ts', originalPath: 'old.ts' },
+      { indexStatus: 'D', worktreeStatus: ' ', path: 'old.ts' },
+    ])
+  })
+
+  it('does not report a worktree copy source as deleted either', () => {
+    expect(parseGitStatusPorcelainZ(` C copy.ts${NUL}source.ts${NUL}`)).toEqual([
+      { indexStatus: ' ', worktreeStatus: 'C', path: 'copy.ts', originalPath: 'source.ts' },
+    ])
+  })
+
   it('does not report a copy source as deleted', () => {
     // A copy leaves its source exactly where it was; staging a deletion for it
     // would remove a file the user never touched.

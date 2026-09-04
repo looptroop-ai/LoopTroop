@@ -190,6 +190,28 @@ describe('createRuntime port allocation', () => {
     expect(runtime.address).toBeNull()
   })
 
+  it('runs the startup sequence once for overlapping start() calls after a close', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    await runtime.start()
+    await runtime.close()
+
+    // `closing` is settled, not null, so both callers pass the `starting`
+    // fence, both await an already-resolved promise, and the second overwrites
+    // the first's `starting` — two servers, one runtime.
+    const startAutoCleanup = vi.spyOn(broadcaster, 'startAutoCleanup')
+    try {
+      const [first, second] = await Promise.all([runtime.start(), runtime.start()])
+      expect(first).toEqual(second)
+      expect(startAutoCleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      startAutoCleanup.mockRestore()
+      await runtime.close()
+    }
+  })
+
   it('runs the startup sequence once for overlapping start() calls', async () => {
     const { createRuntime } = await import('../server/createRuntime')
     const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })

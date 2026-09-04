@@ -73,9 +73,18 @@ function buildFileAudit(worktreePath: string, beforeFingerprint: string): GitHoo
   }
 }
 
-function listUntrackedPaths(worktreePath: string): Set<string> {
+/**
+ * The untracked files present now, or null when git could not say.
+ *
+ * The difference matters: the restore removes every untracked path *not* in
+ * the snapshot's set, so treating a failed listing as "there were none" made
+ * the restore delete every untracked file that was already there — a timeout
+ * or a `maxBuffer` overrun on `ls-files` turning cleanup into data loss. The
+ * index half of this snapshot already fails closed; so does this one.
+ */
+function listUntrackedPaths(worktreePath: string): Set<string> | null {
   const result = runGitBinarySync(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'])
-  if (!result.ok) return new Set()
+  if (!result.ok) return null
   return new Set(result.stdout.toString('utf8').split('\0').filter(Boolean))
 }
 
@@ -109,11 +118,15 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
   }
-  // The index half is not optional. Restoring files while leaving a hook's
-  // `git add` staged is not a restore, so a snapshot without it is unusable
-  // and the caller refuses to run rather than run unprotected.
-  const index = snapshotGitIndex(worktreePath)
-  if (!index) {
+  // Neither half is optional. Restoring files while leaving a hook's `git add`
+  // staged is not a restore, and a snapshot that cannot say which untracked
+  // files were already there cannot tell a hook's leftovers from the
+  // operator's. Either way the caller refuses to run rather than run
+  // unprotected.
+  const untrackedPaths = listUntrackedPaths(worktreePath)
+  const index = untrackedPaths ? snapshotGitIndex(worktreePath) : null
+  if (!index || !untrackedPaths) {
+    index?.dispose()
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
   }
@@ -121,7 +134,7 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
   return {
     tree: treeId,
     temporaryDirectory,
-    untrackedPaths: listUntrackedPaths(worktreePath),
+    untrackedPaths,
     index,
   }
 }
@@ -145,7 +158,15 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
     // than none, and both failures are reported.
     const restored = runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
     if (!restored.ok) failures.push(`worktree restore failed: ${restored.errorDetail}`)
-    for (const path of listUntrackedPaths(worktreePath)) {
+    // A listing that fails here means the same thing it means at snapshot time:
+    // we cannot tell what a hook added from what was already there. Removing
+    // nothing leaves hook output behind and says so; removing everything not in
+    // a set we could not build would delete the operator's files.
+    const currentUntracked = listUntrackedPaths(worktreePath)
+    if (!currentUntracked) {
+      failures.push('untracked cleanup skipped: the worktree could not be listed')
+    }
+    for (const path of currentUntracked ?? []) {
       if (snapshot.untrackedPaths.has(path)) continue
       const absolutePath = resolve(worktreePath, path)
       const relativePath = relative(resolve(worktreePath), absolutePath)

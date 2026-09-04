@@ -291,14 +291,14 @@ describe('ticketRouter basic ticket routes', () => {
       selectedOptions: { Q01: ['preserve'] },
     })
     // Held for the synchronous path too, and given back when it finishes.
-    expect(claimInterviewBatch).toHaveBeenCalledWith(ticket.id)
-    expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id)
+    expect(claimInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(Number))
+    expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
   })
 
   it('refuses a second answer batch while one is already being processed', async () => {
     const { ticket } = createBasicTicket()
     patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
-    vi.mocked(claimInterviewBatch).mockReturnValueOnce(false)
+    vi.mocked(claimInterviewBatch).mockReturnValueOnce(null)
 
     const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
       method: 'POST',
@@ -355,7 +355,7 @@ describe('ticketRouter basic ticket routes', () => {
       expect(releaseInterviewBatch).not.toHaveBeenCalled()
 
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
-      expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id)
+      expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
     } finally {
       vi.useRealTimers()
       if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE

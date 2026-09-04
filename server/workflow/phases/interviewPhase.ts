@@ -26,7 +26,10 @@ import {
 } from '../../phases/interview/sessionState'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
+import { randomUUID } from 'node:crypto'
+import { and, eq } from 'drizzle-orm'
+import { interviewBatchClaims } from '../../db/schema'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { safeAtomicWrite } from '../../io/atomicWrite'
 import { broadcaster } from '../../sse/broadcaster'
@@ -242,7 +245,16 @@ export interface InterviewBatchSkipReceipt {
 }
 
 /**
- * Tickets whose answer batch is still being processed.
+ * How long a claim stays valid when the caller names no budget of its own.
+ *
+ * Only a backstop for the crash case: the route derives its own expiry from the
+ * batch timeout, and every path releases explicitly. This is what stops a
+ * daemon that died mid-batch from wedging the ticket forever.
+ */
+const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Claims the answer batch for a ticket, in the project database.
  *
  * The route accepted a second submission whenever a session existed, even after
  * the first had cleared `currentBatch`. The second then deleted the first's
@@ -252,35 +264,90 @@ export interface InterviewBatchSkipReceipt {
  *
  * Held by both submission paths, not just the asynchronous one: a coverage
  * batch and a mock-mode batch run synchronously, and one of those arriving
- * during an in-flight AI batch walked straight into the same `currentBatch`
- * race from the other side.
+ * during an in-flight AI batch walked into the same race from the other side.
  *
- * **This claim is process-local, and deliberately so for now.** The plan's
- * §9.16 rule — a database row or a file lock, with a generation token — is the
- * right answer for two daemons opened on one project, and it is not what this
- * is: it is a `Set` in one process, lost on restart. A batch is held across the
- * whole model call, which is minutes, so the 30-second stale reclamation
- * `withFileLock` uses would rob a live holder rather than protect it; a durable
- * lease needs a schema and a recovery path, which is more than this stage
- * carries. The single-daemon-per-project assumption is stated here so the next
- * reader does not mistake it for an oversight.
+ * **Durable and cross-process, because a `Set` in one daemon is neither.** Two
+ * daemons opened on one project share nothing but these files, and both would
+ * have accepted the same batch; a restart mid-batch dropped the claim entirely.
+ * The row's primary key is the ticket, so the exclusion is the table's
+ * constraint rather than a check the reader has to remember, and the whole
+ * read-decide-write runs in one better-sqlite3 transaction — synchronous, on
+ * one connection, so no caller had to become async for this.
+ *
+ * Returns the acquisition's token, or null when someone else holds it.
  */
-const inFlightBatches = new Set<string>()
+export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS): string | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
 
-/** True when this ticket already has an async batch in flight. */
+  const token = `${process.pid}:${randomUUID()}`
+  const now = Date.now()
+  // Read and write through `tx`, not the outer handle: a check that reads
+  // outside the transaction it is guarding is not inside it, which is the
+  // mistake §9.25 was raised about.
+  return context.projectDb.transaction((tx): string | null => {
+    const existing = tx
+      .select()
+      .from(interviewBatchClaims)
+      .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .get()
+    // A claim past its expiry belonged to a run that is gone. Taking it over is
+    // the recovery path: nothing else would ever release it.
+    if (existing && Date.parse(existing.expiresAt) > now) return null
+
+    const claim = {
+      ticketId: context.localTicketId,
+      token,
+      claimedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + Math.max(1, ttlMs)).toISOString(),
+    }
+    tx.insert(interviewBatchClaims)
+      .values(claim)
+      .onConflictDoUpdate({ target: interviewBatchClaims.ticketId, set: claim })
+      .run()
+    return token
+  })
+}
+
+/**
+ * Gives the claim back, but only while this acquisition still holds it.
+ *
+ * Without the token an expired claim that someone else had already taken over
+ * would be released by whoever held it before — the same fault
+ * `server/io/fileLock.ts` carries a token to prevent.
+ *
+ * `token` is optional so a caller that only knows the ticket — the cleanup that
+ * runs when a ticket reaches a terminal state — can drop the claim outright.
+ */
+export function releaseInterviewBatch(ticketId: string, token?: string): void {
+  // Best effort by design. This runs from a route's error path and from the
+  // cleanup that follows a ticket reaching a terminal state, neither of which
+  // may throw — and the claim's expiry already covers a release that never
+  // happens, which is the same reason a crashed daemon does not wedge a ticket.
+  try {
+    const context = getTicketContext(ticketId)
+    if (!context) return
+    context.projectDb
+      .delete(interviewBatchClaims)
+      .where(token
+        ? and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, token))
+        : eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .run()
+  } catch (error) {
+    console.warn(`[interview] Could not release the answer-batch claim for ${ticketId}; it expires on its own.`, error)
+  }
+}
+
+/** True when a live claim exists for this ticket. */
 export function hasInFlightInterviewBatch(ticketId: string): boolean {
-  return inFlightBatches.has(ticketId)
-}
-
-/** Claims the batch for this ticket. False when one is already in flight. */
-export function claimInterviewBatch(ticketId: string): boolean {
-  if (inFlightBatches.has(ticketId)) return false
-  inFlightBatches.add(ticketId)
-  return true
-}
-
-export function releaseInterviewBatch(ticketId: string): void {
-  inFlightBatches.delete(ticketId)
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const existing = context.projectDb
+    .select()
+    .from(interviewBatchClaims)
+    .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+    .get()
+  return Boolean(existing && Date.parse(existing.expiresAt) > Date.now())
 }
 
 export function skipAllInterviewQuestionsToApproval(
@@ -1544,6 +1611,7 @@ export function processInterviewBatchAsync(
   originalSnapshot: InterviewSessionSnapshot,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
+  claimToken?: string,
 ): Promise<BatchResponse> {
   // This call's own receipt, so the revert below can only ever undo the skips
   // this call wrote.
@@ -1562,7 +1630,9 @@ export function processInterviewBatchAsync(
       throw err
     })
     .finally(() => {
-      releaseInterviewBatch(ticketId)
+      // With the token, so a task that outlived its own claim cannot delete the
+      // one a later submission is holding.
+      releaseInterviewBatch(ticketId, claimToken)
     })
 }
 

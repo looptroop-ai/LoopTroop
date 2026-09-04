@@ -24,8 +24,9 @@ import { vi } from 'vitest'
 export function workflowRunnerMock() {
   return {
     cancelTicket: vi.fn(),
-    // Both answer-batch submission paths take the claim, so the double offers it.
-    claimInterviewBatch: vi.fn(() => true),
+    // Both answer-batch submission paths take the claim, so the double offers
+    // it. The real one answers with the acquisition's token, or null.
+    claimInterviewBatch: vi.fn(() => 'test-batch-claim-token'),
     releaseInterviewBatch: vi.fn(),
     handleInterviewQABatch: vi.fn(),
     // Returns a promise, like the real one: the route races it against a timeout.

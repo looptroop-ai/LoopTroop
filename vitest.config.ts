@@ -153,6 +153,7 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/coverageEnvelope.test.ts',
   'server/workflow/__tests__/executionPhase.test.ts',
   'server/workflow/__tests__/integrationPhase.test.ts',
+  'server/workflow/__tests__/lifecycleCleanup.test.ts',
   'server/workflow/__tests__/interviewCompilePhase.test.ts',
   'server/workflow/__tests__/openCodeLogCanonicalization.test.ts',
   'server/workflow/__tests__/phaseIntermediateRecovery.test.ts',

@@ -4,6 +4,7 @@ import type { PhaseIntermediateData } from './types'
 import { clearTicketWorkBudget } from '../workBudget'
 import { forgetTicketQuestionMemory } from '../questionWindows'
 import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
+import { releaseInterviewBatch } from './interviewPhase'
 
 export const runningPhases = new Set<string>()
 
@@ -77,6 +78,13 @@ export function cleanupTicketState(ticketId: string) {
   // for their full thirty-minute life, and a restart of the same ticket
   // reapplied the finished run's retry attempts.
   clearTicketSessionContinuations(ticketId)
+
+  // Untokened on purpose: a ticket that has reached a terminal state has no
+  // legitimate batch in flight, so whatever claim is on it belongs to a run
+  // that is over. This is the one caller allowed to take a claim it does not
+  // hold, and it is why the claim's expiry is a backstop rather than the
+  // primary recovery path.
+  releaseInterviewBatch(ticketId)
 }
 
 /**

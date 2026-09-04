@@ -214,6 +214,32 @@ export const ticketErrorOccurrences = sqliteTable('ticket_error_occurrences', {
  * trained on. Opened when the first question on a ticket arrives and closed when
  * the last one is resolved, so overlapping waits are one interval, not two.
  */
+/**
+ * The one ticket-scoped claim that says an interview answer batch is being
+ * processed right now.
+ *
+ * In the project database rather than in daemon memory because the point is to
+ * exclude a *second process*: two daemons opened on one project share nothing
+ * but these files, and an in-memory `Set` let both accept the same batch. The
+ * ticket id is the primary key, so the exclusion is the table's own constraint
+ * rather than something the reader has to get right.
+ *
+ * `token` identifies the acquisition, not the ticket: a claim that expired and
+ * was taken by someone else must not be released by whoever held it before —
+ * the same rule `server/io/fileLock.ts` follows, for the same reason.
+ *
+ * `expires_at` is what makes a crash recoverable. A daemon that dies holding a
+ * claim leaves the row behind, and nothing would ever release it; a claim past
+ * its expiry is available again, so the ticket recovers on its own rather than
+ * needing the row deleted by hand.
+ */
+export const interviewBatchClaims = sqliteTable('interview_batch_claims', {
+  ticketId: integer('ticket_id').primaryKey().references(() => tickets.id, { onDelete: 'cascade' }),
+  token: text('token').notNull(),
+  claimedAt: text('claimed_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+})
+
 export const questionWaits = sqliteTable('question_waits', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ticketId: integer('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),

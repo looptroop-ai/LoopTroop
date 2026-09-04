@@ -358,13 +358,27 @@ export async function handleAnswerBatch(c: Context) {
     return c.json({ error: 'No interview session found' }, 404)
   }
 
+  // Derived from the ticket's own budget rather than a flat ten minutes. The
+  // configured AI response timeout is 20 minutes by default, so a turn that was
+  // slow but well inside its budget was aborted and surfaced to the operator as
+  // `interview_error`. One attempt plus its structured retries, and a margin
+  // for the surrounding bookkeeping.
+  const aiTimeoutMs = resolveAiResponseTimeoutForTicket(ticketId)
+  const structuredRetries = resolveStructuredRetryCountForTicket(ticketId)
+  const batchTimeoutMs = aiTimeoutMs * (1 + Math.max(0, structuredRetries)) + BATCH_PROCESSING_MARGIN_MS
+
   // Claimed before anything is dispatched, on both paths. A session existing is
   // not the same as a batch being available: the first request clears
   // `currentBatch`, and a second one accepted after that used to delete the
   // first request's skip-receipt entry on its way to failing. The synchronous
   // path — coverage batches and mock mode — reaches the same code and so takes
   // the same claim.
-  if (!claimInterviewBatch(ticketId)) {
+  //
+  // The claim's own expiry is the batch's budget plus a margin: every path here
+  // releases it explicitly, so the expiry only matters when a daemon dies
+  // holding one, and it has to outlast the work it is guarding.
+  const claimToken = claimInterviewBatch(ticketId, batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS)
+  if (!claimToken) {
     return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
   }
 
@@ -377,14 +391,6 @@ export async function handleAnswerBatch(c: Context) {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
-      // Derived from the ticket's own budget rather than a flat ten minutes.
-      // The configured AI response timeout is 20 minutes by default, so a turn
-      // that was slow but well inside its budget was aborted here and surfaced
-      // to the operator as `interview_error`. One attempt plus its structured
-      // retries, and a margin for the surrounding bookkeeping.
-      const aiTimeoutMs = resolveAiResponseTimeoutForTicket(ticketId)
-      const structuredRetries = resolveStructuredRetryCountForTicket(ticketId)
-      const batchTimeoutMs = aiTimeoutMs * (1 + Math.max(0, structuredRetries)) + BATCH_PROCESSING_MARGIN_MS
       let timeoutId: ReturnType<typeof setTimeout> | null = null
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -400,13 +406,13 @@ export async function handleAnswerBatch(c: Context) {
           // so the two cannot corrupt each other, and a ticket nobody can
           // answer until the daemon restarts is worse than a race that needs a
           // cancellation to be ignored first.
-          releaseInterviewBatch(ticketId)
+          releaseInterviewBatch(ticketId, claimToken)
           reject(new Error('Async batch processing timed out'))
         }, batchTimeoutMs)
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, asyncSession, parsed.data.selectedOptions, parsed.data.skipReasons),
+        processInterviewBatchAsync(ticketId, parsed.data.answers, asyncSession, parsed.data.selectedOptions, parsed.data.skipReasons, claimToken),
         timeoutPromise,
       ])
         .finally(() => {
@@ -440,7 +446,7 @@ export async function handleAnswerBatch(c: Context) {
     // roll back here — the caller gets the failure directly and the snapshot is
     // left as the batch found it — so no skip receipt is collected.
     const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
-    releaseInterviewBatch(ticketId)
+    releaseInterviewBatch(ticketId, claimToken)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
       sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })
@@ -461,7 +467,7 @@ export async function handleAnswerBatch(c: Context) {
   } catch (err) {
     // The claim is normally released when the background work settles. If
     // anything threw between taking it and dispatching, nothing would.
-    releaseInterviewBatch(ticketId)
+    releaseInterviewBatch(ticketId, claimToken)
     logTicketOperationError(ticketId, 'Failed to process answer-batch for ticket', err)
     return c.json({ error: 'Failed to process batch', details: getErrorMessage(err) }, 500)
   }

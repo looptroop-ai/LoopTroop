@@ -32,7 +32,7 @@ function makeUnkillableChild() {
     kill: () => true,
     unref: vi.fn(),
   })
-  return child as unknown as ReturnType<typeof spawn>
+  return child
 }
 
 function makeRepo(): string {
@@ -181,7 +181,9 @@ describe('executeCommand', () => {
       // Windows so the kill goes through `taskkill`, which is absent here and
       // whose spawn error the terminator already swallows.
       platform: 'windows',
-      spawnProcess: () => child,
+      // The overload set on `spawn` cannot be satisfied by a stub, and the
+      // executor only ever uses the pipes, the pid and `unref`.
+      spawnProcess: (() => child) as unknown as typeof spawn,
     })
 
     await vi.advanceTimersByTimeAsync(200 + FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS + 1)

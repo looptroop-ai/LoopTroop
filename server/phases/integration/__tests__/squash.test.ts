@@ -192,6 +192,41 @@ describe('prepareSquashCandidate', () => {
     expect(readFileSync(resolve(repoDir, 'local.tmp'), 'utf8')).toBe('residue\n')
   })
 
+  it('refuses when an untracked file sits where the merge base tracks one', () => {
+    const repoDir = repoManager.createRepo()
+
+    git(repoDir, ['checkout', '-b', BRANCH])
+    // The merge base carries `obsolete.ts`; the candidate deletes it.
+    writeFileSync(resolve(repoDir, 'obsolete.ts'), 'from the merge base\n')
+    git(repoDir, ['add', 'obsolete.ts'])
+    git(repoDir, ['commit', '-m', 'base file'])
+    const mergeBase = git(repoDir, ['rev-parse', 'HEAD'])
+    git(repoDir, ['rm', '-q', 'obsolete.ts'])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+    git(repoDir, ['add', 'src.ts'])
+    git(repoDir, ['commit', '-m', 'candidate'])
+    const candidate = git(repoDir, ['rev-parse', 'HEAD'])
+
+    // Local-only output that happens to share the deleted file's name.
+    // `reset --hard` writes the merge base's content straight over it — no
+    // warning, no reflog — which is what the tracked-only relaxation opened.
+    writeFileSync(resolve(repoDir, 'obsolete.ts'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteCandidateCommitWithFiles(
+      repoDir,
+      mergeBase,
+      candidate,
+      'Filtered candidate',
+      BRANCH,
+      ['src.ts'],
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('obsolete.ts')
+    expect(readFileSync(resolve(repoDir, 'obsolete.ts'), 'utf8')).toBe('LOCAL OUTPUT\n')
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
+  })
+
   it('rewrites a candidate commit with only AI-audited included files', () => {
     const repoDir = repoManager.createRepo()
 

@@ -1,4 +1,4 @@
-import { ensureNoTrackedWorktreeChanges } from '../../git/github'
+import { ensureNoTrackedWorktreeChanges, ensureNoUntrackedPathsClobberedBy } from '../../git/github'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
@@ -222,6 +222,10 @@ export function rewriteCandidateCommitWithFiles(
     // disk. Refusing on that would block delivery over files this step cannot
     // harm.
     ensureNoTrackedWorktreeChanges(worktreePath, 'the candidate rewrite')
+    // The exception, and the reason the relaxation above is not the whole
+    // check: where the merge base tracks a path, the reset writes its content
+    // over whatever untracked file is sitting there.
+    ensureNoUntrackedPathsClobberedBy(worktreePath, mergeBase, 'the candidate rewrite')
 
     runGit(['reset', '--hard', mergeBase])
     resetForRewrite = true

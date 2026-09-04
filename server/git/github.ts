@@ -760,15 +760,69 @@ export function ensureWorktreeClean(projectPath: string): void {
  * Fails only on *tracked* uncommitted changes.
  *
  * This is the right check in front of `git reset --hard`, which destroys
- * tracked modifications and leaves untracked files exactly where they are.
+ * tracked modifications while leaving untracked files alone.
  * `ensureWorktreeClean` is stricter and would refuse the untracked local-only
  * output that Manual QA and the final-test audit deliberately leave behind.
+ *
+ * It is not the whole check for a reset, though — see
+ * `ensureNoUntrackedPathsClobberedBy`.
  */
 export function ensureNoTrackedWorktreeChanges(projectPath: string, operation = 'local base-branch sync'): void {
   const status = readWorktreeStatus(projectPath)
   if (hasTrackedChanges(status)) {
     throw new Error(`Worktree has tracked changes that would make ${operation} unsafe. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
   }
+}
+
+/** Enough paths per `ls-tree` to keep the argument list well inside every shell's limit. */
+const UNTRACKED_PROBE_BATCH_SIZE = 200
+
+/**
+ * Fails when an untracked file sits on a path the reset target tracks.
+ *
+ * "`reset --hard` leaves untracked files alone" is true only for paths the
+ * target commit does not have. Where it does, git writes the committed content
+ * straight over the untracked file with no warning and no reflog — verified
+ * against a scratch repository — so relaxing the pre-reset check to tracked
+ * changes alone opened a narrow, silent data-loss path: local-only output that
+ * happens to share a name with a file the merge base carries.
+ *
+ * Narrow enough to name exactly, which is what this does, rather than going
+ * back to refusing every untracked file.
+ */
+export function ensureNoUntrackedPathsClobberedBy(
+  projectPath: string,
+  commitish: string,
+  operation: string,
+): void {
+  const listed = runGitSync(projectPath, ['ls-files', '--others', '--exclude-standard', '-z'], { trimOutput: false })
+  if (!listed.ok) {
+    throw new Error(`Could not list untracked files before ${operation}: ${listed.errorDetail}`)
+  }
+  const untracked = listed.stdout.split('\0').filter(Boolean)
+  if (untracked.length === 0) return
+
+  const collisions: string[] = []
+  for (let index = 0; index < untracked.length; index += UNTRACKED_PROBE_BATCH_SIZE) {
+    const batch = untracked.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
+    const tree = runGitSync(
+      projectPath,
+      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map((path) => `:(literal)${path}`)],
+      { trimOutput: false },
+    )
+    if (!tree.ok) {
+      throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
+    }
+    collisions.push(...tree.stdout.split('\0').filter(Boolean))
+  }
+  if (collisions.length === 0) return
+
+  const shown = collisions.slice(0, 10).join(', ')
+  const rest = collisions.length > 10 ? ` (and ${collisions.length - 10} more)` : ''
+  throw new Error(
+    `Untracked files would be overwritten by ${operation}: ${shown}${rest}. `
+    + `${commitish} tracks these paths, so resetting to it writes over what is on disk.`,
+  )
 }
 
 export async function syncLocalBaseBranch(projectPath: string, baseBranch: string): Promise<{

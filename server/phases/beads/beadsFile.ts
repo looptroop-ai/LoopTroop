@@ -50,21 +50,83 @@ export interface ReadBeadsFileOptions {
   malformedEntries?: 'skip' | 'fail'
 }
 
+const isStringArray = (value: unknown): boolean =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string')
+
+const isStringListRecord = (value: unknown, keys: readonly string[]): boolean =>
+  isRecord(value) && keys.every((key) => value[key] === undefined || isStringArray(value[key]))
+
+/**
+ * The type each known bead field has to have if it is there at all.
+ *
+ * Checked rather than cast, which is the whole point of §9.7: readers reach
+ * straight into `bead.dependencies.blocked_by`, `bead.contextGuidance.patterns`
+ * and `bead.testCommands.length` with no guard, so a row whose field holds the
+ * wrong kind of value crashed the scheduler far from the file that caused it.
+ *
+ * A field that is *absent* is deliberately still accepted. `beads.jsonl` holds
+ * rows at more than one stage of their life — the runtime projection reads rows
+ * carrying little more than an id, a status and an iteration — so requiring the
+ * fully expanded shape here would reject files that work today. This checks
+ * what is present; it does not demand what is not.
+ */
+const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
+  title: (value) => typeof value === 'string',
+  description: (value) => typeof value === 'string',
+  issueType: (value) => typeof value === 'string',
+  externalRef: (value) => typeof value === 'string',
+  testCommandReason: (value) => typeof value === 'string',
+  createdAt: (value) => typeof value === 'string',
+  updatedAt: (value) => typeof value === 'string',
+  completedAt: (value) => typeof value === 'string',
+  startedAt: (value) => typeof value === 'string',
+  beadStartCommit: (value) => value === null || typeof value === 'string',
+  priority: (value) => typeof value === 'number' && Number.isFinite(value),
+  iteration: (value) => typeof value === 'number' && Number.isFinite(value),
+  prdRefs: isStringArray,
+  acceptanceCriteria: isStringArray,
+  tests: isStringArray,
+  labels: isStringArray,
+  targetFiles: isStringArray,
+  testCommands: (value) => Array.isArray(value),
+  failedIterationNotes: (value) => Array.isArray(value),
+  userRetryNotes: (value) => Array.isArray(value),
+  finalizationFailureNotes: (value) => Array.isArray(value),
+  dependencies: (value) => isStringListRecord(value, ['blocked_by', 'blocks']),
+  contextGuidance: (value) => isStringListRecord(value, ['patterns', 'anti_patterns']),
+}
+
+/** The first thing wrong with an entry's shape, or null when nothing is. */
+function describeBeadShapeProblem(entry: unknown): string | null {
+  if (!isRecord(entry)) return 'entry is not an object'
+  if (typeof entry.id !== 'string' || !entry.id.trim()) return 'no usable id'
+  for (const [field, isValid] of Object.entries(BEAD_FIELD_CHECKS)) {
+    if (entry[field] === undefined) continue
+    if (!isValid(entry[field])) return `field "${field}" has the wrong type`
+  }
+  return null
+}
+
 export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
   const failClosed = options.malformedEntries === 'fail'
-  const { items, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
+  const { items, itemLines, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
   if (failClosed && malformedLines.length > 0) {
     throw new Error(`Bead file ${path} has unparseable JSON at line(s) ${malformedLines.join(', ')}.`)
   }
   return items.flatMap((entry, index) => {
+    // The line in the file, not the position among the entries that parsed:
+    // blank and malformed lines sit between them, so the index named the wrong
+    // record in exactly the files where the message mattered.
+    const line = itemLines[index] ?? index + 1
     // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
     // `.status` and took the whole tracker with it, and any other non-object
     // became a `Bead` with no id that later code compared against.
-    if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+    const problem = describeBeadShapeProblem(entry)
+    if (problem) {
       if (failClosed) {
-        throw new Error(`Bead file ${path} has an entry at line ${index + 1} with no usable id.`)
+        throw new Error(`Bead file ${path} has an entry at line ${line} with ${problem}.`)
       }
-      console.warn(`[beads] Ignored a malformed entry at line ${index + 1} of ${path}.`)
+      console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${problem}.`)
       return []
     }
     const bead = entry as unknown as Bead

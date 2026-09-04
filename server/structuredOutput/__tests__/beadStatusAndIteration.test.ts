@@ -219,4 +219,74 @@ describe('readBeadsFile', () => {
       warn.mockRestore()
     }
   })
+
+  it('rejects an entry whose field holds the wrong kind of value', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // The scheduler reaches into `bead.dependencies.blocked_by` with no guard,
+    // so casting this row through as a `Bead` crashed it far from the file
+    // that caused it.
+    writeFileSync(path, [
+      JSON.stringify({ id: 'bead-1', status: 'pending', dependencies: 'none' }),
+      JSON.stringify({ id: 'bead-2', status: 'pending', testCommands: { npm: 'test' } }),
+      JSON.stringify({ id: 'bead-3', status: 'pending', dependencies: { blocked_by: ['bead-1'], blocks: [] } }),
+    ].join('\n'))
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['bead-3'])
+    } finally {
+      warn.mockRestore()
+    }
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' }))
+      .toThrow('at line 1 with field "dependencies" has the wrong type')
+  })
+
+  it('accepts a row that carries only the fields it has reached so far', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // Present fields are type-checked; absent ones are not demanded. The
+    // runtime projection reads rows like this one, so requiring the fully
+    // expanded shape would reject files that work today.
+    writeFileSync(path, JSON.stringify({ id: 'bead-1', title: 'Partial', status: 'pending', iteration: 1 }))
+
+    expect(readBeadsFile(path, { malformedEntries: 'fail' }).map((bead) => bead.id)).toEqual(['bead-1'])
+  })
+
+  it('names the line in the file when it rejects an entry', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // The bad entry is on line 4. Counting positions among the entries that
+    // parsed named line 2 and pointed at a bead that was fine.
+    writeFileSync(path, [
+      JSON.stringify({ id: 'bead-1', status: 'pending' }),
+      '',
+      'not json',
+      JSON.stringify({ status: 'pending' }),
+    ].join('\n'))
+
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' })).toThrow('at line(s) 3')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      readBeadsFile(path)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('at line 4'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })

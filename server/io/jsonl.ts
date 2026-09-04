@@ -5,6 +5,12 @@ import { warnIfVerbose } from '../runtime'
 
 export interface JsonlReadResult<T> {
   items: T[]
+  /**
+   * The 1-based source line each item came from, positionally aligned with
+   * `items`. A caller that rejects an item has to name where it is, and the
+   * item's own index is not that: blank and malformed lines sit between them.
+   */
+  itemLines: number[]
   /** 1-based line numbers that did not parse. Empty when the file was clean. */
   malformedLines: number[]
 }
@@ -18,13 +24,14 @@ export interface JsonlReadResult<T> {
  * which needs to know a line was dropped in order to make it.
  */
 export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: string): JsonlReadResult<T> {
-  if (!existsSync(filePath)) return { items: [], malformedLines: [] }
+  if (!existsSync(filePath)) return { items: [], itemLines: [], malformedLines: [] }
   const content = readFileSync(filePath, 'utf-8')
   // Blank lines are skipped in place rather than filtered out first: filtering
   // renumbered everything after them, so the reported line number was an index
   // into the surviving lines and pointed an operator at the wrong text.
   const lines = content.split('\n')
   const items: T[] = []
+  const itemLines: number[] = []
   const malformedLines: number[] = []
 
   for (let i = 0; i < lines.length; i++) {
@@ -32,6 +39,7 @@ export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: 
     if (line.trim() === '') continue
     try {
       items.push(JSON.parse(line) as T)
+      itemLines.push(i + 1)
     } catch {
       const preview = line.length > 80 ? line.slice(0, 80) + '…' : line
       warnIfVerbose(`[jsonl] Skipping malformed line ${i + 1} in ${filePath}: ${preview}`)
@@ -39,7 +47,7 @@ export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: 
     }
   }
 
-  return { items, malformedLines }
+  return { items, itemLines, malformedLines }
 }
 
 /** Skips malformed lines. Use `readJsonlWithDiagnostics` where that matters. */

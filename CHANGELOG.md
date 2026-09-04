@@ -362,6 +362,13 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed an answer batch that never finishes locking a ticket out of every later submission. The claim was released only when the background work settled, so work that ignored the cancellation held it for the life of the process.
 - The mark that says an answer batch is being processed now lives in the project database instead of one daemon's memory. Two daemons opened on the same project could both accept the same submission, and restarting mid-batch forgot the mark entirely. It carries an expiry, so a daemon that stops while holding one no longer leaves the ticket unable to accept answers.
 - Stopping LoopTroop while it is still starting now stops it completely. Shutdown resolved against whatever had been set up at that instant, and startup carried on afterwards to bind a port and start timers that nothing could then close.
+- Fixed two daemons on one project both accepting the same answer batch. The claim decided from a read taken before its write, and the databases use a transaction mode where both readers see the same free slot; the write itself is the decision now.
+- Fixed packaging a ticket overwriting local files a second way. The step restores every file the branch added after resetting, and that overwrites whatever is on disk just as silently as the reset does.
+- Fixed skipping the remaining interview questions while an answer batch is still being processed. The batch would finish, fail, and undo the skip.
+- Fixed a renamed file being missed when the rename had not been staged yet, which left the original path out of the commit and out of the audit.
+- Fixed Git hook validation deleting your own untracked files when it could not list them. It now refuses to run rather than guess what was already there.
+- Fixed `looptroop logs --follow` holding back the last lines written while it was mid-read, until something else was written.
+- Fixed the Manual QA screen describing a checklist generation that gave up as one that completed, and not showing its repair trail at all when no checklist was produced.
 - Fixed a bead tracker row whose field is present but half-formed being accepted and then crashing a later step: an empty `dependencies` object still broke the scheduler, and a Manual QA provenance record without its source items still broke the evidence loader. A field that is there is now checked as far as its readers go into it.
 - Fixed a repository whose approved profile lists the same Git hook twice always reporting hook drift at integration.
 - Fixed council loading throwing on a malformed stored model-variant value instead of falling back.

@@ -393,6 +393,13 @@ export async function handleAnswerBatch(c: Context) {
           // that ignores the abort never does. The claim has no expiry, so
           // without this every later submission for this ticket answers 409 for
           // the life of the process. Releasing twice is harmless.
+          //
+          // The trade is deliberate: a task that survives its own abort could
+          // now run alongside a new submission. That is the lesser fault. The
+          // abort has already been sent, the batch's rollback state is per call
+          // so the two cannot corrupt each other, and a ticket nobody can
+          // answer until the daemon restarts is worse than a race that needs a
+          // cancellation to be ignored first.
           releaseInterviewBatch(ticketId)
           reject(new Error('Async batch processing timed out'))
         }, batchTimeoutMs)

@@ -802,7 +802,7 @@ export function ensureNoUntrackedPathsClobberedBy(
   const untracked = listed.stdout.split('\0').filter(Boolean)
   if (untracked.length === 0) return
 
-  const collisions: string[] = []
+  const collisions = new Set<string>()
   for (let index = 0; index < untracked.length; index += UNTRACKED_PROBE_BATCH_SIZE) {
     const batch = untracked.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
     const tree = runGitSync(
@@ -813,12 +813,21 @@ export function ensureNoUntrackedPathsClobberedBy(
     if (!tree.ok) {
       throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
     }
-    collisions.push(...tree.stdout.split('\0').filter(Boolean))
+    for (const found of tree.stdout.split('\0').filter(Boolean)) {
+      // `ls-tree -r` answers with the tree's own paths, so an untracked *file*
+      // whose name the target carries as a *directory* comes back as the files
+      // inside it — `sub` matched by `sub/a.txt`. Reporting the untracked path
+      // instead names the file the operator would actually lose; the reset
+      // replaces it with the directory, silently. Verified both ways.
+      const source = batch.find((path) => found === path || found.startsWith(`${path}/`))
+      if (source) collisions.add(source)
+    }
   }
-  if (collisions.length === 0) return
+  if (collisions.size === 0) return
 
-  const shown = collisions.slice(0, 10).join(', ')
-  const rest = collisions.length > 10 ? ` (and ${collisions.length - 10} more)` : ''
+  const colliding = [...collisions]
+  const shown = colliding.slice(0, 10).join(', ')
+  const rest = colliding.length > 10 ? ` (and ${colliding.length - 10} more)` : ''
   throw new Error(
     `Untracked files would be overwritten by ${operation}: ${shown}${rest}. `
     + `${commitish} tracks these paths, so resetting to it writes over what is on disk.`,

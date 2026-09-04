@@ -227,6 +227,42 @@ describe('prepareSquashCandidate', () => {
     expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
   })
 
+  it('names the untracked file, not the tree contents, when a directory takes its place', () => {
+    const repoDir = repoManager.createRepo()
+
+    git(repoDir, ['checkout', '-b', BRANCH])
+    mkdirSync(resolve(repoDir, 'sub'))
+    writeFileSync(resolve(repoDir, 'sub', 'a.txt'), 'from the merge base\n')
+    git(repoDir, ['add', 'sub/a.txt'])
+    git(repoDir, ['commit', '-m', 'base dir'])
+    const mergeBase = git(repoDir, ['rev-parse', 'HEAD'])
+    git(repoDir, ['rm', '-r', '-q', 'sub'])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+    git(repoDir, ['add', 'src.ts'])
+    git(repoDir, ['commit', '-m', 'candidate'])
+    const candidate = git(repoDir, ['rev-parse', 'HEAD'])
+
+    // A local-only *file* on a path the merge base carries as a *directory*.
+    // The reset replaces the file with the directory, silently — verified — and
+    // `ls-tree -r` answers with `sub/a.txt`, which is not the file being lost.
+    writeFileSync(resolve(repoDir, 'sub'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteCandidateCommitWithFiles(
+      repoDir,
+      mergeBase,
+      candidate,
+      'Filtered candidate',
+      BRANCH,
+      ['src.ts'],
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('overwritten')
+    expect(result.message).toContain('sub')
+    expect(result.message).not.toContain('sub/a.txt')
+    expect(readFileSync(resolve(repoDir, 'sub'), 'utf8')).toBe('LOCAL OUTPUT\n')
+  })
+
   it('rewrites a candidate commit with only AI-audited included files', () => {
     const repoDir = repoManager.createRepo()
 

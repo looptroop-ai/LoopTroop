@@ -44,11 +44,13 @@ function makeCandidate(repoDir: string): { candidate: string; mergeBase: string 
  */
 function makeCandidateDeleting(
   repoDir: string,
-  seed: { write: () => void; paths: string[] },
+  seed: { write: () => void; paths: string[]; force?: boolean },
 ): { candidate: string; mergeBase: string } {
   git(repoDir, ['checkout', '-b', BRANCH])
   seed.write()
-  git(repoDir, ['add', ...seed.paths])
+  // `-f` for a seed the merge base tracks despite its own `.gitignore`, which
+  // is how a path ends up both committed and ignored.
+  git(repoDir, ['add', ...(seed.force ? ['-f'] : []), ...seed.paths])
   git(repoDir, ['commit', '-m', 'base content'])
   const mergeBase = git(repoDir, ['rev-parse', 'HEAD'])
   git(repoDir, ['rm', '-r', '-q', ...seed.paths])
@@ -237,7 +239,31 @@ describe('prepareSquashCandidate', () => {
     expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
   })
 
-  it('names the untracked file, not the tree contents, when a directory takes its place', () => {
+  it('refuses when the local file in the way is ignored rather than untracked', () => {
+    const repoDir = repoManager.createRepo()
+
+    // Ignored build output is exactly what the earlier phases leave behind, and
+    // `ls-files --others --exclude-standard` does not list it — so a check
+    // written around untracked files missed the case it existed for. Verified:
+    // the reset replaced this file's content with the merge base's.
+    const { candidate, mergeBase } = makeCandidateDeleting(repoDir, {
+      write: () => {
+        writeFileSync(resolve(repoDir, '.gitignore'), '*.log\n')
+        writeFileSync(resolve(repoDir, 'build.log'), 'from the merge base\n')
+      },
+      paths: ['.gitignore', 'build.log'],
+      force: true,
+    })
+    writeFileSync(resolve(repoDir, 'build.log'), 'LOCAL BUILD OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('build.log')
+    expect(readFileSync(resolve(repoDir, 'build.log'), 'utf8')).toBe('LOCAL BUILD OUTPUT\n')
+  })
+
+  it('names the local file, not the tree contents, when a directory takes its place', () => {
     const repoDir = repoManager.createRepo()
 
     // The merge base carries `sub/` as a directory.

@@ -1,3 +1,5 @@
+import { existsSync, statSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { getCurrentBranch } from './repository'
 import { EXCLUDE_LOOPTROOP_DIR, REPO_SCOPE_PATHSPECS } from './pathspecs'
 import {
@@ -774,21 +776,43 @@ export function ensureNoTrackedWorktreeChanges(projectPath: string, operation = 
   }
 }
 
-/** Enough paths per `ls-tree` to keep the argument list well inside every shell's limit. */
-const UNTRACKED_PROBE_BATCH_SIZE = 200
+/**
+ * The path that would be in the way of writing `repoPath`, or null.
+ *
+ * Either the file itself is already there, or one of its parents is a file
+ * where the commit expects a directory — `sub` on disk against `sub/a.txt` in
+ * the tree. `reset --hard` resolves both by replacing what it finds.
+ */
+function findBlockingPath(projectPath: string, repoPath: string): string | null {
+  const segments = repoPath.split('/').filter(Boolean)
+  for (let depth = 1; depth <= segments.length; depth += 1) {
+    const partial = segments.slice(0, depth).join('/')
+    const absolute = resolve(projectPath, partial)
+    if (!existsSync(absolute)) return null
+    if (depth === segments.length) return partial
+    if (!statSync(absolute).isDirectory()) return partial
+  }
+  return null
+}
 
 /**
- * Fails when an untracked file sits on a path the reset target tracks.
+ * Fails when a file on disk sits where `commitish` would write one.
  *
  * "`reset --hard` leaves untracked files alone" is true only for paths the
  * target commit does not have. Where it does, git writes the committed content
- * straight over the untracked file with no warning and no reflog — verified
- * against a scratch repository — so relaxing the pre-reset check to tracked
- * changes alone opened a narrow, silent data-loss path: local-only output that
- * happens to share a name with a file the merge base carries.
+ * straight over whatever is there, with no warning and no reflog — verified
+ * against scratch repositories for a plain file, for an *ignored* file, and for
+ * a file standing where the commit expects a directory. Relaxing the pre-reset
+ * check to tracked changes alone opened a narrow, silent data-loss path:
+ * local-only output that happens to share a name with something the merge base
+ * carries.
  *
- * Narrow enough to name exactly, which is what this does, rather than going
- * back to refusing every untracked file.
+ * The question asked is "which paths will this reset create", not "which files
+ * are untracked". `ls-files --others --exclude-standard` answers the second and
+ * omits ignored files entirely — and ignored build and cache output is exactly
+ * what the earlier phases leave behind, so the check that started here missed
+ * the case it was written for. A path the target has and `HEAD` does not is one
+ * the reset will write; anything on disk there loses.
  *
  * Not every `reset --hard` wants this. `resetWorktreeToCommit` follows its
  * reset with `git clean -fd`, so it is *trying* to remove untracked files and a
@@ -801,33 +825,24 @@ export function ensureNoUntrackedPathsClobberedBy(
   commitish: string,
   operation: string,
 ): void {
-  const listed = runGitSync(projectPath, ['ls-files', '--others', '--exclude-standard', '-z'], { trimOutput: false })
-  if (!listed.ok) {
-    throw new Error(`Could not list untracked files before ${operation}: ${listed.errorDetail}`)
+  // `--no-renames` so a rename is reported as the delete it also is: the reset
+  // restores the original path too, and a rename would hide it behind an `R`.
+  const restored = runGitSync(
+    projectPath,
+    ['diff', '--name-only', '--no-renames', '--diff-filter=D', '-z', commitish, 'HEAD'],
+    { trimOutput: false },
+  )
+  if (!restored.ok) {
+    throw new Error(`Could not compare ${commitish} with HEAD before ${operation}: ${restored.errorDetail}`)
   }
-  const untracked = listed.stdout.split('\0').filter(Boolean)
-  if (untracked.length === 0) return
 
   const collisions = new Set<string>()
-  for (let index = 0; index < untracked.length; index += UNTRACKED_PROBE_BATCH_SIZE) {
-    const batch = untracked.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
-    const tree = runGitSync(
-      projectPath,
-      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map((path) => `:(literal)${path}`)],
-      { trimOutput: false },
-    )
-    if (!tree.ok) {
-      throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
-    }
-    for (const found of tree.stdout.split('\0').filter(Boolean)) {
-      // `ls-tree -r` answers with the tree's own paths, so an untracked *file*
-      // whose name the target carries as a *directory* comes back as the files
-      // inside it — `sub` matched by `sub/a.txt`. Reporting the untracked path
-      // instead names the file the operator would actually lose; the reset
-      // replaces it with the directory, silently. Verified both ways.
-      const source = batch.find((path) => found === path || found.startsWith(`${path}/`))
-      if (source) collisions.add(source)
-    }
+  for (const repoPath of restored.stdout.split('\0').filter(Boolean)) {
+    // Anything still on disk at a path HEAD does not track is untracked or
+    // ignored — the tracked case is `ensureNoTrackedWorktreeChanges`, which
+    // runs first and owns it.
+    const blocking = findBlockingPath(projectPath, repoPath)
+    if (blocking) collisions.add(blocking)
   }
   if (collisions.size === 0) return
 
@@ -835,8 +850,8 @@ export function ensureNoUntrackedPathsClobberedBy(
   const shown = colliding.slice(0, 10).join(', ')
   const rest = colliding.length > 10 ? ` (and ${colliding.length - 10} more)` : ''
   throw new Error(
-    `Untracked files would be overwritten by ${operation}: ${shown}${rest}. `
-    + `${commitish} tracks these paths, so resetting to it writes over what is on disk.`,
+    `Local files would be overwritten by ${operation}: ${shown}${rest}. `
+    + `${commitish} carries these paths and HEAD does not, so resetting to it writes over what is on disk.`,
   )
 }
 

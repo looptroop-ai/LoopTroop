@@ -160,6 +160,36 @@ describe('createRuntime port allocation', () => {
     }
   })
 
+  it('closes what a start still in flight is about to bind', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    // Ctrl-C while the daemon is still starting, which takes seconds. `close()`
+    // used to resolve against whatever existed at that instant, and `runStart()`
+    // then bound a socket nothing could close afterwards.
+    const started = runtime.start()
+    await runtime.close()
+    await started.catch(() => undefined)
+
+    expect(runtime.address).toBeNull()
+  })
+
+  it('can be started again after it has been closed', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    await runtime.start()
+    await runtime.close()
+    expect(runtime.address).toBeNull()
+
+    // The cached `closing` promise made the second close a resolved no-op, so
+    // the second generation's socket and timers stayed behind.
+    const second = await runtime.start()
+    expect(second.port).toBeGreaterThan(0)
+    await runtime.close()
+    expect(runtime.address).toBeNull()
+  })
+
   it('runs the startup sequence once for overlapping start() calls', async () => {
     const { createRuntime } = await import('../server/createRuntime')
     const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })

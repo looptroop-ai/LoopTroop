@@ -87,9 +87,22 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
     })
   }
 
+  /**
+   * Starts, waiting out a shutdown that is still running.
+   *
+   * The wait is what makes a runtime re-startable: `close()` holds its promise
+   * until every resource it knows about is gone, and starting on top of a
+   * half-finished teardown would race it for the same database handle. A
+   * failed close is not a reason to refuse — the caller has already been told
+   * about it — so the rejection is absorbed here rather than surfaced twice.
+   */
   async function start(): Promise<RuntimeAddress> {
-    if (address) return address
     if (starting) return starting
+    if (closing) await closing.catch(() => undefined)
+    if (address) return address
+    // A new generation gets its own shutdown. Keeping the settled promise is
+    // what made a runtime that had been closed once impossible to close again.
+    closing = null
     starting = runStart().finally(() => { starting = null })
     return starting
   }
@@ -156,8 +169,18 @@ export function createRuntime(config: RuntimeConfig = {}): LoopTroopRuntime {
     return address
   }
 
+  /**
+   * Stops, waiting out a startup that is still running.
+   *
+   * Without the wait this resolved against whatever existed at the moment it
+   * was called, and `runStart()` then went on to start timers and bind a
+   * socket that nothing could close — reachable in production by pressing
+   * Ctrl-C while the daemon is still starting, which takes seconds. A start
+   * that fails still has to be torn down, so its rejection is absorbed.
+   */
   async function close(): Promise<void> {
     closing ??= (async () => {
+      if (starting) await starting.catch(() => undefined)
       if (handle && typeof handle.close === 'function') {
         await new Promise<void>((resolveClose) => {
           handle?.close(() => resolveClose())

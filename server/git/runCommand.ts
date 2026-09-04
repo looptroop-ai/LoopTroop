@@ -305,11 +305,17 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       killTimer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_KILL_GRACE_MS)
       killTimer.unref?.()
       abandonTimer = setTimeout(() => {
+        // Nothing here can reap the child, so it must not be what keeps the
+        // process alive either.
+        child.unref()
         settle({
           status: null,
           signal: 'SIGKILL',
           timedOut: true,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          // Through `decode`, like the `close` path: a caller that asked for
+          // untrimmed output is reading NUL-delimited records, and an abandoned
+          // timeout is no reason to hand it a different shape.
+          stdout: decode(Buffer.concat(stdoutChunks), options),
           stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
           spawnError: Object.assign(new Error(`spawn ${bin} ETIMEDOUT`), { code: 'ETIMEDOUT' }),
         })

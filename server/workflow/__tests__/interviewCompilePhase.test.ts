@@ -218,7 +218,7 @@ describe('interview workflow phases', () => {
       description: 'Keep prompt output single-source while saving UI-only inspiration metadata separately.',
     })
 
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })
@@ -384,7 +384,7 @@ describe('interview workflow phases', () => {
       description: 'Persist tooltip-ready interview inspiration even when the model returns source text without question metadata.',
     })
 
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })

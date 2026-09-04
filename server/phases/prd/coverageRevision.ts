@@ -14,7 +14,7 @@ import {
   parseYamlOrJsonCandidate,
   unwrapExplicitWrapperRecord,
 } from '../../structuredOutput/yamlUtils'
-import { parseCoverageGapResolutions } from '../coverage/gapResolutions'
+import { parseCoverageGapResolutions } from '../coverageGapResolutions'
 import { validatePrdRefinementOutput } from './refined'
 
 export type PrdCoverageGapResolutionAction = 'updated_prd' | 'already_covered' | 'left_unresolved'

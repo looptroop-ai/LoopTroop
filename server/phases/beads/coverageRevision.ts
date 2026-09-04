@@ -12,7 +12,7 @@ import {
   parseYamlOrJsonCandidate,
   unwrapExplicitWrapperRecord,
 } from '../../structuredOutput/yamlUtils'
-import { parseCoverageGapResolutions } from '../coverage/gapResolutions'
+import { parseCoverageGapResolutions } from '../coverageGapResolutions'
 import type { BeadSubset } from './types'
 
 export type BeadsCoverageGapResolutionAction = 'updated_beads' | 'already_covered' | 'left_unresolved'

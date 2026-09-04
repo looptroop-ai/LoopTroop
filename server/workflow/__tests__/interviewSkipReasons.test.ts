@@ -71,7 +71,7 @@ function buildSnapshotWithSecondBatch() {
   return recordPreparedBatch(answered, secondBatch)
 }
 
-function makeStartedTicket() {
+async function makeStartedTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
   const ticket = createTicket({
@@ -79,7 +79,7 @@ function makeStartedTicket() {
     title: 'Interview skip reasons',
     description: 'Reasons travel with the interview.',
   })
-  initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+  await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
   return ticket
 }
 
@@ -169,8 +169,8 @@ describe('interview skip reasons', () => {
     expect(finalized.answers.Q03?.skipReason).toBe('Shipping before the demo.')
   })
 
-  it('carries reasons into interview.yaml and leaves one action with N items behind', () => {
-    const ticket = makeStartedTicket()
+  it('carries reasons into interview.yaml and leaves one action with N items behind', async () => {
+    const ticket = await makeStartedTicket()
     upsertLatestPhaseArtifact(
       ticket.id,
       INTERVIEW_SESSION_ARTIFACT,
@@ -209,8 +209,8 @@ describe('interview skip reasons', () => {
       .toBe(events.find((event) => event.isActionSummary)?.actionId)
   })
 
-  it('records the same Skip All once when it is replayed', () => {
-    const ticket = makeStartedTicket()
+  it('records the same Skip All once when it is replayed', async () => {
+    const ticket = await makeStartedTicket()
     const snapshot = buildSnapshotWithSecondBatch()
     upsertLatestPhaseArtifact(
       ticket.id,

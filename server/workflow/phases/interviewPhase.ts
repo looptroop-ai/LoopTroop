@@ -254,6 +254,16 @@ export interface InterviewBatchSkipReceipt {
  * batch and a mock-mode batch run synchronously, and one of those arriving
  * during an in-flight AI batch walked straight into the same `currentBatch`
  * race from the other side.
+ *
+ * **This claim is process-local, and deliberately so for now.** The plan's
+ * §9.16 rule — a database row or a file lock, with a generation token — is the
+ * right answer for two daemons opened on one project, and it is not what this
+ * is: it is a `Set` in one process, lost on restart. A batch is held across the
+ * whole model call, which is minutes, so the 30-second stale reclamation
+ * `withFileLock` uses would rob a live holder rather than protect it; a durable
+ * lease needs a schema and a recovery path, which is more than this stage
+ * carries. The single-daemon-per-project assumption is stated here so the next
+ * reader does not mistake it for an oversight.
  */
 const inFlightBatches = new Set<string>()
 

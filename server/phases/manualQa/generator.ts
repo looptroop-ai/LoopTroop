@@ -387,7 +387,12 @@ export async function handleManualQaChecklistGeneration(
     }
     lastError = parsed.error
     structuredOutput = buildStructuredOutputMetadata(structuredOutput, {
-      autoRetryCount: attempt + 1,
+      // Retries *used*, matching the success branch above and every other
+      // artifact path. `attempt + 1` counted the retry this failure is about to
+      // cause, so a run that exhausted two retries reported three — and since
+      // the merge keeps the larger value, the inflated count survived into the
+      // notice the operator reads.
+      autoRetryCount: attempt,
       validationError: parsed.error,
       retryDiagnostics: [resolveStructuredRetryDiagnostic({
         attempt: attempt + 1,

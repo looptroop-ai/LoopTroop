@@ -389,6 +389,11 @@ export async function handleAnswerBatch(c: Context) {
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           abortTicketWork(ticketId)
+          // The background task releases the claim when it settles, and a task
+          // that ignores the abort never does. The claim has no expiry, so
+          // without this every later submission for this ticket answers 409 for
+          // the life of the process. Releasing twice is harmless.
+          releaseInterviewBatch(ticketId)
           reject(new Error('Async batch processing timed out'))
         }, batchTimeoutMs)
       })

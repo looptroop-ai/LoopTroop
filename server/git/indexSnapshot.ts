@@ -89,7 +89,14 @@ export function withGitIndexRollback<T>(
     restoreQuietly(snapshot, error)
     throw error
   } finally {
-    snapshot.dispose()
+    // Best effort, and never the reason a successful operation fails: removing
+    // a temporary directory is not something the caller can act on, and a throw
+    // here would replace the outcome — success or the original error — with it.
+    try {
+      snapshot.dispose()
+    } catch (disposeError) {
+      console.error('[git] Failed to remove the index snapshot directory.', disposeError)
+    }
   }
 }
 

@@ -86,7 +86,15 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), 'looptroop-hook-snapshot-'))
   const temporaryIndex = resolve(temporaryDirectory, 'index')
   const sourceIndex = resolve(gitDirectoryResult.stdout, 'index')
-  if (existsSync(sourceIndex)) copyFileSync(sourceIndex, temporaryIndex)
+  // A copy that throws has to look like a snapshot that could not be taken —
+  // the caller's answer to that is `refused`, not an exception — and it must
+  // not leave the temporary directory behind on the way out.
+  try {
+    if (existsSync(sourceIndex)) copyFileSync(sourceIndex, temporaryIndex)
+  } catch {
+    rmSync(temporaryDirectory, { recursive: true, force: true })
+    return null
+  }
   const env = { GIT_INDEX_FILE: temporaryIndex }
   if (!existsSync(temporaryIndex)) {
     if (!runGitSync(worktreePath, ['read-tree', '--empty'], { env }).ok) {
@@ -152,8 +160,19 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
   } catch (error) {
     failures.push(`worktree cleanup failed: ${getErrorMessage(error)}`)
   } finally {
-    snapshot.index.dispose()
-    rmSync(snapshot.temporaryDirectory, { recursive: true, force: true })
+    // Cleanup is reported, never thrown: this runs over a validation failure or
+    // an abort, and an exception here would replace the error the operator
+    // needs with one about a temporary directory.
+    try {
+      snapshot.index.dispose()
+    } catch (error) {
+      failures.push(`index snapshot cleanup failed: ${getErrorMessage(error)}`)
+    }
+    try {
+      rmSync(snapshot.temporaryDirectory, { recursive: true, force: true })
+    } catch (error) {
+      failures.push(`snapshot directory cleanup failed: ${getErrorMessage(error)}`)
+    }
   }
   return failures.length > 0 ? failures.join('; ') : null
 }

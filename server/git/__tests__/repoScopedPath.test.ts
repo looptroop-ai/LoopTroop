@@ -25,6 +25,10 @@ describe('normalizeRepoScopedPath', () => {
     expect(normalizeRepoScopedPath('/etc/passwd')).toBeNull()
     expect(normalizeRepoScopedPath('C:/Windows/system32')).toBeNull()
     expect(normalizeRepoScopedPath('C:\\Windows\\system32')).toBeNull()
+    // Drive-relative, not drive-absolute: `C:notes.txt` resolves against
+    // whatever the current directory on drive C happens to be.
+    expect(normalizeRepoScopedPath('C:notes.txt')).toBeNull()
+    expect(normalizeRepoScopedPath('C:')).toBeNull()
   })
 
   it('rejects control characters that would confuse a pathspec', () => {

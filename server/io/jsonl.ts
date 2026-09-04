@@ -20,15 +20,20 @@ export interface JsonlReadResult<T> {
 export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: string): JsonlReadResult<T> {
   if (!existsSync(filePath)) return { items: [], malformedLines: [] }
   const content = readFileSync(filePath, 'utf-8')
-  const lines = content.split('\n').filter(line => line.trim() !== '')
+  // Blank lines are skipped in place rather than filtered out first: filtering
+  // renumbered everything after them, so the reported line number was an index
+  // into the surviving lines and pointed an operator at the wrong text.
+  const lines = content.split('\n')
   const items: T[] = []
   const malformedLines: number[] = []
 
   for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (line.trim() === '') continue
     try {
-      items.push(JSON.parse(lines[i]!) as T)
+      items.push(JSON.parse(line) as T)
     } catch {
-      const preview = lines[i]!.length > 80 ? lines[i]!.slice(0, 80) + '…' : lines[i]
+      const preview = line.length > 80 ? line.slice(0, 80) + '…' : line
       warnIfVerbose(`[jsonl] Skipping malformed line ${i + 1} in ${filePath}: ${preview}`)
       malformedLines.push(i + 1)
     }

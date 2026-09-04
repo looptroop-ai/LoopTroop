@@ -18,7 +18,11 @@ const CONTROL_DIRECTORIES = ['.ticket', '.looptroop'] as const
 export function normalizeRepoScopedPath(filePath: string): string | null {
   const trimmed = filePath.trim().replace(/\\/g, '/')
   if (!trimmed || trimmed.includes('\0') || trimmed.includes('\n') || trimmed.includes('\r')) return null
-  if (trimmed.startsWith('/') || /^[A-Za-z]:\//.test(trimmed)) return null
+  // Any drive qualifier, slash or not: `C:foo` is a path relative to the
+  // *current directory on drive C*, which on Windows is not this worktree, and
+  // a bare `C:` is the drive itself. Both were accepted while only `C:/` was
+  // rejected.
+  if (trimmed.startsWith('/') || /^[A-Za-z]:/.test(trimmed)) return null
 
   const withoutDotPrefix = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
   const segments = withoutDotPrefix.split('/').filter(Boolean)

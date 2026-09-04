@@ -9,6 +9,7 @@ export interface LogsOptions {
 const DEFAULT_LINES = 50
 
 const TAIL_CHUNK_BYTES = 64 * 1024
+const NEWLINE_BYTE = 0x0a
 
 /**
  * The last `lines` lines, read backwards from the end of the file.
@@ -22,17 +23,23 @@ async function readTail(logPath: string, lines: number): Promise<string> {
   try {
     const size = (await handle.stat()).size
     let position = size
-    let collected = ''
+    const chunks: Buffer[] = []
+    let newlines = 0
     // One more newline than lines requested: the first is the end of the line
     // *before* the window, which is what makes the count exact.
-    while (position > 0 && countNewlines(collected) <= lines) {
+    while (position > 0 && newlines <= lines) {
       const length = Math.min(TAIL_CHUNK_BYTES, position)
       position -= length
       const buffer = Buffer.alloc(length)
       await handle.read(buffer, 0, length, position)
-      collected = buffer.toString('utf8') + collected
+      // Kept as bytes and decoded once at the end. Decoding each chunk on its
+      // own split whatever multi-byte character straddled the 64 KiB boundary
+      // into a pair of replacement characters, so a log with any non-ASCII text
+      // in it grew mojibake every 64 KiB.
+      chunks.unshift(buffer)
+      newlines += countNewlines(buffer)
     }
-    const all = collected.split('\n')
+    const all = Buffer.concat(chunks).toString('utf8').split('\n')
     // A trailing newline yields an empty final element that would print as a blank line.
     if (all.at(-1) === '') all.pop()
     return all.slice(-lines).join('\n')
@@ -41,9 +48,13 @@ async function readTail(logPath: string, lines: number): Promise<string> {
   }
 }
 
-function countNewlines(value: string): number {
+/**
+ * Counted over bytes, which UTF-8 makes safe: 0x0A cannot appear inside a
+ * multi-byte sequence, so a byte scan and a character scan agree.
+ */
+function countNewlines(buffer: Buffer): number {
   let count = 0
-  for (let index = value.indexOf('\n'); index !== -1; index = value.indexOf('\n', index + 1)) count += 1
+  for (let index = buffer.indexOf(NEWLINE_BYTE); index !== -1; index = buffer.indexOf(NEWLINE_BYTE, index + 1)) count += 1
   return count
 }
 
@@ -91,7 +102,11 @@ function followLog(logPath: string): Promise<void> {
       if (size === offset) return
 
       reading = true
-      const stream = createReadStream(logPath, { start: offset, end: size - 1, encoding: 'utf8' })
+      // Bytes straight through, no decoding. Each `drain` opened its own
+      // stream, so a decoder could only ever see one window of the file, and a
+      // multi-byte character split across two windows came out as replacement
+      // characters. stdout wants bytes anyway.
+      const stream = createReadStream(logPath, { start: offset, end: size - 1 })
       stream.on('data', (chunk) => process.stdout.write(chunk))
       stream.on('end', () => {
         offset = size

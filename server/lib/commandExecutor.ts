@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
+import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
 // Guarded with Test-Path so an unset $LASTEXITCODE cannot turn a clean cmdlet
@@ -136,11 +137,13 @@ export async function executeCommand(
     let settled = false
     let timedOut = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    let abandonHandle: ReturnType<typeof setTimeout> | undefined
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return
       settled = true
       if (timeoutHandle) clearTimeout(timeoutHandle)
+      if (abandonHandle) clearTimeout(abandonHandle)
       resolveExecution({
         command,
         cwd,
@@ -167,6 +170,16 @@ export async function executeCommand(
       timeoutHandle = setTimeout(() => {
         timedOut = true
         terminateProcessTreeWithEscalation(child, platform)
+        // Killing the tree is a request, not a guarantee, so the timeout has to
+        // be able to end without one. `close` fires only once every pipe is
+        // closed, and a grandchild that outlives `taskkill` keeps them open —
+        // which is how a 200 ms command sat unresolved until the caller's own
+        // deadline. Reported as the timeout it is, with whatever output arrived.
+        abandonHandle = setTimeout(() => {
+          child.unref()
+          finish(null, 'SIGKILL')
+        }, FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS)
+        abandonHandle.unref?.()
       }, command.timeoutMs)
     }
   })

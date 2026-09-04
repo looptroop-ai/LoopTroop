@@ -12,6 +12,16 @@ export const OPENCODE_SESSION_CREATE_RETRY_DELAYS_MS = [1000, 3000, 7000] as con
 export const OPENCODE_SESSION_CREATE_HEALTH_DIAGNOSTIC_TIMEOUT_MS = 1000
 /** Force-kill process delay */
 export const FORCE_KILL_DELAY_MS = 5000
+/**
+ * How long after the force-kill a command runner waits before giving up on the
+ * child's `close` event and reporting the timeout anyway.
+ *
+ * Killing a process tree is a request, not a guarantee: on Windows it is
+ * delegated to `taskkill`, whose own failure is invisible to the caller, and a
+ * surviving grandchild holding the pipes open means `close` never fires. A
+ * runner that waits for it hangs the whole phase rather than the one command.
+ */
+export const PROCESS_ABANDON_GRACE_MS = 2000
 /** Most stdout or stderr a single command may contribute, in UTF-8 bytes */
 export const MAX_COMMAND_OUTPUT_BYTES = 1_000_000
 /** SQLite busy timeout */

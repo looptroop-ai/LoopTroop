@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { createBoundedOutputCollector } from './commandOutput'
+import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
 export interface CommandShell {
@@ -176,11 +177,13 @@ export async function runShellCommand(input: {
     let settled = false
     let timedOut = false
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    let abandonHandle: ReturnType<typeof setTimeout> | undefined
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return
       settled = true
       if (timeoutHandle) clearTimeout(timeoutHandle)
+      if (abandonHandle) clearTimeout(abandonHandle)
       resolveCommand({
         command: input.command,
         ...(effectiveCommand ? { effectiveCommand } : {}),
@@ -213,6 +216,14 @@ export async function runShellCommand(input: {
       timeoutHandle = setTimeout(() => {
         timedOut = true
         terminateProcessTreeWithEscalation(child)
+        // Same reasoning as `executeCommand`: a tree that does not die keeps the
+        // pipes open, `close` never fires, and waiting for it hangs the caller
+        // rather than the command.
+        abandonHandle = setTimeout(() => {
+          child.unref()
+          finish(null, 'SIGKILL')
+        }, FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS)
+        abandonHandle.unref?.()
       }, input.timeoutMs)
     }
   })

@@ -1,17 +1,39 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
+import type { spawn } from 'node:child_process'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
 import { buildCommandInvocation, executeCommand, resolveCommandCwd } from '../commandExecutor'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
+import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from '../constants'
 
 const tempDirectories: string[] = []
 
 afterEach(() => {
+  vi.useRealTimers()
   for (const directory of tempDirectories.splice(0)) {
     removeTempDir(directory)
   }
 })
+
+/**
+ * A child that never exits and never closes its pipes.
+ *
+ * This is what a process tree that survives its own kill looks like from here:
+ * `taskkill` reports nothing back, the grandchild keeps the pipes open, and
+ * `close` never arrives.
+ */
+function makeUnkillableChild() {
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242,
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    kill: () => true,
+    unref: vi.fn(),
+  })
+  return child as unknown as ReturnType<typeof spawn>
+}
 
 function makeRepo(): string {
   const repository = makeTempDir('looptroop-command-executor-')
@@ -136,6 +158,38 @@ describe('executeCommand', () => {
 
     expect(result.timedOut).toBe(true)
     expect(result.signal).not.toBeNull()
+  })
+
+  it('reports a timeout even when the process tree will not die', async () => {
+    // Killing a tree is a request, not a guarantee — on Windows it is delegated
+    // to `taskkill`, whose failure is invisible here. Waiting for a `close` that
+    // never comes hung the caller rather than the command, which is how one
+    // 200 ms hook-validation command sat unresolved for its caller's whole
+    // deadline.
+    vi.useFakeTimers()
+    const child = makeUnkillableChild()
+
+    const pending = executeCommand({
+      mode: 'process',
+      program: 'irrelevant',
+      args: [],
+      cwd: '.',
+      env: {},
+      timeoutMs: 200,
+    }, {
+      repoRoot: makeRepo(),
+      // Windows so the kill goes through `taskkill`, which is absent here and
+      // whose spawn error the terminator already swallows.
+      platform: 'windows',
+      spawnProcess: () => child,
+    })
+
+    await vi.advanceTimersByTimeAsync(200 + FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS + 1)
+    const result = await pending
+
+    expect(result.timedOut).toBe(true)
+    expect(result.exitCode).toBeNull()
+    expect(result.signal).toBe('SIGKILL')
   })
 
   it('rejects traversal before starting a process', async () => {

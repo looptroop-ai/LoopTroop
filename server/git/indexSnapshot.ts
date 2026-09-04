@@ -56,23 +56,54 @@ export function snapshotGitIndex(worktreePath: string): GitIndexSnapshot | null 
   }
 }
 
+export class GitIndexSnapshotUnavailableError extends Error {
+  constructor(worktreePath: string) {
+    super(`The git index for ${worktreePath} could not be snapshotted, so the operation was refused rather than run without a rollback.`)
+    this.name = 'GitIndexSnapshotUnavailableError'
+  }
+}
+
 /**
  * Runs `work` with the index protected, restoring it unless `work` says to keep
  * what it staged. A throw always restores.
+ *
+ * **Refuses to run at all when the snapshot cannot be taken.** Proceeding
+ * without one put back exactly the fault this exists to prevent: `work` stages,
+ * the commit fails, and nothing can undo it. A caller that would rather carry
+ * on unprotected has to say so, and none does.
+ *
+ * A restore that itself fails is reported alongside the original failure rather
+ * than replacing it — the original is what the operator needs to read first.
  */
 export function withGitIndexRollback<T>(
   worktreePath: string,
   work: () => { keepIndex: boolean; value: T },
 ): T {
   const snapshot = snapshotGitIndex(worktreePath)
+  if (!snapshot) throw new GitIndexSnapshotUnavailableError(worktreePath)
   try {
     const outcome = work()
-    if (!outcome.keepIndex) snapshot?.restore()
+    if (!outcome.keepIndex) restoreQuietly(snapshot, null)
     return outcome.value
   } catch (error) {
-    snapshot?.restore()
+    restoreQuietly(snapshot, error)
     throw error
   } finally {
-    snapshot?.dispose()
+    snapshot.dispose()
+  }
+}
+
+/**
+ * Restores, and never lets that throw over the failure that caused it.
+ *
+ * `originalError` is null on the ordinary "nothing to keep" path, where a
+ * restore failure is the only thing that went wrong and is worth surfacing.
+ */
+function restoreQuietly(snapshot: GitIndexSnapshot, originalError: unknown): void {
+  try {
+    snapshot.restore()
+  } catch (restoreError) {
+    if (originalError === null) throw restoreError
+    console.error('[git] Failed to restore the index after an error; the original failure follows.', restoreError)
   }
 }

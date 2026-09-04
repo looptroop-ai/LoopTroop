@@ -160,35 +160,42 @@ export async function commitBeadChanges(
   // leaves nothing behind: before this, a failed bead commit left its paths
   // staged and the next bead committed them by accident.
   type StageOutcome = { error: string; hasStagedChanges?: undefined } | { hasStagedChanges: boolean; error?: undefined }
-  const staged = withGitIndexRollback<StageOutcome>(worktreePath, () => {
-    if (filesToStage.length > 0) {
-      const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage])
-      if (!addResult.ok) {
-        return { keepIndex: false, value: { error: `git add failed: ${addResult.error}` } }
+  // A refused snapshot surfaces as this function's ordinary failure shape, not
+  // as a throw: every other outcome here is reported, and the caller decides.
+  let staged: StageOutcome
+  try {
+    staged = withGitIndexRollback<StageOutcome>(worktreePath, () => {
+      if (filesToStage.length > 0) {
+        const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage])
+        if (!addResult.ok) {
+          return { keepIndex: false, value: { error: `git add failed: ${addResult.error}` } }
+        }
       }
-    }
-    // Answers "do these paths differ from HEAD", including files git has only
-    // just been told about, which `git diff HEAD` cannot report.
-    const probe = probeStagedChanges(worktreePath, committableFiles)
-    if (probe.error) {
-      return { keepIndex: false, value: { error: `git diff --cached --quiet failed: ${probe.error}` } }
-    }
-    if (!probe.hasStagedChanges) {
-      return { keepIndex: false, value: { hasStagedChanges: false } }
-    }
+      // Answers "do these paths differ from HEAD", including files git has only
+      // just been told about, which `git diff HEAD` cannot report.
+      const probe = probeStagedChanges(worktreePath, committableFiles)
+      if (probe.error) {
+        return { keepIndex: false, value: { error: `git diff --cached --quiet failed: ${probe.error}` } }
+      }
+      if (!probe.hasStagedChanges) {
+        return { keepIndex: false, value: { hasStagedChanges: false } }
+      }
 
-    const commitResult = runGitOpSafe(worktreePath, [
-      'commit',
-      ...(bypassHooks ? ['--no-verify'] : []),
-      '-m',
-      commitMsg,
-      '--',
-      ...committableFiles,
-    ])
-    return commitResult.ok
-      ? { keepIndex: true, value: { hasStagedChanges: true } }
-      : { keepIndex: false, value: { error: `git commit failed: ${commitResult.error}` } }
-  })
+      const commitResult = runGitOpSafe(worktreePath, [
+        'commit',
+        ...(bypassHooks ? ['--no-verify'] : []),
+        '-m',
+        commitMsg,
+        '--',
+        ...committableFiles,
+      ])
+      return commitResult.ok
+        ? { keepIndex: true, value: { hasStagedChanges: true } }
+        : { keepIndex: false, value: { error: `git commit failed: ${commitResult.error}` } }
+    })
+  } catch (err) {
+    return { committed: false, pushed: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
 
   if (staged.error) {
     return { committed: false, pushed: false, error: staged.error }

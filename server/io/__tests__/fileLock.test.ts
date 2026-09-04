@@ -62,6 +62,28 @@ describe('withFileLock', () => {
       .toBe('reclaimed')
   })
 
+  it('leaves a successor lock alone when a robbed holder finishes', async () => {
+    // A holder that overruns `staleMs` has its lock reclaimed by a waiter. When
+    // it finally exits it must not take the *replacement* lock with it, or a
+    // third writer walks into the section the second is still inside.
+    const path = lockPath()
+    let successorLockPresentAfterRobbedHolderExited: boolean | undefined
+
+    const robbed = withFileLock(path, async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 160) })
+    }, { staleMs: 20, retryMs: 5 })
+
+    await new Promise((resolve) => { setTimeout(resolve, 40) })
+
+    const successor = withFileLock(path, async () => {
+      await robbed
+      successorLockPresentAfterRobbedHolderExited = existsSync(path)
+    }, { staleMs: 20, timeoutMs: 2_000, retryMs: 5 })
+
+    await Promise.all([robbed, successor])
+    expect(successorLockPresentAfterRobbedHolderExited).toBe(true)
+  })
+
   it('creates the lock directory when it does not exist yet', async () => {
     const path = join(lockPath(), '..', 'nested', 'deeper', 'index.json.lock')
     expect(await withFileLock(path, () => 'ok')).toBe('ok')

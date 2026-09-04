@@ -182,6 +182,24 @@ describe('runExplicitGitHookValidation', () => {
     expect(result.errors).toHaveLength(1)
     expect(() => readFileSync(join(root, 'ran.txt'), 'utf8')).toThrow()
   })
+
+  it('reports a failed restore as an error instead of throwing over the run', async () => {
+    const root = makeRepo()
+
+    // Moving the repository out from under the run is the one sabotage that
+    // reliably breaks both halves of the restore. Reaching the assertions at
+    // all is the point: a restore that throws replaces everything the
+    // validation found with an exception about the cleanup.
+    const result = await runExplicitGitHookValidation({
+      profileContent: profile('validate_advisory', 'node -e "require(\'fs\').renameSync(\'.git\', \'.git-moved\')"'),
+      worktreePath: root,
+    })
+
+    expect(result.receipts).toEqual([expect.objectContaining({ id: 'pre-commit', status: 'passed' })])
+    // Blocking under either policy: the next phase would otherwise start from
+    // whatever the hooks left behind.
+    expect(result.errors).toEqual([expect.stringContaining('could not restore the worktree')])
+  })
 })
 
 describe('runGitHookValidationCommand', () => {

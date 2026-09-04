@@ -18,6 +18,7 @@ import { snapshotGitIndex, type GitIndexSnapshot } from '../../git/indexSnapshot
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitBinarySync, runGitSync } from '../../git/runCommand'
 import { getExecutionSetupCommitExcludedRoots, summarizeWorktreeChanges } from '../../git/worktreeChanges'
+import { getErrorMessage } from '@shared/typeGuards'
 
 const HOOK_VALIDATION_TIMEOUT_MS = 30_000
 
@@ -37,7 +38,7 @@ interface WorktreeSnapshot {
    * Restoring the worktree alone left a hook that ran `git add` with its paths
    * still staged — the validation was undone on disk and not in the index.
    */
-  index: GitIndexSnapshot | null
+  index: GitIndexSnapshot
 }
 
 export interface GitHookValidationFileAudit {
@@ -100,18 +101,42 @@ function snapshotWorktree(worktreePath: string): WorktreeSnapshot | null {
     rmSync(temporaryDirectory, { recursive: true, force: true })
     return null
   }
+  // The index half is not optional. Restoring files while leaving a hook's
+  // `git add` staged is not a restore, so a snapshot without it is unusable
+  // and the caller refuses to run rather than run unprotected.
+  const index = snapshotGitIndex(worktreePath)
+  if (!index) {
+    rmSync(temporaryDirectory, { recursive: true, force: true })
+    return null
+  }
+
   return {
     tree: treeId,
     temporaryDirectory,
     untrackedPaths: listUntrackedPaths(worktreePath),
-    index: snapshotGitIndex(worktreePath),
+    index,
   }
 }
 
-function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): void {
+/**
+ * Puts the worktree and the index back, and reports whether it managed to.
+ *
+ * Never throws. It runs in a `finally` over a validation failure or a
+ * cancellation, and an exception there would replace the error the operator
+ * actually needs to read with one about the cleanup.
+ */
+function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapshot): string | null {
+  const failures: string[] = []
   try {
-    snapshot.index?.restore()
-    runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
+    try {
+      snapshot.index.restore()
+    } catch (error) {
+      failures.push(`index restore failed: ${getErrorMessage(error)}`)
+    }
+    // Attempted even when the index restore failed: half a restore is better
+    // than none, and both failures are reported.
+    const restored = runGitSync(worktreePath, ['restore', '--source', snapshot.tree, '--worktree', '--', '.'])
+    if (!restored.ok) failures.push(`worktree restore failed: ${restored.errorDetail}`)
     for (const path of listUntrackedPaths(worktreePath)) {
       if (snapshot.untrackedPaths.has(path)) continue
       const absolutePath = resolve(worktreePath, path)
@@ -124,10 +149,13 @@ function restoreWorktreeSnapshot(worktreePath: string, snapshot: WorktreeSnapsho
       ) continue
       rmSync(absolutePath, { recursive: true, force: true })
     }
+  } catch (error) {
+    failures.push(`worktree cleanup failed: ${getErrorMessage(error)}`)
   } finally {
-    snapshot.index?.dispose()
+    snapshot.index.dispose()
     rmSync(snapshot.temporaryDirectory, { recursive: true, force: true })
   }
+  return failures.length > 0 ? failures.join('; ') : null
 }
 
 function readProfileValidation(content: string): {
@@ -297,6 +325,7 @@ export async function runExplicitGitHookValidation(input: {
   // failure is rethrown; a failure to restore is reported beside it rather than
   // replacing it.
   let fileAudit: GitHookValidationFileAudit = noMutation
+  let restoreFailure: string | null = null
   try {
     for (const validation of config.commands) {
       if (input.signal?.aborted) throw input.signal.reason
@@ -333,7 +362,14 @@ export async function runExplicitGitHookValidation(input: {
       // A failed audit must not stop the restore, which is the part that
       // leaves the worktree usable.
     }
-    restoreWorktreeSnapshot(input.worktreePath, snapshot)
+    restoreFailure = restoreWorktreeSnapshot(input.worktreePath, snapshot)
+  }
+
+  // Reported beside whatever the validation itself found, never instead of it.
+  // A worktree that could not be put back is a blocking problem under either
+  // policy: the next phase would start from hook output nobody asked for.
+  if (restoreFailure) {
+    errors.push(`Explicit Git hook validation could not restore the worktree: ${restoreFailure}`)
   }
   return { policy, receipts, errors, warnings, fileAudit }
 }

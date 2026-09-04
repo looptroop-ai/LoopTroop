@@ -1,4 +1,5 @@
-import { closeSync, openSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
@@ -39,21 +40,47 @@ export class FileLockTimeoutError extends Error {
   }
 }
 
-function tryAcquire(lockPath: string): boolean {
+/**
+ * Writes a token nobody else can guess, and hands it back.
+ *
+ * The token is what makes release safe. Without one, a holder that ran past
+ * `staleMs` — and so had its lock reclaimed by a waiter — went on to delete the
+ * *replacement* lock on its way out, letting a third writer into a section the
+ * second was still inside.
+ */
+function tryAcquire(lockPath: string): string | null {
+  const token = `${process.pid}:${randomUUID()}`
   try {
     mkdirSync(dirname(lockPath), { recursive: true })
     const fd = openSync(lockPath, 'wx', LOCK_FILE_MODE)
     try {
-      // Written for a human reading a wedged directory, not for the protocol.
-      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() }))
+      writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() }))
     } finally {
       closeSync(fd)
     }
-    return true
+    return token
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null
     throw error
   }
+}
+
+/** The token currently in the lock file, or null when it cannot be read. */
+function readToken(lockPath: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(lockPath, 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return null
+    const token = (parsed as { token?: unknown }).token
+    return typeof token === 'string' ? token : null
+  } catch {
+    return null
+  }
+}
+
+/** Removes the lock only while we still hold it. */
+function releaseOwned(lockPath: string, token: string): void {
+  if (readToken(lockPath) !== token) return
+  rmSync(lockPath, { force: true })
 }
 
 function discardIfStale(lockPath: string, staleMs: number): void {
@@ -78,8 +105,10 @@ export async function withFileLock<T>(
   const retryMs = options.retryMs ?? 25
   const deadline = Date.now() + timeoutMs
 
+  let token: string | null = null
   for (;;) {
-    if (tryAcquire(lockPath)) break
+    token = tryAcquire(lockPath)
+    if (token) break
     discardIfStale(lockPath, staleMs)
     if (Date.now() >= deadline) throw new FileLockTimeoutError(lockPath)
     await sleep(retryMs)
@@ -88,6 +117,6 @@ export async function withFileLock<T>(
   try {
     return await run()
   } finally {
-    rmSync(lockPath, { force: true })
+    releaseOwned(lockPath, token)
   }
 }

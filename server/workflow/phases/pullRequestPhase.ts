@@ -707,7 +707,25 @@ export async function handleCreatePullRequest(
           candidateFileAudit.includedFiles,
         )
         if (!rewrite.success || !rewrite.commitHash) {
-          throw new Error(`Candidate file audit rewrite failed: ${rewrite.message}`)
+          // Recorded before rethrowing, like the push and PR-creation failures
+          // below. The rewrite is the step that discards work back to the merge
+          // base, so a dirty tree or a failed checkout is exactly the case
+          // somebody needs the receipt for — and it used to throw past it.
+          const message = `Candidate file audit rewrite failed: ${rewrite.message}`
+          recordGitRecoveryReceipt(
+            ticketId,
+            captureGitRecoveryReceipt({
+              projectPath: worktreePath,
+              phase: 'CREATING_PULL_REQUEST',
+              step: 'rewrite_candidate_commit',
+              error: message,
+              branch: headBranch,
+              baseBranch,
+              candidateSha: candidateCommitSha,
+            }),
+            'CREATING_PULL_REQUEST',
+          )
+          throw new Error(message)
         }
         candidateCommitSha = rewrite.commitHash
         candidateFileAudit = {

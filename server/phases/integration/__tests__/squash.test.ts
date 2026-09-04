@@ -158,9 +158,38 @@ describe('prepareSquashCandidate', () => {
     )
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('uncommitted changes')
+    expect(result.message).toContain('the candidate rewrite')
     expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toContain('edited by hand')
     expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
+  })
+
+  it('still rewrites when the only residue is untracked local-only output', () => {
+    const repoDir = repoManager.createRepo()
+
+    git(repoDir, ['checkout', '-b', BRANCH])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+    git(repoDir, ['add', 'src.ts'])
+    git(repoDir, ['commit', '-m', 'candidate'])
+    const candidate = git(repoDir, ['rev-parse', 'HEAD'])
+    const mergeBase = git(repoDir, ['merge-base', 'HEAD', 'main'])
+
+    // Manual QA and the final-test audit deliberately leave untracked
+    // local-only output on disk, and `reset --hard` does not remove it. A
+    // whole-tree clean check would refuse delivery over a file this step
+    // cannot harm.
+    writeFileSync(resolve(repoDir, 'local.tmp'), 'residue\n')
+
+    const result = rewriteCandidateCommitWithFiles(
+      repoDir,
+      mergeBase,
+      candidate,
+      'Filtered candidate',
+      BRANCH,
+      ['src.ts'],
+    )
+
+    expect(result.success).toBe(true)
+    expect(readFileSync(resolve(repoDir, 'local.tmp'), 'utf8')).toBe('residue\n')
   })
 
   it('rewrites a candidate commit with only AI-audited included files', () => {

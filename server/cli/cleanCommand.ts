@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync, type Dirent } from 'node:fs'
 import { resolve } from 'node:path'
 import { inspectDaemonLock } from '../lib/daemonLock'
@@ -9,6 +8,7 @@ import { markerVouchesFor, readWorktreeOwnerMarker } from '../storage/worktreeOw
 import { isProcessAlive, killProcessTree, waitForExit } from './processControl'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
+import { runCommandSync } from '../git/runCommand'
 
 export interface CleanOptions {
   apply: boolean
@@ -47,12 +47,17 @@ const OPENCODE_GRACEFUL_MS = 5_000
 /** Matched against when deciding whether the closing advice is worth printing. */
 const NO_MARKER_REASON = 'no LoopTroop ownership marker'
 
+/**
+ * `null` on any failure, which is what every caller here treats as "unknown".
+ *
+ * Through the shared runner so `looptroop clean` gets the mandatory timeout and
+ * the non-interactive environment: it walks project directories running
+ * `worktree list` and `rev-parse`, and a worktree whose gitdir sits on an
+ * unresponsive mount used to block the command with nothing to interrupt.
+ */
 function git(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-  } catch {
-    return null
-  }
+  const result = runCommandSync('git', args, { cwd, log: false })
+  return result.ok ? result.stdout : null
 }
 
 /**

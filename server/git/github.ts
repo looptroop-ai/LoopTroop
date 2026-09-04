@@ -129,6 +129,8 @@ export interface GitRecoveryReceipt {
   prUrl: string | null
   prState: PullRequestState | null
   nextSafeActions: string[]
+  /** Set when git could not be inspected, so the empty file lists mean "unknown". */
+  statusUnreadable?: boolean
 }
 
 interface GitHubPullRecord {
@@ -636,7 +638,11 @@ function formatWorktreeStatusDiagnostic(projectPath: string, parsed: ReturnType<
 }
 
 function readWorktreeStatus(projectPath: string): ReturnType<typeof parseStatusLines> & { raw: string } {
-  const raw = runGit(projectPath, FILTERED_STATUS_ARGS)
+  // Untrimmed: a porcelain record's first column is a *space* when only the
+  // worktree changed (" M file.ts"). Trimming it shifted both status columns
+  // and ate the first character of the path, so a recovery receipt reported
+  // ".txt" as a staged file and nothing as unstaged.
+  const raw = runGitSyncOrThrow(projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
   return {
     ...parseStatusLines(raw),
     raw,
@@ -675,6 +681,11 @@ function buildNextSafeActions(step: string): string[] {
       return [
         'Fetch origin and confirm the remote base branch contains the merged pull request commit, then retry.',
       ]
+    case 'rewrite_candidate_commit':
+      return [
+        'Commit, stash or restore tracked changes in the ticket worktree, then retry the ticket.',
+        'Inspect the candidate commit and the audited file list before retrying.',
+      ]
     case 'sync_local_base_branch':
       return [
         'Resolve tracked local changes or any Git-reported untracked overwrite conflict, then retry the explicit local base-branch sync.',
@@ -705,9 +716,13 @@ export function captureGitRecoveryReceipt(input: {
     headSha = null
   }
 
+  let statusUnreadable = false
   try {
-    statusOutput = runGit(input.projectPath, FILTERED_STATUS_ARGS)
+    statusOutput = runGitSyncOrThrow(input.projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
   } catch {
+    // An unreadable repository is not a clean one. Reporting empty lists would
+    // tell whoever reads the receipt that nothing was in the way.
+    statusUnreadable = true
     statusOutput = ''
   }
 
@@ -726,6 +741,7 @@ export function captureGitRecoveryReceipt(input: {
     stagedFiles: parsed.stagedFiles,
     unstagedFiles: parsed.unstagedFiles,
     untrackedFiles: parsed.untrackedFiles,
+    ...(statusUnreadable ? { statusUnreadable: true } : {}),
     prNumber: input.pr?.number ?? null,
     prUrl: input.pr?.url ?? null,
     prState: input.pr?.state ?? null,
@@ -740,10 +756,18 @@ export function ensureWorktreeClean(projectPath: string): void {
   }
 }
 
-function ensureNoTrackedWorktreeChanges(projectPath: string): void {
+/**
+ * Fails only on *tracked* uncommitted changes.
+ *
+ * This is the right check in front of `git reset --hard`, which destroys
+ * tracked modifications and leaves untracked files exactly where they are.
+ * `ensureWorktreeClean` is stricter and would refuse the untracked local-only
+ * output that Manual QA and the final-test audit deliberately leave behind.
+ */
+export function ensureNoTrackedWorktreeChanges(projectPath: string, operation = 'local base-branch sync'): void {
   const status = readWorktreeStatus(projectPath)
   if (hasTrackedChanges(status)) {
-    throw new Error(`Worktree has tracked changes that would make local base-branch sync unsafe. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
+    throw new Error(`Worktree has tracked changes that would make ${operation} unsafe. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
   }
 }
 

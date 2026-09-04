@@ -11,6 +11,7 @@ import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
+import { NON_INTERACTIVE_GIT_ENV } from '../git/runCommand'
 
 type Status = 'ok' | 'warn' | 'fail'
 
@@ -181,6 +182,15 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: timeoutMs,
+      // Escalates rather than asking twice: a probe that outran its budget has
+      // nothing left to negotiate, and `doctor` must not hang on one.
+      killSignal: 'SIGKILL',
+      // This stays outside the shared git runner on purpose: it probes any
+      // binary by name, and on Windows it needs cmd.exe to resolve `npm` to
+      // `npm.cmd`, which the git runner deliberately does not do. It carries
+      // its own timeout; what it was missing is the non-interactive
+      // environment, so a `git`/`gh` probe cannot stop on a credential prompt.
+      env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
       shell: needsShell,
     })
     return { kind: 'ok', output }

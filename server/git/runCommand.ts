@@ -34,6 +34,12 @@ export const GIT_DEFAULT_TIMEOUT_MS = 30_000
 /** The ceiling the established runner in `phases/execution/gitOps.ts` used. */
 export const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
+/** How long a timed-out child gets to exit on SIGTERM before SIGKILL. */
+const TIMEOUT_KILL_GRACE_MS = 2_000
+
+/** How long after SIGKILL to wait for `close` before settling without it. */
+const TIMEOUT_ABANDON_GRACE_MS = 2_000
+
 /**
  * Keeps git from blocking on interactive input.
  *
@@ -174,6 +180,10 @@ function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | un
     env: buildEnv(options?.env),
     maxBuffer: options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES,
     timeout: options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS,
+    // spawnSync blocks until the child exits and never escalates, so a child
+    // that traps SIGTERM would defeat the timeout on this path too. There is
+    // nothing to negotiate with a command that has already outrun its budget.
+    killSignal: 'SIGKILL',
   })
   // Asking spawnSync for Buffers rather than utf8 keeps one code path for both
   // output shapes; the string variant decodes below.
@@ -278,9 +288,33 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     child.stdout?.on('data', (chunk: Buffer) => { stdoutBytes = collect(stdoutChunks, chunk, stdoutBytes) })
     child.stderr?.on('data', (chunk: Buffer) => { stderrBytes = collect(stderrChunks, chunk, stderrBytes) })
 
+    // SIGTERM first, then SIGKILL, then give up waiting.
+    //
+    // A timeout that only asks politely is not a timeout: `git` with a
+    // credential helper attached, or any child that traps SIGTERM, ignored it
+    // and left this promise pending for as long as the child felt like running
+    // — the exact hang the mandatory timeout exists to bound. The escalation
+    // covers a child that ignores the signal; settling without `close` covers
+    // one that cannot be killed at all, because a process LoopTroop cannot
+    // reap must still not hold an actor open.
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    let abandonTimer: ReturnType<typeof setTimeout> | undefined
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGTERM')
+      killTimer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_KILL_GRACE_MS)
+      killTimer.unref?.()
+      abandonTimer = setTimeout(() => {
+        settle({
+          status: null,
+          signal: 'SIGKILL',
+          timedOut: true,
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
+          spawnError: Object.assign(new Error(`spawn ${bin} ETIMEDOUT`), { code: 'ETIMEDOUT' }),
+        })
+      }, TIMEOUT_KILL_GRACE_MS + TIMEOUT_ABANDON_GRACE_MS)
+      abandonTimer.unref?.()
     }, timeoutMs)
     // A pending timer must not hold the process open during shutdown.
     timer.unref?.()
@@ -289,6 +323,8 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (killTimer) clearTimeout(killTimer)
+      if (abandonTimer) clearTimeout(abandonTimer)
       settleWith(outcome)
     }
 

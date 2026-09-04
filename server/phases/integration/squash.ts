@@ -1,4 +1,4 @@
-import { ensureWorktreeClean } from '../../git/github'
+import { ensureNoTrackedWorktreeChanges } from '../../git/github'
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
@@ -212,11 +212,16 @@ export function rewriteCandidateCommitWithFiles(
       .map((entry) => entry.path)
     const presentFiles = includedChangedFiles.filter((file) => !deletedFiles.includes(file))
 
-    // The rewrite starts by discarding everything back to the merge base, so a
-    // dirty tree here means uncommitted work is about to be destroyed. Failing
-    // first sends the caller down its existing git-recovery receipt path, which
-    // records what was in the way.
-    ensureWorktreeClean(worktreePath)
+    // The rewrite starts by discarding everything back to the merge base, so
+    // tracked uncommitted work is about to be destroyed. Failing first sends
+    // the caller down its git-recovery receipt path, which records what was in
+    // the way.
+    //
+    // Tracked changes only: `reset --hard` does not remove untracked files, and
+    // the earlier phases deliberately leave untracked local-only output on
+    // disk. Refusing on that would block delivery over files this step cannot
+    // harm.
+    ensureNoTrackedWorktreeChanges(worktreePath, 'the candidate rewrite')
 
     runGit(['reset', '--hard', mergeBase])
     resetForRewrite = true

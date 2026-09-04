@@ -59,6 +59,33 @@ describe('server/git/runCommand', () => {
     expect(result.timedOut).toBe(true)
   })
 
+  it('kills a child that ignores SIGTERM instead of waiting on it forever', async () => {
+    const started = Date.now()
+    // A timeout that only asks politely is not a timeout: `git` with a
+    // credential helper attached, or anything that traps SIGTERM, left the
+    // promise pending for as long as the child felt like running.
+    const result = await runCommand(
+      node,
+      script('process.on("SIGTERM", () => {}); setTimeout(() => {}, 60000)'),
+      { timeoutMs: 200, log: false },
+    )
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(true)
+    expect(Date.now() - started).toBeLessThan(10_000)
+  })
+
+  it('kills a SIGTERM-ignoring child on the synchronous path too', () => {
+    const started = Date.now()
+    const result = runCommandSync(
+      node,
+      script('process.on("SIGTERM", () => {}); setTimeout(() => {}, 60000)'),
+      { timeoutMs: 200, log: false },
+    )
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(true)
+    expect(Date.now() - started).toBeLessThan(10_000)
+  })
+
   it('does not report a maxBuffer overrun as a timeout', () => {
     const result = runCommandSync(node, script('process.stdout.write("x".repeat(200000))'), {
       maxBuffer: 16,

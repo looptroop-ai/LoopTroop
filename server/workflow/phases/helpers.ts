@@ -29,6 +29,7 @@ import {
   getTicketContext as getStoredTicketContext,
   getTicketByRef,
   getTicketPaths,
+  parseLockedCouncilMemberVariants,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { buildPrdContextBuilder } from '../../phases/prd/draft'
@@ -2151,11 +2152,12 @@ export function resolveCouncilMembers(context: TicketContext): {
   } else {
     const profile = appDb.select().from(profiles).get()
     const configuredMembers = parseCouncilMembers(profile?.councilMembers)
-    const profileVariants: Record<string, string> = profile?.councilMemberVariants
-      ? (typeof profile.councilMemberVariants === 'string'
-        ? JSON.parse(profile.councilMemberVariants)
-        : profile.councilMemberVariants as Record<string, string>)
-      : {}
+    // Through the tolerant parser the ticket-start path already uses. A bare
+    // `JSON.parse` here threw out of council loading on a stored value nobody
+    // validated, which is the same stored-JSON hazard §9.22 covered elsewhere.
+    const profileVariants: Record<string, string> = typeof profile?.councilMemberVariants === 'string'
+      ? parseLockedCouncilMemberVariants(profile.councilMemberVariants) ?? {}
+      : (profile?.councilMemberVariants as Record<string, string> | undefined) ?? {}
     if (configuredMembers.length > 0) {
       members = configuredMembers
         .map(id => ({ modelId: id, name: id.split('/').pop() ?? id, variant: profileVariants[id] }))

@@ -247,6 +247,37 @@ describe('readBeadsFile', () => {
       .toThrow('at line 1 with field "dependencies" has the wrong type')
   })
 
+  it('rejects a field that is present but not fully formed', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // Each of these passed the first version of the check and then threw
+    // somewhere else: the scheduler on `dependencies.blocked_by`, the prompt
+    // builder on `contextGuidance.patterns` and on a null test command, and the
+    // evidence loader on `qaOrigin.sourceItems` — the last one outside the try
+    // that turns a bad manifest into a readable error.
+    writeFileSync(path, [
+      JSON.stringify({ id: 'empty-deps', status: 'pending', dependencies: {} }),
+      JSON.stringify({ id: 'empty-guidance', status: 'pending', contextGuidance: {} }),
+      JSON.stringify({ id: 'null-command', status: 'pending', testCommands: [null] }),
+      JSON.stringify({ id: 'no-source-items', status: 'pending', qaOrigin: { imageDelivery: 'attached' } }),
+      JSON.stringify({ id: 'good', status: 'pending', dependencies: { blocked_by: [], blocks: [] } }),
+    ].join('\n'))
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(readBeadsFile(path).map((bead) => bead.id)).toEqual(['good'])
+    } finally {
+      warn.mockRestore()
+    }
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' }))
+      .toThrow('field "dependencies" has the wrong type')
+  })
+
   it('accepts a row that carries only the fields it has reached so far', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')

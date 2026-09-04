@@ -53,8 +53,42 @@ export interface ReadBeadsFileOptions {
 const isStringArray = (value: unknown): boolean =>
   Array.isArray(value) && value.every((item) => typeof item === 'string')
 
+/**
+ * Every listed key present and holding a list of strings.
+ *
+ * `dependencies` and `contextGuidance` are reached into without a guard —
+ * `bead.dependencies.blocked_by.every(…)` in the scheduler,
+ * `bead.contextGuidance.patterns.length` in the prompt builder — so a key that
+ * is merely *allowed* is not enough. Accepting `{}` here let the exact
+ * TypeError this check exists to prevent through.
+ */
 const isStringListRecord = (value: unknown, keys: readonly string[]): boolean =>
-  isRecord(value) && keys.every((key) => value[key] === undefined || isStringArray(value[key]))
+  isRecord(value) && keys.every((key) => isStringArray(value[key]))
+
+/** Every element an object, which is what the readers of these lists assume. */
+const isObjectArray = (value: unknown): boolean =>
+  Array.isArray(value) && value.every((item) => isRecord(item))
+
+/**
+ * A command list, in either shape the renderer accepts.
+ *
+ * `renderCommandSpec` takes a string or a spec object; it dereferences
+ * anything else, so `[null]` reached the coding prompt and threw there.
+ */
+const isCommandArray = (value: unknown): boolean =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string' || isRecord(item))
+
+/**
+ * Manual QA provenance, as the evidence reader consumes it.
+ *
+ * `loadQaEvidenceFileParts` does `bead.qaOrigin.sourceItems.flatMap(…)` after
+ * its own try block, so a row carrying a `qaOrigin` without `sourceItems`
+ * threw a TypeError instead of the manifest's own error.
+ */
+const isQaOrigin = (value: unknown): boolean =>
+  isRecord(value)
+  && Array.isArray(value.sourceItems)
+  && value.sourceItems.every((item) => isRecord(item))
 
 /**
  * The type each known bead field has to have if it is there at all.
@@ -69,6 +103,11 @@ const isStringListRecord = (value: unknown, keys: readonly string[]): boolean =>
  * carrying little more than an id, a status and an iteration — so requiring the
  * fully expanded shape here would reject files that work today. This checks
  * what is present; it does not demand what is not.
+ *
+ * Present, though, means fully formed. A field's *contents* are checked as far
+ * as the readers dereference them: an empty `dependencies` object or a
+ * `testCommands: [null]` used to pass here and throw somewhere else entirely,
+ * which is the failure this table exists to move.
  */
 const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   title: (value) => typeof value === 'string',
@@ -88,12 +127,13 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   tests: isStringArray,
   labels: isStringArray,
   targetFiles: isStringArray,
-  testCommands: (value) => Array.isArray(value),
-  failedIterationNotes: (value) => Array.isArray(value),
-  userRetryNotes: (value) => Array.isArray(value),
-  finalizationFailureNotes: (value) => Array.isArray(value),
+  testCommands: isCommandArray,
+  failedIterationNotes: isObjectArray,
+  userRetryNotes: isObjectArray,
+  finalizationFailureNotes: isObjectArray,
   dependencies: (value) => isStringListRecord(value, ['blocked_by', 'blocks']),
   contextGuidance: (value) => isStringListRecord(value, ['patterns', 'anti_patterns']),
+  qaOrigin: isQaOrigin,
 }
 
 /** The first thing wrong with an entry's shape, or null when nothing is. */

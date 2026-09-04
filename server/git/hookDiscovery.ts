@@ -100,9 +100,20 @@ export function normalizeGitHookEvidence(value: unknown): DetectedGitHookPayload
       ...(managerHint ? { managerHint } : {}),
     }]
   })
-  return entries.sort((left, right) => (
-    left.path.localeCompare(right.path) || left.name.localeCompare(right.name)
-  ))
+  // Sorted so field order cannot decide drift, and de-duplicated for the same
+  // reason: a profile listing one hook twice compared unequal to the discovery
+  // that found it once, and every integration reported drift that was not there.
+  const seen = new Set<string>()
+  return entries
+    .sort((left, right) => (
+      left.path.localeCompare(right.path) || left.name.localeCompare(right.name)
+    ))
+    .filter((entry) => {
+      const key = `${entry.path}\u0000${entry.name}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
 }
 
 /** True when two hook-evidence lists describe the same hooks. */

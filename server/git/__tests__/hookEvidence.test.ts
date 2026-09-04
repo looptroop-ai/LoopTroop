@@ -43,6 +43,24 @@ describe('gitHookEvidenceMatches', () => {
     expect(gitHookEvidenceMatches([preCommit], [preCommit, prePush])).toBe(false)
     expect(gitHookEvidenceMatches([preCommit], [{ ...preCommit, runnable: 'no' }])).toBe(false)
   })
+
+  it('treats a hook listed twice as the same hook', () => {
+    // The comparison is a stringify of the normalised list, so a profile that
+    // names one hook twice — a hand edit, or two managers reporting the same
+    // file — compared unequal to the discovery that found it once, and every
+    // integration afterwards reported drift that was not there.
+    expect(normalizeGitHookEvidence([preCommit, preCommit]).map((entry) => entry.path))
+      .toEqual(['.husky/pre-commit'])
+    expect(gitHookEvidenceMatches([preCommit, preCommit], [preCommit])).toBe(true)
+    expect(gitHookEvidenceMatches([preCommit, prePush, preCommit], [prePush, preCommit])).toBe(true)
+  })
+
+  it('keeps two different hooks that share a path', () => {
+    // Deduplication is by path *and* name: a hooks directory reported under one
+    // path with two names is two hooks, not one seen twice.
+    const sameFileOtherName = { ...preCommit, name: 'pre-merge-commit' }
+    expect(normalizeGitHookEvidence([preCommit, sameFileOtherName])).toHaveLength(2)
+  })
 })
 
 describe('readApprovedGitHookEvidence', () => {

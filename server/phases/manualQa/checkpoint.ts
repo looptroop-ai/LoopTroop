@@ -70,14 +70,27 @@ function literalPathspec(filePath: string): string {
   return `:(literal)${filePath}`
 }
 
-function runGit(worktreePath: string, args: string[], allowEmpty = false): string {
-  // Never trimmed: several callers read NUL-delimited output, where the first
-  // byte can legitimately be a space.
+/** Runs git, or throws with the command that failed. Output is untouched. */
+function runGitRaw(worktreePath: string, args: string[]): string {
+  // The runner's own trim is off because these callers read NUL-delimited
+  // records, where a leading byte can legitimately be a space. Nothing here
+  // trims either, so a record's first field survives whatever it starts with.
   const result = runGitSync(worktreePath, args, { trimOutput: false })
   if (!result.ok) {
     throw new Error(`git ${args[0] ?? ''} failed: ${result.errorDetail}`)
   }
-  const output = result.stdout.trim()
+  return result.stdout
+}
+
+/**
+ * The same, for output read as a single token or as newline-separated lines.
+ *
+ * Kept separate from `runGitRaw` rather than switched on the arguments: which
+ * of the two a command needs is the caller's knowledge, and a `-z` reader that
+ * quietly got the trimming one is the bug this split exists to make impossible.
+ */
+function runGit(worktreePath: string, args: string[], allowEmpty = false): string {
+  const output = runGitRaw(worktreePath, args).trim()
   if (!allowEmpty && !output && args[0] === 'rev-parse') {
     throw new Error(`git ${args.join(' ')} returned no result`)
   }
@@ -138,7 +151,7 @@ function appendDriftEvent(ticketDir: string, ticketExternalId: string, receipt: 
 }
 
 function captureTrackedSignatures(worktreePath: string): Record<string, string> {
-  const output = runGit(worktreePath, ['ls-files', '-s', '-z'], true)
+  const output = runGitRaw(worktreePath, ['ls-files', '-s', '-z'])
   const signatures: Record<string, string> = {}
   for (const entry of output.split('\0')) {
     if (!entry) continue
@@ -204,7 +217,7 @@ function readBaseline(ticketDir: string, version: number): ManualQaWorkspaceBase
 
 function captureCommittedDrift(worktreePath: string, baselineHead: string, currentHead: string): Map<string, string> {
   if (baselineHead === currentHead) return new Map()
-  const output = runGit(worktreePath, [
+  const output = runGitRaw(worktreePath, [
     'diff',
     '--name-status',
     '--no-renames',
@@ -212,7 +225,7 @@ function captureCommittedDrift(worktreePath: string, baselineHead: string, curre
     `${baselineHead}..${currentHead}`,
     '--',
     ...REPO_SCOPE_PATHSPECS,
-  ], true)
+  ])
   const fields = output.split('\0').filter(Boolean)
   const drift = new Map<string, string>()
   for (let index = 0; index + 1 < fields.length; index += 2) {

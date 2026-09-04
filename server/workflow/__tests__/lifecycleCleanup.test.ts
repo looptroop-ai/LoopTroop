@@ -10,6 +10,11 @@ import {
   resetAllWorkBudgets,
   suspendTicketWork,
 } from '../workBudget'
+import {
+  clearAllPendingSessionContinuationsForTests,
+  hasPendingSessionContinuationForTicketPhase,
+  requestSessionContinuation,
+} from '../../opencode/sessionContinuation'
 
 const TICKET = 'lifecycle-cleanup-ticket'
 
@@ -52,5 +57,37 @@ describe('cleanupTicketState', () => {
     cleanupTicketState(TICKET)
 
     expect(isTicketWorkSuspended(TICKET)).toBe(false)
+  })
+
+  it('drops pending session continuations', () => {
+    clearAllPendingSessionContinuationsForTests()
+    requestSessionContinuation({
+      ticketId: TICKET,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      sessionId: 'session-lifecycle-1',
+      additionalRetryAttempts: 2,
+    })
+    expect(hasPendingSessionContinuationForTicketPhase(TICKET, 'WAITING_INTERVIEW_ANSWERS')).toBe(true)
+
+    // Only `abortTicketSessions` used to clear these, so a ticket that
+    // completed naturally kept them for their full thirty-minute life and a
+    // restart of the same ticket id reapplied the finished run's retries.
+    cleanupTicketState(TICKET)
+
+    expect(hasPendingSessionContinuationForTicketPhase(TICKET, 'WAITING_INTERVIEW_ANSWERS')).toBe(false)
+  })
+
+  it('leaves another ticket\'s continuations alone', () => {
+    clearAllPendingSessionContinuationsForTests()
+    requestSessionContinuation({
+      ticketId: `${TICKET}-other`,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      sessionId: 'session-lifecycle-2',
+    })
+
+    cleanupTicketState(TICKET)
+
+    expect(hasPendingSessionContinuationForTicketPhase(`${TICKET}-other`, 'WAITING_INTERVIEW_ANSWERS')).toBe(true)
+    clearAllPendingSessionContinuationsForTests()
   })
 })

@@ -3,6 +3,7 @@ import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PhaseIntermediateData } from './types'
 import { clearTicketWorkBudget } from '../workBudget'
 import { forgetTicketQuestionMemory } from '../questionWindows'
+import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
 
 export const runningPhases = new Set<string>()
 
@@ -69,6 +70,13 @@ export function cleanupTicketState(ticketId: string) {
   // ticket that completed without an open question never reached the window
   // teardown that used to be its only clear.
   forgetTicketQuestionMemory(ticketId)
+
+  // Same reasoning, same ticket id. Continuations were cleared only by
+  // `abortTicketSessions`, so a ticket that finished naturally — or was
+  // cancelled through a path that had no sessions left to abort — kept them
+  // for their full thirty-minute life, and a restart of the same ticket
+  // reapplied the finished run's retry attempts.
+  clearTicketSessionContinuations(ticketId)
 }
 
 /**

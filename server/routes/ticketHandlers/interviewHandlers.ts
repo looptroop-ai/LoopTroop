@@ -349,22 +349,27 @@ export async function handleAnswerBatch(c: Context) {
     }, 400)
   }
 
+  const isCoverageBatch = session?.currentBatch?.source === 'coverage'
+  // The asynchronous path hands the snapshot to the background task as the
+  // state to revert to, so it needs one; the synchronous path does not revert.
+  const asyncSession = !isMockOpenCodeMode() && !isCoverageBatch ? session : null
+  const needsAsyncProcessing = asyncSession !== null
+  if (!isMockOpenCodeMode() && !isCoverageBatch && !asyncSession) {
+    return c.json({ error: 'No interview session found' }, 404)
+  }
+
+  // Claimed before anything is dispatched, on both paths. A session existing is
+  // not the same as a batch being available: the first request clears
+  // `currentBatch`, and a second one accepted after that used to delete the
+  // first request's skip-receipt entry on its way to failing. The synchronous
+  // path — coverage batches and mock mode — reaches the same code and so takes
+  // the same claim.
+  if (!claimInterviewBatch(ticketId)) {
+    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+  }
+
   try {
-    const isCoverageBatch = session?.currentBatch?.source === 'coverage'
-    const needsAsyncProcessing = !isMockOpenCodeMode() && !isCoverageBatch
-
     if (needsAsyncProcessing) {
-      if (!session) {
-        return c.json({ error: 'No interview session found' }, 404)
-      }
-      // Claimed before anything is dispatched. A session existing is not the
-      // same as a batch being available: the first request clears
-      // `currentBatch`, and a second one accepted after that used to delete the
-      // first request's skip-receipt entry on its way to failing.
-      if (!claimInterviewBatch(ticketId)) {
-        return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
-      }
-
       // ASYNC path: return 202 immediately, process AI call in background.
       // handleInterviewQABatch persists the intermediate state (answers saved,
       // currentBatch cleared) synchronously before its first await, so the
@@ -389,7 +394,7 @@ export async function handleAnswerBatch(c: Context) {
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions, parsed.data.skipReasons),
+        processInterviewBatchAsync(ticketId, parsed.data.answers, asyncSession, parsed.data.selectedOptions, parsed.data.skipReasons),
         timeoutPromise,
       ])
         .finally(() => {
@@ -419,8 +424,11 @@ export async function handleAnswerBatch(c: Context) {
       return c.json({ accepted: true }, 202)
     }
 
-    // SYNC path: mock mode or coverage batches (fast, no AI call)
+    // SYNC path: mock mode or coverage batches (fast, no AI call). Nothing to
+    // roll back here — the caller gets the failure directly and the snapshot is
+    // left as the batch found it — so no skip receipt is collected.
     const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
+    releaseInterviewBatch(ticketId)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
       sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })

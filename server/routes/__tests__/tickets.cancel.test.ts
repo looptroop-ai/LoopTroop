@@ -15,6 +15,9 @@ import { listSkipEvents } from '../../workflow/skipReceipts'
 
 vi.mock('../../workflow/runner', () => ({
   cancelTicket: vi.fn(),
+  // Both submission paths take the claim, so the double has to offer it.
+  claimInterviewBatch: vi.fn(() => true),
+  releaseInterviewBatch: vi.fn(),
   handleInterviewQABatch: vi.fn(),
   processInterviewBatchAsync: vi.fn(async () => undefined),
   skipAllInterviewQuestionsToApproval: vi.fn(),

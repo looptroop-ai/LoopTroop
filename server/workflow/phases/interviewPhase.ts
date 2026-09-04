@@ -226,21 +226,34 @@ function recordInterviewSkipReceipts(input: {
 }
 
 /**
- * The skip receipts a batch wrote, per ticket, until that batch is durable.
+ * Where one batch reports the skip receipt it wrote, for the caller that may
+ * have to undo it.
  *
  * `processInterviewBatchAsync` restores the previous snapshot when the AI call
- * fails, which un-does the skips. The receipts have to go with them.
+ * fails, which un-does the skips; the receipts have to go with them. This was a
+ * ticket-keyed module map, which made the record shared mutable state between
+ * requests: any other submission for the same ticket — a coverage batch on the
+ * synchronous path, a duplicate, a retry — overwrote or deleted the in-flight
+ * batch's entry on its way through, and the rollback then found nothing to
+ * remove. Per call, there is nothing to collide with.
  */
-const pendingBatchSkipActions = new Map<string, string>()
+export interface InterviewBatchSkipReceipt {
+  actionId?: string
+}
 
 /**
- * Tickets whose async answer batch is still being processed.
+ * Tickets whose answer batch is still being processed.
  *
  * The route accepted a second submission whenever a session existed, even after
  * the first had cleared `currentBatch`. The second then deleted the first's
  * skip-receipt entry, failed with no active batch, and left the first's
  * rollback with nothing to remove — so a failed AI call reverted the snapshot
  * while its receipts stayed behind, describing skips the ticket no longer had.
+ *
+ * Held by both submission paths, not just the asynchronous one: a coverage
+ * batch and a mock-mode batch run synchronously, and one of those arriving
+ * during an in-flight AI batch walked straight into the same `currentBatch`
+ * race from the other side.
  */
 const inFlightBatches = new Set<string>()
 
@@ -1252,14 +1265,8 @@ export async function handleInterviewQABatch(
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
+  skipReceipt?: InterviewBatchSkipReceipt,
 ): Promise<BatchResponse> {
-  // Cleared before anything can throw. A stale entry from a previously committed
-  // batch would otherwise be read by the revert path below and used to delete
-  // that batch's receipts — append-only records, for work that was never
-  // reverted. A duplicate or late submission reaches the throw below and is
-  // exactly the case that triggers it.
-  pendingBatchSkipActions.delete(ticketId)
-
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
     throw new Error('No active interview batch for this ticket')
@@ -1282,8 +1289,10 @@ export async function handleInterviewQABatch(
     questionIds: currentBatch.questions.map((question) => question.id),
     batchNumber: currentBatch.batchNumber,
   })
-  if (batchSkipActionId) pendingBatchSkipActions.set(ticketId, batchSkipActionId)
-  else pendingBatchSkipActions.delete(ticketId)
+  if (skipReceipt) {
+    if (batchSkipActionId) skipReceipt.actionId = batchSkipActionId
+    else delete skipReceipt.actionId
+  }
 
   if (isMockOpenCodeMode()) {
     if (currentBatch.source === 'prom4' && currentBatch.batchNumber === 1) {
@@ -1526,19 +1535,19 @@ export function processInterviewBatchAsync(
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
 ): Promise<BatchResponse> {
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons)
+  // This call's own receipt, so the revert below can only ever undo the skips
+  // this call wrote.
+  const skipReceipt: InterviewBatchSkipReceipt = {}
+  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt)
     .catch((err) => {
       // Revert to original snapshot so the user can retry the submission
       try {
         persistInterviewSession(ticketId, originalSnapshot)
         // The skips in that snapshot are gone, so their receipts describe a
         // decision the ticket no longer carries.
-        const revertedActionId = pendingBatchSkipActions.get(ticketId)
-        if (revertedActionId) deleteSkipReceiptsForAction(ticketId, revertedActionId)
+        if (skipReceipt.actionId) deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
       } catch (revertErr) {
         console.error(`[runner] Failed to revert interview snapshot for ${ticketId}:`, revertErr)
-      } finally {
-        pendingBatchSkipActions.delete(ticketId)
       }
       throw err
     })

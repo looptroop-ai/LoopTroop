@@ -9,6 +9,9 @@ import { createFixtureRepoManager } from '../../test/fixtureRepo'
 
 vi.mock('../../workflow/runner', () => ({
   cancelTicket: vi.fn(),
+  // Both submission paths take the claim, so the double has to offer it.
+  claimInterviewBatch: vi.fn(() => true),
+  releaseInterviewBatch: vi.fn(),
   handleInterviewQABatch: vi.fn(),
   processInterviewBatchAsync: vi.fn(),
   skipAllInterviewQuestionsToApproval: vi.fn(),
@@ -24,7 +27,7 @@ vi.mock('../../machines/persistence', () => ({
 }))
 
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
-import { handleInterviewQABatch } from '../../workflow/runner'
+import { claimInterviewBatch, handleInterviewQABatch, releaseInterviewBatch } from '../../workflow/runner'
 import { ticketRouter } from '../tickets'
 
 const repoManager = createFixtureRepoManager({
@@ -295,5 +298,26 @@ describe('ticketRouter basic ticket routes', () => {
       batchAnswers: { Q01: 'Keep the route behavior unchanged.' },
       selectedOptions: { Q01: ['preserve'] },
     })
+    // Held for the synchronous path too, and given back when it finishes.
+    expect(claimInterviewBatch).toHaveBeenCalledWith(ticket.id)
+    expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id)
+  })
+
+  it('refuses a second answer batch while one is already being processed', async () => {
+    const { ticket } = createBasicTicket()
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    vi.mocked(claimInterviewBatch).mockReturnValueOnce(false)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { Q01: 'A duplicate submission.' } }),
+    })
+
+    // The synchronous path used to skip the claim entirely, so a coverage or
+    // mock-mode batch could enter alongside an in-flight AI batch and clear its
+    // bookkeeping on the way past.
+    expect(response.status).toBe(409)
+    expect(handleInterviewQABatch).not.toHaveBeenCalled()
   })
 })

@@ -62,7 +62,12 @@ describe('interview batch claim', () => {
     expect(token).toBeTruthy()
     // A session existing is not the same as a batch being available: the first
     // request clears currentBatch, and the second used to be accepted anyway.
+    // Refused, and — the part that matters across processes — the live row is
+    // untouched. The conditional write is what guarantees that: a decision read
+    // before the write would let two daemons both pass and the second overwrite.
     expect(claimInterviewBatch(ticket)).toBeNull()
+    expect(hasInFlightInterviewBatch(ticket)).toBe(true)
+    releaseInterviewBatch(ticket, 'not-the-token-that-holds-it')
     expect(hasInFlightInterviewBatch(ticket)).toBe(true)
 
     releaseInterviewBatch(ticket, token ?? undefined)

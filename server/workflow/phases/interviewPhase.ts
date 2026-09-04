@@ -27,7 +27,7 @@ import {
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, lt } from 'drizzle-orm'
 import { interviewBatchClaims } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -270,9 +270,9 @@ const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
  * daemons opened on one project share nothing but these files, and both would
  * have accepted the same batch; a restart mid-batch dropped the claim entirely.
  * The row's primary key is the ticket, so the exclusion is the table's
- * constraint rather than a check the reader has to remember, and the whole
- * read-decide-write runs in one better-sqlite3 transaction — synchronous, on
- * one connection, so no caller had to become async for this.
+ * constraint rather than a check the reader has to remember, and the decision
+ * is a conditional write rather than a read taken before one. SQLite is
+ * synchronous here, so no caller had to become async for this.
  *
  * Returns the acquisition's token, or null when someone else holds it.
  */
@@ -282,30 +282,46 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
 
   const token = `${process.pid}:${randomUUID()}`
   const now = Date.now()
-  // Read and write through `tx`, not the outer handle: a check that reads
-  // outside the transaction it is guarding is not inside it, which is the
-  // mistake §9.25 was raised about.
+  const nowIso = new Date(now).toISOString()
+  const claim = {
+    ticketId: context.localTicketId,
+    token,
+    claimedAt: nowIso,
+    expiresAt: new Date(now + Math.max(1, ttlMs)).toISOString(),
+  }
+
   return context.projectDb.transaction((tx): string | null => {
-    const existing = tx
-      .select()
+    // **The write is the guard.** Deciding from a `SELECT` first and writing
+    // after would be exactly as unsafe as the `Set` this replaced: the shim
+    // opens transactions with a plain `BEGIN`, so in WAL two daemons both read
+    // a snapshot with no live claim, both pass the check, and the second's
+    // unconditional upsert overwrites the first's live row — two winners, which
+    // is the one case this table exists to prevent.
+    //
+    // With the condition on the conflict update, a live row is never touched:
+    // SQLite applies `DO UPDATE … WHERE false` as zero rows changed, not an
+    // error. Reading our own token back is how we learn whether we won, and it
+    // is the same statement's outcome rather than a second opinion.
+    //
+    // `expires_at` is a fixed-width ISO-8601 UTC string, so comparing it as
+    // text is comparing it as time.
+    tx.insert(interviewBatchClaims)
+      .values(claim)
+      .onConflictDoUpdate({
+        target: interviewBatchClaims.ticketId,
+        set: claim,
+        // A claim past its expiry belonged to a run that is gone. Taking it
+        // over is the recovery path: nothing else would ever release it.
+        where: lt(interviewBatchClaims.expiresAt, nowIso),
+      })
+      .run()
+
+    const held = tx
+      .select({ token: interviewBatchClaims.token })
       .from(interviewBatchClaims)
       .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
       .get()
-    // A claim past its expiry belonged to a run that is gone. Taking it over is
-    // the recovery path: nothing else would ever release it.
-    if (existing && Date.parse(existing.expiresAt) > now) return null
-
-    const claim = {
-      ticketId: context.localTicketId,
-      token,
-      claimedAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + Math.max(1, ttlMs)).toISOString(),
-    }
-    tx.insert(interviewBatchClaims)
-      .values(claim)
-      .onConflictDoUpdate({ target: interviewBatchClaims.ticketId, set: claim })
-      .run()
-    return token
+    return held?.token === token ? token : null
   })
 }
 
@@ -318,6 +334,8 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
  *
  * `token` is optional so a caller that only knows the ticket — the cleanup that
  * runs when a ticket reaches a terminal state — can drop the claim outright.
+ * **Omitting it anywhere else is a bug**: an untokened release deletes whatever
+ * claim the ticket currently has, including one a later submission is holding.
  */
 export function releaseInterviewBatch(ticketId: string, token?: string): void {
   // Best effort by design. This runs from a route's error path and from the
@@ -1611,6 +1629,11 @@ export function processInterviewBatchAsync(
   originalSnapshot: InterviewSessionSnapshot,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
+  /**
+   * The claim this batch was dispatched under. Omitting it makes the release in
+   * `finally` untokened, which would delete whatever claim the ticket holds by
+   * then — including a later submission's.
+   */
   claimToken?: string,
 ): Promise<BatchResponse> {
   // This call's own receipt, so the revert below can only ever undo the skips

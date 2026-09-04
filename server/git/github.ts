@@ -789,6 +789,12 @@ const UNTRACKED_PROBE_BATCH_SIZE = 200
  *
  * Narrow enough to name exactly, which is what this does, rather than going
  * back to refusing every untracked file.
+ *
+ * Not every `reset --hard` wants this. `resetWorktreeToCommit` follows its
+ * reset with `git clean -fd`, so it is *trying* to remove untracked files and a
+ * clobber costs its caller nothing. The candidate rewrite is the opposite: it
+ * deliberately leaves local-only output in place. Check where the untracked
+ * files are meant to survive.
  */
 export function ensureNoUntrackedPathsClobberedBy(
   projectPath: string,

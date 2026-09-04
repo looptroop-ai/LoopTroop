@@ -7,24 +7,9 @@ import { attachProject, type PublicProject } from '../../storage/projects'
 import { createTicket, getLatestPhaseArtifact, getTicketByRef, insertPhaseArtifact, patchTicket, type PublicTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 
-vi.mock('../../workflow/runner', () => ({
-  cancelTicket: vi.fn(),
-  // Both submission paths take the claim, so the double has to offer it.
-  claimInterviewBatch: vi.fn(() => true),
-  releaseInterviewBatch: vi.fn(),
-  handleInterviewQABatch: vi.fn(),
-  processInterviewBatchAsync: vi.fn(),
-  skipAllInterviewQuestionsToApproval: vi.fn(),
-}))
+vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
-vi.mock('../../machines/persistence', () => ({
-  createTicketActor: vi.fn(),
-  ensureActorForTicket: vi.fn(() => ({ id: 'mock-actor' })),
-  revertTicketToApprovalStatus: vi.fn(),
-  sendTicketEvent: vi.fn(),
-  getTicketState: vi.fn(() => null),
-  stopActor: vi.fn(() => true),
-}))
+vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
 
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { claimInterviewBatch, handleInterviewQABatch, releaseInterviewBatch } from '../../workflow/runner'

@@ -10,32 +10,13 @@ import { createTicket } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { initializeTicket } from '../../ticket/initialize'
 
-vi.mock('../../workflow/runner', () => ({
-  cancelTicket: vi.fn(),
-  // Both submission paths take the claim, so the double has to offer it.
-  claimInterviewBatch: vi.fn(() => true),
-  releaseInterviewBatch: vi.fn(),
-  handleInterviewQABatch: vi.fn(),
-  processInterviewBatchAsync: vi.fn(async () => undefined),
-  skipAllInterviewQuestionsToApproval: vi.fn(),
-}))
+vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
-vi.mock('../../opencode/sessionManager', () => ({
-  abortTicketSessions: vi.fn(async () => undefined),
-}))
+vi.mock('../../opencode/sessionManager', async () => (await import('../../test/routeMocks')).sessionManagerMock())
 
-vi.mock('../../opencode/contextBuilder', () => ({
-  clearContextCache: vi.fn(),
-}))
+vi.mock('../../opencode/contextBuilder', async () => (await import('../../test/routeMocks')).contextBuilderMock())
 
-vi.mock('../../machines/persistence', () => ({
-  createTicketActor: vi.fn(),
-  ensureActorForTicket: vi.fn(() => ({ id: 'mock-actor' })),
-  revertTicketToApprovalStatus: vi.fn(),
-  sendTicketEvent: vi.fn(),
-  getTicketState: vi.fn(() => null),
-  stopActor: vi.fn(() => true),
-}))
+vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
 
 import { ticketRouter } from '../tickets'
 

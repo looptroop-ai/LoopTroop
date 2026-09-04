@@ -468,7 +468,7 @@ export async function handleInterviewDeliberate(
   // Step 1: Health-check OpenCode before doing any work
   throwIfAborted(signal, ticketId)
   try {
-    const health = await raceWithCancel(adapter.checkHealth(), signal, ticketId)
+    const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     if (!health.available) {
       const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${health.error ?? 'connection refused'})`

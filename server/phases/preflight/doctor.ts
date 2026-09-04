@@ -153,7 +153,7 @@ export async function runPreFlightChecks(
   // 1. OpenCode connectivity
   try {
     throwIfAborted(signal, ticketId)
-    const health = await raceWithCancel(adapter.checkHealth(), signal, ticketId)
+    const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     checks.push({
       name: 'OpenCode Connectivity',
@@ -530,7 +530,7 @@ export async function runPreFlightChecks(
   if (preFlightContext.lockedMainImplementer) {
     try {
       throwIfAborted(signal, ticketId)
-      const connectedIds = await raceWithCancel(deps.fetchConnectedModelIds(), signal, ticketId)
+      const connectedIds = await raceWithCancel(deps.fetchConnectedModelIds(signal), signal, ticketId)
       throwIfAborted(signal, ticketId)
       const connected = new Set(connectedIds)
       if (connected.has(preFlightContext.lockedMainImplementer)) {

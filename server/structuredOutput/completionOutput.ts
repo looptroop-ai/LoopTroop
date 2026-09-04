@@ -481,13 +481,14 @@ function normalizeExecutionSetupProjectCommands(
   value: unknown,
   fieldLabel: string,
   repairWarnings?: string[],
+  hostContext?: HostContext,
 ): ExecutionSetupPlanPayload['projectCommands'] {
   if (!isRecord(value)) throw new Error(`${fieldLabel} missing object`)
   return {
-    prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings),
-    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings),
-    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings),
-    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings),
+    prepare: normalizeExecutionSetupCommands(getValueByAliases(value, ['prepare', 'bootstrap', 'setup']), `${fieldLabel}.prepare`, repairWarnings, hostContext),
+    testFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['testfull', 'tests']), `${fieldLabel}.test_full`, repairWarnings, hostContext),
+    lintFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['lintfull', 'lint']), `${fieldLabel}.lint_full`, repairWarnings, hostContext),
+    typecheckFull: normalizeExecutionSetupCommands(getValueByAliases(value, ['typecheckfull', 'typecheck']), `${fieldLabel}.typecheck_full`, repairWarnings, hostContext),
   }
 }
 
@@ -514,7 +515,25 @@ function normalizeExecutionSetupCommandProbes(
   })
 }
 
-function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupPlanPayload['workspaceInputs'] {
+/** A count or a byte total, or undefined for anything that is not one. */
+function nonNegativeInteger(value: unknown): number | undefined {
+  const parsed = toInteger(value)
+  return parsed !== null && parsed >= 0 ? parsed : undefined
+}
+
+/**
+ * `preserveBackendFields` distinguishes a model's plan from a re-read of one
+ * LoopTroop already wrote. `file_count` and `total_bytes` are measured on disk
+ * after generation, so a model cannot know them and a stored plan must not lose
+ * them: dropping them here undid the shared serialiser that writes them, and an
+ * edit saved from the UI came back without the copy-size metadata the
+ * large-copy warning is computed from.
+ */
+function normalizeExecutionSetupWorkspaceInputs(
+  value: unknown,
+  preserveBackendFields = false,
+  repairWarnings?: string[],
+): ExecutionSetupPlanPayload['workspaceInputs'] {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value)) throw new Error('workspace_inputs must be a list')
   return value.map((entry, index) => {
@@ -542,6 +561,15 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
       )
     }
     const allowLargeCopy = getValueByAliases(entry, ['allowlargecopy'])
+    const rawFileCount = getValueByAliases(entry, ['filecount'])
+    const rawTotalBytes = getValueByAliases(entry, ['totalbytes'])
+    if (!preserveBackendFields && (rawFileCount !== undefined || rawTotalBytes !== undefined)) {
+      repairWarnings?.push(
+        `Ignored model-supplied workspace_inputs[${index}].file_count/total_bytes; LoopTroop measures these from the workspace.`,
+      )
+    }
+    const fileCount = preserveBackendFields ? nonNegativeInteger(rawFileCount) : undefined
+    const totalBytes = preserveBackendFields ? nonNegativeInteger(rawTotalBytes) : undefined
     return {
       path: normalizeExecutionSetupPath(
         getValueByAliases(entry, ['path']),
@@ -551,6 +579,8 @@ function normalizeExecutionSetupWorkspaceInputs(value: unknown): ExecutionSetupP
       sourceStatus,
       category,
       ...(typeof allowLargeCopy === 'boolean' ? { allowLargeCopy } : {}),
+      ...(fileCount === undefined ? {} : { fileCount }),
+      ...(totalBytes === undefined ? {} : { totalBytes }),
       reason: getRequiredString(entry, ['reason', 'rationale'], `workspace_inputs[${index}].reason`),
     }
   })
@@ -748,6 +778,8 @@ function normalizeExecutionSetupPlan(
 
   const workspaceInputs = normalizeExecutionSetupWorkspaceInputs(
     getValueByAliases(value, ['workspaceinputs']),
+    preserveBackendFields,
+    repairWarnings,
   )
   const rawSteps = getValueByAliases(value, ['steps', 'plansteps'])
   const steps = Array.isArray(rawSteps) ? rawSteps.map((entry, index) => {
@@ -775,6 +807,7 @@ function normalizeExecutionSetupPlan(
     getValueByAliases(value, ['projectcommands', 'commands']),
     'Execution setup plan project_commands',
     repairWarnings,
+    hostContext,
   )
   const rawQualityPolicy = getValueByAliases(value, ['qualitygatepolicy', 'qualitypolicy'])
   const qualityGatePolicy = preserveBackendFields && isRecord(rawQualityPolicy)

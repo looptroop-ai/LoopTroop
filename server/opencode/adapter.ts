@@ -87,6 +87,12 @@ export interface OpenCodeAdapter {
   abortSession(sessionId: string): Promise<boolean>
   assembleBeadContext(ticketId: string, beadId: string): Promise<PromptPart[]>
   assembleCouncilContext(ticketId: string, phase: string): Promise<PromptPart[]>
+  /**
+   * Pass the ticket's signal even when racing the returned promise: racing
+   * abandons the wait, the signal abandons the request. Without it a cancelled
+   * ticket left probes running against an unreachable server for their whole
+   * timeout.
+   */
   checkHealth(signal?: AbortSignal): Promise<HealthStatus>
 }
 
@@ -784,7 +790,12 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
     try {
       const health = await this.client.global.health(this.requestOptions(withTimeout()))
       const version = health.data?.version ? String(health.data.version) : 'unknown'
-      const providers = await this.withSdkPromiseTimeout(this.client.config.providers())
+      // The signal reaches this request too. Racing the promise stopped the
+      // waiting and left the request in flight, which is the same half-cancel
+      // the health probe above was fixed for.
+      const providers = await this.withSdkPromiseTimeout(
+        this.client.config.providers(undefined, this.requestOptions(withTimeout())),
+      )
       return {
         available: true,
         version,

@@ -438,4 +438,33 @@ describe('Pre-Flight Doctor', () => {
       }),
     ]))
   })
+
+  it('hands its cancellation signal to the probes it waits on', async () => {
+    // Racing the promise abandons the wait; only the signal abandons the
+    // request. Without it a cancelled ticket left the connectivity and model
+    // probes running against an unreachable server for their whole timeout.
+    const controller = new AbortController()
+    const healthSignals: (AbortSignal | undefined)[] = []
+    const modelSignals: (AbortSignal | undefined)[] = []
+    vi.spyOn(adapter, 'checkHealth').mockImplementation(async (signal?: AbortSignal) => {
+      healthSignals.push(signal)
+      return { available: true, version: 'mock', models: ['model-a'] }
+    })
+    deps.fetchConnectedModelIds = async (signal?: AbortSignal) => {
+      modelSignals.push(signal)
+      return ['model-a', 'model-b']
+    }
+
+    await runPreFlightChecks(
+      adapter,
+      TEST.ticketId,
+      [makeBead()],
+      { ...defaultContext, lockedMainImplementer: 'model-a' },
+      controller.signal,
+      deps,
+    )
+
+    expect(healthSignals).toEqual([controller.signal])
+    expect(modelSignals).toEqual([controller.signal])
+  })
 })

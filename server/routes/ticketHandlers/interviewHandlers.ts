@@ -276,6 +276,16 @@ export async function handleSkipTicket(c: Context) {
     }, 400)
   }
 
+  // The same claim the answer-batch route takes, for the same reason. Skipping
+  // the rest rewrites the session and moves the ticket on; an answer batch
+  // still running underneath then fails and reverts to *its* snapshot, undoing
+  // the skip-all entirely. The batch stays in `WAITING_INTERVIEW_ANSWERS`, so
+  // nothing else was stopping the two from overlapping.
+  const skipClaimToken = claimInterviewBatch(ticketId)
+  if (!skipClaimToken) {
+    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+  }
+
   try {
     ensureActorForTicket(ticketId)
     skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers, {
@@ -294,6 +304,8 @@ export async function handleSkipTicket(c: Context) {
   } catch (err) {
     logTicketOperationError(ticketId, 'Failed to skip remaining interview questions for ticket', err)
     return c.json({ error: 'Failed to skip remaining interview questions', details: getErrorMessage(err) }, 500)
+  } finally {
+    releaseInterviewBatch(ticketId, skipClaimToken)
   }
 
   return respondWithState(c, ticketId, 'Remaining interview questions skipped')
@@ -350,8 +362,10 @@ export async function handleAnswerBatch(c: Context) {
   }
 
   const isCoverageBatch = session?.currentBatch?.source === 'coverage'
-  // The asynchronous path hands the snapshot to the background task as the
-  // state to revert to, so it needs one; the synchronous path does not revert.
+  // Non-null only on the asynchronous path, which hands the snapshot to the
+  // background task as the state to revert to. The synchronous path does not
+  // revert, so it needs no snapshot — and a missing session on the asynchronous
+  // path is a 404 below, not a silent fall-through to the synchronous one.
   const asyncSession = !isMockOpenCodeMode() && !isCoverageBatch ? session : null
   const needsAsyncProcessing = asyncSession !== null
   if (!isMockOpenCodeMode() && !isCoverageBatch && !asyncSession) {
@@ -396,9 +410,11 @@ export async function handleAnswerBatch(c: Context) {
         timeoutId = setTimeout(() => {
           abortTicketWork(ticketId)
           // The background task releases the claim when it settles, and a task
-          // that ignores the abort never does. The claim has no expiry, so
-          // without this every later submission for this ticket answers 409 for
-          // the life of the process. Releasing twice is harmless.
+          // that ignores the abort never does. The claim's own expiry would
+          // free it eventually, but that is a crash backstop measured in the
+          // whole batch budget — a ticket should be answerable again the moment
+          // its batch is abandoned, not one budget later. Releasing twice is
+          // harmless.
           //
           // The trade is deliberate: a task that survives its own abort could
           // now run alongside a new submission. That is the lesser fault. The

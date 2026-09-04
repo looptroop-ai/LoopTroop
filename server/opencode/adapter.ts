@@ -468,8 +468,14 @@ export class OpenCodeSDKAdapter implements OpenCodeAdapter {
       // permission failure as a clean user cancel: no blocked-error
       // diagnostics, no retry, no sign anything had gone wrong.
       if (permissionReplyFailure) throw permissionReplyFailure
-      if (err instanceof Error && (err.name === 'AbortError' && promptOptions.signal?.aborted)) throw err
-      if (err instanceof Error && promptOptions.signal?.aborted) throw err
+      // Only a real abort short-circuits. The broader "the signal is aborted,
+      // so rethrow whatever this is" subsumed both the branch above it and the
+      // `OpenCodeSessionError` branch below, so a genuine provider failure that
+      // landed while a ticket was being cancelled skipped enrichment entirely
+      // and reached the operator with no diagnostics at all. Cancellation is
+      // still classified upstream by the signal; this only decides whether the
+      // error keeps its own detail on the way there.
+      if (isAbortError(err)) throw err
       if (err instanceof Error && err.name === 'OpenCodeSessionError') throw err
       const enriched = enrichGenericOpenCodeProviderError(err, sessionId)
       if (enriched) {

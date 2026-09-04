@@ -22,6 +22,7 @@ import {
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import { claimInterviewBatch } from '../../workflow/phases/interviewPhase'
 import { initializeTicket } from '../../ticket/initialize'
 
 vi.mock('../../opencode/sessionManager', () => ({
@@ -176,6 +177,55 @@ describe('ticketRouter POST /tickets/:id/skip', () => {
     const coverageArtifact = getLatestPhaseArtifact(ticket.id, 'interview_coverage', 'VERIFYING_INTERVIEW_COVERAGE')
     expect(coverageArtifact).toBeDefined()
     expect(coverageArtifact?.content).toContain('"hasGaps":false')
+  })
+
+  it('refuses to skip the rest while an answer batch is still being processed', async () => {
+    const repoDir = repoManager.createRepo()
+    const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
+    const ticket = createTicket({
+      projectId: project.id,
+      title: 'Skip during batch',
+      description: 'Skip-all must not race an in-flight batch.',
+    })
+    const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS', branchName: init.branchName })
+
+    const base = createInterviewSessionSnapshot({
+      winnerId: 'openai/gpt-5-mini',
+      compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' }],
+      maxInitialQuestions: 1,
+    })
+    const batch = buildPersistedBatch({
+      questions: [{ id: 'Q01', phase: 'Foundation', question: 'What outcome matters most?' }],
+      progress: { current: 1, total: 1 },
+      isComplete: false,
+      isFinalFreeForm: false,
+      aiCommentary: 'One question.',
+      batchNumber: 1,
+    }, 'prom4', base)
+    upsertLatestPhaseArtifact(
+      ticket.id,
+      INTERVIEW_SESSION_ARTIFACT,
+      'WAITING_INTERVIEW_ANSWERS',
+      serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+    )
+
+    // A batch is in flight. Skipping the rest rewrites the session and moves
+    // the ticket on; the batch then fails and reverts to its own snapshot,
+    // undoing the skip-all entirely. Nothing but this claim stops the overlap —
+    // the ticket stays in `WAITING_INTERVIEW_ANSWERS` throughout.
+    expect(claimInterviewBatch(ticket.id)).toBeTruthy()
+
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+    const response = await app.request(`/api/tickets/${ticket.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: {}, selectedOptions: {}, skipReasons: {} }),
+    })
+
+    expect(response.status).toBe(409)
+    expect(getTicketByRef(ticket.id)?.status).toBe('WAITING_INTERVIEW_ANSWERS')
   })
 
   it('refuses a skip reason attached to a question the person answered', async () => {

@@ -11,6 +11,7 @@ import {
   buildPrdDocumentContent,
   createArtifactFactory,
 } from '@/test/workspaceArtifactBuilders'
+import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
 import type { DBartifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
@@ -238,6 +239,51 @@ describe('PhaseArtifactsPanel', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('Verify the new checkout behavior.')
     expect(screen.getByRole('dialog')).toHaveTextContent('Checkout succeeds')
     expect(screen.getByRole('dialog')).toHaveTextContent('The order is confirmed.')
+  })
+
+  it('shows the Manual QA generation repair trail beside the checklist', () => {
+    const checklistArtifact = makeArtifact({
+      phase: 'GENERATING_QA_CHECKLIST',
+      artifactType: 'manual_qa_checklist',
+      content: JSON.stringify({
+        version: 1,
+        checklist: [
+          'items:',
+          '  - title: Checkout succeeds',
+          '    expectedResult: The order is confirmed.',
+        ].join('\n'),
+      }),
+    })
+    // Generation records its retries in a companion row. Until it was read, the
+    // checklist and a repaired checklist looked identical.
+    const companionArtifact = makeArtifact({
+      phase: 'GENERATING_QA_CHECKLIST',
+      artifactType: buildUiArtifactCompanionArtifactType('manual_qa_checklist'),
+      content: JSON.stringify({
+        baseArtifactType: 'manual_qa_checklist',
+        generatedAt: '2026-07-14T10:00:00.000Z',
+        payload: {
+          structuredOutput: {
+            repairApplied: true,
+            repairWarnings: [],
+            autoRetryCount: 1,
+            validationError: 'Manual QA parser rejected the model output.',
+          },
+        },
+      }),
+    })
+
+    renderWithProviders(
+      <TestPhaseArtifactsPanel
+        phase="GENERATING_QA_CHECKLIST"
+        isCompleted
+        preloadedArtifacts={[checklistArtifact, companionArtifact]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual QA Checklist/i }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Checkout succeeds')
+    expect(screen.getByRole('dialog')).toHaveTextContent(/LoopTroop adjusted this artifact/i)
   })
 
   it('shows the execution setup runtime as one structured artifact with useful chip details', () => {

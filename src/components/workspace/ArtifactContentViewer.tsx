@@ -6642,6 +6642,32 @@ function manualQaArtifactStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : []
 }
 
+/**
+ * The repair trail generation recorded, folded into the artifact by the panel.
+ *
+ * Manual QA generation retries and repairs like every other artifact-processing
+ * path, and until this was read the checklist view showed only the result — so
+ * an operator never learned a repair had happened, and a generation that gave
+ * up showed nothing at all.
+ */
+function readManualQaProcessingMetadata(content: string): {
+  structuredOutput?: ArtifactStructuredOutputData
+  validationError?: string
+} {
+  try {
+    const envelope = JSON.parse(content) as { structuredOutput?: unknown; validationError?: unknown }
+    return {
+      ...(envelope.structuredOutput && typeof envelope.structuredOutput === 'object'
+        ? { structuredOutput: envelope.structuredOutput as ArtifactStructuredOutputData }
+        : {}),
+      ...(typeof envelope.validationError === 'string' ? { validationError: envelope.validationError } : {}),
+    }
+  } catch {
+    // The artifact can also be the canonical YAML document, which carries none.
+    return {}
+  }
+}
+
 function parseManualQaArtifactChecklist(content: string): { raw: string; checklist: ManualQaArtifactChecklist } | null {
   let raw = content
   try {
@@ -6823,11 +6849,30 @@ export function ArtifactContent({
     return <FinalTestResultsView content={content} />
   }
   if (artifactId === 'manual-qa-checklist') {
+    const { structuredOutput, validationError } = readManualQaProcessingMetadata(content)
+    // A generation that gave up leaves the trail and no checklist, and that is
+    // the run whose repairs an operator most needs to read.
+    const notice = (
+      <ArtifactProcessingNotice
+        structuredOutput={structuredOutput}
+        status={validationError ? 'failed' : 'completed'}
+      />
+    )
     const parsed = parseManualQaArtifactChecklist(content)
-    if (!parsed) return <RawContentWithCopy content={content} />
+    if (!parsed) {
+      return (
+        <div className="space-y-3">
+          {notice}
+          <RawContentWithCopy content={content} />
+        </div>
+      )
+    }
     return (
       <WithRawTab content={parsed.raw} structuredLabel="Checklist">
-        <ManualQaChecklistArtifactView parsed={parsed.checklist} />
+        <div className="space-y-3">
+          {notice}
+          <ManualQaChecklistArtifactView parsed={parsed.checklist} />
+        </div>
       </WithRawTab>
     )
   }

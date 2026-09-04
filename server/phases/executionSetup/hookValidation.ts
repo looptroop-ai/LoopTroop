@@ -22,7 +22,7 @@ import { getErrorMessage } from '@shared/typeGuards'
 
 const HOOK_VALIDATION_TIMEOUT_MS = 30_000
 
-interface ValidationCommand {
+export interface ValidationCommand {
   id: string
   hook: string
   command: CommandSpec
@@ -207,11 +207,10 @@ function readProfileValidation(content: string): {
  *
  * Both hook-validation paths — this module's explicit validator and the
  * execution-setup profile validator — ran their own copy of this, deriving the
- * status and building the receipt slightly differently. What they legitimately
- * differ on stays with them: whether to stop at the first failure, whether the
- * worktree is snapshotted and restored, how the timeout is derived, and how a
- * failure is worded. What they should never differ on is what "passed",
- * "failed" and "timed out" mean for the same command.
+ * status and building the receipt slightly differently. What they should never
+ * differ on is what "passed", "failed" and "timed out" mean for the same
+ * command. What they legitimately differ on is settled by
+ * `runGitHookValidationCommands` below, as options rather than as two loops.
  */
 export interface GitHookValidationCommandOutcome {
   status: 'passed' | 'failed' | 'timed_out'
@@ -252,6 +251,126 @@ export async function runGitHookValidationCommand(input: {
   }
 }
 
+/**
+ * Runs a list of approved hook validation commands, once, for both callers.
+ *
+ * The two paths were two loops that had drifted: one stopped at the first
+ * failure, snapshotted the worktree and audited what the commands changed; the
+ * other ran every command, snapshotted nothing and audited nothing. Neither
+ * behaviour is wrong — the explicit validator is a check that must leave no
+ * trace, and the setup-profile validator runs commands that are *supposed* to
+ * change the workspace — so the differences are options here rather than
+ * duplicated code. What is shared is the part that had no business differing:
+ * ordering, cancellation, scoring, receipts and restoration.
+ *
+ * Message wording and policy routing stay with the callers. They are not the
+ * same operation and their operators read them in different places.
+ */
+export interface GitHookValidationRunOptions {
+  commands: readonly ValidationCommand[]
+  worktreePath: string
+  runtimeEnvironment?: RuntimeEnvironment | undefined
+  /** Stop after the first command that does not pass. */
+  stopOnFirstFailure: boolean
+  /**
+   * Snapshot the worktree and index and put both back when the run ends.
+   *
+   * Fail-closed: when the snapshot cannot be taken the run is refused rather
+   * than performed unprotected, because there would be nothing to undo it with.
+   */
+  protectWorktree: boolean
+  /** Record what the commands changed on disk, before anything is restored. */
+  auditFileMutation: boolean
+  /**
+   * The timeout for the command about to run, or null to end the run because
+   * the caller's own deadline has passed.
+   */
+  nextTimeoutMs: (command: ValidationCommand) => number | null
+  /** Throws to cancel the run. Called before each command. */
+  throwIfCancelled?: (() => void) | undefined
+  /** True to end the run after the command that has just finished. */
+  stopAfterCommand?: ((command: ValidationCommand) => boolean) | undefined
+}
+
+export interface GitHookValidationCommandRunResult {
+  command: ValidationCommand
+  status: 'passed' | 'failed' | 'timed_out'
+  outputExcerpt: string
+  result: CommandExecutionResult
+}
+
+export interface GitHookValidationRun {
+  receipts: ExecutionSetupCommandReceiptPayload[]
+  /** One per command that actually ran, in the order they ran. */
+  outcomes: GitHookValidationCommandRunResult[]
+  fileAudit: GitHookValidationFileAudit
+  /** What went wrong putting the worktree back, or null. */
+  restoreFailure: string | null
+  /** True when `protectWorktree` was asked for and could not be arranged. */
+  refused: boolean
+}
+
+const NO_MUTATION: GitHookValidationFileAudit = {
+  mutated: false,
+  candidatePaths: [],
+  temporaryPaths: [],
+  internalPaths: [],
+}
+
+export async function runGitHookValidationCommands(
+  options: GitHookValidationRunOptions,
+): Promise<GitHookValidationRun> {
+  const receipts: ExecutionSetupCommandReceiptPayload[] = []
+  const outcomes: GitHookValidationCommandRunResult[] = []
+
+  const beforeFingerprint = options.auditFileMutation ? worktreeFingerprint(options.worktreePath) : null
+  const snapshot = options.protectWorktree ? snapshotWorktree(options.worktreePath) : null
+  if (options.protectWorktree && !snapshot) {
+    return { receipts, outcomes, fileAudit: NO_MUTATION, restoreFailure: null, refused: true }
+  }
+
+  let fileAudit: GitHookValidationFileAudit = NO_MUTATION
+  let restoreFailure: string | null = null
+  try {
+    for (const command of options.commands) {
+      options.throwIfCancelled?.()
+      const timeoutMs = options.nextTimeoutMs(command)
+      if (timeoutMs === null) break
+      const outcome = await runGitHookValidationCommand({
+        id: command.id,
+        command: command.command,
+        worktreePath: options.worktreePath,
+        runtimeEnvironment: options.runtimeEnvironment,
+        timeoutMs,
+      })
+      receipts.push(outcome.receipt)
+      outcomes.push({
+        command,
+        status: outcome.status,
+        outputExcerpt: outcome.outputExcerpt,
+        result: outcome.result,
+      })
+      if (options.stopAfterCommand?.(command)) break
+      if (options.stopOnFirstFailure && outcome.status !== 'passed') break
+    }
+  } finally {
+    // The audit is captured before restoration — it is a record of what the
+    // hooks did, which restoring erases — and the restore runs here, so an
+    // abort or a rejected command cannot leave hook output behind.
+    if (beforeFingerprint !== null) {
+      try {
+        fileAudit = buildFileAudit(options.worktreePath, beforeFingerprint)
+      } catch {
+        // A failed audit must not stop the restore, which is the part that
+        // leaves the worktree usable.
+      }
+    }
+    if (snapshot) restoreFailure = restoreWorktreeSnapshot(options.worktreePath, snapshot)
+  }
+
+  return { receipts, outcomes, fileAudit, restoreFailure, refused: false }
+}
+
 export async function runExplicitGitHookValidation(input: {
   profileContent: string
   worktreePath: string
@@ -290,12 +409,27 @@ export async function runExplicitGitHookValidation(input: {
       fileAudit: noMutation,
     }
   }
-  const receipts: ExecutionSetupCommandReceiptPayload[] = []
   const errors: string[] = []
   const warnings: string[] = []
-  const beforeFingerprint = worktreeFingerprint(input.worktreePath)
-  const snapshot = snapshotWorktree(input.worktreePath)
-  if (!snapshot) {
+
+  // Stops at the first failure, snapshots the worktree and audits what the
+  // commands changed. The profile validator asks the same helper for the
+  // opposite of all three, because it runs commands that are meant to change
+  // the workspace.
+  const run = await runGitHookValidationCommands({
+    commands: config.commands,
+    worktreePath: input.worktreePath,
+    runtimeEnvironment: config.runtimeEnvironment,
+    stopOnFirstFailure: true,
+    protectWorktree: true,
+    auditFileMutation: true,
+    nextTimeoutMs: () => HOOK_VALIDATION_TIMEOUT_MS,
+    throwIfCancelled: () => {
+      if (input.signal?.aborted) throw input.signal.reason
+    },
+  })
+
+  if (run.refused) {
     // Validation runs arbitrary approved commands and is only safe because
     // whatever they touch is put back. Without a snapshot it used to run
     // anyway, so a hook that writes files left them in the worktree with
@@ -319,57 +453,26 @@ export async function runExplicitGitHookValidation(input: {
     }
   }
 
-  // The audit is captured before restoration — it is a record of what the hooks
-  // did, which restoring erases — and the restore itself runs in `finally`, so
-  // an abort or a rejected command cannot leave hook output behind. The original
-  // failure is rethrown; a failure to restore is reported beside it rather than
-  // replacing it.
-  let fileAudit: GitHookValidationFileAudit = noMutation
-  let restoreFailure: string | null = null
-  try {
-    for (const validation of config.commands) {
-      if (input.signal?.aborted) throw input.signal.reason
-      // Stops at the first failure, unlike the profile validator, which runs
-      // every command and collects them. Both score a command the same way.
-      const { status, outputExcerpt, receipt } = await runGitHookValidationCommand({
-        id: validation.id,
-        command: validation.command,
-        worktreePath: input.worktreePath,
-        runtimeEnvironment: config.runtimeEnvironment,
-        timeoutMs: HOOK_VALIDATION_TIMEOUT_MS,
-      })
-      receipts.push(receipt)
-      if (status !== 'passed') {
-        const message = `${validation.hook} validation ${status}: ${renderCommandSpec(validation.command)}${outputExcerpt ? `\n${outputExcerpt}` : ''}`
-        if (policy === 'validate_required') errors.push(message)
-        else warnings.push(message)
-        break
-      }
-    }
-    if (receipts.length === 0) {
-      receipts.push({
-        id: 'git-hook-policy',
-        status: 'skipped',
-        exitCode: null,
-        durationMs: 0,
-        outputExcerpt: 'No explicit Git hook validation commands were approved.',
-      })
-    }
-  } finally {
-    try {
-      fileAudit = buildFileAudit(input.worktreePath, beforeFingerprint)
-    } catch {
-      // A failed audit must not stop the restore, which is the part that
-      // leaves the worktree usable.
-    }
-    restoreFailure = restoreWorktreeSnapshot(input.worktreePath, snapshot)
+  for (const outcome of run.outcomes) {
+    if (outcome.status === 'passed') continue
+    const message = `${outcome.command.hook} validation ${outcome.status}: ${renderCommandSpec(outcome.command.command)}${outcome.outputExcerpt ? `\n${outcome.outputExcerpt}` : ''}`
+    if (policy === 'validate_required') errors.push(message)
+    else warnings.push(message)
   }
+
+  const receipts = run.receipts.length > 0 ? run.receipts : [{
+    id: 'git-hook-policy',
+    status: 'skipped' as const,
+    exitCode: null,
+    durationMs: 0,
+    outputExcerpt: 'No explicit Git hook validation commands were approved.',
+  }]
 
   // Reported beside whatever the validation itself found, never instead of it.
   // A worktree that could not be put back is a blocking problem under either
   // policy: the next phase would start from hook output nobody asked for.
-  if (restoreFailure) {
-    errors.push(`Explicit Git hook validation could not restore the worktree: ${restoreFailure}`)
+  if (run.restoreFailure) {
+    errors.push(`Explicit Git hook validation could not restore the worktree: ${run.restoreFailure}`)
   }
-  return { policy, receipts, errors, warnings, fileAudit }
+  return { policy, receipts, errors, warnings, fileAudit: run.fileAudit }
 }

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { runExplicitGitHookValidation, runGitHookValidationCommand } from '../hookValidation'
+import { runExplicitGitHookValidation, runGitHookValidationCommand, runGitHookValidationCommands } from '../hookValidation'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../../lib/hostContext'
 
@@ -199,6 +199,130 @@ describe('runExplicitGitHookValidation', () => {
     // Blocking under either policy: the next phase would otherwise start from
     // whatever the hooks left behind.
     expect(result.errors).toEqual([expect.stringContaining('could not restore the worktree')])
+  })
+})
+
+describe('runGitHookValidationCommands', () => {
+  /** One approved command, described the way a profile describes it. */
+  function hookCommand(id: string, script: string) {
+    return { id, hook: id, command: shellSpec(script) }
+  }
+
+  const writesTrackedFile = 'node -e "require(\'fs\').writeFileSync(\'tracked.txt\', \'after\\n\')"'
+  const fails = 'node -e "process.exit(3)"'
+  const passes = 'node -e "process.exit(0)"'
+
+  it('stops at the first failure, or runs every command, as asked', async () => {
+    const commands = [hookCommand('first', fails), hookCommand('second', passes)]
+
+    const stopping = await runGitHookValidationCommands({
+      commands,
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: true,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+    expect(stopping.outcomes.map((outcome) => outcome.command.id)).toEqual(['first'])
+
+    // The setup-profile validator wants every command run: its hooks are part
+    // of preparing the workspace, not a check that has to stop at the first no.
+    const continuing = await runGitHookValidationCommands({
+      commands,
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: false,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+    expect(continuing.outcomes.map((outcome) => outcome.command.id)).toEqual(['first', 'second'])
+    expect(continuing.outcomes.map((outcome) => outcome.status)).toEqual(['failed', 'passed'])
+  })
+
+  it('restores what the commands wrote only when asked to protect the worktree', async () => {
+    const protectedRoot = makeRepo()
+    const protectedRun = await runGitHookValidationCommands({
+      commands: [hookCommand('writer', writesTrackedFile)],
+      worktreePath: protectedRoot,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+    expect(protectedRun.restoreFailure).toBeNull()
+    expect(readFileSync(join(protectedRoot, 'tracked.txt'), 'utf8')).toBe('before\n')
+
+    const unprotectedRoot = makeRepo()
+    await runGitHookValidationCommands({
+      commands: [hookCommand('writer', writesTrackedFile)],
+      worktreePath: unprotectedRoot,
+      stopOnFirstFailure: false,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+    expect(readFileSync(join(unprotectedRoot, 'tracked.txt'), 'utf8')).toBe('after\n')
+  })
+
+  it('reports what the commands changed only when asked to audit', async () => {
+    const audited = await runGitHookValidationCommands({
+      commands: [hookCommand('writer', writesTrackedFile)],
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+    // Captured before the restore erases it, which is the only moment it exists.
+    expect(audited.fileAudit).toMatchObject({ mutated: true, candidatePaths: ['tracked.txt'] })
+
+    const unaudited = await runGitHookValidationCommands({
+      commands: [hookCommand('writer', writesTrackedFile)],
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: false,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => 30_000,
+    })
+    expect(unaudited.fileAudit).toEqual({
+      mutated: false,
+      candidatePaths: [],
+      temporaryPaths: [],
+      internalPaths: [],
+    })
+  })
+
+  it('ends the run when the caller has no budget left for the next command', async () => {
+    const run = await runGitHookValidationCommands({
+      commands: [hookCommand('first', passes), hookCommand('second', passes)],
+      worktreePath: makeRepo(),
+      stopOnFirstFailure: false,
+      protectWorktree: false,
+      auditFileMutation: false,
+      // The execution-setup attempt has its own deadline, and a command it
+      // cannot fit is not started rather than started with no time.
+      nextTimeoutMs: (command) => (command.id === 'second' ? null : 30_000),
+    })
+    expect(run.outcomes.map((outcome) => outcome.command.id)).toEqual(['first'])
+    expect(run.receipts).toHaveLength(1)
+  })
+
+  it('refuses to run at all when protection was asked for and cannot be arranged', async () => {
+    const root = makeTempDir('looptroop-hook-validation-')
+    roots.push(root)
+
+    const run = await runGitHookValidationCommands({
+      commands: [hookCommand('writer', 'node -e "require(\'fs\').writeFileSync(\'ran.txt\', \'x\')"')],
+      worktreePath: root,
+      stopOnFirstFailure: true,
+      protectWorktree: true,
+      auditFileMutation: true,
+      nextTimeoutMs: () => 30_000,
+    })
+
+    expect(run.refused).toBe(true)
+    expect(run.outcomes).toEqual([])
+    expect(() => readFileSync(join(root, 'ran.txt'), 'utf8')).toThrow()
   })
 })
 

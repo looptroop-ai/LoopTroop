@@ -68,7 +68,7 @@ import { isVersionOnlyWorkspaceProbeCommand } from '../../phases/executionSetup/
 import { materializeExecutionSetupWorkspaceInputs } from '../../phases/executionSetup/workspaceInputs'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { writeExecutionSetupRuntimeLauncher } from '../../phases/executionSetup/runtimeLauncher'
-import { runGitHookValidationCommand } from '../../phases/executionSetup/hookValidation'
+import { runGitHookValidationCommands } from '../../phases/executionSetup/hookValidation'
 
 const SETUP_PROBE_TIMEOUT_MS = 30_000
 
@@ -322,38 +322,50 @@ async function validateExecutionSetupRuntimeProfile(input: {
     input.profile.gitHooks.policy === 'validate_advisory'
     || input.profile.gitHooks.policy === 'validate_required'
   ) {
-    for (const validation of input.profile.gitHooks.validationCommands) {
-      throwIfAborted(input.signal, input.ticketId)
-      const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'validating Git hooks')
-      if (timeoutMs === null) return resultWithReceipts()
-      // Scored by the shared runner, so "passed", "failed" and "timed out"
-      // cannot mean one thing here and another in the explicit validator. This
-      // path deliberately keeps its own semantics: every command runs, the
-      // deadline can cut the loop short, and the worktree is not snapshotted —
-      // these commands are part of setting the workspace up.
-      const { receipt, result } = await runGitHookValidationCommand({
-        id: validation.id,
-        command: validation.command,
-        worktreePath: input.worktreePath,
-        runtimeEnvironment: input.profile.runtimeEnvironment,
-        timeoutMs,
+    // The same runner the explicit validator uses, asked for the opposite of
+    // all three of its safety options: every command runs, the worktree is not
+    // snapshotted and nothing is audited. That is deliberate — these commands
+    // are part of setting the workspace up, so their changes are the point —
+    // and it is now a set of arguments rather than a second loop that can drift.
+    // Both of these end the run *and* the whole validation, exactly as the two
+    // `return resultWithReceipts()` statements they replace did: the attempt's
+    // budget is gone, so there is nothing left to check.
+    let outOfBudget = false
+    let deadlinePassed = false
+    const run = await runGitHookValidationCommands({
+      commands: input.profile.gitHooks.validationCommands,
+      worktreePath: input.worktreePath,
+      runtimeEnvironment: input.profile.runtimeEnvironment,
+      stopOnFirstFailure: false,
+      protectWorktree: false,
+      auditFileMutation: false,
+      nextTimeoutMs: () => {
+        const timeoutMs = commandTimeout(SETUP_PROBE_TIMEOUT_MS, 'validating Git hooks')
+        if (timeoutMs === null) outOfBudget = true
+        return timeoutMs
+      },
+      throwIfCancelled: () => throwIfAborted(input.signal, input.ticketId),
+      stopAfterCommand: () => {
+        deadlinePassed = stopAfterDeadline('validating Git hooks')
+        return deadlinePassed
+      },
+    })
+    hookValidationReceipts.push(...run.receipts)
+    for (const outcome of run.outcomes) {
+      if (outcome.status === 'passed') continue
+      const failure = summarizeSetupCommandFailure({
+        label: `Explicit Git hook validation failed (${outcome.command.hook})`,
+        command: outcome.command.command,
+        exitCode: outcome.result.exitCode,
+        stdout: outcome.result.stdout,
+        stderr: outcome.result.stderr,
+        durationMs: outcome.result.durationMs,
+        timedOut: outcome.result.timedOut,
       })
-      hookValidationReceipts.push(receipt)
-      if (stopAfterDeadline('validating Git hooks')) return resultWithReceipts()
-      if (result.exitCode !== 0 || result.timedOut) {
-        const failure = summarizeSetupCommandFailure({
-          label: `Explicit Git hook validation failed (${validation.hook})`,
-          command: validation.command,
-          exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          durationMs: result.durationMs,
-          timedOut: result.timedOut,
-        })
-        if (input.profile.gitHooks.policy === 'validate_required') errors.push(failure)
-        else advisoryWarnings.push(failure)
-      }
+      if (input.profile.gitHooks.policy === 'validate_required') errors.push(failure)
+      else advisoryWarnings.push(failure)
     }
+    if (outOfBudget || deadlinePassed) return resultWithReceipts()
   }
   if (
     input.profile.gitHooks.policy !== 'validate_advisory'

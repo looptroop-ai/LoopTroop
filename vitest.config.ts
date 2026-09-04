@@ -118,9 +118,19 @@ const clientNodeTests = [
 // Keep the fast server bucket focused on pure logic. The integration bucket
 // also carries a small set of isolation-sensitive tests that historically
 // depended on per-file module state.
+//
+// **Anything that calls `vi.mock` belongs here.** `server-pure` runs with
+// `isolate: false`, so one module registry is shared by every file a worker
+// takes, and a stub installed by one file answers for its siblings. A stub of
+// `node:child_process` is the worst of them: half the server reaches it, so
+// `runCommand.test.ts` and `hookDiscovery.test.ts` saw empty output from real
+// commands and failed on CI while passing locally, purely on file order.
+// Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
   'server/__tests__/startupSessions.test.ts',
   'server/git/__tests__/github.test.ts',
+  'server/git/__tests__/push.test.ts',
+  'server/git/__tests__/repository.test.ts',
   'server/io/__tests__/atomicIO.test.ts',
   'server/log/__tests__/executionLog.test.ts',
   'server/opencode/__tests__/sessionManager.test.ts',

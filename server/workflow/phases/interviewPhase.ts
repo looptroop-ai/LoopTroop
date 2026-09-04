@@ -242,6 +242,14 @@ function recordInterviewSkipReceipts(input: {
  */
 export interface InterviewBatchSkipReceipt {
   actionId?: string
+  /**
+   * `updatedAt` of the last session this call persisted.
+   *
+   * The revert below compares it against what is on disk. Reverting to a
+   * snapshot that predates somebody else's write is how a stuck task undoes a
+   * completed skip-all, and a revert cannot be taken back.
+   */
+  persistedUpdatedAt?: string
 }
 
 /**
@@ -1461,6 +1469,7 @@ export async function handleInterviewQABatch(
   // This ensures GET /interview returns the correct state while the AI processes
   // the next batch, and answers are not lost if the OpenCode call fails.
   persistInterviewSession(ticketId, answeredSnapshot)
+  if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt
 
   // Get session info from memory or reload from DB
   const sessionInfo = await restoreInterviewQASession(ticketId)
@@ -1641,12 +1650,27 @@ export function processInterviewBatchAsync(
   const skipReceipt: InterviewBatchSkipReceipt = {}
   return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt)
     .catch((err) => {
-      // Revert to original snapshot so the user can retry the submission
+      // Revert to original snapshot so the user can retry the submission —
+      // but only while the session is still the one this call left behind.
+      //
+      // A task that outlived its own claim has no business rewriting a session
+      // somebody else has moved on: skip-all completing the interview, or a
+      // later batch being answered, would both be undone by a revert to a
+      // snapshot from before either. The claim makes that rare; this makes it
+      // impossible, because a revert is unrecoverable and a skipped revert is
+      // not.
       try {
-        persistInterviewSession(ticketId, originalSnapshot)
-        // The skips in that snapshot are gone, so their receipts describe a
-        // decision the ticket no longer carries.
-        if (skipReceipt.actionId) deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
+        const current = readInterviewSessionSnapshotArtifact(ticketId)
+        const stillOurs = skipReceipt.persistedUpdatedAt === undefined
+          || current?.updatedAt === skipReceipt.persistedUpdatedAt
+        if (stillOurs) {
+          persistInterviewSession(ticketId, originalSnapshot)
+          // The skips in that snapshot are gone, so their receipts describe a
+          // decision the ticket no longer carries.
+          if (skipReceipt.actionId) deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
+        } else {
+          console.warn(`[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`)
+        }
       } catch (revertErr) {
         console.error(`[runner] Failed to revert interview snapshot for ${ticketId}:`, revertErr)
       }

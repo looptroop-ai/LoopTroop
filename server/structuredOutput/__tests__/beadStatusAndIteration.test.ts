@@ -294,6 +294,48 @@ describe('readBeadsFile', () => {
     expect(readBeadsFile(path, { malformedEntries: 'fail' }).map((bead) => bead.id)).toEqual(['bead-1'])
   })
 
+  it('fills in the collections its readers dereference without a guard', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+    const { getRunnable } = await import('../../phases/execution/scheduler')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // A row that has not reached expansion carries neither field, and rejecting
+    // it would refuse files that work — but the scheduler and a dozen other
+    // readers reach straight into them. An empty list is the only thing "no
+    // dependencies" can mean.
+    writeFileSync(path, JSON.stringify({ id: 'early', title: 'Early', status: 'pending', priority: 1 }))
+
+    const [bead] = readBeadsFile(path, { malformedEntries: 'fail' })
+    expect(bead?.dependencies).toEqual({ blocked_by: [], blocks: [] })
+    expect(bead?.contextGuidance).toEqual({ patterns: [], anti_patterns: [] })
+    expect(getRunnable([bead!]).map((entry) => entry.id)).toEqual(['early'])
+  })
+
+  it('rejects a Manual QA provenance record whose items carry no evidence list', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { readBeadsFile } = await import('../../phases/beads/beadsFile')
+
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-beads-'))
+    const path = join(dir, 'beads.jsonl')
+    // The evidence loader walks `sourceItems[].evidence` outside the try that
+    // turns a bad manifest into a readable error, so this row used to reach it
+    // and throw a TypeError from somewhere the operator cannot place.
+    writeFileSync(path, JSON.stringify({
+      id: 'qa-fix',
+      status: 'pending',
+      qaOrigin: { imageDelivery: 'attached', sourceItems: [{ itemId: 'i1' }] },
+    }))
+
+    expect(() => readBeadsFile(path, { malformedEntries: 'fail' }))
+      .toThrow('field "qaOrigin" has the wrong type')
+  })
+
   it('names the line in the file when it rejects an entry', async () => {
     const { mkdtempSync, writeFileSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')

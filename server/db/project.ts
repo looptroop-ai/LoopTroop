@@ -387,6 +387,10 @@ function cleanupProjectForeignKeyOrphans(sqlite: Database) {
     WHERE ticket_id NOT IN (SELECT id FROM tickets)
       OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
 
+    DELETE FROM interview_batch_claims
+    WHERE ticket_id NOT IN (SELECT id FROM tickets)
+      OR ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));
+
     DELETE FROM manual_qa_improvement_tickets
     WHERE destination_ticket_id NOT IN (SELECT id FROM tickets)
       OR destination_ticket_id IN (SELECT id FROM tickets WHERE project_id NOT IN (SELECT id FROM projects));

@@ -88,7 +88,13 @@ const isCommandArray = (value: unknown): boolean =>
 const isQaOrigin = (value: unknown): boolean =>
   isRecord(value)
   && Array.isArray(value.sourceItems)
-  && value.sourceItems.every((item) => isRecord(item))
+  // Down to the lists the loader itself walks: it does
+  // `sourceItems.flatMap(item => item.evidence.flatMap(...))`, all of it after
+  // the try that turns a bad manifest into a readable error, so an item without
+  // `evidence` threw a TypeError from somewhere the operator cannot place.
+  && value.sourceItems.every((item) => isRecord(item)
+    && Array.isArray(item.evidence)
+    && item.evidence.every((entry) => isRecord(entry)))
 
 /**
  * The type each known bead field has to have if it is there at all.
@@ -147,6 +153,24 @@ function describeBeadShapeProblem(entry: unknown): string | null {
   return null
 }
 
+/**
+ * Fills in the two nested collections the `Bead` type declares as required.
+ *
+ * A row that has not reached expansion carries neither, and rejecting it would
+ * refuse files that work — but thirteen readers dereference
+ * `dependencies.blocked_by` and `contextGuidance.patterns` without a guard, and
+ * defaulting at each of them is thirteen chances to miss one. An empty list is
+ * the only thing "no dependencies" can mean, and it is exactly what the
+ * expansion phase writes, so this normalises to the declared type rather than
+ * inventing anything.
+ */
+function normalizeBeadCollections(bead: Bead): Bead {
+  const dependencies = bead.dependencies ?? { blocked_by: [], blocks: [] }
+  const contextGuidance = bead.contextGuidance ?? { patterns: [], anti_patterns: [] }
+  if (dependencies === bead.dependencies && contextGuidance === bead.contextGuidance) return bead
+  return { ...bead, dependencies, contextGuidance }
+}
+
 export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
   const failClosed = options.malformedEntries === 'fail'
   const { items, itemLines, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
@@ -169,7 +193,7 @@ export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}):
       console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${problem}.`)
       return []
     }
-    const bead = entry as unknown as Bead
+    const bead = normalizeBeadCollections(entry as unknown as Bead)
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
     if (!reconciled.warning) return [bead]
     console.warn(`[beads] ${reconciled.warning}`)

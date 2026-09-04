@@ -278,6 +278,11 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
         if (!overranBuffer) {
           overranBuffer = true
           child.kill('SIGKILL')
+          // The same abandon the timeout path carries, for the same reason: a
+          // grandchild holding the pipes means `close` never fires, and an
+          // overrun that waits for it hangs the caller exactly as a timeout
+          // did. Killing is a request either way.
+          abandonOverrun()
         }
         return next
       }
@@ -287,6 +292,23 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
 
     child.stdout?.on('data', (chunk: Buffer) => { stdoutBytes = collect(stdoutChunks, chunk, stdoutBytes) })
     child.stderr?.on('data', (chunk: Buffer) => { stderrBytes = collect(stderrChunks, chunk, stderrBytes) })
+
+    /** Settles the overrun without `close`, once the kill has had its chance. */
+    const abandonOverrun = () => {
+      const timer = setTimeout(() => {
+        child.unref()
+        settle({
+          status: null,
+          signal: 'SIGKILL',
+          timedOut,
+          stdout: decode(Buffer.concat(stdoutChunks), options),
+          stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
+          spawnError: new Error(`${bin} output exceeded ${maxBuffer} bytes`),
+        })
+      }, TIMEOUT_ABANDON_GRACE_MS)
+      timer.unref?.()
+      overrunTimer = timer
+    }
 
     // SIGTERM first, then SIGKILL, then give up waiting.
     //
@@ -299,6 +321,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
     // reap must still not hold an actor open.
     let killTimer: ReturnType<typeof setTimeout> | undefined
     let abandonTimer: ReturnType<typeof setTimeout> | undefined
+    let overrunTimer: ReturnType<typeof setTimeout> | undefined
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGTERM')
@@ -331,6 +354,7 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
       clearTimeout(timer)
       if (killTimer) clearTimeout(killTimer)
       if (abandonTimer) clearTimeout(abandonTimer)
+      if (overrunTimer) clearTimeout(overrunTimer)
       settleWith(outcome)
     }
 

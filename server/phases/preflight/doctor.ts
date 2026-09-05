@@ -153,7 +153,7 @@ export async function runPreFlightChecks(
   // 1. OpenCode connectivity
   try {
     throwIfAborted(signal, ticketId)
-    const health = await raceWithCancel(adapter.checkHealth(), signal, ticketId)
+    const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     checks.push({
       name: 'OpenCode Connectivity',
@@ -244,6 +244,41 @@ export async function runPreFlightChecks(
     }
   }
 
+  // The scheduler runs entirely off `blocked_by`, and so does the cycle check
+  // below, so a `blocks` edge with no inverse is an edge nothing enforces:
+  // `A.blocks = [B]` with `B.blocks = [A]` and both `blocked_by` empty declares
+  // a cycle, passes every check above, and lets both beads run at once.
+  // Requiring the inverse means the graph that is validated is the graph that
+  // is executed.
+  const beadsById = new Map(beads.map((bead) => [bead.id, bead]))
+  // Tracked apart from `graphValid` so a genuine cycle is still named: an
+  // inconsistent edge is a fault in its own right, not a reason to stop looking.
+  let edgesConsistent = true
+  for (const bead of beads) {
+    for (const dep of bead.dependencies.blocks) {
+      const target = beadsById.get(dep)
+      if (!target || target.dependencies.blocked_by.includes(bead.id)) continue
+      edgesConsistent = false
+      checks.push({
+        name: 'Dependency Graph',
+        category: 'graph',
+        result: 'fail',
+        message: `Bead ${bead.id} declares it blocks ${dep}, but ${dep} does not list ${bead.id} in blocked_by`,
+      })
+    }
+    for (const dep of bead.dependencies.blocked_by) {
+      const target = beadsById.get(dep)
+      if (!target || target.dependencies.blocks.includes(bead.id)) continue
+      edgesConsistent = false
+      checks.push({
+        name: 'Dependency Graph',
+        category: 'graph',
+        result: 'fail',
+        message: `Bead ${bead.id} is blocked by ${dep}, but ${dep} does not list ${bead.id} in blocks`,
+      })
+    }
+  }
+
   // 6. Duplicate bead IDs
   if (beads.length > 0 && beadIds.size !== beads.length) {
     graphValid = false
@@ -271,7 +306,7 @@ export async function runPreFlightChecks(
       visited.add(beadId)
       recStack.add(beadId)
 
-      const bead = beads.find(b => b.id === beadId)
+      const bead = beadsById.get(beadId)
       if (bead) {
         for (const dep of bead.dependencies.blocked_by) {
           if (!visited.has(dep)) {
@@ -320,12 +355,12 @@ export async function runPreFlightChecks(
     }
   }
 
-  if (graphValid && beads.length > 0) {
+  if (graphValid && edgesConsistent && beads.length > 0) {
     checks.push({
       name: 'Dependency Graph',
       category: 'graph',
       result: 'pass',
-      message: 'No dangling, circular, or duplicate dependencies detected',
+      message: 'No dangling, circular, duplicate, or one-sided dependencies detected',
     })
   }
 
@@ -435,7 +470,7 @@ export async function runPreFlightChecks(
     })
 
     // 12. GitHub auth
-    const authStatus = ghInstalled ? deps.getGhAuthStatus() : { ok: false as const, error: 'gh CLI is not installed' }
+    const authStatus = ghInstalled ? await deps.getGhAuthStatus() : { ok: false as const, error: 'gh CLI is not installed' }
     checks.push({
       name: 'GitHub Auth',
       category: 'connectivity',
@@ -445,7 +480,7 @@ export async function runPreFlightChecks(
 
     // 13. GitHub repository access
     const repoAccess = ghInstalled && authStatus.ok
-      ? deps.getGitHubRepoAccess(paths.worktreePath)
+      ? await deps.getGitHubRepoAccess(paths.worktreePath)
       : { ok: false as const, error: 'GitHub auth is not ready' }
     checks.push({
       name: 'GitHub Repo Access',
@@ -495,7 +530,7 @@ export async function runPreFlightChecks(
   if (preFlightContext.lockedMainImplementer) {
     try {
       throwIfAborted(signal, ticketId)
-      const connectedIds = await raceWithCancel(deps.fetchConnectedModelIds(), signal, ticketId)
+      const connectedIds = await raceWithCancel(deps.fetchConnectedModelIds(signal), signal, ticketId)
       throwIfAborted(signal, ticketId)
       const connected = new Set(connectedIds)
       if (connected.has(preFlightContext.lockedMainImplementer)) {

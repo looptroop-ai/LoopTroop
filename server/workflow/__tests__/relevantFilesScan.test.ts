@@ -43,7 +43,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function createInitializedTicket() {
+async function createInitializedTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -56,7 +56,7 @@ function createInitializedTicket() {
     description: 'Retry malformed relevant-files output and block on failure.',
   })
 
-  initializeTicket({
+  await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -83,7 +83,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('retries once in the same session after a prompt echo and succeeds with the corrected artifact', async () => {
-    const { ticket, context, paths } = createInitializedTicket()
+    const { ticket, context, paths } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -198,7 +198,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('emits ERROR after the retry is exhausted so the ticket can block', async () => {
-    const { ticket, context, paths } = createInitializedTicket()
+    const { ticket, context, paths } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -268,7 +268,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('restarts the scan in a fresh session after an empty response instead of sending a structured retry prompt', async () => {
-    const { ticket, context, paths } = createInitializedTicket()
+    const { ticket, context, paths } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock
@@ -364,7 +364,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('includes underlying provider diagnostics when retry exhaustion ends with discarded OpenCode output', async () => {
-    const { ticket, context, paths } = createInitializedTicket()
+    const { ticket, context, paths } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock
@@ -462,7 +462,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('blocks immediately when no main implementer is locked', async () => {
-    const { ticket } = createInitializedTicket()
+    const { ticket } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     await handleRelevantFilesScan(
@@ -481,7 +481,7 @@ describe('handleRelevantFilesScan', () => {
   })
 
   it('succeeds without retry when model output is truncated but normalizer recovers', async () => {
-    const { ticket, context, paths } = createInitializedTicket()
+    const { ticket, context, paths } = await createInitializedTicket()
     const sendEvent = vi.fn()
 
     runOpenCodePromptMock.mockResolvedValueOnce({
@@ -529,9 +529,10 @@ describe('handleRelevantFilesScan', () => {
     expect(artifactYaml).not.toContain('src/broken.ts')
   })
 
-  it('transitions scan errors to BLOCKED_ERROR in the ticket machine', () => {
+  it('transitions scan errors to BLOCKED_ERROR in the ticket machine', async () => {
+    const { ticket } = await createInitializedTicket()
     const actor = createActor(ticketMachine, {
-      input: makeTicketContextFromTicket(createInitializedTicket().ticket),
+      input: makeTicketContextFromTicket(ticket),
     })
 
     actor.start()

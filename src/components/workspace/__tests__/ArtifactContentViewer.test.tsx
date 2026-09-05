@@ -173,6 +173,57 @@ items:
     expect(screen.getByText((_, element) => element?.tagName === 'PRE' && element.textContent === checklist)).toBeInTheDocument()
   })
 
+  it('says nothing extra about a Manual QA checklist that generated first time', () => {
+    const checklist = 'items:\n  - title: Only check\n    expectedResult: It works.\n'
+
+    render(<ArtifactContent artifactId="manual-qa-checklist" content={JSON.stringify({ version: 1, checklist })} />)
+
+    expect(screen.getByText('1. Only check')).toBeInTheDocument()
+    expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
+  })
+
+  it('tells the operator when a Manual QA checklist needed a repair', () => {
+    const checklist = 'items:\n  - title: Only check\n    expectedResult: It works.\n'
+
+    render(
+      <ArtifactContent
+        artifactId="manual-qa-checklist"
+        content={JSON.stringify({
+          version: 1,
+          checklist,
+          // Recorded by generation and, until the viewer read it, never shown:
+          // the checklist looked like a clean first pass.
+          structuredOutput: futureStructuredOutput({
+            autoRetryCount: 1,
+            validationError: 'Manual QA parser rejected the model output.',
+          }),
+        })}
+      />,
+    )
+
+    expect(screen.getByText('1. Only check')).toBeInTheDocument()
+    expect(screen.getByText(/LoopTroop adjusted this artifact/i)).toBeInTheDocument()
+  })
+
+  it('shows the repair trail of a Manual QA generation that produced no checklist', () => {
+    render(
+      <ArtifactContent
+        artifactId="manual-qa-checklist"
+        content={JSON.stringify({
+          structuredOutput: futureStructuredOutput({
+            autoRetryCount: 2,
+            validationError: 'Manual QA checklist generation failed.',
+          }),
+          validationError: 'Manual QA checklist generation failed.',
+        })}
+      />,
+    )
+
+    // No checklist to render, which is exactly the run whose failed attempts
+    // the operator's next move depends on.
+    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+  })
+
   it('shows Manual QA provenance in bead artifacts while keeping retry notes separate', () => {
     render(<BeadsDraftView content={JSON.stringify({ beads: [{
       id: 'QA-v2-1', title: 'Fix checkout', priority: 1, status: 'pending', notes: 'Retry note',

@@ -1,110 +1,73 @@
-import { spawnSync } from 'node:child_process'
+import { existsSync, statSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { getCurrentBranch } from './repository'
-import * as commandLogger from '../log/commandLogger'
+import { EXCLUDE_LOOPTROOP_DIR, literalPathspec, REPO_SCOPE_PATHSPECS } from './pathspecs'
+import {
+  runCommand,
+  runCommandSync,
+  runGitSync,
+  runGitSyncOrThrow,
+  type RunCommandOptions,
+  type RunCommandResult,
+} from './runCommand'
 
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
-
-const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 const GIT_PATCH_MAX_BUFFER_BYTES = 2 * 1024 * 1024
 const GITHUB_PERMISSION_CHECK_TIMEOUT_MS = 5_000
 
-function runCommand(
-  bin: string,
-  args: string[],
-  options?: {
-    cwd?: string
-    input?: string
-    env?: NodeJS.ProcessEnv
-    maxBuffer?: number
-  },
-): string {
-  const result = spawnSync(bin, args, {
-    cwd: options?.cwd,
-    input: options?.input,
-    encoding: 'utf8',
-    env: options?.env,
-    maxBuffer: options?.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
+/**
+ * Ceiling for a `gh` call, which had none at all before.
+ *
+ * Longer than the 30s local-git default because these are round trips to the
+ * GitHub API — a merge on a busy repository is measured in seconds, not
+ * milliseconds — and short enough that a hung request cannot hold a phase open.
+ */
+const GITHUB_COMMAND_TIMEOUT_MS = 60_000
 
-  if (result.status !== 0 || result.error) {
-    const error = result.error?.message ?? `exit code ${result.status ?? '?'}`
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd(bin, args, {
-      ok: false,
-      error,
-      stdin: options?.input?.trim() || undefined,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
+type CommandAttempt =
+  | { ok: true; stdout: string; stderr: string }
+  | { ok: false; error: string }
 
-  logCmd(bin, args, {
-    ok: true,
-    stdin: options?.input?.trim() || undefined,
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-  })
-  return stdout
+function toAttempt(result: RunCommandResult): CommandAttempt {
+  return result.ok
+    ? { ok: true, stdout: result.stdout, stderr: result.stderr }
+    : { ok: false, error: result.errorDetail ?? `exit code ${result.status ?? '?'}` }
 }
 
-function tryCommand(
-  bin: string,
-  args: string[],
-  options?: {
-    cwd?: string
-    input?: string
-    env?: NodeJS.ProcessEnv
-    maxBuffer?: number
-    timeout?: number
-  },
-): { ok: true; stdout: string; stderr: string } | { ok: false; error: string } {
-  const result = spawnSync(bin, args, {
-    cwd: options?.cwd,
-    input: options?.input,
-    encoding: 'utf8',
-    env: options?.env,
-    maxBuffer: options?.maxBuffer ?? GIT_COMMAND_MAX_BUFFER_BYTES,
-    timeout: options?.timeout,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
+/**
+ * `gh` talks to github.com on every call, so all of them are asynchronous;
+ * the plain git reads in this module are local and stay synchronous.
+ */
+async function runGh(args: string[], options?: RunCommandOptions): Promise<string> {
+  const result = await runCommand('gh', args, { timeoutMs: GITHUB_COMMAND_TIMEOUT_MS, ...options })
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
+}
 
-  if (result.status !== 0 || result.error) {
-    const error = result.error?.message ?? `exit code ${result.status ?? '?'}`
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd(bin, args, {
-      ok: false,
-      error,
-      stdin: options?.input?.trim() || undefined,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    return { ok: false, error: detail }
-  }
+async function tryGh(args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
+  return toAttempt(await runCommand('gh', args, { timeoutMs: GITHUB_COMMAND_TIMEOUT_MS, ...options }))
+}
 
-  logCmd(bin, args, {
-    ok: true,
-    stdin: options?.input?.trim() || undefined,
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-  })
-  return { ok: true, stdout, stderr }
+function trySyncCommand(bin: string, args: string[], options?: RunCommandOptions): CommandAttempt {
+  return toAttempt(runCommandSync(bin, args, options))
 }
 
 function runGit(projectPath: string, args: string[]): string {
-  return runCommand('git', ['-C', projectPath, ...args])
+  return runGitSyncOrThrow(projectPath, args)
+}
+
+function tryGit(projectPath: string, args: string[], options?: RunCommandOptions): CommandAttempt {
+  return toAttempt(runGitSync(projectPath, args, options))
+}
+
+/** Reaches the remote, so it is asynchronous unlike the other git helpers here. */
+async function tryRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
+  return toAttempt(await runCommand('git', ['-C', projectPath, ...args], options))
+}
+
+async function runRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
+  const result = await runCommand('git', ['-C', projectPath, ...args], options)
+  if (!result.ok) throw new Error(result.errorDetail)
+  return result.stdout
 }
 
 export interface GitHubRepoRef {
@@ -168,6 +131,8 @@ export interface GitRecoveryReceipt {
   prUrl: string | null
   prState: PullRequestState | null
   nextSafeActions: string[]
+  /** Set when git could not be inspected, so the empty file lists mean "unknown". */
+  statusUnreadable?: boolean
 }
 
 interface GitHubPullRecord {
@@ -201,7 +166,9 @@ interface GhAuthStatusPayload {
   hosts?: Record<string, unknown>
 }
 
-const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '--untracked-files=all', '--', '.', ':(top,exclude).looptroop']
+// Deliberately excludes only `.looptroop`: this is the "is the worktree clean"
+// probe, and a change under `.ticket` is a change the delivery flow must see.
+const FILTERED_STATUS_ARGS = ['status', '--porcelain=1', '--untracked-files=all', '--', '.', EXCLUDE_LOOPTROOP_DIR]
 const SSH_HOSTNAME_CACHE = new Map<string, string | null>()
 
 function normalizeString(value: unknown): string | null {
@@ -230,7 +197,7 @@ function resolveSshHostname(host: string): string | null {
     return SSH_HOSTNAME_CACHE.get(normalizedHost) ?? null
   }
 
-  const result = tryCommand('ssh', ['-G', host])
+  const result = trySyncCommand('ssh', ['-G', host])
   if (!result.ok) {
     SSH_HOSTNAME_CACHE.set(normalizedHost, null)
     return null
@@ -354,15 +321,16 @@ export function assertGitHubOrigin(projectPath: string): GitHubRepoRef {
   return repo
 }
 
+/** `gh --version` answers from disk, so this one probe stays synchronous. */
 export function isGhInstalled(): boolean {
-  return tryCommand('gh', ['--version']).ok
+  return trySyncCommand('gh', ['--version'], { timeoutMs: GITHUB_PERMISSION_CHECK_TIMEOUT_MS }).ok
 }
 
-export function getGhAuthStatus(): { ok: true } | { ok: false; error: string } {
-  const result = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
+export async function getGhAuthStatus(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const result = await tryGh(['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
   if (!result.ok) {
     if (isUnsupportedGhAuthStatusJsonFlag(result.error)) {
-      const fallback = tryCommand('gh', ['auth', 'status', '--hostname', 'github.com'])
+      const fallback = await tryGh(['auth', 'status', '--hostname', 'github.com'])
       return fallback.ok ? { ok: true } : { ok: false, error: fallback.error }
     }
     return { ok: false, error: result.error }
@@ -402,15 +370,15 @@ function isUnsupportedGhAuthStatusJsonFlag(error: string): boolean {
   return /unknown flag:\s*--json/i.test(error)
 }
 
-export function getGitHubRepoAccess(projectPath: string): { ok: true; repo: GitHubRepoRef } | { ok: false; error: string } {
+export async function getGitHubRepoAccess(projectPath: string): Promise<{ ok: true; repo: GitHubRepoRef } | { ok: false; error: string }> {
   const repo = assertGitHubOrigin(projectPath)
-  const result = tryCommand('gh', ['repo', 'view', repo.slug, '--json', 'nameWithOwner'], { cwd: projectPath })
+  const result = await tryGh(['repo', 'view', repo.slug, '--json', 'nameWithOwner'], { cwd: projectPath })
   return result.ok
     ? { ok: true, repo }
     : { ok: false, error: result.error }
 }
 
-export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAccess {
+export async function getGitHubRepoWriteAccess(projectPath: string): Promise<GitHubRepoWriteAccess> {
   let repo: GitHubRepoRef
   try {
     repo = assertGitHubOrigin(projectPath)
@@ -422,9 +390,9 @@ export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAc
     }
   }
 
-  const result = tryCommand('gh', ['repo', 'view', repo.slug, '--json', 'viewerPermission'], {
+  const result = await tryGh(['repo', 'view', repo.slug, '--json', 'viewerPermission'], {
     cwd: projectPath,
-    timeout: GITHUB_PERMISSION_CHECK_TIMEOUT_MS,
+    timeoutMs: GITHUB_PERMISSION_CHECK_TIMEOUT_MS,
   })
   if (!result.ok) {
     return { status: 'unknown', permission: null, error: result.error }
@@ -455,12 +423,12 @@ export function getGitHubRepoWriteAccess(projectPath: string): GitHubRepoWriteAc
   }
 }
 
-function runGhJson<T>(
+async function runGhJson<T>(
   projectPath: string,
   args: string[],
   options?: { input?: string; env?: NodeJS.ProcessEnv },
-): T {
-  const stdout = runCommand('gh', args, {
+): Promise<T> {
+  const stdout = await runGh(args, {
     cwd: projectPath,
     input: options?.input,
     env: options?.env,
@@ -473,8 +441,8 @@ function runGhJson<T>(
   return JSON.parse(stdout) as T
 }
 
-function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): PullRequestInfo[] {
-  const pulls = runGhJson<GitHubPullRecord[]>(projectPath, [
+async function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: string, baseBranch: string): Promise<PullRequestInfo[]> {
+  const pulls = await runGhJson<GitHubPullRecord[]>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls`,
     '--method',
@@ -494,23 +462,23 @@ function listPullRequests(projectPath: string, repo: GitHubRepoRef, branchName: 
     .sort((left, right) => right.number - left.number)
 }
 
-export function getPullRequestForBranch(projectPath: string, branchName: string, baseBranch: string): PullRequestInfo | null {
+export async function getPullRequestForBranch(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
   const repo = assertGitHubOrigin(projectPath)
-  return listPullRequests(projectPath, repo, branchName, baseBranch)[0] ?? null
+  return (await listPullRequests(projectPath, repo, branchName, baseBranch))[0] ?? null
 }
 
-export function createOrUpdateDraftPullRequest(params: {
+export async function createOrUpdateDraftPullRequest(params: {
   projectPath: string
   branchName: string
   baseBranch: string
   title: string
   body: string
-}): PullRequestInfo {
+}): Promise<PullRequestInfo> {
   const repo = assertGitHubOrigin(params.projectPath)
-  const existing = listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch)[0] ?? null
+  const existing = (await listPullRequests(params.projectPath, repo, params.branchName, params.baseBranch))[0] ?? null
 
   if (existing) {
-    const updated = runGhJson<GitHubPullRecord>(params.projectPath, [
+    const updated = await runGhJson<GitHubPullRecord>(params.projectPath, [
       'api',
       `repos/${repo.slug}/pulls/${existing.number}`,
       '--method',
@@ -523,7 +491,7 @@ export function createOrUpdateDraftPullRequest(params: {
     return toPullRequestInfo(updated) ?? existing
   }
 
-  const created = runGhJson<GitHubPullRecord>(params.projectPath, [
+  const created = await runGhJson<GitHubPullRecord>(params.projectPath, [
     'api',
     `repos/${repo.slug}/pulls`,
     '--method',
@@ -547,10 +515,10 @@ export function createOrUpdateDraftPullRequest(params: {
   return info
 }
 
-export function markPullRequestReady(projectPath: string, prNumber: number): PullRequestInfo {
-  runCommand('gh', ['pr', 'ready', String(prNumber)], { cwd: projectPath })
+export async function markPullRequestReady(projectPath: string, prNumber: number): Promise<PullRequestInfo> {
+  await runGh(['pr', 'ready', String(prNumber)], { cwd: projectPath })
   const repo = assertGitHubOrigin(projectPath)
-  const refreshed = runGhJson<GitHubPullRecord>(projectPath, [
+  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}`,
     '--method',
@@ -563,9 +531,9 @@ export function markPullRequestReady(projectPath: string, prNumber: number): Pul
   return info
 }
 
-export function mergePullRequest(projectPath: string, prNumber: number, title: string): PullRequestInfo {
+export async function mergePullRequest(projectPath: string, prNumber: number, title: string): Promise<PullRequestInfo> {
   const repo = assertGitHubOrigin(projectPath)
-  runGhJson<{ merged?: unknown; message?: unknown }>(projectPath, [
+  await runGhJson<{ merged?: unknown; message?: unknown }>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}/merge`,
     '--method',
@@ -576,7 +544,7 @@ export function mergePullRequest(projectPath: string, prNumber: number, title: s
     `commit_title=${title}`,
   ])
 
-  const refreshed = runGhJson<GitHubPullRecord>(projectPath, [
+  const refreshed = await runGhJson<GitHubPullRecord>(projectPath, [
     'api',
     `repos/${repo.slug}/pulls/${prNumber}`,
     '--method',
@@ -590,13 +558,11 @@ export function mergePullRequest(projectPath: string, prNumber: number, title: s
 }
 
 export function readGitDiff(projectPath: string, fromRef: string, toRef: string): GitDiffSummary {
-  const exclusion = ':(top,exclude).ticket'
-  const looptroopExclusion = ':(top,exclude).looptroop'
-  const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
-  const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion])
-  const patchResult = tryCommand(
-    'git',
-    ['-C', projectPath, 'diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', '.', exclusion, looptroopExclusion],
+  const stat = runGit(projectPath, ['diff', '--stat', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
+  const nameStatus = runGit(projectPath, ['diff', '--name-status', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS])
+  const patchResult = tryGit(
+    projectPath,
+    ['diff', '--no-ext-diff', '--unified=0', `${fromRef}..${toRef}`, '--', ...REPO_SCOPE_PATHSPECS],
     { maxBuffer: GIT_PATCH_MAX_BUFFER_BYTES },
   )
 
@@ -674,7 +640,11 @@ function formatWorktreeStatusDiagnostic(projectPath: string, parsed: ReturnType<
 }
 
 function readWorktreeStatus(projectPath: string): ReturnType<typeof parseStatusLines> & { raw: string } {
-  const raw = runGit(projectPath, FILTERED_STATUS_ARGS)
+  // Untrimmed: a porcelain record's first column is a *space* when only the
+  // worktree changed (" M file.ts"). Trimming it shifted both status columns
+  // and ate the first character of the path, so a recovery receipt reported
+  // ".txt" as a staged file and nothing as unstaged.
+  const raw = runGitSyncOrThrow(projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
   return {
     ...parseStatusLines(raw),
     raw,
@@ -713,6 +683,11 @@ function buildNextSafeActions(step: string): string[] {
       return [
         'Fetch origin and confirm the remote base branch contains the merged pull request commit, then retry.',
       ]
+    case 'rewrite_candidate_commit':
+      return [
+        'Commit, stash or restore tracked changes in the ticket worktree, then retry the ticket.',
+        'Inspect the candidate commit and the audited file list before retrying.',
+      ]
     case 'sync_local_base_branch':
       return [
         'Resolve tracked local changes or any Git-reported untracked overwrite conflict, then retry the explicit local base-branch sync.',
@@ -743,9 +718,13 @@ export function captureGitRecoveryReceipt(input: {
     headSha = null
   }
 
+  let statusUnreadable = false
   try {
-    statusOutput = runGit(input.projectPath, FILTERED_STATUS_ARGS)
+    statusOutput = runGitSyncOrThrow(input.projectPath, FILTERED_STATUS_ARGS, { trimOutput: false })
   } catch {
+    // An unreadable repository is not a clean one. Reporting empty lists would
+    // tell whoever reads the receipt that nothing was in the way.
+    statusUnreadable = true
     statusOutput = ''
   }
 
@@ -764,6 +743,7 @@ export function captureGitRecoveryReceipt(input: {
     stagedFiles: parsed.stagedFiles,
     unstagedFiles: parsed.unstagedFiles,
     untrackedFiles: parsed.untrackedFiles,
+    ...(statusUnreadable ? { statusUnreadable: true } : {}),
     prNumber: input.pr?.number ?? null,
     prUrl: input.pr?.url ?? null,
     prState: input.pr?.state ?? null,
@@ -778,19 +758,167 @@ export function ensureWorktreeClean(projectPath: string): void {
   }
 }
 
-function ensureNoTrackedWorktreeChanges(projectPath: string): void {
+/**
+ * Fails only on *tracked* uncommitted changes.
+ *
+ * This is the right check in front of `git reset --hard`, which destroys
+ * tracked modifications while leaving untracked files alone.
+ * `ensureWorktreeClean` is stricter and would refuse the untracked local-only
+ * output that Manual QA and the final-test audit deliberately leave behind.
+ *
+ * It is not the whole check for a reset, though — see
+ * `ensureNoUntrackedPathsClobberedBy`.
+ */
+export function ensureNoTrackedWorktreeChanges(projectPath: string, operation = 'local base-branch sync'): void {
   const status = readWorktreeStatus(projectPath)
   if (hasTrackedChanges(status)) {
-    throw new Error(`Worktree has tracked changes that would make local base-branch sync unsafe. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
+    throw new Error(`Worktree has tracked changes that would make ${operation} unsafe. ${formatWorktreeStatusDiagnostic(projectPath, status)}`)
   }
 }
 
-export function syncLocalBaseBranch(projectPath: string, baseBranch: string): {
+/** Enough paths per `ls-tree` to keep the argument list well inside every shell's limit. */
+const UNTRACKED_PROBE_BATCH_SIZE = 200
+
+/**
+ * The path that would be in the way of writing `repoPath`, or null.
+ *
+ * Either the file itself is already there, or one of its parents is a file
+ * where the commit expects a directory — `sub` on disk against `sub/a.txt` in
+ * the tree. `reset --hard` resolves both by replacing what it finds.
+ */
+function findBlockingPath(projectPath: string, repoPath: string): string | null {
+  const segments = repoPath.split('/').filter(Boolean)
+  for (let depth = 1; depth <= segments.length; depth += 1) {
+    const partial = segments.slice(0, depth).join('/')
+    const absolute = resolve(projectPath, partial)
+    if (!existsSync(absolute)) return null
+    if (depth === segments.length) return partial
+    if (!statSync(absolute).isDirectory()) return partial
+  }
+  return null
+}
+
+/**
+ * Fails when a file on disk sits where `commitish` would write one.
+ *
+ * "`reset --hard` leaves untracked files alone" is true only for paths the
+ * target commit does not have. Where it does, git writes the committed content
+ * straight over whatever is there, with no warning and no reflog — verified
+ * against scratch repositories for a plain file, for an *ignored* file, and for
+ * a file standing where the commit expects a directory. Relaxing the pre-reset
+ * check to tracked changes alone opened a narrow, silent data-loss path:
+ * local-only output that happens to share a name with something the merge base
+ * carries.
+ *
+ * The question asked is "which paths will this reset create", not "which files
+ * are untracked". `ls-files --others --exclude-standard` answers the second and
+ * omits ignored files entirely — and ignored build and cache output is exactly
+ * what the earlier phases leave behind, so the check that started here missed
+ * the case it was written for. A path the target has and `HEAD` does not is one
+ * the reset will write; anything on disk there loses.
+ *
+ * Not every `reset --hard` wants this. `resetWorktreeToCommit` follows its
+ * reset with `git clean -fd`, so it is *trying* to remove untracked files and a
+ * clobber costs its caller nothing. The candidate rewrite is the opposite: it
+ * deliberately leaves local-only output in place. Check where the untracked
+ * files are meant to survive.
+ */
+export function ensureNoUntrackedPathsClobberedBy(
+  projectPath: string,
+  commitish: string,
+  operation: string,
+): void {
+  // `--no-renames` so a rename is reported as the delete it also is: the reset
+  // restores the original path too, and a rename would hide it behind an `R`.
+  const restored = runGitSync(
+    projectPath,
+    ['diff', '--name-only', '--no-renames', '--diff-filter=D', '-z', commitish, 'HEAD'],
+    { trimOutput: false },
+  )
+  if (!restored.ok) {
+    throw new Error(`Could not compare ${commitish} with HEAD before ${operation}: ${restored.errorDetail}`)
+  }
+
+  const collisions = new Set<string>()
+  for (const repoPath of restored.stdout.split('\0').filter(Boolean)) {
+    // Anything still on disk at a path HEAD does not track is untracked or
+    // ignored — the tracked case is `ensureNoTrackedWorktreeChanges`, which
+    // runs first and owns it.
+    const blocking = findBlockingPath(projectPath, repoPath)
+    if (blocking) collisions.add(blocking)
+  }
+  refuseCollisions(collisions, operation, `${commitish} carries these paths and HEAD does not, so resetting to it writes over what is on disk.`)
+}
+
+/**
+ * Fails when a file on disk sits where a checkout is about to write.
+ *
+ * The reset is only half of what a rewrite writes. `git checkout <sha> -- <p>`
+ * replaces an untracked file at `p` just as silently and exits 0 — verified —
+ * and those paths are the ones the *candidate adds*, which a merge-base
+ * comparison never names.
+ *
+ * A path HEAD already tracks is not local-only output: the tracked-changes
+ * check ahead of this one owns it, and overwriting it is the operation's whole
+ * purpose. So this must be asked **before** anything moves HEAD, while HEAD is
+ * still the commit whose tracked set answers that question.
+ */
+export function ensureNoUntrackedPathsOverwrittenBy(
+  projectPath: string,
+  repoPaths: readonly string[],
+  operation: string,
+): void {
+  const blocked = new Map<string, string>()
+  for (const repoPath of repoPaths) {
+    const blocking = findBlockingPath(projectPath, repoPath)
+    if (blocking) blocked.set(repoPath, blocking)
+  }
+  if (blocked.size === 0) return
+
+  const tracked = new Set(listPathsInTree(projectPath, 'HEAD', [...blocked.keys()], operation))
+  const collisions = new Set(
+    [...blocked.entries()].filter(([repoPath]) => !tracked.has(repoPath)).map(([, blocking]) => blocking),
+  )
+  refuseCollisions(collisions, operation, 'HEAD does not track these paths, so writing them replaces what is on disk.')
+}
+
+/** The subset of `repoPaths` that `commitish` carries, batched to bound the argv. */
+function listPathsInTree(
+  projectPath: string,
+  commitish: string,
+  repoPaths: readonly string[],
+  operation: string,
+): string[] {
+  const found: string[] = []
+  for (let index = 0; index < repoPaths.length; index += UNTRACKED_PROBE_BATCH_SIZE) {
+    const batch = repoPaths.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
+    const tree = runGitSync(
+      projectPath,
+      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map(literalPathspec)],
+      { trimOutput: false },
+    )
+    if (!tree.ok) {
+      throw new Error(`Could not read ${commitish} before ${operation}: ${tree.errorDetail}`)
+    }
+    found.push(...tree.stdout.split('\0').filter(Boolean))
+  }
+  return found
+}
+
+function refuseCollisions(collisions: ReadonlySet<string>, operation: string, why: string): void {
+  if (collisions.size === 0) return
+  const colliding = [...collisions]
+  const shown = colliding.slice(0, 10).join(', ')
+  const rest = colliding.length > 10 ? ` (and ${colliding.length - 10} more)` : ''
+  throw new Error(`Local files would be overwritten by ${operation}: ${shown}${rest}. ${why}`)
+}
+
+export async function syncLocalBaseBranch(projectPath: string, baseBranch: string): Promise<{
   originalBranch: string | null
   localBaseHead: string
   remoteBaseHead: string
-} {
-  runGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+}> {
+  await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
   ensureNoTrackedWorktreeChanges(projectPath)
 
   const originalBranch = getCurrentBranch(projectPath)
@@ -815,17 +943,17 @@ export function syncLocalBaseBranch(projectPath: string, baseBranch: string): {
   }
 }
 
-export function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: string, commitSha: string): RemoteBaseVerification {
+export async function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: string, commitSha: string): Promise<RemoteBaseVerification> {
   const verifiedCommitSha = normalizeString(commitSha)
   if (!verifiedCommitSha) {
     throw new Error('Cannot verify remote merge without a pull request head or candidate commit SHA.')
   }
 
-  runGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+  await runRemoteGit(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
 
   const remoteBaseRef = `refs/remotes/origin/${baseBranch}`
   const remoteBaseHead = runGit(projectPath, ['rev-parse', remoteBaseRef])
-  const ancestor = tryCommand('git', ['-C', projectPath, 'merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
+  const ancestor = tryGit(projectPath, ['merge-base', '--is-ancestor', verifiedCommitSha, remoteBaseHead])
   if (!ancestor.ok) {
     throw new Error(`Remote origin/${baseBranch} does not contain commit ${verifiedCommitSha}. Latest remote base is ${remoteBaseHead}.`)
   }
@@ -837,8 +965,8 @@ export function verifyRemoteBaseContainsCommit(projectPath: string, baseBranch: 
   }
 }
 
-export function tryDeleteRemoteBranch(projectPath: string, branchName: string): { deleted: boolean; warning: string | null } {
-  const result = tryCommand('git', ['-C', projectPath, 'push', 'origin', '--delete', branchName])
+export async function tryDeleteRemoteBranch(projectPath: string, branchName: string): Promise<{ deleted: boolean; warning: string | null }> {
+  const result = await tryRemoteGit(projectPath, ['push', 'origin', '--delete', branchName])
   return result.ok
     ? { deleted: true, warning: null }
     : { deleted: false, warning: result.error }

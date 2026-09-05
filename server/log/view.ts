@@ -15,22 +15,68 @@ export function classifyPersistedLogEntry(entry: Record<string, unknown>): Exclu
   return 'system'
 }
 
-export function normalizePersistedLogEntry(raw: unknown): Record<string, unknown> | null {
+/** The audience a row belongs to when it does not declare one. */
+function inferAudience(record: Record<string, unknown>, type: string): string {
+  const source = record.source
+  if (source === 'debug' || type === 'debug') return 'debug'
+  if (
+    source === 'opencode'
+    || (typeof source === 'string' && source.startsWith('model:'))
+    || type === 'model_output'
+  ) return 'ai'
+  return 'all'
+}
+
+/** The kind a row belongs to when it does not declare one. */
+function inferKind(type: string): string {
+  if (type === 'test_result') return 'test'
+  if (type === 'error') return 'error'
+  if (type === 'model_output') return 'text'
+  return 'milestone'
+}
+
+export interface NormalizePersistedLogEntryOptions {
+  /**
+   * What to do when a row carries no `audience` or `kind`.
+   *
+   * `infer` derives them from `type` and `source`, which is what the log HTTP
+   * endpoints have always returned. `passthrough` leaves them undefined, which
+   * is what the durable projection index stores.
+   *
+   * The two used to be separate functions, so an older or malformed row could
+   * be classified one way by the projection and another by the endpoint reading
+   * it back.
+   */
+  audienceAndKind?: 'infer' | 'passthrough'
+}
+
+export function normalizePersistedLogEntry(
+  raw: unknown,
+  options: NormalizePersistedLogEntryOptions = {},
+): Record<string, unknown> | null {
   if (!raw || typeof raw !== 'object') return null
   const record = raw as Record<string, unknown>
   const phase = typeof record.phase === 'string' ? record.phase : typeof record.status === 'string' ? record.status : 'unknown'
   const phaseAttempt = Number(record.phaseAttempt)
   const content = typeof record.content === 'string' ? record.content : typeof record.message === 'string' ? record.message : ''
+  const type = typeof record.type === 'string' ? record.type : 'info'
+  const infer = options.audienceAndKind === 'infer'
   const normalized: Record<string, unknown> = {
     ...record,
     phase,
+    // Attempts are 1-based, so anything else is a malformed row rather than a
+    // meaningful value to filter on.
     phaseAttempt: Number.isFinite(phaseAttempt) && phaseAttempt > 0 ? phaseAttempt : 1,
     status: typeof record.status === 'string' ? record.status : phase,
     message: typeof record.message === 'string' ? record.message : content,
     content,
-    type: typeof record.type === 'string' ? record.type : 'info',
-    audience: typeof record.audience === 'string' ? record.audience : undefined,
-    kind: typeof record.kind === 'string' ? record.kind : undefined,
+    type,
+    audience: typeof record.audience === 'string'
+      ? record.audience
+      : (infer ? inferAudience(record, type) : undefined),
+    kind: typeof record.kind === 'string'
+      ? record.kind
+      : (infer ? inferKind(type) : undefined),
     op: typeof record.op === 'string' ? record.op : 'append',
   }
   const fingerprint = extractLogFingerprint(record)

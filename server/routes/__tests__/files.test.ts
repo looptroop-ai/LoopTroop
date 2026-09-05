@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Hono } from 'hono'
@@ -10,6 +10,15 @@ import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 import { recoverTicketRuntimeArtifacts } from '../../startup'
 import { cleanupTicketResources } from '../../phases/cleanup/cleaner'
+const { readOpenCodeNativeLogsMock } = vi.hoisted(() => ({ readOpenCodeNativeLogsMock: vi.fn(() => []) }))
+
+// The native entries come from OpenCode's own log directory, which a fixture
+// repository has no way to populate; what matters here is what the route does
+// with them once it has them.
+vi.mock('../../opencode/logDiagnostics', () => ({
+  readOpenCodeNativeLogs: readOpenCodeNativeLogsMock,
+}))
+
 import { filesRouter } from '../files'
 
 const repoManager = createFixtureRepoManager({
@@ -42,6 +51,8 @@ function createProjectTicket() {
 }
 
 beforeEach(() => {
+  readOpenCodeNativeLogsMock.mockReset()
+  readOpenCodeNativeLogsMock.mockReturnValue([])
   clearProjectDatabaseCache()
   initializeDatabase()
   sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
@@ -163,6 +174,103 @@ describe('filesRouter GET /files/:ticketId/logs', () => {
     const aiPayload = await aiResponse.json() as Array<Record<string, unknown>>
     expect(aiPayload.map((entry) => entry.content)).toEqual(['thinking latest'])
     expect(aiPayload.every((entry) => entry.audience === 'ai')).toBe(true)
+  })
+
+  it('filters native OpenCode entries on channel=all like every other source', async () => {
+    const { ticket, paths } = createProjectTicket()
+    writeJsonl(paths.aiLogPath, [
+      {
+        timestamp: '2026-03-13T12:00:00.000Z',
+        type: 'model_output',
+        sessionId: 'ses-1',
+        phase: 'CODING',
+        phaseAttempt: 1,
+        status: 'CODING',
+        message: 'ai entry',
+        content: 'ai entry',
+      },
+    ])
+    readOpenCodeNativeLogsMock.mockReturnValue([
+      {
+        timestamp: '2026-03-13T12:00:01.000Z',
+        type: 'debug',
+        source: 'debug',
+        audience: 'debug',
+        kind: 'session',
+        op: 'append',
+        phase: 'CODING',
+        phaseAttempt: 1,
+        status: 'CODING',
+        message: 'native coding row',
+        content: 'native coding row',
+        sessionId: 'ses-1',
+        data: { ocNativeLog: true },
+      },
+      {
+        timestamp: '2026-03-13T12:00:02.000Z',
+        type: 'debug',
+        source: 'debug',
+        audience: 'debug',
+        kind: 'session',
+        op: 'append',
+        phase: 'opencode_native',
+        phaseAttempt: 9,
+        status: 'opencode_native',
+        message: 'native row from another phase',
+        content: 'native row from another phase',
+        sessionId: 'ses-1',
+        data: { ocNativeLog: true },
+      },
+    ] as never)
+
+    const response = await app.request(
+      `/api/files/${encodeURIComponent(ticket.id)}/logs?channel=all&phase=CODING&phaseAttempt=1`,
+    )
+
+    expect(response.status).toBe(200)
+    const payload = await response.json() as Array<Record<string, unknown>>
+    // Appended raw, the out-of-phase native row came back on every scoped
+    // request for the ticket's sessions.
+    expect(payload.map((entry) => entry.content)).toEqual(['ai entry', 'native coding row'])
+  })
+
+  it('puts a native entry with an unreadable timestamp last rather than first', async () => {
+    const { ticket, paths } = createProjectTicket()
+    writeJsonl(paths.executionLogPath, [
+      {
+        timestamp: '2026-03-13T12:00:05.000Z',
+        type: 'info',
+        phase: 'CODING',
+        phaseAttempt: 1,
+        status: 'CODING',
+        message: 'dated entry',
+        content: 'dated entry',
+      },
+    ])
+    readOpenCodeNativeLogsMock.mockReturnValue([
+      {
+        timestamp: null,
+        type: 'debug',
+        source: 'debug',
+        audience: 'debug',
+        kind: 'session',
+        op: 'append',
+        phase: 'CODING',
+        phaseAttempt: 1,
+        status: 'CODING',
+        message: 'undated native row',
+        content: 'undated native row',
+        sessionId: 'ses-1',
+        data: { ocNativeLog: true },
+      },
+    ] as never)
+
+    const response = await app.request(`/api/files/${encodeURIComponent(ticket.id)}/logs?channel=all`)
+
+    const payload = await response.json() as Array<Record<string, unknown>>
+    // Treated as epoch zero it sorted above everything, which is how a line
+    // with no usable time ended up presented as the oldest event in the view.
+    expect(payload.map((entry) => entry.content)).toEqual(['dated entry', 'undated native row'])
   })
 
   it('returns all matching log entries even when legacy limit parameters are present', async () => {

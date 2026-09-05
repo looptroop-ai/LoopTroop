@@ -18,6 +18,14 @@ export function throwIfCancelled(
   }
 }
 
+/**
+ * Stops waiting when the signal aborts.
+ *
+ * **It does not stop the operation.** The promise passed in keeps running; only
+ * the wait for it is abandoned. Pass the signal into the operation as well
+ * wherever it accepts one — this is the fallback for a callee that cannot be
+ * aborted at all, not a substitute for cancelling one that can.
+ */
 export async function raceWithCancel<T>(
   operation: Promise<T>,
   signal?: AbortSignal,

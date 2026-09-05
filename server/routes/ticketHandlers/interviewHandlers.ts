@@ -1,4 +1,7 @@
 import type { Context } from 'hono'
+
+/** Room for the bookkeeping around the AI call itself, not for the call. */
+const BATCH_PROCESSING_MARGIN_MS = 60_000
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
@@ -6,11 +9,17 @@ import { abortTicketSessions } from '../../opencode/sessionManager'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { broadcaster } from '../../sse/broadcaster'
 import {
+  claimInterviewBatch,
   handleInterviewQABatch,
   processInterviewBatchAsync,
+  releaseInterviewBatch,
   skipAllInterviewQuestionsToApproval,
 } from '../../workflow/runner'
 import { abortTicketWork } from '../../workflow/phases/state'
+import {
+  resolveAiResponseTimeoutForTicket,
+  resolveStructuredRetryCountForTicket,
+} from '../../workflow/phases/helpers'
 import {
   getLatestPhaseArtifact,
   getTicketByRef,
@@ -267,6 +276,16 @@ export async function handleSkipTicket(c: Context) {
     }, 400)
   }
 
+  // The same claim the answer-batch route takes, for the same reason. Skipping
+  // the rest rewrites the session and moves the ticket on; an answer batch
+  // still running underneath then fails and reverts to *its* snapshot, undoing
+  // the skip-all entirely. The batch stays in `WAITING_INTERVIEW_ANSWERS`, so
+  // nothing else was stopping the two from overlapping.
+  const skipClaimToken = claimInterviewBatch(ticketId)
+  if (!skipClaimToken) {
+    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+  }
+
   try {
     ensureActorForTicket(ticketId)
     skipAllInterviewQuestionsToApproval(ticketId, parsed.data.answers, {
@@ -285,6 +304,8 @@ export async function handleSkipTicket(c: Context) {
   } catch (err) {
     logTicketOperationError(ticketId, 'Failed to skip remaining interview questions for ticket', err)
     return c.json({ error: 'Failed to skip remaining interview questions', details: getErrorMessage(err) }, 500)
+  } finally {
+    releaseInterviewBatch(ticketId, skipClaimToken)
   }
 
   return respondWithState(c, ticketId, 'Remaining interview questions skipped')
@@ -340,14 +361,43 @@ export async function handleAnswerBatch(c: Context) {
     }, 400)
   }
 
-  try {
-    const isCoverageBatch = session?.currentBatch?.source === 'coverage'
-    const needsAsyncProcessing = !isMockOpenCodeMode() && !isCoverageBatch
+  const isCoverageBatch = session?.currentBatch?.source === 'coverage'
+  // Non-null only on the asynchronous path, which hands the snapshot to the
+  // background task as the state to revert to. The synchronous path does not
+  // revert, so it needs no snapshot — and a missing session on the asynchronous
+  // path is a 404 below, not a silent fall-through to the synchronous one.
+  const asyncSession = !isMockOpenCodeMode() && !isCoverageBatch ? session : null
+  const needsAsyncProcessing = asyncSession !== null
+  if (!isMockOpenCodeMode() && !isCoverageBatch && !asyncSession) {
+    return c.json({ error: 'No interview session found' }, 404)
+  }
 
+  // Derived from the ticket's own budget rather than a flat ten minutes. The
+  // configured AI response timeout is 20 minutes by default, so a turn that was
+  // slow but well inside its budget was aborted and surfaced to the operator as
+  // `interview_error`. One attempt plus its structured retries, and a margin
+  // for the surrounding bookkeeping.
+  const aiTimeoutMs = resolveAiResponseTimeoutForTicket(ticketId)
+  const structuredRetries = resolveStructuredRetryCountForTicket(ticketId)
+  const batchTimeoutMs = aiTimeoutMs * (1 + Math.max(0, structuredRetries)) + BATCH_PROCESSING_MARGIN_MS
+
+  // Claimed before anything is dispatched, on both paths. A session existing is
+  // not the same as a batch being available: the first request clears
+  // `currentBatch`, and a second one accepted after that used to delete the
+  // first request's skip-receipt entry on its way to failing. The synchronous
+  // path — coverage batches and mock mode — reaches the same code and so takes
+  // the same claim.
+  //
+  // The claim's own expiry is the batch's budget plus a margin: every path here
+  // releases it explicitly, so the expiry only matters when a daemon dies
+  // holding one, and it has to outlast the work it is guarding.
+  const claimToken = claimInterviewBatch(ticketId, batchTimeoutMs + BATCH_PROCESSING_MARGIN_MS)
+  if (!claimToken) {
+    return c.json({ error: 'An answer batch for this ticket is already being processed' }, 409)
+  }
+
+  try {
     if (needsAsyncProcessing) {
-      if (!session) {
-        return c.json({ error: 'No interview session found' }, 404)
-      }
       // ASYNC path: return 202 immediately, process AI call in background.
       // handleInterviewQABatch persists the intermediate state (answers saved,
       // currentBatch cleared) synchronously before its first await, so the
@@ -355,17 +405,30 @@ export async function handleAnswerBatch(c: Context) {
       ensureActorForTicket(ticketId)
       sendTicketEvent(ticketId, { type: 'BATCH_ANSWERED', batchAnswers: parsed.data.answers, selectedOptions: parsed.data.selectedOptions })
 
-      const batchTimeoutMs = 10 * 60 * 1000
       let timeoutId: ReturnType<typeof setTimeout> | null = null
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           abortTicketWork(ticketId)
+          // The background task releases the claim when it settles, and a task
+          // that ignores the abort never does. The claim's own expiry would
+          // free it eventually, but that is a crash backstop measured in the
+          // whole batch budget — a ticket should be answerable again the moment
+          // its batch is abandoned, not one budget later. Releasing twice is
+          // harmless.
+          //
+          // The trade is deliberate: a task that survives its own abort could
+          // now run alongside a new submission. That is the lesser fault. The
+          // abort has already been sent, the batch's rollback state is per call
+          // so the two cannot corrupt each other, and a ticket nobody can
+          // answer until the daemon restarts is worse than a race that needs a
+          // cancellation to be ignored first.
+          releaseInterviewBatch(ticketId, claimToken)
           reject(new Error('Async batch processing timed out'))
         }, batchTimeoutMs)
       })
 
       Promise.race([
-        processInterviewBatchAsync(ticketId, parsed.data.answers, session, parsed.data.selectedOptions, parsed.data.skipReasons),
+        processInterviewBatchAsync(ticketId, parsed.data.answers, asyncSession, parsed.data.selectedOptions, parsed.data.skipReasons, claimToken),
         timeoutPromise,
       ])
         .finally(() => {
@@ -395,8 +458,11 @@ export async function handleAnswerBatch(c: Context) {
       return c.json({ accepted: true }, 202)
     }
 
-    // SYNC path: mock mode or coverage batches (fast, no AI call)
+    // SYNC path: mock mode or coverage batches (fast, no AI call). Nothing to
+    // roll back here — the caller gets the failure directly and the snapshot is
+    // left as the batch found it — so no skip receipt is collected.
     const result = await handleInterviewQABatch(ticketId, parsed.data.answers, parsed.data.selectedOptions, parsed.data.skipReasons)
+    releaseInterviewBatch(ticketId, claimToken)
     ensureActorForTicket(ticketId)
     if (result.isComplete) {
       sendTicketEvent(ticketId, { type: 'INTERVIEW_COMPLETE' })
@@ -415,6 +481,9 @@ export async function handleAnswerBatch(c: Context) {
       ...('roundNumber' in result && typeof result.roundNumber === 'number' ? { roundNumber: result.roundNumber } : {}),
     })
   } catch (err) {
+    // The claim is normally released when the background work settles. If
+    // anything threw between taking it and dispatching, nothing would.
+    releaseInterviewBatch(ticketId, claimToken)
     logTicketOperationError(ticketId, 'Failed to process answer-batch for ticket', err)
     return c.json({ error: 'Failed to process batch', details: getErrorMessage(err) }, 500)
   }

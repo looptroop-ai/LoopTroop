@@ -610,7 +610,11 @@ function WorkspaceInputEditor({
               aria-label={`Workspace input ${index + 1} allow large copy`}
               checked={item.allowLargeCopy === true}
               disabled={disabled}
-              onChange={(event) => updateItem(index, { allowLargeCopy: event.target.checked || undefined })}
+              // Stores `false`, not `undefined`. The shared serialiser was
+              // taught to write an explicit `false`; collapsing it here meant
+              // unchecking the box still round-tripped the field away, moving
+              // the §9.50 hole from the serialiser into the control.
+              onChange={(event) => updateItem(index, { allowLargeCopy: event.target.checked })}
             />
             Allow this input to exceed the normal copy-size limit after reviewing its preview
           </label>

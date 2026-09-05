@@ -3,22 +3,56 @@ import { safeAtomicWrite } from './atomicWrite'
 import { safeAtomicAppend } from './atomicAppend'
 import { warnIfVerbose } from '../runtime'
 
-export function readJsonl<T = Record<string, unknown>>(filePath: string): T[] {
-  if (!existsSync(filePath)) return []
+export interface JsonlReadResult<T> {
+  items: T[]
+  /**
+   * The 1-based source line each item came from, positionally aligned with
+   * `items`. A caller that rejects an item has to name where it is, and the
+   * item's own index is not that: blank and malformed lines sit between them.
+   */
+  itemLines: number[]
+  /** 1-based line numbers that did not parse. Empty when the file was clean. */
+  malformedLines: number[]
+}
+
+/**
+ * Reads a JSONL file, reporting which lines could not be parsed.
+ *
+ * Skipping a bad line is right for diagnostic reads and wrong for authoritative
+ * ones — a Manual QA evidence manifest that quietly loses a line attaches
+ * partial evidence and says nothing — so the decision belongs to the caller,
+ * which needs to know a line was dropped in order to make it.
+ */
+export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: string): JsonlReadResult<T> {
+  if (!existsSync(filePath)) return { items: [], itemLines: [], malformedLines: [] }
   const content = readFileSync(filePath, 'utf-8')
-  const lines = content.split('\n').filter(line => line.trim() !== '')
+  // Blank lines are skipped in place rather than filtered out first: filtering
+  // renumbered everything after them, so the reported line number was an index
+  // into the surviving lines and pointed an operator at the wrong text.
+  const lines = content.split('\n')
   const items: T[] = []
+  const itemLines: number[] = []
+  const malformedLines: number[] = []
 
   for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (line.trim() === '') continue
     try {
-      items.push(JSON.parse(lines[i]!) as T)
+      items.push(JSON.parse(line) as T)
+      itemLines.push(i + 1)
     } catch {
-      const preview = lines[i]!.length > 80 ? lines[i]!.slice(0, 80) + '…' : lines[i]
+      const preview = line.length > 80 ? line.slice(0, 80) + '…' : line
       warnIfVerbose(`[jsonl] Skipping malformed line ${i + 1} in ${filePath}: ${preview}`)
+      malformedLines.push(i + 1)
     }
   }
 
-  return items
+  return { items, itemLines, malformedLines }
+}
+
+/** Skips malformed lines. Use `readJsonlWithDiagnostics` where that matters. */
+export function readJsonl<T = Record<string, unknown>>(filePath: string): T[] {
+  return readJsonlWithDiagnostics<T>(filePath).items
 }
 
 export function writeJsonl<T>(filePath: string, items: T[]): void {

@@ -20,7 +20,7 @@ export function resetTestDb() {
   sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
 }
 
-export function createInitializedTestTicket(
+export async function createInitializedTestTicket(
   repoManager: ReturnType<typeof createTestRepoManager>,
   overrides: {
     projectName?: string
@@ -41,7 +41,7 @@ export function createInitializedTestTicket(
     description: overrides.description ?? 'Test description.',
   })
 
-  initializeTicket({
+  await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })

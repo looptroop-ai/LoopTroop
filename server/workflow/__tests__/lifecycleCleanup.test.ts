@@ -1,0 +1,209 @@
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { initializeDatabase } from '../../db/init'
+import { sqlite } from '../../db/index'
+import { clearProjectDatabaseCache } from '../../db/project'
+import { attachProject } from '../../storage/projects'
+import { createTicket } from '../../storage/tickets'
+import { createFixtureRepoManager } from '../../test/fixtureRepo'
+import { cleanupTicketState } from '../phases/state'
+import {
+  claimInterviewBatch,
+  hasInFlightInterviewBatch,
+  releaseInterviewBatch,
+} from '../phases/interviewPhase'
+import {
+  isTicketWorkSuspended,
+  resetAllWorkBudgets,
+  suspendTicketWork,
+} from '../workBudget'
+import {
+  clearAllPendingSessionContinuationsForTests,
+  hasPendingSessionContinuationForTicketPhase,
+  requestSessionContinuation,
+} from '../../opencode/sessionContinuation'
+
+const repoManager = createFixtureRepoManager({
+  templatePrefix: 'looptroop-lifecycle-cleanup-',
+  files: {
+    'README.md': '# LoopTroop Lifecycle Cleanup Test\n',
+  },
+})
+
+afterAll(() => {
+  clearProjectDatabaseCache()
+  repoManager.cleanup()
+})
+
+/**
+ * A real ticket, because the batch claim now lives in the project database —
+ * the point of it being there is that a second daemon can see it.
+ */
+function makeTicket(title = 'Lifecycle cleanup'): string {
+  const project = attachProject({
+    folderPath: repoManager.createRepo(),
+    name: 'LoopTroop',
+    shortname: 'LOOP',
+  })
+  return createTicket({ projectId: project.id, title, description: 'Lifecycle cleanup test.' }).id
+}
+
+function resetDatabase(): void {
+  clearProjectDatabaseCache()
+  initializeDatabase()
+  sqlite.exec('DELETE FROM attached_projects; DELETE FROM profiles;')
+}
+
+describe('interview batch claim', () => {
+  beforeEach(resetDatabase)
+
+  it('admits one claim and refuses the next until it is released', () => {
+    const ticket = makeTicket()
+    const token = claimInterviewBatch(ticket)
+    expect(token).toBeTruthy()
+    // A session existing is not the same as a batch being available: the first
+    // request clears currentBatch, and the second used to be accepted anyway.
+    // Refused, and — the part that matters across processes — the live row is
+    // untouched. The conditional write is what guarantees that: a decision read
+    // before the write would let two daemons both pass and the second overwrite.
+    expect(claimInterviewBatch(ticket)).toBeNull()
+    expect(hasInFlightInterviewBatch(ticket)).toBe(true)
+    releaseInterviewBatch(ticket, 'not-the-token-that-holds-it')
+    expect(hasInFlightInterviewBatch(ticket)).toBe(true)
+
+    releaseInterviewBatch(ticket, token ?? undefined)
+    expect(hasInFlightInterviewBatch(ticket)).toBe(false)
+    expect(claimInterviewBatch(ticket)).toBeTruthy()
+  })
+
+  it('keeps claims separate per ticket', () => {
+    const first = makeTicket('First')
+    const second = makeTicket('Second')
+    expect(claimInterviewBatch(first)).toBeTruthy()
+    expect(claimInterviewBatch(second)).toBeTruthy()
+  })
+
+  it('refuses a release from an acquisition that no longer holds the claim', () => {
+    const ticket = makeTicket()
+    // A zero-length lease is expired the instant it is written, so the takeover
+    // below is decided by the comparison rather than by how long the assertions
+    // took to run. With a 1 ms lease this was a coin flip: CI landed on the
+    // exact millisecond where the claim was neither live nor takeable.
+    const stale = claimInterviewBatch(ticket, 0)
+    expect(stale).toBeTruthy()
+
+    // The first claim has already expired, so a second run takes it over. The
+    // first run finishing afterwards must not delete what the second is
+    // holding — the fault `server/io/fileLock.ts` carries a token to prevent.
+    const current = claimInterviewBatch(ticket)
+    expect(current).toBeTruthy()
+
+    releaseInterviewBatch(ticket, stale ?? undefined)
+    expect(hasInFlightInterviewBatch(ticket)).toBe(true)
+
+    releaseInterviewBatch(ticket, current ?? undefined)
+    expect(hasInFlightInterviewBatch(ticket)).toBe(false)
+  })
+
+  it('lets a later run take over a claim whose holder is gone', () => {
+    const ticket = makeTicket()
+    // A daemon that dies holding a claim releases nothing. The expiry is what
+    // stops that from wedging the ticket until someone deletes the row.
+    expect(claimInterviewBatch(ticket, 0)).toBeTruthy()
+
+    // The two halves of the expiry have to be exact complements. "Not live" and
+    // "takeable" are the same instant seen from either side, so a claim that
+    // reports no holder must always be claimable — at `expires_at === now`
+    // included, which is where a `<` on one side and a `>` on the other left
+    // the ticket wedged with nobody able to release it.
+    expect(hasInFlightInterviewBatch(ticket)).toBe(false)
+    expect(claimInterviewBatch(ticket)).toBeTruthy()
+  })
+
+  it('treats the expiry instant itself as expired on both sides', () => {
+    // The boundary has to be *pinned*, not approached. Both tests above pass
+    // whichever comparison the takeover uses, because a real clock almost
+    // always moves a millisecond between the two calls and lands them off the
+    // boundary — which is how a `<` shipped, and why CI failed only on the
+    // lanes slow enough to land exactly on it. Freezing the clock makes
+    // `expires_at === now` the case under test rather than a rare accident.
+    //
+    // Only `Date` is faked: the claim path is synchronous, and hijacking real
+    // timers here would strand the database's own callbacks.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-09-05T00:00:00.000Z'))
+      const ticket = makeTicket()
+      expect(claimInterviewBatch(ticket, 0)).toBeTruthy()
+
+      // Same frozen instant for both questions: not live, therefore takeable.
+      expect(hasInFlightInterviewBatch(ticket)).toBe(false)
+      expect(claimInterviewBatch(ticket)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('cleanupTicketState', () => {
+  let TICKET = ''
+
+  beforeEach(() => {
+    resetDatabase()
+    resetAllWorkBudgets()
+    TICKET = makeTicket()
+  })
+
+  it('drops the batch claim, whoever holds it', () => {
+    expect(claimInterviewBatch(TICKET)).toBeTruthy()
+
+    // A ticket that has reached a terminal state has no legitimate batch in
+    // flight, so the claim on it belongs to a run that is over.
+    cleanupTicketState(TICKET)
+
+    expect(hasInFlightInterviewBatch(TICKET)).toBe(false)
+  })
+
+  it('drops the work-budget ledger', () => {
+    suspendTicketWork(TICKET)
+    expect(isTicketWorkSuspended(TICKET)).toBe(true)
+
+    // Every cancel, completion and restart passes through here. Clearing only
+    // from the cancel route left a restart — which cancels and then continues
+    // the same ticket id — holding the next run's clocks still.
+    cleanupTicketState(TICKET)
+
+    expect(isTicketWorkSuspended(TICKET)).toBe(false)
+  })
+
+  it('drops pending session continuations', () => {
+    clearAllPendingSessionContinuationsForTests()
+    requestSessionContinuation({
+      ticketId: TICKET,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      sessionId: 'session-lifecycle-1',
+      additionalRetryAttempts: 2,
+    })
+    expect(hasPendingSessionContinuationForTicketPhase(TICKET, 'WAITING_INTERVIEW_ANSWERS')).toBe(true)
+
+    // Only `abortTicketSessions` used to clear these, so a ticket that
+    // completed naturally kept them for their full thirty-minute life and a
+    // restart of the same ticket id reapplied the finished run's retries.
+    cleanupTicketState(TICKET)
+
+    expect(hasPendingSessionContinuationForTicketPhase(TICKET, 'WAITING_INTERVIEW_ANSWERS')).toBe(false)
+  })
+
+  it('leaves another ticket\'s continuations alone', () => {
+    clearAllPendingSessionContinuationsForTests()
+    requestSessionContinuation({
+      ticketId: `${TICKET}-other`,
+      phase: 'WAITING_INTERVIEW_ANSWERS',
+      sessionId: 'session-lifecycle-2',
+    })
+
+    cleanupTicketState(TICKET)
+
+    expect(hasPendingSessionContinuationForTicketPhase(`${TICKET}-other`, 'WAITING_INTERVIEW_ANSWERS')).toBe(true)
+    clearAllPendingSessionContinuationsForTests()
+  })
+})

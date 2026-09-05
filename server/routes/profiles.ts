@@ -124,6 +124,9 @@ profileRouter.patch('/profile', async (c) => {
   const requestedMainImplementer = parsed.data.mainImplementer ?? existing.mainImplementer
   const requestedCouncilMembers = parsed.data.councilMembers ?? existing.councilMembers
   let modelPatch: Pick<typeof existing, 'mainImplementer' | 'councilMembers'>
+  // Kept alongside the serialised column so the registration below does not
+  // have to parse back what this handler has just validated and stringified.
+  let councilMembersToRegister: string[]
 
   if (hasModelSelectionChange(existing, {
     mainImplementer: requestedMainImplementer,
@@ -136,12 +139,14 @@ profileRouter.patch('/profile', async (c) => {
       return c.json({ error: err instanceof Error ? err.message : 'Invalid model configuration' }, 400)
     }
 
+    councilMembersToRegister = validatedModels.councilMembers
     modelPatch = {
       mainImplementer: validatedModels.mainImplementer,
       councilMembers: JSON.stringify(validatedModels.councilMembers),
     }
   } else {
     const normalizedRequested = normalizeModelSelection(requestedMainImplementer, requestedCouncilMembers)
+    councilMembersToRegister = normalizedRequested.councilMembers
     modelPatch = {
       mainImplementer: normalizedRequested.mainImplementer || existing.mainImplementer,
       councilMembers: JSON.stringify(normalizedRequested.councilMembers),
@@ -149,9 +154,7 @@ profileRouter.patch('/profile', async (c) => {
   }
 
   try {
-    await registerSelectedRoutingModels(
-      JSON.parse(modelPatch.councilMembers ?? '[]') as string[],
-    )
+    await registerSelectedRoutingModels(councilMembersToRegister)
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : 'Unable to register OpenRouter routing models' }, 502)
   }

@@ -4,27 +4,22 @@ import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
 import { attachProject, type PublicProject } from '../../storage/projects'
-import { createTicket, getLatestPhaseArtifact, getTicketByRef, insertPhaseArtifact, patchTicket, type PublicTicket } from '../../storage/tickets'
+import { createTicket, getLatestPhaseArtifact, getTicketByRef, insertPhaseArtifact, patchTicket, upsertLatestPhaseArtifact, type PublicTicket } from '../../storage/tickets'
+import {
+  buildPersistedBatch,
+  createInterviewSessionSnapshot,
+  INTERVIEW_SESSION_ARTIFACT,
+  recordPreparedBatch,
+  serializeInterviewSessionSnapshot,
+} from '../../phases/interview/sessionState'
 import { createFixtureRepoManager } from '../../test/fixtureRepo'
 
-vi.mock('../../workflow/runner', () => ({
-  cancelTicket: vi.fn(),
-  handleInterviewQABatch: vi.fn(),
-  processInterviewBatchAsync: vi.fn(),
-  skipAllInterviewQuestionsToApproval: vi.fn(),
-}))
+vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
-vi.mock('../../machines/persistence', () => ({
-  createTicketActor: vi.fn(),
-  ensureActorForTicket: vi.fn(() => ({ id: 'mock-actor' })),
-  revertTicketToApprovalStatus: vi.fn(),
-  sendTicketEvent: vi.fn(),
-  getTicketState: vi.fn(() => null),
-  stopActor: vi.fn(() => true),
-}))
+vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
 
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
-import { handleInterviewQABatch } from '../../workflow/runner'
+import { claimInterviewBatch, handleInterviewQABatch, processInterviewBatchAsync, releaseInterviewBatch } from '../../workflow/runner'
 import { ticketRouter } from '../tickets'
 
 const repoManager = createFixtureRepoManager({
@@ -295,5 +290,76 @@ describe('ticketRouter basic ticket routes', () => {
       batchAnswers: { Q01: 'Keep the route behavior unchanged.' },
       selectedOptions: { Q01: ['preserve'] },
     })
+    // Held for the synchronous path too, and given back when it finishes.
+    expect(claimInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(Number))
+    expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
+  })
+
+  it('refuses a second answer batch while one is already being processed', async () => {
+    const { ticket } = createBasicTicket()
+    patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+    vi.mocked(claimInterviewBatch).mockReturnValueOnce(null)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { Q01: 'A duplicate submission.' } }),
+    })
+
+    // The synchronous path used to skip the claim entirely, so a coverage or
+    // mock-mode batch could enter alongside an in-flight AI batch and clear its
+    // bookkeeping on the way past.
+    expect(response.status).toBe(409)
+    expect(handleInterviewQABatch).not.toHaveBeenCalled()
+  })
+
+  it('gives the batch claim back when the asynchronous processing times out', async () => {
+    // The suite runs in mock mode, where every batch takes the synchronous
+    // path. The asynchronous path is the one with the timeout arm.
+    const previousMode = process.env.LOOPTROOP_OPENCODE_MODE
+    delete process.env.LOOPTROOP_OPENCODE_MODE
+    vi.useFakeTimers()
+    try {
+      const { ticket } = createBasicTicket()
+      patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS' })
+      const base = createInterviewSessionSnapshot({
+        winnerId: 'openai/gpt-5-mini',
+        compiledQuestions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+        maxInitialQuestions: 1,
+      })
+      const batch = buildPersistedBatch({
+        questions: [{ id: 'Q01', phase: 'Foundation', question: 'Why?' }],
+        progress: { current: 1, total: 1 },
+        isComplete: false,
+        isFinalFreeForm: false,
+        aiCommentary: 'One question.',
+        batchNumber: 1,
+      }, 'prom4', base)
+      upsertLatestPhaseArtifact(
+        ticket.id,
+        INTERVIEW_SESSION_ARTIFACT,
+        'WAITING_INTERVIEW_ANSWERS',
+        serializeInterviewSessionSnapshot(recordPreparedBatch(base, batch)),
+      )
+      // Never settles, which is what a background task that ignores the abort
+      // looks like. The claim has no expiry, so before this the ticket answered
+      // 409 to every later submission for the life of the process.
+      vi.mocked(processInterviewBatchAsync).mockReturnValue(new Promise(() => {}))
+
+      const response = await app.request(`/api/tickets/${ticket.id}/answer-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answers: { Q01: 'An answer that will hang.' } }),
+      })
+      expect(response.status).toBe(202)
+      expect(releaseInterviewBatch).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(releaseInterviewBatch).toHaveBeenCalledWith(ticket.id, expect.any(String))
+    } finally {
+      vi.useRealTimers()
+      if (previousMode === undefined) delete process.env.LOOPTROOP_OPENCODE_MODE
+      else process.env.LOOPTROOP_OPENCODE_MODE = previousMode
+    }
   })
 })

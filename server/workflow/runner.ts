@@ -33,8 +33,10 @@ import {
   handleInterviewVote,
   handleInterviewCompile,
   handleInterviewQAStart,
+  claimInterviewBatch,
   handleInterviewQABatch,
   processInterviewBatchAsync,
+  releaseInterviewBatch,
   skipAllInterviewQuestionsToApproval,
   handleMockCouncilDeliberate,
   handleMockInterviewVote,
@@ -85,8 +87,10 @@ import { isWorkflowPhaseId } from '@shared/workflowMeta'
 // Re-export public API for external callers
 export {
   cancelTicket,
+  claimInterviewBatch,
   handleInterviewQABatch,
   processInterviewBatchAsync,
+  releaseInterviewBatch,
   skipAllInterviewQuestionsToApproval,
   handleRelevantFilesScan,
 }

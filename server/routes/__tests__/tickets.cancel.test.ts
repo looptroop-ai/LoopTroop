@@ -13,29 +13,13 @@ import { initializeTicket } from '../../ticket/initialize'
 import { getTicketAiLogPath, getTicketDebugLogPath, getTicketExecutionLogPath } from '../../storage/paths'
 import { listSkipEvents } from '../../workflow/skipReceipts'
 
-vi.mock('../../workflow/runner', () => ({
-  cancelTicket: vi.fn(),
-  handleInterviewQABatch: vi.fn(),
-  processInterviewBatchAsync: vi.fn(async () => undefined),
-  skipAllInterviewQuestionsToApproval: vi.fn(),
-}))
+vi.mock('../../workflow/runner', async () => (await import('../../test/routeMocks')).workflowRunnerMock())
 
-vi.mock('../../opencode/sessionManager', () => ({
-  abortTicketSessions: vi.fn(async () => undefined),
-}))
+vi.mock('../../opencode/sessionManager', async () => (await import('../../test/routeMocks')).sessionManagerMock())
 
-vi.mock('../../opencode/contextBuilder', () => ({
-  clearContextCache: vi.fn(),
-}))
+vi.mock('../../opencode/contextBuilder', async () => (await import('../../test/routeMocks')).contextBuilderMock())
 
-vi.mock('../../machines/persistence', () => ({
-  createTicketActor: vi.fn(),
-  ensureActorForTicket: vi.fn(() => ({ id: 'mock-actor' })),
-  revertTicketToApprovalStatus: vi.fn(),
-  sendTicketEvent: vi.fn(),
-  getTicketState: vi.fn(() => null),
-  stopActor: vi.fn(() => true),
-}))
+vi.mock('../../machines/persistence', async () => (await import('../../test/routeMocks')).machinesPersistenceMock())
 
 import { ensureActorForTicket, sendTicketEvent } from '../../machines/persistence'
 import { ticketRouter } from '../tickets'
@@ -47,7 +31,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function createCancelableTicket(repoDir: string) {
+async function createCancelableTicket(repoDir: string) {
   const project = attachProject({
     folderPath: repoDir,
     name: 'CancelTest',
@@ -58,7 +42,7 @@ function createCancelableTicket(repoDir: string) {
     title: 'Cancel route test',
     description: 'Regression coverage for cancel cleanup.',
   })
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -95,7 +79,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('cancels a ticket without cleanup when no body is sent', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket, init } = createCancelableTicket(repoDir)
+    const { ticket, init } = await createCancelableTicket(repoDir)
     const worktreePath = init.worktreePath
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
@@ -121,7 +105,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('removes only the execution logs when deleteLog=true and deleteContent=false', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket, init } = createCancelableTicket(repoDir)
+    const { ticket, init } = await createCancelableTicket(repoDir)
     const logPath = getTicketExecutionLogPath(repoDir, ticket.externalId)
     const debugLogPath = getTicketDebugLogPath(repoDir, ticket.externalId)
     const aiLogPath = getTicketAiLogPath(repoDir, ticket.externalId)
@@ -149,7 +133,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('removes the worktree and branch when deleteContent=true', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket, init } = createCancelableTicket(repoDir)
+    const { ticket, init } = await createCancelableTicket(repoDir)
     const logPath = getTicketExecutionLogPath(repoDir, ticket.externalId)
     const debugLogPath = getTicketDebugLogPath(repoDir, ticket.externalId)
     const aiLogPath = getTicketAiLogPath(repoDir, ticket.externalId)
@@ -179,7 +163,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('removes worktree and log when both deleteContent and deleteLog are true', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket, init } = createCancelableTicket(repoDir)
+    const { ticket, init } = await createCancelableTicket(repoDir)
     const logPath = getTicketExecutionLogPath(repoDir, ticket.externalId)
     const debugLogPath = getTicketDebugLogPath(repoDir, ticket.externalId)
     const aiLogPath = getTicketAiLogPath(repoDir, ticket.externalId)
@@ -200,7 +184,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('completely deletes the ticket and all files when deleteTicket=true', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket, init } = createCancelableTicket(repoDir)
+    const { ticket, init } = await createCancelableTicket(repoDir)
     const logPath = getTicketExecutionLogPath(repoDir, ticket.externalId)
     const debugLogPath = getTicketDebugLogPath(repoDir, ticket.externalId)
     const aiLogPath = getTicketAiLogPath(repoDir, ticket.externalId)
@@ -224,7 +208,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('keeps the cancel reason on the ticket row and in the skip trail', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -247,7 +231,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('keeps the reason on the ticket row when the artifacts are deleted with it', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -263,7 +247,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('rejects a malformed cancel payload instead of cancelling with defaults', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -279,7 +263,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('keeps receipts when only the logs are deleted', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -297,7 +281,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('leaves no skip trail at all when the ticket itself is deleted', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -314,7 +298,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('normalizes a whitespace-only cancel reason to null', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {
       method: 'POST',
@@ -335,7 +319,7 @@ describe('ticketRouter POST /tickets/:id/cancel', () => {
 
   it('returns 409 when trying to cancel a terminal ticket', async () => {
     const repoDir = repoManager.createRepo()
-    const { ticket } = createCancelableTicket(repoDir)
+    const { ticket } = await createCancelableTicket(repoDir)
     patchTicket(ticket.id, { status: 'CANCELED' })
 
     const response = await app.request(`/api/tickets/${ticket.id}/cancel`, {

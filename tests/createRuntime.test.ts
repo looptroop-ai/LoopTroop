@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { mkdtempSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -114,6 +114,115 @@ describe('createRuntime port allocation', () => {
     cleanups.push(() => new Promise<void>((done) => server.close(() => done())))
     return (server.address() as { port: number }).port
   }
+
+  it('stops the timers the startup sequence started when the bind fails', async () => {
+    const taken = await occupyPort()
+    const { createRuntime } = await import('../server/createRuntime')
+    const { resolveSettings } = await import('../server/lib/appSettings')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+
+    const runtime = createRuntime({
+      skipStartupSequence: true,
+      hostname: '127.0.0.1',
+      settings: resolveSettings({ env: {}, file: { port: taken } }),
+    })
+
+    const stopAutoCleanup = vi.spyOn(broadcaster, 'stopAutoCleanup')
+    try {
+      await expect(runtime.start()).rejects.toThrow(`Port ${taken} is already in use`)
+      // close() is the only teardown, and it is only reachable once a caller
+      // holds a started runtime — so a failed bind used to leave the
+      // broadcaster's cleanup timer and the WAL checkpoint running with nothing
+      // able to stop them.
+      expect(stopAutoCleanup).toHaveBeenCalled()
+    } finally {
+      stopAutoCleanup.mockRestore()
+    }
+  })
+
+  it('stops them for a failure before the bind, too', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+
+    // A hostname the host policy refuses throws after the cleanup timer has
+    // started and before `listen` is reached. Only the bind was guarded, so
+    // this path left the timer running with nothing able to stop it.
+    const runtime = createRuntime({ skipStartupSequence: true, hostname: '0.0.0.0' })
+
+    const stopAutoCleanup = vi.spyOn(broadcaster, 'stopAutoCleanup')
+    try {
+      await expect(runtime.start()).rejects.toThrow('non-loopback host')
+      expect(stopAutoCleanup).toHaveBeenCalled()
+      expect((broadcaster as unknown as { cleanupInterval: unknown }).cleanupInterval).toBeNull()
+    } finally {
+      stopAutoCleanup.mockRestore()
+      broadcaster.stopAutoCleanup()
+    }
+  })
+
+  it('closes what a start still in flight is about to bind', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    // Ctrl-C while the daemon is still starting, which takes seconds. `close()`
+    // used to resolve against whatever existed at that instant, and `runStart()`
+    // then bound a socket nothing could close afterwards.
+    const started = runtime.start()
+    await runtime.close()
+    await started.catch(() => undefined)
+
+    expect(runtime.address).toBeNull()
+  })
+
+  it('can be started again after it has been closed', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    await runtime.start()
+    await runtime.close()
+    expect(runtime.address).toBeNull()
+
+    // The cached `closing` promise made the second close a resolved no-op, so
+    // the second generation's socket and timers stayed behind.
+    const second = await runtime.start()
+    expect(second.port).toBeGreaterThan(0)
+    await runtime.close()
+    expect(runtime.address).toBeNull()
+  })
+
+  it('runs the startup sequence once for overlapping start() calls after a close', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const { broadcaster } = await import('../server/sse/broadcaster')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+
+    await runtime.start()
+    await runtime.close()
+
+    // `closing` is settled, not null, so both callers pass the `starting`
+    // fence, both await an already-resolved promise, and the second overwrites
+    // the first's `starting` — two servers, one runtime.
+    const startAutoCleanup = vi.spyOn(broadcaster, 'startAutoCleanup')
+    try {
+      const [first, second] = await Promise.all([runtime.start(), runtime.start()])
+      expect(first).toEqual(second)
+      expect(startAutoCleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      startAutoCleanup.mockRestore()
+      await runtime.close()
+    }
+  })
+
+  it('runs the startup sequence once for overlapping start() calls', async () => {
+    const { createRuntime } = await import('../server/createRuntime')
+    const runtime = createRuntime({ skipStartupSequence: true, port: 0, hostname: '127.0.0.1' })
+    cleanups.push(() => runtime.close())
+
+    const [first, second] = await Promise.all([runtime.start(), runtime.start()])
+
+    // Without a `starting` guard both calls saw a null address, both ran the
+    // startup sequence, and each allocated its own timers.
+    expect(first).toEqual(second)
+  })
 
   it('rejects with the requested port and its origin when an explicit port is taken', async () => {
     const taken = await occupyPort()

@@ -1,30 +1,17 @@
 // Git operations for bead execution
 
-import { spawnSync } from 'node:child_process'
 import { getCurrentBranch } from '../../git/repository'
 import { pushBranchRef } from '../../git/push'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
+import { withGitIndexRollback } from '../../git/indexSnapshot'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { runGitSync, runGitSyncOrThrow } from '../../git/runCommand'
 import {
   buildGeneratedNoiseWarning,
   classifyWorktreePath,
   getExecutionSetupCommitExcludedRoots,
   summarizeWorktreeChanges,
 } from '../../git/worktreeChanges'
-
-import * as commandLogger from '../../log/commandLogger'
-
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
-
-const GIT_OP_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 interface ResetWorktreeOptions {
   preservePaths?: string[]
@@ -54,81 +41,32 @@ export function filterAllowedFiles(files: string[], options: FileAllowOptions = 
 }
 
 function runGitOp(worktreePath: string, args: string[]): string {
-  const fullArgs = ['-C', worktreePath, ...args]
-  const result = spawnSync('git', fullArgs, {
-    encoding: 'utf8',
-    maxBuffer: GIT_OP_MAX_BUFFER_BYTES,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  return stdout
+  return runGitSyncOrThrow(worktreePath, args)
 }
 
-function runGitOpSafe(worktreePath: string, args: string[]): { ok: boolean; stdout: string; error?: string } {
-  try {
-    const stdout = runGitOp(worktreePath, args)
-    return { ok: true, stdout }
-  } catch (err) {
-    const error = err instanceof Error ? err.message : 'Unknown error'
-    return { ok: false, stdout: '', error }
-  }
+function runGitOpSafe(
+  worktreePath: string,
+  args: string[],
+): { ok: true; stdout: string } | { ok: false; stdout: string; error: string } {
+  const result = runGitSync(worktreePath, args)
+  return result.ok
+    ? { ok: true, stdout: result.stdout }
+    : { ok: false, stdout: '', error: result.errorDetail ?? 'Unknown error' }
 }
 
-function probeStagedChanges(worktreePath: string, paths?: string[]): { hasStagedChanges: boolean; error?: string } {
-  const fullArgs = ['-C', worktreePath, 'diff', '--cached', '--quiet']
-  if (paths?.length) {
-    fullArgs.push('--', ...paths)
-  }
-  const result = spawnSync('git', fullArgs, {
-    encoding: 'utf8',
-    maxBuffer: GIT_OP_MAX_BUFFER_BYTES,
-  })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
+function probeStagedChanges(
+  worktreePath: string,
+  paths: string[],
+): { hasStagedChanges: boolean; error?: string } {
+  const args = ['diff', '--cached', '--quiet']
+  if (paths.length) args.push('--', ...paths.map(literalPathspec))
+  const result = runGitSync(worktreePath, args)
 
-  if (result.error) {
-    const detail = result.error.message
-      ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error.message,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    return { hasStagedChanges: false, error: detail }
-  }
-
-  if (result.status === 0) {
-    logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-    return { hasStagedChanges: false }
-  }
-
-  if (result.status === 1) {
-    // For `git diff --cached --quiet`, exit code 1 is a normal probe result:
-    // staged changes are present and the commit flow should continue.
-    logCmd('git', fullArgs, { ok: false, error: 'exit code 1' })
-    return { hasStagedChanges: true }
-  }
-
-  const detail = [stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`
-  logCmd('git', fullArgs, {
-    ok: false,
-    error: `exit code ${result.status ?? '?'}`,
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-  })
-  return { hasStagedChanges: false, error: detail }
+  if (result.ok) return { hasStagedChanges: false }
+  // For `git diff --cached --quiet`, exit code 1 is a normal probe result:
+  // staged changes are present and the commit flow should continue.
+  if (!result.spawnError && result.status === 1) return { hasStagedChanges: true }
+  return { hasStagedChanges: false, error: result.errorDetail }
 }
 
 export function recordWorktreeStartCommit(worktreePath: string): string {
@@ -154,19 +92,19 @@ export function recordBeadStartCommit(worktreePath: string): string {
  * cannot undo a commit, so the exclusion has to happen here. They are reported
  * as skipped, like every other file left out.
  */
-export function commitBeadChanges(
+export async function commitBeadChanges(
   worktreePath: string,
   beadId: string,
   beadTitle: string,
   options: { excludePaths?: readonly string[] } = {},
-): {
+): Promise<{
   committed: boolean
   pushed: boolean
   error?: string
   committableFiles?: string[]
   skippedFiles?: string[]
   generatedNoiseWarning?: string
-} {
+}> {
   let summary: ReturnType<typeof summarizeWorktreeChanges>
   try {
     summary = summarizeWorktreeChanges(worktreePath, {
@@ -181,9 +119,17 @@ export function commitBeadChanges(
   }
 
   const excluded = new Set((options.excludePaths ?? []).map(normalizeRepoPath))
-  const committableFiles = summary.committable
+  const committableEntries = summary.committable.filter(entry => !excluded.has(entry.path))
+  const committableFiles = committableEntries.map(entry => entry.path)
+  // A path git already records as deleted in the index — the source half of a
+  // staged rename, or a `git rm` — exists in neither the worktree nor the
+  // index, so `git add` fails on it with "did not match any files". It still
+  // belongs in the commit pathspec: that is what carries its deletion into the
+  // commit, and without it a renamed file is committed twice, once under each
+  // name.
+  const filesToStage = committableEntries
+    .filter(entry => !(entry.indexStatus === 'D' && entry.worktreeStatus === ' '))
     .map(entry => entry.path)
-    .filter(path => !excluded.has(path))
   const skippedFiles = [
     ...[
       ...summary.looptroopExcluded,
@@ -205,18 +151,56 @@ export function commitBeadChanges(
     }
   }
 
-  const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...committableFiles])
-  if (!addResult.ok) {
-    return { committed: false, pushed: false, error: `git add failed: ${addResult.error}` }
+  const commitMsg = `bead(${beadId}): ${beadTitle}`
+  const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(worktreePath))
+
+  // `git add` has to run against the real index — a partial commit can only
+  // name a path git already knows, so a new file has to be staged first — and
+  // the commit that follows can fail. Snapshotting the index means a failure
+  // leaves nothing behind: before this, a failed bead commit left its paths
+  // staged and the next bead committed them by accident.
+  type StageOutcome = { error: string; hasStagedChanges?: undefined } | { hasStagedChanges: boolean; error?: undefined }
+  // A refused snapshot surfaces as this function's ordinary failure shape, not
+  // as a throw: every other outcome here is reported, and the caller decides.
+  let staged: StageOutcome
+  try {
+    staged = withGitIndexRollback<StageOutcome>(worktreePath, () => {
+      if (filesToStage.length > 0) {
+        const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage.map(literalPathspec)])
+        if (!addResult.ok) {
+          return { keepIndex: false, value: { error: `git add failed: ${addResult.error}` } }
+        }
+      }
+      // Answers "do these paths differ from HEAD", including files git has only
+      // just been told about, which `git diff HEAD` cannot report.
+      const probe = probeStagedChanges(worktreePath, committableFiles)
+      if (probe.error) {
+        return { keepIndex: false, value: { error: `git diff --cached --quiet failed: ${probe.error}` } }
+      }
+      if (!probe.hasStagedChanges) {
+        return { keepIndex: false, value: { hasStagedChanges: false } }
+      }
+
+      const commitResult = runGitOpSafe(worktreePath, [
+        'commit',
+        ...(bypassHooks ? ['--no-verify'] : []),
+        '-m',
+        commitMsg,
+        '--',
+        ...committableFiles.map(literalPathspec),
+      ])
+      return commitResult.ok
+        ? { keepIndex: true, value: { hasStagedChanges: true } }
+        : { keepIndex: false, value: { error: `git commit failed: ${commitResult.error}` } }
+    })
+  } catch (err) {
+    return { committed: false, pushed: false, error: err instanceof Error ? err.message : 'Unknown error' }
   }
 
-  // Check whether the committable paths have staged changes. The index may
-  // already contain unrelated files, but workflow commits must stay scoped.
-  const stagedProbe = probeStagedChanges(worktreePath, committableFiles)
-  if (stagedProbe.error) {
-    return { committed: false, pushed: false, error: `git diff --cached --quiet failed: ${stagedProbe.error}` }
+  if (staged.error) {
+    return { committed: false, pushed: false, error: staged.error }
   }
-  if (!stagedProbe.hasStagedChanges) {
+  if (!staged.hasStagedChanges) {
     return {
       committed: false,
       pushed: false,
@@ -226,26 +210,12 @@ export function commitBeadChanges(
     }
   }
 
-  const commitMsg = `bead(${beadId}): ${beadTitle}`
-  const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(worktreePath))
-  const commitResult = runGitOpSafe(worktreePath, [
-    'commit',
-    ...(bypassHooks ? ['--no-verify'] : []),
-    '-m',
-    commitMsg,
-    '--',
-    ...committableFiles,
-  ])
-  if (!commitResult.ok) {
-    return { committed: false, pushed: false, error: `git commit failed: ${commitResult.error}` }
-  }
-
   const currentBranch = getCurrentBranch(worktreePath)
   if (!currentBranch) {
     return { committed: true, pushed: false, error: 'git push failed: could not determine current branch' }
   }
 
-  const pushResult = pushBranchRef({
+  const pushResult = await pushBranchRef({
     projectPath: worktreePath,
     destinationBranch: currentBranch,
     sourceRef: 'HEAD',
@@ -274,14 +244,21 @@ export function commitBeadChanges(
 
 /**
  * Capture a code-only diff between beadStartCommit and HEAD.
- * Excludes .ticket/** to avoid noise from metadata changes.
- * Returns the diff string (empty string if no code changes).
+ *
+ * Excludes both of LoopTroop's control directories, so the diff is the
+ * project's work and nothing else. A git failure is reported as an error
+ * rather than as an empty diff: the two are not the same thing, and returning
+ * `''` for a failure made a broken bead read downstream as one that changed
+ * nothing.
  */
-export function captureBeadDiff(worktreePath: string, beadStartCommit: string): string {
+export function captureBeadDiff(
+  worktreePath: string,
+  beadStartCommit: string,
+): { ok: true; diff: string } | { ok: false; error: string } {
   const result = runGitOpSafe(worktreePath, [
-    'diff', beadStartCommit, 'HEAD', '--', '.', ':!.ticket',
+    'diff', beadStartCommit, 'HEAD', '--', ...REPO_SCOPE_PATHSPECS,
   ])
-  return result.ok ? result.stdout : ''
+  return result.ok ? { ok: true, diff: result.stdout } : { ok: false, error: result.error }
 }
 
 export function resetWorktreeToCommit(worktreePath: string, commit: string, options?: ResetWorktreeOptions): void {

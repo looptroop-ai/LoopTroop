@@ -28,7 +28,7 @@ vi.mock('../../phases/integration/squash', () => ({
 }))
 
 vi.mock('../../phases/manualQa/delivery', () => ({
-  readManualQaDeliverySummary: readManualQaDeliverySummaryMock,
+  readManualQaDeliverySummaryForTicket: readManualQaDeliverySummaryMock,
 }))
 
 vi.mock('../../storage/tickets', () => ({
@@ -59,6 +59,9 @@ vi.mock('../phases/executionPhase', () => ({
 
 vi.mock('../../log/commandLogger', () => ({
   withCommandLoggingAsync: async (_tid: string, _eid: string, _phase: string, fn: () => Promise<unknown>) => fn(),
+  // Every git command now goes through the shared runner, which logs; a mock
+  // that omits this export makes the runner throw rather than stay quiet.
+  logCommand: vi.fn(),
 }))
 
 import { handleIntegration } from '../phases/integrationPhase'
@@ -99,32 +102,16 @@ describe('handleIntegration', () => {
   })
 
   it('successful integration defers the remote update until manual verification', async () => {
-    getLatestPhaseArtifactMock.mockImplementation((_ticketId: string, artifactType: string) => artifactType === 'manual_qa_summary'
-      ? {
-          content: JSON.stringify({
-            schemaVersion: 1,
-            artifact: 'manual_qa_summary',
-            ticketId: 'DEMO-1',
-            version: 2,
-            outcome: 'waived_through',
-            createdFixBeadIds: ['qa-fix-1'],
-            improvementTicketIds: ['DEMO-2'],
-            waivedItemIds: ['qa-v2-001'],
-            waivedItems: [{ itemId: 'qa-v2-001', reason: 'Accepted.' }],
-            startedAt: '2026-07-13T10:00:00.000Z',
-            completedAt: '2026-07-13T10:01:00.000Z',
-            durationMs: 60_000,
-            itemCounts: { pass: 0, fail: 0, waive: 1, improvement: 0, pending: 0 },
-            requiredItemCount: 1,
-            optionalItemCount: 0,
-            evidenceCount: 0,
-            nextAction: 'integrate',
-            coverage: { covered: 1, partiallyCovered: 0, uncovered: 0, notApplicable: 0 },
-            modelCapability: null,
-            idempotencyKey: '2:waived_through',
-          }),
-        }
-      : undefined)
+    // The canonical-first read and its artifact fallback are one reader now,
+    // and its own tests cover the envelope shapes; this drives its result.
+    readManualQaDeliverySummaryMock.mockReturnValue({
+      version: 2,
+      outcome: 'waived_through',
+      createdFixBeadIds: ['qa-fix-1'],
+      improvementTicketIds: ['DEMO-2'],
+      waivedItemIds: ['qa-v2-001'],
+      skipReason: null,
+    })
     const sendEvent = vi.fn<(event: TicketEvent) => void>()
     await handleIntegration(TEST.ticketId, context, sendEvent)
 

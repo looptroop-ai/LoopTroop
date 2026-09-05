@@ -47,7 +47,12 @@ export async function validateJson(c: Context, next: Next) {
       return
     }
     const contentType = c.req.header('content-type')
-    if (contentType && !contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+    // `text/event-stream` used to be allowed through here. No route sends it as
+    // a *request* type — it is a response type — and letting it past skipped
+    // both the 415 and the size limit, so a handler calling `c.req.json()` read
+    // an uncapped body. A route that genuinely needs a non-JSON stream is
+    // exempted by path, as Manual QA evidence is above.
+    if (contentType && !contentType.includes('application/json')) {
       return c.json({ error: 'Content-Type must be application/json' }, 415)
     }
 

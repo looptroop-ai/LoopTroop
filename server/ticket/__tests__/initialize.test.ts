@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { appendLogEvent } from '../../log/executionLog'
-import { getCommandLogContext, withCommandLogging } from '../../log/commandLogger'
+import { getCommandLogContext, withCommandLoggingAsync } from '../../log/commandLogger'
 import { attachProject } from '../../storage/projects'
 import { createTicket, getTicketPaths } from '../../storage/tickets'
 import { TEST } from '../../test/factories'
@@ -62,7 +62,7 @@ describe('initializeTicket', () => {
     repoManager.cleanup()
   })
 
-  it('materializes a reserved ticket skeleton when command logs are persisted during initialization', () => {
+  it('materializes a reserved ticket skeleton when command logs are persisted during initialization', async () => {
     const repoDir = repoManager.createRepo()
     const project = attachProject({
       folderPath: repoDir,
@@ -87,7 +87,7 @@ describe('initializeTicket', () => {
     )
 
     activeWorktreePath = paths.worktreePath
-    const init = withCommandLogging(
+    const init = await withCommandLoggingAsync(
       ticket.id,
       ticket.externalId,
       'DRAFT',
@@ -128,7 +128,7 @@ describe('initializeTicket', () => {
     expect(unsafeAppendCount).toBe(0)
   })
 
-  it('blocks worktree creation when the project already tracks LoopTroop runtime paths', () => {
+  it('blocks worktree creation when the project already tracks LoopTroop runtime paths', async () => {
     const repoDir = repoManager.createRepo()
     const trackedRuntimePath = resolve(repoDir, '.looptroop', 'worktrees', 'OLD-1')
     mkdirSync(resolve(repoDir, '.looptroop', 'worktrees'), { recursive: true })
@@ -151,7 +151,7 @@ describe('initializeTicket', () => {
 
     let initError: unknown = null
     try {
-      initializeTicket({
+      await initializeTicket({
         projectFolder: repoDir,
         externalId: ticket.externalId,
       })
@@ -177,7 +177,7 @@ describe('initializeTicket', () => {
    * ticket's branch.
    */
   describe('ignore rules in the ticket worktree', () => {
-    function initializeFor(repoDir: string, ignoreMode: 'repo' | 'local' | 'skip') {
+    async function initializeFor(repoDir: string, ignoreMode: 'repo' | 'local' | 'skip') {
       const project = attachProject({
         folderPath: repoDir,
         name: TEST.projectName,
@@ -189,7 +189,7 @@ describe('initializeTicket', () => {
         title: `Worktree ignores with ${ignoreMode}`,
         description: 'Regression coverage for ignore rules inside ticket worktrees.',
       })
-      const init = initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+      const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
 
       // Runtime directories the worktree acquires as soon as work starts.
       mkdirSync(resolve(init.worktreePath, '.looptroop'), { recursive: true })
@@ -197,12 +197,12 @@ describe('initializeTicket', () => {
       return init
     }
 
-    it('ignores LoopTroop runtime paths in a worktree the .gitignore has not reached yet', () => {
+    it('ignores LoopTroop runtime paths in a worktree the .gitignore has not reached yet', async () => {
       const repoDir = repoManager.createRepo()
       // Deliberately not committed: this is the window between attaching a
       // project and pushing the .gitignore change, during which a worktree
       // branched from the base branch cannot see it.
-      const init = initializeFor(repoDir, 'repo')
+      const init = await initializeFor(repoDir, 'repo')
 
       // Closed through the shared exclude file, not a .gitignore of its own: a
       // ticket worktree must contain that ticket's changes and nothing else.
@@ -210,9 +210,9 @@ describe('initializeTicket', () => {
       expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
     })
 
-    it('ignores LoopTroop runtime paths in the worktree via the shared exclude file', () => {
+    it('ignores LoopTroop runtime paths in the worktree via the shared exclude file', async () => {
       const repoDir = repoManager.createRepo()
-      const init = initializeFor(repoDir, 'local')
+      const init = await initializeFor(repoDir, 'local')
 
       // .git/info/exclude lives in the common directory, so the worktree
       // inherits it without any file of its own.
@@ -220,9 +220,9 @@ describe('initializeTicket', () => {
       expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
     })
 
-    it('writes nothing into the worktree when the project chose to skip', () => {
+    it('writes nothing into the worktree when the project chose to skip', async () => {
       const repoDir = repoManager.createRepo()
-      const init = initializeFor(repoDir, 'skip')
+      const init = await initializeFor(repoDir, 'skip')
 
       expect(existsSync(resolve(init.worktreePath, '.gitignore'))).toBe(false)
       // Untracked and visible, which is what the project asked for by taking
@@ -230,7 +230,7 @@ describe('initializeTicket', () => {
       expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('?? .looptroop/\n?? .ticket/')
     })
 
-    it('writes no exclude file at all when the .gitignore is already committed', () => {
+    it('writes no exclude file at all when the .gitignore is already committed', async () => {
       const repoDir = repoManager.createRepo()
       writeFileSync(resolve(repoDir, '.gitignore'), '/.looptroop/\n/.ticket/\n')
       git(repoDir, ['add', '.gitignore'])
@@ -238,7 +238,7 @@ describe('initializeTicket', () => {
       const excludePath = resolve(repoDir, git(repoDir, ['rev-parse', '--git-path', 'info/exclude']))
       const excludeBefore = readFileSync(excludePath, 'utf8')
 
-      const init = initializeFor(repoDir, 'repo')
+      const init = await initializeFor(repoDir, 'repo')
 
       expect(git(init.worktreePath, ['status', '--porcelain'])).toBe('')
       expect(readFileSync(resolve(init.worktreePath, '.gitignore'), 'utf8')).toBe('/.looptroop/\n/.ticket/\n')

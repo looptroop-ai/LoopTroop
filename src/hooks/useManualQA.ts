@@ -198,7 +198,15 @@ function normalizeDraft(value: unknown): ManualQaDraft | null {
   const raw = asRecord(value)
   const rawResults = raw.results
   if (!rawResults) return null
-  if (!Array.isArray(rawResults)) return { results: rawResults as Record<string, ManualQaItemResult> }
+  // The skip reason is part of the draft, and this used to return `{ results }`
+  // alone — so the restore that reads `restored.skipReason` found a field the
+  // normaliser had just dropped, and a typed reason vanished on reload.
+  const skipReason = typeof raw.skipReason === 'string' && raw.skipReason.trim()
+    ? { skipReason: raw.skipReason }
+    : {}
+  if (!Array.isArray(rawResults)) {
+    return { results: rawResults as Record<string, ManualQaItemResult>, ...skipReason }
+  }
   const improvements = Array.isArray(raw.improvements) ? raw.improvements.map(asRecord) : []
   const improvementById = new Map(improvements.map((entry) => [String(entry.id ?? ''), entry]))
   const results: Record<string, ManualQaItemResult> = {}
@@ -229,7 +237,7 @@ function normalizeDraft(value: unknown): ManualQaDraft | null {
       } : undefined,
     }
   }
-  return { results }
+  return { results, ...skipReason }
 }
 
 function numberValue(value: unknown): number {

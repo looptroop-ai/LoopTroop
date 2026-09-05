@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import * as jsYaml from 'js-yaml'
 import type { TicketContext, TicketEvent } from '../../machines/types'
 import {
+  getActivePhaseAttempt,
   getLatestPhaseArtifact,
   getTicketPaths,
   insertPhaseArtifact,
@@ -61,7 +62,7 @@ import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import { appendAcceptedRawAttempt, appendRejectedRawAttempt } from '../../lib/structuredRawAttempts'
 import type { RawAttempt } from '../../council/types'
-import { readManualQaDeliverySummary } from '../../phases/manualQa/delivery'
+import { readManualQaDeliverySummaryForTicket } from '../../phases/manualQa/delivery'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
 
 const PULL_REQUEST_REPORT_ARTIFACT = 'pull_request_report'
@@ -501,7 +502,10 @@ async function runCandidateFileAudit(input: {
       sessionOwnership: {
         ticketId: input.ticketId,
         phase: 'CREATING_PULL_REQUEST',
-        phaseAttempt: 1,
+        // CREATING_PULL_REQUEST is attempt-tracked, and a restart archives
+        // attempt 1 — the literal made every later attempt's session claim
+        // ownership of the archived one, as every other phase avoids doing.
+        phaseAttempt: getActivePhaseAttempt(input.ticketId, 'CREATING_PULL_REQUEST') ?? 1,
         forceFresh: true,
         memberId: input.model,
         step: 'candidate_file_audit',
@@ -618,27 +622,13 @@ export function buildPullRequestContext(ticketId: string, context: TicketContext
   }
 
   const finalTestArtifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
-  const canonicalManualQaSummary = readManualQaDeliverySummary(ticketDir)
-  const manualQaArtifact = canonicalManualQaSummary
-    ? null
-    : getLatestPhaseArtifact(ticketId, 'manual_qa_summary')
-  let manualQaSummary = canonicalManualQaSummary
-    ? JSON.stringify(canonicalManualQaSummary)
-    : manualQaArtifact?.content ?? ''
-  if (manualQaSummary) {
-    try {
-      const parsed = jsYaml.load(manualQaSummary)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
-        const nested = (parsed as { value?: unknown }).value
-        if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-          manualQaSummary = JSON.stringify(nested)
-        }
-      }
-    } catch {
-      // Keep malformed content unchanged so the prompt still exposes the
-      // durable artifact and the compact formatter can safely omit it.
-    }
-  }
+  // Canonical files first, then the stored artifact — through the same reader
+  // the integration phase uses. This path had its own fallback that unwrapped a
+  // `value` key and handed whatever it found to the prompt without validating
+  // it or refusing a failed outcome, so the two phases could describe the same
+  // Manual QA run differently, or describe one the other had refused.
+  const deliverySummary = readManualQaDeliverySummaryForTicket(ticketId)
+  const manualQaSummary = deliverySummary ? JSON.stringify(deliverySummary) : ''
   return {
     ticketState,
     contextParts: buildMinimalContext('pull_request', ticketState),
@@ -717,7 +707,25 @@ export async function handleCreatePullRequest(
           candidateFileAudit.includedFiles,
         )
         if (!rewrite.success || !rewrite.commitHash) {
-          throw new Error(`Candidate file audit rewrite failed: ${rewrite.message}`)
+          // Recorded before rethrowing, like the push and PR-creation failures
+          // below. The rewrite is the step that discards work back to the merge
+          // base, so a dirty tree or a failed checkout is exactly the case
+          // somebody needs the receipt for — and it used to throw past it.
+          const message = `Candidate file audit rewrite failed: ${rewrite.message}`
+          recordGitRecoveryReceipt(
+            ticketId,
+            captureGitRecoveryReceipt({
+              projectPath: worktreePath,
+              phase: 'CREATING_PULL_REQUEST',
+              step: 'rewrite_candidate_commit',
+              error: message,
+              branch: headBranch,
+              baseBranch,
+              candidateSha: candidateCommitSha,
+            }),
+            'CREATING_PULL_REQUEST',
+          )
+          throw new Error(message)
         }
         candidateCommitSha = rewrite.commitHash
         candidateFileAudit = {
@@ -783,7 +791,7 @@ export async function handleCreatePullRequest(
         sessionOwnership: {
           ticketId,
           phase: 'CREATING_PULL_REQUEST',
-          phaseAttempt: 1,
+          phaseAttempt: getActivePhaseAttempt(ticketId, 'CREATING_PULL_REQUEST') ?? 1,
           keepActive: true,
           forceFresh: true,
           memberId: mainImplementer,
@@ -1006,7 +1014,7 @@ export async function handleCreatePullRequest(
       let currentStep = 'push_candidate_branch'
 
       try {
-        const pushResult = pushBranchRef({
+        const pushResult = await pushBranchRef({
           projectPath: worktreePath,
           destinationBranch: headBranch,
           sourceRef: candidateCommitSha,
@@ -1027,7 +1035,7 @@ export async function handleCreatePullRequest(
         )
 
         currentStep = 'create_or_update_pull_request'
-        pullRequest = createOrUpdateDraftPullRequest({
+        pullRequest = await createOrUpdateDraftPullRequest({
           projectPath: worktreePath,
           branchName: headBranch,
           baseBranch,
@@ -1101,7 +1109,7 @@ export function refreshPullRequestReport(ticketId: string, report: PullRequestRe
   upsertLatestPhaseArtifact(ticketId, PULL_REQUEST_REPORT_ARTIFACT, 'CREATING_PULL_REQUEST', JSON.stringify(report))
 }
 
-export function refreshPullRequestState(projectPath: string, branchName: string, baseBranch: string): PullRequestInfo | null {
+export function refreshPullRequestState(projectPath: string, branchName: string, baseBranch: string): Promise<PullRequestInfo | null> {
   return getPullRequestForBranch(projectPath, branchName, baseBranch)
 }
 
@@ -1132,7 +1140,7 @@ function verifyTicketWorktreeClean(ticketId: string) {
   ensureWorktreeClean(paths.worktreePath)
 }
 
-export function completeMergedPullRequest(input: {
+export async function completeMergedPullRequest(input: {
   ticketId: string
   externalId: string
   projectPath: string
@@ -1141,8 +1149,8 @@ export function completeMergedPullRequest(input: {
   candidateCommitSha: string | null
   prReport: PullRequestReport
   skipRemoteMerge?: boolean
-}): MergeCompletionReport {
-  const existingPullRequest = getPullRequestForBranch(input.projectPath, input.headBranch, input.baseBranch)
+}): Promise<MergeCompletionReport> {
+  const existingPullRequest = await getPullRequestForBranch(input.projectPath, input.headBranch, input.baseBranch)
   if (!existingPullRequest) {
     throw new Error(`No pull request found for branch ${input.headBranch}.`)
   }
@@ -1162,7 +1170,7 @@ export function completeMergedPullRequest(input: {
     if (!input.skipRemoteMerge && pr.state !== 'merged') {
       if (pr.state === 'draft') {
         currentStep = 'mark_pull_request_ready'
-        pr = markPullRequestReady(input.projectPath, pr.number)
+        pr = await markPullRequestReady(input.projectPath, pr.number)
         currentStep = 'verify_pull_request_candidate'
         assertPullRequestMatchesExpected({
           pr,
@@ -1173,7 +1181,7 @@ export function completeMergedPullRequest(input: {
       }
 
       currentStep = 'merge_pull_request'
-      pr = mergePullRequest(input.projectPath, pr.number, pr.title)
+      pr = await mergePullRequest(input.projectPath, pr.number, pr.title)
     }
 
     if (pr.state !== 'merged') {
@@ -1182,9 +1190,9 @@ export function completeMergedPullRequest(input: {
 
     currentStep = 'verify_remote_merge'
     const verificationSha = input.candidateCommitSha ?? pr.headRefOid
-    const remoteVerification = verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, verificationSha ?? '')
+    const remoteVerification = await verifyRemoteBaseContainsCommit(input.projectPath, input.baseBranch, verificationSha ?? '')
     const remoteBranchDelete = pr.state === 'merged'
-      ? tryDeleteRemoteBranch(input.projectPath, input.headBranch)
+      ? await tryDeleteRemoteBranch(input.projectPath, input.headBranch)
       : { deleted: false, warning: null as string | null }
 
     const report: MergeCompletionReport = {

@@ -52,6 +52,7 @@ export interface OpenCodeRunCallbacks {
 
 import type { PromptTimeoutKind } from '@shared/promptTimeout'
 import type { WorkflowPhaseId } from '@shared/workflowMeta'
+import { throwIfCancelled } from '../lib/abort'
 export type { PromptTimeoutKind }
 
 export interface OpenCodePromptDispatchEvent {
@@ -611,6 +612,12 @@ export async function runOpenCodeSessionPrompt({
 
   let response = ''
   const promptTimeoutMs = readRemaining()
+  // Refused before dispatch rather than dispatched with an expired clock. A
+  // budget already at zero cannot arm a timer that will ever fire, so without
+  // this the prompt ran unbounded.
+  if (promptTimeoutMs !== undefined && promptTimeoutMs <= 0) {
+    throw buildDeadlineTimeoutError(deadlineScope, workBudget?.totalMs ?? 0, sessionOwnership)
+  }
   const deadlineController = promptTimeoutMs === undefined ? undefined : new AbortController()
   const retryController = new AbortController()
   const combinedSignal = signal
@@ -881,7 +888,9 @@ export async function runOpenCodeSessionPrompt({
     const latestAssistant = analyzeAssistantMessages(messages)
     latestAssistantResponse = latestAssistant.responseText
     responseMeta = latestAssistant.responseMeta
-  } catch {
+  } catch (err) {
+    // A cancellation is not a transcript that happened to be unreadable.
+    throwIfCancelled(err, signal)
     messages = []
   }
   responseMeta = mergeSessionErrorIntoResponseMeta(responseMeta, sessionErrorEvent)

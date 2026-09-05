@@ -52,8 +52,8 @@ function checklistItem(id: string, required = true): ManualQaChecklist['items'][
   }
 }
 
-function prepareFixture(items = [checklistItem('item-one')]) {
-  const setup = createInitializedTestTicket(repoManager, { title: 'Manual QA submission' })
+async function prepareFixture(items = [checklistItem('item-one')]) {
+  const setup = await createInitializedTestTicket(repoManager, { title: 'Manual QA submission' })
   const clean = captureFinalTestDirtyFiles(setup.paths.worktreePath)
   insertPhaseArtifact(setup.ticket.id, {
     phase: 'RUNNING_FINAL_TEST',
@@ -119,7 +119,7 @@ function byteStream(value: Uint8Array) {
 }
 
 function terminalSummary(
-  setup: ReturnType<typeof prepareFixture>,
+  setup: Awaited<ReturnType<typeof prepareFixture>>,
   outcome: 'passed' | 'skipped',
   skipReason?: string,
 ): ManualQaSummary {
@@ -155,7 +155,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('persists top-level summary artifacts and re-dispatches a durable untransitioned outcome', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const firstEvent = vi.fn()
     const summary = await submitManualQa({
       ticketId: setup.ticket.id,
@@ -204,7 +204,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('repairs a missing phase summary before replaying a canonical terminal outcome', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     persistManualQaSummary(setup.paths.ticketDir, terminalSummary(setup, 'passed'))
 
     const sendEvent = vi.fn()
@@ -222,7 +222,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('repairs missing skip and summary phase artifacts after a terminal skip crash window', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     const actionId = 'skip-crash-window'
     reserveManualQaSubmissionOperation({
@@ -271,7 +271,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects a conflicting operation before writing canonical submission results', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       path: paths.operationPath,
@@ -294,7 +294,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects invalid action IDs before reserving an operation', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const operationPath = getManualQaStoragePaths(setup.paths.ticketDir, 1).operationPath
     await expect(submitManualQa({
       ticketId: setup.ticket.id,
@@ -307,7 +307,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('reuses the immutable canonical results snapshot on a partial-operation retry', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const paths = getManualQaStoragePaths(setup.paths.ticketDir, 1)
     reserveManualQaSubmissionOperation({
       path: paths.operationPath,
@@ -336,7 +336,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('supports a required waiver without a reason, optional pending, and skip completion paths', async () => {
-    const waived = prepareFixture()
+    const waived = await prepareFixture()
     waived.draft.results[0] = { ...waived.draft.results[0]!, outcome: 'waive', reason: '' }
     expect(await submitManualQa({
       ticketId: waived.ticket.id,
@@ -350,7 +350,7 @@ describe('Manual QA submission recovery and integrity', () => {
       waivedItems: [{ itemId: 'item-one', reason: '' }],
     })
 
-    const optional = prepareFixture([checklistItem('optional-pending', false)])
+    const optional = await prepareFixture([checklistItem('optional-pending', false)])
     optional.draft.results[0] = { ...optional.draft.results[0]!, outcome: 'pending' }
     expect((await submitManualQa({
       ticketId: optional.ticket.id,
@@ -360,7 +360,7 @@ describe('Manual QA submission recovery and integrity', () => {
       sendEvent: vi.fn(),
     })).outcome).toBe('passed')
 
-    const skipped = prepareFixture()
+    const skipped = await prepareFixture()
     const skipEvent = vi.fn()
     const skippedSummary = await skipManualQa({
       ticketId: skipped.ticket.id,
@@ -380,7 +380,7 @@ describe('Manual QA submission recovery and integrity', () => {
 
 
   it('stores no reason as null and reads the skip back through the shared audit trail', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     await skipManualQa({
       ticketId: setup.ticket.id,
       version: 1,
@@ -407,7 +407,7 @@ describe('Manual QA submission recovery and integrity', () => {
     outcome,
     expectedSummaryOutcome,
   }) => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     const evidence = await streamManualQaEvidence({
       ticketDir: setup.paths.ticketDir,
       version: 1,
@@ -442,7 +442,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('skips with incomplete Fail and Improvement data while preserving the draft and creating no work', async () => {
-    const setup = prepareFixture([
+    const setup = await prepareFixture([
       checklistItem('incomplete-failure'),
       checklistItem('incomplete-improvement'),
     ])
@@ -487,7 +487,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('resumes a failed round without duplicating fresh phase attempts', async () => {
-    const setup = prepareFixture()
+    const setup = await prepareFixture()
     setup.draft.results[0] = {
       ...setup.draft.results[0]!,
       outcome: 'fail',
@@ -546,7 +546,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('moves fix-bead generation failures to the error path before creating any child work', async () => {
-    const setup = prepareFixture([checklistItem('failed-item'), checklistItem('improvement-item')])
+    const setup = await prepareFixture([checklistItem('failed-item'), checklistItem('improvement-item')])
     setup.draft.results = [
       {
         ...setup.draft.results[0]!,
@@ -593,7 +593,7 @@ describe('Manual QA submission recovery and integrity', () => {
   })
 
   it('rejects evidence attached to a different checklist item', async () => {
-    const setup = prepareFixture([checklistItem('item-one'), checklistItem('item-two')])
+    const setup = await prepareFixture([checklistItem('item-one'), checklistItem('item-two')])
     const evidence = await streamManualQaEvidence({
       ticketDir: setup.paths.ticketDir,
       version: 1,
@@ -623,7 +623,7 @@ describe('Manual QA submission recovery and integrity', () => {
     item.expectedResult = 'The chosen value remains selected after reload'
     item.prdRefs = [{ ref: 'EPIC-1/STORY-1/AC-1', coverage: 'full' }]
     item.beadRefs = ['source-bead']
-    const setup = prepareFixture([item])
+    const setup = await prepareFixture([item])
     writeFileSync(resolve(setup.paths.ticketDir, 'prd.yaml'), [
       'epics:',
       '  - id: EPIC-1',

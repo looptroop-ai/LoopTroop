@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { spawnFromSyncResult } from '../../test/childProcess'
 
 const spawnSyncMock = vi.fn()
+// Async commands run through `spawn`; both stubs answer from one description.
+const spawnMock = vi.fn((...args: unknown[]) => spawnFromSyncResult(
+  spawnSyncMock(...args) as ReturnType<typeof import('node:child_process').spawnSync>,
+))
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   return {
     ...actual,
     spawnSync: spawnSyncMock,
+    spawn: spawnMock,
   }
 })
 
@@ -31,13 +37,14 @@ describe('server/git/push', () => {
   beforeEach(() => {
     vi.resetModules()
     spawnSyncMock.mockReset()
+    spawnMock.mockClear()
   })
 
   it('pushes branch refs without forcing progress output', async () => {
     spawnSyncMock.mockReturnValue(makeSpawnResult())
 
     const { pushBranchRef } = await import('../push')
-    const result = pushBranchRef({
+    const result = await pushBranchRef({
       projectPath: '/repo',
       destinationBranch: 'TEST-1',
       sourceRef: 'HEAD',
@@ -45,13 +52,15 @@ describe('server/git/push', () => {
     })
 
     expect(result).toEqual({ pushed: true })
+    // The push runs asynchronously now, so the options carry cwd and env only;
+    // `encoding` belonged to the synchronous call this replaced.
     expect(spawnSyncMock).toHaveBeenCalledWith('git', [
       '-C',
       '/repo',
       'push',
       'origin',
       'HEAD:refs/heads/TEST-1',
-    ], expect.objectContaining({ encoding: 'utf8' }))
+    ], expect.objectContaining({ env: expect.any(Object) }))
     expect(spawnSyncMock.mock.calls[0]?.[1]).not.toContain('--progress')
   })
 
@@ -83,7 +92,7 @@ describe('server/git/push', () => {
 
     async function push() {
       const { pushBranchRef } = await import('../push')
-      pushBranchRef({ projectPath: '/repo', destinationBranch: 'TEST-1', sourceRef: 'HEAD', maxRetries: 1 })
+      await pushBranchRef({ projectPath: '/repo', destinationBranch: 'TEST-1', sourceRef: 'HEAD', maxRetries: 1 })
     }
 
     for (const variable of tokenVars) {

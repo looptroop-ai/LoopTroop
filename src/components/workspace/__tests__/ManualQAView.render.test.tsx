@@ -19,7 +19,13 @@ const mocks = vi.hoisted(() => ({
   includeDrift: vi.fn(),
   discardDrift: vi.fn(),
   logSection: vi.fn((_props: Record<string, unknown>) => <div data-testid="manual-qa-log" />),
+  artifacts: vi.fn(() => ({ artifacts: [], status: 'success', isLoading: false, isFetching: false, isError: false, error: null, refetch: vi.fn() })),
 }))
+
+vi.mock('@/hooks/useTicketArtifacts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/useTicketArtifacts')>()
+  return { ...actual, useTicketArtifacts: mocks.artifacts }
+})
 
 vi.mock('@/hooks/useProjects', () => ({
   useProjects: () => ({ data: [{ id: 1, manualQaOverride: true }] }),
@@ -836,5 +842,144 @@ describe('ManualQAView recovery behavior', () => {
     expect(mocks.round).toHaveBeenLastCalledWith(generatingTicket.id, 1, true)
     expect(screen.getByRole('heading', { name: 'Manual QA' })).toBeInTheDocument()
     expect(screen.queryByText('Manual QA version not found')).not.toBeInTheDocument()
+  })
+
+  it('tells the person running the checks that the checklist was repaired', () => {
+    // The companion belongs to the generating phase, whose artifact chip is not
+    // where anyone stands while doing Manual QA. Showing it only there meant an
+    // operator worked through a repaired checklist believing it was a clean
+    // first pass.
+    mocks.artifacts.mockReturnValue({
+      artifacts: [{
+        id: 1,
+        phase: 'GENERATING_QA_CHECKLIST',
+        phaseAttempt: 1,
+        artifactType: 'ui_artifact_companion:manual_qa_checklist',
+        content: JSON.stringify({
+          baseArtifactType: 'manual_qa_checklist',
+          generatedAt: '2026-07-14T10:00:00.000Z',
+          payload: {
+            structuredOutput: {
+              repairApplied: true,
+              repairWarnings: [],
+              autoRetryCount: 1,
+              validationError: 'Manual QA parser rejected the model output.',
+            },
+          },
+        }),
+        filePath: null,
+        createdAt: '2026-07-14T10:00:00.000Z',
+        updatedAt: '2026-07-14T10:00:00.000Z',
+      }],
+      status: 'success',
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText(/LoopTroop adjusted this artifact/i)).toBeInTheDocument()
+  })
+
+  it('shows the repair trail when generation produced no checklist at all', () => {
+    // The run that used up its retries writes the companion and no checklist,
+    // so the view takes its "not available yet" branch — which is exactly the
+    // run whose failed attempts the operator's next move depends on.
+    mocks.round.mockReturnValue({ data: undefined, isLoading: false, error: null, refetch: mocks.refetchRound })
+    mocks.artifacts.mockReturnValue({
+      artifacts: [{
+        id: 1,
+        phase: 'GENERATING_QA_CHECKLIST',
+        phaseAttempt: 1,
+        artifactType: 'ui_artifact_companion:manual_qa_checklist',
+        content: JSON.stringify({
+          baseArtifactType: 'manual_qa_checklist',
+          generatedAt: '2026-07-14T10:00:00.000Z',
+          // Both fields, as the give-up path writes them: the top-level one is
+          // what says the generation itself failed, rather than an attempt
+          // within a generation that went on to succeed.
+          payload: {
+            validationError: 'Manual QA checklist generation failed.',
+            structuredOutput: {
+              repairApplied: false,
+              repairWarnings: [],
+              autoRetryCount: 2,
+              validationError: 'Manual QA checklist generation failed.',
+            },
+          },
+        }),
+        filePath: null,
+        createdAt: '2026-07-14T10:00:00.000Z',
+        updatedAt: '2026-07-14T10:00:00.000Z',
+      }],
+      status: 'success',
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText(/Manual QA artifacts are not available yet/i)).toBeInTheDocument()
+    // "Intervention details", not "LoopTroop adjusted" — the companion carries
+    // a validationError, and describing a generation that gave up as completed
+    // is what this screen and the artifact chip used to disagree about.
+    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+  })
+
+  it('does not describe a failed generation as a completed one', () => {
+    // Same companion, but a checklist exists — a repair that succeeded on a
+    // later attempt. This is the success tree, which omitted the status
+    // entirely and so defaulted every generation to "completed".
+    mocks.artifacts.mockReturnValue({
+      artifacts: [{
+        id: 1,
+        phase: 'GENERATING_QA_CHECKLIST',
+        phaseAttempt: 1,
+        artifactType: 'ui_artifact_companion:manual_qa_checklist',
+        content: JSON.stringify({
+          baseArtifactType: 'manual_qa_checklist',
+          generatedAt: '2026-07-14T10:00:00.000Z',
+          payload: {
+            validationError: 'Manual QA checklist generation failed.',
+            structuredOutput: {
+              repairApplied: false,
+              repairWarnings: [],
+              autoRetryCount: 2,
+              validationError: 'Manual QA checklist generation failed.',
+            },
+          },
+        }),
+        filePath: null,
+        createdAt: '2026-07-14T10:00:00.000Z',
+        updatedAt: '2026-07-14T10:00:00.000Z',
+      }],
+      status: 'success',
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.getByText(/Intervention details for this artifact/i)).toBeInTheDocument()
+    expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
+  })
+
+  it('says nothing when the checklist generated first time', () => {
+    mocks.artifacts.mockReturnValue({
+      artifacts: [], status: 'success', isLoading: false, isFetching: false, isError: false, error: null, refetch: vi.fn(),
+    } as unknown as ReturnType<typeof mocks.artifacts>)
+
+    renderWithProviders(<ManualQAView ticket={waitingTicket()} />)
+
+    expect(screen.queryByText(/LoopTroop adjusted this artifact/i)).not.toBeInTheDocument()
   })
 })

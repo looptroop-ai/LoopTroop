@@ -4189,19 +4189,6 @@ export async function handleCoverageVerification(
       return
     }
 
-    if (phase !== 'interview' && gapDisposition.shouldLoopBack) {
-      emitModelSystemLog(
-        ticketId,
-        context.externalId,
-        stateLabel,
-        'info',
-        `Coverage gaps detected by winning model ${winnerId}. Looping back for refinement.`,
-        winnerId,
-      )
-      sendEvent({ type: 'GAPS_FOUND' })
-      return
-    }
-
     const reviewReason = phase === 'interview' && gapDisposition.terminationReason === 'follow_up_generation_failed'
       ? interviewCoverageResolution?.validationError
         ?? 'Coverage found interview gaps but produced no parseable follow-up questions.'

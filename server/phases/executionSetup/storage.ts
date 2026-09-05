@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { runGitSync } from '../../git/runCommand'
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { eq } from 'drizzle-orm'
@@ -50,13 +50,9 @@ export function isAllowedExecutionSetupRuntimePath(path: string): boolean {
 }
 
 function listGitPaths(worktreePath: string, args: string[]): string[] {
-  const result = spawnSync('git', ['-C', worktreePath, ...args], {
-    encoding: 'utf8',
-  })
-  if (result.status !== 0 || result.error) {
-    return []
-  }
-  return (result.stdout ?? '')
+  const result = runGitSync(worktreePath, args)
+  if (!result.ok) return []
+  return result.stdout
     .split('\n')
     .map((entry) => normalizeRepoRelativePath(entry))
     .filter(Boolean)

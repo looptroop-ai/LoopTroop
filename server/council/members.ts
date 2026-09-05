@@ -1,3 +1,5 @@
+import { parseLockedCouncilMembers } from '../storage/ticketQueries'
+
 export const DEFAULT_MAIN_IMPLEMENTER = 'openai/codex-mini-latest'
 
 export const DEFAULT_COUNCIL_MEMBERS = [
@@ -5,30 +7,16 @@ export const DEFAULT_COUNCIL_MEMBERS = [
   'openai/gpt-5.3-codex',
 ] as const
 
-function normalizeCouncilMembers(modelIds: Array<string | null | undefined>): string[] {
-  const unique = new Set<string>()
-  const normalized: string[] = []
-
-  for (const modelId of modelIds) {
-    const trimmed = typeof modelId === 'string' ? modelId.trim() : ''
-    if (!trimmed || unique.has(trimmed)) continue
-    unique.add(trimmed)
-    normalized.push(trimmed)
-  }
-
-  return normalized
-}
-
+/**
+ * Reads a stored council-member list.
+ *
+ * Delegates to the locking path's parser rather than keeping a second one. The
+ * two disagreed: this used to drop non-string entries and keep the rest, while
+ * the lock validated the whole array and returned nothing on any bad element —
+ * so a profile could persist members that vanished the moment a ticket started,
+ * and the operator was told nothing.
+ */
 export function parseCouncilMembers(raw: string | null | undefined): string[] {
-  if (!raw) return []
-
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    return Array.isArray(parsed)
-      ? normalizeCouncilMembers(parsed.filter((value): value is string => typeof value === 'string'))
-      : []
-  } catch {
-    return []
-  }
+  return parseLockedCouncilMembers(raw)
 }
 

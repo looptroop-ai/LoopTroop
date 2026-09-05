@@ -1,5 +1,8 @@
-import { spawnSync } from 'node:child_process'
 import { getLatestPhaseArtifact } from '../../storage/tickets'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
+import { runGitSync } from '../../git/runCommand'
+import { parseGitStatusPorcelainZ } from '../../git/statusPorcelain'
 import { classifyWorktreePath } from '../../git/worktreeChanges'
 import {
   FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT,
@@ -73,62 +76,25 @@ export interface FinalTestCandidateResolution {
   audit?: FinalTestFileEffectsAudit
 }
 
-function normalizeAuditPath(filePath: string): string | null {
-  const trimmed = filePath.trim().replace(/\\/g, '/')
-  if (!trimmed || trimmed.includes('\0') || trimmed.includes('\n') || trimmed.includes('\r')) return null
-  if (trimmed.startsWith('/') || /^[A-Za-z]:\//.test(trimmed)) return null
-
-  const withoutDotPrefix = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
-  const segments = withoutDotPrefix.split('/').filter(Boolean)
-  if (segments.length === 0) return null
-  if (segments.some((segment) => segment === '.' || segment === '..')) return null
-
-  const normalized = segments.join('/')
-  if (
-    normalized === '.ticket'
-    || normalized.startsWith('.ticket/')
-    || normalized === '.looptroop'
-    || normalized.startsWith('.looptroop/')
-  ) {
-    return null
-  }
-
-  return normalized
-}
-
-function uniqueNormalizedPaths(files: string[]): string[] {
-  return [...new Set(files.map(normalizeAuditPath).filter((file): file is string => file !== null))]
-}
-
-function toLiteralPathspec(filePath: string): string {
-  return `:(literal)${filePath}`
-}
+const normalizeAuditPath = normalizeRepoScopedPath
+const uniqueNormalizedPaths = uniqueRepoScopedPaths
 
 function getContentSignature(worktreePath: string, filePath: string): string | null {
-  const result = spawnSync('git', ['-C', worktreePath, 'hash-object', '--no-filters', '--', filePath], {
-    encoding: 'utf8',
-  })
-  if (result.status !== 0 || result.error) return null
-  const hash = (result.stdout ?? '').trim()
-  return hash || null
+  // Not a pathspec: `hash-object` opens the file by name, and a `:(literal)`
+  // prefix makes it look for a file called that. Verified — it fails with
+  // "could not open ':(literal)…'". `check-ignore` rejects the magic outright.
+  const result = runGitSync(worktreePath, ['hash-object', '--no-filters', '--', filePath])
+  return result.ok ? result.stdout || null : null
 }
 
 function parseGitStatusPorcelain(stdout: string, worktreePath: string): FinalTestDirtyFile[] {
-  const entries = stdout.split('\0').filter(Boolean)
   const dirtyFiles: FinalTestDirtyFile[] = []
 
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index] ?? ''
-    if (entry.length < 4) continue
-
-    const indexStatus = entry[0] ?? ' '
-    const worktreeStatus = entry[1] ?? ' '
-    const rawPath = entry.slice(3)
-    if ((indexStatus === 'R' || indexStatus === 'C') && index + 1 < entries.length) {
-      index += 1
-    }
-
-    const path = normalizeAuditPath(rawPath)
+  // A rename reaches the audit as the destination plus a deletion of the
+  // original, so neither half of the move goes unrecorded.
+  for (const record of parseGitStatusPorcelainZ(stdout)) {
+    const { indexStatus, worktreeStatus } = record
+    const path = normalizeAuditPath(record.path)
     if (!path) continue
 
     dirtyFiles.push({
@@ -148,26 +114,20 @@ export function captureFinalTestDirtyFiles(
   worktreePath: string,
   explicitPaths: string[] = [],
 ): FinalTestDirtyFile[] {
-  const result = spawnSync('git', [
-    '-C',
-    worktreePath,
+  const result = runGitSync(worktreePath, [
     'status',
     '--porcelain=v1',
     '-z',
     '--untracked-files=all',
     '--',
-    '.',
-    ':(top,exclude).ticket',
-    ':(top,exclude).looptroop',
-  ], { encoding: 'utf8' })
+    ...REPO_SCOPE_PATHSPECS,
+  ], { trimOutput: false })
 
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message
-      ?? ((result.stderr ?? '').trim() || `exit code ${result.status ?? '?'}`)
-    throw new Error(`Failed to capture final-test dirty files: ${detail}`)
+  if (!result.ok) {
+    throw new Error(`Failed to capture final-test dirty files: ${result.errorDetail}`)
   }
 
-  const dirtyFiles = parseGitStatusPorcelain(result.stdout ?? '', worktreePath)
+  const dirtyFiles = parseGitStatusPorcelain(result.stdout, worktreePath)
   const seenPaths = new Set(dirtyFiles.map((file) => file.path))
 
   // Git omits ignored untracked files from normal status output. An exact
@@ -177,15 +137,7 @@ export function captureFinalTestDirtyFiles(
     if (seenPaths.has(path)) continue
     const contentSignature = getContentSignature(worktreePath, path)
     if (!contentSignature) continue
-    const trackedProbe = spawnSync('git', [
-      '-C',
-      worktreePath,
-      'ls-files',
-      '--error-unmatch',
-      '--',
-      path,
-    ], { encoding: 'utf8' })
-    const tracked = trackedProbe.status === 0 && !trackedProbe.error
+    const tracked = runGitSync(worktreePath, ['ls-files', '--error-unmatch', '--', literalPathspec(path)]).ok
     dirtyFiles.push({
       path,
       indexStatus: tracked ? ' ' : '?',
@@ -450,19 +402,15 @@ export function restoreTrackedFinalTestLocalFiles(
     .filter((file) => producedByPath.has(file) && !producedByPath.get(file)?.untracked)
   if (trackedLocalOnlyFiles.length === 0) return []
 
-  const result = spawnSync('git', [
-    '-C',
-    worktreePath,
+  const result = runGitSync(worktreePath, [
     'restore',
     '--staged',
     '--worktree',
     '--',
-    ...trackedLocalOnlyFiles.map(toLiteralPathspec),
-  ], { encoding: 'utf8' })
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message
-      ?? ((result.stderr ?? '').trim() || `exit code ${result.status ?? '?'}`)
-    throw new Error(`Failed to restore tracked local-only final-test file(s): ${detail}`)
+    ...trackedLocalOnlyFiles.map(literalPathspec),
+  ])
+  if (!result.ok) {
+    throw new Error(`Failed to restore tracked local-only final-test file(s): ${result.errorDetail}`)
   }
   return trackedLocalOnlyFiles
 }

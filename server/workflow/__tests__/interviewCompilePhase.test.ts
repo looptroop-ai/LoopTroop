@@ -67,7 +67,7 @@ describe('interview workflow phases', () => {
   })
 
   it('persists live interview draft parser metadata for the Council Drafting Questions status', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Show live interview parser notices',
     })
     const sendEvent = vi.fn()
@@ -218,7 +218,7 @@ describe('interview workflow phases', () => {
       description: 'Keep prompt output single-source while saving UI-only inspiration metadata separately.',
     })
 
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })
@@ -384,7 +384,7 @@ describe('interview workflow phases', () => {
       description: 'Persist tooltip-ready interview inspiration even when the model returns source text without question metadata.',
     })
 
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: ticket.externalId,
     })

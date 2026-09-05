@@ -763,8 +763,11 @@ export async function handleCoding(
   // Capture code-only diff for this bead (excludes .ticket/** metadata)
   if (beadStartCommit) {
     try {
-      const diffContent = await withCommandLoggingFieldsAsync({ beadId: finalizingBead.id }, async () => captureBeadDiff(paths.worktreePath, beadStartCommit))
-      upsertLatestPhaseArtifact(ticketId, getBeadDiffArtifactType(finalizingBead.id), 'CODING', diffContent)
+      const diffResult = await withCommandLoggingFieldsAsync({ beadId: finalizingBead.id }, async () => captureBeadDiff(paths.worktreePath, beadStartCommit))
+      // A git failure is not an empty diff: storing '' for one would tell every
+      // later phase the bead changed nothing.
+      if (!diffResult.ok) throw new Error(diffResult.error)
+      upsertLatestPhaseArtifact(ticketId, getBeadDiffArtifactType(finalizingBead.id), 'CODING', diffResult.diff)
     } catch (err) {
       emitPhaseLog(ticketId, context.externalId, 'CODING', 'info', `Could not capture bead diff: ${err instanceof Error ? err.message : 'Unknown error'}`, { source: 'system', modelId: codingModelId, beadId: finalizingBead.id })
     }

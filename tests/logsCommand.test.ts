@@ -87,6 +87,44 @@ describe('logs command', () => {
     expect(text).not.toContain('line 97')
   })
 
+  it('reads only the tail of a log larger than one chunk', async () => {
+    const configDir = useConfigDir()
+    const logPath = getDaemonLogPath(configDir)
+    // Comfortably past the 64 KiB the backward reader takes at a time, so the
+    // window has to be assembled from several chunks rather than from the one
+    // whole-file read this replaces.
+    for (let index = 1; index <= 4000; index += 1) {
+      appendFileSync(logPath, `line ${index} ${'x'.repeat(60)}\n`)
+    }
+    const stdout = captureStdout()
+
+    await logsCommand({ follow: false, lines: 2 })
+
+    const printed = stdout.text().trimEnd().split('\n')
+    expect(printed).toHaveLength(2)
+    expect(printed[0]).toContain('line 3999 ')
+    expect(printed[1]).toContain('line 4000 ')
+  })
+
+  it('prints the whole file when it holds fewer lines than requested', async () => {
+    const configDir = useConfigDir()
+    writeFileSync(getDaemonLogPath(configDir), 'first\nsecond\n')
+    const stdout = captureStdout()
+
+    await logsCommand({ follow: false, lines: 50 })
+
+    expect(stdout.text().trimEnd().split('\n')).toEqual(['first', 'second'])
+  })
+
+  it('prints nothing extra for an empty log', async () => {
+    const configDir = useConfigDir()
+    writeFileSync(getDaemonLogPath(configDir), '')
+    const stdout = captureStdout()
+
+    expect(await logsCommand({ follow: false })).toBe(0)
+    expect(stdout.text()).toBe('')
+  })
+
   it('ignores a nonsensical line count instead of printing nothing', async () => {
     const configDir = useConfigDir()
     writeFileSync(getDaemonLogPath(configDir), 'only line\n')

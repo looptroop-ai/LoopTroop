@@ -1,17 +1,5 @@
-import { spawnSync } from 'node:child_process'
 import { getErrorMessage } from '@shared/typeGuards'
-import * as commandLogger from '../log/commandLogger'
-
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
+import { runCommandSync, runGitOrThrow } from './runCommand'
 
 const GIT_PUSH_TIMEOUT_MS = 120_000
 
@@ -53,46 +41,24 @@ let ghInstalled: boolean | null = null
 
 function ghIsInstalled(): boolean {
   if (ghInstalled === null) {
-    const probe = spawnSync('gh', ['--version'], { encoding: 'utf8', timeout: 10_000 })
-    ghInstalled = !probe.error && probe.status === 0
+    // Local and memoised, so this one stays synchronous: it answers from the
+    // machine, never the network, and only ever runs once per daemon.
+    ghInstalled = runCommandSync('gh', ['--version'], { timeoutMs: 10_000, log: false }).ok
   }
   return ghInstalled
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    GIT_TERMINAL_PROMPT: '0',
-    GIT_ASKPASS: 'echo',
-    ...ghCredentialEnv(),
-  }
+  return { ...ghCredentialEnv() }
 }
 
-function runGit(projectPath: string, args: string[]): string {
-  const fullArgs = ['-C', projectPath, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8', timeout: GIT_PUSH_TIMEOUT_MS, env: gitEnv() })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-
-  if (result.signal === 'SIGTERM') {
-    const detail = `git command timed out after ${GIT_PUSH_TIMEOUT_MS / 1000}s: git ${args.join(' ')}`
-    logCmd('git', fullArgs, { ok: false, error: detail })
-    throw new Error(detail)
-  }
-
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
-
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-  return stdout
+/**
+ * Every command in this module reaches the remote, so all of them are async:
+ * a stalled push or `ls-remote` would otherwise hold the daemon thread for the
+ * full two minutes.
+ */
+function runGit(projectPath: string, args: string[]): Promise<string> {
+  return runGitOrThrow(projectPath, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitEnv() })
 }
 
 export interface PushBranchRefResult {
@@ -110,8 +76,8 @@ interface PushBranchRefParams {
   bypassHooks?: boolean
 }
 
-function readRemoteBranchSha(projectPath: string, remote: string, branch: string): string | null {
-  const stdout = runGit(projectPath, ['ls-remote', '--heads', remote, `refs/heads/${branch}`])
+async function readRemoteBranchSha(projectPath: string, remote: string, branch: string): Promise<string | null> {
+  const stdout = await runGit(projectPath, ['ls-remote', '--heads', remote, `refs/heads/${branch}`])
   const [line] = stdout.split('\n').filter(Boolean)
   if (!line) return null
 
@@ -119,7 +85,7 @@ function readRemoteBranchSha(projectPath: string, remote: string, branch: string
   return sha?.trim() || null
 }
 
-export function pushBranchRef({
+export async function pushBranchRef({
   projectPath,
   destinationBranch,
   sourceRef = 'HEAD',
@@ -127,13 +93,13 @@ export function pushBranchRef({
   forceWithLease = false,
   maxRetries = 3,
   bypassHooks = false,
-}: PushBranchRefParams): PushBranchRefResult {
+}: PushBranchRefParams): Promise<PushBranchRefResult> {
   const refspec = `${sourceRef}:refs/heads/${destinationBranch}`
   let leaseArg: string[] = []
 
   try {
     if (forceWithLease) {
-      const expectedRemoteSha = readRemoteBranchSha(projectPath, remote, destinationBranch)
+      const expectedRemoteSha = await readRemoteBranchSha(projectPath, remote, destinationBranch)
       leaseArg = [`--force-with-lease=refs/heads/${destinationBranch}:${expectedRemoteSha ?? ''}`]
     }
   } catch (error) {
@@ -145,7 +111,7 @@ export function pushBranchRef({
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      runGit(projectPath, ['push', ...(bypassHooks ? ['--no-verify'] : []), ...leaseArg, remote, refspec])
+      await runGit(projectPath, ['push', ...(bypassHooks ? ['--no-verify'] : []), ...leaseArg, remote, refspec])
       return { pushed: true }
     } catch (error) {
       const detail = getErrorMessage(error)

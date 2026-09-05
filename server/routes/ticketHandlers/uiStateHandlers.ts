@@ -6,7 +6,7 @@ import {
   getTicketByRef,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
-import { getErrorMessage } from '@shared/typeGuards'
+import { getErrorMessage, isRecord } from '@shared/typeGuards'
 import { getTicketParam } from './routeUtils'
 import { uiStateScopeSchema, upsertUiStateSchema } from './schemas'
 
@@ -36,15 +36,10 @@ export function readTicketUiState(ticketId: string, scope: string): PersistedUiS
   if (!artifact) return null
 
   try {
-    const parsed = JSON.parse(artifact.content) as {
-      data?: unknown
-      updatedAt?: string | null
-      revision?: unknown
-      clientRevision?: unknown
-      lastActionId?: unknown
-      lastActionHash?: unknown
-    }
-    if (parsed && typeof parsed === 'object' && 'data' in parsed) {
+    // Parsed as unknown and narrowed, rather than asserted into a shape the
+    // stored artifact may not have.
+    const parsed: unknown = JSON.parse(artifact.content)
+    if (isRecord(parsed) && Object.hasOwn(parsed, 'data')) {
       return {
         data: parsed.data,
         updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : artifact.createdAt,

@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process'
+import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { runGitSync } from '../../git/runCommand'
 
-const GIT_TIMEOUT_MS = 30_000
 const DIFF_METADATA_LIMIT = 80_000
 
 const UNAVAILABLE = 'Focused diff metadata unavailable.'
@@ -15,19 +15,15 @@ const EMPTY = 'No candidate file metadata was reported.'
  * copies that can drift on excludes, timeout or truncation limit.
  */
 export function focusedDiffMetadata(worktreePath: string, baseBranch: string): string {
-  const mergeBaseResult = spawnSync('git', ['-C', worktreePath, 'merge-base', 'HEAD', baseBranch], {
-    encoding: 'utf8',
-    timeout: GIT_TIMEOUT_MS,
-  })
-  const mergeBase = mergeBaseResult.status === 0 ? (mergeBaseResult.stdout ?? '').trim() : ''
+  const mergeBaseResult = runGitSync(worktreePath, ['merge-base', 'HEAD', baseBranch])
+  const mergeBase = mergeBaseResult.ok ? mergeBaseResult.stdout : ''
   if (!mergeBase) return UNAVAILABLE
 
-  const result = spawnSync('git', [
-    '-C', worktreePath,
+  const result = runGitSync(worktreePath, [
     'diff', '--name-status', '--stat=120,80', `${mergeBase}..HEAD`,
-    '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop',
-  ], { encoding: 'utf8', timeout: GIT_TIMEOUT_MS })
-  if (result.status !== 0) return UNAVAILABLE
+    '--', ...REPO_SCOPE_PATHSPECS,
+  ])
+  if (!result.ok) return UNAVAILABLE
 
-  return (result.stdout ?? '').trim().slice(0, DIFF_METADATA_LIMIT) || EMPTY
+  return result.stdout.slice(0, DIFF_METADATA_LIMIT) || EMPTY
 }

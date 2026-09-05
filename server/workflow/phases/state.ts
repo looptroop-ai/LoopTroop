@@ -1,6 +1,10 @@
 import { getOpenCodeAdapter } from '../../opencode/factory'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PhaseIntermediateData } from './types'
+import { clearTicketWorkBudget } from '../workBudget'
+import { forgetTicketQuestionMemory } from '../questionWindows'
+import { clearTicketSessionContinuations } from '../../opencode/sessionContinuation'
+import { releaseInterviewBatch } from './interviewPhase'
 
 export const runningPhases = new Set<string>()
 
@@ -56,6 +60,31 @@ export function cleanupTicketState(ticketId: string) {
 
   // Clean up interview QA session
   interviewQASessions.delete(ticketId)
+
+  // Every cancel, completion and restart passes through here. The ledger used
+  // to be dropped from the cancel route alone, so a restart — which cancels and
+  // then continues the *same* ticket id — carried a leftover depth or
+  // suspension into the next run and held its clocks still.
+  clearTicketWorkBudget(ticketId)
+
+  // Per-ticket question bookkeeping outlives the timers themselves, and a
+  // ticket that completed without an open question never reached the window
+  // teardown that used to be its only clear.
+  forgetTicketQuestionMemory(ticketId)
+
+  // Same reasoning, same ticket id. Continuations were cleared only by
+  // `abortTicketSessions`, so a ticket that finished naturally — or was
+  // cancelled through a path that had no sessions left to abort — kept them
+  // for their full thirty-minute life, and a restart of the same ticket
+  // reapplied the finished run's retry attempts.
+  clearTicketSessionContinuations(ticketId)
+
+  // Untokened on purpose: a ticket that has reached a terminal state has no
+  // legitimate batch in flight, so whatever claim is on it belongs to a run
+  // that is over. This is the one caller allowed to take a claim it does not
+  // hold, and it is why the claim's expiry is a backstop rather than the
+  // primary recovery path.
+  releaseInterviewBatch(ticketId)
 }
 
 /**

@@ -5,7 +5,10 @@ export function getRunnable(beads: Bead[]): Bead[] {
 
   return beads
     .filter((b) => b.status === 'pending')
-    .filter((b) => b.dependencies.blocked_by.every((dep) => doneIds.has(dep)))
+    // Defaulted even though `readBeadsFile` normalises it: this takes a
+    // `Bead[]` from whoever calls it, and the runtime projection still reads
+    // the file with the raw `readJsonl`.
+    .filter((b) => (b.dependencies?.blocked_by ?? []).every((dep) => doneIds.has(dep)))
     .sort((a, b) => a.priority - b.priority)
 }
 

@@ -77,7 +77,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function createWaitingPrReviewTicket() {
+async function createWaitingPrReviewTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -90,7 +90,7 @@ function createWaitingPrReviewTicket() {
     description: 'Verify the PR review routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -189,8 +189,24 @@ describe('ticketRouter PR review routes', () => {
     })
   })
 
+  it('leaves the ticket alone when a GET cannot reach GitHub', async () => {
+    const { ticket } = await createWaitingPrReviewTicket()
+    refreshPullRequestStateMock.mockRejectedValue(new Error('gh: API rate limit exceeded'))
+    const app = new Hono()
+    app.route('/api', ticketRouter)
+
+    const response = await app.request(`/api/tickets/${ticket.id}`)
+
+    expect(response.status).toBe(200)
+    // A routine UI poll used to dispatch ERROR here, so a transient GitHub
+    // failure moved the ticket to BLOCKED_ERROR: a read request bricked it.
+    const after = getTicketByRef(ticket.id)
+    expect(after?.status).toBe('WAITING_PR_REVIEW')
+    expect(after?.errorMessage).toBeFalsy()
+  })
+
   it('merges the pull request and advances to cleanup', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 
@@ -206,7 +222,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('finishes without merge and advances to cleanup', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 
@@ -222,7 +238,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('keeps /verify as an alias for merge during the transition', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 
@@ -238,7 +254,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('blocks as a merge failure when remote merge verification fails', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
     completeMergedPullRequestMock.mockImplementationOnce(() => {
@@ -257,7 +273,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('persists a close-unmerged merge report artifact', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 
@@ -271,7 +287,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('records why the branch was finished without merging', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 
@@ -297,7 +313,7 @@ describe('ticketRouter PR review routes', () => {
   })
 
   it('rejects an unknown field on the close request', async () => {
-    const { ticket } = createWaitingPrReviewTicket()
+    const { ticket } = await createWaitingPrReviewTicket()
     const app = new Hono()
     app.route('/api', ticketRouter)
 

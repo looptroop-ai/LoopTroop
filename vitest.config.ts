@@ -118,14 +118,27 @@ const clientNodeTests = [
 // Keep the fast server bucket focused on pure logic. The integration bucket
 // also carries a small set of isolation-sensitive tests that historically
 // depended on per-file module state.
+//
+// **Anything that calls `vi.mock` belongs here.** `server-pure` runs with
+// `isolate: false`, so one module registry is shared by every file a worker
+// takes, and a stub installed by one file answers for its siblings. A stub of
+// `node:child_process` is the worst of them: half the server reaches it, so
+// `runCommand.test.ts` and `hookDiscovery.test.ts` saw empty output from real
+// commands and failed on CI while passing locally, purely on file order.
+// Reproduce with `--sequence.shuffle.files --sequence.seed=N`.
 const serverIntegrationTests = [
   'server/__tests__/startupSessions.test.ts',
+  'server/cli/__tests__/cliUpdate.test.ts',
   'server/git/__tests__/github.test.ts',
+  'server/git/__tests__/push.test.ts',
+  'server/git/__tests__/repository.test.ts',
   'server/io/__tests__/atomicIO.test.ts',
   'server/log/__tests__/executionLog.test.ts',
+  'server/opencode/__tests__/modelValidation.test.ts',
   'server/opencode/__tests__/sessionManager.test.ts',
   'server/phases/execution/__tests__/executor.test.ts',
   'server/phases/execution/__tests__/gitOps.test.ts',
+  'server/phases/executionSetup/__tests__/executor.test.ts',
   'server/phases/executionSetup/__tests__/storage.test.ts',
   'server/phases/finalTest/__tests__/generator.test.ts',
   'server/phases/integration/__tests__/squash.test.ts',
@@ -137,8 +150,10 @@ const serverIntegrationTests = [
   'server/workflow/__tests__/beadsDraftPhase.test.ts',
   'server/workflow/__tests__/beadsRefinePhase.test.ts',
   'server/workflow/__tests__/beadsVotePhase.test.ts',
+  'server/workflow/__tests__/coverageEnvelope.test.ts',
   'server/workflow/__tests__/executionPhase.test.ts',
   'server/workflow/__tests__/integrationPhase.test.ts',
+  'server/workflow/__tests__/lifecycleCleanup.test.ts',
   'server/workflow/__tests__/interviewCompilePhase.test.ts',
   'server/workflow/__tests__/openCodeLogCanonicalization.test.ts',
   'server/workflow/__tests__/phaseIntermediateRecovery.test.ts',
@@ -157,6 +172,9 @@ const serverIntegrationTests = [
   'tests/createRuntime.test.ts',
   // Builds the whole app, which loads the real providerCatalog and would
   // defeat the vi.mock in a sibling sharing the non-isolated worker.
+  'tests/daemonHandoff.test.ts',
+  'tests/doctorProbeWindows.test.ts',
+  'tests/seaAssets.test.ts',
   'tests/staticServing.test.ts',
   'tests/sessionAuth.test.ts',
   // Binds two real loopback ports to replay a captured cookie between them.

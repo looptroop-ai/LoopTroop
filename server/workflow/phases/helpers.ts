@@ -29,6 +29,7 @@ import {
   getTicketContext as getStoredTicketContext,
   getTicketByRef,
   getTicketPaths,
+  parseLockedCouncilMemberVariants,
   upsertLatestPhaseArtifact,
 } from '../../storage/tickets'
 import { buildPrdContextBuilder } from '../../phases/prd/draft'
@@ -2138,11 +2139,15 @@ export function resolveCouncilMembers(context: TicketContext): {
   let members: Array<{ modelId: string; name: string; variant?: string }> = []
   let source: 'locked_ticket' | 'profile' = 'profile'
 
-  const variantMap: Record<string, string> = context.lockedCouncilMemberVariants
-    ? (typeof context.lockedCouncilMemberVariants === 'string'
-      ? JSON.parse(context.lockedCouncilMemberVariants as string)
-      : context.lockedCouncilMemberVariants as Record<string, string>)
-    : {}
+  // Both branches read the same stored column through the same tolerant parser.
+  // `buildTicketContextFromTicket` assigns the raw `text` column to this typed
+  // field without parsing it, so the string branch is live — and a bare
+  // `JSON.parse` on it threw out of council loading on a value nobody had
+  // validated. Fixing the profile branch below and not this one left the hazard
+  // in place next to a comment describing it.
+  const variantMap: Record<string, string> = typeof context.lockedCouncilMemberVariants === 'string'
+    ? parseLockedCouncilMemberVariants(context.lockedCouncilMemberVariants) ?? {}
+    : (context.lockedCouncilMemberVariants as Record<string, string> | undefined) ?? {}
 
   if (context.lockedCouncilMembers && context.lockedCouncilMembers.length > 0) {
     members = context.lockedCouncilMembers
@@ -2151,11 +2156,9 @@ export function resolveCouncilMembers(context: TicketContext): {
   } else {
     const profile = appDb.select().from(profiles).get()
     const configuredMembers = parseCouncilMembers(profile?.councilMembers)
-    const profileVariants: Record<string, string> = profile?.councilMemberVariants
-      ? (typeof profile.councilMemberVariants === 'string'
-        ? JSON.parse(profile.councilMemberVariants)
-        : profile.councilMemberVariants as Record<string, string>)
-      : {}
+    const profileVariants: Record<string, string> = typeof profile?.councilMemberVariants === 'string'
+      ? parseLockedCouncilMemberVariants(profile.councilMemberVariants) ?? {}
+      : (profile?.councilMemberVariants as Record<string, string> | undefined) ?? {}
     if (configuredMembers.length > 0) {
       members = configuredMembers
         .map(id => ({ modelId: id, name: id.split('/').pop() ?? id, variant: profileVariants[id] }))

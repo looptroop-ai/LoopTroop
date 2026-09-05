@@ -94,7 +94,7 @@ async function collectHealthDiagnostic(
   timeoutMs: number,
 ): Promise<string> {
   try {
-    const health = await raceWithAbortAndTimeout(adapter.checkHealth(), signal, timeoutMs)
+    const health = await raceWithAbortAndTimeout(adapter.checkHealth(signal), signal, timeoutMs)
     return formatHealthDiagnostic(health)
   } catch (error) {
     if (isAbortLike(error, signal)) throw error

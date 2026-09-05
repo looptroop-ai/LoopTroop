@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createFixtureRepoManager } from '../../../test/fixtureRepo'
 import { prepareSquashCandidate, pushSquashedCandidate, rewriteCandidateCommitWithFiles } from '../squash'
@@ -22,6 +22,55 @@ function git(repoDir: string, args: string[]): string {
 afterAll(() => {
   repoManager.cleanup()
 })
+
+/**
+ * A branch with one committed candidate change, which is what every rewrite
+ * test starts from. Returns the two commits the rewrite needs.
+ */
+function makeCandidate(repoDir: string): { candidate: string; mergeBase: string } {
+  git(repoDir, ['checkout', '-b', BRANCH])
+  writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+  git(repoDir, ['add', 'src.ts'])
+  git(repoDir, ['commit', '-m', 'candidate'])
+  return {
+    candidate: git(repoDir, ['rev-parse', 'HEAD']),
+    mergeBase: git(repoDir, ['merge-base', 'HEAD', 'main']),
+  }
+}
+
+/**
+ * The merge base carries what `seed` writes; the candidate deletes it and adds
+ * `src.ts` instead. Both untracked-collision tests need exactly that shape.
+ */
+function makeCandidateDeleting(
+  repoDir: string,
+  seed: { write: () => void; paths: string[]; force?: boolean },
+): { candidate: string; mergeBase: string } {
+  git(repoDir, ['checkout', '-b', BRANCH])
+  seed.write()
+  // `-f` for a seed the merge base tracks despite its own `.gitignore`, which
+  // is how a path ends up both committed and ignored.
+  git(repoDir, ['add', ...(seed.force ? ['-f'] : []), ...seed.paths])
+  git(repoDir, ['commit', '-m', 'base content'])
+  const mergeBase = git(repoDir, ['rev-parse', 'HEAD'])
+  git(repoDir, ['rm', '-r', '-q', ...seed.paths])
+  writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = true\n')
+  git(repoDir, ['add', 'src.ts'])
+  git(repoDir, ['commit', '-m', 'candidate'])
+  return { candidate: git(repoDir, ['rev-parse', 'HEAD']), mergeBase }
+}
+
+/** The rewrite every test in this group runs, with only `src.ts` included. */
+function rewriteSrcOnly(repoDir: string, mergeBase: string, candidate: string) {
+  return rewriteCandidateCommitWithFiles(
+    repoDir,
+    mergeBase,
+    candidate,
+    'Filtered candidate',
+    BRANCH,
+    ['src.ts'],
+  )
+}
 
 describe('prepareSquashCandidate', () => {
   it('squashes multiple commits into one', () => {
@@ -135,6 +184,131 @@ describe('prepareSquashCandidate', () => {
     expect(showFiles).not.toContain('.ticket/prd.yaml')
   })
 
+  it('refuses to rewrite over a dirty worktree instead of resetting it away', () => {
+    const repoDir = repoManager.createRepo()
+
+    const { candidate, mergeBase } = makeCandidate(repoDir)
+
+    // Uncommitted work the rewrite's `reset --hard` would destroy.
+    writeFileSync(resolve(repoDir, 'src.ts'), 'export const feature = "edited by hand"\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('the candidate rewrite')
+    expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toContain('edited by hand')
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
+  })
+
+  it('still rewrites when the only residue is untracked local-only output', () => {
+    const repoDir = repoManager.createRepo()
+
+    const { candidate, mergeBase } = makeCandidate(repoDir)
+
+    // Manual QA and the final-test audit deliberately leave untracked
+    // local-only output on disk, and `reset --hard` does not remove it. A
+    // whole-tree clean check would refuse delivery over a file this step
+    // cannot harm.
+    writeFileSync(resolve(repoDir, 'local.tmp'), 'residue\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(true)
+    expect(readFileSync(resolve(repoDir, 'local.tmp'), 'utf8')).toBe('residue\n')
+  })
+
+  it('refuses when an untracked file sits where the merge base tracks one', () => {
+    const repoDir = repoManager.createRepo()
+
+    // The merge base carries `obsolete.ts`; the candidate deletes it.
+    const { candidate, mergeBase } = makeCandidateDeleting(repoDir, {
+      write: () => writeFileSync(resolve(repoDir, 'obsolete.ts'), 'from the merge base\n'),
+      paths: ['obsolete.ts'],
+    })
+
+    // Local-only output that happens to share the deleted file's name.
+    // `reset --hard` writes the merge base's content straight over it — no
+    // warning, no reflog — which is what the tracked-only relaxation opened.
+    writeFileSync(resolve(repoDir, 'obsolete.ts'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('obsolete.ts')
+    expect(readFileSync(resolve(repoDir, 'obsolete.ts'), 'utf8')).toBe('LOCAL OUTPUT\n')
+    expect(git(repoDir, ['rev-parse', 'HEAD'])).toBe(candidate)
+  })
+
+  it('refuses when the local file in the way is ignored rather than untracked', () => {
+    const repoDir = repoManager.createRepo()
+
+    // Ignored build output is exactly what the earlier phases leave behind, and
+    // `ls-files --others --exclude-standard` does not list it — so a check
+    // written around untracked files missed the case it existed for. Verified:
+    // the reset replaced this file's content with the merge base's.
+    const { candidate, mergeBase } = makeCandidateDeleting(repoDir, {
+      write: () => {
+        writeFileSync(resolve(repoDir, '.gitignore'), '*.log\n')
+        writeFileSync(resolve(repoDir, 'build.log'), 'from the merge base\n')
+      },
+      paths: ['.gitignore', 'build.log'],
+      force: true,
+    })
+    writeFileSync(resolve(repoDir, 'build.log'), 'LOCAL BUILD OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('build.log')
+    expect(readFileSync(resolve(repoDir, 'build.log'), 'utf8')).toBe('LOCAL BUILD OUTPUT\n')
+  })
+
+  it('names the local file, not the tree contents, when a directory takes its place', () => {
+    const repoDir = repoManager.createRepo()
+
+    // The merge base carries `sub/` as a directory.
+    const { candidate, mergeBase } = makeCandidateDeleting(repoDir, {
+      write: () => {
+        mkdirSync(resolve(repoDir, 'sub'))
+        writeFileSync(resolve(repoDir, 'sub', 'a.txt'), 'from the merge base\n')
+      },
+      paths: ['sub/a.txt'],
+    })
+
+    // A local-only *file* on a path the merge base carries as a *directory*.
+    // The reset replaces the file with the directory, silently — verified — and
+    // `ls-tree -r` answers with `sub/a.txt`, which is not the file being lost.
+    writeFileSync(resolve(repoDir, 'sub'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('overwritten')
+    expect(result.message).toContain('sub')
+    expect(result.message).not.toContain('sub/a.txt')
+    expect(readFileSync(resolve(repoDir, 'sub'), 'utf8')).toBe('LOCAL OUTPUT\n')
+  })
+
+  it('refuses when local output sits on a path the candidate adds', () => {
+    const repoDir = repoManager.createRepo()
+    const { candidate, mergeBase } = makeCandidate(repoDir)
+
+    // The reset is only half of what the rewrite writes: it then checks out
+    // every file the candidate *added*, and `git checkout <sha> -- <path>`
+    // replaces an untracked file silently and exits 0 — verified. A merge-base
+    // comparison never names those paths, so the first guard cannot see this.
+    // Reachable when HEAD is not the candidate, which a rollback that itself
+    // failed leaves behind.
+    git(repoDir, ['reset', '--hard', mergeBase])
+    writeFileSync(resolve(repoDir, 'src.ts'), 'LOCAL OUTPUT\n')
+
+    const result = rewriteSrcOnly(repoDir, mergeBase, candidate)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('src.ts')
+    expect(readFileSync(resolve(repoDir, 'src.ts'), 'utf8')).toBe('LOCAL OUTPUT\n')
+  })
+
   it('rewrites a candidate commit with only AI-audited included files', () => {
     const repoDir = repoManager.createRepo()
 
@@ -169,10 +343,10 @@ describe('prepareSquashCandidate', () => {
 })
 
 describe('pushSquashedCandidate', () => {
-  it('returns failure when no remote is configured', () => {
+  it('returns failure when no remote is configured', async () => {
     const repoDir = repoManager.createRepo()
 
-    const result = pushSquashedCandidate(repoDir)
+    const result = await pushSquashedCandidate(repoDir)
 
     expect(result.pushed).toBe(false)
     expect(result.error).toMatch(/push failed/i)

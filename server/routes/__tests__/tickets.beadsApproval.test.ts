@@ -85,7 +85,7 @@ function sampleBeadsJsonl(): string {
   return beads.map((b) => JSON.stringify(b)).join('\n') + '\n'
 }
 
-function setupBeadsApprovalTicket() {
+async function setupBeadsApprovalTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({
     folderPath: repoDir,
@@ -98,7 +98,7 @@ function setupBeadsApprovalTicket() {
     description: 'Verify the beads approval routes.',
   })
 
-  const init = initializeTicket({
+  const init = await initializeTicket({
     projectFolder: repoDir,
     externalId: ticket.externalId,
   })
@@ -153,7 +153,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('approves project-agnostic bead commands without requiring an ecosystem manifest', async () => {
-    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     expect(existsSync(`${paths.worktreePath}/package.json`)).toBe(false)
 
@@ -178,7 +178,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('approves a bead with no planned command when its reason is visible', async () => {
-    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
     const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
     beads[0]!.testCommands = []
     beads[0]!.testCommandReason = 'No appropriate automated command exists for this documentation-only change.'
@@ -199,7 +199,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('dispatches beads approval through the generic approve route', async () => {
-    const { app, ticket, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, beadsContent } = await setupBeadsApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve`, {
       method: 'POST',
@@ -234,11 +234,11 @@ describe('ticketRouter beads approval routes', () => {
       description: 'Already executing.',
     })
 
-    const waitingInit = initializeTicket({
+    const waitingInit = await initializeTicket({
       projectFolder: repoDir,
       externalId: waitingTicket.externalId,
     })
-    initializeTicket({
+    await initializeTicket({
       projectFolder: repoDir,
       externalId: runningTicket.externalId,
     })
@@ -277,7 +277,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('rejects approval when ticket is not in WAITING_BEADS_APPROVAL status', async () => {
-    const { app, ticket, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, beadsContent } = await setupBeadsApprovalTicket()
 
     patchTicket(ticket.id, { status: 'DRAFTING_BEADS' })
 
@@ -292,7 +292,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('returns 404 when ticket does not exist', async () => {
-    const { app, beadsContent } = setupBeadsApprovalTicket()
+    const { app, beadsContent } = await setupBeadsApprovalTicket()
 
     const response = await app.request('/api/tickets/9999/approve-beads', {
       method: 'POST',
@@ -305,7 +305,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('returns 500 when beads file is missing', async () => {
-    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     // Remove beads file
     unlinkSync(paths.beadsPath)
@@ -321,7 +321,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('returns stored diffs for uppercase bead ids', async () => {
-    const { app, ticket } = setupBeadsApprovalTicket()
+    const { app, ticket } = await setupBeadsApprovalTicket()
 
     insertPhaseArtifact(ticket.id, {
       phase: 'CODING',
@@ -340,7 +340,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('rejects malformed bead ids on the diff route', async () => {
-    const { app, ticket } = setupBeadsApprovalTicket()
+    const { app, ticket } = await setupBeadsApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/beads/bad_id/diff`)
 
@@ -350,7 +350,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('returns 500 when beads file contains invalid JSON', async () => {
-    const { app, ticket, paths } = setupBeadsApprovalTicket()
+    const { app, ticket, paths } = await setupBeadsApprovalTicket()
 
     // Write invalid JSON — first line has valid id+title, second has bad JSON
     const invalidContent = '{"id":"bead-001","title":"Valid bead"}\nnot valid json\n'
@@ -367,7 +367,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('stamps createdAt on all beads at approval time', async () => {
-    const { app, ticket, paths, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
       method: 'POST',
@@ -387,7 +387,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('handles empty beads file gracefully', async () => {
-    const { app, ticket, paths } = setupBeadsApprovalTicket()
+    const { app, ticket, paths } = await setupBeadsApprovalTicket()
 
     const emptyContent = '\n'
     writeFileSync(paths.beadsPath, emptyContent)
@@ -403,7 +403,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('requires expectedContentSha256 for beads approval', async () => {
-    const { app, ticket } = setupBeadsApprovalTicket()
+    const { app, ticket } = await setupBeadsApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
       method: 'POST',
@@ -415,7 +415,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('rejects stale beads approval hashes with 409', async () => {
-    const { app, ticket, beadsContent } = setupBeadsApprovalTicket()
+    const { app, ticket, beadsContent } = await setupBeadsApprovalTicket()
     const expectedContentSha256 = '0'.repeat(64)
 
     const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
@@ -434,7 +434,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('reads beads via GET endpoint', async () => {
-    const { app, ticket } = setupBeadsApprovalTicket()
+    const { app, ticket } = await setupBeadsApprovalTicket()
 
     const response = await app.request(`/api/tickets/${ticket.id}/beads`)
 
@@ -447,7 +447,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('saves edited beads via PUT endpoint', async () => {
-    const { app, ticket, paths } = setupBeadsApprovalTicket()
+    const { app, ticket, paths } = await setupBeadsApprovalTicket()
 
     const editedBeads = [
       {
@@ -487,7 +487,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('clears execution setup state when beads are edited', async () => {
-    const { app, ticket, paths } = setupBeadsApprovalTicket()
+    const { app, ticket, paths } = await setupBeadsApprovalTicket()
 
     mkdirSync(paths.executionSetupDir, { recursive: true })
     writeFileSync(`${paths.executionSetupDir}/cache.txt`, 'warm\n')

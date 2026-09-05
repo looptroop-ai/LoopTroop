@@ -26,7 +26,10 @@ import {
 } from '../../phases/interview/sessionState'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
-import { getLatestPhaseArtifact, getTicketByRef, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
+import { randomUUID } from 'node:crypto'
+import { and, eq, lte } from 'drizzle-orm'
+import { interviewBatchClaims } from '../../db/schema'
+import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
 import { safeAtomicWrite } from '../../io/atomicWrite'
 import { broadcaster } from '../../sse/broadcaster'
@@ -226,12 +229,164 @@ function recordInterviewSkipReceipts(input: {
 }
 
 /**
- * The skip receipts a batch wrote, per ticket, until that batch is durable.
+ * Where one batch reports the skip receipt it wrote, for the caller that may
+ * have to undo it.
  *
  * `processInterviewBatchAsync` restores the previous snapshot when the AI call
- * fails, which un-does the skips. The receipts have to go with them.
+ * fails, which un-does the skips; the receipts have to go with them. This was a
+ * ticket-keyed module map, which made the record shared mutable state between
+ * requests: any other submission for the same ticket — a coverage batch on the
+ * synchronous path, a duplicate, a retry — overwrote or deleted the in-flight
+ * batch's entry on its way through, and the rollback then found nothing to
+ * remove. Per call, there is nothing to collide with.
  */
-const pendingBatchSkipActions = new Map<string, string>()
+export interface InterviewBatchSkipReceipt {
+  actionId?: string
+  /**
+   * `updatedAt` of the last session this call persisted.
+   *
+   * The revert below compares it against what is on disk. Reverting to a
+   * snapshot that predates somebody else's write is how a stuck task undoes a
+   * completed skip-all, and a revert cannot be taken back.
+   */
+  persistedUpdatedAt?: string
+}
+
+/**
+ * How long a claim stays valid when the caller names no budget of its own.
+ *
+ * Only a backstop for the crash case: the route derives its own expiry from the
+ * batch timeout, and every path releases explicitly. This is what stops a
+ * daemon that died mid-batch from wedging the ticket forever.
+ */
+const DEFAULT_BATCH_CLAIM_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Claims the answer batch for a ticket, in the project database.
+ *
+ * The route accepted a second submission whenever a session existed, even after
+ * the first had cleared `currentBatch`. The second then deleted the first's
+ * skip-receipt entry, failed with no active batch, and left the first's
+ * rollback with nothing to remove — so a failed AI call reverted the snapshot
+ * while its receipts stayed behind, describing skips the ticket no longer had.
+ *
+ * Held by both submission paths, not just the asynchronous one: a coverage
+ * batch and a mock-mode batch run synchronously, and one of those arriving
+ * during an in-flight AI batch walked into the same race from the other side.
+ *
+ * **Durable and cross-process, because a `Set` in one daemon is neither.** Two
+ * daemons opened on one project share nothing but these files, and both would
+ * have accepted the same batch; a restart mid-batch dropped the claim entirely.
+ * The row's primary key is the ticket, so the exclusion is the table's
+ * constraint rather than a check the reader has to remember, and the decision
+ * is a conditional write rather than a read taken before one. SQLite is
+ * synchronous here, so no caller had to become async for this.
+ *
+ * Returns the acquisition's token, or null when someone else holds it.
+ */
+export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAIM_TTL_MS): string | null {
+  const context = getTicketContext(ticketId)
+  if (!context) return null
+
+  const token = `${process.pid}:${randomUUID()}`
+  const now = Date.now()
+  const nowIso = new Date(now).toISOString()
+  const claim = {
+    ticketId: context.localTicketId,
+    token,
+    claimedAt: nowIso,
+    // Clamped at zero, not one: a zero-length lease is a claim that is expired
+    // the instant it is written, which is exactly what the takeover tests need
+    // to assert without waiting on the wall clock. A negative TTL is nonsense
+    // and lands on the same instant rather than in the past.
+    expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
+  }
+
+  return context.projectDb.transaction((tx): string | null => {
+    // **The write is the guard.** Deciding from a `SELECT` first and writing
+    // after would be exactly as unsafe as the `Set` this replaced: the shim
+    // opens transactions with a plain `BEGIN`, so in WAL two daemons both read
+    // a snapshot with no live claim, both pass the check, and the second's
+    // unconditional upsert overwrites the first's live row — two winners, which
+    // is the one case this table exists to prevent.
+    //
+    // With the condition on the conflict update, a live row is never touched:
+    // SQLite applies `DO UPDATE … WHERE false` as zero rows changed, not an
+    // error. Reading our own token back is how we learn whether we won, and it
+    // is the same statement's outcome rather than a second opinion.
+    //
+    // `expires_at` is a fixed-width ISO-8601 UTC string, so comparing it as
+    // text is comparing it as time.
+    tx.insert(interviewBatchClaims)
+      .values(claim)
+      .onConflictDoUpdate({
+        target: interviewBatchClaims.ticketId,
+        set: claim,
+        // A claim past its expiry belonged to a run that is gone. Taking it
+        // over is the recovery path: nothing else would ever release it.
+        //
+        // `lte`, not `lt`, and the boundary is the whole reason. A claim is
+        // live while `expires_at > now` — the test `hasInFlightInterviewBatch`
+        // applies, and the one `sessionAuth` and `fileLock` already used. With
+        // `lt` here the instant `expires_at === now` satisfied neither side:
+        // the claim was not live, and no one could take it over, so the ticket
+        // was wedged for that millisecond with no holder to release it. The two
+        // conditions have to be exact complements, not merely opposite.
+        where: lte(interviewBatchClaims.expiresAt, nowIso),
+      })
+      .run()
+
+    const held = tx
+      .select({ token: interviewBatchClaims.token })
+      .from(interviewBatchClaims)
+      .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .get()
+    return held?.token === token ? token : null
+  })
+}
+
+/**
+ * Gives the claim back, but only while this acquisition still holds it.
+ *
+ * Without the token an expired claim that someone else had already taken over
+ * would be released by whoever held it before — the same fault
+ * `server/io/fileLock.ts` carries a token to prevent.
+ *
+ * `token` is optional so a caller that only knows the ticket — the cleanup that
+ * runs when a ticket reaches a terminal state — can drop the claim outright.
+ * **Omitting it anywhere else is a bug**: an untokened release deletes whatever
+ * claim the ticket currently has, including one a later submission is holding.
+ */
+export function releaseInterviewBatch(ticketId: string, token?: string): void {
+  // Best effort by design. This runs from a route's error path and from the
+  // cleanup that follows a ticket reaching a terminal state, neither of which
+  // may throw — and the claim's expiry already covers a release that never
+  // happens, which is the same reason a crashed daemon does not wedge a ticket.
+  try {
+    const context = getTicketContext(ticketId)
+    if (!context) return
+    context.projectDb
+      .delete(interviewBatchClaims)
+      .where(token
+        ? and(eq(interviewBatchClaims.ticketId, context.localTicketId), eq(interviewBatchClaims.token, token))
+        : eq(interviewBatchClaims.ticketId, context.localTicketId))
+      .run()
+  } catch (error) {
+    console.warn(`[interview] Could not release the answer-batch claim for ${ticketId}; it expires on its own.`, error)
+  }
+}
+
+/** True when a live claim exists for this ticket. */
+export function hasInFlightInterviewBatch(ticketId: string): boolean {
+  const context = getTicketContext(ticketId)
+  if (!context) return false
+  const existing = context.projectDb
+    .select()
+    .from(interviewBatchClaims)
+    .where(eq(interviewBatchClaims.ticketId, context.localTicketId))
+    .get()
+  return Boolean(existing && Date.parse(existing.expiresAt) > Date.now())
+}
 
 export function skipAllInterviewQuestionsToApproval(
   ticketId: string,
@@ -441,7 +596,7 @@ export async function handleInterviewDeliberate(
   // Step 1: Health-check OpenCode before doing any work
   throwIfAborted(signal, ticketId)
   try {
-    const health = await raceWithCancel(adapter.checkHealth(), signal, ticketId)
+    const health = await raceWithCancel(adapter.checkHealth(signal), signal, ticketId)
     throwIfAborted(signal, ticketId)
     if (!health.available) {
       const msg = `OpenCode server is not running. Start it with \`opencode serve\`. (${health.error ?? 'connection refused'})`
@@ -1225,14 +1380,8 @@ export async function handleInterviewQABatch(
   batchAnswers: Record<string, string>,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
+  skipReceipt?: InterviewBatchSkipReceipt,
 ): Promise<BatchResponse> {
-  // Cleared before anything can throw. A stale entry from a previously committed
-  // batch would otherwise be read by the revert path below and used to delete
-  // that batch's receipts — append-only records, for work that was never
-  // reverted. A duplicate or late submission reaches the throw below and is
-  // exactly the case that triggers it.
-  pendingBatchSkipActions.delete(ticketId)
-
   const snapshot = readInterviewSessionSnapshotArtifact(ticketId)
   if (!snapshot?.currentBatch) {
     throw new Error('No active interview batch for this ticket')
@@ -1255,8 +1404,10 @@ export async function handleInterviewQABatch(
     questionIds: currentBatch.questions.map((question) => question.id),
     batchNumber: currentBatch.batchNumber,
   })
-  if (batchSkipActionId) pendingBatchSkipActions.set(ticketId, batchSkipActionId)
-  else pendingBatchSkipActions.delete(ticketId)
+  if (skipReceipt) {
+    if (batchSkipActionId) skipReceipt.actionId = batchSkipActionId
+    else delete skipReceipt.actionId
+  }
 
   if (isMockOpenCodeMode()) {
     if (currentBatch.source === 'prom4' && currentBatch.batchNumber === 1) {
@@ -1330,6 +1481,7 @@ export async function handleInterviewQABatch(
   // This ensures GET /interview returns the correct state while the AI processes
   // the next batch, and answers are not lost if the OpenCode call fails.
   persistInterviewSession(ticketId, answeredSnapshot)
+  if (skipReceipt) skipReceipt.persistedUpdatedAt = answeredSnapshot.updatedAt
 
   // Get session info from memory or reload from DB
   const sessionInfo = await restoreInterviewQASession(ticketId)
@@ -1498,22 +1650,48 @@ export function processInterviewBatchAsync(
   originalSnapshot: InterviewSessionSnapshot,
   selectedOptions: Record<string, string[]> = {},
   skipReasons: Record<string, string> = {},
+  /**
+   * The claim this batch was dispatched under. Omitting it makes the release in
+   * `finally` untokened, which would delete whatever claim the ticket holds by
+   * then — including a later submission's.
+   */
+  claimToken?: string,
 ): Promise<BatchResponse> {
-  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons)
+  // This call's own receipt, so the revert below can only ever undo the skips
+  // this call wrote.
+  const skipReceipt: InterviewBatchSkipReceipt = {}
+  return handleInterviewQABatch(ticketId, batchAnswers, selectedOptions, skipReasons, skipReceipt)
     .catch((err) => {
-      // Revert to original snapshot so the user can retry the submission
+      // Revert to original snapshot so the user can retry the submission —
+      // but only while the session is still the one this call left behind.
+      //
+      // A task that outlived its own claim has no business rewriting a session
+      // somebody else has moved on: skip-all completing the interview, or a
+      // later batch being answered, would both be undone by a revert to a
+      // snapshot from before either. The claim makes that rare; this makes it
+      // impossible, because a revert is unrecoverable and a skipped revert is
+      // not.
       try {
-        persistInterviewSession(ticketId, originalSnapshot)
-        // The skips in that snapshot are gone, so their receipts describe a
-        // decision the ticket no longer carries.
-        const revertedActionId = pendingBatchSkipActions.get(ticketId)
-        if (revertedActionId) deleteSkipReceiptsForAction(ticketId, revertedActionId)
+        const current = readInterviewSessionSnapshotArtifact(ticketId)
+        const stillOurs = skipReceipt.persistedUpdatedAt === undefined
+          || current?.updatedAt === skipReceipt.persistedUpdatedAt
+        if (stillOurs) {
+          persistInterviewSession(ticketId, originalSnapshot)
+          // The skips in that snapshot are gone, so their receipts describe a
+          // decision the ticket no longer carries.
+          if (skipReceipt.actionId) deleteSkipReceiptsForAction(ticketId, skipReceipt.actionId)
+        } else {
+          console.warn(`[runner] Not reverting the interview session for ${ticketId}: it has moved on since this batch wrote it.`)
+        }
       } catch (revertErr) {
         console.error(`[runner] Failed to revert interview snapshot for ${ticketId}:`, revertErr)
-      } finally {
-        pendingBatchSkipActions.delete(ticketId)
       }
       throw err
+    })
+    .finally(() => {
+      // With the token, so a task that outlived its own claim cannot delete the
+      // one a later submission is holding.
+      releaseInterviewBatch(ticketId, claimToken)
     })
 }
 

@@ -1,18 +1,21 @@
-import { spawnSync } from 'node:child_process'
+import { ensureNoTrackedWorktreeChanges, ensureNoUntrackedPathsClobberedBy, ensureNoUntrackedPathsOverwrittenBy } from '../../git/github'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
+import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
+import { runCommand, runGitSyncOrThrow } from '../../git/runCommand'
 import { getErrorMessage } from '@shared/typeGuards'
-import * as commandLogger from '../../log/commandLogger'
 
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
+const GIT_PUSH_TIMEOUT_MS = 120_000
+
+/**
+ * The one runner for this file.
+ *
+ * There used to be three private copies, none of which set `maxBuffer`, so a
+ * diff large enough to succeed in the execution phase truncated here.
+ */
+function runSquashGit(worktreePath: string, args: string[]): string {
+  return runGitSyncOrThrow(worktreePath, args)
 }
 
 export interface SquashResult {
@@ -26,42 +29,13 @@ export interface SquashResult {
 
 const GIT_ADD_BATCH_SIZE = 100
 
-function normalizeCandidatePath(filePath: string): string | null {
-  const trimmed = filePath.trim()
-  if (!trimmed || trimmed.includes('\0') || trimmed.includes('\n')) return null
-
-  const normalized = trimmed.startsWith('./') ? trimmed.slice(2) : trimmed
-  if (
-    !normalized
-    || normalized === '.'
-    || normalized === '..'
-    || normalized.startsWith('/')
-    || normalized.startsWith('../')
-    || normalized.includes('/../')
-    || normalized === '.ticket'
-    || normalized.startsWith('.ticket/')
-    || normalized === '.looptroop'
-    || normalized.startsWith('.looptroop/')
-  ) {
-    return null
-  }
-
-  return normalized
-}
-
-function uniqueCandidatePaths(files: string[]): string[] {
-  return [...new Set(files.map(normalizeCandidatePath).filter((file): file is string => file !== null))]
-}
+const uniqueCandidatePaths = uniqueRepoScopedPaths
 
 function parsePathList(output: string): string[] {
   return output
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-}
-
-function toLiteralPathspec(filePath: string): string {
-  return `:(literal)${filePath}`
 }
 
 function parseNameStatus(output: string): Array<{ status: string; path: string }> {
@@ -88,24 +62,7 @@ export function prepareSquashCandidate(
 ): SquashResult {
   let preSquashHead: string | undefined
   let resetForSquash = false
-  const runGit = (args: string[]) => {
-    const fullArgs = ['-C', worktreePath, ...args]
-    const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-    const stdout = (result.stdout ?? '').trim()
-    const stderr = (result.stderr ?? '').trim()
-    if (result.status !== 0 || result.error) {
-      const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-      logCmd('git', fullArgs, {
-        ok: false,
-        error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      })
-      throw new Error(detail)
-    }
-    logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-    return stdout
-  }
+  const runGit = (args: string[]) => runSquashGit(worktreePath, args)
 
   try {
     const baseBranchRef = resolveBaseBranchRef(worktreePath, baseBranch)
@@ -118,9 +75,7 @@ export function prepareSquashCandidate(
       '--no-renames',
       `${mergeBase}..${preSquashHead}`,
       '--',
-      '.',
-      ':(top,exclude).ticket',
-      ':(top,exclude).looptroop',
+      ...REPO_SCOPE_PATHSPECS,
     ])))
     const explicitFiles = uniqueCandidatePaths(extraFilesToStage)
     const candidateFiles = uniqueCandidatePaths([
@@ -146,10 +101,10 @@ export function prepareSquashCandidate(
       // Candidate paths are explicit, validated delivery decisions. `-f`
       // lets an explicitly declared permanent artifact override a repository
       // ignore rule without sweeping any other ignored/local files.
-      runGit(['add', '-v', '-f', '-A', '--', ...batch.map(toLiteralPathspec)])
+      runGit(['add', '-v', '-f', '-A', '--', ...batch.map(literalPathspec)])
     }
 
-    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop'])
+    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])
     if (!stagedChanges) {
       runGit(['reset', '--mixed', preSquashHead])
       return {
@@ -206,24 +161,7 @@ export function rewriteCandidateCommitWithFiles(
 ): SquashResult {
   let preRewriteHead: string | undefined
   let resetForRewrite = false
-  const runGit = (args: string[]) => {
-    const fullArgs = ['-C', worktreePath, ...args]
-    const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-    const stdout = (result.stdout ?? '').trim()
-    const stderr = (result.stderr ?? '').trim()
-    if (result.status !== 0 || result.error) {
-      const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-      logCmd('git', fullArgs, {
-        ok: false,
-        error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      })
-      throw new Error(detail)
-    }
-    logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-    return stdout
-  }
+  const runGit = (args: string[]) => runSquashGit(worktreePath, args)
 
   try {
     preRewriteHead = runGit(['rev-parse', 'HEAD'])
@@ -244,9 +182,7 @@ export function rewriteCandidateCommitWithFiles(
       '--no-renames',
       `${mergeBase}..${candidateCommitSha}`,
       '--',
-      '.',
-      ':(top,exclude).ticket',
-      ':(top,exclude).looptroop',
+      ...REPO_SCOPE_PATHSPECS,
     ])))
     const includedChangedFiles = candidateFiles.filter((file) => changedFiles.has(file))
 
@@ -265,26 +201,47 @@ export function rewriteCandidateCommitWithFiles(
       '--no-renames',
       `${mergeBase}..${candidateCommitSha}`,
       '--',
-      ...includedChangedFiles.map(toLiteralPathspec),
+      ...includedChangedFiles.map(literalPathspec),
     ]))
     const deletedFiles = nameStatus
       .filter((entry) => entry.status.startsWith('D'))
       .map((entry) => entry.path)
     const presentFiles = includedChangedFiles.filter((file) => !deletedFiles.includes(file))
 
+    // The rewrite starts by discarding everything back to the merge base, so
+    // tracked uncommitted work is about to be destroyed. Failing first sends
+    // the caller down its git-recovery receipt path, which records what was in
+    // the way.
+    //
+    // Tracked changes only: `reset --hard` does not remove untracked files, and
+    // the earlier phases deliberately leave untracked local-only output on
+    // disk. Refusing on that would block delivery over files this step cannot
+    // harm.
+    ensureNoTrackedWorktreeChanges(worktreePath, 'the candidate rewrite')
+    // The exception, and the reason the relaxation above is not the whole
+    // check: where the merge base tracks a path, the reset writes its content
+    // over whatever untracked file is sitting there.
+    ensureNoUntrackedPathsClobberedBy(worktreePath, mergeBase, 'the candidate rewrite')
+    // The reset is only half of what this writes: the checkouts below restore
+    // every file the candidate *adds*, and `git checkout <sha> -- <path>`
+    // replaces an untracked file just as silently. Asked here, before the reset
+    // moves HEAD, because "does HEAD track this?" is what separates a file the
+    // rewrite is meant to write from local-only output standing in its way.
+    ensureNoUntrackedPathsOverwrittenBy(worktreePath, presentFiles, 'the candidate rewrite')
+
     runGit(['reset', '--hard', mergeBase])
     resetForRewrite = true
 
     for (let index = 0; index < presentFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = presentFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['checkout', candidateCommitSha, '--', ...batch.map(toLiteralPathspec)])
+      runGit(['checkout', candidateCommitSha, '--', ...batch.map(literalPathspec)])
     }
     for (let index = 0; index < deletedFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = deletedFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(toLiteralPathspec)])
+      runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(literalPathspec)])
     }
 
-    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', '.', ':(top,exclude).ticket', ':(top,exclude).looptroop'])
+    const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])
     if (!stagedChanges) {
       runGit(['reset', '--hard', preRewriteHead])
       return {
@@ -339,26 +296,16 @@ export interface PushResult {
 
 const MAX_PUSH_RETRIES = 3
 
-export function pushSquashedCandidate(worktreePath: string): PushResult {
+/** Asynchronous: it reaches the remote, and the remote is what stalls. */
+export async function pushSquashedCandidate(worktreePath: string): Promise<PushResult> {
   const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(worktreePath))
   for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-    const fullArgs = ['-C', worktreePath, 'push', ...(bypassHooks ? ['--no-verify'] : [])]
-    const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-    const stdout = (result.stdout ?? '').trim()
-    const stderr = (result.stderr ?? '').trim()
-    if (result.status === 0 && !result.error) {
-      logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
-      return { pushed: true }
-    }
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
+    const result = await runCommand('git', [
+      '-C', worktreePath, 'push', ...(bypassHooks ? ['--no-verify'] : []),
+    ], { timeoutMs: GIT_PUSH_TIMEOUT_MS })
+    if (result.ok) return { pushed: true }
     if (attempt === MAX_PUSH_RETRIES) {
-      return { pushed: false, error: `git push failed after ${MAX_PUSH_RETRIES} attempts: ${detail}` }
+      return { pushed: false, error: `git push failed after ${MAX_PUSH_RETRIES} attempts: ${result.errorDetail}` }
     }
   }
   return { pushed: false, error: 'push failed' }

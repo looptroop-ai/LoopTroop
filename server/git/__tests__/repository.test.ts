@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { spawnFromSyncResult } from '../../test/childProcess'
 
 const spawnSyncMock = vi.fn()
+// Async commands run through `spawn`; both stubs answer from one description.
+const spawnMock = vi.fn((...args: unknown[]) => spawnFromSyncResult(
+  spawnSyncMock(...args) as ReturnType<typeof import('node:child_process').spawnSync>,
+))
 
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   return {
     ...actual,
     spawnSync: spawnSyncMock,
+    spawn: spawnMock,
   }
 })
 
@@ -31,6 +37,7 @@ describe('server/git/repository', () => {
   beforeEach(() => {
     vi.resetModules()
     spawnSyncMock.mockReset()
+    spawnMock.mockClear()
   })
 
   it('prefers origin/<baseBranch> when resolving a ticket base ref', async () => {

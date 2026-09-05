@@ -43,6 +43,7 @@ import {
 } from '@shared/artifactCompanions'
 import {
   mergeDraftArtifactContent,
+  mergeManualQaChecklistArtifactContent,
   mergeVoteArtifactContent,
   unwrapArtifactCompanionPayloadContent,
 } from './artifactCompanionUtils'
@@ -373,6 +374,14 @@ export function PhaseArtifactsPanel({ phase, isCompleted, ticketId, councilMembe
       )
         ?? refinedArtifact?.content
         ?? null
+    }
+    if (artifactDef.id === 'manual-qa-checklist') {
+      // The checklist and its repair trail are two rows. The viewer reads one
+      // string, so they are joined here rather than plumbed separately.
+      return mergeManualQaChecklistArtifactContent(
+        findExactArtifact('manual_qa_checklist')?.content,
+        findCompanionArtifact('manual_qa_checklist')?.content,
+      )
     }
     if (artifactDef.id === 'bead-commits') {
       const beads = reversedArtifacts

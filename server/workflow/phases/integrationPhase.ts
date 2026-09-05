@@ -10,22 +10,16 @@ import { emitPhaseLog } from './helpers'
 import { handleMockExecutionUnsupported } from './executionPhase'
 import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { CancelledError } from '../../council/types'
-import { ManualQaSummarySchema } from '../../phases/manualQa/types'
-import { readManualQaDeliverySummary as readCanonicalManualQaDeliverySummary } from '../../phases/manualQa/delivery'
+import { readManualQaDeliverySummaryForTicket as readManualQaDeliverySummary } from '../../phases/manualQa/delivery'
 import { EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE } from '../../phases/executionSetup/types'
 import { runExplicitGitHookValidation } from '../../phases/executionSetup/hookValidation'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
-import { discoverGitHooks } from '../../git/hookDiscovery'
-
-function readApprovedHookEvidence(profileContent: string): unknown[] {
-  try {
-    const profile = JSON.parse(profileContent) as Record<string, unknown>
-    const hooks = (profile.git_hooks ?? profile.gitHooks) as Record<string, unknown> | undefined
-    return Array.isArray(hooks?.detected) ? hooks.detected : []
-  } catch {
-    return []
-  }
-}
+import {
+  discoverGitHooks,
+  gitHookEvidenceMatches,
+  normalizeGitHookEvidence,
+  readApprovedGitHookEvidence,
+} from '../../git/hookDiscovery'
 
 function readFinalTestFilesToStage(ticketId: string): string[] {
   const artifact = getLatestPhaseArtifact(ticketId, 'final_test_report', 'RUNNING_FINAL_TEST')
@@ -47,35 +41,6 @@ function readFinalTestFilesToStage(ticketId: string): string[] {
     return [...new Set(testFiles)]
   } catch {
     return []
-  }
-}
-
-function readManualQaDeliverySummary(ticketId: string) {
-  const ticketDir = getTicketPaths(ticketId)?.ticketDir
-  const canonical = ticketDir ? readCanonicalManualQaDeliverySummary(ticketDir) : null
-  if (canonical) return canonical
-
-  const artifact = getLatestPhaseArtifact(ticketId, 'manual_qa_summary')
-  if (!artifact) return null
-  try {
-    const raw = JSON.parse(artifact.content) as unknown
-    const record = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
-    const candidate = record.value && typeof record.value === 'object' && !Array.isArray(record.value)
-      ? record.value as Record<string, unknown>
-      : record
-    const { idempotencyKey: _idempotencyKey, ...summaryValue } = candidate
-    const parsed = ManualQaSummarySchema.safeParse(summaryValue)
-    if (!parsed.success || parsed.data.outcome === 'failed') return null
-    return {
-      version: parsed.data.version,
-      outcome: parsed.data.outcome,
-      createdFixBeadIds: parsed.data.createdFixBeadIds,
-      improvementTicketIds: parsed.data.improvementTicketIds,
-      waivedItemIds: parsed.data.waivedItemIds,
-      skipReason: parsed.data.skipReason ?? null,
-    }
-  } catch {
-    return null
   }
 }
 
@@ -105,12 +70,14 @@ export async function handleIntegration(
     EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
     'PREPARING_EXECUTION_ENV',
   )
-  const currentHookEvidence = discoverGitHooks(paths.worktreePath).detected
+  // Both sides go through the canonical reader, so equivalent hook sets compare
+  // equal regardless of the order they were discovered or serialised in.
+  const currentHookEvidence = normalizeGitHookEvidence(discoverGitHooks(paths.worktreePath).detected)
   const approvedHookEvidence = setupProfileArtifact
-    ? readApprovedHookEvidence(setupProfileArtifact.content)
+    ? readApprovedGitHookEvidence(setupProfileArtifact.content)
     : []
   const hookEvidenceDrift = {
-    changed: JSON.stringify(approvedHookEvidence) !== JSON.stringify(currentHookEvidence),
+    changed: !gitHookEvidenceMatches(approvedHookEvidence, currentHookEvidence),
     approved: approvedHookEvidence,
     current: currentHookEvidence,
   }

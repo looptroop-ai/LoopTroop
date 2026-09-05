@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getFrontendOrigin, getFrontendPort } from '../appConfig'
+import { getAllowedBackendHost, getBackendOrigin, getBackendPort, getDocsBaseUrl, getFrontendOrigin, getFrontendPort, isLoopbackHost } from '../appConfig'
 
 const ORIGINAL_ENV = {
   LOOPTROOP_BACKEND_PORT: process.env.LOOPTROOP_BACKEND_PORT,
@@ -127,5 +127,33 @@ describe('appConfig frontend origin', () => {
     process.env.LOOPTROOP_ALLOW_REMOTE_API = '1'
     process.env.LOOPTROOP_API_TOKEN = 'my-token'
     expect(getAllowedBackendHost()).toBe('0.0.0.0')
+  })
+})
+
+describe('isLoopbackHost', () => {
+  it('accepts the loopback names and addresses', () => {
+    for (const host of ['localhost', 'LOCALHOST', '127.0.0.1', '127.1.2.3', '127.255.255.255', '::1', '[::1]', '::ffff:127.0.0.1']) {
+      expect(isLoopbackHost(host)).toBe(true)
+    }
+  })
+
+  it('rejects a hostname that merely starts with 127.', () => {
+    // `startsWith('127.')` accepted this, and it resolves to whatever its owner
+    // points it at — so a name under someone else's control passed the check
+    // the host guard depends on.
+    expect(isLoopbackHost('127.attacker.example')).toBe(false)
+    expect(isLoopbackHost('127.0.0.1.evil.test')).toBe(false)
+  })
+
+  it('rejects an address that is not a valid dotted quad', () => {
+    for (const host of ['127.999.0.1', '127.0.0', '127.0.0.1.2', '127.0.0.256', '127.0.0.01', '127.', '127.0.0.x']) {
+      expect(isLoopbackHost(host)).toBe(false)
+    }
+  })
+
+  it('rejects other private and public addresses', () => {
+    for (const host of ['0.0.0.0', '10.0.0.1', '192.168.1.1', '128.0.0.1', 'example.com']) {
+      expect(isLoopbackHost(host)).toBe(false)
+    }
   })
 })

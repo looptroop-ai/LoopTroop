@@ -27,7 +27,11 @@ import {
 } from '@/hooks/useManualQA'
 import { cn } from '@/lib/utils'
 import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
-import { CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
+import { ArtifactProcessingNotice, CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
+import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
+import { findLatestCompanionArtifact, parseArtifactCompanionPayload } from '@/components/workspace/artifactCompanionUtils'
+import type { ArtifactStructuredOutputData } from '@/components/workspace/phaseArtifactTypes'
+import type { ArtifactProcessingStatus } from '@/components/workspace/artifactProcessingNotice'
 import { CollapsiblePhaseLogSection } from '@/components/workspace/CollapsiblePhaseLogSection'
 import { SHARED_PROFILE_DEFAULTS as PROFILE_DEFAULTS } from '@shared/profileDefaults'
 import { ManualQaSetting } from '@/components/manual-qa/ManualQaSetting'
@@ -187,6 +191,27 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   // A generation reservation exposes its version before checklist.yaml exists.
   // Do not cache that expected pre-artifact 404; historical rounds remain selectable.
   const roundQuery = useManualQaRound(ticket.id, version, !isGenerating || selectedVersion !== null || versionIsArtifactBacked)
+  // Generation records its repairs in a companion artifact on its own phase.
+  // Reading it here is what puts the trail in front of the person running the
+  // checks, rather than only behind the past phase's artifact chip.
+  const generationArtifacts = useTicketArtifacts(ticket.id, { phase: 'GENERATING_QA_CHECKLIST' })
+  const generation = useMemo((): {
+    structuredOutput?: ArtifactStructuredOutputData
+    status: ArtifactProcessingStatus
+  } => {
+    const companion = findLatestCompanionArtifact(generationArtifacts.artifacts ?? [], 'manual_qa_checklist')
+    const payload = parseArtifactCompanionPayload(companion?.content, 'manual_qa_checklist')
+    const structuredOutput = payload?.structuredOutput
+    return {
+      ...(structuredOutput && typeof structuredOutput === 'object'
+        ? { structuredOutput: structuredOutput as ArtifactStructuredOutputData }
+        : {}),
+      // The companion carries `validationError` when generation gave up. Without
+      // reading it the notice defaults to "completed", so this screen and the
+      // artifact chip described the same generation two different ways.
+      status: typeof payload?.validationError === 'string' ? 'failed' : 'completed',
+    }
+  }, [generationArtifacts.artifacts])
   const { data: round, isLoading: roundLoading, error: roundError } = roundQuery
   const scope = version === null ? 'manual_qa_draft:none' : `manual_qa_draft:v${version}`
   const uiState = useTicketUIState<ManualQaDraft>(ticket.id, scope, version !== null)
@@ -545,6 +570,23 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
     return created
   }, [round?.operation?.actionId, round?.operation?.operationType, round?.operation?.status, version])
 
+  /**
+   * Typing a skip reason edits the draft, so the autosave carries it.
+   *
+   * It used to live only in component state and reach the draft at the moment
+   * Skip was confirmed. Anyone who typed a reason and then reloaded, or whose
+   * tab was closed by the keepalive path, lost it — while the restore already
+   * read `restored.skipReason`, expecting it to have been saved.
+   */
+  const handleSkipReasonChange = (value: string) => {
+    setSkipReason(value)
+    setDraft((current) => ({
+      ...current,
+      ...(value.trim() ? { skipReason: value } : { skipReason: undefined }),
+    }))
+    setDirty(true)
+  }
+
   const reloadConflictingDraft = async () => {
     const refreshed = await uiState.refetch()
     const restored = extractSavedDraft(refreshed.data?.data) ?? round?.draft ?? emptyDraft()
@@ -619,10 +661,16 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
   if (error || !round || !checklist || version === null) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center">
-        <div>
-          <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
-          <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
-          <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
+        <div className="max-w-2xl space-y-4">
+          {/* A generation that used up its retries writes the repair trail and
+              no checklist, so this is the one screen it can appear on — and the
+              run whose failed attempts the operator's next move depends on. */}
+          <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
+          <div>
+            <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
+            <p className="mt-3 font-medium">Manual QA artifacts are not available yet.</p>
+            <p className="mt-1 text-sm text-muted-foreground">{error instanceof Error ? error.message : 'The checklist may still be restoring.'}</p>
+          </div>
         </div>
       </div>
     )
@@ -668,6 +716,12 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
 
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-4xl space-y-4">
+          {/* Only against the round the latest generation produced: the
+              companion belongs to that generation, and pinning it to an older
+              round would describe a repair that round never had. */}
+          {!historical && version === activeVersion && (
+            <ArtifactProcessingNotice structuredOutput={generation.structuredOutput} status={generation.status} />
+          )}
           {round.workspaceDrift?.detected && (
             <Card className="border-amber-500/60 bg-amber-500/5">
               <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><AlertTriangle className="h-4 w-4 text-amber-500" />Application use changed project files</CardTitle></CardHeader>
@@ -864,7 +918,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
           <DialogHeader><DialogTitle>Skip Manual QA?</DialogTitle><DialogDescription>Your entered results, notes, links, and files will be saved in the archived draft and cannot be edited later. No fix bead or improvement ticket will be created, and the workflow will continue to integration.</DialogDescription></DialogHeader>
           <SkipReasonField
             value={skipReason}
-            onChange={setSkipReason}
+            onChange={handleSkipReasonChange}
             help="Saved with the ticket. Nobody is blocked if you leave it empty."
           />
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setSkipOpen(false)}>Cancel</Button><Button variant="destructive" onClick={handleSkip} disabled={skip.isPending || saveState === 'conflict' || evidenceMutationInProgress}>{skip.isPending ? <LoadingText text="Skipping" /> : 'Skip and integrate'}</Button></div>

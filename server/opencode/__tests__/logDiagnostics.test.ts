@@ -6,6 +6,7 @@ import {
   enrichGenericOpenCodeProviderError,
   findOpenCodeLogErrorDetails,
   LOOPTROOP_OPENCODE_LOG_DIR,
+  readOpenCodeNativeLogs,
 } from '../logDiagnostics'
 
 const tempDirs: string[] = []
@@ -99,5 +100,55 @@ describe('OpenCode log diagnostics', () => {
       logDirs: [dir],
       maxBytesPerFile: 10,
     })).toBeUndefined()
+  })
+})
+
+describe('readOpenCodeNativeLogs', () => {
+  it('reads a quoted timestamp instead of choking on its quotes', () => {
+    const dir = makeLogDir()
+    writeLog(dir, 'time="2026-05-22T15:16:03.000Z" level=INFO service=session session.id=ses-1 msg="hello"\n')
+
+    const entries = readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]?.timestamp).toBe('2026-05-22T15:16:03.000Z')
+  })
+
+  it('keeps a line whose timestamp cannot be parsed, with no timestamp at all', () => {
+    const dir = makeLogDir()
+    writeLog(dir, 'time="not-a-date" level=INFO session.id=ses-1 msg="still useful"\n')
+
+    const entries = readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })
+
+    expect(entries).toHaveLength(1)
+    // Substituting the current time would invent ordering data and float an old
+    // event above newer ones in the merged view.
+    expect(entries[0]?.timestamp).toBeNull()
+    expect(entries[0]?.content).toContain('still useful')
+  })
+
+  it('keeps reading the file after a line it cannot use', () => {
+    const dir = makeLogDir()
+    writeLog(dir, [
+      'time="not-a-date" level=INFO session.id=ses-1 msg="first"',
+      'time="2026-05-22T15:16:04.000Z" level=INFO session.id=ses-1 msg="second"',
+      '',
+    ].join('\n'))
+
+    // One unreadable line used to abort the rest of the file, and the merged
+    // log channel answered 500.
+    expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] }).map((entry) => entry.content))
+      .toEqual([expect.stringContaining('first'), expect.stringContaining('second')])
+  })
+
+  it('ignores lines belonging to another session', () => {
+    const dir = makeLogDir()
+    writeLog(dir, [
+      'time="2026-05-22T15:16:03.000Z" session.id=ses-other msg="theirs"',
+      'time="2026-05-22T15:16:04.000Z" session.id=ses-1 msg="ours"',
+      '',
+    ].join('\n'))
+
+    expect(readOpenCodeNativeLogs(['ses-1'], { logDirs: [dir] })).toHaveLength(1)
   })
 })

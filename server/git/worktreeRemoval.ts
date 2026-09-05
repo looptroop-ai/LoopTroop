@@ -1,5 +1,5 @@
 import { existsSync, rmSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { runGitSyncOrThrow } from './runCommand'
 import { dirname, resolve } from 'node:path'
 import { makeOwnerWritableRecursive } from '../io/removal'
 
@@ -13,15 +13,7 @@ export interface RemoveWorktreeOptions {
 }
 
 function runGitCommand(projectRoot: string, args: string[]): void {
-  const result = spawnSync('git', ['-C', projectRoot, ...args], { encoding: 'utf8' })
-  if (result.status === 0 && !result.error) return
-
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  const detail = result.error?.message
-    ?? ([stdout, stderr].filter(Boolean).join(' | ')
-      || `exit code ${result.status ?? '?'}`)
-  throw new Error(detail)
+  runGitSyncOrThrow(projectRoot, args)
 }
 
 /**

@@ -94,9 +94,13 @@ class BudgetImpl implements WorkBudget {
   constructor(args: { ticketId?: string | undefined; totalMs?: number | undefined; scope: WorkBudgetScope }) {
     this.scope = args.scope
     this.ticketId = args.ticketId
-    const total = args.totalMs !== undefined && Number.isFinite(args.totalMs) && args.totalMs > 0
-      ? args.totalMs
-      : undefined
+    // `undefined` means "no budget"; zero means "a budget that has already run
+    // out". Collapsing the second into the first handed a prompt started after
+    // its deadline an apparently unbounded clock and no deadline controller at
+    // all, so it ran past the static timeout it was supposed to be bounded by.
+    const total = args.totalMs === undefined || !Number.isFinite(args.totalMs)
+      ? undefined
+      : Math.max(0, args.totalMs)
     this.totalMs = total
     this.baseDeadlineAt = total === undefined ? undefined : Date.now() + total
     const ledger = this.ticketId ? ledgers.get(this.ticketId) : undefined

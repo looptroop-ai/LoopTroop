@@ -17,7 +17,7 @@ import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { isGitHookPolicy } from '../../git/hookPolicy'
 import { cancelTicket } from '../../workflow/runner'
 import { TicketInitializationError, initializeTicket } from '../../ticket/initialize'
-import { withCommandLogging } from '../../log/commandLogger'
+import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { validateModelSelection } from '../../opencode/modelValidation'
 import { registerOpenRouterRoutingModels } from '../../opencode/openRouterRoutingConfig'
 import { refreshProviderCatalog } from '../../opencode/providerCatalog'
@@ -67,8 +67,8 @@ import { deriveSkipActionId, formatSkipReceiptLogLines, writeSkipReceipts } from
 import { normalizeSkipReason } from '@shared/skipReceipt'
 import { clampAiQuestionWindowMs } from '@shared/aiQuestions'
 import { clearTicketWindows } from '../../workflow/questionWindows'
-import { clearTicketWorkBudget } from '../../workflow/workBudget'
 import { resolveStoredWorkflowPhase } from '@shared/workflowMeta'
+import { parseLockedCouncilMemberVariants } from '../../storage/ticketQueries'
 
 function rollbackTicketStartToDraft(ticketId: string): void {
   patchTicket(ticketId, {
@@ -157,9 +157,9 @@ export async function handleStartTicket(c: Context) {
   }
 
   emitRoutePhaseLog(ticketId, startPhase, 'info', 'Initializing workspace and ticket directories.')
-  let init: ReturnType<typeof initializeTicket>
+  let init: Awaited<ReturnType<typeof initializeTicket>>
   try {
-    init = withCommandLogging(
+    init = await withCommandLoggingAsync(
       ticketId,
       ticketContext.externalId,
       startPhase,
@@ -268,11 +268,14 @@ export async function handleStartTicket(c: Context) {
   let lockedCouncilMemberVariants: Record<string, string> | null = null
   if (profile?.councilMemberVariants) {
     if (typeof profile.councilMemberVariants === 'string') {
-      try {
-        lockedCouncilMemberVariants = JSON.parse(profile.councilMemberVariants)
-      } catch (err) {
-        console.warn(`[tickets] Invalid councilMemberVariants configuration for ticket ${ticketId}:`, err)
-        return c.json({ error: 'Invalid configuration: malformed councilMemberVariants' }, 500)
+      // The canonical parser, not a bare JSON.parse. An array, a number or an
+      // empty key used to be locked here and then read back as `null` by
+      // `parseLockedCouncilMemberVariants`, so the ticket's variants silently
+      // disappeared for the rest of its life. A shape this cannot lock is a
+      // configuration error the caller should hear about at start.
+      lockedCouncilMemberVariants = parseLockedCouncilMemberVariants(profile.councilMemberVariants)
+      if (!lockedCouncilMemberVariants) {
+        return c.json({ error: 'Invalid configuration: malformed councilMemberVariants' }, 400)
       }
     } else {
       lockedCouncilMemberVariants = profile.councilMemberVariants
@@ -419,9 +422,6 @@ export async function handleCancelTicket(c: Context) {
       // true but tells a later reader nothing about why.
       await clearTicketWindows(ticketId, 'ticket_canceled', 'The ticket was canceled while the question was open.')
       await abortTicketSessions(ticketId)
-      // A suspension surviving the cancel would hold the clocks of whatever
-      // runs next on this ticket.
-      clearTicketWorkBudget(ticketId)
       if (deleteTicket) {
         stopActor(ticketId)
         clearContextCache(ticketId)
@@ -473,7 +473,7 @@ export async function handleCancelTicket(c: Context) {
   return respondWithState(c, ticketId, 'Cancel action accepted')
 }
 
-export function handleMergeTicket(c: Context) {
+export async function handleMergeTicket(c: Context) {
   const ticketId = getTicketParam(c)
   const ticket = getTicketByRef(ticketId)
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404)
@@ -493,7 +493,7 @@ export function handleMergeTicket(c: Context) {
   const phase = 'WAITING_PR_REVIEW'
 
   try {
-    const mergeReport = withCommandLogging(
+    const mergeReport = await withCommandLoggingAsync(
       ticketId,
       ticket.externalId,
       phase,

@@ -324,7 +324,7 @@ describe('handleBeadsRefine', () => {
   })
 
   it('persists the semantic refined blueprint and refinement diff without expanding beads during REFINING_BEADS', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Preserve Beads refinement attribution',
       description: 'Keep explicit inspiration metadata in REFINING_BEADS diff artifacts.',
     })
@@ -430,7 +430,7 @@ describe('handleBeadsRefine', () => {
     // Refinement cross-validates against the winner, and the winner is not what
     // the retry prompt asks the model to rewrite, so every attempt failed on the
     // same unchanged input.
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Reject an unusable winning bead draft',
       description: 'Refinement cannot cross-validate against a draft that does not parse.',
     })
@@ -456,7 +456,7 @@ describe('handleBeadsRefine', () => {
   })
 
   it('runs terminal bead expansion only after beads coverage becomes clean', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Revise beads during coverage',
       description: 'Persist semantic coverage revisions, then expand once at the end.',
     })
@@ -616,7 +616,7 @@ describe('handleBeadsRefine', () => {
   })
 
   it('supports fourth beads coverage revision before a final clean v5 pass', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Revise beads to a final v5 candidate during coverage',
       description: 'Persist a second semantic coverage revision before the clean terminal expansion.',
     })
@@ -849,7 +849,7 @@ describe('handleBeadsRefine', () => {
   })
 
   it('still runs the terminal bead expansion before approval when beads coverage reaches v5 with unresolved gaps', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Expand final beads even when coverage caps out',
       description: 'Coverage warnings should survive into approval, but the final expanded beads must still exist.',
     })
@@ -1026,7 +1026,7 @@ describe('handleBeadsExpansion', () => {
   })
 
   it('emits EXPANDED and persists beads_expanded under EXPANDING_BEADS on success', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Expand beads blueprint into execution-ready records',
       description: 'Run expansion after coverage is clean.',
     })
@@ -1079,7 +1079,7 @@ describe('handleBeadsExpansion', () => {
   })
 
   it('emits ERROR when no expansion input (no beads_refined artifact) is found', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Expansion fails without blueprint',
       description: 'Expansion should error when no coverage revision or refined artifact exists.',
     })

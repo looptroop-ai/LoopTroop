@@ -567,6 +567,24 @@ function claim(timer: QuestionTimer, key: string, claimId?: string): QuestionReq
   return record
 }
 
+/**
+ * Seizes a request for teardown, whatever state it is in.
+ *
+ * `claim` only takes a `pending` record, so a request already `resolving` — a
+ * reply or skip part-way through — was filtered out and simply left. OpenCode
+ * had been given the answer, no receipt was written, and the SSE resolve never
+ * fired. Taking the claim id away stops the original owner completing it, so
+ * teardown can finish it exactly once.
+ */
+function seizeForTeardown(timer: QuestionTimer, key: string): QuestionRequestRecord | null {
+  const record = timer.requests.get(key)
+  if (!record || record.state === 'resolved') return null
+  record.state = 'resolving'
+  record.claimId = null
+  record.revision += 1
+  return record
+}
+
 /** Claims a request and hands back the id its owner completes it with. */
 function claimAndIssueId(timer: QuestionTimer, key: string): string | null {
   const record = timer.requests.get(key)
@@ -996,11 +1014,10 @@ export async function clearTicketWindows(
   reason: string,
 ): Promise<void> {
   const timers = timersByTicket.get(ticketId)
-  if (!timers) return
-  for (const timer of [...timers.values()]) {
+  for (const timer of [...(timers?.values() ?? [])]) {
     disarm(timer)
     const doomed = pendingRequests(timer)
-      .map((record) => claim(timer, requestKey(record.sessionId, record.requestId)))
+      .map((record) => seizeForTeardown(timer, requestKey(record.sessionId, record.requestId)))
       .filter((record): record is QuestionRequestRecord => record !== null)
     const siblingIds = doomed.map((record) => record.requestId)
     for (const record of doomed) {
@@ -1008,6 +1025,19 @@ export async function clearTicketWindows(
     }
   }
   timersByTicket.delete(ticketId)
+  // Outside the timer loop and reachable with no timers at all: the answered
+  // bookkeeping is per ticket, not per timer, and a ticket that completed
+  // without an open question used to leak its entries for the process lifetime.
+  forgetTicketMemory(ticketId)
+}
+
+/**
+ * Drops a ticket's question bookkeeping without touching any timers.
+ *
+ * The natural COMPLETED path never opens or closes a window, so it never
+ * reached `clearTicketWindows`; this is the entry point for it. Idempotent.
+ */
+export function forgetTicketQuestionMemory(ticketId: string): void {
   forgetTicketMemory(ticketId)
 }
 

@@ -11,6 +11,7 @@ import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
+import { NON_INTERACTIVE_GIT_ENV } from '../git/runCommand'
 
 type Status = 'ok' | 'warn' | 'fail'
 
@@ -181,6 +182,15 @@ export function runProbe(command: string, args: string[], timeoutMs: number): Pr
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: timeoutMs,
+      // Escalates rather than asking twice: a probe that outran its budget has
+      // nothing left to negotiate, and `doctor` must not hang on one.
+      killSignal: 'SIGKILL',
+      // This stays outside the shared git runner on purpose: it probes any
+      // binary by name, and on Windows it needs cmd.exe to resolve `npm` to
+      // `npm.cmd`, which the git runner deliberately does not do. It carries
+      // its own timeout; what it was missing is the non-interactive
+      // environment, so a `git`/`gh` probe cannot stop on a credential prompt.
+      env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
       shell: needsShell,
     })
     return { kind: 'ok', output }
@@ -413,6 +423,19 @@ async function probeOpenCodeConfig(baseUrl: string): Promise<OpenCodeReachabilit
  * server reports no version of its own, and the two can differ: a server that
  * was already up may predate an upgrade of the CLI on PATH.
  */
+/**
+ * Whether `looptroop start` could launch OpenCode.
+ *
+ * "Not missing", not "ok". The version probe reports `warn` both when the
+ * binary is absent and when it timed out, and treating the timeout as
+ * unavailable made doctor report that `opencode` cannot be launched — about a
+ * CLI that is installed and merely slow to answer. Only a binary that is
+ * genuinely absent makes launching impossible.
+ */
+export function isOpenCodeCliLaunchable(check: Check): boolean {
+  return check.missing !== true
+}
+
 function checkOpenCodeVersion(latest: string | null = null): Check {
   if (resolveSettings().opencodeMode === 'mock') {
     return { name: 'opencode cli', status: 'ok', detail: 'not needed in mock mode' }
@@ -826,7 +849,7 @@ export async function runChecks(): Promise<Check[]> {
     await checkLastStart(),
     await checkProjectIgnores(),
     opencodeCli,
-    await checkOpenCode(daemon, opencodeCli.status === 'ok'),
+    await checkOpenCode(daemon, isOpenCodeCliLaunchable(opencodeCli)),
     await checkPort(daemon),
     await checkDaemon(daemon),
   ]

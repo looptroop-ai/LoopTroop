@@ -152,7 +152,7 @@ describe('handleCoding', () => {
     isMockOpenCodeModeMock.mockReturnValue(false)
     recordBeadStartCommitMock.mockReturnValue('abc123')
     commitBeadChangesMock.mockReturnValue({ committed: true, pushed: false })
-    captureBeadDiffMock.mockReturnValue('diff --git a/file.ts b/file.ts')
+    captureBeadDiffMock.mockReturnValue({ ok: true, diff: 'diff --git a/file.ts b/file.ts' })
     assembleBeadContextMock.mockResolvedValue([])
   })
 
@@ -163,7 +163,7 @@ describe('handleCoding', () => {
   })
 
   it('sends ALL_BEADS_DONE immediately when all beads are already done', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'All beads done shortcut',
     })
     writeTicketBeads(ticket.id, [
@@ -180,7 +180,7 @@ describe('handleCoding', () => {
 
   it('sends ERROR event and returns when mock mode is active', async () => {
     isMockOpenCodeModeMock.mockReturnValue(true)
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Mock mode unsupported',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -195,7 +195,7 @@ describe('handleCoding', () => {
   })
 
   it('sends BEAD_COMPLETE when one bead succeeds with more beads still pending', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Bead success with more pending',
     })
     writeTicketBeads(ticket.id, [
@@ -239,7 +239,7 @@ describe('handleCoding', () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-02-02T03:04:05.000Z'))
-      const { ticket, context } = createInitializedTestTicket(repoManager, {
+      const { ticket, context } = await createInitializedTestTicket(repoManager, {
         title: 'Attempt countdown reset',
       })
       writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, {
@@ -284,7 +284,7 @@ describe('handleCoding', () => {
   })
 
   it('sends ALL_BEADS_DONE when the last pending bead succeeds', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Last bead success',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -321,7 +321,7 @@ describe('handleCoding', () => {
   })
 
   it('sends BEAD_ERROR and does not commit when executeBead fails', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Bead execution failure',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -353,7 +353,7 @@ describe('handleCoding', () => {
   })
 
   it('propagates retry-budget exhaustion codes when a bead uses its per-bead window', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Bead retry budget exhaustion',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, { iteration: 5 })])
@@ -382,7 +382,7 @@ describe('handleCoding', () => {
   })
 
   it('propagates underlying OpenCode diagnostics with bead failures', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Bead failure with OpenCode diagnostics',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -419,7 +419,7 @@ describe('handleCoding', () => {
   })
 
   it('lets continuable OpenCode retry errors bubble for the workflow ERROR path instead of BEAD_ERROR', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Continuable OpenCode retry error',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -447,7 +447,7 @@ describe('handleCoding', () => {
   })
 
   it('invokes resetToBeadStart and persists notes through the fresh-reload when onContextWipe fires', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Notes updated triggers reset',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -512,7 +512,7 @@ describe('handleCoding', () => {
   })
 
   it('preserves retry notes and iteration when resetToBeadStart fails during context wipe', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Reset failure preserves retry metadata',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, { iteration: 1 })])
@@ -576,7 +576,7 @@ describe('handleCoding', () => {
   // --- Throw paths ---
 
   it('throws when there are no beads', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'No beads throw',
     })
     // Beads file is empty (no writeTicketBeads call)
@@ -589,7 +589,7 @@ describe('handleCoding', () => {
   })
 
   it('throws when no runnable bead exists due to unresolved dependencies', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Blocked bead throw',
     })
     // bead-2 is blocked by bead-1 which is not done (not even present)
@@ -607,7 +607,7 @@ describe('handleCoding', () => {
   })
 
   it('recovers an interrupted in-progress bead before selecting runnable work', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Recover interrupted in-progress bead',
     })
     writeTicketBeads(ticket.id, [
@@ -679,7 +679,7 @@ describe('handleCoding', () => {
   })
 
   it('continues an interrupted in-progress bead without resetting when a session continuation is pending', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Continue interrupted in-progress bead',
     })
     writeTicketBeads(ticket.id, [
@@ -720,7 +720,7 @@ describe('handleCoding', () => {
   })
 
   it('finalizes a current persisted execution checkpoint without re-executing the bead', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Finalize matching execution checkpoint',
     })
     const interruptedBead = makePendingBead('bead-1', 1, {
@@ -756,7 +756,7 @@ describe('handleCoding', () => {
   })
 
   it('does not reuse a stale persisted execution checkpoint after retry/reset changes bead state', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Ignore stale execution checkpoint',
     })
     const interruptedBead = makePendingBead('bead-1', 1, {
@@ -822,7 +822,7 @@ describe('handleCoding', () => {
   })
 
   it('blocks interrupted coding recovery when no bead start commit exists', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Interrupted bead without reset anchor',
     })
     writeTicketBeads(ticket.id, [
@@ -841,7 +841,7 @@ describe('handleCoding', () => {
   })
 
   it('throws when lockedMainImplementer is missing', async () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Missing implementer throw',
     })
     const context = makeTicketContextFromTicket(ticket, { lockedMainImplementer: null })
@@ -857,7 +857,7 @@ describe('handleCoding', () => {
   // --- Artifact assertions ---
 
   it('inserts bead_execution artifact on success and bead_diff when beadStartCommit is available', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Success artifacts',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -920,7 +920,7 @@ describe('handleCoding', () => {
   })
 
   it('inserts bead_execution artifact on failure but does not insert bead_diff', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Failure artifacts',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -979,7 +979,7 @@ describe('handleCoding', () => {
     recordBeadStartCommitMock.mockImplementation(() => {
       throw new Error('git rev-parse failed')
     })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'recordBeadStartCommit throws',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1009,7 +1009,7 @@ describe('handleCoding', () => {
     commitBeadChangesMock.mockImplementation(() => {
       throw new Error('\u001b[31mgit commit failed\u001b[0m')
     })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'commitBeadChanges throws',
     })
     const existingFinalizationNote = { ...makeNote('Earlier finalization failure'), errorCode: 'BEAD_FINALIZATION_FAILED' }
@@ -1052,7 +1052,7 @@ describe('handleCoding', () => {
 
   it('keeps the bead retryable and blocks progress when local commit returns an error', async () => {
     commitBeadChangesMock.mockReturnValue({ committed: false, pushed: false, error: 'git add failed: permission denied' })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'commitBeadChanges returns error',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1079,7 +1079,7 @@ describe('handleCoding', () => {
 
   it('marks the bead done when finalization is a true no-op', async () => {
     commitBeadChangesMock.mockReturnValue({ committed: false, pushed: false })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'No-op finalization',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1101,7 +1101,7 @@ describe('handleCoding', () => {
 
   it('treats push failure as a warning after successful local commit', async () => {
     commitBeadChangesMock.mockReturnValue({ committed: true, pushed: false, error: 'remote rejected push' })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Push warning finalization',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1124,7 +1124,7 @@ describe('handleCoding', () => {
 
   it('re-finalizes a successful execution checkpoint after a finalization retry without resetting work', async () => {
     commitBeadChangesMock.mockReturnValue({ committed: false, pushed: false })
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Re-finalize checkpoint',
     })
     const failedFinalizationBead = makePendingBead('bead-1', 1, {
@@ -1161,8 +1161,8 @@ describe('handleCoding', () => {
     expect(readTicketBeads(ticket.id).find((b) => b.id === 'bead-1')?.status).toBe('done')
   })
 
-  it('requeues the latest failed bead for retry without clearing notes or iteration', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('requeues the latest failed bead for retry without clearing notes or iteration', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Retry failed coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1186,8 +1186,8 @@ describe('handleCoding', () => {
     expect(recoveredBead?.beadStartCommit).toBe('abc123')
   })
 
-  it('appends a verbatim user retry note to the exact recovered bead', () => {
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+  it('appends a verbatim user retry note to the exact recovered bead', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Retry failed coding bead with user guidance',
     })
     writeTicketBeads(ticket.id, [
@@ -1222,8 +1222,8 @@ describe('handleCoding', () => {
       .toEqual(recoveredBead?.userRetryNotes)
   })
 
-  it('does not mutate bead state or notes when the required reset fails', () => {
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+  it('does not mutate bead state or notes when the required reset fails', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Unsafe retry reset',
     })
     const originalBead = makePendingBead('bead-1', 1, {
@@ -1245,8 +1245,8 @@ describe('handleCoding', () => {
     expect(readTicketBeads(ticket.id)).toEqual([originalBead])
   })
 
-  it('requeues the latest in-progress bead when coding blocked before status flipped to error', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('requeues the latest in-progress bead when coding blocked before status flipped to error', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Retry blocked in-progress coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1289,7 +1289,7 @@ describe('handleCoding', () => {
 
     it('merges the cap into a project configuration and puts the original back', async () => {
       setStepCap(25)
-      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'Step cap merge' })
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap merge' })
       const paths = getTicketPaths(ticket.id)!
       const configPath = join(paths.worktreePath, 'opencode.json')
       const original = `${JSON.stringify({ mcp: { docs: { type: 'local' } } }, null, 2)}\n`
@@ -1315,7 +1315,7 @@ describe('handleCoding', () => {
      */
     it('keeps the capped configuration out of the bead commit', async () => {
       setStepCap(25)
-      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'Step cap commit' })
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap commit' })
       const paths = getTicketPaths(ticket.id)!
       writeFileSync(join(paths.worktreePath, 'opencode.json'), '{"mcp": {}}\n', 'utf8')
       writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1)])
@@ -1333,7 +1333,7 @@ describe('handleCoding', () => {
 
     it('does not touch opencode.json at all when no cap is set', async () => {
       setStepCap(0)
-      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'No step cap' })
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'No step cap' })
       const paths = getTicketPaths(ticket.id)!
       const configPath = join(paths.worktreePath, 'opencode.json')
       writeFileSync(configPath, '{"mcp": {}}\n', 'utf8')
@@ -1359,7 +1359,7 @@ describe('handleCoding', () => {
      */
     it('puts the cap back after the reset that recovers an interrupted bead', async () => {
       setStepCap(25)
-      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'Step cap after recovery' })
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap after recovery' })
       const paths = getTicketPaths(ticket.id)!
       const configPath = join(paths.worktreePath, 'opencode.json')
       const original = `${JSON.stringify({ mcp: { docs: { type: 'local' } } }, null, 2)}\n`
@@ -1394,7 +1394,7 @@ describe('handleCoding', () => {
      */
     it('restores when hiding a created configuration from git fails', async () => {
       setStepCap(25)
-      const { ticket, context } = createInitializedTestTicket(repoManager, { title: 'Step cap exclude failure' })
+      const { ticket, context } = await createInitializedTestTicket(repoManager, { title: 'Step cap exclude failure' })
       const paths = getTicketPaths(ticket.id)!
       const configPath = join(paths.worktreePath, 'opencode.json')
       ensureLocalGitExcludeMock.mockImplementationOnce(() => { throw new Error('git exclude is unavailable') })

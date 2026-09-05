@@ -3,7 +3,7 @@ import { mkdtempSync, chmodSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { doctorCommand, runChecks, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
+import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
 import type { DaemonState } from '../server/lib/daemonPaths'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
@@ -351,6 +351,15 @@ describe('doctor command', () => {
         ...(opencode === undefined ? {} : { opencode }),
       }
     }
+
+    it('treats a timed-out version probe as launchable, and a missing binary as not', () => {
+      // Both report `warn`. Only one of them means the binary is not there, and
+      // keying on `status === 'ok'` made a slow probe say `opencode` cannot be
+      // launched.
+      expect(isOpenCodeCliLaunchable({ name: 'opencode cli', status: 'ok', detail: '1.2.3' })).toBe(true)
+      expect(isOpenCodeCliLaunchable({ name: 'opencode cli', status: 'warn', detail: 'timed out' })).toBe(true)
+      expect(isOpenCodeCliLaunchable({ name: 'opencode cli', status: 'warn', missing: true, detail: 'not found on PATH' })).toBe(false)
+    })
 
     it('fails when nothing is running and nothing could start one', () => {
       const check = judgeOpenCode(

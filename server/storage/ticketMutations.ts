@@ -1,20 +1,8 @@
 import { and, desc, eq, isNull } from 'drizzle-orm'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { resolve } from 'path'
-import { spawnSync } from 'child_process'
+import { runGitSyncOrThrow } from '../git/runCommand'
 import { z } from 'zod'
-import * as commandLogger from '../log/commandLogger'
-
-// Tolerates partial vi.mock() factories that omit logCommand.
-function logCmd(
-  bin: string,
-  args: string[],
-  result:
-    | { ok: true; stdin?: string; stdout?: string; stderr?: string }
-    | { ok: false; error: string; stdin?: string; stdout?: string; stderr?: string },
-) {
-  commandLogger.logCommand?.(bin, args, result)
-}
 import { getProjectContextById } from './projects'
 import { manualQaImprovementTickets, opencodeSessions, phaseArtifacts, projects, ticketErrorOccurrences, ticketPhaseAttempts, ticketStatusHistory, tickets } from '../db/schema'
 import { getProjectWorktreesRoot, getTicketAiLogPath, getTicketDebugLogPath, getTicketDir, getTicketExecutionLogPath, getTicketWorktreePath } from './paths'
@@ -350,21 +338,7 @@ function assertLockedGitHookConfigurationMutable(
 }
 
 function runGit(projectRoot: string, args: string[]) {
-  const fullArgs = ['-C', projectRoot, ...args]
-  const result = spawnSync('git', fullArgs, { encoding: 'utf8' })
-  const stdout = (result.stdout ?? '').trim()
-  const stderr = (result.stderr ?? '').trim()
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message ?? ([stdout, stderr].filter(Boolean).join(' | ') || `exit code ${result.status ?? '?'}`)
-    logCmd('git', fullArgs, {
-      ok: false,
-      error: result.error?.message ?? `exit code ${result.status ?? '?'}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    })
-    throw new Error(detail)
-  }
-  logCmd('git', fullArgs, { ok: true, stdout: stdout || undefined, stderr: stderr || undefined })
+  runGitSyncOrThrow(projectRoot, args)
 }
 
 function removeTicketFilesystem(projectRoot: string, externalId: string, branchName?: string | null) {
@@ -411,33 +385,42 @@ export function createTicket(input: {
   const project = getProjectContextById(validatedInput.projectId)
   if (!project) throw new Error('Project not found')
 
-  const newCounter = (project.project.ticketCounter ?? 0) + 1
-  const externalId = `${project.project.shortname}-${newCounter}`
+  // Advancing the counter and inserting the row are one step or neither.
+  // Apart they drift: an external_id collision after the counter moved burns a
+  // number, and a crash between them leaves the counter permanently ahead of
+  // the tickets that exist. `createManualQaImprovementTicket` below already
+  // does it this way; this is the same sequence.
+  const ticket = project.projectDb.transaction((tx) => {
+    const currentProject = tx.select().from(projects).where(eq(projects.id, project.project.id)).get()
+    if (!currentProject) throw new Error('Project not found')
+    const newCounter = (currentProject.ticketCounter ?? 0) + 1
+    const externalId = `${currentProject.shortname}-${newCounter}`
 
-  project.projectDb.update(projects)
-    .set({ ticketCounter: newCounter, updatedAt: new Date().toISOString() })
-    .where(eq(projects.id, project.project.id))
-    .run()
+    tx.update(projects)
+      .set({ ticketCounter: newCounter, updatedAt: new Date().toISOString() })
+      .where(eq(projects.id, currentProject.id))
+      .run()
 
-  const ticket = project.projectDb.insert(tickets)
-    .values({
-      externalId,
-      projectId: project.project.id,
-      title: validatedInput.title,
-      description: validatedInput.description ?? null,
-      priority: validatedInput.priority ?? 3,
-      manualQaOverride: validatedInput.manualQaOverride ?? null,
-      aiQuestionsOverride: validatedInput.aiQuestionsOverride ?? null,
-      aiQuestionWindowOverride: validatedInput.aiQuestionWindowOverride ?? null,
-      status: 'DRAFT',
-    })
-    .returning()
-    .get()
+    const inserted = tx.insert(tickets)
+      .values({
+        externalId,
+        projectId: currentProject.id,
+        title: validatedInput.title,
+        description: validatedInput.description ?? null,
+        priority: validatedInput.priority ?? 3,
+        manualQaOverride: validatedInput.manualQaOverride ?? null,
+        aiQuestionsOverride: validatedInput.aiQuestionsOverride ?? null,
+        aiQuestionWindowOverride: validatedInput.aiQuestionWindowOverride ?? null,
+        status: 'DRAFT',
+      })
+      .returning()
+      .get()
 
-  if (!ticket) {
-    throw new Error(`Failed to create ticket: ${externalId}`)
-  }
+    if (!inserted) throw new Error(`Failed to create ticket: ${externalId}`)
+    return inserted
+  })
 
+  const externalId = ticket.externalId
   const metaDir = resolve(getTicketDir(project.projectRoot, externalId), 'meta')
   mkdirSync(metaDir, { recursive: true })
   safeAtomicWrite(

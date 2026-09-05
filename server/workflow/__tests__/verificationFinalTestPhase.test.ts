@@ -78,7 +78,7 @@ describe('handleFinalTest', () => {
   })
 
   it('reloads persisted final-test retry notes into context and uses execution runtime settings', async () => {
-    const { ticket, context, paths, project } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths, project } = await createInitializedTestTicket(repoManager, {
       title: 'Final test retry state',
       description: 'Ensure retries keep prior final-test notes.',
     })
@@ -172,7 +172,7 @@ describe('handleFinalTest', () => {
   })
 
   it('preserves LoopTroop ticket artifacts when resetting before a final-test retry', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Final test reset preservation',
     })
 
@@ -233,7 +233,7 @@ describe('handleFinalTest', () => {
   })
 
   it('reuses the final-test session once to classify an unknown untracked file', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Final-test file classification retry',
     })
     mkdirSync(`${paths.worktreePath}/diagnostics`, { recursive: true })
@@ -310,7 +310,7 @@ describe('handleFinalTest', () => {
   })
 
   it('keeps an unknown untracked file local-only when the classification retry fails', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Final-test file classification fallback',
     })
 

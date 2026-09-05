@@ -56,7 +56,7 @@ describe('handlePrdDraft', () => {
   })
 
   it('fails fast before drafting when the canonical interview artifact is missing', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager)
+    const { ticket, context } = await createInitializedTestTicket(repoManager)
     const sendEvent = vi.fn()
 
     await expect(handlePrdDraft(ticket.id, context, sendEvent, new AbortController().signal))
@@ -67,8 +67,8 @@ describe('handlePrdDraft', () => {
     expect(getLatestPhaseArtifact(ticket.id, 'prd_drafts', 'DRAFTING_PRD')).toBeUndefined()
   })
 
-  it('persists invalid draft diagnostics without visible artifact content', () => {
-    const { ticket } = createInitializedTestTicket(repoManager)
+  it('persists invalid draft diagnostics without visible artifact content', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager)
     const malformedOutput = 'not a valid PRD draft but previously leaked into artifact body'
     const drafts: DraftResult[] = [{
       memberId: TEST.councilMembers[0],
@@ -116,7 +116,7 @@ describe('handlePrdDraft', () => {
   })
 
   it('persists normalized draft metadata and logs PRD-specific metrics', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager)
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const sendEvent = vi.fn()
 
     writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
@@ -447,7 +447,7 @@ describe('handlePrdDraft', () => {
   })
 
   it('persists the full mock PRD vote artifact shape', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager)
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const sendEvent = vi.fn()
 
     writeFileSync(`${paths.ticketDir}/interview.yaml`, makeInterviewYaml({ ticket_id: ticket.externalId }), 'utf-8')
@@ -483,7 +483,7 @@ describe('handlePrdDraft', () => {
   })
 
   it('persists live and final PRD vote artifacts with winner metadata and presentation order', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager)
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager)
     const sendEvent = vi.fn()
     const draftA = buildMockVoteDraft(TEST.councilMembers[0], 'Alpha')
     const draftB = buildMockVoteDraft(TEST.councilMembers[1], 'Beta')

@@ -85,3 +85,34 @@ describe('JSON validation middleware', () => {
     expect(await response.json()).toEqual({ body: '' })
   })
 })
+
+describe('request content types', () => {
+  it('rejects text/event-stream as a request body type', async () => {
+    const app = createValidationApp()
+
+    const response = await app.request('/api/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/event-stream' },
+      body: 'data: not json\n\n',
+    })
+
+    // It is a response type, not a request one. Letting it through skipped both
+    // the 415 and the 2 MiB cap, so a handler calling c.req.json() read an
+    // uncapped body.
+    expect(response.status).toBe(415)
+  })
+
+  it('still exempts the Manual QA evidence upload path by path', async () => {
+    const app = new Hono()
+    app.use('/api/*', validateJson)
+    app.post('/api/tickets/:id/manual-qa/versions/:version/evidence', (c) => c.json({ ok: true }))
+
+    const response = await app.request('/api/tickets/1%3AT-1/manual-qa/versions/1/evidence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      body: 'binary-ish',
+    })
+
+    expect(response.status).toBe(200)
+  })
+})

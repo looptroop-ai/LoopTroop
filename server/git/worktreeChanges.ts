@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process'
+import { runGitSync } from './runCommand'
+import { parseGitStatusPorcelainZ } from './statusPorcelain'
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 
@@ -278,22 +279,14 @@ export function classifyWorktreePath(path: string, options: FileClassifyOptions 
 }
 
 function parseGitStatusPorcelain(output: string, options: WorktreeSummaryOptions = {}): WorktreeChangeEntry[] {
-  const fields = output.split('\0').filter(Boolean)
   const entries: WorktreeChangeEntry[] = []
 
-  for (let index = 0; index < fields.length; index += 1) {
-    const field = fields[index] ?? ''
-    if (field.length < 4) continue
-
-    const indexStatus = field[0] ?? ' '
-    const worktreeStatus = field[1] ?? ' '
-    const rawPath = field.slice(3)
-    const path = normalizeRepoPath(rawPath)
+  // The shared reader also yields the source of a rename as its own deletion,
+  // so a renamed file is committed as a move rather than as a second copy.
+  for (const record of parseGitStatusPorcelainZ(output)) {
+    const { indexStatus, worktreeStatus } = record
+    const path = normalizeRepoPath(record.path)
     if (!path) continue
-
-    if ((indexStatus === 'R' || indexStatus === 'C') && index + 1 < fields.length) {
-      index += 1
-    }
 
     const untracked = indexStatus === '?' && worktreeStatus === '?'
     const classification = classifyWorktreePath(path, {
@@ -319,26 +312,26 @@ export function summarizeWorktreeChanges(
   worktreePath: string,
   options: WorktreeSummaryOptions = {},
 ): WorktreeChangeSummary {
-  const result = spawnSync('git', [
-    '-C',
-    worktreePath,
+  // An omitted `timeoutMs` used to mean "no timeout", so a hung status call
+  // froze the caller for good; the shared runner's default applies instead.
+  const result = runGitSync(worktreePath, [
     'status',
     '--porcelain=v1',
     '-z',
     '--untracked-files=all',
   ], {
-    encoding: 'utf8',
     maxBuffer: GIT_OP_MAX_BUFFER_BYTES,
-    ...(options.timeoutMs !== undefined && options.timeoutMs > 0 ? { timeout: options.timeoutMs } : {}),
+    // NUL-delimited: a worktree-only change is reported as " D path", and a
+    // trim would eat the leading space along with the path's first character.
+    trimOutput: false,
+    ...(options.timeoutMs !== undefined && options.timeoutMs > 0 ? { timeoutMs: options.timeoutMs } : {}),
   })
 
-  if (result.status !== 0 || result.error) {
-    const detail = result.error?.message
-      ?? ((result.stderr ?? '').trim() || `exit code ${result.status ?? '?'}`)
-    throw new Error(`Failed to inspect worktree changes: ${detail}`)
+  if (!result.ok) {
+    throw new Error(`Failed to inspect worktree changes: ${result.errorDetail}`)
   }
 
-  const entries = parseGitStatusPorcelain(result.stdout ?? '', options)
+  const entries = parseGitStatusPorcelain(result.stdout, options)
   const committable = entries.filter(entry => entry.category === 'committable')
   const looptroopExcluded = entries.filter(entry => entry.category === 'looptroopExcluded')
   const setupExcluded = entries.filter(entry => entry.category === 'setupExcluded')

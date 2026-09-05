@@ -25,8 +25,8 @@ describe('hydrateAllTickets', () => {
     repoManager.cleanup()
   })
 
-  it('does not append active-state log noise when restoring a paused ticket', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('does not append active-state log noise when restoring a paused ticket', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Hydrated review pause',
     })
 
@@ -71,8 +71,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('blocks a non-draft ticket instead of regressing to draft when its snapshot is corrupt', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('blocks a non-draft ticket instead of regressing to draft when its snapshot is corrupt', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Corrupt snapshot recovery',
     })
 
@@ -93,8 +93,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('drops invalid persisted context fields instead of restoring them', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('drops invalid persisted context fields instead of restoring them', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Malformed persisted context',
     })
 
@@ -146,8 +146,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('keeps valid persisted context fields untouched', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('keeps valid persisted context fields untouched', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Valid persisted context',
     })
 
@@ -185,8 +185,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('does not hydrate or actor-create display-only mock tickets', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('does not hydrate or actor-create display-only mock tickets', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Display-only mock actor guard',
     })
 
@@ -212,8 +212,8 @@ describe('hydrateAllTickets', () => {
     expect(() => ensureActorForTicket(ticket.id)).toThrow(/display-only mock ticket/i)
   })
 
-  it('persists blocked-error diagnostics from actor ERROR events into public tickets', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('persists blocked-error diagnostics from actor ERROR events into public tickets', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Persist blocked diagnostics',
     })
     const broadcastSpy = vi.spyOn(broadcaster, 'broadcast')
@@ -277,8 +277,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('resolves blocked-error occurrences as continued when CONTINUE resumes the previous status', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('resolves blocked-error occurrences as continued when CONTINUE resumes the previous status', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Persist blocked continue',
     })
 
@@ -312,8 +312,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('reconstructs a missing active snapshot from the durable ticket status', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('reconstructs a missing active snapshot from the durable ticket status', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Missing snapshot recovery',
     })
 
@@ -332,8 +332,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('persists a planning edit rewind when reverting an active actor to approval', () => {
-    const { ticket, paths } = createInitializedTestTicket(repoManager, {
+  it('persists a planning edit rewind when reverting an active actor to approval', async () => {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Persist planning edit rewind',
     })
 
@@ -376,8 +376,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('can revert an actor without immediately processing the restored approval snapshot', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('can revert an actor without immediately processing the restored approval snapshot', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Quiet runtime setup rewind',
     })
 
@@ -416,8 +416,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('hydrates an actor with malformed locked council JSON without crashing', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('hydrates an actor with malformed locked council JSON without crashing', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Malformed locked council hydration',
     })
 
@@ -449,8 +449,8 @@ describe('hydrateAllTickets', () => {
     }
   })
 
-  it('reverts an active actor with malformed locked council JSON without crashing', () => {
-    const { ticket } = createInitializedTestTicket(repoManager, {
+  it('reverts an active actor with malformed locked council JSON without crashing', async () => {
+    const { ticket } = await createInitializedTestTicket(repoManager, {
       title: 'Malformed locked council revert',
     })
 

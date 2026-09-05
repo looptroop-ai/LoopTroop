@@ -7,13 +7,12 @@ import {
   collectAliasConflictWarnings,
   collectStructuredCandidates,
   getValueByAliases,
-  getStringByAliases,
   isRecord,
   normalizeKey,
   parseYamlOrJsonCandidate,
   unwrapExplicitWrapperRecord,
 } from '../../structuredOutput/yamlUtils'
-import { matchCoverageGapReference } from '../coverageGapMatching'
+import { parseCoverageGapResolutions } from '../coverageGapResolutions'
 import type { BeadSubset } from './types'
 
 export type BeadsCoverageGapResolutionAction = 'updated_beads' | 'already_covered' | 'left_unresolved'
@@ -145,113 +144,49 @@ function parseGapResolutions(
   gapResolutions: BeadsCoverageGapResolution[]
   repairWarnings: string[]
 } {
-  const rawGapResolutions = getValueByAliases(parsed, ['gap_resolutions', 'gapresolutions'])
-  if (!Array.isArray(rawGapResolutions)) {
-    throw new Error('Beads coverage revision output must include a top-level gap_resolutions list')
-  }
-
-  const repairWarnings: string[] = []
   const priorLookup = buildBeadLookup(currentCandidateBeads)
   const revisedLookup = buildBeadLookup(revisedBeads)
-  const resolutions: BeadsCoverageGapResolution[] = []
 
-  for (const [index, value] of rawGapResolutions.entries()) {
-    if (!isRecord(value)) {
-      throw new Error(`Beads coverage gap_resolutions entry at index ${index} is not an object`)
-    }
-
-    const gap = getStringByAliases(value, ['gap'])?.trim() ?? ''
-    if (!gap) {
-      throw new Error(`Beads coverage gap_resolutions entry at index ${index} is missing gap`)
-    }
-
-    const rawAction = getStringByAliases(value, ['action'])?.trim() ?? ''
-    const normalizedAction = normalizeKey(rawAction)
-    let action: BeadsCoverageGapResolutionAction | null = null
-    if (normalizedAction === 'updatedbeads' || normalizedAction === 'updatedplan') action = 'updated_beads'
-    if (normalizedAction === 'alreadycovered') action = 'already_covered'
-    if (normalizedAction === 'leftunresolved') action = 'left_unresolved'
-    if (!action) {
-      throw new Error(`Beads coverage gap_resolutions entry for "${gap}" has unsupported action "${rawAction}"`)
-    }
-
-    const rationale = getStringByAliases(value, ['rationale'])?.trim() ?? ''
-    if (!rationale) {
-      throw new Error(`Beads coverage gap_resolutions entry for "${gap}" is missing rationale`)
-    }
-
-    const rawAffectedItems = getValueByAliases(value, ['affected_items', 'affecteditems'])
-    const affectedItems = Array.isArray(rawAffectedItems)
-      ? rawAffectedItems.flatMap((item, itemIndex) => {
-          if (!isRecord(item)) {
-            throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} is not an object`)
+  return parseCoverageGapResolutions<BeadsCoverageGapResolutionAction, 'bead'>(
+    parsed,
+    coverageGaps,
+    {
+      label: 'Beads',
+      gapMatchLabel: 'Canonicalized beads',
+      resolveAction: (normalizedAction) => {
+        if (normalizedAction === 'updatedbeads' || normalizedAction === 'updatedplan') return 'updated_beads'
+        if (normalizedAction === 'alreadycovered') return 'already_covered'
+        if (normalizedAction === 'leftunresolved') return 'left_unresolved'
+        return null
+      },
+      resolveAffectedItem: ({ id, label, rawItemType, gap, itemIndex, repairWarnings }) => {
+        let itemType = normalizeBeadsAffectedItemType(rawItemType)
+        if (!itemType) {
+          const inferredItemType = inferBeadsAffectedItemType(id, label, priorLookup, revisedLookup)
+          if (inferredItemType) {
+            itemType = inferredItemType
+            repairWarnings.push(`Inferred missing beads coverage affected_items item_type at gap "${gap}" index ${itemIndex} as bead.`)
           }
-          const id = getStringByAliases(item, ['id'])?.trim() ?? ''
-          const label = getStringByAliases(item, ['label', 'title'])?.trim() ?? ''
-          let itemType = normalizeBeadsAffectedItemType(getValueByAliases(item, ['item_type', 'itemtype']))
-          if (!itemType) {
-            const inferredItemType = inferBeadsAffectedItemType(id, label, priorLookup, revisedLookup)
-            if (inferredItemType) {
-              itemType = inferredItemType
-              repairWarnings.push(`Inferred missing beads coverage affected_items item_type at gap "${gap}" index ${itemIndex} as bead.`)
-            }
-          }
-          if (itemType !== 'bead') {
-            throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} must use item_type bead`)
-          }
-          if (!id || !label) {
-            throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} requires id and label`)
-          }
+        }
+        if (itemType !== 'bead') {
+          throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} must use item_type bead`)
+        }
+        if (!id || !label) {
+          throw new Error(`Beads coverage affected_items entry at gap "${gap}" index ${itemIndex} requires id and label`)
+        }
 
-          const canonical = revisedLookup.byId.get(id) ?? priorLookup.byId.get(id)
-          if (!canonical) {
-            throw new Error(`Beads coverage affected_items entry at gap "${gap}" references unknown bead ${id}`)
-          }
-          if (canonical.title !== label) {
-            repairWarnings.push(`Canonicalized affected_items label for bead ${id} from "${label}" to "${canonical.title}".`)
-          }
+        const canonical = revisedLookup.byId.get(id) ?? priorLookup.byId.get(id)
+        if (!canonical) {
+          throw new Error(`Beads coverage affected_items entry at gap "${gap}" references unknown bead ${id}`)
+        }
+        if (canonical.title !== label) {
+          repairWarnings.push(`Canonicalized affected_items label for bead ${id} from "${label}" to "${canonical.title}".`)
+        }
 
-          return [{
-            itemType: 'bead',
-            id,
-            label: canonical.title,
-          } satisfies BeadsCoverageAffectedItem]
-        })
-      : []
-
-    resolutions.push({
-      gap,
-      action,
-      rationale,
-      affectedItems,
-    })
-  }
-
-  const normalizedCoverageGaps = coverageGaps.map((gap) => gap.trim()).filter(Boolean)
-  const seen = new Set<string>()
-  for (const resolution of resolutions) {
-    const matchedGap = matchCoverageGapReference(resolution.gap, normalizedCoverageGaps, 'Canonicalized beads')
-    if (!matchedGap) {
-      throw new Error(`Beads coverage gap_resolutions entry references unknown gap "${resolution.gap}"`)
-    }
-    if (seen.has(matchedGap.gap)) {
-      throw new Error(`Beads coverage gap_resolutions contains duplicate entry for "${matchedGap.gap}"`)
-    }
-    if (matchedGap.gap !== resolution.gap) {
-      resolution.gap = matchedGap.gap
-    }
-    if (matchedGap.repairWarning) {
-      repairWarnings.push(matchedGap.repairWarning)
-    }
-    seen.add(matchedGap.gap)
-  }
-
-  const missingGaps = normalizedCoverageGaps.filter((gap) => !seen.has(gap))
-  if (missingGaps.length > 0) {
-    throw new Error(`Beads coverage gap_resolutions must include exactly one entry per gap. Missing: ${missingGaps.join(' | ')}`)
-  }
-
-  return { gapResolutions: resolutions, repairWarnings }
+        return { itemType: 'bead', id, label: canonical.title } satisfies BeadsCoverageAffectedItem
+      },
+    },
+  )
 }
 
 export function validateBeadsCoverageRevisionOutput(

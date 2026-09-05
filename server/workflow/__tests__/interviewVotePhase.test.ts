@@ -67,7 +67,7 @@ describe('interview voting workflow', () => {
   })
 
   it('persists raw voter responses in live and final interview vote companions', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Capture interview vote raw output',
     })
     const sendEvent = vi.fn()

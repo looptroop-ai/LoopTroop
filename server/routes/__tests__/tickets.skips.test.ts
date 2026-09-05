@@ -24,7 +24,7 @@ const repoManager = createFixtureRepoManager({
   },
 })
 
-function setupTicket() {
+async function setupTicket() {
   const repoDir = repoManager.createRepo()
   const project = attachProject({ folderPath: repoDir, name: 'LoopTroop', shortname: 'LOOP' })
   const ticket = createTicket({
@@ -32,7 +32,7 @@ function setupTicket() {
     title: 'Skips route',
     description: 'The audit trail is readable over HTTP.',
   })
-  const init = initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
+  const init = await initializeTicket({ projectFolder: repoDir, externalId: ticket.externalId })
   patchTicket(ticket.id, { status: 'WAITING_INTERVIEW_ANSWERS', branchName: init.branchName })
 
   const app = new Hono()
@@ -53,7 +53,7 @@ describe('ticketRouter GET /tickets/:id/skips', () => {
   })
 
   it('returns the whole ticket, including receipts from archived attempts', async () => {
-    const { app, ticket } = setupTicket()
+    const { app, ticket } = await setupTicket()
     ensureActivePhaseAttempt(ticket.id, 'WAITING_INTERVIEW_ANSWERS')
     writeSkipReceipts({
       ticketId: ticket.id,
@@ -96,7 +96,7 @@ describe('ticketRouter GET /tickets/:id/skips', () => {
   })
 
   it('filters to a single surface and refuses an unknown one', async () => {
-    const { app, ticket } = setupTicket()
+    const { app, ticket } = await setupTicket()
     writeSkipReceipts({
       ticketId: ticket.id,
       surface: 'interview_question',
@@ -115,7 +115,7 @@ describe('ticketRouter GET /tickets/:id/skips', () => {
   })
 
   it('returns 404 for a ticket that does not exist', async () => {
-    const { app } = setupTicket()
+    const { app } = await setupTicket()
     const response = await app.request('/api/tickets/1:MISSING-9/skips')
     expect(response.status).toBe(404)
   })

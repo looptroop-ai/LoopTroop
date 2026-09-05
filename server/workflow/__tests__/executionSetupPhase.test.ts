@@ -216,7 +216,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('runs one numbered manual attempt after the latest persisted setup report', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup manual session retry',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -259,7 +259,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('keeps an honest blocked profile diagnostic-only and does not publish it as reusable runtime state', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup honest blocked result',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -320,7 +320,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects an otherwise ready profile after the aggregate setup-attempt deadline expires', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup aggregate deadline',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -362,7 +362,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('caps backend setup probes at the time remaining in the aggregate attempt', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup remaining validation budget',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -412,7 +412,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('preserves LoopTroop ticket artifacts when resetting before an execution-setup retry', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup reset preservation',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -482,7 +482,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a schema-compatible setup result when tooling checks fail', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup tooling gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -609,7 +609,7 @@ describe('handleExecutionSetup', () => {
       ],
     },
   ])('rejects incomplete tooling failure evidence for $title', async ({ title, toolRequirements }) => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: `Execution setup ${title}`,
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -701,7 +701,7 @@ describe('handleExecutionSetup', () => {
       ],
     },
   ])('accepts tooling failure evidence for $title', async ({ title, toolRequirements }) => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: `Execution setup ${title}`,
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -752,7 +752,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile that declares reusable command execution without tooling probes', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup missing probes gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -805,7 +805,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile when its declared wrapper is missing', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup missing wrapper gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -853,7 +853,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup profile when a tooling probe fails', async () => {
-    const { ticket, context } = createInitializedTestTicket(repoManager, {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup failing probe gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -898,7 +898,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('accepts a ready setup profile when the wrapper and tooling probe pass', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup passing probe gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -947,7 +947,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it.runIf(process.platform !== 'win32')('does not silently apply an unapproved setup wrapper', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup canonical wrapper fallback',
     })
     const bareProbeCommand = 'workspace-probe-tool'
@@ -1038,7 +1038,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('rejects a ready setup result when setup leaves committable project changes', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup dirty worktree gate',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)
@@ -1098,7 +1098,7 @@ describe('handleExecutionSetup', () => {
   })
 
   it('allows generated setup noise but records gitignore suggestions as profile cautions', async () => {
-    const { ticket, context, paths } = createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Execution setup generated noise warning',
     })
     writeExecutionSetupPlan(ticket.id, ticket.externalId)

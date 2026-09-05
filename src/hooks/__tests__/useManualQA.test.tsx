@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useManualQaIndex, useManualQaRound } from '../useManualQA'
+import { normalizeManualQaRound, useManualQaIndex, useManualQaRound } from '../useManualQA'
 
 describe('useManualQaRound', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -132,5 +132,35 @@ describe('useManualQaIndex', () => {
       expect.objectContaining({ version: 1, artifactAvailable: true, phaseAttempt: 3 }),
       expect.objectContaining({ version: 2, artifactAvailable: false, phaseAttempt: 4 }),
     ])
+  })
+})
+
+describe('normalizeManualQaRound draft', () => {
+  const draftPayload = {
+    draft: {
+      skipReason: 'Covered by the integration suite.',
+      results: [{ itemId: 'qa-1', status: 'pass' }],
+    },
+  }
+
+  it('keeps the skip reason on the restored draft', () => {
+    // The normaliser returned `{ results }` alone, so the restore that reads
+    // `restored.skipReason` found a field it had just dropped and a typed
+    // reason vanished on reload.
+    const round = normalizeManualQaRound(draftPayload, 1)
+    expect(round.draft?.skipReason).toBe('Covered by the integration suite.')
+    expect(round.draft?.results['qa-1']?.status).toBe('pass')
+  })
+
+  it('omits the skip reason when there is none to keep', () => {
+    const round = normalizeManualQaRound({ draft: { results: [{ itemId: 'qa-1', status: 'pass' }] } }, 1)
+    expect(round.draft?.skipReason).toBeUndefined()
+  })
+
+  it('keeps the skip reason for a legacy keyed-results draft too', () => {
+    const round = normalizeManualQaRound({
+      draft: { skipReason: 'Legacy shape.', results: { 'qa-1': { itemId: 'qa-1', status: 'pass' } } },
+    }, 1)
+    expect(round.draft?.skipReason).toBe('Legacy shape.')
   })
 })

@@ -219,6 +219,38 @@ export function mergeCoverageArtifactContent(
   })
 }
 
+/**
+ * Folds the Manual QA checklist's processing metadata into its artifact.
+ *
+ * Generation records its repair trail in a companion row, the way every other
+ * artifact-processing path does — and the checklist view read only the
+ * checklist, so an operator saw the result and never learned a repair had
+ * happened. Merging here keeps the viewer reading one string.
+ *
+ * The metadata is returned on its own when there is no checklist: generation
+ * that gave up writes the companion and no artifact, which is the case an
+ * operator most needs to see.
+ */
+export function mergeManualQaChecklistArtifactContent(
+  checklistContent: string | null | undefined,
+  companionContent?: string | null | undefined,
+): string | null {
+  const companion = parseArtifactCompanionPayload(companionContent, 'manual_qa_checklist')
+  const metadata: Record<string, unknown> = {}
+  if (companion?.structuredOutput !== undefined) metadata.structuredOutput = companion.structuredOutput
+  if (typeof companion?.validationError === 'string') metadata.validationError = companion.validationError
+  const hasMetadata = Object.keys(metadata).length > 0
+
+  if (!checklistContent?.trim()) return hasMetadata ? JSON.stringify(metadata) : null
+  if (!hasMetadata) return checklistContent
+
+  const core = parseArtifactRecord(checklistContent)
+  // The artifact is normally the `{ version, checklist }` envelope, but it can
+  // also be the canonical YAML document. Wrapping rather than rewriting keeps
+  // the viewer's existing unwrap working on both.
+  return JSON.stringify(core ? { ...core, ...metadata } : { checklist: checklistContent, ...metadata })
+}
+
 export function readWinnerIdFromArtifactContent(content: string | null | undefined): string | undefined {
   const parsed = parseArtifactRecord(content)
   const winnerId = typeof parsed?.winnerId === 'string' ? parsed.winnerId.trim() : ''

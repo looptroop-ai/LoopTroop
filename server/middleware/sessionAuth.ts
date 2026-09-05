@@ -30,7 +30,15 @@ export function readCookie(header: string | undefined, name: string): string | n
     const separator = part.indexOf('=')
     if (separator === -1) continue
     if (part.slice(0, separator).trim() !== name) continue
-    return decodeURIComponent(part.slice(separator + 1).trim())
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim())
+    } catch {
+      // Bad percent-encoding threw here, before authentication could return
+      // its ordinary 401 — so a malformed Cookie header answered 500 and told
+      // an unauthenticated caller that something had broken. An undecodable
+      // cookie is a cookie we do not have.
+      return null
+    }
   }
   return null
 }

@@ -1,10 +1,8 @@
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { execFile } from 'child_process'
 import { access, constants, readdir, stat } from 'fs/promises'
 import { dirname, resolve as resolvePath } from 'path'
 import { homedir } from 'os'
-import { promisify } from 'util'
 
 import {
   attachExistingProject,
@@ -32,10 +30,9 @@ import { normalizeFolderPath } from '../storage/paths'
 import { buildWslProjectMountedDriveWarning, isWslWindowsMountPath } from '../../shared/wslPerformance'
 import { aiQuestionWindowOverrideSchema, gitHookPolicySchema, ignoreModeSchema } from '../lib/settingSchemas'
 import { getErrorMessage } from '@shared/typeGuards'
+import { runGit } from '../git/runCommand'
 
 const projectRouter = new Hono()
-const execFileAsync = promisify(execFile)
-const GIT_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024
 
 const perProjectOverrides = {
   gitHookPolicy: gitHookPolicySchema.optional(),
@@ -100,29 +97,33 @@ async function existsAsync(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Both discovery probes run on the attach request path, so they use the async
+ * runner with a short budget of their own rather than the 30s default: they are
+ * local reads that should answer immediately, and a folder whose gitdir sits on
+ * an unresponsive mount used to hang the request with no timeout at all.
+ */
+const REPO_DISCOVERY_TIMEOUT_MS = 5_000
+
 async function resolveGitRepoRootAsync(folderPath: string): Promise<string | null> {
   const normalized = normalizeFolderPath(folderPath)
   if (!(await existsAsync(normalized))) return null
 
-  try {
-    const { stdout } = await execFileAsync('git', ['-C', normalized, 'rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      maxBuffer: GIT_COMMAND_MAX_BUFFER_BYTES,
-    })
-    const repoRoot = stdout.trim()
-    return repoRoot ? normalizeFolderPath(repoRoot) : null
-  } catch {
-    return null
-  }
+  const result = await runGit(normalized, ['rev-parse', '--show-toplevel'], {
+    timeoutMs: REPO_DISCOVERY_TIMEOUT_MS,
+    log: false,
+  })
+  if (!result.ok || !result.stdout) return null
+  return normalizeFolderPath(result.stdout)
 }
 
 async function readOriginRemoteUrlAsync(repoRoot: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'remote', 'get-url', 'origin'], {
-      encoding: 'utf8',
-      maxBuffer: GIT_COMMAND_MAX_BUFFER_BYTES,
+    const result = await runGit(repoRoot, ['remote', 'get-url', 'origin'], {
+      timeoutMs: REPO_DISCOVERY_TIMEOUT_MS,
+      log: false,
     })
-    return stdout.trim() || null
+    return result.ok ? result.stdout || null : null
   } catch {
     return null
   }
@@ -138,7 +139,7 @@ async function getGitRepoInfo(folderPath: string): Promise<GitRepoInfo> {
   const repoRoot = await resolveGitRepoRootAsync(resolved)
   if (!repoRoot) return { isGit: false }
   const githubRepo = parseGitHubRemoteUrl(await readOriginRemoteUrlAsync(repoRoot))
-  const writeAccess = githubRepo ? getGitHubRepoWriteAccess(repoRoot) : null
+  const writeAccess = githubRepo ? await getGitHubRepoWriteAccess(repoRoot) : null
 
   const state = resolveProjectState(repoRoot)
   const attachedProject = getAttachedProjectByRoot(repoRoot)

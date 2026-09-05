@@ -32,6 +32,18 @@ function makeRepo(): string {
   return root
 }
 
+/**
+ * The staged set by name.
+ *
+ * Deliberately not `git status --porcelain`: whether a path stages as `A` or
+ * `M` depends on what the *setup* left tracked, and git 2.47 and 2.55 disagreed
+ * about that here. The question this file asks is only ever "which paths did
+ * git stage", so ask exactly that.
+ */
+function stagedPaths(root: string): string[] {
+  return git(root, 'diff', '--cached', '--name-only').split('\n').filter(Boolean)
+}
+
 afterEach(() => {
   while (roots.length) rmSync(roots.pop() as string, { recursive: true, force: true })
 })
@@ -47,13 +59,17 @@ describe('literalPathspec', () => {
     // from the worktree *and* the index, so nothing matches it literally and the
     // glob is free to match the neighbour instead.
     unlinkSync(join(root, 'src', '[id].tsx'))
-    git(root, 'rm', '--quiet', '--cached', '--', 'src/[id].tsx')
+    // The setup names the file literally too. It did not at first, and git 2.55
+    // duly matched the neighbour and untracked that as well — this test's own
+    // fixture walked into the bug it exists to describe, and only on the git CI
+    // runs (2.55) and not the one here (2.47).
+    git(root, 'rm', '--quiet', '--cached', '--', literalPathspec('src/[id].tsx'))
     git(root, 'commit', '-m', 'drop the route')
     writeFileSync(join(root, 'src', 'i.tsx'), 'edited by someone else\n')
 
     // Bare: exit zero, and `src/i.tsx` staged — a file the caller never named.
     git(root, 'add', '-v', '--', 'src/[id].tsx')
-    expect(git(root, 'status', '--porcelain')).toContain('M  src/i.tsx')
+    expect(stagedPaths(root)).toContain('src/i.tsx')
 
     git(root, 'reset', '--quiet')
 
@@ -62,7 +78,7 @@ describe('literalPathspec', () => {
     // that is not there.
     const literal = runCommandSync('git', ['add', '-v', '--', literalPathspec('src/[id].tsx')], { cwd: root, log: false })
     expect(literal.ok).toBe(false)
-    expect(git(root, 'status', '--porcelain')).not.toContain('M  src/i.tsx')
+    expect(stagedPaths(root)).not.toContain('src/i.tsx')
   })
 
   it('still names the file it is given when that file does exist', () => {
@@ -72,10 +88,8 @@ describe('literalPathspec', () => {
 
     git(root, 'add', '-v', '--', literalPathspec('src/[id].tsx'))
 
-    const status = git(root, 'status', '--porcelain')
-    expect(status).toContain('M  src/[id].tsx')
-    // The neighbour the glob would have swept in stays unstaged.
-    expect(status).toContain(' M src/i.tsx')
+    // Exactly one path staged, and it is the one that was named.
+    expect(stagedPaths(root)).toEqual(['src/[id].tsx'])
   })
 
   it('keeps the control directories excluded as patterns, not names', () => {

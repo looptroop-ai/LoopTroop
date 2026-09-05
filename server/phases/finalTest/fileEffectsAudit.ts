@@ -7,10 +7,9 @@ import { classifyWorktreePath } from '../../git/worktreeChanges'
 import {
   FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT,
   type FinalTestFileEffect,
-  type FinalTestFileEffectIntent,
 } from '@shared/finalTestFileEffects'
 
-export { FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT, type FinalTestFileEffect, type FinalTestFileEffectIntent }
+export { FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT, type FinalTestFileEffect }
 
 export interface FinalTestDirtyFile {
   path: string

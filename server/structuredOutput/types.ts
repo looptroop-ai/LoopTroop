@@ -9,7 +9,7 @@ import type { FinalTestFileEffect, FinalTestFileEffectIntent } from '@shared/fin
 // Re-exported so the parser modules keep importing their payload pieces from
 // one place, while the definitions themselves live in shared/ next to the
 // clients that read the same records.
-export type { InterviewQuestionOption, FinalTestFileEffect, FinalTestFileEffectIntent }
+export type { FinalTestFileEffect, FinalTestFileEffectIntent }
 
 export interface StructuredOutputSuccess<T> {
   ok: true

@@ -56,7 +56,6 @@ describe('streamRouter', () => {
     for (let index = 0; index < MAX_SSE_CONNECTIONS_PER_TICKET; index += 1) {
       broadcaster.addClient(ticket.id, {
         id: `client-${index}`,
-        ticketId: ticket.id,
         send: vi.fn(),
         close: vi.fn(),
       })

@@ -434,22 +434,6 @@ function hasActiveProjectTickets(projectRoot: string): boolean {
   return rows.some(ticket => !DETACHABLE_TICKET_STATUSES.has(ticket.status))
 }
 
-/**
- * Detaching a project is intentionally non-destructive: it only removes the
- * app-level attachment row so the existing on-disk LoopTroop state can be
- * re-attached later. Refuse to detach while tickets are still active.
- */
-export function detachProject(id: number): boolean {
-  const attached = getAttachedRow(id)
-  if (!attached) return false
-  if (hasActiveProjectTickets(attached.folderPath)) {
-    throw new Error('Cannot detach project while tickets are still active. Complete or cancel them first.')
-  }
-  closeProjectDatabase(attached.folderPath)
-  appDb.delete(attachedProjects).where(eq(attachedProjects.id, id)).run()
-  return true
-}
-
 export function deleteProject(id: number): boolean {
   const attached = getAttachedRow(id)
   if (!attached) return false

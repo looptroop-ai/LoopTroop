@@ -66,7 +66,6 @@ streamRouter.get('/stream', (c) => {
     // Register client with broadcaster
     broadcaster.addClient(safeTicketId, {
       id: clientId,
-      ticketId: safeTicketId,
       send: (event: string, data: string, id: string) => {
         stream.writeSSE({ event, data, id }).catch((err) => {
           warnIfVerbose(`[stream] SSE write failed for client ${clientId}:`, err)

@@ -138,7 +138,6 @@ describe('AI turn metrics', () => {
     const sent = vi.fn()
     broadcaster.addClient(ticket.id, {
       id: 'metrics-test',
-      ticketId: ticket.id,
       send: sent,
       close: () => undefined,
     })

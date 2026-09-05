@@ -6,7 +6,6 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { getTicketByRef, getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
-import { safeAtomicWrite } from '../io/atomicWrite'
 import { foldPersistedLogEntries } from '../log/readDedupe'
 import { normalizePersistedLogEntry } from '../log/view'
 import { handlePutInterview, handlePutPrd } from './ticketHandlers'
@@ -268,22 +267,7 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
     return handlePutInterview(c)
   }
 
-  if (file === 'prd') {
-    return handlePutPrd(c)
-  }
-
-  const body = await c.req.json()
-  if (typeof body.content !== 'string') {
-    return c.json({ error: 'Request body must include a "content" string field' }, 400)
-  }
-
-  try {
-    safeAtomicWrite(filePath, body.content)
-  } catch {
-    return c.json({ error: 'Failed to write file' }, 500)
-  }
-
-  return c.json({ success: true })
+  return handlePutPrd(c)
 })
 
 const execFileAsync = promisify(execFile)

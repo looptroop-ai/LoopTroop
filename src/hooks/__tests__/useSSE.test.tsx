@@ -3,7 +3,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryClient } from '@/lib/queryClient'
 import { SERVER_LOG_REFRESH_EVENT } from '@/context/logUtils'
-import { getTicketArtifactsQueryKey, useTicketArtifacts, type DBartifact } from '../useTicketArtifacts'
+import { getTicketArtifactsQueryKey, useTicketArtifacts, type TicketArtifact } from '../useTicketArtifacts'
 
 vi.mock('@/lib/devApi', () => ({
   getApiUrl: (path: string, options?: { directInDevelopment?: boolean }) =>
@@ -198,7 +198,7 @@ describe('useSSE', () => {
 
   it('keeps loaded historical bodies and invalidates only artifact scopes affected by metadata events', async () => {
     const ticketId = '1:T-42'
-    const historicalArtifact: DBartifact = {
+    const historicalArtifact: TicketArtifact = {
       id: 11,
       ticketId,
       phase: 'COUNCIL_VOTING_PRD',

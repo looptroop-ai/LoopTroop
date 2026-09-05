@@ -3,6 +3,13 @@ import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { HostContext } from '@shared/hostContext'
 import type { CommandSpec, RuntimeEnvironment } from '@shared/commandSpec'
+import type { InterviewQuestionOption } from '@shared/interviewSession'
+import type { FinalTestFileEffect, FinalTestFileEffectIntent } from '@shared/finalTestFileEffects'
+
+// Re-exported so the parser modules keep importing their payload pieces from
+// one place, while the definitions themselves live in shared/ next to the
+// clients that read the same records.
+export type { InterviewQuestionOption, FinalTestFileEffect, FinalTestFileEffectIntent }
 
 export interface StructuredOutputSuccess<T> {
   ok: true
@@ -45,11 +52,6 @@ export interface CoverageResultEnvelope {
   status: 'clean' | 'gaps'
   gaps: string[]
   followUpQuestions: CoverageFollowUpQuestion[]
-}
-
-export interface InterviewQuestionOption {
-  id: string
-  label: string
 }
 
 export interface InterviewBatchPayloadQuestion {
@@ -97,14 +99,6 @@ export interface FinalTestCommandPayload {
   modifiedFiles: string[]
   fileEffects: FinalTestFileEffect[]
   testsCount: number | null
-}
-
-export type FinalTestFileEffectIntent = 'candidate' | 'temporary' | 'unexpected'
-
-export interface FinalTestFileEffect {
-  path: string
-  intent: FinalTestFileEffectIntent
-  reason?: string
 }
 
 export interface ExecutionSetupReusableArtifactPayload {

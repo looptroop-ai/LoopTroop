@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useEffect, useRef, useState, useCallback, type Dispatch, type SetStateAction, type RefObject } from 'react'
 import { createTicketUiStateActionId, getTicketUiStateRevision } from '@/lib/ticketUiStateRevision'
 import type { AutosaveStatusState } from './AutosaveStatus'
 import type { QueryClient } from '@tanstack/react-query'
@@ -20,7 +20,7 @@ interface UseDebouncedApprovalUiStateOptions<T> {
   ticketId: string
   scope: string
   saveUiState: SaveTicketUiStateFn<T>
-  lastSavedSnapshotRef: MutableRefObject<string>
+  lastSavedSnapshotRef: RefObject<string>
   initialUpdatedAt?: string | null
   delayMs?: number
 }
@@ -73,8 +73,8 @@ export function flushTicketUiStateSnapshot<T>(ticketId: string, scope: string, d
 
 export function useApprovalDraftReset(
   ticketId: string,
-  restoredDraftRef: MutableRefObject<boolean>,
-  lastSavedSnapshotRef: MutableRefObject<string>,
+  restoredDraftRef: RefObject<boolean>,
+  lastSavedSnapshotRef: RefObject<string>,
 ) {
   useEffect(() => {
     restoredDraftRef.current = false

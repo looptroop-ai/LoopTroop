@@ -10,15 +10,11 @@ import {
 
 export {
   FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT,
+  type FinalTestFileEffect,
+  type FinalTestFileEffectIntent,
 } from '@shared/finalTestFileEffects'
 
-export type FinalTestFileEffectIntent = 'candidate' | 'temporary' | 'unexpected'
-
-export interface FinalTestFileEffect {
-  path: string
-  intent: FinalTestFileEffectIntent
-  reason?: string
-}
+import type { FinalTestFileEffect } from '@shared/finalTestFileEffects'
 
 export interface FinalTestDirtyFile {
   path: string

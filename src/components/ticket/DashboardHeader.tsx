@@ -12,7 +12,7 @@ import { throwIfNotOk } from '@/lib/fetchError'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { getWorkflowRingProgress, getStatusRingColor } from '@/components/kanban/ticketCardUtils'
+import { getWorkflowRingProgress } from '@/components/kanban/ticketCardUtils'
 import { ProgressRing } from '@/components/kanban/ProgressRing'
 import { BeadCompletionChip } from '@/components/kanban/BeadCompletionChip'
 import { EtaRange } from '@/components/navigator/EtaRange'
@@ -349,7 +349,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
     errorMessage: ticket.errorMessage,
   })
   const workflowRingProgress = getWorkflowRingProgress(ticket.status)
-  const ringColor = getStatusRingColor(ticket.status)
+  // One colour for every status. `getStatusRingColor` took a status and
+  // ignored it, which read as a per-status palette that did not exist.
+  const ringColor = 'text-muted-foreground'
   return (
     <div className="border-b border-border bg-background">
       <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 px-3 sm:px-4 py-2">

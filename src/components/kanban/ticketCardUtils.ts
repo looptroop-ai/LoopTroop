@@ -64,7 +64,3 @@ export function getBeadCompletionProgress(
   }
   return null
 }
-
-export function getStatusRingColor(_status: string): string {
-  return 'text-muted-foreground'
-}

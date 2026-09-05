@@ -11,7 +11,7 @@ import {
   type ExecutionSetupWorkspaceInputCategory,
 } from '@shared/executionSetupCategories'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import {
   mergeCoverageArtifactContent,
   mergeVoteArtifactContent,
@@ -2031,12 +2031,12 @@ export function getArtifactSourcePhases(phase: string): string[] {
 export function resolveStaticArtifact(
   artifactDef: ArtifactDef,
   phase: string,
-  reversedArtifacts: DBartifact[],
-): DBartifact | undefined {
+  reversedArtifacts: TicketArtifact[],
+): TicketArtifact | undefined {
   const targetPhases = getArtifactTargetPhases(phase)
   const findExactType = (artifactType: string) =>
     reversedArtifacts.find(artifact => targetPhases.includes(artifact.phase) && artifact.artifactType === artifactType)
-  const findByPredicate = (predicate: (artifact: DBartifact) => boolean) =>
+  const findByPredicate = (predicate: (artifact: TicketArtifact) => boolean) =>
     reversedArtifacts.find(artifact => targetPhases.includes(artifact.phase) && predicate(artifact))
 
   switch (artifactDef.id) {

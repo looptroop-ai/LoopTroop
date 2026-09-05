@@ -13,9 +13,9 @@ import {
 } from '@/test/workspaceArtifactBuilders'
 import { buildUiArtifactCompanionArtifactType } from '@shared/artifactCompanions'
 import { PhaseArtifactsPanel } from '../PhaseArtifactsPanel'
-import type { DBartifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact, TicketArtifactCollectionState } from '@/hooks/useTicketArtifacts'
 
-function successfulArtifactState(artifacts: DBartifact[]): TicketArtifactCollectionState {
+function successfulArtifactState(artifacts: TicketArtifact[]): TicketArtifactCollectionState {
   return {
     artifacts,
     status: 'success',
@@ -30,7 +30,7 @@ function successfulArtifactState(artifacts: DBartifact[]): TicketArtifactCollect
 function TestPhaseArtifactsPanel({
   preloadedArtifacts,
   ...props
-}: React.ComponentProps<typeof PhaseArtifactsPanel> & { preloadedArtifacts?: DBartifact[] }) {
+}: React.ComponentProps<typeof PhaseArtifactsPanel> & { preloadedArtifacts?: TicketArtifact[] }) {
   return (
     <PhaseArtifactsPanel
       {...props}

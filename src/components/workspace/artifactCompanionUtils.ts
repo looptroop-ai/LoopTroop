@@ -1,11 +1,11 @@
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import {
   buildUiArtifactCompanionArtifactType,
   parseUiArtifactCompanionArtifact,
 } from '@shared/artifactCompanions'
 import { isRecord } from '@shared/typeGuards'
 
-type ArtifactSource = Pick<DBartifact, 'phase' | 'artifactType' | 'content'>
+type ArtifactSource = Pick<TicketArtifact, 'phase' | 'artifactType' | 'content'>
 
 function parseArtifactRecord(content: string | null | undefined): Record<string, unknown> | null {
   if (!content?.trim()) return null

@@ -5,12 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   getTicketArtifactsQueryKey,
   useTicketArtifacts,
-  type DBartifact,
+  type TicketArtifact,
 } from '../useTicketArtifacts'
 
 const ticketId = '1:ART-1'
 
-function artifact(content = 'durable content'): DBartifact {
+function artifact(content = 'durable content'): TicketArtifact {
   return {
     id: 1,
     ticketId,

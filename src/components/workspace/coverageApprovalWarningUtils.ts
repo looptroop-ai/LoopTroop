@@ -1,4 +1,4 @@
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import { findLatestArtifactByType, findLatestCompanionArtifact } from './artifactCompanionUtils'
 import { buildCoverageArtifactContent, parseCoverageArtifact } from './phaseArtifactTypes'
 
@@ -18,7 +18,7 @@ function getCoverageCandidateLabel(domain: 'prd' | 'beads', version?: number): s
 }
 
 export function resolveCoverageApprovalWarning(
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   domain: 'prd' | 'beads',
 ): CoverageApprovalWarningData | null {
   const coveragePhase = domain === 'prd'

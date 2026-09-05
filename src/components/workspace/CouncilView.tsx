@@ -17,7 +17,7 @@ import { isRecord } from '@shared/typeGuards'
 import { getArtifactSourcePhases } from './phaseArtifactTypes'
 
 import type { Ticket } from '@/hooks/useTickets'
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 
 interface VoteLike {
   voterId: string
@@ -59,7 +59,7 @@ interface VoteSummary {
   leaderTotal: number
 }
 
-function deriveVoteSummary(phase: string, artifacts: DBartifact[]): VoteSummary | null {
+function deriveVoteSummary(phase: string, artifacts: TicketArtifact[]): VoteSummary | null {
   const domain = getPhaseDomain(phase)
   if (!domain) return null
   const voteArtifact = findLatestArtifact(

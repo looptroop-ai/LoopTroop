@@ -5,8 +5,8 @@ import {
   type HostContext,
 } from './hostContext'
 
-export const MIN_COMMAND_TIMEOUT_MS = 100
-export const MAX_COMMAND_TIMEOUT_MS = 30 * 60 * 1000
+const MIN_COMMAND_TIMEOUT_MS = 100
+const MAX_COMMAND_TIMEOUT_MS = 30 * 60 * 1000
 
 const relativeWorkingDirectorySchema = z.string()
   .trim()
@@ -35,7 +35,7 @@ const commandBaseSchema = z.object({
   timeoutMs: commandTimeoutSchema,
 })
 
-export const processCommandSpecSchema = commandBaseSchema.extend({
+const processCommandSpecSchema = commandBaseSchema.extend({
   mode: z.literal('process'),
   program: z.string().trim().min(1).max(10_000).refine((value) => !value.includes('\0'), {
     message: 'Program cannot contain null characters',
@@ -45,7 +45,7 @@ export const processCommandSpecSchema = commandBaseSchema.extend({
   })).default([]),
 })
 
-export const shellCommandSpecSchema = commandBaseSchema.extend({
+const shellCommandSpecSchema = commandBaseSchema.extend({
   mode: z.literal('shell'),
   shell: commandShellSchema,
   script: z.string().trim().min(1).max(1_000_000).refine((value) => !value.includes('\0'), {
@@ -58,7 +58,6 @@ export const commandSpecSchema = z.discriminatedUnion('mode', [
   shellCommandSpecSchema,
 ])
 
-export type ProcessCommandSpec = z.infer<typeof processCommandSpecSchema>
 export type ShellCommandSpec = z.infer<typeof shellCommandSpecSchema>
 export type CommandSpec = z.infer<typeof commandSpecSchema>
 
@@ -97,7 +96,7 @@ function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
-export function quoteCommandArgument(value: string, shell: CommandShellKind): string {
+function quoteCommandArgument(value: string, shell: CommandShellKind): string {
   if (shell === 'cmd') return quoteCmd(value)
   if (shell === 'powershell') return quotePowerShell(value)
   return quotePosix(value)

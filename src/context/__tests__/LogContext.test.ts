@@ -228,7 +228,6 @@ describe('LogProvider', () => {
       {
         ticketId: '1:T-scope',
         currentStatus: 'CODING',
-        visiblePhase: 'CODING',
         children: createElement(LogHarness),
       },
     ))

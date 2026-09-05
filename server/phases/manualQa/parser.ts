@@ -82,7 +82,7 @@ function isPlainYamlScalar(value: string): boolean {
  * This repair is deliberately restricted to known Manual QA prose fields and
  * only quotes the model's existing scalar; it never creates replacement text.
  */
-export function repairManualQaHexColorText(yaml: string): { yaml: string; repaired: boolean } {
+function repairManualQaHexColorText(yaml: string): { yaml: string; repaired: boolean } {
   const lines = yaml.split('\n')
   let sequenceKey: string | null = null
   let sequenceIndent = -1

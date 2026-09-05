@@ -9,6 +9,9 @@ export interface TicketSkips {
   counts: SkipEventCounts
 }
 
+// Exported so any module that needs to read or invalidate this cache names
+// the key rather than repeating the literal — a second copy that drifts
+// silently stops invalidating anything.
 export function getTicketSkipsQueryKey(ticketId: string) {
   return ['ticket-skips', ticketId] as const
 }

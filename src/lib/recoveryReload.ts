@@ -62,8 +62,3 @@ export function requestRecoveryReload(
   schedule(reload, RECOVERY_RELOAD_DELAY_MS)
   return true
 }
-
-export const __recoveryReloadForTests = {
-  RECOVERY_RELOAD_STORAGE_KEY,
-  parseRecoveryReloadRecord,
-}

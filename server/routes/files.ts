@@ -6,7 +6,6 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { getTicketByRef, getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
-import { safeAtomicWrite } from '../io/atomicWrite'
 import { foldPersistedLogEntries } from '../log/readDedupe'
 import { normalizePersistedLogEntry } from '../log/view'
 import { handlePutInterview, handlePutPrd } from './ticketHandlers'
@@ -261,8 +260,7 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
   }
 
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const filePath = resolveTicketFilePath(ticketId, file)
-  if (!filePath) return c.json({ error: 'Ticket not found' }, 404)
+  if (!resolveTicketFilePath(ticketId, file)) return c.json({ error: 'Ticket not found' }, 404)
 
   if (file === 'interview') {
     return handlePutInterview(c)
@@ -272,18 +270,11 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
     return handlePutPrd(c)
   }
 
-  const body = await c.req.json()
-  if (typeof body.content !== 'string') {
-    return c.json({ error: 'Request body must include a "content" string field' }, 400)
-  }
-
-  try {
-    safeAtomicWrite(filePath, body.content)
-  } catch {
-    return c.json({ error: 'Failed to write file' }, 500)
-  }
-
-  return c.json({ success: true })
+  // Unreachable while `VALID_FILES` and the branches above agree, and that is
+  // the point: a third file type added to `VALID_FILES` without a handler here
+  // fails loudly instead of being written through the PRD writer, which reads
+  // nothing from `:file` and would have persisted it as a PRD.
+  return c.json({ error: `Unsupported file type: ${file satisfies never}` }, 400)
 })
 
 const execFileAsync = promisify(execFile)

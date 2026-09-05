@@ -18,10 +18,10 @@ interface TicketRecord {
  * patch carries only the runtime fields the response actually had, and merging
  * it is what keeps the rest of the cached runtime alive.
  */
-export type IncomingTicket<T extends TicketRecord> =
+type IncomingTicket<T extends TicketRecord> =
   Partial<Omit<T, 'runtime'>> & TicketRecord & { runtime?: Record<string, unknown> }
 
-export function patchTicketStatus<T extends TicketStatusRecord>(
+function patchTicketStatus<T extends TicketStatusRecord>(
   ticket: T,
   ticketId: string,
   status: string,
@@ -36,7 +36,7 @@ export function patchTicketStatus<T extends TicketStatusRecord>(
   }
 }
 
-export function mergeTicket<T extends TicketRecord>(
+function mergeTicket<T extends TicketRecord>(
   ticket: T,
   incomingTicket: IncomingTicket<T>,
 ): T {

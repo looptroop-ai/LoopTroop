@@ -3,7 +3,6 @@ import { MAX_SSE_BUFFER_BYTES, MAX_SSE_BUFFER_SIZE } from '../lib/constants'
 
 interface SSEClient {
   id: string
-  ticketId: string
   send: (event: string, data: string, id: string) => void
   close: () => void
   interval?: ReturnType<typeof setInterval>

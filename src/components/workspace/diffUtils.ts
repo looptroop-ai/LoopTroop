@@ -1,7 +1,7 @@
 import { buildTextDiffSegments, type TextDiffSegment } from './textDiffSegments'
 import { isRecord } from '@shared/typeGuards'
 
-export interface DiffStats {
+interface DiffStats {
   files: number
   additions: number
   deletions: number
@@ -19,13 +19,13 @@ export function parseDiffStats(diff: string): DiffStats {
   return { files, additions, deletions }
 }
 
-export interface DiffLineInfo {
+interface DiffLineInfo {
   text: string
   oldNum: number | null
   newNum: number | null
 }
 
-export interface HighlightedDiffLineInfo extends DiffLineInfo {
+interface HighlightedDiffLineInfo extends DiffLineInfo {
   wordDiffSegments?: TextDiffSegment[]
 }
 
@@ -36,7 +36,7 @@ export interface FileDiff {
   lines: string[]
 }
 
-export interface BeadCommitDiffEntry {
+interface BeadCommitDiffEntry {
   beadId: string
   label?: string
   priority?: number
@@ -45,14 +45,14 @@ export interface BeadCommitDiffEntry {
   updatedAt?: string
 }
 
-export interface BeadCommitsDiffContent {
+interface BeadCommitsDiffContent {
   isStructured: boolean
   netDiff?: string
   beads: BeadCommitDiffEntry[]
   fallbackDiff: string
 }
 
-export interface FileDiffOccurrence extends FileDiff {
+interface FileDiffOccurrence extends FileDiff {
   beadId?: string
   beadLabel?: string
   beadPriority?: number
@@ -243,7 +243,7 @@ function parseHunkHeader(line: string): { oldStart: number; newStart: number } |
 }
 
 /** Compute per-line old/new line numbers from a list of raw diff lines */
-export function computeLineNumbers(lines: string[]): DiffLineInfo[] {
+function computeLineNumbers(lines: string[]): DiffLineInfo[] {
   let oldNum = 0
   let newNum = 0
   return lines.map((line) => {

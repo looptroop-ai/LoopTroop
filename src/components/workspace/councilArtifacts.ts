@@ -1,5 +1,5 @@
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { extractInterviewQuestionPreviews } from '@shared/interviewQuestions'
@@ -93,7 +93,7 @@ interface CoverageResultLike {
 }
 
 type Domain = 'interview' | 'prd' | 'beads'
-type ArtifactSource = Pick<DBartifact, 'phase' | 'artifactType' | 'content'>
+type ArtifactSource = Pick<TicketArtifact, 'phase' | 'artifactType' | 'content'>
 type NonSuccessOutcome = Extract<CouncilOutcome, 'invalid_output' | 'failed' | 'timed_out'>
 
 export function getCouncilAction(phase: string): CouncilAction {
@@ -124,7 +124,7 @@ export function getCouncilStatusLabel(outcome?: CouncilOutcome, action?: Council
 
 export function buildCouncilMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   configuredMembers: string[],
   isCompleted: boolean,
   fallbackCount: number = 3,
@@ -170,7 +170,7 @@ function isFailedDraftOutcome(outcome: CouncilOutcome | undefined): outcome is N
 
 function buildDraftMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   configuredMembers: string[],
   fallbackCount: number,
 ): CouncilMemberArtifactChip[] {
@@ -203,7 +203,7 @@ function buildDraftMemberArtifacts(
 
 function buildVotingMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   configuredMembers: string[],
   fallbackCount: number,
 ): CouncilMemberArtifactChip[] {
@@ -254,7 +254,7 @@ function buildVotingMemberArtifacts(
 
 function buildRefiningMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   configuredMembers: string[],
   isCompleted: boolean,
   fallbackCount: number,
@@ -320,7 +320,7 @@ function buildRefiningMemberArtifacts(
 
 function buildVerificationMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   isCompleted: boolean,
 ): CouncilMemberArtifactChip[] {
   const domain = getPhaseDomain(phase)
@@ -349,7 +349,7 @@ function buildVerificationMemberArtifacts(
 
 export function buildFullAnswerMemberArtifacts(
   phase: string,
-  artifacts: DBartifact[],
+  artifacts: TicketArtifact[],
   configuredMembers: string[],
   fallbackCount: number = 3,
 ): CouncilMemberArtifactChip[] {

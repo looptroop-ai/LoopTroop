@@ -8,7 +8,7 @@ import {
 } from '@/lib/constants'
 import { failedResponseError } from '@/lib/fetchError'
 
-export interface ModelsApiResponse {
+interface ModelsApiResponse {
   models: OpenCodeCatalogModel[]
   connectedProviders: string[]
   defaultModels: Record<string, string>
@@ -49,7 +49,7 @@ export function fetchAllModelsApi(signal?: AbortSignal): Promise<ModelsApiRespon
   return requestModelsApi('/api/models?scope=all', 'GET', signal)
 }
 
-export function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
+function refreshModelsApi(signal?: AbortSignal): Promise<ModelsApiResponse> {
   return requestModelsApi('/api/models/refresh', 'POST', signal)
 }
 

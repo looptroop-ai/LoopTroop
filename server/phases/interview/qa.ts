@@ -1,4 +1,3 @@
-import type { InterviewQuestion, InterviewAnswer } from './types'
 import type { OpenCodeAdapter } from '../../opencode/adapter'
 import type { PromptPart, StreamEvent } from '../../opencode/types'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
@@ -17,7 +16,7 @@ import {
   type InterviewTurnOutput,
 } from '../../structuredOutput'
 import { calculateFollowUpLimit } from './followUpBudget'
-import { MAX_INTERVIEW_BATCH_SIZE, COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
+import { COUNCIL_RESPONSE_TIMEOUT_MS } from '../../lib/constants'
 import type { InterviewSessionSnapshot } from '@shared/interviewSession'
 import { buildInterviewQuestionViews } from './sessionState'
 import { SessionManager } from '../../opencode/sessionManager'
@@ -25,12 +24,6 @@ import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 
 export { calculateFollowUpLimit } from './followUpBudget'
-
-export interface QABatch {
-  questions: InterviewQuestion[]
-  batchNumber: number
-  totalBatches: number
-}
 
 export interface BatchQuestion {
   id: string
@@ -123,35 +116,6 @@ function buildInterviewResumePrompt(
       'Return only the next <INTERVIEW_BATCH> or the final <INTERVIEW_COMPLETE> artifact.',
     ].join('\n'),
   }]
-}
-
-export function createBatches(questions: InterviewQuestion[], batchSize: number = MAX_INTERVIEW_BATCH_SIZE): QABatch[] {
-  const batches: QABatch[] = []
-  const totalBatches = Math.ceil(questions.length / batchSize)
-
-  for (let i = 0; i < questions.length; i += batchSize) {
-    batches.push({
-      questions: questions.slice(i, i + batchSize),
-      batchNumber: Math.floor(i / batchSize) + 1,
-      totalBatches,
-    })
-  }
-
-  return batches
-}
-
-export function processAnswers(
-  questions: InterviewQuestion[],
-  answers: Record<string, string>,
-): InterviewAnswer[] {
-  return questions.map(q => {
-    const raw = answers[q.id]
-    return {
-      questionId: q.id,
-      answer: raw ?? '',
-      skipped: !raw || raw.trim() === '',
-    }
-  })
 }
 
 /**
@@ -413,19 +377,6 @@ export async function submitBatchToSession(
         }
       : undefined,
   })
-}
-
-/**
- * Parse an AI response to extract batch data from structured tags.
- * Supports <INTERVIEW_BATCH> for intermediate batches and <INTERVIEW_COMPLETE> for final output.
- */
-export function parseBatchResponse(response: string): BatchResponse {
-  const normalized = normalizeInterviewTurnOutput(response)
-  if (!normalized.ok) {
-    throw new Error(normalized.error)
-  }
-  logInterviewTurnRepairWarnings(normalized.repairWarnings)
-  return toBatchResponse(normalized.value)
 }
 
 function toBatchResponse(output: InterviewTurnOutput): BatchResponse {

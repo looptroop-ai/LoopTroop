@@ -16,12 +16,12 @@ import { isRecord } from '@shared/typeGuards'
 
 export const INTERVIEW_APPROVAL_FOCUS_EVENT = 'looptroop:interview-approval-focus'
 
-export interface InterviewDocumentParseResult {
+interface InterviewDocumentParseResult {
   document: InterviewDocument | null
   error: string | null
 }
 
-export interface InterviewDocumentGroup {
+interface InterviewDocumentGroup {
   id: string
   label: string
   description: string
@@ -298,12 +298,8 @@ export function getInterviewSummaryAnchorId(): string {
   return 'interview-summary'
 }
 
-export function getInterviewGroupAnchorId(groupId: string): string {
+function getInterviewGroupAnchorId(groupId: string): string {
   return `interview-group-${slugify(groupId) || 'section'}`
-}
-
-export function getInterviewPhaseGroupAnchorId(phase: string): string {
-  return getInterviewGroupAnchorId(`phase-${slugify(phase || 'foundation') || 'foundation'}`)
 }
 
 export function getInterviewQuestionAnchorId(questionId: string): string {

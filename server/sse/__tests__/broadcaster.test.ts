@@ -14,7 +14,6 @@ describe('SSEBroadcaster', () => {
 
     broadcaster.addClient('1:T-42', {
       id: 'client-1',
-      ticketId: '1:T-42',
       send: sent,
       close: () => undefined,
     })
@@ -116,7 +115,6 @@ describe('SSEBroadcaster', () => {
     const interval = setInterval(() => undefined, 1_000)
     broadcaster.addClient('1:T-HEARTBEAT', {
       id: 'client-heartbeat',
-      ticketId: '1:T-HEARTBEAT',
       send: vi.fn(),
       close: vi.fn(),
     })

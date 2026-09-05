@@ -11,7 +11,7 @@ import {
   type ExecutionSetupWorkspaceInputCategory,
 } from '@shared/executionSetupCategories'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import {
   mergeCoverageArtifactContent,
   mergeVoteArtifactContent,
@@ -31,16 +31,7 @@ import {
   parseUiRefinementDiffArtifact,
 } from '@shared/refinementDiffArtifacts'
 import type { UiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
-import {
-  buildTextDiffSegments,
-  type TextDiffSegment,
-} from './textDiffSegments'
-export {
-  TEXT_DIFF_TOKEN_PATTERN as QUESTION_DIFF_TOKEN_PATTERN,
-  tokenizeTextDiff as tokenizeQuestionDiffText,
-  mergeTextDiffSegments as mergeQuestionDiffSegments,
-} from './textDiffSegments'
-
+import { buildTextDiffSegments } from './textDiffSegments'
 export interface ArtifactDef {
   id: string
   label: string
@@ -48,13 +39,13 @@ export interface ArtifactDef {
   icon: React.ReactNode
 }
 
-export interface InterviewAnswerField {
+interface InterviewAnswerField {
   skipped?: boolean
   free_text?: string
   selected_option_ids?: string[]
 }
 
-export interface InterviewArtifactOption {
+interface InterviewArtifactOption {
   id?: string
   label?: string
 }
@@ -85,7 +76,7 @@ export interface CoverageInputData {
   candidateVersion?: number
 }
 
-export interface CoverageGapResolutionItemData {
+interface CoverageGapResolutionItemData {
   itemType: 'epic' | 'user_story' | 'bead'
   id: string
   label: string
@@ -98,7 +89,7 @@ export interface CoverageGapResolutionData {
   affectedItems: CoverageGapResolutionItemData[]
 }
 
-export interface CoverageAttemptData {
+interface CoverageAttemptData {
   candidateVersion: number
   status: 'clean' | 'gaps'
   summary: string
@@ -135,7 +126,7 @@ export interface CoverageTransitionData {
   label?: string
 }
 
-export interface CoverageFollowUpArtifactQuestion {
+interface CoverageFollowUpArtifactQuestion {
   id?: string
   question?: string
   prompt?: string
@@ -217,14 +208,14 @@ export interface CouncilDraftData {
   skippedReason?: string
 }
 
-export interface CouncilVoteData {
+interface CouncilVoteData {
   voterId: string
   draftId: string
   totalScore: number
   scores: Array<{ category: string; score: number }>
 }
 
-export interface VotePresentationOrderData {
+interface VotePresentationOrderData {
   seed: string
   order: string[]
 }
@@ -280,7 +271,7 @@ export interface InterviewDiffEntry {
   attributionStatus?: InterviewQuestionChangeAttributionStatus
 }
 
-export interface RefinementDiffArtifactData {
+interface RefinementDiffArtifactData {
   winnerId?: string
   refinedContent?: string
   winnerDraftContent?: string
@@ -326,8 +317,6 @@ export interface RefinementDiffEntry {
   attributionStatus?: RefinementChangeAttributionStatus
 }
 
-export type QuestionDiffSegment = TextDiffSegment
-
 export interface RelevantFileScanEntry {
   path: string
   rationale: string
@@ -345,7 +334,7 @@ export interface RelevantFilesScanData {
   rawAttempts?: ArtifactRawAttemptData[]
 }
 
-export interface FinalTestCommandResultData {
+interface FinalTestCommandResultData {
   /** Structured command data is retained so the exact execution can be audited. */
   command: CommandSpec | string
   /** Human-readable command text emitted by the final-test runner. */
@@ -360,7 +349,7 @@ export interface FinalTestCommandResultData {
   timedOut: boolean
 }
 
-export interface FinalTestAttemptHistoryEntryData {
+interface FinalTestAttemptHistoryEntryData {
   attempt: number
   status: 'passed' | 'failed'
   checkedAt: string
@@ -409,19 +398,19 @@ export interface ExecutionSetupPlanReportData {
   source?: 'auto' | 'regenerate' | string
 }
 
-export interface ExecutionSetupReusableArtifactData {
+interface ExecutionSetupReusableArtifactData {
   path: string
   kind: string
   purpose: string
 }
 
-export interface ExecutionSetupCommandProbeData {
+interface ExecutionSetupCommandProbeData {
   id: string
   command: string
   purpose: string
 }
 
-export interface ExecutionSetupCommandReceiptData {
+interface ExecutionSetupCommandReceiptData {
   id: string
   command: string
   status: 'passed' | 'failed' | 'timed_out' | 'skipped'
@@ -430,7 +419,7 @@ export interface ExecutionSetupCommandReceiptData {
   outputExcerpt: string
 }
 
-export interface ExecutionSetupGitHooksData {
+interface ExecutionSetupGitHooksData {
   policy: GitHookPolicy
   detected: Array<{ name: string; path: string; source: string; kind: 'hook' | 'manager_config'; runnable: 'yes' | 'no' | 'unknown'; managerHint?: string }>
   validationCommands: Array<{ id: string; hook: string; command: string; purpose: string }>
@@ -473,7 +462,7 @@ export interface ExecutionSetupProfileData {
   cautions: string[]
 }
 
-export interface ExecutionSetupAttemptHistoryEntryData {
+interface ExecutionSetupAttemptHistoryEntryData {
   attempt: number
   status: string
   checkedAt?: string
@@ -552,7 +541,7 @@ export interface PullRequestCandidateFileAuditEntry {
   reason?: string
 }
 
-export interface PullRequestCandidateFileAuditStats {
+interface PullRequestCandidateFileAuditStats {
   totalFiles?: number
   includedFiles?: number
   excludedFiles?: number
@@ -699,7 +688,7 @@ export function normalizeInterviewDiffQuestions(content: string | undefined): Ar
     }))
 }
 
-export function normalizeInterviewDiffQuestionRecord(value: unknown, fallbackIndex: number): { id: string; phase?: string; question: string } | null {
+function normalizeInterviewDiffQuestionRecord(value: unknown, fallbackIndex: number): { id: string; phase?: string; question: string } | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
 
   const record = value as Record<string, unknown>
@@ -1365,7 +1354,7 @@ function normalizeUiRefinementDiff(value: unknown): UiRefinementDiffArtifact | u
   return parseUiRefinementDiffArtifact(JSON.stringify(value)) ?? undefined
 }
 
-export function normalizeArtifactStructuredOutput(value: unknown): ArtifactStructuredOutputData | undefined {
+function normalizeArtifactStructuredOutput(value: unknown): ArtifactStructuredOutputData | undefined {
   if (!isRecord(value)) return undefined
 
   const repairApplied = typeof value.repairApplied === 'boolean' ? value.repairApplied : false
@@ -1391,7 +1380,7 @@ export function normalizeArtifactStructuredOutput(value: unknown): ArtifactStruc
   }
 }
 
-export function normalizeRefinementDraftMetrics(
+function normalizeRefinementDraftMetrics(
   value: unknown,
 ): RefinementDiffArtifactData['draftMetrics'] | undefined {
   if (!isRecord(value)) return undefined
@@ -2036,12 +2025,12 @@ export function getArtifactSourcePhases(phase: string): string[] {
 export function resolveStaticArtifact(
   artifactDef: ArtifactDef,
   phase: string,
-  reversedArtifacts: DBartifact[],
-): DBartifact | undefined {
+  reversedArtifacts: TicketArtifact[],
+): TicketArtifact | undefined {
   const targetPhases = getArtifactTargetPhases(phase)
   const findExactType = (artifactType: string) =>
     reversedArtifacts.find(artifact => targetPhases.includes(artifact.phase) && artifact.artifactType === artifactType)
-  const findByPredicate = (predicate: (artifact: DBartifact) => boolean) =>
+  const findByPredicate = (predicate: (artifact: TicketArtifact) => boolean) =>
     reversedArtifacts.find(artifact => targetPhases.includes(artifact.phase) && predicate(artifact))
 
   switch (artifactDef.id) {

@@ -18,8 +18,6 @@ export const RECOVERY_RELOAD_COOLDOWN_MS = 10_000
 export const RECOVERY_RELOAD_DELAY_MS = 50
 /** Minimum visible warning duration before an automatic recovery reload is armed */
 export const RECOVERY_RELOAD_MIN_ACTIVE_MS = 5000
-/** Default API call timeout */
-export const API_TIMEOUT_MS = 1000
 /** Model fetch timeout */
 export const MODEL_FETCH_TIMEOUT_MS = 5000
 /** Max raw output length before truncation */

@@ -24,8 +24,6 @@ export type { LogEntry }
 interface LogProviderProps {
   ticketId?: string | null
   currentStatus?: string
-  visiblePhase?: string | null
-  fullLogOpen?: boolean
   children: ReactNode
 }
 

@@ -7,7 +7,7 @@ import type { LogEntry } from '@/context/LogContext'
 import { getStatusUserLabel, WORKFLOW_GROUPS } from '@/lib/workflowMeta'
 import { cn } from '@/lib/utils'
 import type { Ticket } from '@/hooks/useTickets'
-import { type DBartifact, useTicketArtifacts } from '@/hooks/useTicketArtifacts'
+import { type TicketArtifact, useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { useTicketPhaseAttempts, type TicketPhaseAttempt } from '@/hooks/useTicketPhaseAttempts'
 import { sanitizeErrorForDisplay } from '@shared/errorDisplay'
 import type { TicketErrorOccurrence } from '@/lib/errorOccurrences'
@@ -144,7 +144,7 @@ function isTimestampOnOrAfter(timestamp: string | undefined, minimumTimestamp: s
   return timestampMs >= minimumMs
 }
 
-type ArtifactContentSource = Pick<DBartifact, 'content'>
+type ArtifactContentSource = Pick<TicketArtifact, 'content'>
 type CoveragePassProgress = { run: number; max?: number }
 
 /** Extracts a candidate version number from an artifact’s content or its companion payload. */
@@ -167,7 +167,7 @@ function extractArtifactCandidateVersion(
 }
 
 /** Reads the highest candidate version from coverage, input, and revision artifacts for the current phase activation. */
-function extractCoverageVersionFromArtifacts(phase: VersionedCoveragePhase, artifacts: DBartifact[]): number | null {
+function extractCoverageVersionFromArtifacts(phase: VersionedCoveragePhase, artifacts: TicketArtifact[]): number | null {
   const meta = COVERAGE_PHASE_META[phase]
   const coverageArtifact = findLatestArtifactByType(artifacts, meta.coverageArtifactType, [phase])
   const coverageCompanion = findLatestCompanionArtifact(artifacts, meta.coverageArtifactType, [phase])
@@ -277,7 +277,7 @@ function chooseLatestCoveragePassProgress(
     ), null)
 }
 
-function extractCoveragePassFromArtifacts(phase: CoveragePhase, artifacts: DBartifact[]): CoveragePassProgress | null {
+function extractCoveragePassFromArtifacts(phase: CoveragePhase, artifacts: TicketArtifact[]): CoveragePassProgress | null {
   const meta = COVERAGE_ARTIFACT_TYPES[phase]
   const coverageArtifact = findLatestArtifactByType(artifacts, meta.coverageArtifactType, [phase])
   const coverageCompanion = findLatestCompanionArtifact(artifacts, meta.coverageArtifactType, [phase])

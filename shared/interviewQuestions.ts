@@ -719,22 +719,3 @@ export function parseInterviewQuestions(
     }
   })
 }
-
-export function formatInterviewQuestionPreview(
-  label: string,
-  questions: ParsedInterviewQuestion[],
-  maxPreviewQuestions: number = questions.length,
-): string {
-  const previewCount = Math.max(0, Math.trunc(maxPreviewQuestions))
-  const visibleQuestions = questions.slice(0, previewCount)
-  const previewLines = visibleQuestions.map(question =>
-    `- [${question.phase.trim().toLowerCase()}] ${question.question.trim()}`,
-  )
-  const remainingCount = questions.length - visibleQuestions.length
-
-  return [
-    `${label} (${questions.length} total):`,
-    ...previewLines,
-    ...(remainingCount > 0 ? [`... ${remainingCount} more ${remainingCount === 1 ? 'question' : 'questions'}`] : []),
-  ].join('\n')
-}

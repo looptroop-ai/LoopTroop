@@ -22,66 +22,17 @@ export const SSE_EVENT_TYPES = [
 
 export type SSEEventType = typeof SSE_EVENT_TYPES[number]
 
-export interface SSEEvent {
-  id: string
-  event: SSEEventType
-  data: Record<string, unknown>
-  ticketId: string
-  timestamp: string
-}
-
-export interface StateChangeEvent {
-  ticketId: string
-  from: string
-  to: string
-  phaseAttempt?: number
-  previousStatus?: string | null
-}
-
-export interface LogEvent {
-  ticketId: string
-  type: string
-  content: string
-  phase?: string
-  phaseAttempt?: number
-  status?: string
-  source?: string
-  entryId?: string
-  op?: 'append' | 'upsert' | 'finalize'
-  audience?: 'all' | 'ai' | 'debug'
-  kind?: 'milestone' | 'reasoning' | 'text' | 'assistant' | 'tool' | 'step' | 'session' | 'prompt' | 'error' | 'test'
-  modelId?: string
-  sessionId?: string
-  streaming?: boolean
-  message?: string
-  data?: Record<string, unknown>
-}
-
-export interface ProgressEvent {
-  ticketId: string
-  bead: number
-  total: number
-  percent: number
-}
-
-export interface ErrorEvent {
-  ticketId: string
-  message: string
-  recoverable: boolean
-}
-
-export interface BeadCompleteEvent {
-  ticketId: string
-  beadId: string
-  attempts: number
-}
-
-export interface NeedsInputEvent {
-  ticketId: string
-  type: string
-  questionIndex?: number
-  context?: Record<string, unknown>
-}
+/**
+ * Payloads are deliberately not typed here.
+ *
+ * `SSEBroadcaster.broadcast` takes `Record<string, unknown>` and every emitter
+ * builds its object inline, so a per-event interface describes a contract
+ * nothing checks. This file used to carry nine of them — one per event name —
+ * and not one was imported anywhere; they drifted from the objects actually
+ * sent without a single compiler complaint. Typing the boundary for real means
+ * a discriminated union that `broadcast` accepts and every emitter narrows to,
+ * which is a change to the emission path rather than a set of spare interfaces.
+ */
 
 export interface ArtifactSnapshot {
   id: number
@@ -108,22 +59,4 @@ export interface ArtifactManifestEntry {
   contentSha256: string
   available: boolean
   preview: Record<string, string | number | boolean | null>
-}
-
-export interface ArtifactChangeEvent {
-  ticketId: string
-  phase: string
-  artifactType: string
-  /** Metadata only: artifact bodies never enter the SSE replay buffer. */
-  artifact?: ArtifactManifestEntry
-  removedArtifactIds?: number[]
-  invalidatedPhases?: string[]
-}
-
-export interface AiMetricsEvent {
-  ticketId: string
-  phase: string
-  phaseAttempt: number
-  modelId: string
-  updatedAt: string
 }

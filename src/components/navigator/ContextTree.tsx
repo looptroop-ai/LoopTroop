@@ -8,7 +8,6 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 
 interface ContextTreeProps {
   selectedPhase: string
-  ticketId: string
 }
 
 interface ContextItem {

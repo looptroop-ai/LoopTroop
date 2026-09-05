@@ -259,28 +259,6 @@ export function invalidateDownstreamBeadsArtifacts(ticketId: string): {
   }
 }
 
-export function savePrdRawContent(
-  ticketId: string,
-  rawContent: string,
-): {
-  raw: string
-  document: PrdDocument
-  invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
-} {
-  return savePrdDocument(ticketId, buildDraftPrdDocumentFromRawContent(ticketId, rawContent))
-}
-
-export function savePrdStructuredContent(
-  ticketId: string,
-  document: PrdDocument,
-): {
-  raw: string
-  document: PrdDocument
-  invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
-} {
-  return savePrdDocument(ticketId, buildDraftPrdDocumentFromStructuredContent(ticketId, document))
-}
-
 export function savePrdDocument(
   ticketId: string,
   document: PrdDocument,

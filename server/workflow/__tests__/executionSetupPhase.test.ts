@@ -4,7 +4,6 @@ import { dirname, join } from 'path'
 import { makeBeadsYaml, TEST } from '../../test/factories'
 import { createInitializedTestTicket, createTestRepoManager, resetTestDb } from '../../test/integration'
 import { getLatestPhaseArtifact, upsertLatestPhaseArtifact } from '../../storage/tickets'
-import { quoteShellArg } from '../../lib/shellCommand'
 import type {
   ExecutionSetupProfile,
   ExecutionSetupReport,
@@ -15,6 +14,22 @@ import {
   requestSessionContinuation,
 } from '../../opencode/sessionContinuation'
 import { createShellCommandSpec } from '@shared/commandSpec'
+
+/**
+ * Quotes one argument for the shell these probe commands are handed to.
+ *
+ * The specs below are `mode: 'shell'`, so the script text is interpreted by
+ * cmd.exe on Windows and by a POSIX shell everywhere else — the same split the
+ * production executor makes when it resolves a shell. Local to this file
+ * because it is scaffolding for building probe scripts, not a contract: the
+ * production path never renders a shell script from parts.
+ */
+function quoteShellArg(value: string): string {
+  if (process.platform === 'win32') {
+    return `"${value.replace(/"/g, '""')}"`
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
 
 const {
   executeExecutionSetupWithRetriesMock,

@@ -301,7 +301,6 @@ export function KanbanBoard() {
   return (
     <div className="flex h-[calc(100vh-3.5rem)] flex-col supports-[height:100dvh]:h-[calc(100dvh-3.5rem)]">
       {/* Triage & Filter Control Bar */}
-      {/* Triage & Filter Control Bar */}
       <div
         className={cn(
           "bg-card/45 backdrop-blur-md border-b border-border/40 transition-all duration-350 ease-in-out flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-[inset_0_-1px_0_0_rgba(0,0,0,0.03)]",

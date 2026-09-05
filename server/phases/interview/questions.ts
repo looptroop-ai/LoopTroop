@@ -1,5 +1,4 @@
 export {
-  formatInterviewQuestionPreview,
   parseInterviewQuestions,
   unwrapInterviewYamlFence,
   type ParsedInterviewQuestion,

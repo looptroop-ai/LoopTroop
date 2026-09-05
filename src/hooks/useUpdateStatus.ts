@@ -17,6 +17,9 @@ export interface UpdateStatus {
   release: ReleaseDetails | null
 }
 
+// Exported so any module that needs to read or invalidate this cache names
+// the key rather than repeating the literal — a second copy that drifts
+// silently stops invalidating anything.
 export const UPDATE_STATUS_QUERY_KEY = ['update-status'] as const
 
 async function fetchUpdateStatus(signal?: AbortSignal): Promise<UpdateStatus> {

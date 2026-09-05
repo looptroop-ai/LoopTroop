@@ -145,18 +145,6 @@ export interface VotingPhaseResult {
   voterDetails: VoterDetail[]
 }
 
-export interface CouncilResult {
-  phase: string
-  drafts: DraftResult[]
-  votes: Vote[]
-  presentationOrders?: Record<string, VotePresentationOrder>
-  winnerId: string
-  winnerContent: string
-  refinedContent: string
-  memberOutcomes: Record<string, MemberOutcome>
-  isFinal?: boolean
-}
-
 /** Returned by draft-only phase functions (before vote/refine). */
 export interface DraftPhaseResult {
   phase: string

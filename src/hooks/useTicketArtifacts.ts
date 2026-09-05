@@ -2,7 +2,7 @@ import { useQueries, useQuery, type QueryClient } from '@tanstack/react-query'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
 
-export interface DBartifact {
+export interface TicketArtifact {
   id: number
   ticketId: string
   phase: string
@@ -20,7 +20,7 @@ export interface TicketArtifactQueryScope {
 }
 
 export interface TicketArtifactCollectionState {
-  artifacts: DBartifact[] | undefined
+  artifacts: TicketArtifact[] | undefined
   status: 'idle' | 'loading' | 'success' | 'error'
   isLoading: boolean
   isFetching: boolean
@@ -29,7 +29,7 @@ export interface TicketArtifactCollectionState {
   refetch: () => Promise<unknown>
 }
 
-export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: string): DBartifact | null {
+function normalizeTicketArtifact(input: unknown, fallbackTicketId?: string): TicketArtifact | null {
   if (!input || typeof input !== 'object') return null
 
   const raw = input as Record<string, unknown>
@@ -69,11 +69,11 @@ export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: strin
   }
 }
 
-export async function fetchTicketArtifacts(
+async function fetchTicketArtifacts(
   ticketId: string,
   options?: TicketArtifactQueryScope,
   signal?: AbortSignal,
-): Promise<DBartifact[]> {
+): Promise<TicketArtifact[]> {
   const params = new URLSearchParams()
   if (options?.phase) params.set('phase', options.phase)
   if (typeof options?.phaseAttempt === 'number' && Number.isFinite(options.phaseAttempt) && options.phaseAttempt > 0) {

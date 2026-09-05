@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPrdDocumentYaml, type PrdApprovalDraft } from '@/lib/prdDocument'
 import { makeTicket, makePrdDocument, TEST } from '@/test/factories'
 import { renderWithProviders } from '@/test/renderHelpers'
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import { PrdApprovalPane } from '../PrdApprovalPane'
 
 const mockSaveUiState = vi.fn()
@@ -13,7 +13,7 @@ const INITIAL_CONTENT_HASH = 'a'.repeat(64)
 const SAVED_CONTENT_HASH = 'b'.repeat(64)
 let coverageFixRequestHandler: (() => Promise<Response>) | null = null
 
-function buildPrdCoverageArtifact(content: Record<string, unknown>): DBartifact {
+function buildPrdCoverageArtifact(content: Record<string, unknown>): TicketArtifact {
   return {
     id: 901,
     ticketId: TEST.ticketId,
@@ -430,7 +430,7 @@ describe('PrdApprovalPane', () => {
   })
 
   it('disables approval during extra fixes, refreshes gaps, and removes the warning when clean', async () => {
-    let coverageArtifacts: DBartifact[] = [
+    let coverageArtifacts: TicketArtifact[] = [
       buildPrdCoverageArtifact({
         status: 'gaps',
         summary: 'Coverage gaps remain after the final PRD audit.',

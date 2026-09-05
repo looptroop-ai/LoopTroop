@@ -55,7 +55,7 @@ export interface AnswerEditorProps {
   onSkipReasonChange: (questionId: string, reason: string) => void
   onSubmitBatch: () => void
   onShowSkipConfirm: () => void
-  questionRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>
+  questionRefs: React.RefObject<Record<string, HTMLDivElement | null>>
   currentBatch: {
     source: string
     roundNumber?: number | null

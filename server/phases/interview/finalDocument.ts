@@ -204,28 +204,6 @@ export function invalidateDownstreamPlanningArtifacts(ticketId: string): {
   }
 }
 
-export function saveInterviewRawContent(
-  ticketId: string,
-  rawContent: string,
-): {
-  raw: string
-  document: InterviewDocument
-  invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
-} {
-  return saveInterviewDocument(ticketId, buildDraftInterviewDocumentFromRawContent(ticketId, rawContent))
-}
-
-export function saveInterviewAnswerUpdates(
-  ticketId: string,
-  updates: InterviewAnswerUpdate[],
-): {
-  raw: string
-  document: InterviewDocument
-  invalidation: { removedArtifacts: number; removedFiles: string[]; invalidatedPhases: string[] }
-} {
-  return saveInterviewDocument(ticketId, buildDraftInterviewDocumentFromAnswerUpdates(ticketId, updates))
-}
-
 export function saveInterviewDocument(
   ticketId: string,
   document: InterviewDocument,

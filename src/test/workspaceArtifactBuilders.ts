@@ -1,4 +1,4 @@
-import type { DBartifact } from '@/hooks/useTicketArtifacts'
+import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import { TEST } from '@/test/factories'
 
 interface InterviewDocumentContentOptions {
@@ -492,8 +492,8 @@ export function createArtifactFactory() {
 
   return {
     makeArtifact(
-      overrides: Partial<DBartifact> & Pick<DBartifact, 'phase' | 'artifactType' | 'content'>,
-    ): DBartifact {
+      overrides: Partial<TicketArtifact> & Pick<TicketArtifact, 'phase' | 'artifactType' | 'content'>,
+    ): TicketArtifact {
       return {
         id: nextArtifactId++,
         ticketId: TEST.ticketId,

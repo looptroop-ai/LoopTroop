@@ -383,27 +383,3 @@ export function makeBeadsYaml(options: {
   }
   return lines.join('\n')
 }
-
-// ---------------------------------------------------------------------------
-// Vote factory
-// ---------------------------------------------------------------------------
-export function makeVote(overrides: {
-  voterId?: string
-  draftId?: string
-  scores?: Array<{ category: string; score: number; justification: string }>
-  totalScore?: number
-} = {}) {
-  const scores = overrides.scores ?? [
-    { category: 'Coverage', score: 18, justification: 'Good coverage.' },
-    { category: 'Correctness', score: 17, justification: 'Sound approach.' },
-    { category: 'Testability', score: 16, justification: 'Clear criteria.' },
-    { category: 'Complexity', score: 15, justification: 'Well decomposed.' },
-    { category: 'Risks', score: 14, justification: 'Risks addressed.' },
-  ]
-  return {
-    voterId: overrides.voterId ?? TEST.councilMembers[0],
-    draftId: overrides.draftId ?? 'draft-1',
-    scores,
-    totalScore: overrides.totalScore ?? scores.reduce((sum, score) => sum + score.score, 0),
-  }
-}

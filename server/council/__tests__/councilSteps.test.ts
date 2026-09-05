@@ -6,12 +6,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 vi.unmock('../../workflow/runOpenCodePrompt')
 
 import { MockOpenCodeAdapter } from '../../opencode/adapter'
-import { runCouncilPipeline } from '../pipeline'
 import { generateDrafts } from '../drafter'
-import { checkQuorum } from '../quorum'
+import { checkMemberResponseQuorum, checkQuorum } from '../quorum'
 import { buildVotePresentationOrder, conductVoting, selectWinner } from '../voter'
 import { refineDraft } from '../refiner'
-import type { CouncilMember, DraftResult, Vote } from '../types'
+import { requireWinnerDraft } from '../draftUtils'
+import type { CouncilMember, DraftResult, MemberOutcome, Vote } from '../types'
 import type { PromptPart } from '../../opencode/types'
 import { deliberateInterview } from '../../phases/interview/deliberate'
 import { normalizeInterviewRefinementOutput } from '../../structuredOutput'
@@ -37,7 +37,7 @@ function stalledPrompt(signal?: AbortSignal): Promise<string> {
 /** Long enough that only a stalled prompt reaches it, short enough to wait for. */
 const DEADLINE_MS = 500
 
-describe('Council Pipeline', () => {
+describe('Council draft, vote and refine steps', () => {
   let adapter: MockOpenCodeAdapter
   const members: CouncilMember[] = [
     { modelId: 'model-a', name: 'Model A' },
@@ -49,63 +49,19 @@ describe('Council Pipeline', () => {
     adapter = new MockOpenCodeAdapter()
   })
 
-  it('runs full council pipeline with mock adapter', async () => {
-    const result = await runCouncilPipeline(adapter, {
-      phase: 'interview_draft',
+  it('drafts once per member and reports every outcome', async () => {
+    const draftRun = await generateDrafts(
+      adapter,
       members,
-      contextParts: [{ type: 'text', content: 'Generate interview questions' }],
-      projectPath: '/tmp/test',
-    })
-
-    expect(result.phase).toBe('interview_draft')
-    expect(result.drafts.length).toBe(3)
-    expect(result.winnerId).toBeTruthy()
-    expect(result.refinedContent).toBeTruthy()
-  })
-
-  it('calls contextBuilder for vote and refine steps', async () => {
-    const contextBuilder = vi.fn(
-      (step: 'vote' | 'refine', _drafts: DraftResult[]): PromptPart[] => {
-        return [{ type: 'text' as const, content: `prompt-for-${step}` }]
-      },
+      [{ type: 'text', content: 'Generate interview questions' }],
+      '/tmp/test',
     )
 
-    const result = await runCouncilPipeline(adapter, {
-      phase: 'interview_draft',
-      members,
-      contextParts: [{ type: 'text', content: 'draft prompt' }],
-      projectPath: '/tmp/test',
-      contextBuilder,
-    })
-
-    expect(contextBuilder).toHaveBeenCalledTimes(2)
-    expect(contextBuilder).toHaveBeenCalledWith('vote', expect.any(Array))
-    expect(contextBuilder).toHaveBeenCalledWith('refine', expect.any(Array))
-    expect(result.refinedContent).toBeTruthy()
-  })
-
-  it('uses default contextParts when no contextBuilder provided', async () => {
-    const result = await runCouncilPipeline(adapter, {
-      phase: 'interview_draft',
-      members,
-      contextParts: [{ type: 'text', content: 'draft prompt' }],
-      projectPath: '/tmp/test',
-    })
-
-    expect(result.refinedContent).toBeTruthy()
-  })
-
-  it('tracks member outcomes', async () => {
-    const result = await runCouncilPipeline(adapter, {
-      phase: 'test',
-      members,
-      contextParts: [{ type: 'text', content: 'test' }],
-      projectPath: '/tmp/test',
-    })
-
-    expect(Object.keys(result.memberOutcomes).length).toBe(3)
-    for (const outcome of Object.values(result.memberOutcomes)) {
-      expect(outcome).toBe('completed')
+    expect(draftRun.drafts).toHaveLength(3)
+    expect(draftRun.drafts.map(draft => draft.memberId)).toEqual(['model-a', 'model-b', 'model-c'])
+    for (const draft of draftRun.drafts) {
+      expect(draft.outcome).toBe('completed')
+      expect(draft.content).toBeTruthy()
     }
   })
 
@@ -416,49 +372,78 @@ describe('Council Pipeline', () => {
     })
   })
 
-  it('continues the council pipeline when voting times out after quorum is met', async () => {
-    class VoteTimeoutAdapter extends MockOpenCodeAdapter {
-      override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
-        if (sessionId === 'mock-session-6') {
-          return stalledPrompt(signal)
-        }
-
-        return super.promptSession(sessionId, parts, signal)
-      }
+  /**
+   * An adapter whose named sessions never answer.
+   *
+   * The two cases below turn on *how many* voters fail to answer, not on which
+   * one, so they stall by session id and assert on the count. Naming the voter
+   * would mean pinning which member gets which session, and `conductVoting`
+   * runs its voters concurrently — a mapping the test would be assuming rather
+   * than establishing.
+   */
+  class StalledSessionsAdapter extends MockOpenCodeAdapter {
+    constructor(private readonly stalledSessionIds: string[]) {
+      super()
     }
 
-    const result = await runCouncilPipeline(new VoteTimeoutAdapter(), {
-      phase: 'interview_draft',
-      members,
-      contextParts: [{ type: 'text', content: 'Generate interview questions' }],
-      projectPath: '/tmp/test',
-      draftTimeout: DEADLINE_MS,
-      minQuorum: 2,
-    })
+    override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
+      if (this.stalledSessionIds.includes(sessionId)) {
+        return stalledPrompt(signal)
+      }
 
-    expect(result.winnerId).toBeTruthy()
-    expect(result.votes.length).toBeGreaterThan(0)
+      return super.promptSession(sessionId, parts, signal)
+    }
+  }
+
+  const completedDraftsForVoting: DraftResult[] = [
+    { memberId: 'model-a', content: 'draft-a', outcome: 'completed', duration: 1 },
+    { memberId: 'model-b', content: 'draft-b', outcome: 'completed', duration: 1 },
+    { memberId: 'model-c', content: 'draft-c', outcome: 'completed', duration: 1 },
+  ]
+
+  function countOutcomes(outcomes: Record<string, MemberOutcome>, outcome: MemberOutcome): number {
+    return Object.values(outcomes).filter(candidate => candidate === outcome).length
+  }
+
+  it('still elects a winner when one voter times out but quorum is met', async () => {
+    const voteRun = await conductVoting(
+      new StalledSessionsAdapter(['mock-session-3']),
+      members,
+      completedDraftsForVoting,
+      [{ type: 'text', content: 'vote prompt' }],
+      '/tmp/test',
+      'interview_draft',
+      DEADLINE_MS,
+    )
+
+    expect(countOutcomes(voteRun.memberOutcomes, 'timed_out')).toBe(1)
+    expect(countOutcomes(voteRun.memberOutcomes, 'completed')).toBe(2)
+    expect(checkMemberResponseQuorum(voteRun.memberOutcomes, 2).passed).toBe(true)
+    expect(voteRun.votes.length).toBeGreaterThan(0)
+
+    // The three phases all follow this with `selectWinner` + `requireWinnerDraft`,
+    // so the surviving votes have to be enough to name a draft.
+    const { winnerId } = selectWinner(voteRun.votes, members)
+    expect(requireWinnerDraft(completedDraftsForVoting, winnerId, 'Council interview_draft').content).toBeTruthy()
   })
 
-  it('fails the council pipeline when voting times out before quorum is met', async () => {
-    class VoteQuorumFailingAdapter extends MockOpenCodeAdapter {
-      override async promptSession(sessionId: string, parts: PromptPart[], signal?: AbortSignal): Promise<string> {
-        if (sessionId === 'mock-session-5' || sessionId === 'mock-session-6') {
-          return stalledPrompt(signal)
-        }
-
-        return super.promptSession(sessionId, parts, signal)
-      }
-    }
-
-    await expect(runCouncilPipeline(new VoteQuorumFailingAdapter(), {
-      phase: 'interview_draft',
+  it('fails the vote quorum when too many voters time out', async () => {
+    const voteRun = await conductVoting(
+      new StalledSessionsAdapter(['mock-session-2', 'mock-session-3']),
       members,
-      contextParts: [{ type: 'text', content: 'Generate interview questions' }],
-      projectPath: '/tmp/test',
-      draftTimeout: DEADLINE_MS,
-      minQuorum: 2,
-    })).rejects.toThrow('quorum not met')
+      completedDraftsForVoting,
+      [{ type: 'text', content: 'vote prompt' }],
+      '/tmp/test',
+      'interview_draft',
+      DEADLINE_MS,
+    )
+
+    expect(countOutcomes(voteRun.memberOutcomes, 'timed_out')).toBe(2)
+
+    const voteQuorum = checkMemberResponseQuorum(voteRun.memberOutcomes, 2)
+    expect(voteQuorum.passed).toBe(false)
+    expect(voteQuorum.message).toContain('Quorum not met')
+    expect(voteQuorum.message).toContain('timed_out')
   })
 
   it('times out refinement calls when the winner exceeds the council timeout', async () => {

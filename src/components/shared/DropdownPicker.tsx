@@ -136,7 +136,7 @@ export function DropdownPicker({ trigger, children, open, onOpenChange }: Dropdo
           ref={dropdownRef}
           id={popupId}
           {...{ [PORTAL_ATTRIBUTE]: ownerId }}
-          className="fixed z-[100] rounded-lg border border-border bg-popover shadow-xl p-3 animate-in fade-in-0 zoom-in-95"
+          className="fixed z-[100] rounded-lg border border-border bg-popover shadow-xl p-3"
           style={{
             top: pos.top,
             left: pos.left,

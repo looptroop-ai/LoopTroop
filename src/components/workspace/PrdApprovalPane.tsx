@@ -14,7 +14,7 @@ import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { PrdApprovalEditor } from './PrdApprovalEditor'
 import { PrdDocumentView } from './PrdDocumentView'
 import { InterviewDocumentView } from './InterviewDocumentView'
-import { clearTicketArtifactsCache, useTicketArtifacts, type DBartifact } from '@/hooks/useTicketArtifacts'
+import { clearTicketArtifactsCache, useTicketArtifacts, type TicketArtifact } from '@/hooks/useTicketArtifacts'
 import { useSaveTicketUIState, useTicketUIState, type Ticket } from '@/hooks/useTickets'
 import { getCascadeEditWarningMessage } from '@/lib/workflowMeta'
 import type { InterviewDocument } from '@shared/interviewArtifact'
@@ -90,7 +90,7 @@ function parseWinnerId(content: string | null | undefined): string | null {
   return winnerId || null
 }
 
-function resolvePrdWinnerId(artifacts: DBartifact[]): string | null {
+function resolvePrdWinnerId(artifacts: TicketArtifact[]): string | null {
   const winnerArtifact = findLatestArtifact(artifacts, artifact => artifact.artifactType === 'prd_winner')
   const winnerId = parseWinnerId(winnerArtifact?.content)
   if (winnerId) return winnerId
@@ -104,7 +104,7 @@ function resolvePrdWinnerId(artifacts: DBartifact[]): string | null {
   return parseWinnerId(mergedVoteContent ?? voteArtifact?.content)
 }
 
-function resolveWinnerFullAnswers(artifacts: DBartifact[]): FullAnswersArtifact | null {
+function resolveWinnerFullAnswers(artifacts: TicketArtifact[]): FullAnswersArtifact | null {
   const winnerId = resolvePrdWinnerId(artifacts)
   if (!winnerId) return null
 

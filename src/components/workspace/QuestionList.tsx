@@ -34,7 +34,7 @@ export interface QuestionListProps {
   onStartEdit: (questionId: string, currentAnswer: string) => void
   onCancelEdit: () => void
   onSaveEdit: () => void
-  questionRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>
+  questionRefs: React.RefObject<Record<string, HTMLDivElement | null>>
 }
 
 export function QuestionList({

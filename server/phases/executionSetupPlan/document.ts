@@ -105,21 +105,6 @@ export function saveExecutionSetupPlan(ticketId: string, plan: ExecutionSetupPla
   return { raw: canonicalRaw, contentSha256: contentSha256(canonicalRaw), plan: normalized.value }
 }
 
-export function saveExecutionSetupPlanRawContent(ticketId: string, rawContent: string): {
-  raw: string
-  contentSha256: string
-  plan: ExecutionSetupPlan
-} {
-  const normalized = normalizeStoredExecutionSetupPlanContent(
-    rawContent,
-    getTicketByRef(ticketId)?.externalId,
-  )
-  if (!normalized.ok) {
-    throw new Error(normalized.error)
-  }
-
-  return saveExecutionSetupPlan(ticketId, normalized.value)
-}
 
 export function appendExecutionSetupPlanNotes(ticketId: string, notes: string[]): string[] {
   const existing = getLatestPhaseArtifact(

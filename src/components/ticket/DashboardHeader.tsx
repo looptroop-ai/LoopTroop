@@ -12,7 +12,7 @@ import { throwIfNotOk } from '@/lib/fetchError'
 import { useProjects } from '@/hooks/useProjects'
 import { getStatusUserLabel } from '@/lib/workflowMeta'
 import { isTerminalWorkflowStatus } from '@shared/workflowMeta'
-import { getWorkflowRingProgress, getStatusRingColor } from '@/components/kanban/ticketCardUtils'
+import { getWorkflowRingProgress } from '@/components/kanban/ticketCardUtils'
 import { ProgressRing } from '@/components/kanban/ProgressRing'
 import { BeadCompletionChip } from '@/components/kanban/BeadCompletionChip'
 import { EtaRange } from '@/components/navigator/EtaRange'
@@ -349,7 +349,9 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
     errorMessage: ticket.errorMessage,
   })
   const workflowRingProgress = getWorkflowRingProgress(ticket.status)
-  const ringColor = getStatusRingColor(ticket.status)
+  // One colour for every status. `getStatusRingColor` took a status and
+  // ignored it, which read as a per-status palette that did not exist.
+  const ringColor = 'text-muted-foreground'
   return (
     <div className="border-b border-border bg-background">
       <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 px-3 sm:px-4 py-2">
@@ -793,7 +795,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex flex-col gap-3 py-0.5 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="flex flex-col gap-3 py-0.5">
                       <div className="flex items-center gap-4">
                         <div className="p-2.5 bg-muted border border-border/80 rounded-lg shrink-0 flex items-center justify-center shadow-sm">
                           <HardDrive className="h-5 w-5 text-foreground animate-pulse" />
@@ -910,7 +912,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                           {(expandedSections['source'] || expandedSections['artifacts'] || expandedSections['logs']) && (
                             <div className="mt-1.5 border border-border/40 rounded bg-muted/15 p-2 flex flex-col gap-2.5 max-h-[220px] overflow-y-auto divide-y divide-border/20 shadow-inner">
                               {expandedSections['source'] && (
-                                <div className="flex flex-col gap-1.5 pb-2 last:pb-0 animate-in fade-in slide-in-from-top-1 duration-200">
+                                <div className="flex flex-col gap-1.5 pb-2 last:pb-0">
                                   <div className="flex items-center gap-1.5 text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
                                     <span className="h-1.5 w-1.5 rounded-full bg-primary shrink-0" />
                                     Source Code Files ({sizeBreakdown.source.children.length})
@@ -928,7 +930,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                               )}
 
                               {expandedSections['artifacts'] && (
-                                <div className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0 animate-in fade-in slide-in-from-top-1 duration-200">
+                                <div className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0">
                                   <div className="flex items-center gap-1.5 text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
                                     <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60 shrink-0" />
                                     Phase Artifacts ({sizeBreakdown.artifacts.children.length})
@@ -946,7 +948,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                               )}
 
                               {expandedSections['logs'] && (
-                                <div className="flex flex-col gap-1.5 pt-2 last:pb-0 animate-in fade-in slide-in-from-top-1 duration-200">
+                                <div className="flex flex-col gap-1.5 pt-2 last:pb-0">
                                   <div className="flex items-center gap-1.5 text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
                                     <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/25 shrink-0" />
                                     Execution Logs ({sizeBreakdown.logs.children.length})
@@ -984,7 +986,7 @@ export function DashboardHeader({ ticket }: DashboardHeaderProps) {
                   )}
 
                   {sizeError && (
-                    <div className="mt-2 text-xs text-red-500 border-t border-red-500/20 pt-1.5 flex items-center gap-1.5 animate-in fade-in duration-200">
+                    <div className="mt-2 text-xs text-red-500 border-t border-red-500/20 pt-1.5 flex items-center gap-1.5">
                       <span className="h-1.5 w-1.5 rounded-full bg-red-500 shrink-0" />
                       {sizeError}
                     </div>

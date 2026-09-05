@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
-import { hostname } from 'node:os'
 import { createRuntime, type LoopTroopRuntime } from '../createRuntime'
 import { IncompatibleSchemaVersionError } from '../db/schemaVersion'
 import { acquireDaemonLock, type AcquiredLock } from '../lib/daemonLock'
@@ -370,9 +369,4 @@ export function installShutdownHandlers(handle: DaemonHandle): void {
   handle.onShutdownRequest(shutdown)
   process.on('SIGTERM', () => shutdown('SIGTERM'))
   process.on('SIGINT', () => shutdown('SIGINT'))
-}
-
-/** Describes the machine a state file was written on, for cross-host checks. */
-export function currentHostname(): string {
-  return hostname()
 }

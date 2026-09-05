@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { closeTag, openTag, PROTOCOL_TAGS, type ProtocolTag } from '../protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS, type ProtocolTag } from '@shared/protocolTags'
 import { collectTaggedCandidates } from '../yamlUtils'
 import { FINAL_TEST_COMMANDS_END, FINAL_TEST_COMMANDS_MARKER } from '../../phases/finalTest/parser'
 import { BEAD_STATUS_END, BEAD_STATUS_MARKER, buildCompletionInstructions } from '../../phases/execution/completionSchema'
@@ -107,7 +107,7 @@ describe('protocol tag names', () => {
     [PROTOCOL_TAGS.EXECUTION_SETUP_PLAN, ['server/prompts/index.ts', 'server/phases/executionSetupPlan/generator.ts']],
     [PROTOCOL_TAGS.EXECUTION_SETUP_RESULT, ['server/prompts/index.ts', 'server/phases/executionSetup/generator.ts']],
     [PROTOCOL_TAGS.BEAD_STATUS, ['server/prompts/index.ts', 'server/phases/execution/executor.ts', 'shared/workflowMeta.ts']],
-    [PROTOCOL_TAGS.FINAL_TEST_COMMANDS, ['server/prompts/index.ts', 'server/phases/finalTest/generator.ts']],
+    [PROTOCOL_TAGS.FINAL_TEST_COMMANDS, ['server/prompts/index.ts', 'server/phases/finalTest/generator.ts', 'server/workflow/phases/verificationPhase.ts']],
     [PROTOCOL_TAGS.MANUAL_QA_FIX_BEADS, ['server/prompts/index.ts']],
   ])('is still spelled out in every file whose prose teaches %s', (tag: ProtocolTag, files: string[]) => {
     for (const file of files) {
@@ -124,5 +124,43 @@ describe('protocol tag names', () => {
   it('has no prose copy left to drift for MANUAL_QA_CHECKLIST', () => {
     const prompts = readFileSync(resolve(repoRoot, 'server/prompts/index.ts'), 'utf8')
     expect(prompts).not.toContain(openTag(PROTOCOL_TAGS.MANUAL_QA_CHECKLIST))
+  })
+
+  /**
+   * The client reads this protocol too, which is why the constant lives in
+   * `shared/` rather than under `server/`.
+   *
+   * `ArtifactContentViewer` unwraps the execution-setup plan envelope before
+   * showing it, and had the tag written out. A rename would have moved every
+   * server parser and left the viewer matching the old envelope — and its
+   * fallback is to show the text unchanged, so the user would have seen a raw
+   * `<TAG>` wrapper with no error anywhere. The sweep is the general form: no
+   * shipped client file may spell a tag out.
+   *
+   * Test files are deliberately excluded. Their fixtures are literals on
+   * purpose — a fixture built from the constant would wrap whatever the constant
+   * currently says and prove nothing about the value.
+   */
+  it('never spells a tag out in shipped client source', () => {
+    const clientFiles = readdirSync(resolve(repoRoot, 'src'), { recursive: true, encoding: 'utf8' })
+      .filter((entry) => /\.tsx?$/.test(entry))
+      .filter((entry) => !/(^|[\\/])__tests__[\\/]|\.test\.tsx?$|^test[\\/]/.test(entry))
+
+    // A sweep over an empty list passes for the wrong reason.
+    expect(clientFiles.length).toBeGreaterThan(100)
+
+    for (const entry of clientFiles) {
+      const source = readFileSync(join(repoRoot, 'src', entry), 'utf8')
+      for (const tag of ALL_TAGS) {
+        expect(`${entry}: ${source.includes(openTag(tag))}`).toBe(`${entry}: false`)
+      }
+    }
+  })
+
+  /** The sweep above passes just as well if the viewer stops unwrapping at all. */
+  it('derives the client envelope from the constant', () => {
+    const viewer = readFileSync(resolve(repoRoot, 'src/components/workspace/ArtifactContentViewer.tsx'), 'utf8')
+    expect(viewer).toContain('openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)')
+    expect(viewer).toContain('closeTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)')
   })
 })

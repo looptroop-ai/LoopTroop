@@ -6,7 +6,7 @@ import type { Session } from '../../opencode/types'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
-import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export const EXECUTION_SETUP_PLAN_ARTIFACT_TYPE = 'execution_setup_plan'
 export const EXECUTION_SETUP_PLAN_REPORT_ARTIFACT_TYPE = 'execution_setup_plan_report'

@@ -1,7 +1,7 @@
 import { normalizeFinalTestCommandsOutput } from '../../structuredOutput'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
-import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import type { CommandSpec } from '@shared/commandSpec'
 import type { HostContext } from '@shared/hostContext'
 

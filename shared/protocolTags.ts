@@ -12,8 +12,14 @@
  *
  * The name is written once here. `openTag` and `closeTag` derive the bracket
  * forms, which are proven byte-for-byte against the historical literals in
- * `__tests__/protocolTags.test.ts` — the values are wire protocol and none of
- * them may change.
+ * `server/structuredOutput/__tests__/protocolTags.test.ts` — the values are wire
+ * protocol and none of them may change.
+ *
+ * In `shared/` rather than under `server/` because the client reads the protocol
+ * as well: `ArtifactContentViewer` unwraps the execution-setup plan envelope
+ * before showing it. That was a literal, invisible to a rename, and its fallback
+ * is to show the text unchanged — so a missed rename would have shown the user a
+ * raw `<TAG>` wrapper with no error raised anywhere.
  *
  * **Not covered here on purpose**: the prompt copy that teaches each tag to the
  * model. Those are prose the user can edit through the Prompts editor, and

@@ -35,7 +35,7 @@ import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
 import { focusedDiffMetadata } from './focusedDiff'
 import { STRUCTURED_CORRECTION_ECHO_LENGTH } from '../../lib/constants'
-import { PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export const MANUAL_QA_FIX_BEADS_TAG = PROTOCOL_TAGS.MANUAL_QA_FIX_BEADS
 

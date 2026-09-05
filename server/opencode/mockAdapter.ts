@@ -11,7 +11,7 @@ import type {
   StreamEvent,
 } from './types'
 import type { OpenCodeAdapter } from './adapter'
-import { closeTag, openTag, PROTOCOL_TAGS } from '../structuredOutput/protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export class MockOpenCodeAdapter implements OpenCodeAdapter {
   public sessions: Session[] = []

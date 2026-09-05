@@ -1,6 +1,6 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import { looksLikePromptEcho } from '../lib/promptEcho'
-import { openTag, PROTOCOL_TAGS } from './protocolTags'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import { detectHostContext } from '../lib/hostContext'
 import type { HostContext } from '@shared/hostContext'
 import { hostContextSchema } from '@shared/hostContext'

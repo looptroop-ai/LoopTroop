@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import {
   mergeStructuredInterventions,
   normalizeStructuredInterventions,
@@ -4535,9 +4536,24 @@ function RelevantFilesScanView({ content }: { content: string }) {
   )
 }
 
+/**
+ * The envelope the plan arrives in, built from the tag rather than written out.
+ *
+ * This is the only place in the client that reads the model's wire protocol, and
+ * it had the tag as a literal. A literal is invisible to a rename: every server
+ * parser would follow the constant to the new name and this viewer would go on
+ * matching the old envelope, so the approval pane would show the user a raw
+ * `<TAG>` wrapper instead of the plan inside it — no error, just the wrong text.
+ * Interpolating is safe: the tag names are a closed set of `[A-Z_]` words with
+ * nothing a regex reads as syntax.
+ */
+const EXECUTION_SETUP_PLAN_ENVELOPE = new RegExp(
+  `${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)}\\s*([\\s\\S]*?)\\s*${closeTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)}`,
+)
+
 function extractExecutionSetupPlanPayloadText(value: string): string {
   const trimmed = value.trim()
-  const markerMatch = trimmed.match(/<EXECUTION_SETUP_PLAN>\s*([\s\S]*?)\s*<\/EXECUTION_SETUP_PLAN>/)
+  const markerMatch = EXECUTION_SETUP_PLAN_ENVELOPE.exec(trimmed)
   return markerMatch?.[1]?.trim() ?? trimmed
 }
 

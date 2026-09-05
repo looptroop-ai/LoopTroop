@@ -8,7 +8,7 @@ import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnosti
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
 import { DEFAULT_GIT_HOOK_POLICY } from '@shared/gitHookPolicy'
-import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export const EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE = 'execution_setup_profile'
 export const EXECUTION_SETUP_REPORT_ARTIFACT_TYPE = 'execution_setup_report'

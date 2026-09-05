@@ -6,7 +6,7 @@ import type {
 } from '@shared/interviewQuestions'
 import { MAX_SINGLE_CHOICE_OPTIONS, MAX_MULTIPLE_CHOICE_OPTIONS } from '../lib/constants'
 import { looksLikePromptEcho } from '../lib/promptEcho'
-import { openTag, PROTOCOL_TAGS } from './protocolTags'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import type {
   InterviewBatchPayload,
   InterviewBatchPayloadQuestion,

@@ -16,7 +16,7 @@ import {
   type ManualQaResults,
 } from './types'
 import { validateManualQaPrdReferences } from './coverage'
-import { PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export const MANUAL_QA_CHECKLIST_TAG = PROTOCOL_TAGS.MANUAL_QA_CHECKLIST
 

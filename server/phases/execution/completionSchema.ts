@@ -1,4 +1,4 @@
-import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export interface BeadChecks {
   tests: string

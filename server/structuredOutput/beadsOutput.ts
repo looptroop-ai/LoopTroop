@@ -2,7 +2,7 @@ import * as jsYaml from 'js-yaml'
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
 import type { Bead, BeadStatus, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from '../phases/beads/types'
-import { openTag, PROTOCOL_TAGS } from './protocolTags'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type { StructuredOutputResult, RelevantFilesOutputEntry, RelevantFilesOutputPayload } from './types'
 import {

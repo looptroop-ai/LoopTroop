@@ -2,8 +2,16 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { formatNodeVersion, parseNodeFloor } from '../shared/nodeFloor'
 
 const LAUNCHER = resolve(process.cwd(), 'server/cli/launcher.cjs')
+
+const FLOOR = parseNodeFloor(
+  (JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
+    engines: { node: string }
+  }).engines.node,
+)
+const FLOOR_LABEL = formatNodeVersion(FLOOR)
 
 /** The guard half of the launcher, with the shebang stripped so `node -e` accepts it. */
 function readGuardSource(): string {
@@ -63,23 +71,53 @@ describe('cli launcher', () => {
     const result = runGuard('22.9.0')
 
     expect(result.exitCode).toBe(1)
-    // The guard compares major and minor only — it is ES5 and dependency-free
-    // by design, so it cannot parse a full semver range. Its label is therefore
-    // the floor's major.minor with a zero patch, which is what it prints here
-    // even when engines names a patch release. npm enforces the exact floor.
-    expect(result.stderr).toContain('requires Node.js 24.18.0 or newer')
+    // The exact floor, patch level included. The guard used to compare major
+    // and minor only and print the floor's major.minor with a zero patch, so a
+    // user on 24.18.0 was refused by a message naming 24.18.0.
+    expect(result.stderr).toContain(`requires Node.js ${FLOOR_LABEL} or newer`)
     expect(result.stderr).toContain('22.9.0')
   })
 
-  it('accepts a supported runtime', () => {
-    expect(runGuard('24.18.1', 'process.stdout.write("passed");').stdout).toBe('passed')
+  it('accepts exactly the floor', () => {
+    expect(runGuard(FLOOR_LABEL, 'process.stdout.write("passed");').stdout).toBe('passed')
+  })
+
+  it('accepts the patch just above the floor', () => {
+    const justAbove = formatNodeVersion({ ...FLOOR, patch: FLOOR.patch + 1 })
+    expect(runGuard(justAbove, 'process.stdout.write("passed");').stdout).toBe('passed')
+  })
+
+  /**
+   * The case the old major.minor comparison got wrong in both directions: it
+   * accepted this runtime and then told anyone it refused to install it.
+   */
+  it('rejects the patch just below the floor', () => {
+    const justBelow = FLOOR.patch > 0
+      ? formatNodeVersion({ ...FLOOR, patch: FLOOR.patch - 1 })
+      : formatNodeVersion({ ...FLOOR, minor: FLOOR.minor - 1, patch: 99 })
+    expect(runGuard(justBelow).exitCode).toBe(1)
   })
 
   it('accepts a newer major', () => {
-    expect(runGuard('26.0.0', 'process.stdout.write("passed");').stdout).toBe('passed')
+    expect(runGuard(`${FLOOR.major + 1}.0.0`, 'process.stdout.write("passed");').stdout).toBe('passed')
   })
 
   it('rejects a same-major but older minor', () => {
-    expect(runGuard('24.14.0').exitCode).toBe(1)
+    expect(runGuard(`${FLOOR.major}.${FLOOR.minor - 1}.99`).exitCode).toBe(1)
+  })
+
+  /**
+   * §11.5: the floor was written by hand in five places with three different
+   * answers. `engines.node` is the only one left; these constants are generated
+   * from it by `scripts/sync-installers.mjs`, and this is what catches a drift
+   * between releases — `installers:check` runs only in the release workflow.
+   */
+  it('enforces the floor package.json declares', () => {
+    const source = readFileSync(LAUNCHER, 'utf8')
+    expect({
+      major: Number(/var REQUIRED_MAJOR = (\d+)/.exec(source)?.[1]),
+      minor: Number(/var REQUIRED_MINOR = (\d+)/.exec(source)?.[1]),
+      patch: Number(/var REQUIRED_PATCH = (\d+)/.exec(source)?.[1]),
+    }).toEqual(FLOOR)
   })
 })

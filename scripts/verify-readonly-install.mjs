@@ -25,9 +25,26 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-/** The floor `dist/server/cli/launcher.cjs` enforces before it loads anything. */
-const REQUIRED_NODE = { major: 24, minor: 15 }
+/**
+ * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
+ * read from `engines.node` rather than restated here, which is how this came to
+ * accept 24.15 while the launcher required 24.18. Patch-level, like every other
+ * consumer of that floor.
+ */
+const REQUIRED_NODE = parseFloor(
+  JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
+    .engines.node,
+)
+
+function parseFloor(spec) {
+  const [major = 0, minor = 0, patch = 0] = String(spec)
+    .replace(/^[^\d]*/, '')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10) || 0)
+  return { major, minor, patch, label: `${major}.${minor}.${patch}` }
+}
 
 /**
  * What every child gets on top of this process's own environment.
@@ -331,12 +348,15 @@ async function main() {
     // under `sudo` is not the shell this script was started from.
     const childNode = run('node', ['-p', 'process.execPath + " " + process.versions.node'])
     const [nodePath, version] = childNode.stdout.trim().split(' ')
-    const [major, minor] = (version ?? '').split('.').map((part) => Number.parseInt(part, 10))
-    const meetsFloor = major > REQUIRED_NODE.major
-      || (major === REQUIRED_NODE.major && minor >= REQUIRED_NODE.minor)
+    const have = parseFloor(version ?? '')
+    const meetsFloor = have.major !== REQUIRED_NODE.major
+      ? have.major > REQUIRED_NODE.major
+      : have.minor !== REQUIRED_NODE.minor
+        ? have.minor > REQUIRED_NODE.minor
+        : have.patch >= REQUIRED_NODE.patch
     if (!check('the shim will find a supported Node on PATH', meetsFloor,
       `${nodePath ?? 'no node on PATH'} is ${version ?? 'unreadable'}, ` +
-      `floor is ${REQUIRED_NODE.major}.${REQUIRED_NODE.minor}.0`)) {
+      `floor is ${REQUIRED_NODE.label}`)) {
       return
     }
 

@@ -45,10 +45,18 @@ const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 const MANIFEST_ASSET = 'release-manifest.json'
 const TARBALL_PATTERN = /^looptroop-.+\.tgz$/
 
-const NODE_HELP = {
-  darwin: 'brew install node@24   (or download from https://nodejs.org/)',
-  win32: 'winget install OpenJS.NodeJS.LTS   (or download from https://nodejs.org/)',
-  linux: 'Use your distribution\'s package or https://github.com/nvm-sh/nvm',
+/**
+ * How to get a supported Node, named for the floor actually being enforced.
+ *
+ * The keg is `node@<major>` rather than a hardcoded one: this help is printed
+ * only when a release's own `engines.node` has just been checked, and a
+ * hardcoded major would eventually tell people to install a version the release
+ * no longer accepts.
+ */
+function nodeHelp(platform, floorMajor) {
+  if (platform === 'darwin') return `brew install node@${floorMajor}   (or download from https://nodejs.org/)`
+  if (platform === 'win32') return 'winget install OpenJS.NodeJS.LTS   (or download from https://nodejs.org/)'
+  return 'Use your distribution\'s package or https://github.com/nvm-sh/nvm'
 }
 
 /**
@@ -370,7 +378,7 @@ function checkRuntime(engines) {
   if (engines.node && !satisfiesFloor(process.versions.node, engines.node)) {
     fail(
       `LoopTroop needs Node ${engines.node}; this is ${process.versions.node}.`,
-      NODE_HELP[process.platform] ?? NODE_HELP.linux,
+      nodeHelp(process.platform, String(engines.node).replace(/^[^\d]*/, '').split('.')[0]),
       'LoopTroop will not install Node for you.',
     )
   }

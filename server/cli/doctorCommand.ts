@@ -11,6 +11,8 @@ import { readDaemonStartFailure, type DaemonState } from '../lib/daemonPaths'
 import type { SchemaCompatibility } from '../db/schemaVersion'
 import { readRunningDaemon } from './commands'
 import { getErrorMessage } from '@shared/typeGuards'
+import { formatNodeVersion, parseNodeVersion, satisfiesNodeFloor } from '@shared/nodeFloor'
+import { NODE_FLOOR } from '../lib/nodeFloor'
 import { NON_INTERACTIVE_GIT_ENV } from '../git/runCommand'
 
 type Status = 'ok' | 'warn' | 'fail'
@@ -85,8 +87,7 @@ interface Check {
   install?: InstallFacts
 }
 
-const REQUIRED_NODE_MAJOR = 24
-const REQUIRED_NODE_MINOR = 15
+const REQUIRED_NODE_LABEL = formatNodeVersion(NODE_FLOOR)
 
 /**
  * Bold, but only on a terminal.
@@ -224,10 +225,14 @@ function timedOutCheck(name: string, command: string, timeoutMs: number): Omit<C
   }
 }
 
+/**
+ * The floor is the one `engines.node` declares, compared to the patch level.
+ * This used to accept anything from 24.15 while the launcher refused to start
+ * below 24.18, so a machine in between passed `doctor` and then could not run
+ * LoopTroop at all.
+ */
 function checkNode(latest: string | null = null): Check {
-  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number)
-  const supported = major > REQUIRED_NODE_MAJOR
-    || (major === REQUIRED_NODE_MAJOR && minor >= REQUIRED_NODE_MINOR)
+  const supported = satisfiesNodeFloor(parseNodeVersion(process.versions.node), NODE_FLOOR)
 
   return supported
     ? { name: 'node', status: 'ok', detail: withLatest(`v${process.versions.node}`, latest) }
@@ -235,7 +240,7 @@ function checkNode(latest: string | null = null): Check {
         name: 'node',
         status: 'fail',
         detail: withLatest(`v${process.versions.node}`, latest),
-        remedy: `LoopTroop needs Node ${REQUIRED_NODE_MAJOR}.${REQUIRED_NODE_MINOR}.0 or newer. Install it with nvm: nvm install ${REQUIRED_NODE_MAJOR}`,
+        remedy: `LoopTroop needs Node ${REQUIRED_NODE_LABEL} or newer. Install it with nvm: nvm install ${NODE_FLOOR.major}`,
       }
 }
 

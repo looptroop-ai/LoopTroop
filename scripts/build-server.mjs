@@ -38,6 +38,9 @@ const result = await build({
     // npm install and nowhere else — most importantly in a single-file build,
     // where there is no `package.json` and the answer was a silent `0.0.0`.
     __LOOPTROOP_VERSION__: JSON.stringify(pkg.version),
+    // Same reason, and one more: a floor that fell back to a placeholder would
+    // make `doctor`'s node check pass on every runtime, silently.
+    __LOOPTROOP_NODE_FLOOR__: JSON.stringify(pkg.engines.node),
   },
 })
 

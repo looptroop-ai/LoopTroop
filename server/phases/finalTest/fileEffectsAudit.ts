@@ -6,15 +6,11 @@ import { parseGitStatusPorcelainZ } from '../../git/statusPorcelain'
 import { classifyWorktreePath } from '../../git/worktreeChanges'
 import {
   FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT,
-} from '@shared/finalTestFileEffects'
-
-export {
-  FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT,
   type FinalTestFileEffect,
   type FinalTestFileEffectIntent,
 } from '@shared/finalTestFileEffects'
 
-import type { FinalTestFileEffect } from '@shared/finalTestFileEffects'
+export { FINAL_TEST_FILE_EFFECTS_AUDIT_ARTIFACT, type FinalTestFileEffect, type FinalTestFileEffectIntent }
 
 export interface FinalTestDirtyFile {
   path: string

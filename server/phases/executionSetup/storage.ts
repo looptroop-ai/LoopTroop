@@ -13,8 +13,6 @@ import {
 import {
   EXECUTION_LOG_RUNTIME_PATH,
   EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
-  EXECUTION_SETUP_REPORT_ARTIFACT_TYPE,
-  EXECUTION_SETUP_RETRY_NOTES_ARTIFACT_TYPE,
   serializeExecutionSetupProfile,
   type ExecutionSetupProfile,
 } from './types'
@@ -174,10 +172,4 @@ export function describeExecutionSetupPaths(ticketId: string): {
     profilePath: paths.executionSetupProfilePath,
     logPath: resolve(paths.worktreePath, EXECUTION_LOG_RUNTIME_PATH),
   }
-}
-
-export {
-  EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
-  EXECUTION_SETUP_REPORT_ARTIFACT_TYPE,
-  EXECUTION_SETUP_RETRY_NOTES_ARTIFACT_TYPE,
 }

@@ -3,13 +3,13 @@ export interface TextDiffSegment {
   changed: boolean
 }
 
-export const TEXT_DIFF_TOKEN_PATTERN = /(\s+|[A-Za-z0-9_]+|[^A-Za-z0-9_\s]+)/g
+const TEXT_DIFF_TOKEN_PATTERN = /(\s+|[A-Za-z0-9_]+|[^A-Za-z0-9_\s]+)/g
 
-export function tokenizeTextDiff(text: string): string[] {
+function tokenizeTextDiff(text: string): string[] {
   return text.match(TEXT_DIFF_TOKEN_PATTERN) ?? []
 }
 
-export function mergeTextDiffSegments(segments: TextDiffSegment[]): TextDiffSegment[] {
+function mergeTextDiffSegments(segments: TextDiffSegment[]): TextDiffSegment[] {
   const merged: TextDiffSegment[] = []
 
   for (const segment of segments) {

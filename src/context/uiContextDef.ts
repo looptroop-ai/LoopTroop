@@ -26,7 +26,11 @@ export interface UIState {
   selectedTicketId: string | null
   selectedTicketExternalId: string | null
   sidebarOpen: boolean
-  activeView: 'kanban' | 'ticket' | 'project' | 'config'
+  /**
+   * Which of the two root surfaces is showing. Modals are not views: they are
+   * routes owned by `App`, which is the only writer of `window.history`.
+   */
+  activeView: 'kanban' | 'ticket'
   logPanelHeight: number
   filters: {
     projectId: number | null
@@ -51,7 +55,6 @@ export interface UIState {
 export type UIAction =
   | { type: 'SELECT_TICKET'; ticketId: string | null; externalId?: string | null }
   | { type: 'TOGGLE_SIDEBAR' }
-  | { type: 'SET_VIEW'; view: UIState['activeView'] }
   | { type: 'SET_LOG_PANEL_HEIGHT'; height: number }
   | { type: 'SET_FILTER'; filter: Partial<UIState['filters']> }
   | { type: 'SET_PRESETS'; presetKey: string; presets: Record<string, TriagePreset> }

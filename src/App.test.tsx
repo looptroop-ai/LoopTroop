@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { UIProvider } from '@/context/UIContext'
+import { useUI } from '@/context/useUI'
 import { WELCOME_DISCLAIMER_STORAGE_KEY } from '@/components/shared/WelcomeDisclaimer'
 import type { StartupStatus } from '@/hooks/useStartupStatus'
 
@@ -12,6 +13,7 @@ const mockState = vi.hoisted(() => ({
   tickets: [] as Array<{ id: string; externalId: string }>,
   ticketsFetched: true,
   ticketsLoading: false,
+  ticketsError: false,
   dismissMutation: {
     mutate: vi.fn(),
     isPending: false,
@@ -76,6 +78,7 @@ vi.mock('@/hooks/useTickets', () => ({
     isFetched: mockState.ticketsFetched,
     isLoading: mockState.ticketsLoading,
     isSuccess: mockState.ticketsFetched && !mockState.ticketsLoading,
+    isError: mockState.ticketsError,
   }),
 }))
 
@@ -150,11 +153,169 @@ function renderApp() {
   return renderAppElement()
 }
 
+/** Drives the selection from outside `App`, the way the board and the shell do. */
+function SelectionProbe() {
+  const { dispatch } = useUI()
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'SELECT_TICKET', ticketId: 'ticket-1', externalId: 'LT-1' })}
+      >
+        Select LT-1
+      </button>
+      <button type="button" onClick={() => dispatch({ type: 'CLOSE_TICKET' })}>Close ticket</button>
+    </>
+  )
+}
+
+function renderAppWithProbe() {
+  return render(
+    <QueryClientProvider client={createTestQueryClient()}>
+      <UIProvider>
+        <App />
+        <SelectionProbe />
+      </UIProvider>
+    </QueryClientProvider>,
+  )
+}
+
+function persistTicketSelection(ticketId: string, externalId: string) {
+  localStorage.setItem('looptroop-ui-state', JSON.stringify({
+    selectedTicketId: ticketId,
+    selectedTicketExternalId: externalId,
+    activeView: 'ticket',
+    sidebarOpen: true,
+    logPanelHeight: 300,
+    filters: { projectId: null, status: null, search: '' },
+    theme: 'system',
+  }))
+}
+
+/**
+ * `App` is the only writer of `window.history`. These lock that down: the URL
+ * used to have two owners, and `UIContext`'s mount effect rewrote the pathname
+ * of whatever route `App` had just opened.
+ */
+describe('App route ownership', () => {
+  beforeEach(() => {
+    mockState.tickets = []
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    mockState.ticketsError = false
+    mockState.startupStatus = null
+    useRecoveryAutoReloadMock.mockReset()
+    localStorage.clear()
+    localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
+    window.history.pushState(null, '', '/')
+  })
+
+  it('keeps the modal route when a ticket selection is restored underneath it', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/config')
+  })
+
+  it('restores the ticket route when the modal opened over it closes', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+  })
+
+  /**
+   * The ticket list is still in flight when the app mounts, which is the case
+   * that matters: a route effect that writes before the deep link has been
+   * resolved pushes the *restored* ticket over the *requested* one, and the
+   * hydration step then reads back the pathname it just clobbered.
+   */
+  it('honours a deep-linked ticket over the restored selection without rewriting the URL', async () => {
+    persistTicketSelection('ticket-2', 'LT-2')
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <UIProvider>
+          <App />
+        </UIProvider>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+  })
+
+  it('pushes the ticket route when a ticket is selected and clears it when it closes', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+
+    renderAppWithProbe()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close ticket' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+  })
+
+  /**
+   * Hydration settles on the ticket list settling, not on it being non-empty.
+   * Keyed to the empty list because that is the case a `!tickets?.length` guard
+   * never releases: the route effect would stay frozen for the whole session.
+   */
+  it('releases the route effect when the ticket list settles empty', async () => {
+    mockState.tickets = []
+    window.history.pushState(null, '', '/ticket/LT-9')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+  })
+})
+
 describe('App startup notices', () => {
   beforeEach(() => {
     mockState.tickets = []
     mockState.ticketsFetched = true
     mockState.ticketsLoading = false
+    mockState.ticketsError = false
     mockState.dismissMutation.isPending = false
     mockState.dismissMutation.mutate.mockReset()
     useRecoveryAutoReloadMock.mockReset()

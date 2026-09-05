@@ -57,7 +57,7 @@ function App() {
   const isRecoverableTicketListLoading = ticketsQuery.isLoading === true
     && hasCompletedInitialTicketListLoadRef.current
   useRecoveryAutoReload('tickets-loading', isRecoverableTicketListLoading)
-  const initialUrlProcessed = useRef(false)
+  const [hasHydratedUrl, setHasHydratedUrl] = useState(false)
   const [isProfileOpen, setIsProfileOpen] = useState(() => initialModal === 'profile')
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const [isProjectOpen, setIsProjectOpen] = useState(() => initialModal === 'project')
@@ -110,19 +110,57 @@ function App() {
     setIsWelcomeOpen(false)
   }
 
-  // Resolve ticket from URL externalId when tickets load
+  /**
+   * Reconcile the pathname the app was opened with, exactly once.
+   *
+   * The pathname wins over the restored selection: a deep link is what the user
+   * asked for, while `selectedTicketId` is only what the previous session left
+   * in storage. Until this has run the route effect below must not write, or a
+   * deep-linked ticket is overwritten before it can be resolved.
+   *
+   * It settles when the ticket list settles rather than when it is non-empty:
+   * an account with no tickets never resolves a deep link, but the route effect
+   * still has to be released.
+   */
   useEffect(() => {
-    if (!tickets?.length || initialUrlProcessed.current) return
+    if (hasHydratedUrl) return
+    if (!ticketsQuery.isSuccess && !ticketsQuery.isError) return
     const path = window.location.pathname
     if (path.startsWith('/ticket/')) {
       const externalId = path.split('/')[2]
       if (externalId && externalId !== 'new') {
-        const ticket = tickets.find(t => t.externalId === externalId)
+        const ticket = tickets?.find(t => t.externalId === externalId)
         if (ticket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
       }
     }
-    initialUrlProcessed.current = true
-  }, [tickets, dispatch])
+    setHasHydratedUrl(true)
+  }, [dispatch, hasHydratedUrl, tickets, ticketsQuery.isError, ticketsQuery.isSuccess])
+
+  /**
+   * The ticket route, owned here. `UIContext` used to push a pathname derived
+   * from its own state, which meant two writers: refreshing `/config` with a
+   * ticket selected reopened Configuration and then had the context rewrite the
+   * pathname to `/ticket/…` underneath it.
+   *
+   * Suppressed while a modal route is showing — that modal owns the pathname
+   * until it closes and restores the one it replaced.
+   */
+  const isModalRouteOpen = isProfileOpen || isProjectOpen || isTicketOpen || isPromptsOpen
+  useEffect(() => {
+    if (!hasHydratedUrl || isModalRouteOpen) return
+    const target = state.activeView === 'ticket' && state.selectedTicketId
+      ? `/ticket/${state.selectedTicketExternalId ?? state.selectedTicketId}`
+      : ROUTE_ROOT
+    if (window.location.pathname !== target) {
+      window.history.pushState(null, '', target)
+    }
+  }, [
+    hasHydratedUrl,
+    isModalRouteOpen,
+    state.activeView,
+    state.selectedTicketId,
+    state.selectedTicketExternalId,
+  ])
 
   // Handle back/forward navigation
   useEffect(() => {

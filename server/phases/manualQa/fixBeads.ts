@@ -34,6 +34,7 @@ import { getManualQaEvidenceRelativePath, getManualQaStoragePaths } from './stor
 import { readManualQaPrd } from './prd'
 import { getErrorMessage } from '@shared/typeGuards'
 import { focusedDiffMetadata } from './focusedDiff'
+import { STRUCTURED_CORRECTION_ECHO_LENGTH } from '../../lib/constants'
 
 export const MANUAL_QA_FIX_BEADS_TAG = 'MANUAL_QA_FIX_BEADS'
 
@@ -439,7 +440,7 @@ export async function generateManualQaFixBeadCandidates(
         `The previous attempt was invalid: ${lastError}`,
         'Perform a successful focused read-only repository inspection if one has not completed, then return the corrected tagged YAML only.',
         'Previous invalid response:',
-        result.response.slice(0, 50_000),
+        result.response.slice(0, STRUCTURED_CORRECTION_ECHO_LENGTH),
       ].join('\n')
     }
   }

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { MANUAL_QA_ACTIVE_VERSION_POLL_MS, MANUAL_QA_GENERATING_POLL_MS } from '@/lib/constants'
 
 export type ManualQaResultStatus = 'pass' | 'fail' | 'waive' | 'improvement' | 'pending'
 type ManualQaSeverity = 'required' | 'optional'
@@ -424,7 +425,7 @@ export function useManualQaIndex(ticketId: string, enabled = true) {
         }),
       }
     },
-    refetchInterval: (query) => query.state.data?.activeVersion ? 5000 : false,
+    refetchInterval: (query) => query.state.data?.activeVersion ? MANUAL_QA_ACTIVE_VERSION_POLL_MS : false,
   })
 }
 
@@ -436,7 +437,7 @@ export function useManualQaRound(ticketId: string, version: number | null, enabl
       await fetch(apiTicketPath(ticketId, 'manual-qa', 'versions', version!), { signal }),
       'Failed to load Manual QA checklist',
     ), version!),
-    refetchInterval: (query) => query.state.data?.status === 'generating' ? 3000 : false,
+    refetchInterval: (query) => query.state.data?.status === 'generating' ? MANUAL_QA_GENERATING_POLL_MS : false,
   })
 }
 

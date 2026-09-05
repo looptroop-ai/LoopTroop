@@ -66,6 +66,16 @@ export interface PushBranchRefResult {
   error?: string
 }
 
+/**
+ * How many times a `git push` is attempted before the failure is reported.
+ *
+ * A push is the one git operation that reaches a network, and the reason it
+ * fails is usually transient. Shared with `pushSquashedCandidate`, which runs
+ * its own loop against the same remote: two retry counts for the same operation
+ * is one of them being wrong.
+ */
+export const GIT_PUSH_MAX_RETRIES = 3
+
 interface PushBranchRefParams {
   projectPath: string
   destinationBranch: string
@@ -91,7 +101,7 @@ export async function pushBranchRef({
   sourceRef = 'HEAD',
   remote = 'origin',
   forceWithLease = false,
-  maxRetries = 3,
+  maxRetries = GIT_PUSH_MAX_RETRIES,
   bypassHooks = false,
 }: PushBranchRefParams): Promise<PushBranchRefResult> {
   const refspec = `${sourceRef}:refs/heads/${destinationBranch}`

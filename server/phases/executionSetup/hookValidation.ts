@@ -19,6 +19,7 @@ import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitBinarySync, runGitSync } from '../../git/runCommand'
 import { getExecutionSetupCommitExcludedRoots, summarizeWorktreeChanges } from '../../git/worktreeChanges'
 import { getErrorMessage } from '@shared/typeGuards'
+import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../lib/constants'
 
 const HOOK_VALIDATION_TIMEOUT_MS = 30_000
 
@@ -274,7 +275,7 @@ export async function runGitHookValidationCommand(input: {
     repoRoot: input.worktreePath,
     ...(input.runtimeEnvironment ? { runtimeEnvironment: input.runtimeEnvironment } : {}),
   })
-  const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
+  const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, COMMAND_OUTPUT_EXCERPT_LENGTH)
   const status = result.timedOut ? 'timed_out' as const : result.exitCode === 0 ? 'passed' as const : 'failed' as const
   return {
     status,

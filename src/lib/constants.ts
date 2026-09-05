@@ -34,6 +34,18 @@ export const DROPDOWN_FOCUS_DELAY_MS = 50
 
 /** Query stale time for infrequently-changing data (5 minutes) */
 export const QUERY_STALE_TIME_5M = 5 * 60 * 1000
+/** Default query stale time: long enough to coalesce a burst, short enough to feel live */
+export const QUERY_STALE_TIME_5S = 5 * 1000
+
+/** How often a Manual QA checklist is polled while the model is still writing it */
+export const MANUAL_QA_GENERATING_POLL_MS = 3000
+/** How often the active Manual QA version is polled while a round is open */
+export const MANUAL_QA_ACTIVE_VERSION_POLL_MS = 5000
+
+/** How often a single ticket is refetched while its workflow is running */
+export const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
+/** How often the ticket list is refetched while any ticket's workflow is running */
+export const ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS = 10_000
 /**
  * How the model catalog waits out OpenCode's startup window.
  *
@@ -54,7 +66,11 @@ export const QUESTION_RECOVERY_INTERVAL_MS = 30_000
 export const GIT_CHECK_DEBOUNCE_MS = 300
 /** Debounce delay for git-check in project form */
 export const PROJECT_GIT_CHECK_DEBOUNCE_MS = 500
-/** Tick interval for the active-bead countdown timer */
+/**
+ * Tick interval for the surfaces that display whole seconds — the active-bead
+ * countdown and the current-activity strip's elapsed time. One value because
+ * one decision: the smallest unit either of them renders.
+ */
 export const COUNTDOWN_TICK_MS = 1_000
 
 /** z-index for absolutely positioned dropdowns above all other UI */

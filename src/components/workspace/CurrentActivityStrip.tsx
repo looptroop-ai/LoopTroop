@@ -3,6 +3,7 @@ import { AlertTriangle, ChevronDown, Clock3, RefreshCw } from 'lucide-react'
 import type { LogEntry } from '@/context/LogContext'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { cn } from '@/lib/utils'
+import { COUNTDOWN_TICK_MS } from '@/lib/constants'
 import { deriveCurrentActivities, formatElapsedDuration, type CurrentActivity } from './currentActivity'
 
 interface CurrentActivityStripProps {
@@ -92,8 +93,7 @@ export function CurrentActivityStrip({ entries, enabled = true, activeStatus, cl
 
   useEffect(() => {
     if (!hasAnyActive) return
-    const UPDATE_INTERVAL_MS = 1000
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), UPDATE_INTERVAL_MS)
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), COUNTDOWN_TICK_MS)
     return () => window.clearInterval(intervalId)
   }, [hasAnyActive])
 

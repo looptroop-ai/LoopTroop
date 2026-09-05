@@ -15,11 +15,10 @@ import { readProcessStartToken } from '../lib/processIdentity'
 import { createSessionCredentials, BootstrapNonceStore, type SessionCredentials } from '../middleware/sessionAuth'
 import { OpenCodeSupervisor, type OpenCodeStatus } from '../opencode/supervisor'
 import { getErrorMessage } from '@shared/typeGuards'
+import { SHUTDOWN_FORCE_EXIT_MS } from '../lib/constants'
 
 /** Keeps the lock's heartbeat ahead of the staleness window. */
 const HEARTBEAT_INTERVAL_MS = 15_000
-
-const SHUTDOWN_FORCE_EXIT_MS = 30_000
 
 export interface DaemonHandle {
   state: DaemonState

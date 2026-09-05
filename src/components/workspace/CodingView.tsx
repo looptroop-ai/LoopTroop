@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { useLogs } from '@/context/useLogContext'
 import { getLogEntryIdentity, mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
-import { QUERY_STALE_TIME_5M, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
+import { QUERY_STALE_TIME_5M, QUERY_STALE_TIME_5S, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
 import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -1179,7 +1179,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     placeholderData: hasBeadControls
       ? (ticket.runtime.beads ?? []).map((bead) => normalizeBead(bead))
       : [],
-    staleTime: 5000,
+    staleTime: QUERY_STALE_TIME_5S,
     refetchOnMount: false,
   })
   const beads = useMemo(

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { TOAST_DURATION_MS } from '@/lib/constants'
 import { ToastContext, type ToastType } from './toastDef'
 
@@ -49,10 +48,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
   }, [toast, onDismiss])
 
   return (
-    <div className={cn(
-      'flex items-center gap-2 rounded-lg border bg-background px-4 py-3 shadow-lg',
-      'animate-in slide-in-from-right-full fade-in duration-300',
-    )}>
+    <div className="flex items-center gap-2 rounded-lg border bg-background px-4 py-3 shadow-lg">
       {ICONS[toast.type]}
       <span className="text-sm flex-1">{toast.message}</span>
       <button onClick={() => onDismiss(toast.id)} className="text-muted-foreground hover:text-foreground">

@@ -21,6 +21,7 @@ const mockSSEState = vi.hoisted(() => ({
 const mockTicketQuery = vi.hoisted(() => ({
   override: null as null | {
     data: Ticket | undefined
+    dataUpdatedAt?: number
     isError?: boolean
     error?: unknown
     refetch?: () => void
@@ -262,6 +263,54 @@ describe('TicketDashboard', () => {
         }),
       )
     })
+  })
+
+  /**
+   * The acknowledgment is written to the server so the flash stays stopped in
+   * other tabs and after a reload; the local mark hides a failed write from
+   * this one. The retry that covers that failure needs a value that moves on
+   * every read — the ticket's own `updatedAt` does not move when a poll returns
+   * an unchanged ticket, which is exactly when the retry is needed.
+   */
+  it('re-sends an acknowledgment the server has not recorded when the ticket is polled again', async () => {
+    const waitingTicket = makeTicket({
+      status: 'WAITING_PRD_APPROVAL',
+      id: selectedTicketId,
+      needsInputSeenSignature: null,
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url.startsWith(`/api/files/${encodeURIComponent(selectedTicketId)}/logs`)) {
+        return createJsonResponse([])
+      }
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}/artifacts`)) {
+        return createJsonResponse([])
+      }
+      if (url.endsWith(`/api/tickets/${encodeURIComponent(selectedTicketId)}`)) {
+        return createJsonResponse(waitingTicket)
+      }
+      throw new Error(`Unhandled fetch: ${url}`)
+    })
+
+    mockTicketQuery.override = { data: waitingTicket, dataUpdatedAt: 1_000 }
+    const { rerender } = renderDashboard()
+
+    await waitFor(() => {
+      expect(saveUiStateMutate).toHaveBeenCalledTimes(1)
+    })
+
+    // A later poll of a ticket that has not changed: same record, same
+    // `updatedAt`, still unacknowledged on the server.
+    mockTicketQuery.override = { data: waitingTicket, dataUpdatedAt: 2_000 }
+    rerender(renderDashboardElement())
+
+    await waitFor(() => {
+      expect(saveUiStateMutate).toHaveBeenCalledTimes(2)
+    })
+    expect(saveUiStateMutate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scope: 'needs_input_attention' }),
+    )
   })
 
   it('follows the next live status immediately on SSE transitions even if ticket refetch is still stale', async () => {

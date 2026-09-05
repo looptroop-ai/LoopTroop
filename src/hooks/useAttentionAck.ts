@@ -21,10 +21,13 @@ interface UseAttentionAckOptions {
    *
    * Both effects used to depend on the whole `ticket` object, which had this
    * property by accident: a poll returning a new identity re-ran them. Depending
-   * on the primitives instead is what makes the guard below work — but it also
-   * means a PUT that never landed is never retried, because none of the values
-   * it compares has changed. The local acknowledgment still stops the flash on
-   * this tab, so the failure is invisible here and permanent everywhere else.
+   * on the primitives instead is precise, but it costs that retry unless
+   * something passed here moves on every read — and a PUT that never landed is
+   * invisible, because the local acknowledgment has already stopped the flash
+   * on this tab. It would simply be permanent everywhere else.
+   *
+   * So pass the query's `dataUpdatedAt`, not the ticket's own `updatedAt`: that
+   * one moves when the *record* changes, which an unchanged poll does not do.
    */
   retryKey: string | number | undefined
   scope: AttentionScope
@@ -67,9 +70,12 @@ export function useAttentionAck({
     }
 
     clear(ticketId)
-    // `!== null` rather than a truthiness check, and deliberately: `undefined`
-    // means the server has never been told, which still needs the write.
-    if (seenSignature !== null) {
+    // Only when the server is actually holding a signature. `null` is already
+    // "nothing acknowledged" and `undefined` is a ticket payload that did not
+    // carry the field at all — writing `null` for either records nothing, and
+    // since neither value can change in response to the write, `retryKey` would
+    // reissue that same request on every poll for as long as the pane is open.
+    if (typeof seenSignature === 'string') {
       saveUiState({ ticketId, scope, data: { seenSignature: null } })
     }
   }, [clear, mark, retryKey, saveUiState, scope, seenSignature, signature, ticketId])

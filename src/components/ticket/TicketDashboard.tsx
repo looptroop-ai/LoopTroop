@@ -198,6 +198,7 @@ export function TicketDashboard() {
   const ticketId = state.selectedTicketId
   const {
     data: ticket,
+    dataUpdatedAt: ticketDataUpdatedAt,
     isError: isTicketError,
     error: ticketError,
     refetch: refetchTicket,
@@ -469,8 +470,11 @@ export function TicketDashboard() {
     ticketId: ticket?.id,
     signature: errorSignature,
     seenSignature: ticket?.errorSeenSignature,
-    // Every ticket re-read is another chance for a save that failed to land.
-    retryKey: ticket?.updatedAt,
+    // The query's timestamp, not the ticket's own `updatedAt`: that one only
+    // moves when the record changes, so a poll that re-read an unchanged ticket
+    // retried nothing. `dataUpdatedAt` moves on every successful fetch, which
+    // is what "another chance" was supposed to mean.
+    retryKey: ticketDataUpdatedAt,
     scope: 'error_attention',
     mark: markErrorTicketSeen,
     clear: clearErrorTicketSeen,
@@ -481,8 +485,8 @@ export function TicketDashboard() {
     ticketId: ticket?.id,
     signature: needsInputSignature,
     seenSignature: ticket?.needsInputSeenSignature,
-    // Every ticket re-read is another chance for a save that failed to land.
-    retryKey: ticket?.updatedAt,
+    // See above: the query's fetch timestamp, not the record's `updatedAt`.
+    retryKey: ticketDataUpdatedAt,
     scope: 'needs_input_attention',
     mark: markNeedsInputSeen,
     clear: clearNeedsInputSeen,

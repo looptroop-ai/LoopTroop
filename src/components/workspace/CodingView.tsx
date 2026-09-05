@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { selectedAttemptNumber } from './phaseAttemptSelection'
 import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { BeadDiffViewer } from './BeadDiffViewer'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
@@ -1085,6 +1086,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
+  const attemptNumber = selectedAttemptNumber(selectedAttempt, phaseAttempts)
   const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null
@@ -1434,11 +1436,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       ) : null}
 
-      {shouldShowPhaseVersionSelector && phaseAttempts.length > 1 ? (
+      {shouldShowPhaseVersionSelector && attemptNumber !== undefined && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">
           <PhaseAttemptSelector
             attempts={phaseAttempts}
-            value={selectedAttempt?.attemptNumber ?? phaseAttempts[0]!.attemptNumber}
+            value={attemptNumber}
             onChange={setManualSelectedAttemptNumber}
           />
         </div>

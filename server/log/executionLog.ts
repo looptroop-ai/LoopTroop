@@ -98,11 +98,12 @@ function resolvePhaseAttemptSafely(
  * files are preserved as audit/debug evidence and are never automatically
  * truncated. To keep normal logs from growing unbounded:
  *
- * 1. STREAMING UPSERTS ARE NOT PERSISTED TO THE NORMAL LOG. Intermediate
- *    streaming snapshots (op='upsert' + streaming=true) are delivered to the UI
- *    via SSE and are also written to the AI detail log when audience='ai' so
- *    reopening a ticket can restore the AI tab. Only the final 'finalize' event
- *    is written to the normal log. Without this split, a 5-minute streaming
+ * 1. STREAMING UPSERTS ARE NOT PERSISTED AT ALL. Intermediate streaming
+ *    snapshots (op='upsert' + streaming=true, with an entryId) are delivered to
+ *    the UI over SSE and written to no file — not the normal log and not the AI
+ *    detail log, which `appendToExecutionLog` returns before reaching. Only the
+ *    final 'finalize' event is written, and that is what restores the AI tab
+ *    when a ticket is reopened. Without this split, a 5-minute streaming
  *    session produces ~90 progressive snapshots with quadratic content growth
  *    in the normal lifecycle log.
  *

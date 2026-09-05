@@ -5,6 +5,7 @@ import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { useTicketArtifactBundle, type TicketArtifactQueryScope } from '@/hooks/useTicketArtifacts'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { selectedAttemptNumber } from './phaseAttemptSelection'
 import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import {
@@ -148,6 +149,7 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
     refetch: refetchAttempts,
     isPhaseVersionUnknown,
   } = useSelectedPhaseAttempt(ticket.id, phase)
+  const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
   const artifactScopes = useMemo<TicketArtifactQueryScope[]>(() => {
     if (!selectedAttempt) return []
     if (selectedAttempt.state === 'archived') {
@@ -176,10 +178,10 @@ export function CouncilView({ phase, ticket }: CouncilViewProps) {
         {isAttemptsError ? (
           <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
         ) : null}
-        {attempts.length > 1 ? (
+        {attemptNumber !== undefined && attempts.length > 1 ? (
           <PhaseAttemptSelector
             attempts={attempts}
-            value={selectedAttempt?.attemptNumber ?? attempts[0]!.attemptNumber}
+            value={attemptNumber}
             onChange={setManualSelectedAttemptNumber}
           />
         ) : null}

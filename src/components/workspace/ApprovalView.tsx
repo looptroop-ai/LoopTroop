@@ -21,6 +21,7 @@ import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { selectedAttemptNumber } from './phaseAttemptSelection'
 import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdDocumentContent } from '@/lib/prdDocument'
@@ -796,15 +797,16 @@ export function ApprovalView({ ticket, phase, artifactType, readOnly }: Approval
     error: attemptsError,
     refetch: refetchAttempts,
   } = useSelectedPhaseAttempt(ticket.id, resolvedPhase)
+  const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
   const selector = isAttemptsError ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
     </div>
-  ) : attempts.length > 1 ? (
+  ) : attemptNumber !== undefined && attempts.length > 1 ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptSelector
         attempts={attempts}
-        value={selectedAttempt?.attemptNumber ?? attempts[0]!.attemptNumber}
+        value={attemptNumber}
         onChange={setManualSelectedAttemptNumber}
       />
     </div>

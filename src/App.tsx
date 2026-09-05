@@ -56,6 +56,21 @@ function modalForPathname(pathname: string): ModalRoute | null {
   return MODAL_ROUTE_ENTRIES.find(([, route]) => route === pathname)?.[0] ?? null
 }
 
+/**
+ * A pathname this app has no route for: not the board, not a modal route, and
+ * not shaped like a ticket route.
+ *
+ * These have to be corrected in place rather than pushed past. The board is
+ * what gets shown either way, so a history entry for the unowned path is one
+ * Back would return to only for the app to correct it a second time.
+ */
+function isUnownedPathname(pathname: string): boolean {
+  return pathname !== ROUTE_ROOT
+    && pathname !== ''
+    && modalForPathname(pathname) === null
+    && !pathname.startsWith(TICKET_ROUTE_PREFIX)
+}
+
 /** The external id a ticket route names, or null for `/ticket/new` and anything else. */
 function ticketExternalIdForPathname(pathname: string): string | null {
   if (!pathname.startsWith(TICKET_ROUTE_PREFIX)) return null
@@ -105,12 +120,32 @@ function App() {
   useRecoveryAutoReload('tickets-loading', isRecoverableTicketListLoading)
   const [hasHydratedUrl, setHasHydratedUrl] = useState(false)
   /**
-   * Bumped whenever the app learns the current pathname is not one it can
-   * honour, so the route effect overwrites that entry instead of pushing past
-   * it. Starts at 1 because the entry URL is itself something to reconcile
-   * rather than a place Back should return to.
+   * A one-time snapshot of the pathname the tab was opened with.
+   *
+   * Hydration used to read the live address bar, which is only the entry URL
+   * for as long as nothing has written to it — and the route effect is allowed
+   * to write before hydration whenever a modal is open. Opening Configuration
+   * while the ticket list was still in flight therefore replaced the deep link
+   * with `/config`, and hydration then resolved `/config`: the ticket the link
+   * named was never selected and was no longer anywhere to be found.
    */
-  const [routeRepairToken, setRouteRepairToken] = useState(1)
+  const entryPathnameRef = useRef(window.location.pathname)
+  /**
+   * Bumped whenever the app learns the pathname now in the bar is not one it
+   * can honour, so the route effect overwrites that entry instead of pushing
+   * past it.
+   *
+   * It starts level with `repairedRouteTokenRef`, so the *first* write is a
+   * push unless something has asked for a repair. It used to start one ahead,
+   * on the reasoning that the entry URL is always something to reconcile — but
+   * that is a claim about hydration, not about the first write, and the first
+   * write is often the user's: opening a modal before the list settles, or
+   * reopening the restored ticket from `/`. Both were replacing the entry the
+   * user would expect Back to return to. The genuine entry-URL repairs — a
+   * ticket that no longer exists, a path this app has no route for — bump the
+   * token from hydration instead, which is where they are actually detected.
+   */
+  const [routeRepairToken, setRouteRepairToken] = useState(0)
   const repairedRouteTokenRef = useRef(0)
   const previousModalRef = useRef<ModalRoute | null>(null)
   const [activeModal, setActiveModal] = useState<ModalRoute | null>(
@@ -143,10 +178,19 @@ function App() {
     }
   }, [ticketsQuery.isFetched, ticketsQuery.isSuccess])
 
+  /**
+   * The selected ticket disappeared from the live list — deleted here, or in
+   * another tab. The board is what gets shown, and the ticket route in the bar
+   * has to be corrected rather than pushed past: a history entry naming a
+   * ticket that no longer exists is one Back returns to only for the app to
+   * correct it a second time. Back onto a deleted ticket already bumped the
+   * token; this path is the same repair and was pushing.
+   */
   useEffect(() => {
     if (!state.selectedTicketId || !ticketsQuery.isSuccess || !Array.isArray(tickets)) return
     if (tickets.some(ticket => ticket.id === state.selectedTicketId)) return
     dispatch({ type: 'CLOSE_TICKET' })
+    setRouteRepairToken(token => token + 1)
   }, [dispatch, state.selectedTicketId, tickets, ticketsQuery.isSuccess])
 
   useEffect(() => {
@@ -181,7 +225,8 @@ function App() {
    */
   useEffect(() => {
     if (hasHydratedUrl || !ticketsQuery.isSuccess) return
-    const match = matchTicketRoute(window.location.pathname, tickets)
+    const entryPathname = entryPathnameRef.current
+    const match = matchTicketRoute(entryPathname, tickets)
     if (match.kind === 'ticket') {
       dispatch({ type: 'SELECT_TICKET', ticketId: match.ticketId, externalId: match.externalId })
     } else if (match.kind === 'unresolved') {
@@ -189,6 +234,10 @@ function App() {
       // different ticket than the one the link named, which reads as if the app
       // had honoured the link. The board is the honest answer.
       dispatch({ type: 'CLOSE_TICKET' })
+      setRouteRepairToken(token => token + 1)
+    } else if (isUnownedPathname(entryPathname)) {
+      // A typo, a stale bookmark, a path from a future version. The board is
+      // what gets shown, and the address bar has to stop claiming otherwise.
       setRouteRepairToken(token => token + 1)
     }
     setHasHydratedUrl(true)
@@ -209,13 +258,17 @@ function App() {
    * the writes that only ever correct the address bar, because a history entry
    * there is one the app would immediately leave again:
    *
-   *   - reconciling the entry URL, where the entry a push would add is the one
-   *     the browser is already sitting on;
-   *   - repairing a pathname naming a ticket this account does not have, which
-   *     Back would return to only to be corrected a second time;
+   *   - repairing a pathname naming a ticket this account does not have, or one
+   *     this app has no route for at all, which Back would return to only to be
+   *     corrected a second time;
    *   - closing a routed modal, which restores the route the modal opened over.
    *     Pushing duplicates that entry, so Back lands back on the modal route and
    *     reopens the dialog the user just dismissed.
+   *
+   * Everything else pushes, including the first write. A modal opened while the
+   * ticket list is still in flight is a user transition like any other, and
+   * reopening the restored ticket from `/` is one Back should undo onto the
+   * board.
    */
   const baseRoute = state.activeView === 'ticket' && state.selectedTicketId
     ? `${TICKET_ROUTE_PREFIX}${state.selectedTicketExternalId ?? state.selectedTicketId}`
@@ -258,6 +311,13 @@ function App() {
         setRouteRepairToken(token => token + 1)
       } else if (pathname === ROUTE_ROOT || pathname === '') {
         dispatch({ type: 'CLOSE_TICKET' })
+      } else if (isUnownedPathname(pathname)) {
+        // Back onto a path this app has no route for. A direct load of one is
+        // repaired at hydration; arriving at the same path through history was
+        // the hole — nothing matched, no input changed, and the bar sat on it
+        // with the board on screen.
+        dispatch({ type: 'CLOSE_TICKET' })
+        setRouteRepairToken(token => token + 1)
       }
     }
     window.addEventListener('popstate', handlePop)
@@ -283,11 +343,18 @@ function App() {
    * `window.history` and put it in a fight with the route effect: with a modal
    * open the effect wrote the modal route straight back, and dismissing the
    * dialog then landed on the board rather than the ticket underneath it.
+   *
+   * It also settles hydration, because an explicit "take me home" *is* the
+   * answer to the entry URL. Without that the logo did nothing at all while the
+   * ticket list was loading: the route effect still bailed out on
+   * `!hasHydratedUrl`, so the deep link stayed in the bar, and hydration then
+   * selected the ticket the user had just asked to leave.
    */
   const navigateHome = useCallback(() => {
     setActiveModal(null)
     setIsAboutOpen(false)
     dispatch({ type: 'CLOSE_TICKET' })
+    setHasHydratedUrl(true)
   }, [dispatch])
   const openAbout = useCallback(() => setIsAboutOpen(true), [])
   const closeAbout = useCallback(() => setIsAboutOpen(false), [])

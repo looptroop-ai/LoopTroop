@@ -23,10 +23,16 @@ const mockState = vi.hoisted(() => ({
 const MISSING_TICKET_EXTERNAL_ID = 'test-ticket-1'
 
 vi.mock('@/components/layout/AppShell', () => ({
-  AppShell: ({ children, onNavigateHome }: { children: ReactNode; onNavigateHome?: () => void }) => (
+  AppShell: ({ children, onNavigateHome, onOpenProfile }: {
+    children: ReactNode
+    onNavigateHome?: () => void
+    onOpenProfile?: () => void
+  }) => (
     <div data-testid="app-shell">
-      {/* Stands in for the logo, the shell's one navigation control. */}
+      {/* Stand-ins for the shell's navigation controls: the logo, and one of
+          the four buttons that open a routed modal. */}
       <button type="button" onClick={onNavigateHome}>Logo</button>
+      <button type="button" onClick={onOpenProfile}>Open Configuration</button>
       {children}
     </div>
   ),
@@ -189,12 +195,28 @@ function SelectionProbe() {
   )
 }
 
-function renderAppWithProbe() {
-  return render(
-    <QueryClientProvider client={createTestQueryClient()}>
+function renderAppWithProbe(queryClient: QueryClient = createTestQueryClient()) {
+  // A fresh element each time: React bails out of a re-render given the very
+  // same element object, so a reused one would silently skip the update the
+  // test is trying to make.
+  const tree = () => (
+    <QueryClientProvider client={queryClient}>
       <UIProvider>
         <App />
         <SelectionProbe />
+      </UIProvider>
+    </QueryClientProvider>
+  )
+  const result = render(tree())
+  return { ...result, rerenderApp: () => result.rerender(tree()) }
+}
+
+/** Re-renders `App` after the mocked ticket query has been moved on. */
+function rerenderAppElement(rerender: (ui: ReactNode) => void, queryClient: QueryClient) {
+  rerender(
+    <QueryClientProvider client={queryClient}>
+      <UIProvider>
+        <App />
       </UIProvider>
     </QueryClientProvider>,
   )
@@ -307,6 +329,8 @@ describe('App route ownership', () => {
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
 
     renderAppWithProbe()
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
 
     fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
     await waitFor(() => {
@@ -317,6 +341,210 @@ describe('App route ownership', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/')
     })
+    // Both are the user's own transitions, so both are undoable. Asserting only
+    // the pathname would pass just as happily on a pair of replaces.
+    expect(pushState.mock.calls.map(call => call[2])).toEqual(['/ticket/LT-1', '/'])
+    expect(replaceState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The first write the app makes is not automatically a reconciliation.
+   *
+   * The repair token used to start one ahead of the ref that consumes it, on
+   * the reasoning that the entry URL is always something to correct. That made
+   * *whatever wrote first* a replace — and with a modal open the route effect is
+   * deliberately allowed to write before hydration, so the first user gesture on
+   * a still-loading app destroyed the entry it should have been pushed onto.
+   */
+  it('pushes a modal opened before the ticket list settles, and still honours the deep link', async () => {
+    persistTicketSelection('ticket-2', 'LT-2')
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/config')
+    })
+    expect(pushState).toHaveBeenCalledWith(null, '', '/config')
+    expect(replaceState).not.toHaveBeenCalled()
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerenderAppElement(rerender, queryClient)
+
+    // Hydration reads the pathname the tab was opened with, not the live bar —
+    // which by now says `/config`. Closing the modal returns to the deep link
+    // rather than to the restored LT-2.
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+  })
+
+  /**
+   * Reopening the ticket the last session left selected is a transition, not a
+   * correction: the board is behind it and Back should reach it. This was a
+   * replace for the same start-one-ahead reason, so Back left the app.
+   */
+  it('pushes the restored ticket route so Back reaches the board', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+    expect(pushState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
+    expect(replaceState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A ticket deleted here, or in another tab, while it is on screen. The board
+   * is what gets shown and the address bar has to follow — as a correction. Back
+   * onto the dead ticket route already replaced; this path pushed, so Back
+   * handed the user the dead URL and then corrected it a second time.
+   */
+  it('replaces the ticket route when the selected ticket disappears from the list', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+
+    const { rerenderApp } = renderAppWithProbe()
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    mockState.tickets = []
+    rerenderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A typo, a stale bookmark, a path from a future version. The board is what
+   * gets shown either way, so the bar must stop claiming otherwise — by
+   * overwriting the entry, not stacking one on it.
+   */
+  it('replaces an entry URL the app has no route for', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/nowhere')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The same path reached through history rather than typed. Nothing matched,
+   * no route input moved, and the effect had no reason to run — so the bar sat
+   * on `/nowhere` with the board behind it. Unresolvable *ticket* routes were
+   * repaired here; anything else was not.
+   */
+  it('repairs the URL when Back lands on a path the app has no route for', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+
+    renderApp()
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+
+    window.history.pushState(null, '', '/nowhere')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The logo is the way out of anywhere, including out of a deep link that has
+   * not resolved yet. It did nothing at all during the load window: the route
+   * effect still bailed out on the un-hydrated URL, so the bar kept the ticket
+   * route, and hydration then selected the ticket the user had just left.
+   */
+  it('goes home when the logo is clicked before the ticket list settles', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logo' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/')
+  })
+
+  /**
+   * Hydration spends itself once, so it waits for a *successful* list rather
+   * than a settled one. A failed fetch resolves nothing: latching on it would
+   * leave the deep link unreconciled for the rest of the session, and the retry
+   * seconds later would find nothing left to do.
+   */
+  it('honours the deep link once the ticket list recovers from an error', async () => {
+    persistTicketSelection('ticket-2', 'LT-2')
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsError = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+
+    mockState.ticketsError = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-1')
   })
 
   /**
@@ -413,6 +641,8 @@ describe('App route ownership', () => {
     })
 
     window.history.pushState(null, '', '/ticket/LT-404')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
     await act(async () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
@@ -421,6 +651,10 @@ describe('App route ownership', () => {
       expect(window.location.pathname).toBe('/')
     })
     expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    // The pathname alone would read the same after a push, which would leave
+    // the dead link one Back away and needing a second repair.
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+    expect(pushState).not.toHaveBeenCalled()
   })
 
   /**

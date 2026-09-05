@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { runCommandSync } from '../runCommand'
 import { literalPathspec, LOOPTROOP_EXCLUDE_PATHSPECS, REPO_SCOPE_PATHSPECS } from '../pathspecs'
 
@@ -19,7 +19,7 @@ function git(cwd: string, ...args: string[]): string {
  * matches the `src/i.tsx` sitting beside it.
  */
 function makeRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), 'looptroop-pathspecs-'))
+  const root = makeTempDir('looptroop-pathspecs-')
   roots.push(root)
   git(root, 'init', '--initial-branch', 'main')
   git(root, 'config', 'user.name', 'LoopTroop')
@@ -45,7 +45,9 @@ function stagedPaths(root: string): string[] {
 }
 
 afterEach(() => {
-  while (roots.length) rmSync(roots.pop() as string, { recursive: true, force: true })
+  // `removeTempDir` retries: `git` was spawned into these, and Windows will
+  // not delete a tree whose handles are still open.
+  while (roots.length) removeTempDir(roots.pop() as string)
 })
 
 describe('literalPathspec', () => {

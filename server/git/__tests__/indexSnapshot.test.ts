@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { runCommandSync } from '../runCommand'
 import { GitIndexSnapshotUnavailableError, snapshotGitIndex, withGitIndexRollback } from '../indexSnapshot'
 
@@ -14,7 +14,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function makeRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), 'looptroop-index-snapshot-'))
+  const root = makeTempDir('looptroop-index-snapshot-')
   roots.push(root)
   git(root, 'init', '--initial-branch', 'main')
   git(root, 'config', 'user.name', 'LoopTroop')
@@ -31,7 +31,11 @@ function stagedPaths(root: string): string[] {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  // `removeTempDir`, not a bare `rmSync`: these directories had `git`
+  // spawned into them, and Windows refuses to delete a tree whose handles
+  // have not been released yet — it retries rather than failing an
+  // otherwise-passing test from its own teardown.
+  for (const root of roots.splice(0)) removeTempDir(root)
 })
 
 describe('withGitIndexRollback', () => {
@@ -79,7 +83,7 @@ describe('withGitIndexRollback', () => {
   })
 
   it('restores a repository that had no index at all', () => {
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-index-snapshot-empty-'))
+    const root = makeTempDir('looptroop-index-snapshot-empty-')
     roots.push(root)
     git(root, 'init', '--initial-branch', 'main')
     writeFileSync(join(root, 'added.txt'), 'new\n')
@@ -95,7 +99,7 @@ describe('withGitIndexRollback', () => {
   it('refuses to run when the index cannot be snapshotted', () => {
     // Fail-closed: without a snapshot there is nothing to roll back to, and
     // running anyway is exactly the fault this exists to prevent.
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-index-snapshot-nonrepo-'))
+    const root = makeTempDir('looptroop-index-snapshot-nonrepo-')
     roots.push(root)
     let ran = false
 
@@ -109,7 +113,7 @@ describe('withGitIndexRollback', () => {
 
 describe('snapshotGitIndex', () => {
   it('reports failure rather than throwing when the path is not a repository', () => {
-    const root = mkdtempSync(join(tmpdir(), 'looptroop-index-snapshot-plain-'))
+    const root = makeTempDir('looptroop-index-snapshot-plain-')
     roots.push(root)
     expect(snapshotGitIndex(root)).toBeNull()
   })

@@ -372,6 +372,47 @@ describe('commitBeadChanges', () => {
     expect(tracked).not.toContain('hello.ts')
   })
 
+  it('commits a glob-shaped rename without disturbing an excluded neighbour', async () => {
+    const dir = makeFreshRepo()
+    // Characterization, not a guard: `[id].tsx` is a dynamic route whose name
+    // is a character class matching the `i.tsx` beside it, and this exercises
+    // the hardest shape — a staged rename, whose *source* the commit pathspec
+    // carries deliberately (that is what records the deletion) and which exists
+    // in neither the worktree nor the index.
+    //
+    // It passes with or without `literalPathspec` at these call sites: git
+    // resolves index entries exactly here, so the glob never wins. The hazard
+    // is real but reachable only when the named path exists nowhere at all —
+    // `server/git/__tests__/pathspecs.test.ts` pins that against real git. This
+    // test exists to keep glob-shaped filenames working end to end.
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', '[id].tsx'), 'export const route = true\n')
+    writeFileSync(join(dir, 'src', 'i.tsx'), 'export const sibling = true\n')
+    execFileSync('git', ['-C', dir, 'add', '--', 'src'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', dir, 'commit', '-m', 'add the route and its neighbour'], { stdio: 'pipe' })
+
+    execFileSync('git', ['-C', dir, 'mv', 'src/[id].tsx', 'src/[slug].tsx'], { stdio: 'pipe' })
+    writeFileSync(join(dir, 'src', 'i.tsx'), 'export const sibling = "edited elsewhere"\n')
+
+    const result = await commitBeadChanges(dir, 'bead-glob-rename', 'Rename the route', {
+      excludePaths: ['src/i.tsx'],
+    })
+    expect(result.committed).toBe(true)
+
+    // The rename landed: the source name is gone from the tree, the new one is
+    // there. (`--name-only` alone would hide this behind rename detection.)
+    const tracked = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', '-r', 'HEAD'], { encoding: 'utf8' }).trim().split('\n')
+    expect(tracked).toContain('src/[slug].tsx')
+    expect(tracked).not.toContain('src/[id].tsx')
+
+    // The discriminator: the excluded neighbour's edit must not be in the
+    // commit. With a bare pathspec the glob matches it and it is committed
+    // anyway, silently overriding `excludePaths`.
+    const committedSibling = execFileSync('git', ['-C', dir, 'show', 'HEAD:src/i.tsx'], { encoding: 'utf8' })
+    expect(committedSibling).toBe('export const sibling = true\n')
+    expect(status(dir)).toContain('src/i.tsx')
+  })
+
   it('returns { committed: false, pushed: false } when there are no changes', async () => {
     const dir = makeFreshRepo()
     expect(await commitBeadChanges(dir, 'bead-1', 'No changes')).toEqual({

@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { runGitSync } from '../../git/runCommand'
+import { literalPathspec } from '../../git/pathspecs'
 import type { ExecutionSetupWorkspaceInputPayload } from '../../structuredOutput/types'
 
 const INTERNAL_ROOTS = ['.git', '.ticket', '.looptroop'] as const
@@ -57,19 +58,23 @@ function runGit(projectRoot: string, args: string[]): { status: number | null; s
 }
 
 function sourceStatusMatches(projectRoot: string, path: string, status: ExecutionSetupWorkspaceInputPayload['sourceStatus']): boolean {
+  // `check-ignore` takes a pathname and refuses pathspec magic outright
+  // ("pathspec magic not supported by this command"), so this one stays bare
+  // while its neighbours below are wrapped. The paths here are repo-scoped
+  // and normalized, so a glob-shaped name is the only exposure.
   const ignored = runGit(projectRoot, ['check-ignore', '-q', '--', path]).status === 0
   if (status === 'ignored') {
     if (ignored) return true
-    const evidence = runGit(projectRoot, ['status', '--porcelain=v1', '--ignored=matching', '--untracked-files=all', '--', path]).stdout
+    const evidence = runGit(projectRoot, ['status', '--porcelain=v1', '--ignored=matching', '--untracked-files=all', '--', literalPathspec(path)]).stdout
     return evidence.split('\n').some((line) => line.startsWith('!! '))
   }
   if (ignored) return false
-  const evidence = runGit(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', path]).stdout
+  const evidence = runGit(projectRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', literalPathspec(path)]).stdout
   return evidence.split('\n').some((line) => line.startsWith('?? '))
 }
 
 function isTracked(projectRoot: string, path: string): boolean {
-  return runGit(projectRoot, ['ls-files', '--error-unmatch', '--', path]).status === 0
+  return runGit(projectRoot, ['ls-files', '--error-unmatch', '--', literalPathspec(path)]).status === 0
 }
 
 function inspectEligiblePath(input: {

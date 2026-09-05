@@ -4,7 +4,7 @@ import { getCurrentBranch } from '../../git/repository'
 import { pushBranchRef } from '../../git/push'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { withGitIndexRollback } from '../../git/indexSnapshot'
-import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitSync, runGitSyncOrThrow } from '../../git/runCommand'
 import {
   buildGeneratedNoiseWarning,
@@ -59,7 +59,7 @@ function probeStagedChanges(
   paths: string[],
 ): { hasStagedChanges: boolean; error?: string } {
   const args = ['diff', '--cached', '--quiet']
-  if (paths.length) args.push('--', ...paths)
+  if (paths.length) args.push('--', ...paths.map(literalPathspec))
   const result = runGitSync(worktreePath, args)
 
   if (result.ok) return { hasStagedChanges: false }
@@ -166,7 +166,7 @@ export async function commitBeadChanges(
   try {
     staged = withGitIndexRollback<StageOutcome>(worktreePath, () => {
       if (filesToStage.length > 0) {
-        const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage])
+        const addResult = runGitOpSafe(worktreePath, ['add', '-v', '--', ...filesToStage.map(literalPathspec)])
         if (!addResult.ok) {
           return { keepIndex: false, value: { error: `git add failed: ${addResult.error}` } }
         }
@@ -187,7 +187,7 @@ export async function commitBeadChanges(
         '-m',
         commitMsg,
         '--',
-        ...committableFiles,
+        ...committableFiles.map(literalPathspec),
       ])
       return commitResult.ok
         ? { keepIndex: true, value: { hasStagedChanges: true } }

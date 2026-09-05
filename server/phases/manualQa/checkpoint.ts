@@ -1,5 +1,5 @@
 import { withGitIndexRollback } from '../../git/indexSnapshot'
-import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
 import { runGitSync } from '../../git/runCommand'
 import { createHash } from 'node:crypto'
@@ -65,10 +65,6 @@ const RECEIPT_FILE_MODE = 0o600
 // which it collapses rather than refuses — and is otherwise identical.
 const normalizeProjectPath = normalizeRepoScopedPath
 const uniqueProjectPaths = uniqueRepoScopedPaths
-
-function literalPathspec(filePath: string): string {
-  return `:(literal)${filePath}`
-}
 
 /** Runs git, or throws with the command that failed. Output is untouched. */
 function runGitRaw(worktreePath: string, args: string[]): string {

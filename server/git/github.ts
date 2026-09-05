@@ -1,7 +1,7 @@
 import { existsSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { getCurrentBranch } from './repository'
-import { EXCLUDE_LOOPTROOP_DIR, REPO_SCOPE_PATHSPECS } from './pathspecs'
+import { EXCLUDE_LOOPTROOP_DIR, literalPathspec, REPO_SCOPE_PATHSPECS } from './pathspecs'
 import {
   runCommand,
   runCommandSync,
@@ -894,7 +894,7 @@ function listPathsInTree(
     const batch = repoPaths.slice(index, index + UNTRACKED_PROBE_BATCH_SIZE)
     const tree = runGitSync(
       projectPath,
-      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map((path) => `:(literal)${path}`)],
+      ['ls-tree', '-r', '-z', '--name-only', commitish, '--', ...batch.map(literalPathspec)],
       { trimOutput: false },
     )
     if (!tree.ok) {

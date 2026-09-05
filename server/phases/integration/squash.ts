@@ -1,5 +1,5 @@
 import { ensureNoTrackedWorktreeChanges, ensureNoUntrackedPathsClobberedBy, ensureNoUntrackedPathsOverwrittenBy } from '../../git/github'
-import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
@@ -36,10 +36,6 @@ function parsePathList(output: string): string[] {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-}
-
-function toLiteralPathspec(filePath: string): string {
-  return `:(literal)${filePath}`
 }
 
 function parseNameStatus(output: string): Array<{ status: string; path: string }> {
@@ -105,7 +101,7 @@ export function prepareSquashCandidate(
       // Candidate paths are explicit, validated delivery decisions. `-f`
       // lets an explicitly declared permanent artifact override a repository
       // ignore rule without sweeping any other ignored/local files.
-      runGit(['add', '-v', '-f', '-A', '--', ...batch.map(toLiteralPathspec)])
+      runGit(['add', '-v', '-f', '-A', '--', ...batch.map(literalPathspec)])
     }
 
     const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])
@@ -205,7 +201,7 @@ export function rewriteCandidateCommitWithFiles(
       '--no-renames',
       `${mergeBase}..${candidateCommitSha}`,
       '--',
-      ...includedChangedFiles.map(toLiteralPathspec),
+      ...includedChangedFiles.map(literalPathspec),
     ]))
     const deletedFiles = nameStatus
       .filter((entry) => entry.status.startsWith('D'))
@@ -238,11 +234,11 @@ export function rewriteCandidateCommitWithFiles(
 
     for (let index = 0; index < presentFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = presentFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['checkout', candidateCommitSha, '--', ...batch.map(toLiteralPathspec)])
+      runGit(['checkout', candidateCommitSha, '--', ...batch.map(literalPathspec)])
     }
     for (let index = 0; index < deletedFiles.length; index += GIT_ADD_BATCH_SIZE) {
       const batch = deletedFiles.slice(index, index + GIT_ADD_BATCH_SIZE)
-      runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(toLiteralPathspec)])
+      runGit(['rm', '-f', '--ignore-unmatch', '--', ...batch.map(literalPathspec)])
     }
 
     const stagedChanges = runGit(['diff', '--cached', '--name-only', '--', ...REPO_SCOPE_PATHSPECS])

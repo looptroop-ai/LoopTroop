@@ -30,3 +30,25 @@ export const LOOPTROOP_EXCLUDE_PATHSPECS = [
  * meant to see the whole project and nothing of LoopTroop's.
  */
 export const REPO_SCOPE_PATHSPECS = ['.', ...LOOPTROOP_EXCLUDE_PATHSPECS] as const
+
+/**
+ * Names one exact file, with no globbing.
+ *
+ * A path is not a pathspec. Everything after `--` is matched as a *pattern*, so
+ * `src/[id].tsx` — an ordinary dynamic-route filename — is read as a character
+ * class and matches `src/i.tsx` instead. Verified against git: with the named
+ * file absent from both the index and the worktree, `git add -- 'src/[id].tsx'`
+ * exits zero having staged a sibling it was never asked to touch, which is the
+ * worst shape a bug can take here: silent, and in the commit.
+ *
+ * `:(literal)` turns the pattern back into a name. Use this for every concrete
+ * path handed to git; the exclusions above are the only patterns we mean as
+ * patterns.
+ *
+ * This rule had been written out by hand in four files and applied at nine call
+ * sites out of eighteen — the same drift `LOOPTROOP_EXCLUDE_PATHSPECS` was
+ * hoisted here to stop.
+ */
+export function literalPathspec(filePath: string): string {
+  return `:(literal)${filePath}`
+}

@@ -1,5 +1,5 @@
 import { getLatestPhaseArtifact } from '../../storage/tickets'
-import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
+import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { normalizeRepoScopedPath, uniqueRepoScopedPaths } from '../../git/repoScopedPath'
 import { runGitSync } from '../../git/runCommand'
 import { parseGitStatusPorcelainZ } from '../../git/statusPorcelain'
@@ -79,11 +79,10 @@ export interface FinalTestCandidateResolution {
 const normalizeAuditPath = normalizeRepoScopedPath
 const uniqueNormalizedPaths = uniqueRepoScopedPaths
 
-function toLiteralPathspec(filePath: string): string {
-  return `:(literal)${filePath}`
-}
-
 function getContentSignature(worktreePath: string, filePath: string): string | null {
+  // Not a pathspec: `hash-object` opens the file by name, and a `:(literal)`
+  // prefix makes it look for a file called that. Verified — it fails with
+  // "could not open ':(literal)…'". `check-ignore` rejects the magic outright.
   const result = runGitSync(worktreePath, ['hash-object', '--no-filters', '--', filePath])
   return result.ok ? result.stdout || null : null
 }
@@ -138,7 +137,7 @@ export function captureFinalTestDirtyFiles(
     if (seenPaths.has(path)) continue
     const contentSignature = getContentSignature(worktreePath, path)
     if (!contentSignature) continue
-    const tracked = runGitSync(worktreePath, ['ls-files', '--error-unmatch', '--', path]).ok
+    const tracked = runGitSync(worktreePath, ['ls-files', '--error-unmatch', '--', literalPathspec(path)]).ok
     dirtyFiles.push({
       path,
       indexStatus: tracked ? ' ' : '?',
@@ -408,7 +407,7 @@ export function restoreTrackedFinalTestLocalFiles(
     '--staged',
     '--worktree',
     '--',
-    ...trackedLocalOnlyFiles.map(toLiteralPathspec),
+    ...trackedLocalOnlyFiles.map(literalPathspec),
   ])
   if (!result.ok) {
     throw new Error(`Failed to restore tracked local-only final-test file(s): ${result.errorDetail}`)

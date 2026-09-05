@@ -293,6 +293,42 @@ describe('App route ownership', () => {
   })
 
   /**
+   * One mapping between a modal and its route, so back/forward and a fresh load
+   * of the same URL agree. They did not: the handler tested `/ticket/` before
+   * `/ticket/new`, so Forward to the New Ticket route closed every modal while
+   * opening that URL directly showed the dialog.
+   */
+  it('opens the New Ticket dialog on a Forward to its route', async () => {
+    renderApp()
+
+    window.history.pushState(null, '', '/ticket/new')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    expect(await screen.findByText('Ticket Form')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/ticket/new')
+  })
+
+  it('swaps Configuration for Prompts on a Back to the prompts route', async () => {
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/prompts')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/prompts')
+  })
+
+  /**
    * Hydration settles on the ticket list settling, not on it being non-empty.
    * Keyed to the empty list because that is the case a `!tickets?.length` guard
    * never releases: the route effect would stay frozen for the whole session.

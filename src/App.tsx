@@ -1,4 +1,4 @@
-import { Suspense, useState, useEffect, useRef } from 'react'
+import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { KanbanBoard } from '@/components/kanban/KanbanBoard'
 import { TicketDashboard } from '@/components/ticket/TicketDashboard'
@@ -29,21 +29,43 @@ import { useWorkflowMeta } from '@/hooks/useWorkflowMeta'
 import { preloadWorkspaceForView } from '@/components/ticket/workspacePreload'
 
 const ROUTE_ROOT = '/'
-const ROUTE_CONFIG = '/config'
-const ROUTE_PROJECT_NEW = '/project/new'
-const ROUTE_TICKET_NEW = '/ticket/new'
-const ROUTE_PROMPTS = '/prompts'
+const TICKET_ROUTE_PREFIX = '/ticket/'
 
-function getInitialModal(pathname: string): 'profile' | 'project' | 'ticket' | 'prompts' | null {
-  if (pathname === ROUTE_CONFIG) return 'profile'
-  if (pathname === ROUTE_PROJECT_NEW) return 'project'
-  if (pathname === ROUTE_TICKET_NEW) return 'ticket'
-  if (pathname === ROUTE_PROMPTS) return 'prompts'
-  return null
+/**
+ * The one mapping between a modal and its route.
+ *
+ * Adding a modal used to mean editing four places that each encoded this
+ * separately — the entry-URL reader, the back/forward handler, and an open and
+ * a close helper per modal — and they had already drifted: back/forward to
+ * `/ticket/new` matched the ticket-route branch first and closed every modal,
+ * so the New Ticket dialog opened on a fresh load of that URL but not on a
+ * Forward to it.
+ */
+const MODAL_ROUTES = {
+  profile: '/config',
+  prompts: '/prompts',
+  project: '/project/new',
+  ticket: '/ticket/new',
+} as const
+
+type ModalRoute = keyof typeof MODAL_ROUTES
+
+const MODAL_ROUTE_ENTRIES = Object.entries(MODAL_ROUTES) as [ModalRoute, string][]
+
+function modalForPathname(pathname: string): ModalRoute | null {
+  return MODAL_ROUTE_ENTRIES.find(([, route]) => route === pathname)?.[0] ?? null
 }
 
+/** The external id a ticket route names, or null for `/ticket/new` and anything else. */
+function ticketExternalIdForPathname(pathname: string): string | null {
+  if (!pathname.startsWith(TICKET_ROUTE_PREFIX)) return null
+  const externalId = pathname.slice(TICKET_ROUTE_PREFIX.length).split('/')[0] ?? ''
+  return externalId && externalId !== 'new' ? externalId : null
+}
+
+const MODAL_SUSPENSE_FALLBACK = <div className="p-4 text-center text-muted-foreground">Loading…</div>
+
 function App() {
-  const initialModal = getInitialModal(window.location.pathname)
   useProfile() // Preload profile for faster Configuration open
   const { data: startupStatus } = useStartupStatus()
   const { state, dispatch } = useUI()
@@ -58,11 +80,10 @@ function App() {
     && hasCompletedInitialTicketListLoadRef.current
   useRecoveryAutoReload('tickets-loading', isRecoverableTicketListLoading)
   const [hasHydratedUrl, setHasHydratedUrl] = useState(false)
-  const [isProfileOpen, setIsProfileOpen] = useState(() => initialModal === 'profile')
+  const [activeModal, setActiveModal] = useState<ModalRoute | null>(
+    () => modalForPathname(window.location.pathname),
+  )
   const [isAboutOpen, setIsAboutOpen] = useState(false)
-  const [isProjectOpen, setIsProjectOpen] = useState(() => initialModal === 'project')
-  const [isTicketOpen, setIsTicketOpen] = useState(() => initialModal === 'ticket')
-  const [isPromptsOpen, setIsPromptsOpen] = useState(() => initialModal === 'prompts')
   const [isWelcomeOpen, setIsWelcomeOpen] = useState(() => {
     try {
       return !localStorage.getItem(WELCOME_DISCLAIMER_STORAGE_KEY)
@@ -70,17 +91,18 @@ function App() {
       return true
     }
   })
-  const prevPathRef = useRef(ROUTE_ROOT)
+  /** A one-time snapshot of the entry URL, not live state. */
+  const openedWithModalRef = useRef(activeModal)
   const isRestorePopupOpen = !isWelcomeOpen
     && startupStatus?.storage.kind === 'restored'
     && startupStatus.ui.restoreNotice.shouldShow === true
-  const isModalOpen = isProfileOpen || isAboutOpen || isProjectOpen || isTicketOpen || isPromptsOpen || isWelcomeOpen || isRestorePopupOpen
+  const isModalOpen = activeModal !== null || isAboutOpen || isWelcomeOpen || isRestorePopupOpen
 
   useEffect(() => {
-    if (initialModal === 'profile') {
+    if (openedWithModalRef.current === 'profile') {
       clearOpenCodeModelsQuery(queryClient)
     }
-  }, [initialModal, queryClient])
+  }, [queryClient])
 
   useEffect(() => {
     if (ticketsQuery.isFetched || ticketsQuery.isSuccess) {
@@ -125,136 +147,71 @@ function App() {
   useEffect(() => {
     if (hasHydratedUrl) return
     if (!ticketsQuery.isSuccess && !ticketsQuery.isError) return
-    const path = window.location.pathname
-    if (path.startsWith('/ticket/')) {
-      const externalId = path.split('/')[2]
-      if (externalId && externalId !== 'new') {
-        const ticket = tickets?.find(t => t.externalId === externalId)
-        if (ticket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
-      }
-    }
+    const externalId = ticketExternalIdForPathname(window.location.pathname)
+    const ticket = externalId ? tickets?.find(t => t.externalId === externalId) : undefined
+    if (ticket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
     setHasHydratedUrl(true)
   }, [dispatch, hasHydratedUrl, tickets, ticketsQuery.isError, ticketsQuery.isSuccess])
 
   /**
-   * The ticket route, owned here. `UIContext` used to push a pathname derived
-   * from its own state, which meant two writers: refreshing `/config` with a
+   * The URL, owned here and derived in one place. `UIContext` used to push a
+   * pathname of its own, which meant two writers: refreshing `/config` with a
    * ticket selected reopened Configuration and then had the context rewrite the
    * pathname to `/ticket/…` underneath it.
    *
-   * Suppressed while a modal route is showing — that modal owns the pathname
-   * until it closes and restores the one it replaced.
+   * A modal route covers the ticket route while it is open, and closing one
+   * therefore returns to the ticket the user was on — the behaviour a remembered
+   * previous pathname used to produce, without the remembering.
    */
-  const isModalRouteOpen = isProfileOpen || isProjectOpen || isTicketOpen || isPromptsOpen
+  const baseRoute = state.activeView === 'ticket' && state.selectedTicketId
+    ? `${TICKET_ROUTE_PREFIX}${state.selectedTicketExternalId ?? state.selectedTicketId}`
+    : ROUTE_ROOT
   useEffect(() => {
-    if (!hasHydratedUrl || isModalRouteOpen) return
-    const target = state.activeView === 'ticket' && state.selectedTicketId
-      ? `/ticket/${state.selectedTicketExternalId ?? state.selectedTicketId}`
-      : ROUTE_ROOT
+    // With no modal and no resolved deep link, the pathname is still the user's
+    // request rather than anything derived from state. Leave it alone.
+    if (!activeModal && !hasHydratedUrl) return
+    const target = activeModal ? MODAL_ROUTES[activeModal] : baseRoute
     if (window.location.pathname !== target) {
       window.history.pushState(null, '', target)
     }
-  }, [
-    hasHydratedUrl,
-    isModalRouteOpen,
-    state.activeView,
-    state.selectedTicketId,
-    state.selectedTicketExternalId,
-  ])
+  }, [activeModal, baseRoute, hasHydratedUrl])
 
   // Handle back/forward navigation
   useEffect(() => {
     const handlePop = () => {
-      const p = window.location.pathname
-      prevPathRef.current = p
+      const pathname = window.location.pathname
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
       // it and leave About floating over the board with nothing behind it.
       setIsAboutOpen(false)
-      setIsPromptsOpen(p === ROUTE_PROMPTS)
-      if (p === ROUTE_ROOT || p === '') {
+      setActiveModal(modalForPathname(pathname))
+
+      const externalId = ticketExternalIdForPathname(pathname)
+      if (externalId) {
+        const ticket = ticketsRef.current?.find(t => t.externalId === externalId)
+        if (ticket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
+      } else if (pathname === ROUTE_ROOT || pathname === '') {
         dispatch({ type: 'CLOSE_TICKET' })
-        setIsProfileOpen(false)
-        setIsProjectOpen(false)
-        setIsTicketOpen(false)
-      } else if (p === ROUTE_PROMPTS) {
-        setIsProfileOpen(false)
-        setIsProjectOpen(false)
-        setIsTicketOpen(false)
-      } else if (p.startsWith('/ticket/')) {
-        const externalId = p.split('/')[2] ?? ''
-        if (externalId && externalId !== 'new') {
-          const ticket = ticketsRef.current?.find(t => t.externalId === externalId)
-          if (ticket) dispatch({ type: 'SELECT_TICKET', ticketId: ticket.id, externalId: ticket.externalId })
-        }
-        setIsProfileOpen(false)
-        setIsProjectOpen(false)
-        setIsTicketOpen(false)
-      } else if (p === ROUTE_CONFIG) {
-        setIsProfileOpen(true)
-        setIsProjectOpen(false)
-        setIsTicketOpen(false)
-      } else if (p === ROUTE_PROJECT_NEW) {
-        setIsProfileOpen(false)
-        setIsProjectOpen(true)
-        setIsTicketOpen(false)
-      } else if (p === ROUTE_TICKET_NEW) {
-        setIsProfileOpen(false)
-        setIsProjectOpen(false)
-        setIsTicketOpen(true)
       }
     }
     window.addEventListener('popstate', handlePop)
     return () => window.removeEventListener('popstate', handlePop)
   }, [dispatch])
 
-  // Modal open/close helpers that sync URL
-  const openProfile = () => {
-    clearOpenCodeModelsQuery(queryClient)
-    prevPathRef.current = window.location.pathname
-    window.history.pushState(null, '', ROUTE_CONFIG)
-    setIsProfileOpen(true)
-  }
-  const closeProfile = () => {
-    window.history.pushState(null, '', prevPathRef.current)
-    setIsProfileOpen(false)
+  // One open and one close transition, shared by every routed modal. The URL
+  // follows from the state through the route effect above.
+  const openModal = useCallback((modal: ModalRoute) => {
+    if (modal === 'profile') clearOpenCodeModelsQuery(queryClient)
+    setActiveModal(modal)
+  }, [queryClient])
+  const closeModal = useCallback(() => {
+    setActiveModal(null)
     // About is opened from inside Configuration; it has nowhere to belong once
     // Configuration is gone.
     setIsAboutOpen(false)
-  }
-  const openPrompts = () => {
-    prevPathRef.current = window.location.pathname
-    window.history.pushState(null, '', ROUTE_PROMPTS)
-    setIsPromptsOpen(true)
-  }
-  const closePrompts = () => {
-    window.history.pushState(null, '', prevPathRef.current)
-    setIsPromptsOpen(false)
-  }
-  const openAbout = () => {
-    setIsAboutOpen(true)
-  }
-  const closeAbout = () => {
-    setIsAboutOpen(false)
-  }
-  const openProject = () => {
-    prevPathRef.current = window.location.pathname
-    window.history.pushState(null, '', ROUTE_PROJECT_NEW)
-    setIsProjectOpen(true)
-  }
-  const closeProject = () => {
-    window.history.pushState(null, '', prevPathRef.current)
-    setIsProjectOpen(false)
-  }
-  const openTicket = () => {
-    prevPathRef.current = window.location.pathname
-    window.history.pushState(null, '', ROUTE_TICKET_NEW)
-    setIsTicketOpen(true)
-  }
-  const closeTicket = () => {
-    window.history.pushState(null, '', prevPathRef.current)
-    setIsTicketOpen(false)
-  }
+  }, [])
+  const openAbout = useCallback(() => setIsAboutOpen(true), [])
+  const closeAbout = useCallback(() => setIsAboutOpen(false), [])
 
   return (
     <ToastProvider>
@@ -271,10 +228,10 @@ function App() {
           />
         )}
         <AppShell
-          onOpenProfile={openProfile}
-          onOpenPrompts={openPrompts}
-          onOpenProject={openProject}
-          onOpenTicket={openTicket}
+          onOpenProfile={() => openModal('profile')}
+          onOpenPrompts={() => openModal('prompts')}
+          onOpenProject={() => openModal('project')}
+          onOpenTicket={() => openModal('ticket')}
           onOpenAbout={openAbout}
           isModalOpen={isModalOpen}
         >
@@ -289,14 +246,14 @@ function App() {
             : <KanbanBoard />}
         </AppShell>
 
-        <CenteredModal open={isProfileOpen} onClose={closeProfile} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>
-          <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
-            <ProfileSetup onClose={closeProfile} onOpenAbout={openAbout} />
+        <CenteredModal open={activeModal === 'profile'} onClose={closeModal} title="Configuration" maxWidth="max-w-2xl" closeDisabled={isAboutOpen}>
+          <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
+            <ProfileSetup onClose={closeModal} onOpenAbout={openAbout} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={isPromptsOpen} onClose={closePrompts} title="Prompts editor" maxWidth="max-w-[80vw]">
-          <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
+        <CenteredModal open={activeModal === 'prompts'} onClose={closeModal} title="Prompts editor" maxWidth="max-w-[80vw]">
+          <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
             <PromptsDialog />
           </Suspense>
         </CenteredModal>
@@ -305,15 +262,15 @@ function App() {
           <AboutDialog />
         </CenteredModal>
 
-        <CenteredModal open={isProjectOpen} onClose={closeProject} title="Projects" maxWidth="max-w-2xl">
-          <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
-            <ProjectsPanel onClose={closeProject} />
+        <CenteredModal open={activeModal === 'project'} onClose={closeModal} title="Projects" maxWidth="max-w-2xl">
+          <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
+            <ProjectsPanel onClose={closeModal} />
           </Suspense>
         </CenteredModal>
 
-        <CenteredModal open={isTicketOpen} onClose={closeTicket} title="New Ticket" maxWidth="max-w-xl">
-          <Suspense fallback={<div className="p-4 text-center text-muted-foreground">Loading…</div>}>
-            <TicketForm onClose={closeTicket} />
+        <CenteredModal open={activeModal === 'ticket'} onClose={closeModal} title="New Ticket" maxWidth="max-w-xl">
+          <Suspense fallback={MODAL_SUSPENSE_FALLBACK}>
+            <TicketForm onClose={closeModal} />
           </Suspense>
         </CenteredModal>
 

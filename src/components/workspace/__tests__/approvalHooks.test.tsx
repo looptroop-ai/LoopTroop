@@ -163,7 +163,9 @@ describe('useDebouncedApprovalUiState', () => {
 
 interface RestoreHarnessProps {
   document: { id: string } | null
-  ready?: boolean
+  // Required, like the hook's own option: a harness default would restore the
+  // "ready unless told otherwise" reading the hook deliberately dropped.
+  ready: boolean
   persisted: { tab: string } | undefined
   restore: (persisted: { tab: string } | undefined, document: { id: string }) => unknown
 }
@@ -174,7 +176,7 @@ function useRestoreHarness({ document, ready, persisted, restore }: RestoreHarne
 
   useApprovalDraftRestore({
     document,
-    ...(ready === undefined ? {} : { ready }),
+    ready,
     persisted,
     restoredDraftRef,
     lastSavedSnapshotRef,
@@ -191,7 +193,7 @@ describe('useApprovalDraftRestore', () => {
     const restore = vi.fn(() => ({ tab: 'yaml' }))
     const { result, rerender } = renderHook(
       (props: RestoreHarnessProps) => useRestoreHarness(props),
-      { initialProps: { document: DOCUMENT, persisted: { tab: 'yaml' }, restore } },
+      { initialProps: { document: DOCUMENT, ready: true, persisted: { tab: 'yaml' }, restore } },
     )
 
     expect(restore).toHaveBeenCalledTimes(1)
@@ -199,7 +201,7 @@ describe('useApprovalDraftRestore', () => {
     expect(result.current.restoredDraftRef.current).toBe(true)
     expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'yaml' }))
 
-    rerender({ document: DOCUMENT, persisted: { tab: 'structured' }, restore })
+    rerender({ document: DOCUMENT, ready: true, persisted: { tab: 'structured' }, restore })
     expect(restore).toHaveBeenCalledTimes(1)
   })
 
@@ -212,14 +214,14 @@ describe('useApprovalDraftRestore', () => {
     const restore = vi.fn(() => ({ tab: 'structured' }))
     const { result, rerender } = renderHook(
       (props: RestoreHarnessProps) => useRestoreHarness(props),
-      { initialProps: { document: null as { id: string } | null, persisted: undefined, restore } },
+      { initialProps: { document: null as { id: string } | null, ready: true, persisted: undefined, restore } },
     )
 
     expect(restore).not.toHaveBeenCalled()
     expect(result.current.restoredDraftRef.current).toBe(false)
     expect(result.current.lastSavedSnapshotRef.current).toBe('')
 
-    rerender({ document: DOCUMENT, persisted: undefined, restore })
+    rerender({ document: DOCUMENT, ready: true, persisted: undefined, restore })
 
     expect(restore).toHaveBeenCalledWith(undefined, DOCUMENT)
     expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'structured' }))
@@ -261,6 +263,7 @@ describe('useApprovalDraftRestore', () => {
 
     renderHook(() => useApprovalDraftRestore({
       document: DOCUMENT,
+      ready: true,
       persisted: undefined,
       restoredDraftRef,
       lastSavedSnapshotRef,

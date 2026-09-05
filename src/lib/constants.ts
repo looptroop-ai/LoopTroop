@@ -67,6 +67,13 @@ export const GIT_CHECK_DEBOUNCE_MS = 300
 /** Debounce delay for git-check in project form */
 export const PROJECT_GIT_CHECK_DEBOUNCE_MS = 500
 /**
+ * How long an approval pane waits after the last keystroke before saving its
+ * draft. Long enough that typing a paragraph is one write rather than fifty,
+ * short enough that closing the tab shortly after a change still keeps it —
+ * the pane also flushes on unload, which is what covers the rest.
+ */
+export const APPROVAL_AUTOSAVE_DEBOUNCE_MS = 5000
+/**
  * Tick interval for the surfaces that display whole seconds — the active-bead
  * countdown and the current-activity strip's elapsed time. One value because
  * one decision: the smallest unit either of them renders.

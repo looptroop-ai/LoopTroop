@@ -93,7 +93,7 @@ export function InterviewApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'interview', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState, isFetched: isUiStateFetched } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
   const {
     data: interviewData,
     isLoading,
@@ -150,7 +150,13 @@ export function InterviewApprovalPane({
     // Both queries, not just the document one: `persisted` is undefined while
     // the UI-state query is in flight and restoring from it latches the pane on
     // defaults, discarding the saved answer drafts that arrive a moment later.
-    ready: !isLoading && isUiStateFetched,
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // answers and arm the autosave to write the empty ones over the server's
+    // copy — from a request that never read it. Waiting means the retry
+    // restores.
+    ready: !isLoading && isUiStateSuccess,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,

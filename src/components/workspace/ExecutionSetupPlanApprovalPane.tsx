@@ -333,7 +333,7 @@ export function ExecutionSetupPlanApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
-  const { data: persistedUiState, isFetched: isUiStateFetched } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -432,12 +432,40 @@ export function ExecutionSetupPlanApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
+  // Re-arm the one-shot restore when a read-only view ends.
+  //
+  // Opening an archived attempt renders this same pane with `readOnly`, and it
+  // is not remounted when the attempt clears. The restore below is skipped
+  // while read-only, so without this the pane that comes back is holding the
+  // defaults it was left with and the user's draft is never applied.
+  //
+  // Declared *before* `useApprovalDraftRestore` so it commits first: effects
+  // run in declaration order, and on the render where `readOnly` clears the
+  // restore has to see a latch that is already re-armed. Nothing changes its
+  // inputs afterwards, so a second chance never comes.
+  const wasReadOnlyRef = useRef(readOnly)
+  useEffect(() => {
+    if (wasReadOnlyRef.current && !readOnly) {
+      restoredDraftRef.current = false
+    }
+    wasReadOnlyRef.current = readOnly
+  }, [readOnly])
+
   useApprovalDraftRestore({
     document: plan,
     // `persisted` is undefined both while the UI-state query is in flight and
     // when there is genuinely no draft, so without this the pane can latch on
     // defaults and discard the draft that lands a moment later.
-    ready: isUiStateFetched,
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // draft and arm the autosave to write the defaults over the server's copy
+    // — from a request that never read it. Waiting means the retry restores.
+    //
+    // `!readOnly` because an archived attempt shows this pane with editing
+    // disabled. Restoring into it would spend the one-shot on a view that
+    // cannot use the draft; the effect above re-arms it when the attempt ends.
+    ready: isUiStateSuccess && !readOnly,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
@@ -448,21 +476,14 @@ export function ExecutionSetupPlanApprovalPane({
       const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
       const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
 
-      // `readOnly` gates edit mode, and the baseline has to record the value
-      // React actually holds — not the one the draft asked for. An archived
-      // attempt restores `isEditMode: true` into a pane that shows `false`, and
-      // the pane is not remounted when the attempt clears, so the autosave that
-      // switches on then reads a difference nobody made and writes it back
-      // five seconds later.
-      const restoredEditMode = !readOnly && nextEditMode
-      setIsEditMode(restoredEditMode)
+      setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
       setStructuredDraft(nextStructuredDraft ?? null)
       setRawDraft(nextRawDraft)
       setCommentary(nextCommentary)
 
       return {
-        isEditMode: restoredEditMode,
+        isEditMode: nextEditMode,
         editTab: nextEditTab,
         rawDraft: nextRawDraft,
         structuredDraft: nextStructuredDraft,

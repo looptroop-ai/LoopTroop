@@ -1,4 +1,4 @@
-import { startTransition, useMemo, useState, useEffect, useCallback, useRef } from 'react'
+import { startTransition, useMemo, useState, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useInterviewQuestions, useTicketUIState, useSaveTicketUIState } from '@/hooks/useTickets'
@@ -27,6 +27,7 @@ import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/in
 import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdDocumentContent } from '@/lib/prdDocument'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   approveArtifact,
@@ -170,7 +171,7 @@ function BeadsApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_beads'
-  const { data: persistedUiState } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
   const councilMemberNames = useMemo(
     () => ticket.lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0),
     [ticket.lockedCouncilMembers],
@@ -254,31 +255,41 @@ function BeadsApprovalPane({
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
   // Restore persisted UI state
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || fetchedBeads === undefined) return
+  useApprovalDraftRestore({
+    document: fetchedBeads,
+    // The UI-state query too, not just the beads one: `persisted` is undefined
+    // while it is in flight, and restoring from that latches the pane on
+    // defaults, discarding the saved structured and JSONL drafts.
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // draft and arm the autosave to write the defaults over the server's copy
+    // — from a request that never read it. Waiting means the retry restores.
+    ready: !isLoading && isUiStateSuccess,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    restore: (persisted) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
+      const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
+        ? persisted.structuredDraft
+        : baseStructuredDraft
+      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : rawJsonl
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
-    const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
-      ? persisted.structuredDraft
-      : baseStructuredDraft
-    const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : rawJsonl
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft)
+      setJsonlDraft(nextJsonlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft)
-    setJsonlDraft(nextJsonlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      jsonlDraft: nextJsonlDraft,
-      structuredDraft: nextStructuredDraft,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [isLoading, fetchedBeads, persistedUiState, baseStructuredDraft, rawJsonl])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        jsonlDraft: nextJsonlDraft,
+        structuredDraft: nextStructuredDraft,
+      }
+    },
+  })
 
   useApprovalFocusAnchor(ticket.id, BEADS_APPROVAL_FOCUS_EVENT)
 

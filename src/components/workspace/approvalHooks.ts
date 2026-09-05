@@ -5,6 +5,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { clearTicketArtifactsCache } from '@/hooks/useTicketArtifacts'
+import { APPROVAL_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
 
 interface SaveTicketUiStateInput<T> {
   ticketId: string
@@ -102,8 +103,13 @@ interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
    * no draft, and this hook cannot tell those apart — so a document that arrives
    * first restores defaults, latches, and the saved draft that lands a moment
    * later is discarded with no way back.
+   *
+   * Required, and with no default: a default of `true` reads as "ready unless
+   * told otherwise", which is the failure this option exists to prevent. It
+   * also hid the gate from every test whose query mock left the flag out —
+   * `!isLoading && undefined` is `undefined`, and the default made that ready.
    */
-  ready?: boolean
+  ready: boolean
   /** The persisted UI state for this pane, if the server had any. */
   persisted: TPersisted | undefined
   restoredDraftRef: RefObject<boolean>
@@ -131,7 +137,7 @@ interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
  */
 export function useApprovalDraftRestore<TPersisted, TDocument>({
   document,
-  ready = true,
+  ready,
   persisted,
   restoredDraftRef,
   lastSavedSnapshotRef,
@@ -179,7 +185,7 @@ export function useDebouncedApprovalUiState<T>({
   saveUiState,
   lastSavedSnapshotRef,
   initialUpdatedAt = null,
-  delayMs = 5_000,
+  delayMs = APPROVAL_AUTOSAVE_DEBOUNCE_MS,
 }: UseDebouncedApprovalUiStateOptions<T>): ApprovalAutosaveStatus {
   const [state, setState] = useState<AutosaveStatusState>('pending')
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(

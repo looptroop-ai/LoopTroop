@@ -28,7 +28,9 @@ export interface UIState {
   sidebarOpen: boolean
   /**
    * Which of the two root surfaces is showing. Modals are not views: they are
-   * routes owned by `App`, which is the only writer of `window.history`.
+   * routes owned by `App`, the only writer of `window.history` once React is
+   * mounted. (`bootstrapAuth` strips the nonce fragment before that, which is
+   * why it is not a second owner — see the note there.)
    */
   activeView: 'kanban' | 'ticket'
   logPanelHeight: number

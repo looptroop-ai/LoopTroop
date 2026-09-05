@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { UIProvider } from '@/context/UIContext'
 import { useUI } from '@/context/useUI'
@@ -23,7 +23,13 @@ const mockState = vi.hoisted(() => ({
 const MISSING_TICKET_EXTERNAL_ID = 'test-ticket-1'
 
 vi.mock('@/components/layout/AppShell', () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <div data-testid="app-shell">{children}</div>,
+  AppShell: ({ children, onNavigateHome }: { children: ReactNode; onNavigateHome?: () => void }) => (
+    <div data-testid="app-shell">
+      {/* Stands in for the logo, the shell's one navigation control. */}
+      <button type="button" onClick={onNavigateHome}>Logo</button>
+      {children}
+    </div>
+  ),
 }))
 
 vi.mock('@/components/kanban/KanbanBoard', () => ({
@@ -77,9 +83,23 @@ vi.mock('@/hooks/useTickets', () => ({
     data: mockState.tickets,
     isFetched: mockState.ticketsFetched,
     isLoading: mockState.ticketsLoading,
-    isSuccess: mockState.ticketsFetched && !mockState.ticketsLoading,
+    // Mirrors TanStack: a query that errored is fetched and settled but not
+    // successful. Deriving this from `ticketsFetched` alone made every
+    // error-state test also assert the success path, and the URL hydration
+    // reads exactly this flag.
+    isSuccess: mockState.ticketsFetched && !mockState.ticketsLoading && !mockState.ticketsError,
     isError: mockState.ticketsError,
   }),
+}))
+
+/**
+ * The workspace preloader imports a chunk. Under the test runner that resolves
+ * after the test has finished and torn its environment down, which surfaces as
+ * an unhandled rejection attributed to whichever test was unlucky. Nothing here
+ * asserts on prefetching, so there is nothing to lose by stubbing it.
+ */
+vi.mock('@/components/ticket/workspacePreload', () => ({
+  preloadWorkspaceForView: vi.fn(() => Promise.resolve()),
 }))
 
 const useRecoveryAutoReloadMock = vi.hoisted(() => vi.fn())
@@ -208,6 +228,13 @@ describe('App route ownership', () => {
     localStorage.clear()
     localStorage.setItem(WELCOME_DISCLAIMER_STORAGE_KEY, 'true')
     window.history.pushState(null, '', '/')
+  })
+
+  // The history spies below would otherwise outlive their test: nothing in this
+  // project restores spies automatically, and a leaked one turns the next test's
+  // navigation into a recording of the previous test's expectations.
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('keeps the modal route when a ticket selection is restored underneath it', async () => {
@@ -343,6 +370,105 @@ describe('App route ownership', () => {
       expect(window.location.pathname).toBe('/')
     })
     expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+  })
+
+  /**
+   * A pathname naming a ticket the account does not have — deleted since the
+   * link was shared, mistyped, copied from another machine — is reconciled, not
+   * honoured. The reconciliation *replaces* that entry: the URL was never a
+   * place the user chose to be, so Back has to reach whatever they were looking
+   * at before, not hand them the dead link again.
+   */
+  it('replaces an unresolvable entry URL instead of stacking a history entry on it', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/ticket/LT-404')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalled()
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The same rule after the app is running. Back onto a ticket that has since
+   * been deleted leaves the address bar pointing at a ticket the board is not
+   * showing, and nothing about the board changed to prompt a correction — which
+   * is why the repair is tracked explicitly rather than inferred from the route
+   * inputs, none of which move in this case.
+   */
+  it('repairs the URL when Back lands on a ticket that no longer exists', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+
+    window.history.pushState(null, '', '/ticket/LT-404')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+  })
+
+  /**
+   * Closing a modal overwrites the entry it opened. Pushing instead meant Back
+   * from a closed modal re-opened it, so the gesture that dismissed the dialog
+   * was also the gesture that brought it back.
+   */
+  it('replaces the modal entry when the modal closes', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The logo is the way out of anywhere. It used to write the URL itself, which
+   * made the shell a second history owner racing the route effect; now it asks
+   * `App` for the whole transition — modal closed, ticket deselected, one route
+   * write for both.
+   */
+  it('closes the open modal and deselects the ticket when the logo is clicked', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/config')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Logo' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('Profile Setup')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
   })
 })
 

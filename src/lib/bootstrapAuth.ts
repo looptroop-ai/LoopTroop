@@ -6,6 +6,11 @@
  *
  * Only a code fragment ever carries the nonce: it is not sent to the server as
  * part of a request line, so it cannot appear in access logs.
+ *
+ * The `replaceState` below is the one history write outside `App.tsx`, and
+ * deliberately so: it runs before React mounts, so there is no route state yet
+ * for it to contradict, and it only strips a fragment — the path it writes is
+ * the path already showing. `App.tsx` then reads that path as the entry URL.
  */
 export async function consumeBootstrapNonce(): Promise<void> {
   const raw = window.location.hash

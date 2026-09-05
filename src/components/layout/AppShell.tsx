@@ -20,6 +20,12 @@ interface AppShellProps {
   onOpenProject?: () => void
   onOpenTicket?: () => void
   onOpenAbout?: () => void
+  /**
+   * Returns to the board, closing whatever is open on the way. Supplied by
+   * `App`, which owns the URL: the logo used to write `/` itself and so raced
+   * the route effect that derives the pathname from this state.
+   */
+  onNavigateHome?: () => void
   isModalOpen?: boolean
 }
 
@@ -69,7 +75,7 @@ function getActiveTriageFilterSummaries(filters: UIState['filters']): string[] {
   return summaries
 }
 
-export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, onOpenAbout, isModalOpen = false }: AppShellProps) {
+export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, onOpenAbout, onNavigateHome, isModalOpen = false }: AppShellProps) {
   const { state, dispatch } = useUI()
   const theme = state.theme
   const queryClient = useQueryClient()
@@ -108,8 +114,11 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
           <button
             className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => {
+              if (onNavigateHome) {
+                onNavigateHome()
+                return
+              }
               dispatch({ type: 'SELECT_TICKET', ticketId: null })
-              window.history.pushState({}, '', '/')
             }}
           >
             <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />

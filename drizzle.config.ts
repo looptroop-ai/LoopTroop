@@ -5,8 +5,11 @@ import appConfig from './drizzle.app.config'
  *
  * There are two, and they are not interchangeable:
  *
- * - `drizzle.app.config.ts` → `~/.looptroop/app.sqlite`, one per machine, holding
- *   projects, profiles and settings.
+ * - `drizzle.app.config.ts` → `app.sqlite` in the config directory
+ *   `resolveAppConfigDir()` picks — `%APPDATA%\looptroop` on Windows,
+ *   `$XDG_CONFIG_HOME/looptroop` or `~/.config/looptroop` elsewhere, or
+ *   `LOOPTROOP_CONFIG_DIR` when it is set. One per machine, holding projects,
+ *   profiles and settings. `LOOPTROOP_APP_DB_PATH` overrides the file outright.
  * - `drizzle.project.config.ts` → `<project>/.looptroop/db.sqlite`, one per
  *   project, holding that project's tickets and their state.
  *

@@ -101,8 +101,8 @@ function resolvePhaseAttemptSafely(
  * 1. STREAMING UPSERTS ARE NOT PERSISTED AT ALL. Intermediate streaming
  *    snapshots (op='upsert' + streaming=true, with an entryId) are delivered to
  *    the UI over SSE and written to no file — not the normal log and not the AI
- *    detail log, which `appendToExecutionLog` returns before reaching. Only the
- *    final 'finalize' event is written, and that is what restores the AI tab
+ *    detail log, because `appendLogEvent` returns before reaching either. Only
+ *    the final 'finalize' event is written, and that is what restores the AI tab
  *    when a ticket is reopened. Without this split, a 5-minute streaming
  *    session produces ~90 progressive snapshots with quadratic content growth
  *    in the normal lifecycle log.

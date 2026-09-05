@@ -1,7 +1,14 @@
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync, runGitOrThrow } from './runCommand'
 
-const GIT_PUSH_TIMEOUT_MS = 120_000
+/**
+ * How long a `git push` is given before it is treated as stalled.
+ *
+ * Shared with `pushSquashedCandidate` for the same reason its retry count is:
+ * both push to the same remote over the same network, so two numbers for it
+ * means one of them is wrong and nothing says which.
+ */
+export const GIT_PUSH_TIMEOUT_MS = 120_000
 
 /**
  * Lets `git push` use the token `gh` was given, when there is nothing else.

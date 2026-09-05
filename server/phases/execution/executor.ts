@@ -17,7 +17,7 @@ import { throwIfAborted } from '../../council/types'
 import { throwIfCancelled } from '../../lib/abort'
 import { buildStructuredRetryPrompt } from '../../structuredOutput'
 import { SessionManager } from '../../opencode/sessionManager'
-import { COUNCIL_RESPONSE_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_DETAIL_TRUNCATION_LENGTH } from '../../lib/constants'
+import { COUNCIL_RESPONSE_TIMEOUT_MS, EXECUTOR_NOTE_TRUNCATION_LENGTH, EXECUTOR_DETAIL_TRUNCATION_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
 import { getStructuredRetryDecision } from '../../lib/structuredOutputRetry'
 import { normalizeStructuredRetryCount } from '../../lib/structuredRetryPolicy'
 import { buildPromptFromTemplate, buildSameSessionPromptFromTemplate, PROM_CODING, PROM51 } from '../../prompts/index'
@@ -234,7 +234,7 @@ async function generateContextWipeNote(
       recentFailureExcerpts.length > 0 ? recentFailureExcerpts.map((entry) => `- ${entry}`).join('\n') : 'No recent failing tool or test excerpts captured.',
       '',
       `## Last Output (truncated)`,
-      lastOutput.slice(0, 2000),
+      lastOutput.slice(0, MODEL_OUTPUT_PREVIEW_LENGTH),
     ].join('\n'),
   }
 

@@ -3,11 +3,9 @@ import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
-import { GIT_PUSH_MAX_RETRIES } from '../../git/push'
+import { GIT_PUSH_MAX_RETRIES, GIT_PUSH_TIMEOUT_MS } from '../../git/push'
 import { runCommand, runGitSyncOrThrow } from '../../git/runCommand'
 import { getErrorMessage } from '@shared/typeGuards'
-
-const GIT_PUSH_TIMEOUT_MS = 120_000
 
 /**
  * The one runner for this file.

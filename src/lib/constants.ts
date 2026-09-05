@@ -34,6 +34,14 @@ export const DROPDOWN_FOCUS_DELAY_MS = 50
 
 /** Query stale time for infrequently-changing data (5 minutes) */
 export const QUERY_STALE_TIME_5M = 5 * 60 * 1000
+/**
+ * Stale time for a workflow's own record of what it already did — a bead's
+ * diff, the skip list, a ticket's AI details, an archived attempt's logs.
+ * None of it changes while you are reading it, but all of it changes when the
+ * workflow moves on, so it is cached long enough to survive flipping between
+ * panes and short enough that a finished phase shows up without a reload.
+ */
+export const QUERY_STALE_TIME_30S = 30_000
 /** Default query stale time: long enough to coalesce a burst, short enough to feel live */
 export const QUERY_STALE_TIME_5S = 5 * 1000
 

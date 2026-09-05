@@ -39,11 +39,21 @@ export function makeTempDir(prefix: string): string {
  * and a real assertion, in a file that is working perfectly.
  *
  * That is a Windows-only failure signature this repository has chased more than
- * once. `rmSync`'s own `maxRetries` handles most of it — the budget below is
- * three seconds in short steps, up from half a second, which was not enough for
- * the case that kept `hookValidation.test.ts` red on a required lane: a command
- * that hits its timeout is killed with `taskkill /T`, and that walks the process
- * tree *after* returning, so the handles outlive the call that asked for them.
+ * once. `rmSync`'s own `maxRetries` handles most of it, and the budget below is
+ * a few seconds in growing steps — enough for the case that kept
+ * `hookValidation.test.ts` red on a required lane: a command that hits its
+ * timeout is killed with `taskkill /T`, and that walks the process tree *after*
+ * returning, so the handles outlive the call that asked for them.
+ *
+ * `retryDelay` is not that budget divided by `maxRetries`. Node backs off
+ * linearly — attempt *n* sleeps `n * retryDelay` — so the wall clock is the
+ * triangular sum, `retryDelay * n * (n + 1) / 2`. The 30 retries this asked for
+ * were 46.5 seconds of synchronous teardown, not the three the comment claimed,
+ * and a teardown that blocks that long turns a warning into a suite that runs
+ * out of time. Seven is ~2.8s, which is the figure that was actually wanted.
+ *
+ * The elapsed time is measured rather than stated, because the stated one was
+ * wrong for as long as it was written down.
  *
  * A tree still locked after that is reported and left behind rather than failing
  * the run. The alternative is a red required lane for a runner's timing, and the
@@ -52,19 +62,21 @@ export function makeTempDir(prefix: string): string {
  * Windows run rather than the occasional one, something is genuinely leaking a
  * handle and this is where to start.
  *
- * The retry options are inert off Windows, so only the last-resort branch is
- * conditional — everywhere else, a removal that fails is a real defect.
+ * The retry options are inert off Windows — libuv only retries there, so a
+ * locked tree on POSIX fails in milliseconds — which is why only the last-resort
+ * branch is conditional. Everywhere else, a removal that fails is a real defect.
  */
 export function removeTempDir(path: string): void {
+  const startedAt = Date.now()
   try {
-    rmSync(path, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 })
+    rmSync(path, { recursive: true, force: true, maxRetries: 7, retryDelay: 100 })
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | null)?.code
     const isWindowsLock = process.platform === 'win32'
       && (code === 'EPERM' || code === 'EBUSY' || code === 'ENOTEMPTY')
     if (!isWindowsLock) throw error
     console.warn(
-      `[tempDir] leaving ${path} behind: still locked after 3s (${code}). `
+      `[tempDir] leaving ${path} behind: still locked after ${Date.now() - startedAt}ms (${code}). `
       + 'A child process is holding a handle past its own exit.',
     )
   }

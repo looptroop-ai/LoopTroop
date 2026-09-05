@@ -3,9 +3,9 @@ import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
 
 export type ManualQaResultStatus = 'pass' | 'fail' | 'waive' | 'improvement' | 'pending'
-export type ManualQaSeverity = 'required' | 'optional'
-export type ManualQaChecklistSource = 'prd' | 'bead' | 'previous_qa' | 'implementation_diff'
-export type ManualQaCoverageLevel = 'full' | 'partial'
+type ManualQaSeverity = 'required' | 'optional'
+type ManualQaChecklistSource = 'prd' | 'bead' | 'previous_qa' | 'implementation_diff'
+type ManualQaCoverageLevel = 'full' | 'partial'
 
 export interface ManualQaPrdReference {
   ref: string
@@ -78,7 +78,7 @@ export interface ManualQaDraft {
   skipReason?: string
 }
 
-export interface ManualQaCoverageEntry {
+interface ManualQaCoverageEntry {
   criterionRef: string
   criterion: string
   status: 'covered' | 'partially_covered' | 'uncovered' | 'not_applicable'
@@ -86,7 +86,7 @@ export interface ManualQaCoverageEntry {
   reason?: string
 }
 
-export interface ManualQaCoverageSummary {
+interface ManualQaCoverageSummary {
   coveredCount: number
   partiallyCoveredCount: number
   uncoveredCount: number
@@ -376,7 +376,7 @@ export function normalizeManualQaRound(value: unknown, version: number): ManualQ
   }
 }
 
-export interface ManualQaMutationBase {
+interface ManualQaMutationBase {
   ticketId: string
   version: number
   actionId: string

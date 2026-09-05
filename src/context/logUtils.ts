@@ -93,7 +93,7 @@ export interface LogActionsValue {
 export type LogContextValue = LogStateValue & LogActionsValue
 
 export const LOG_STORAGE_PREFIX = 'logs-v2-'
-export const LEGACY_LOG_STORAGE_PREFIX = 'logs-'
+const LEGACY_LOG_STORAGE_PREFIX = 'logs-'
 export const SERVER_LOG_REFRESH_EVENT = 'looptroop:server-log-refresh'
 export const INITIAL_LOG_PAGE_LIMIT = 20
 export const OLDER_LOG_PAGE_LIMIT = 250
@@ -275,7 +275,7 @@ function formatLine(type: string, kind: string, content: string, fallback: unkno
   return `${tag} ${stringifyForLine(fallback)}`
 }
 
-export function fallbackEntryId(status: string, source: string, timestamp: string | undefined, line: string): string {
+function fallbackEntryId(status: string, source: string, timestamp: string | undefined, line: string): string {
   return `${status}:${source}:${timestamp ?? 'no-ts'}:${line}`
 }
 
@@ -454,11 +454,11 @@ export function getLogEntryAliases(entry: LogEntry): string[] {
   ]
 }
 
-export function isCommandLine(line: string): boolean {
+function isCommandLine(line: string): boolean {
   return line.startsWith('[CMD] $ ')
 }
 
-export function isLowValueGitProbeLine(line: string): boolean {
+function isLowValueGitProbeLine(line: string): boolean {
   return isCommandLine(line)
     && line.includes('$ git ')
     && LOW_VALUE_GIT_PROBE_PATTERNS.some((pattern) => line.includes(pattern))

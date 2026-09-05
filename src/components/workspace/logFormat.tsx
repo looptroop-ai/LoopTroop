@@ -2,7 +2,7 @@ import type { LogEntry } from '@/context/LogContext'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { isBenignGitProbeErrorLine } from '@/context/logUtils'
 
-export interface FormattedLogLine {
+interface FormattedLogLine {
   tagText: string | null
   tagTitle?: string
   bodyText: string
@@ -84,7 +84,7 @@ function isSystemShapedAiDetail(entry: LogEntry): boolean {
   return Boolean(entry.modelId) && AI_DETAIL_OUTPUT_KINDS.has(entry.kind)
 }
 
-export function getCanonicalLogEntries(entries: LogEntry[]): LogEntry[] {
+function getCanonicalLogEntries(entries: LogEntry[]): LogEntry[] {
   const canonicalSessions = new Set<string>()
   const canonicalPhaseModels = new Set<string>()
 
@@ -171,7 +171,7 @@ export function formatTimestamp(timestamp?: string, options: TimestampFormatOpti
   )
 }
 
-export function getEntryModelDisplayName(entry: LogEntry): string | null {
+function getEntryModelDisplayName(entry: LogEntry): string | null {
   const rawModelId = getEntryFullModelId(entry) ?? ''
   const displayName = rawModelId ? getModelDisplayName(rawModelId) : ''
   return displayName || null

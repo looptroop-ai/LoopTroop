@@ -29,7 +29,7 @@ export interface TicketArtifactCollectionState {
   refetch: () => Promise<unknown>
 }
 
-export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: string): TicketArtifact | null {
+function normalizeTicketArtifact(input: unknown, fallbackTicketId?: string): TicketArtifact | null {
   if (!input || typeof input !== 'object') return null
 
   const raw = input as Record<string, unknown>
@@ -69,7 +69,7 @@ export function normalizeTicketArtifact(input: unknown, fallbackTicketId?: strin
   }
 }
 
-export async function fetchTicketArtifacts(
+async function fetchTicketArtifacts(
   ticketId: string,
   options?: TicketArtifactQueryScope,
   signal?: AbortSignal,

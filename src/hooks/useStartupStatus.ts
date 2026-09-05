@@ -37,6 +37,9 @@ export interface DismissStartupRestoreNoticeResponse {
   dismissedAt: string | null
 }
 
+// Exported so any module that needs to read or invalidate this cache names
+// the key rather than repeating the literal — a second copy that drifts
+// silently stops invalidating anything.
 export const STARTUP_STATUS_QUERY_KEY = ['startup-status'] as const
 
 async function fetchStartupStatus(signal?: AbortSignal): Promise<StartupStatus> {

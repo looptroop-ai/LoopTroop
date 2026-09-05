@@ -12,14 +12,17 @@
  * anything downstream: a formula with a wrong sha256 installs green in CI
  * against the file CI just built and fails for every user.
  *
- * The one thing read from outside is the Node floor, below. It is read rather
- * than restated so that raising `engines.node` cannot leave a channel
- * advertising the old one — and so that raising it shows up as a golden-file
- * change somebody has to look at.
+ * The two things read from outside are the Node floor, below, and the install
+ * channel marker filename, which the server reads back. Both are read rather
+ * than restated: raising `engines.node` cannot leave a channel advertising the
+ * old floor, and renaming the marker cannot leave the server looking for a file
+ * no installer writes any more. Both show up as golden-file changes somebody
+ * has to look at.
  */
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { INSTALL_CHANNEL_MARKER } from '../shared/installChannel.ts'
 import { formatNodeVersion, parseNodeFloor } from '../shared/nodeFloor.ts'
 
 export type Channel = 'homebrew' | 'scoop' | 'chocolatey'
@@ -41,9 +44,6 @@ export const SHORT_DESCRIPTION = 'Local AI coding orchestration with council pla
 export const HOMEPAGE = 'https://www.looptroop.ovh/'
 export const REPOSITORY = 'https://github.com/looptroop-ai/LoopTroop'
 export const LICENSE = 'MIT'
-
-/** Written at the package root so LoopTroop can name the upgrade command. */
-export const CHANNEL_MARKER = '.install-channel'
 
 /**
  * The Node floor, from `engines.node`, in the three forms these channels can
@@ -118,7 +118,7 @@ class Looptroop < Formula
 
   def install
     libexec.install Dir["*"]
-    (libexec/"${CHANNEL_MARKER}").write "homebrew"
+    (libexec/"${INSTALL_CHANNEL_MARKER}").write "homebrew"
     (bin/"looptroop").write_env_script libexec/"bin/looptroop",
                                        PATH: "#{formula_opt_bin("node@${NODE_FLOOR_MAJOR}")}:$PATH"
   end
@@ -171,7 +171,7 @@ export function renderScoopManifest(inputs: ChannelInputs): string {
     depends: ['nodejs-lts', 'git', 'gh'],
     bin: [['bin\\looptroop.cmd', 'looptroop']],
     post_install: [
-      `Set-Content -LiteralPath "$dir\\${CHANNEL_MARKER}" -Value 'scoop' -NoNewline`,
+      `Set-Content -LiteralPath "$dir\\${INSTALL_CHANNEL_MARKER}" -Value 'scoop' -NoNewline`,
     ],
     notes: [
       'LoopTroop drives OpenCode, which it does not install. Run: looptroop doctor',
@@ -434,7 +434,7 @@ package() {
   # Says which channel installed this, so \`looptroop doctor\` names the right
   # upgrade command rather than inferring one from a path that several
   # channels could have produced.
-  printf 'aur' > "\${pkgdir}/usr/lib/${AUR_PACKAGE_NAME}/${CHANNEL_MARKER}"
+  printf 'aur' > "\${pkgdir}/usr/lib/${AUR_PACKAGE_NAME}/${INSTALL_CHANNEL_MARKER}"
 
   # A symlink, which the launcher resolves before working out where its own
   # \`dist\` lives — that is what the readlink loop in the wrapper is for.
@@ -487,7 +487,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'package.json'))) {
 
 # So \`looptroop doctor\` names \`choco upgrade looptroop\` and not some other
 # manager's command.
-Set-Content -LiteralPath (Join-Path $packageRoot '${CHANNEL_MARKER}') -Value 'chocolatey' -NoNewline
+Set-Content -LiteralPath (Join-Path $packageRoot '${INSTALL_CHANNEL_MARKER}') -Value 'chocolatey' -NoNewline
 
 Install-BinFile -Name 'looptroop' -Path (Join-Path $packageRoot 'bin\\looptroop.cmd')
 `

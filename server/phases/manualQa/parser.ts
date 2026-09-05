@@ -16,8 +16,9 @@ import {
   type ManualQaResults,
 } from './types'
 import { validateManualQaPrdReferences } from './coverage'
+import { PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
 
-export const MANUAL_QA_CHECKLIST_TAG = 'MANUAL_QA_CHECKLIST'
+export const MANUAL_QA_CHECKLIST_TAG = PROTOCOL_TAGS.MANUAL_QA_CHECKLIST
 
 const ModelReferenceSchema = z.object({
   ref: z.string().trim().min(1),

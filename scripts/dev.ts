@@ -21,7 +21,8 @@ import {
 import { getDevLanUrls, LOOPTROOP_DEV_HOST, resolveDevHostMode } from './dev-host-mode'
 import { describeDevFrontendMode, resolveDevFrontendMode } from './dev-frontend-mode'
 import { resolveOpenCodeBaseUrl } from './opencode-dev-base-url'
-import { LOOPTROOP_OPENCODE_LOGS, resolveOpenCodeLogMode } from './opencode-log-mode'
+import { resolveOpenCodeLogMode } from './opencode-log-mode'
+import { LOOPTROOP_OPENCODE_LOGS_ENV } from '../shared/opencodeLogMode.ts'
 import { getWslLanAccessPlan } from './wsl-lan-access'
 import { getErrorMessage } from '../shared/typeGuards'
 import { LOOPTROOP_OPENCODE_ROUTING_CONFIG } from '../shared/openRouterRouting'
@@ -85,7 +86,7 @@ const frontendLanUrls = isWslAccessRelevant
   : directFrontendLanUrls
 
 if (opencodeLogMode.mode === 'all') {
-  childEnv[LOOPTROOP_OPENCODE_LOGS] = 'all'
+  childEnv[LOOPTROOP_OPENCODE_LOGS_ENV] = 'all'
 }
 
 if (devHostMode.enabled) {

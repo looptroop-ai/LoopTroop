@@ -3,6 +3,7 @@ import { withCommandLoggingAsync } from '../../log/commandLogger'
 import { handleMockExecutionUnsupported } from './executionPhase'
 import type { PromptPart } from '../../opencode/types'
 import { CancelledError, throwIfAborted, type RawAttempt } from '../../council/types'
+import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
 import { throwIfCancelled } from '../../lib/abort'
 import { COMMAND_OUTPUT_SLICE_LENGTH, MODEL_OUTPUT_PREVIEW_LENGTH } from '../../lib/constants'
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
@@ -231,8 +232,14 @@ export function validateRelevantFilesScanResponse(response: string): StructuredO
   }
 
   // Normalizer failed — enrich with tag-count diagnostics
-  const openTagCount = [...trimmed.matchAll(/<RELEVANT_FILES_RESULT>/gi)].length
-  const closeTagCount = [...trimmed.matchAll(/<\/RELEVANT_FILES_RESULT>/gi)].length
+  const relevantFilesOpen = openTag(PROTOCOL_TAGS.RELEVANT_FILES_RESULT)
+  const relevantFilesClose = closeTag(PROTOCOL_TAGS.RELEVANT_FILES_RESULT)
+  // Case-insensitive, matching `collectTaggedCandidates`: a model that shouts or
+  // whispers the tag is still emitting the tag, and counting only the exact case
+  // would report zero blocks for output the parser had already accepted. Tag
+  // names are `[A-Z_]+`, so nothing here needs escaping.
+  const openTagCount = [...trimmed.matchAll(new RegExp(relevantFilesOpen, 'gi'))].length
+  const closeTagCount = [...trimmed.matchAll(new RegExp(relevantFilesClose, 'gi'))].length
 
   if (normalized.error.includes('echoed the prompt')) {
     return normalized
@@ -241,7 +248,7 @@ export function validateRelevantFilesScanResponse(response: string): StructuredO
   if (openTagCount !== 1 || closeTagCount !== 1) {
     return buildStructuredOutputFailure(
       response,
-      `Relevant files output must contain exactly one <RELEVANT_FILES_RESULT>...</RELEVANT_FILES_RESULT> block (found open=${openTagCount}, close=${closeTagCount}). Parse error: ${normalized.error}`,
+      `Relevant files output must contain exactly one ${relevantFilesOpen}...${relevantFilesClose} block (found open=${openTagCount}, close=${closeTagCount}). Parse error: ${normalized.error}`,
       {
         repairWarnings: normalized.repairWarnings,
         retryDiagnostic: normalized.retryDiagnostic,

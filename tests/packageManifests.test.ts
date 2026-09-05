@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 import {
   BUNDLE_ROOT,
   bundleFileName,
-  CHANNEL_MARKER,
   DESCRIPTOR_PATH,
   parseDescriptor,
   parseWingetInstaller,
@@ -26,6 +25,7 @@ import {
   AUR_PACKAGE_NAME,
   type Channel,
 } from '../scripts/package-manifests.ts'
+import { INSTALL_CHANNEL_MARKER } from '../shared/installChannel'
 
 const fixtures = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'channels')
 
@@ -127,7 +127,7 @@ describe('the Homebrew formula', () => {
   })
 
   it('writes the channel marker at the package root', () => {
-    expect(formula).toContain(`(libexec/"${CHANNEL_MARKER}").write "homebrew"`)
+    expect(formula).toContain(`(libexec/"${INSTALL_CHANNEL_MARKER}").write "homebrew"`)
   })
 
   it('keeps the description inside what brew audit --strict accepts', () => {
@@ -157,7 +157,7 @@ describe('the Scoop manifest', () => {
   })
 
   it('writes the channel marker after extracting', () => {
-    expect(manifest.post_install.join('\n')).toContain(CHANNEL_MARKER)
+    expect(manifest.post_install.join('\n')).toContain(INSTALL_CHANNEL_MARKER)
   })
 
   /**
@@ -203,7 +203,7 @@ describe('the Chocolatey install scripts', () => {
   })
 
   it('writes the channel marker at the package root', () => {
-    expect(install).toContain(CHANNEL_MARKER)
+    expect(install).toContain(INSTALL_CHANNEL_MARKER)
     expect(install).toContain(BUNDLE_ROOT)
   })
 
@@ -478,7 +478,7 @@ describe('the AUR package', () => {
    */
   it('writes the channel marker, so doctor names the right upgrade command', () => {
     expect(rendered().PKGBUILD).toContain(`printf 'aur' >`)
-    expect(rendered().PKGBUILD).toContain(CHANNEL_MARKER)
+    expect(rendered().PKGBUILD).toContain(INSTALL_CHANNEL_MARKER)
   })
 
   /** They cannot run on Arch, and namcap asks for a pwsh dependency to satisfy them. */

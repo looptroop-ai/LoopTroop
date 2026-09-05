@@ -6,13 +6,14 @@ import type { Session } from '../../opencode/types'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { RawAttempt } from '../../council/types'
 import type { CommandSpec } from '@shared/commandSpec'
+import { closeTag, openTag, PROTOCOL_TAGS } from '../../structuredOutput/protocolTags'
 
 export const EXECUTION_SETUP_PLAN_ARTIFACT_TYPE = 'execution_setup_plan'
 export const EXECUTION_SETUP_PLAN_REPORT_ARTIFACT_TYPE = 'execution_setup_plan_report'
 export const EXECUTION_SETUP_PLAN_NOTES_ARTIFACT_TYPE = 'execution_setup_plan_notes'
 export const EXECUTION_SETUP_PLAN_REGENERATION_REQUEST_ARTIFACT_TYPE = 'execution_setup_plan_regeneration_request'
-export const EXECUTION_SETUP_PLAN_RESULT_MARKER = '<EXECUTION_SETUP_PLAN>'
-export const EXECUTION_SETUP_PLAN_RESULT_END = '</EXECUTION_SETUP_PLAN>'
+export const EXECUTION_SETUP_PLAN_RESULT_MARKER = openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)
+export const EXECUTION_SETUP_PLAN_RESULT_END = closeTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)
 
 export type ExecutionSetupPlan = ExecutionSetupPlanPayload
 

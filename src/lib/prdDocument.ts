@@ -390,10 +390,6 @@ export function getPrdUserStoryAnchorId(epicId: string, storyId: string): string
   return `prd-story-${slugify(epicId) || 'epic'}-${slugify(storyId) || 'story'}`
 }
 
-export function getPrdStoryAnchorId(storyId: string): string {
-  return getPrdUserStoryAnchorId('story', storyId)
-}
-
 export function dispatchPrdApprovalFocus(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(PRD_APPROVAL_FOCUS_EVENT, {
     detail: { ticketId, anchorId },

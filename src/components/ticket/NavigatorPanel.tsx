@@ -99,10 +99,7 @@ export function NavigatorPanel({
             Full Log
           </button>
           {!fullLogOpen && (
-            <ContextTree
-              selectedPhase={contextPhase}
-              ticketId={ticketId}
-            />
+            <ContextTree selectedPhase={contextPhase} />
           )}
         </>
       )}

@@ -638,8 +638,6 @@ export function TicketDashboard() {
     <LogProvider
       ticketId={ticketId}
       currentStatus={currentStatus}
-      visiblePhase={contextPhase}
-      fullLogOpen={isFullLogOpen}
     >
       <SSELogConnector
         ticketId={ticketId}

@@ -214,10 +214,6 @@ function formatCopyText(visibleText: string, entry: LogEntry): string {
   return fullModelId && !visibleHeaderContainsModel ? `${visibleText} [model: ${fullModelId}]` : visibleText
 }
 
-export function formatVisibleTag(tag: string, entry: LogEntry, showModelName: boolean): string {
-  return formatTaggedSegment(tag, entry, showModelName).tagText ?? tag
-}
-
 export function formatLogLine(entry: LogEntry, showModelName: boolean): FormattedLogLine {
   const tagMatch = entry.line.match(/^(\[[^\]]+\])([\s\S]*)$/)
   if (tagMatch) {
@@ -298,42 +294,6 @@ export function filterBeadLogEntries(entries: LogEntry[]): LogEntry[] {
   return canonicalEntries.filter(entry =>
     !(entry.audience === 'debug' || entry.source === 'debug' || entry.line.includes('[DEBUG]')),
   )
-}
-
-export const PHASE_LOG_DESCRIPTIONS: Record<string, string> = {
-  DRAFT: 'Ticket created and waiting to start.',
-  SCANNING_RELEVANT_FILES: 'AI reads and extracts relevant source file contents for use as context in subsequent phases.',
-  COUNCIL_DELIBERATING: 'Each council model generates an independent interview draft with questions in logical order.',
-  COUNCIL_VOTING_INTERVIEW: 'Council members vote on all interview drafts using weighted scoring rubric.',
-  COMPILING_INTERVIEW: 'Winning model incorporates best ideas from other drafts into a final normalized question set.',
-  WAITING_INTERVIEW_ANSWERS: 'Interview questions presented to user for answers.',
-  VERIFYING_INTERVIEW_COVERAGE: 'AI analyzes answers for coverage gaps, may add follow-up questions, and checks interview completeness.',
-  WAITING_INTERVIEW_APPROVAL: 'Interview results ready for user review and approval before PRD drafting.',
-  DRAFTING_PRD: 'Each council model creates its own Full Answers artifact, then generates an independent PRD draft with epics and user stories.',
-  COUNCIL_VOTING_PRD: 'Council members vote on all PRD drafts using weighted scoring rubric.',
-  REFINING_PRD: 'Winning model consolidates the best draft into PRD Candidate v1 using useful ideas from the losing proposals.',
-  VERIFYING_PRD_COVERAGE: 'LoopTroop checks the current PRD against the winning model Full Answers artifact and, if needed, revises it before checking again.',
-  WAITING_PRD_APPROVAL: 'Latest PRD candidate is ready for user review and approval, with the winning Full Answers available as read-only context.',
-  DRAFTING_BEADS: 'Each council model creates an independent beads breakdown from the PRD.',
-  COUNCIL_VOTING_BEADS: 'Council members vote on all beads drafts for best architecture.',
-  REFINING_BEADS: 'Winning model consolidates the best beads draft into the final semantic blueprint using useful ideas from the losing proposals.',
-  VERIFYING_BEADS_COVERAGE: 'LoopTroop checks the semantic beads blueprint against the approved PRD and revises it if gaps are found, up to a maximum number of passes.',
-  EXPANDING_BEADS: 'LoopTroop transforms the coverage-validated semantic blueprint into execution-ready bead records with commands, file targets, and dependency graphs.',
-  WAITING_BEADS_APPROVAL: 'Beads breakdown ready for user review and approval.',
-  PRE_FLIGHT_CHECK: 'Validating OpenCode connectivity, git safety, tool availability, artifact paths, beads graph integrity.',
-  GENERATING_EXECUTION_SETUP_PLAN: 'Auditing workspace readiness and drafting a versioned execution setup plan for user review.',
-  PREPARING_EXECUTION_ENV: 'Verifying workspace readiness, provisioning missing required tooling in ticket-owned temp roots, using setup-scoped online lookup for unresolved launcher artifacts, validating setup wrappers/probes, recording provisioning-attempt evidence, and persisting a setup profile for later phases.',
-  CODING: 'AI coding agent executes beads with retry loop (Ralph Wiggum loop) until all tasks + tests pass.',
-  RUNNING_FINAL_TEST: 'Generating and running final tests from ticket details, PRD, beads, retry notes, and any validated setup wrapper.',
-  GENERATING_QA_CHECKLIST: 'Preparing a versioned Manual QA checklist and advisory PRD coverage from the final-test checkpoint. No user action or application control occurs in this phase.',
-  WAITING_MANUAL_QA: 'Waiting for user-run verification results, evidence, waivers, improvements, drift decisions, submission, or skip.',
-  INTEGRATING_CHANGES: 'Squashing commits and preparing the final reviewable candidate commit.',
-  CREATING_PULL_REQUEST: 'Pushing the final candidate branch and creating or updating the draft GitHub pull request.',
-  WAITING_PR_REVIEW: 'Draft pull request ready for human review and finish decision.',
-  CLEANING_ENV: 'Removing temporary files, worktrees, and processes created during execution.',
-  COMPLETED: 'All phases completed successfully. Cleanup finished after either merging the PR or closing the ticket unmerged.',
-  CANCELED: 'Ticket was canceled.',
-  BLOCKED_ERROR: 'An error occurred during processing.',
 }
 
 export const MULTI_MODEL_PHASES = new Set([

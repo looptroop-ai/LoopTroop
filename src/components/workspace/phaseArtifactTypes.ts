@@ -31,10 +31,7 @@ import {
   parseUiRefinementDiffArtifact,
 } from '@shared/refinementDiffArtifacts'
 import type { UiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
-import {
-  buildTextDiffSegments,
-  type TextDiffSegment,
-} from './textDiffSegments'
+import { buildTextDiffSegments } from './textDiffSegments'
 export {
   TEXT_DIFF_TOKEN_PATTERN as QUESTION_DIFF_TOKEN_PATTERN,
   tokenizeTextDiff as tokenizeQuestionDiffText,
@@ -325,8 +322,6 @@ export interface RefinementDiffEntry {
   } | null
   attributionStatus?: RefinementChangeAttributionStatus
 }
-
-export type QuestionDiffSegment = TextDiffSegment
 
 export interface RelevantFileScanEntry {
   path: string

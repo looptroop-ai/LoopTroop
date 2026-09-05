@@ -69,57 +69,6 @@ input[type='search']::-webkit-search-results-decoration {
   appearance: none;
 }
 
-/* Taste-Skill Glassmorphism & Ambient Utilities */
-.glass-panel {
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(228, 228, 231, 0.8);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 4px 20px -2px rgba(0, 0, 0, 0.05);
-}
-
-.dark .glass-panel {
-  background: rgba(12, 12, 14, 0.75);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(39, 39, 42, 0.8);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 8px 32px -4px rgba(0, 0, 0, 0.4);
-}
-
-.glass-card {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(228, 228, 231, 0.9);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.dark .glass-card {
-  background: rgba(18, 18, 22, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(39, 39, 42, 0.9);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.glass-card:hover {
-  border-color: rgba(12, 109, 124, 0.4);
-  box-shadow: 0 10px 25px -5px rgba(12, 109, 124, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-
-.dark .glass-card:hover {
-  border-color: rgba(26, 174, 194, 0.4);
-  box-shadow: 0 12px 30px -5px rgba(26, 174, 194, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-.glow-brand {
-  box-shadow: 0 0 20px -3px rgba(21, 148, 166, 0.35);
-}
-
-.dark .glow-brand {
-  box-shadow: 0 0 24px -2px rgba(26, 174, 194, 0.4);
-}
-
 @keyframes loading-dots {
   0% { opacity: 0.2; }
   20% { opacity: 1; }

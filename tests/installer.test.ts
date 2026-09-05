@@ -793,10 +793,43 @@ describe('installer wrappers', () => {
     expect(result.status).toBe(0)
   })
 
+  /**
+   * `--check` compares the generated regions and says nothing about the code
+   * around them. That is exactly where a regeneration breaks a wrapper: when the
+   * generated block grew from a `case` *arm* to the whole `case…esac`, the
+   * handwritten arms below the end marker became a second, unbalanced statement
+   * and `install.sh` stopped parsing — while `--check` still reported PASS.
+   *
+   * Two parsers because they disagree: `sh` is what the documented
+   * `curl … | sh` pipeline uses, `bash` is what most people have interactively.
+   */
   it.runIf(process.platform !== 'win32')('parse as shell scripts', () => {
-    const result = spawnSync('sh', ['-n', join(repoRoot, 'install.sh')], { encoding: 'utf8' })
+    for (const shell of ['sh', 'bash']) {
+      const result = spawnSync(shell, ['-n', join(repoRoot, 'install.sh')], { encoding: 'utf8' })
 
-    expect(result.stderr).toBe('')
-    expect(result.status).toBe(0)
+      expect(`${shell}: ${result.stderr}`).toBe(`${shell}: `)
+      expect(`${shell}: ${result.status}`).toBe(`${shell}: 0`)
+    }
+  })
+
+  /**
+   * The same failure mode in `install.ps1`, which has no parser available on the
+   * Linux runners. Structural instead: every generated region is delimited once,
+   * and the PowerShell blocks balance. A leftover handwritten remnant below an
+   * end marker shows up as an extra brace.
+   */
+  it('keep one delimited region per generated block, with balanced braces', () => {
+    for (const wrapper of ['install.sh', 'install.ps1']) {
+      const source = readFileSync(join(repoRoot, wrapper), 'utf8')
+      const begins = source.match(/--- BEGIN [a-z-]+ \(generated/g) ?? []
+      const ends = source.match(/--- END [a-z-]+ ---/g) ?? []
+
+      expect(`${wrapper}: ${begins.length === ends.length}`).toBe(`${wrapper}: true`)
+      expect(`${wrapper}: ${begins.length > 0}`).toBe(`${wrapper}: true`)
+
+      const opens = (source.match(/\{/g) ?? []).length
+      const closes = (source.match(/\}/g) ?? []).length
+      expect(`${wrapper}: ${opens}`).toBe(`${wrapper}: ${closes}`)
+    }
   })
 })

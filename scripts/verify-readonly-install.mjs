@@ -347,7 +347,14 @@ async function main() {
     // what `env node` and the Windows `.cmd` shim both do, and because a shell
     // under `sudo` is not the shell this script was started from.
     const childNode = run('node', ['-p', 'process.execPath + " " + process.versions.node'])
-    const [nodePath, version] = childNode.stdout.trim().split(' ')
+    // Split from the right. The version never contains a space; the path does,
+    // on every default Windows install — `C:\Program Files\nodejs\node.exe`
+    // splitting from the left reported the version as `Files\nodejs\node.exe`,
+    // which parses as 0.0.0 and fails a floor the machine actually met.
+    const printed = childNode.stdout.trim()
+    const separator = printed.lastIndexOf(' ')
+    const nodePath = separator === -1 ? undefined : printed.slice(0, separator)
+    const version = separator === -1 ? undefined : printed.slice(separator + 1)
     const have = parseFloor(version ?? '')
     const meetsFloor = have.major !== REQUIRED_NODE.major
       ? have.major > REQUIRED_NODE.major

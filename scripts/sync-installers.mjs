@@ -5,7 +5,7 @@
  *   npm run installers:sync     rewrite the generated blocks
  *   npm run installers:check    fail if any copy has drifted
  *
- * Two sources, four destinations:
+ * Two sources, three destination files, five generated blocks:
  *
  * - `scripts/installer-core.mjs` is copied into `install.sh` and `install.ps1`.
  *   The wrappers have to be standalone single files — `curl … | sh` cannot fetch
@@ -50,8 +50,15 @@ for (const line of core.split('\n')) {
 const engines = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')).engines.node
 const [major = 0, minor = 0, patch = 0] = String(engines)
   .replace(/^[^\d]*/, '')
+  .split('-')[0]
   .split('.')
   .map((part) => Number.parseInt(part, 10) || 0)
+// The same refusal `parseNodeFloor` makes in `shared/nodeFloor.ts`, repeated
+// here because this script is `.mjs` and cannot import the TypeScript module.
+// A floor of `0.0.0` is not a lenient floor, it is a floor every runtime
+// clears, and generating installers around one would ship that bypass to every
+// channel at once.
+if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
 const floorLabel = `${major}.${minor}.${patch}`
 
 /** Replaces everything between a pair of markers, keeping the markers themselves. */
@@ -74,11 +81,19 @@ const targets = [
       {
         begin: FLOOR_BEGIN,
         end: FLOOR_END,
+        // A whole, closed `case`. It used to open here and close outside the
+        // markers, with the Linux and fallback arms handwritten below — so any
+        // change to this body that did not happen to end mid-`case` would have
+        // left `install.sh` unparseable, and only at the moment somebody piped
+        // it into `sh`.
         body: [
           `  echo "LoopTroop needs Node.js ${floorLabel} or newer and it is not on your PATH." >&2`,
           '  echo "" >&2',
           '  case "$(uname -s 2>/dev/null || echo unknown)" in',
           `    Darwin) echo "  brew install node@${major}" >&2 ;;`,
+          '    Linux)  echo "  Use your distribution\'s package or https://github.com/nvm-sh/nvm" >&2 ;;',
+          '    *)      echo "  https://nodejs.org/" >&2 ;;',
+          '  esac',
         ].join('\n'),
       },
     ],
@@ -94,7 +109,13 @@ const targets = [
       {
         begin: FLOOR_BEGIN,
         end: FLOOR_END,
-        body: `  Write-Host 'LoopTroop needs Node.js ${floorLabel} or newer and it is not on your PATH.' -ForegroundColor Red`,
+        // The install line belongs in here too. Left handwritten below the
+        // markers it was the one piece of platform help no drift check read.
+        body: [
+          `  Write-Host 'LoopTroop needs Node.js ${floorLabel} or newer and it is not on your PATH.' -ForegroundColor Red`,
+          "  Write-Host ''",
+          "  Write-Host '  winget install OpenJS.NodeJS.LTS'",
+        ].join('\n'),
       },
     ],
   },

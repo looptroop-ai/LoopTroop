@@ -23,10 +23,10 @@ node_missing() {
   echo "" >&2
   case "$(uname -s 2>/dev/null || echo unknown)" in
     Darwin) echo "  brew install node@24" >&2 ;;
-# --- END node-floor ---
-    Linux)  echo "  Use your distribution's package, or https://github.com/nvm-sh/nvm" >&2 ;;
+    Linux)  echo "  Use your distribution's package or https://github.com/nvm-sh/nvm" >&2 ;;
     *)      echo "  https://nodejs.org/" >&2 ;;
   esac
+# --- END node-floor ---
   echo "  ...or download an installer from https://nodejs.org/" >&2
   echo "" >&2
   echo "Then run this installer again. It will not install Node for you." >&2

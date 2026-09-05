@@ -16,21 +16,36 @@ var REQUIRED_PATCH = 1
 var REQUIRED_LABEL = REQUIRED_MAJOR + '.' + REQUIRED_MINOR + '.' + REQUIRED_PATCH
 
 function parseVersion(raw) {
-  var parts = String(raw).split('.')
+  var text = String(raw)
+  var parts = text.split('-')[0].split('.')
   return {
     major: parseInt(parts[0], 10) || 0,
     minor: parseInt(parts[1], 10) || 0,
-    patch: parseInt(parts[2], 10) || 0
+    patch: parseInt(parts[2], 10) || 0,
+    prerelease: text.indexOf('-') !== -1
   }
 }
 
 // Patch-level, because the floor is a patch release. A major.minor comparison
 // refused 24.18.0 while printing 24.18.0 as the version to install.
+//
+// A prerelease of the floor is below it, which is how npm reads `engines.node`
+// and what `scripts/installer-core.mjs` already does: 24.18.1-nightly.0 comes
+// before 24.18.1 and does not carry its fixes.
 function isSupported(raw) {
   var version = parseVersion(raw)
   if (version.major !== REQUIRED_MAJOR) return version.major > REQUIRED_MAJOR
   if (version.minor !== REQUIRED_MINOR) return version.minor > REQUIRED_MINOR
-  return version.patch >= REQUIRED_PATCH
+  if (version.patch !== REQUIRED_PATCH) return version.patch > REQUIRED_PATCH
+  return !version.prerelease
+}
+
+// Platform-neutral: nvm is not how anybody installs Node on Windows, and this
+// message is printed on whatever machine the user happens to be on.
+function nodeHelp() {
+  if (process.platform === 'darwin') return '  brew install node@' + REQUIRED_MAJOR + '\n'
+  if (process.platform === 'win32') return '  winget install OpenJS.NodeJS.LTS\n'
+  return '  Use your distribution\'s package or https://github.com/nvm-sh/nvm\n'
 }
 
 if (!isSupported(process.versions.node)) {
@@ -38,9 +53,8 @@ if (!isSupported(process.versions.node)) {
     'LoopTroop requires Node.js ' + REQUIRED_LABEL + ' or newer.\n' +
     'You are running Node.js ' + process.versions.node + '.\n\n' +
     'Install a supported version:\n' +
-    '  nvm:      nvm install ' + REQUIRED_MAJOR + ' && nvm use ' + REQUIRED_MAJOR + '\n' +
-    '  Homebrew: brew install node@' + REQUIRED_MAJOR + '\n' +
-    '  Download: https://nodejs.org/\n'
+    nodeHelp() +
+    '  ...or download an installer from https://nodejs.org/\n'
   )
   process.exit(1)
 }

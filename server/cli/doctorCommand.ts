@@ -240,8 +240,22 @@ function checkNode(latest: string | null = null): Check {
         name: 'node',
         status: 'fail',
         detail: withLatest(`v${process.versions.node}`, latest),
-        remedy: `LoopTroop needs Node ${REQUIRED_NODE_LABEL} or newer. Install it with nvm: nvm install ${NODE_FLOOR.major}`,
+        remedy: `LoopTroop needs Node ${REQUIRED_NODE_LABEL} or newer. ${nodeInstallHint()}`,
       }
+}
+
+/**
+ * How to get Node, on the machine this is running on.
+ *
+ * It used to name nvm unconditionally, which is not how anybody installs Node
+ * on Windows. The keg and the winget id follow the floor's major rather than a
+ * literal, so a release cannot end up recommending a version it has stopped
+ * accepting.
+ */
+function nodeInstallHint(): string {
+  if (process.platform === 'darwin') return `Install it with Homebrew: brew install node@${NODE_FLOOR.major}`
+  if (process.platform === 'win32') return 'Install it with winget: winget install OpenJS.NodeJS.LTS'
+  return `Install it with your distribution's package manager, or nvm: nvm install ${NODE_FLOOR.major}`
 }
 
 /**

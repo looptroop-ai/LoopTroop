@@ -20,9 +20,14 @@ function readGuardSource(): string {
   return guard.replace(/^#![^\n]*\n/, '')
 }
 
-function runGuard(nodeVersion: string, trailer = ''): { stdout: string; stderr: string; exitCode: number } {
+function runGuard(
+  nodeVersion: string,
+  trailer = '',
+  platform?: NodeJS.Platform,
+): { stdout: string; stderr: string; exitCode: number } {
   const script = [
     `Object.defineProperty(process.versions, "node", { value: "${nodeVersion}", configurable: true });`,
+    ...(platform ? [`Object.defineProperty(process, "platform", { value: "${platform}", configurable: true });`] : []),
     readGuardSource(),
     trailer,
   ].join('\n')
@@ -107,6 +112,41 @@ describe('cli launcher', () => {
   })
 
   /**
+   * A prerelease of the floor is below the floor, which is how npm reads
+   * `engines.node` and therefore the only reading that agrees with whatever
+   * installed the runtime. The comparison waved `24.18.1-rc.1` through because
+   * the three numbers matched, so a nightly missing the fix the floor exists for
+   * started the app and failed later, somewhere unrelated.
+   */
+  it('rejects a prerelease of the floor', () => {
+    expect(runGuard(`${FLOOR_LABEL}-rc.1`).exitCode).toBe(1)
+  })
+
+  it('accepts a prerelease of a version above the floor', () => {
+    const above = `${FLOOR.major + 1}.0.0-nightly20260101`
+    expect(runGuard(above, 'process.stdout.write("passed");').stdout).toBe('passed')
+  })
+
+  /**
+   * The refusal is the only thing a user on an old Node ever sees from
+   * LoopTroop, so it has to name a way forward that exists on their machine.
+   * It named nvm unconditionally, which is not how anyone installs Node on
+   * Windows and not how most people do on macOS.
+   */
+  it.each([
+    ['darwin' as const, `brew install node@${FLOOR.major}`],
+    ['win32' as const, 'winget install OpenJS.NodeJS.LTS'],
+    ['linux' as const, 'nvm'],
+  ])('tells a %s user how to install Node', (platform, hint) => {
+    const result = runGuard('22.9.0', '', platform)
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(hint)
+    // Always offered as well: a package manager is not always an option.
+    expect(result.stderr).toContain('https://nodejs.org/')
+  })
+
+  /**
    * §11.5: the floor was written by hand in five places with three different
    * answers. `engines.node` is the only one left; these constants are generated
    * from it by `scripts/sync-installers.mjs`, and this is what catches a drift
@@ -118,6 +158,10 @@ describe('cli launcher', () => {
       major: Number(/var REQUIRED_MAJOR = (\d+)/.exec(source)?.[1]),
       minor: Number(/var REQUIRED_MINOR = (\d+)/.exec(source)?.[1]),
       patch: Number(/var REQUIRED_PATCH = (\d+)/.exec(source)?.[1]),
+      // The generated block carries three numbers; a floor is never itself a
+      // prerelease, and `parseNodeFloor` says so.
+      prerelease: FLOOR.prerelease,
     }).toEqual(FLOOR)
+    expect(FLOOR.prerelease).toBe(false)
   })
 })

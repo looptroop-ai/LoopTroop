@@ -424,14 +424,17 @@ export function updateProject(id: number, patch: Partial<Pick<LocalProjectRow, '
   return hydrateProject(context.attached, updated)
 }
 
-const DETACHABLE_TICKET_STATUSES = new Set(['DRAFT', 'COMPLETED', 'CANCELED'])
+// Statuses that do not hold a project open. Named for what they mean rather
+// than for one caller: `detachProject` is gone, and the remaining readers ask
+// whether a project still has live work, not whether it can be detached.
+const INACTIVE_TICKET_STATUSES = new Set(['DRAFT', 'COMPLETED', 'CANCELED'])
 
 function hasActiveProjectTickets(projectRoot: string): boolean {
   const projectDb = getExistingProjectDatabase(projectRoot)
   if (!projectDb) return false
 
   const rows = projectDb.db.select({ status: tickets.status }).from(tickets).all()
-  return rows.some(ticket => !DETACHABLE_TICKET_STATUSES.has(ticket.status))
+  return rows.some(ticket => !INACTIVE_TICKET_STATUSES.has(ticket.status))
 }
 
 export function deleteProject(id: number): boolean {
@@ -469,7 +472,7 @@ export function getExistingProjectMetadata(projectRootOrFolder: string): Existin
 
   const ticketCount = db.select().from(tickets).all().length
   const activeTicketCount = db.select({ status: tickets.status }).from(tickets).all()
-    .filter(ticket => !DETACHABLE_TICKET_STATUSES.has(ticket.status))
+    .filter(ticket => !INACTIVE_TICKET_STATUSES.has(ticket.status))
     .length
   return {
     name: project.name,

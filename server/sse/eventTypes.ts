@@ -60,5 +60,3 @@ export interface ArtifactManifestEntry {
   available: boolean
   preview: Record<string, string | number | boolean | null>
 }
-
-

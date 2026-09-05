@@ -260,14 +260,21 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
   }
 
   if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
-  const filePath = resolveTicketFilePath(ticketId, file)
-  if (!filePath) return c.json({ error: 'Ticket not found' }, 404)
+  if (!resolveTicketFilePath(ticketId, file)) return c.json({ error: 'Ticket not found' }, 404)
 
   if (file === 'interview') {
     return handlePutInterview(c)
   }
 
-  return handlePutPrd(c)
+  if (file === 'prd') {
+    return handlePutPrd(c)
+  }
+
+  // Unreachable while `VALID_FILES` and the branches above agree, and that is
+  // the point: a third file type added to `VALID_FILES` without a handler here
+  // fails loudly instead of being written through the PRD writer, which reads
+  // nothing from `:file` and would have persisted it as a PRD.
+  return c.json({ error: `Unsupported file type: ${file satisfies never}` }, 400)
 })
 
 const execFileAsync = promisify(execFile)

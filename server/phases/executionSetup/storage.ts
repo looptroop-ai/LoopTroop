@@ -13,10 +13,8 @@ import {
 import {
   EXECUTION_LOG_RUNTIME_PATH,
   EXECUTION_SETUP_PROFILE_ARTIFACT_TYPE,
-  EXECUTION_SETUP_PROFILE_MIRROR,
   EXECUTION_SETUP_REPORT_ARTIFACT_TYPE,
   EXECUTION_SETUP_RETRY_NOTES_ARTIFACT_TYPE,
-  EXECUTION_SETUP_RUNTIME_DIR,
   serializeExecutionSetupProfile,
   type ExecutionSetupProfile,
 } from './types'
@@ -27,11 +25,6 @@ const EXECUTION_SETUP_UI_STATE_ARTIFACT_TYPES = new Set([
   'ui_state:approval_execution_setup',
 ])
 const EXECUTION_SETUP_TOOL_CACHE_DIR = 'tool-cache'
-
-export const EXECUTION_SETUP_ALLOWED_RUNTIME_PATHS = [
-  EXECUTION_SETUP_RUNTIME_DIR,
-  EXECUTION_SETUP_PROFILE_MIRROR,
-] as const
 
 export interface ExecutionSetupPathSnapshot {
   untrackedPaths: string[]

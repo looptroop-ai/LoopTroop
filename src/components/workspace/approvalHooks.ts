@@ -20,6 +20,11 @@ interface UseDebouncedApprovalUiStateOptions<T> {
   ticketId: string
   scope: string
   saveUiState: SaveTicketUiStateFn<T>
+  /**
+   * `RefObject`, not the deprecated `MutableRefObject`: in React 19's typings
+   * `RefObject<T>` is `{ current: T }` — mutable — so the refs this module
+   * assigns to keep working. On React 18 typings it would be read-only.
+   */
   lastSavedSnapshotRef: RefObject<string>
   initialUpdatedAt?: string | null
   delayMs?: number

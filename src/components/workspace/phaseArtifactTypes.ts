@@ -32,12 +32,6 @@ import {
 } from '@shared/refinementDiffArtifacts'
 import type { UiRefinementDiffArtifact } from '@shared/refinementDiffArtifacts'
 import { buildTextDiffSegments } from './textDiffSegments'
-export {
-  TEXT_DIFF_TOKEN_PATTERN as QUESTION_DIFF_TOKEN_PATTERN,
-  tokenizeTextDiff as tokenizeQuestionDiffText,
-  mergeTextDiffSegments as mergeQuestionDiffSegments,
-} from './textDiffSegments'
-
 export interface ArtifactDef {
   id: string
   label: string

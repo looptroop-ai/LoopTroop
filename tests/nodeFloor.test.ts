@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { formatNodeVersion, parseNodeFloor } from '../shared/nodeFloor'
+import { formatNodeVersion, parseNodeFloor, parseNodeVersion, satisfiesNodeFloor } from '../shared/nodeFloor'
+import { satisfiesFloor } from '../scripts/installer-core.mjs'
 import {
   NODE_FLOOR_EXACT,
   NODE_FLOOR_MAJOR,
@@ -44,12 +45,51 @@ describe('the Node floor is stated once', () => {
   it('is what both installer wrappers tell a reader to install', () => {
     expect(read('install.sh')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
     expect(read('install.ps1')).toContain(`LoopTroop needs Node.js ${FLOOR_LABEL} or newer`)
-    expect(read('install.sh')).toContain(`brew install node@${FLOOR.major}`)
+    expect(read('install.sh')).toContain('brew install node')
+    // Not `node@<major>`: that formula is keg-only, so it installs Node without
+    // putting it on PATH and the reader lands back on the same message.
+    expect(read('install.sh')).not.toContain(`brew install node@${FLOOR.major}`)
   })
 
-  it('is what the read-only install verifier enforces', () => {
-    // It reads `engines.node`; this only proves it no longer restates one.
-    expect(read('scripts/verify-readonly-install.mjs')).not.toMatch(/REQUIRED_NODE = \{ major: \d/)
+  /**
+   * The verifier predicts what the launcher will do when the shim resolves a
+   * Node on PATH, so a runtime the two disagree about is the one case it exists
+   * to report clearly and the one it used to get wrong: its private comparison
+   * dropped the prerelease suffix, so `24.18.1-rc.1` "met the floor" and the run
+   * failed later, at `start succeeds`, as a launcher refusal wearing a read-only
+   * failure's clothes.
+   *
+   * It now asks `installer-core.mjs`, which is what `curl | sh` asks. This holds
+   * that answer to `shared/nodeFloor.ts`'s — the launcher's and doctor's — for
+   * every runtime either of them can disagree about, so the verifier is correct
+   * by construction rather than by a source-text assertion.
+   */
+  it('is what the read-only install verifier enforces, via the installer comparison', () => {
+    // The verifier ends in `await main()`, so it cannot be imported and asked.
+    // These two lines are the whole of what a source-text gate can prove: that
+    // it delegates, and that it kept no second comparison to drift.
+    const verifier = read('scripts/verify-readonly-install.mjs')
+    expect(verifier).not.toMatch(/REQUIRED_NODE = \{ major: \d/)
+    expect(verifier).toContain('satisfiesFloor(version, NODE_FLOOR_SPEC)')
+    expect(verifier).not.toMatch(/have\.(major|minor|patch)/)
+
+    const runtimes = [
+      FLOOR_LABEL,
+      `${FLOOR_LABEL}-rc.1`,
+      `${FLOOR.major}.${FLOOR.minor}.${FLOOR.patch + 1}`,
+      `${FLOOR.major}.${FLOOR.minor - 1}.99`,
+      `${FLOOR.major + 1}.0.0`,
+      `${FLOOR.major + 1}.0.0-nightly20260101`,
+      `v${FLOOR_LABEL}`,
+      `${FLOOR.major - 1}.99.99`,
+    ]
+    for (const runtime of runtimes) {
+      expect([runtime, satisfiesFloor(runtime, engines)])
+        .toEqual([runtime, satisfiesNodeFloor(parseNodeVersion(runtime), FLOOR)])
+    }
+    // The pair that used to differ, named rather than left to the loop.
+    expect(satisfiesFloor(`${FLOOR_LABEL}-rc.1`, engines)).toBe(false)
+    expect(satisfiesFloor(FLOOR_LABEL, engines)).toBe(true)
   })
 
   /**

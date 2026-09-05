@@ -22,7 +22,7 @@ node_missing() {
   echo "LoopTroop needs Node.js 24.18.1 or newer and it is not on your PATH." >&2
   echo "" >&2
   case "$(uname -s 2>/dev/null || echo unknown)" in
-    Darwin) echo "  brew install node@24" >&2 ;;
+    Darwin) echo "  brew install node" >&2 ;;
     Linux)  echo "  Use your distribution's package or https://github.com/nvm-sh/nvm" >&2 ;;
     *)      echo "  https://nodejs.org/" >&2 ;;
   esac
@@ -103,15 +103,17 @@ const MANIFEST_ASSET = 'release-manifest.json'
 const TARBALL_PATTERN = /^looptroop-.+\.tgz$/
 
 /**
- * How to get a supported Node, named for the floor actually being enforced.
+ * How to get a supported Node.
  *
- * The keg is `node@<major>` rather than a hardcoded one: this help is printed
- * only when a release's own `engines.node` has just been checked, and a
- * hardcoded major would eventually tell people to install a version the release
- * no longer accepts.
+ * The macOS line names the unversioned formula on purpose. `brew install
+ * node@24` is keg-only — Homebrew installs it and deliberately does not link it
+ * onto PATH, which is why LoopTroop's own tap has to wrap it — so a reader who
+ * ran the versioned command would come back to the same "Node is not on your
+ * PATH" message with Node installed. `brew install node` is linked, and is
+ * always at or above a floor that names a released major.
  */
-function nodeHelp(platform, floorMajor) {
-  if (platform === 'darwin') return `brew install node@${floorMajor}   (or download from https://nodejs.org/)`
+function nodeHelp(platform) {
+  if (platform === 'darwin') return 'brew install node   (or download from https://nodejs.org/)'
   if (platform === 'win32') return 'winget install OpenJS.NodeJS.LTS   (or download from https://nodejs.org/)'
   return 'Use your distribution\'s package or https://github.com/nvm-sh/nvm'
 }
@@ -435,7 +437,7 @@ function checkRuntime(engines) {
   if (engines.node && !satisfiesFloor(process.versions.node, engines.node)) {
     fail(
       `LoopTroop needs Node ${engines.node}; this is ${process.versions.node}.`,
-      nodeHelp(process.platform, String(engines.node).replace(/^[^\d]*/, '').split('.')[0]),
+      nodeHelp(process.platform),
       'LoopTroop will not install Node for you.',
     )
   }

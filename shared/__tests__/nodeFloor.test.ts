@@ -50,6 +50,23 @@ describe('parseNodeFloor', () => {
   it.each(['', 'latest', '*', '>=x.y.z'])('throws rather than accepting everything for %o', (range) => {
     expect(() => parseNodeFloor(range)).toThrow(/Unreadable Node floor/)
   })
+
+  /**
+   * A positive major is not enough. `>=24.bad.1` read component by component is
+   * `24.0.1` — a floor every Node in the wild clears, written into the launcher,
+   * doctor, the installers and the verifier, all agreeing with each other.
+   * Matching the whole grammar is what turns a typo into a build failure.
+   */
+  it.each(['>=24.bad.1', '>=24.18.x', '>=24.18', '>=24', '>=24.18.1.2', '^24.18.1', '>=24.18.-1'])(
+    'throws for the malformed floor %o even though its major reads',
+    (range) => {
+      expect(() => parseNodeFloor(range)).toThrow(/Unreadable Node floor/)
+    },
+  )
+
+  it('reads a prerelease floor, which asks for the prereleases too', () => {
+    expect(parseNodeFloor('>=24.18.1-rc.0')).toEqual({ major: 24, minor: 18, patch: 1, prerelease: true })
+  })
 })
 
 describe('satisfiesNodeFloor', () => {

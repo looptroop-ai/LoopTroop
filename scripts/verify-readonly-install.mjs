@@ -27,22 +27,41 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The comparison, not a fourth copy of it. `installer-core.mjs` already orders
+// prereleases below the release they precede, which is what `curl | sh` uses to
+// decide the same question, and `tests/installer.test.ts` already holds it to
+// that. A private copy here is how this check came to accept a runtime the
+// launcher refuses.
+import { satisfiesFloor } from './installer-core.mjs'
+
 /**
  * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
  * read from `engines.node` rather than restated here, which is how this came to
  * accept 24.15 while the launcher required 24.18. Patch-level, like every other
  * consumer of that floor.
  */
-const REQUIRED_NODE = parseFloor(
-  JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
-    .engines.node,
-)
+const NODE_FLOOR_SPEC = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+).engines.node
+const REQUIRED_NODE = parseFloor(NODE_FLOOR_SPEC)
 
+/**
+ * The floor, matched whole. `.mjs` cannot import `shared/nodeFloor.ts`, which is
+ * why this is a copy — the same reason `scripts/sync-installers.mjs` carries
+ * one — so it repeats that module's grammar rather than its own looser reading.
+ * Component-by-component, `>=24.bad.1` was `24.0.1`: a floor every runtime in
+ * the wild clears, quietly turning this check into a no-op.
+ *
+ * The result is the label and the fail-closed check. Whether a runtime clears
+ * the floor is `satisfiesFloor`'s answer, so there is no second comparison here
+ * to drift from the installer's.
+ */
 function parseFloor(spec) {
-  const [major = 0, minor = 0, patch = 0] = String(spec)
-    .replace(/^[^\d]*/, '')
-    .split('.')
-    .map((part) => Number.parseInt(part, 10) || 0)
+  const match = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?\s*$/.exec(String(spec))
+  if (!match) {
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=24.18.1".`)
+  }
+  const [, major, minor, patch] = match.map(Number)
   return { major, minor, patch, label: `${major}.${minor}.${patch}` }
 }
 
@@ -355,12 +374,12 @@ async function main() {
     const separator = printed.lastIndexOf(' ')
     const nodePath = separator === -1 ? undefined : printed.slice(0, separator)
     const version = separator === -1 ? undefined : printed.slice(separator + 1)
-    const have = parseFloor(version ?? '')
-    const meetsFloor = have.major !== REQUIRED_NODE.major
-      ? have.major > REQUIRED_NODE.major
-      : have.minor !== REQUIRED_NODE.minor
-        ? have.minor > REQUIRED_NODE.minor
-        : have.patch >= REQUIRED_NODE.patch
+    // `satisfiesFloor` rather than a comparison of its own: a prerelease of the
+    // floor is *below* it, and the launcher this check exists to predict
+    // refuses one. A verifier that dropped the suffix would call the PATH Node
+    // fine and let the run fail later, at `start succeeds`, as a launcher
+    // refusal dressed up as a read-only failure.
+    const meetsFloor = version !== undefined && satisfiesFloor(version, NODE_FLOOR_SPEC)
     if (!check('the shim will find a supported Node on PATH', meetsFloor,
       `${nodePath ?? 'no node on PATH'} is ${version ?? 'unreadable'}, ` +
       `floor is ${REQUIRED_NODE.label}`)) {

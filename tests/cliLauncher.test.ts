@@ -132,9 +132,13 @@ describe('cli launcher', () => {
    * LoopTroop, so it has to name a way forward that exists on their machine.
    * It named nvm unconditionally, which is not how anyone installs Node on
    * Windows and not how most people do on macOS.
+   *
+   * macOS names the unversioned formula, not `node@<major>`: the versioned one
+   * is keg-only, so it installs Node without putting it on PATH and the reader
+   * lands back on this same message.
    */
   it.each([
-    ['darwin' as const, `brew install node@${FLOOR.major}`],
+    ['darwin' as const, 'brew install node'],
     ['win32' as const, 'winget install OpenJS.NodeJS.LTS'],
     ['linux' as const, 'nvm'],
   ])('tells a %s user how to install Node', (platform, hint) => {

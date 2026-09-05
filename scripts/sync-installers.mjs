@@ -48,16 +48,14 @@ for (const line of core.split('\n')) {
 }
 
 const engines = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')).engines.node
-const [major = 0, minor = 0, patch = 0] = String(engines)
-  .replace(/^[^\d]*/, '')
-  .split('-')[0]
-  .split('.')
-  .map((part) => Number.parseInt(part, 10) || 0)
-// The same refusal `parseNodeFloor` makes in `shared/nodeFloor.ts`, repeated
+// The same grammar `parseNodeFloor` enforces in `shared/nodeFloor.ts`, repeated
 // here because this script is `.mjs` and cannot import the TypeScript module.
-// A floor of `0.0.0` is not a lenient floor, it is a floor every runtime
-// clears, and generating installers around one would ship that bypass to every
-// channel at once.
+// Reading the floor component by component is what made `>=24.bad.1` mean
+// `24.0.1` — not a lenient floor but a floor every runtime clears, generated
+// into every channel at once, with each copy agreeing with the others.
+const floorMatch = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?\s*$/.exec(String(engines))
+if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+const [, major, minor, patch] = floorMatch.map(Number)
 if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
 const floorLabel = `${major}.${minor}.${patch}`
 
@@ -90,7 +88,10 @@ const targets = [
           `  echo "LoopTroop needs Node.js ${floorLabel} or newer and it is not on your PATH." >&2`,
           '  echo "" >&2',
           '  case "$(uname -s 2>/dev/null || echo unknown)" in',
-          `    Darwin) echo "  brew install node@${major}" >&2 ;;`,
+          // The unversioned formula, because `node@24` is keg-only: Homebrew
+          // installs it and deliberately leaves it off PATH, so the versioned
+          // command answers this message with the same message.
+          `    Darwin) echo "  brew install node" >&2 ;;`,
           '    Linux)  echo "  Use your distribution\'s package or https://github.com/nvm-sh/nvm" >&2 ;;',
           '    *)      echo "  https://nodejs.org/" >&2 ;;',
           '  esac',

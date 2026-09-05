@@ -45,6 +45,19 @@ export function parseNodeVersion(raw: string): NodeVersion {
 }
 
 /**
+ * The whole floor grammar, matched in one place: an optional `>=`, an optional
+ * `v`, three numeric components, an optional prerelease suffix.
+ *
+ * A runtime string is read leniently, because an unreadable component there can
+ * only under-report and so fails closed. A *floor* is the opposite: a lenient
+ * read of `>=24.bad.1` is `24.0.1`, a floor every runtime in the wild clears,
+ * and every generated copy — launcher, doctor, installers, verifier — would
+ * agree with each other on it. So the floor is matched whole rather than
+ * component by component.
+ */
+const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?\s*$/
+
+/**
  * `>=24.18.1` and `24.18.1` both read as the same floor.
  *
  * Throws rather than returning `0.0.0`. An unreadable floor is not a lenient
@@ -55,7 +68,17 @@ export function parseNodeVersion(raw: string): NodeVersion {
  * the install or the check rather than quietly disable it.
  */
 export function parseNodeFloor(engines: string): NodeVersion {
-  const floor = parseNodeVersion(String(engines).replace(/^[^\d]*/, ''))
+  const match = NODE_FLOOR_PATTERN.exec(String(engines))
+  if (!match) {
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
+  }
+  const [, major = '0', minor = '0', patch = '0', suffix] = match
+  const floor: NodeVersion = {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+    prerelease: suffix !== undefined,
+  }
   if (floor.major <= 0) {
     throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
   }

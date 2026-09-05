@@ -248,12 +248,15 @@ function checkNode(latest: string | null = null): Check {
  * How to get Node, on the machine this is running on.
  *
  * It used to name nvm unconditionally, which is not how anybody installs Node
- * on Windows. The keg and the winget id follow the floor's major rather than a
+ * on Windows. The winget id and the nvm major follow the floor rather than a
  * literal, so a release cannot end up recommending a version it has stopped
- * accepting.
+ * accepting. Homebrew is the exception: `brew install node@24` is keg-only, so
+ * it installs Node and deliberately leaves it off PATH — LoopTroop's own tap
+ * wraps it for exactly that reason — and the unversioned formula, which is
+ * linked, is always at or above a floor that names a released major.
  */
 function nodeInstallHint(): string {
-  if (process.platform === 'darwin') return `Install it with Homebrew: brew install node@${NODE_FLOOR.major}`
+  if (process.platform === 'darwin') return 'Install it with Homebrew: brew install node'
   if (process.platform === 'win32') return 'Install it with winget: winget install OpenJS.NodeJS.LTS'
   return `Install it with your distribution's package manager, or nvm: nvm install ${NODE_FLOOR.major}`
 }

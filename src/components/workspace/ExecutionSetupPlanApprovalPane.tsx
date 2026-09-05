@@ -333,7 +333,7 @@ export function ExecutionSetupPlanApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
-  const { data: persistedUiState } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isFetched: isUiStateFetched } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -434,6 +434,10 @@ export function ExecutionSetupPlanApprovalPane({
 
   useApprovalDraftRestore({
     document: plan,
+    // `persisted` is undefined both while the UI-state query is in flight and
+    // when there is genuinely no draft, so without this the pane can latch on
+    // defaults and discard the draft that lands a moment later.
+    ready: isUiStateFetched,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
@@ -444,17 +448,21 @@ export function ExecutionSetupPlanApprovalPane({
       const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
       const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
 
-      // `readOnly` gates edit mode on entry but not the snapshot: what is
-      // recorded is the draft the user last had, so leaving read-only does not
-      // read as an unsaved change.
-      setIsEditMode(!readOnly && nextEditMode)
+      // `readOnly` gates edit mode, and the baseline has to record the value
+      // React actually holds — not the one the draft asked for. An archived
+      // attempt restores `isEditMode: true` into a pane that shows `false`, and
+      // the pane is not remounted when the attempt clears, so the autosave that
+      // switches on then reads a difference nobody made and writes it back
+      // five seconds later.
+      const restoredEditMode = !readOnly && nextEditMode
+      setIsEditMode(restoredEditMode)
       setEditTab(nextEditTab)
       setStructuredDraft(nextStructuredDraft ?? null)
       setRawDraft(nextRawDraft)
       setCommentary(nextCommentary)
 
       return {
-        isEditMode: nextEditMode,
+        isEditMode: restoredEditMode,
         editTab: nextEditTab,
         rawDraft: nextRawDraft,
         structuredDraft: nextStructuredDraft,

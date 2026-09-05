@@ -16,6 +16,17 @@ interface UseAttentionAckOptions {
   signature: string | null
   /** What the server last recorded as acknowledged for this scope. */
   seenSignature: string | null | undefined
+  /**
+   * Moves whenever the ticket is re-read, so a save that failed is tried again.
+   *
+   * Both effects used to depend on the whole `ticket` object, which had this
+   * property by accident: a poll returning a new identity re-ran them. Depending
+   * on the primitives instead is what makes the guard below work — but it also
+   * means a PUT that never landed is never retried, because none of the values
+   * it compares has changed. The local acknowledgment still stops the flash on
+   * this tab, so the failure is invisible here and permanent everywhere else.
+   */
+  retryKey: string | number | undefined
   scope: AttentionScope
   /** Records the acknowledgment locally, so the card stops flashing before the save lands. */
   mark: (ticketId: string, signature: string | null) => void
@@ -38,6 +49,7 @@ export function useAttentionAck({
   ticketId,
   signature,
   seenSignature,
+  retryKey,
   scope,
   mark,
   clear,
@@ -60,5 +72,5 @@ export function useAttentionAck({
     if (seenSignature !== null) {
       saveUiState({ ticketId, scope, data: { seenSignature: null } })
     }
-  }, [clear, mark, saveUiState, scope, seenSignature, signature, ticketId])
+  }, [clear, mark, retryKey, saveUiState, scope, seenSignature, signature, ticketId])
 }

@@ -270,4 +270,71 @@ describe('useApprovalDraftRestore', () => {
     expect(writes).toEqual(['baseline-snapshot', 'restored-flag'])
     expect(lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'answers' }))
   })
+
+  /**
+   * The drag that cost this fix. The persisted draft arrived after the document
+   * already had, so the pane restored its defaults, latched `restoredDraftRef`,
+   * and then discarded the real draft that landed a moment later. The latch
+   * that keeps the restore one-shot is exactly what makes the timing race —
+   * which is why `ready` is there: the pane only restores once it has both the
+   * document and the UI state, so "persisted" is a genuine value rather than a
+   * still-loading gap.
+   */
+  it('does not restore, then discard a draft that arrives after the document', () => {
+    // Echoes what it was handed, the way a real pane's restore does: the
+    // baseline snapshot is then the draft that was actually applied, so a
+    // restore from the wrong input shows up in the snapshot rather than
+    // hiding behind a fixed return value.
+    const restore = vi.fn((draft: { tab: string } | undefined) => draft ?? { tab: 'default' })
+    const { result, rerender } = renderHook(
+      (props: RestoreHarnessProps) => useRestoreHarness(props),
+      { initialProps: {
+        document: null as { id: string } | null,
+        ready: false,
+        persisted: undefined as { tab: string } | undefined,
+        restore,
+      } },
+    )
+
+    // Document arrives before the over-debounced UI-state query settles.
+    rerender({ document: DOCUMENT, ready: false, persisted: undefined, restore })
+    expect(restore).not.toHaveBeenCalled()
+
+    // The UI state resolves: the draft the user actually saved.
+    rerender({ document: DOCUMENT, ready: true, persisted: { tab: 'answers' }, restore })
+
+    expect(restore).toHaveBeenCalledTimes(1)
+    expect(restore).toHaveBeenCalledWith({ tab: 'answers' }, DOCUMENT)
+    expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'answers' }))
+    expect(result.current.restoredDraftRef.current).toBe(true)
+  })
+
+  /**
+   * Restore is held through a ref so the one-shot effect does not re-run on
+   * every render, and the ref is refreshed in an earlier effect. These two have
+   * to be in that order: a render where the document arrives first, restores,
+   * and only then the real restore closure (the one that reads the draft the
+   * user needs) becomes available must still use the current one. If the ref
+   * were updated after the restore effect, the baseline would be the default.
+   */
+  it('uses the current restore closure even when its identity changes before a retry', () => {
+    const first = vi.fn(() => ({ tab: 'default' }))
+    const current = vi.fn(() => ({ tab: 'answers' }))
+    const { result, rerender } = renderHook(
+      (props: RestoreHarnessProps) => useRestoreHarness(props),
+      { initialProps: {
+        document: null as { id: string } | null,
+        ready: true,
+        persisted: undefined as { tab: string } | undefined,
+        restore: first,
+      } },
+    )
+
+    // Document and readiness both arrive in the same render as the saved draft.
+    rerender({ document: DOCUMENT, ready: true, persisted: { tab: 'answers' }, restore: current })
+
+    expect(current).toHaveBeenCalledWith({ tab: 'answers' }, DOCUMENT)
+    expect(first).not.toHaveBeenCalled()
+    expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'answers' }))
+  })
 })

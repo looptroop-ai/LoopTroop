@@ -93,7 +93,7 @@ export function InterviewApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'interview', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isFetched: isUiStateFetched } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
   const {
     data: interviewData,
     isLoading,
@@ -147,7 +147,10 @@ export function InterviewApprovalPane({
 
   useApprovalDraftRestore({
     document: interviewDocument,
-    ready: !isLoading,
+    // Both queries, not just the document one: `persisted` is undefined while
+    // the UI-state query is in flight and restoring from it latches the pane on
+    // defaults, discarding the saved answer drafts that arrive a moment later.
+    ready: !isLoading && isUiStateFetched,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,

@@ -469,6 +469,8 @@ export function TicketDashboard() {
     ticketId: ticket?.id,
     signature: errorSignature,
     seenSignature: ticket?.errorSeenSignature,
+    // Every ticket re-read is another chance for a save that failed to land.
+    retryKey: ticket?.updatedAt,
     scope: 'error_attention',
     mark: markErrorTicketSeen,
     clear: clearErrorTicketSeen,
@@ -479,6 +481,8 @@ export function TicketDashboard() {
     ticketId: ticket?.id,
     signature: needsInputSignature,
     seenSignature: ticket?.needsInputSeenSignature,
+    // Every ticket re-read is another chance for a save that failed to land.
+    retryKey: ticket?.updatedAt,
     scope: 'needs_input_attention',
     mark: markNeedsInputSeen,
     clear: clearNeedsInputSeen,

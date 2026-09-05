@@ -94,7 +94,15 @@ interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
    * pane restored, so the real document would never reach the editors.
    */
   document: TDocument | null | undefined
-  /** Anything else that has to be true first — a query still loading, say. */
+  /**
+   * Anything else that has to be true first.
+   *
+   * The UI-state query belongs here, and not only the document query. `persisted`
+   * is `undefined` both while that query is in flight and when the server holds
+   * no draft, and this hook cannot tell those apart — so a document that arrives
+   * first restores defaults, latches, and the saved draft that lands a moment
+   * later is discarded with no way back.
+   */
   ready?: boolean
   /** The persisted UI state for this pane, if the server had any. */
   persisted: TPersisted | undefined
@@ -131,9 +139,14 @@ export function useApprovalDraftRestore<TPersisted, TDocument>({
 }: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): void {
   // Held in a ref rather than in the dependency array: this effect is one-shot,
   // and a `restore` closure that changes identity every render would otherwise
-  // re-run it for no reason. It reads the latest one when it does run.
+  // re-run it for no reason. Written in an effect rather than during render —
+  // a render React discards would otherwise leave the ref pointing at a closure
+  // over state that was never committed, and the baseline snapshot below would
+  // be computed from it. Declared first so it commits before that effect runs.
   const restoreRef = useRef(restore)
-  restoreRef.current = restore
+  useEffect(() => {
+    restoreRef.current = restore
+  })
 
   useEffect(() => {
     if (!ready || !document || restoredDraftRef.current) return

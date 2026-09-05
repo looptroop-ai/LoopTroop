@@ -150,7 +150,7 @@ export function PrdApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'prd', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isFetched: isUiStateFetched } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
   const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
     queryFn: async ({ signal }) => {
@@ -235,7 +235,10 @@ export function PrdApprovalPane({
 
   useApprovalDraftRestore({
     document: prdDocument,
-    ready: !isLoading,
+    // Both queries, not just the document one: `persisted` is undefined while
+    // the UI-state query is in flight and restoring from it latches the pane on
+    // defaults, discarding the saved structured and YAML drafts.
+    ready: !isLoading && isUiStateFetched,
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,

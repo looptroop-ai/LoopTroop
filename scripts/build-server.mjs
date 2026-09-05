@@ -33,7 +33,6 @@ const result = await build({
   metafile: true,
   logLevel: 'info',
   define: {
-    'process.env.LOOPTROOP_BUILD': JSON.stringify('production'),
     // Compiled in rather than read off disk at runtime. Two callers used to
     // resolve `package.json` relative to their own module, which holds for an
     // npm install and nowhere else — most importantly in a single-file build,

@@ -34,7 +34,6 @@ import {
 } from '../../storage/tickets'
 import { buildPrdContextBuilder } from '../../phases/prd/draft'
 import { buildBeadsContextBuilder } from '../../phases/beads/draft'
-import { formatInterviewQuestionPreview, parseInterviewQuestions } from '../../phases/interview/questions'
 import type { OpenCodePromptDispatchEvent } from '../runOpenCodePrompt'
 import { buildSessionStatusLogEntries } from '../sessionStatusLogging'
 import {
@@ -1925,18 +1924,6 @@ export function createPendingDrafts(members: Array<{ modelId: string }>): DraftR
     outcome: 'pending',
     duration: 0,
   }))
-}
-
-export function tryBuildInterviewQuestionPreview(label: string, content?: string): string | null {
-  if (!content?.trim()) return null
-
-  try {
-    const questions = parseInterviewQuestions(content, { allowTopLevelArray: true })
-    if (questions.length === 0) return null
-    return formatInterviewQuestionPreview(label, questions)
-  } catch {
-    return null
-  }
 }
 
 export function upsertCouncilDraftArtifact(

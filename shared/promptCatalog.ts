@@ -115,10 +115,6 @@ export function promptStatusLabel(status: string): string {
   return label ? stripRuntimePlaceholders(label) : status
 }
 
-export function promptGroupIdForStatus(status: string): WorkflowGroupId | 'general' {
-  return statusMeta.get(status)?.groupId ?? 'general'
-}
-
 export function catalogEntry(promptId: string): PromptCatalogEntry | undefined {
   return PROMPT_CATALOG.find((entry) => entry.id === promptId)
 }

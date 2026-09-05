@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatInterviewQuestionPreview, parseInterviewQuestions } from '../questions'
+import { parseInterviewQuestions } from '../questions'
 
 describe.concurrent('parseInterviewQuestions', () => {
   it('parses wrapped question YAML for interview log previews', () => {
@@ -223,36 +223,3 @@ describe.concurrent('parseInterviewQuestions', () => {
   })
 })
 
-describe('formatInterviewQuestionPreview', () => {
-  it('formats the full multiline preview for the log viewer by default', () => {
-    const preview = formatInterviewQuestionPreview('Questions received from openai/gpt-5-mini', [
-      { id: 'Q01', phase: 'Foundation', question: 'What problem are we solving?' },
-      { id: 'Q02', phase: 'Structure', question: 'Which users should be supported first?' },
-      { id: 'Q03', phase: 'Assembly', question: 'How will success be verified?' },
-      { id: 'Q04', phase: 'Assembly', question: 'What is explicitly out of scope?' },
-    ])
-
-    expect(preview).toBe([
-      'Questions received from openai/gpt-5-mini (4 total):',
-      '- [foundation] What problem are we solving?',
-      '- [structure] Which users should be supported first?',
-      '- [assembly] How will success be verified?',
-      '- [assembly] What is explicitly out of scope?',
-    ].join('\n'))
-  })
-
-  it('still supports explicit truncation when requested', () => {
-    const preview = formatInterviewQuestionPreview('Questions received from openai/gpt-5-mini', [
-      { id: 'Q01', phase: 'Foundation', question: 'What problem are we solving?' },
-      { id: 'Q02', phase: 'Structure', question: 'Which users should be supported first?' },
-      { id: 'Q03', phase: 'Assembly', question: 'How will success be verified?' },
-    ], 2)
-
-    expect(preview).toBe([
-      'Questions received from openai/gpt-5-mini (3 total):',
-      '- [foundation] What problem are we solving?',
-      '- [structure] Which users should be supported first?',
-      '... 1 more question',
-    ].join('\n'))
-  })
-})

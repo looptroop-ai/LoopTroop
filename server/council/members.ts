@@ -1,12 +1,5 @@
 import { parseLockedCouncilMembers } from '../storage/ticketQueries'
 
-export const DEFAULT_MAIN_IMPLEMENTER = 'openai/codex-mini-latest'
-
-export const DEFAULT_COUNCIL_MEMBERS = [
-  DEFAULT_MAIN_IMPLEMENTER,
-  'openai/gpt-5.3-codex',
-] as const
-
 /**
  * Reads a stored council-member list.
  *

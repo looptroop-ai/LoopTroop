@@ -41,14 +41,6 @@ function normalizeRepoRelativePath(input: string): string {
   return input.replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
 
-export function isAllowedExecutionSetupRuntimePath(path: string): boolean {
-  const normalized = normalizeRepoRelativePath(path)
-  return normalized === EXECUTION_SETUP_PROFILE_MIRROR
-    || normalized === EXECUTION_LOG_RUNTIME_PATH
-    || normalized === EXECUTION_SETUP_RUNTIME_DIR
-    || normalized.startsWith(`${EXECUTION_SETUP_RUNTIME_DIR}/`)
-}
-
 function listGitPaths(worktreePath: string, args: string[]): string[] {
   const result = runGitSync(worktreePath, args)
   if (!result.ok) return []

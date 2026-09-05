@@ -243,18 +243,3 @@ export function matchProcess(
   }
   return current === recordedToken ? { kind: 'same' } : { kind: 'different' }
 }
-
-/**
- * True only when this pid is still the process the token was taken from.
- *
- * False for every uncertainty: no token was recorded, the process is gone, or
- * this platform cannot say. The caller is about to signal something, so the
- * unverifiable case must be indistinguishable from a mismatch.
- */
-export function isSameProcess(
-  pid: number,
-  recordedToken: string | undefined,
-  deps?: ProcessIdentityDeps,
-): boolean {
-  return matchProcess(pid, recordedToken, deps).kind === 'same'
-}

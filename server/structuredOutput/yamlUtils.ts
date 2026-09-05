@@ -16,7 +16,7 @@ export function stripTranscriptPrefixes(content: string): string {
   return stripSharedTranscriptPrefixes(content).trim()
 }
 
-export function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined) {
+function addCandidate(target: string[], seen: Set<string>, value: string | null | undefined) {
   const normalized = value?.trim()
   if (!normalized || seen.has(normalized)) return
   seen.add(normalized)
@@ -154,7 +154,7 @@ export function collectTaggedCandidates(rawContent: string, tag: string): string
 }
 
 /** Remove lines that are purely an XML tag — safe because real YAML string values won't be on a line alone as a bare tag */
-export function stripSpuriousXmlTags(content: string): string {
+function stripSpuriousXmlTags(content: string): string {
   return content
     .split('\n')
     .filter((line) => !/^\s*<\/?[a-zA-Z_][a-zA-Z0-9_-]*\s*\/?\s*>\s*$/.test(line))
@@ -284,7 +284,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-export function isExactTaggedEnvelope(rawContent: string, tag: string, candidate: string): boolean {
+function isExactTaggedEnvelope(rawContent: string, tag: string, candidate: string): boolean {
   const trimmed = rawContent.trim()
   const escapedTag = escapeRegExp(tag)
   const match = trimmed.match(new RegExp(`^<${escapedTag}>\\s*([\\s\\S]*?)\\s*<\\/${escapedTag}>$`))

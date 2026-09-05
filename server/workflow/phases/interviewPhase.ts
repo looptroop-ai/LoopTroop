@@ -27,7 +27,7 @@ import {
 import { buildMinimalContext, type TicketState } from '../../opencode/contextBuilder'
 import { buildPromptFromTemplate, PROM2, PROM3 } from '../../prompts/index'
 import { randomUUID } from 'node:crypto'
-import { and, eq, lt } from 'drizzle-orm'
+import { and, eq, lte } from 'drizzle-orm'
 import { interviewBatchClaims } from '../../db/schema'
 import { getLatestPhaseArtifact, getTicketByRef, getTicketContext, getTicketPaths, insertPhaseArtifact, upsertLatestPhaseArtifact, countPhaseArtifacts } from '../../storage/tickets'
 import { isMockOpenCodeMode } from '../../opencode/factory'
@@ -295,7 +295,11 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
     ticketId: context.localTicketId,
     token,
     claimedAt: nowIso,
-    expiresAt: new Date(now + Math.max(1, ttlMs)).toISOString(),
+    // Clamped at zero, not one: a zero-length lease is a claim that is expired
+    // the instant it is written, which is exactly what the takeover tests need
+    // to assert without waiting on the wall clock. A negative TTL is nonsense
+    // and lands on the same instant rather than in the past.
+    expiresAt: new Date(now + Math.max(0, ttlMs)).toISOString(),
   }
 
   return context.projectDb.transaction((tx): string | null => {
@@ -320,7 +324,15 @@ export function claimInterviewBatch(ticketId: string, ttlMs = DEFAULT_BATCH_CLAI
         set: claim,
         // A claim past its expiry belonged to a run that is gone. Taking it
         // over is the recovery path: nothing else would ever release it.
-        where: lt(interviewBatchClaims.expiresAt, nowIso),
+        //
+        // `lte`, not `lt`, and the boundary is the whole reason. A claim is
+        // live while `expires_at > now` — the test `hasInFlightInterviewBatch`
+        // applies, and the one `sessionAuth` and `fileLock` already used. With
+        // `lt` here the instant `expires_at === now` satisfied neither side:
+        // the claim was not live, and no one could take it over, so the ticket
+        // was wedged for that millisecond with no holder to release it. The two
+        // conditions have to be exact complements, not merely opposite.
+        where: lte(interviewBatchClaims.expiresAt, nowIso),
       })
       .run()
 

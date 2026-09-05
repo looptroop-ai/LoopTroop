@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
 import { clearProjectDatabaseCache } from '../../db/project'
@@ -84,7 +84,11 @@ describe('interview batch claim', () => {
 
   it('refuses a release from an acquisition that no longer holds the claim', () => {
     const ticket = makeTicket()
-    const stale = claimInterviewBatch(ticket, 1)
+    // A zero-length lease is expired the instant it is written, so the takeover
+    // below is decided by the comparison rather than by how long the assertions
+    // took to run. With a 1 ms lease this was a coin flip: CI landed on the
+    // exact millisecond where the claim was neither live nor takeable.
+    const stale = claimInterviewBatch(ticket, 0)
     expect(stale).toBeTruthy()
 
     // The first claim has already expired, so a second run takes it over. The
@@ -104,9 +108,39 @@ describe('interview batch claim', () => {
     const ticket = makeTicket()
     // A daemon that dies holding a claim releases nothing. The expiry is what
     // stops that from wedging the ticket until someone deletes the row.
-    expect(claimInterviewBatch(ticket, 1)).toBeTruthy()
+    expect(claimInterviewBatch(ticket, 0)).toBeTruthy()
+
+    // The two halves of the expiry have to be exact complements. "Not live" and
+    // "takeable" are the same instant seen from either side, so a claim that
+    // reports no holder must always be claimable — at `expires_at === now`
+    // included, which is where a `<` on one side and a `>` on the other left
+    // the ticket wedged with nobody able to release it.
     expect(hasInFlightInterviewBatch(ticket)).toBe(false)
     expect(claimInterviewBatch(ticket)).toBeTruthy()
+  })
+
+  it('treats the expiry instant itself as expired on both sides', () => {
+    // The boundary has to be *pinned*, not approached. Both tests above pass
+    // whichever comparison the takeover uses, because a real clock almost
+    // always moves a millisecond between the two calls and lands them off the
+    // boundary — which is how a `<` shipped, and why CI failed only on the
+    // lanes slow enough to land exactly on it. Freezing the clock makes
+    // `expires_at === now` the case under test rather than a rare accident.
+    //
+    // Only `Date` is faked: the claim path is synchronous, and hijacking real
+    // timers here would strand the database's own callbacks.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-09-05T00:00:00.000Z'))
+      const ticket = makeTicket()
+      expect(claimInterviewBatch(ticket, 0)).toBeTruthy()
+
+      // Same frozen instant for both questions: not live, therefore takeable.
+      expect(hasInFlightInterviewBatch(ticket)).toBe(false)
+      expect(claimInterviewBatch(ticket)).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

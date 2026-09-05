@@ -10,7 +10,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useBackendHealth } from '@/hooks/useBackendHealth'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
-import packageJson from '../../../package.json'
 import { DashboardSearch } from './DashboardSearch'
 import { cn } from '@/lib/utils'
 
@@ -83,7 +82,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
    * agree for a normal install, but a browser tab left open across an upgrade
    * would otherwise keep showing the version it was served with.
    */
-  const version = update?.currentVersion ?? packageJson.version
+  const version = update?.currentVersion ?? __APP_VERSION__
   const activeTriageFilterSummaries = getActiveTriageFilterSummaries(state.filters)
   const activeTriageFilterCount = activeTriageFilterSummaries.length
 

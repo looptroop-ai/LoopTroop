@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,7 @@ import {
 } from '@/lib/prdDocument'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -232,29 +233,31 @@ export function PrdApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || !prdDocument) return
+  useApprovalDraftRestore({
+    document: prdDocument,
+    ready: !isLoading,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
+      const nextStructuredDraft = normalizePrdApprovalDraft(persisted?.structuredDraft, document)
+      const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
-    const nextStructuredDraft = normalizePrdApprovalDraft(persisted?.structuredDraft, prdDocument)
-    const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft)
+      setYamlDraft(nextYamlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft)
-    setYamlDraft(nextYamlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      yamlDraft: nextYamlDraft,
-      structuredDraft: nextStructuredDraft,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [isLoading, persistedUiState, prdDocument, rawContent, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        yamlDraft: nextYamlDraft,
+        structuredDraft: nextStructuredDraft,
+      }
+    },
+  })
 
   useApprovalFocusAnchor(ticket.id, PRD_APPROVAL_FOCUS_EVENT)
 

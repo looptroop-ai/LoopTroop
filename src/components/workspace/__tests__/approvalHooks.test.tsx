@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useRef } from 'react'
-import { useDebouncedApprovalUiState } from '../approvalHooks'
+import { useApprovalDraftRestore, useDebouncedApprovalUiState } from '../approvalHooks'
 
 interface HarnessProps {
   snapshot: { value: string }
@@ -158,5 +158,116 @@ describe('useDebouncedApprovalUiState', () => {
       expectedRevision: expect.any(Number),
       actionId: expect.any(String),
     })
+  })
+})
+
+interface RestoreHarnessProps {
+  document: { id: string } | null
+  ready?: boolean
+  persisted: { tab: string } | undefined
+  restore: (persisted: { tab: string } | undefined, document: { id: string }) => unknown
+}
+
+function useRestoreHarness({ document, ready, persisted, restore }: RestoreHarnessProps) {
+  const restoredDraftRef = useRef(false)
+  const lastSavedSnapshotRef = useRef('')
+
+  useApprovalDraftRestore({
+    document,
+    ...(ready === undefined ? {} : { ready }),
+    persisted,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    restore,
+  })
+
+  return { restoredDraftRef, lastSavedSnapshotRef }
+}
+
+describe('useApprovalDraftRestore', () => {
+  const DOCUMENT = { id: 'doc-1' }
+
+  it('restores once, from the persisted state, and records the baseline snapshot', () => {
+    const restore = vi.fn(() => ({ tab: 'yaml' }))
+    const { result, rerender } = renderHook(
+      (props: RestoreHarnessProps) => useRestoreHarness(props),
+      { initialProps: { document: DOCUMENT, persisted: { tab: 'yaml' }, restore } },
+    )
+
+    expect(restore).toHaveBeenCalledTimes(1)
+    expect(restore).toHaveBeenCalledWith({ tab: 'yaml' }, DOCUMENT)
+    expect(result.current.restoredDraftRef.current).toBe(true)
+    expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'yaml' }))
+
+    rerender({ document: DOCUMENT, persisted: { tab: 'structured' }, restore })
+    expect(restore).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Restoring before the document arrives would write a snapshot of empty state
+   * and then mark the pane restored, so the real document would never reach the
+   * editors — and the autosave would treat the first render as a user edit.
+   */
+  it('waits for the document', () => {
+    const restore = vi.fn(() => ({ tab: 'structured' }))
+    const { result, rerender } = renderHook(
+      (props: RestoreHarnessProps) => useRestoreHarness(props),
+      { initialProps: { document: null as { id: string } | null, persisted: undefined, restore } },
+    )
+
+    expect(restore).not.toHaveBeenCalled()
+    expect(result.current.restoredDraftRef.current).toBe(false)
+    expect(result.current.lastSavedSnapshotRef.current).toBe('')
+
+    rerender({ document: DOCUMENT, persisted: undefined, restore })
+
+    expect(restore).toHaveBeenCalledWith(undefined, DOCUMENT)
+    expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'structured' }))
+  })
+
+  it('waits for anything else the pane says it is waiting for', () => {
+    const restore = vi.fn(() => ({ tab: 'answers' }))
+    const { result, rerender } = renderHook(
+      (props: RestoreHarnessProps) => useRestoreHarness(props),
+      { initialProps: { document: DOCUMENT, ready: false, persisted: undefined, restore } },
+    )
+
+    expect(restore).not.toHaveBeenCalled()
+
+    rerender({ document: DOCUMENT, ready: true, persisted: undefined, restore })
+
+    expect(restore).toHaveBeenCalledTimes(1)
+    expect(result.current.restoredDraftRef.current).toBe(true)
+  })
+
+  /**
+   * The snapshot has to be in place before the pane counts as restored: the
+   * autosave is enabled by that flag, and a baseline of `''` reads as a dirty
+   * draft the user never typed. Recorded through refs that log their own writes,
+   * because a ref assignment causes no re-render for a render body to observe.
+   */
+  it('writes the baseline before marking the pane restored', () => {
+    const writes: string[] = []
+    const restoredDraftRef = {
+      _value: false,
+      get current() { return this._value },
+      set current(next: boolean) { writes.push('restored-flag'); this._value = next },
+    }
+    const lastSavedSnapshotRef = {
+      _value: '',
+      get current() { return this._value },
+      set current(next: string) { writes.push('baseline-snapshot'); this._value = next },
+    }
+
+    renderHook(() => useApprovalDraftRestore({
+      document: DOCUMENT,
+      persisted: undefined,
+      restoredDraftRef,
+      lastSavedSnapshotRef,
+      restore: () => ({ tab: 'answers' }),
+    }))
+
+    expect(writes).toEqual(['baseline-snapshot', 'restored-flag'])
+    expect(lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'answers' }))
   })
 })

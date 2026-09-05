@@ -87,6 +87,61 @@ export function useApprovalDraftReset(
   }, [ticketId, lastSavedSnapshotRef, restoredDraftRef])
 }
 
+interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
+  /**
+   * The document the draft belongs to. Null or undefined means it has not
+   * arrived: restoring then would write a snapshot of empty state and mark the
+   * pane restored, so the real document would never reach the editors.
+   */
+  document: TDocument | null | undefined
+  /** Anything else that has to be true first — a query still loading, say. */
+  ready?: boolean
+  /** The persisted UI state for this pane, if the server had any. */
+  persisted: TPersisted | undefined
+  restoredDraftRef: RefObject<boolean>
+  lastSavedSnapshotRef: RefObject<string>
+  /**
+   * Applies the restored values to the pane's state and returns the object they
+   * represent, which becomes the baseline the autosave compares against.
+   */
+  restore: (persisted: TPersisted | undefined, document: TDocument) => unknown
+}
+
+/**
+ * Restores one approval pane's draft from persisted UI state, exactly once.
+ *
+ * The interview, PRD and execution-setup panes each wrote this out: the same
+ * guard, the same `JSON.stringify` into `lastSavedSnapshotRef`, the same
+ * `restoredDraftRef` flip, around a `restore` body that is genuinely different
+ * in each — different tabs, different defaults, different fields. Only the
+ * bookkeeping is shared, so only the bookkeeping is here.
+ *
+ * The order matters and is why this is worth centralising: the snapshot has to
+ * be written *before* the pane is marked restored, or the autosave can see a
+ * dirty pane whose baseline is still the empty string and save a draft the user
+ * never touched.
+ */
+export function useApprovalDraftRestore<TPersisted, TDocument>({
+  document,
+  ready = true,
+  persisted,
+  restoredDraftRef,
+  lastSavedSnapshotRef,
+  restore,
+}: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): void {
+  // Held in a ref rather than in the dependency array: this effect is one-shot,
+  // and a `restore` closure that changes identity every render would otherwise
+  // re-run it for no reason. It reads the latest one when it does run.
+  const restoreRef = useRef(restore)
+  restoreRef.current = restore
+
+  useEffect(() => {
+    if (!ready || !document || restoredDraftRef.current) return
+    lastSavedSnapshotRef.current = JSON.stringify(restoreRef.current(persisted, document))
+    restoredDraftRef.current = true
+  }, [document, lastSavedSnapshotRef, persisted, ready, restoredDraftRef])
+}
+
 export function useApprovalFocusAnchor(ticketId: string, eventName: string) {
   useEffect(() => {
     const handler = (event: Event) => {

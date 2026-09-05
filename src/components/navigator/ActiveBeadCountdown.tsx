@@ -9,6 +9,10 @@ interface ActiveBeadCountdownProps {
   tooltip?: string
 }
 
+function remainingFor(startedAt: string, perIterationTimeoutMs: number): number {
+  return Math.max(0, perIterationTimeoutMs - (Date.now() - new Date(startedAt).getTime()))
+}
+
 function formatTime(ms: number) {
   const totalSeconds = Math.floor(ms / 1000)
   const minutes = Math.floor(totalSeconds / 60)
@@ -17,17 +21,16 @@ function formatTime(ms: number) {
 }
 
 export function ActiveBeadCountdown({ startedAt, perIterationTimeoutMs, tooltip = 'Time remaining for the current bead iteration before it times out and is retried.' }: ActiveBeadCountdownProps) {
-  const [remainingMs, setRemainingMs] = useState(() => {
-    const startMs = new Date(startedAt).getTime()
-    const now = Date.now()
-    return Math.max(0, perIterationTimeoutMs - (now - startMs))
-  })
+  const [remainingMs, setRemainingMs] = useState(() => remainingFor(startedAt, perIterationTimeoutMs))
 
   useEffect(() => {
+    // Set before the interval, not only inside it. The initial state is computed
+    // once at mount, so switching to a different bead left the previous bead's
+    // remaining time on screen until the first tick — up to a whole second of a
+    // countdown that belonged to something else.
+    setRemainingMs(remainingFor(startedAt, perIterationTimeoutMs))
     const interval = setInterval(() => {
-      const startMs = new Date(startedAt).getTime()
-      const now = Date.now()
-      setRemainingMs(Math.max(0, perIterationTimeoutMs - (now - startMs)))
+      setRemainingMs(remainingFor(startedAt, perIterationTimeoutMs))
     }, COUNTDOWN_TICK_MS)
     return () => clearInterval(interval)
   }, [startedAt, perIterationTimeoutMs])

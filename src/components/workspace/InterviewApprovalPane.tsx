@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,7 @@ import {
 import { getCascadeEditWarningMessage } from '@/lib/workflowMeta'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -144,29 +145,31 @@ export function InterviewApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || !interviewDocument) return
+  useApprovalDraftRestore({
+    document: interviewDocument,
+    ready: !isLoading,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
+      const nextAnswerDrafts = normalizePersistedAnswerDrafts(persisted?.answerDrafts, document)
+      const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
-    const nextAnswerDrafts = normalizePersistedAnswerDrafts(persisted?.answerDrafts, interviewDocument)
-    const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setAnswerDrafts(nextAnswerDrafts)
+      setYamlDraft(nextYamlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setAnswerDrafts(nextAnswerDrafts)
-    setYamlDraft(nextYamlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      yamlDraft: nextYamlDraft,
-      answerDrafts: nextAnswerDrafts,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [interviewDocument, isLoading, persistedUiState, rawContent, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        yamlDraft: nextYamlDraft,
+        answerDrafts: nextAnswerDrafts,
+      }
+    },
+  })
 
   useApprovalFocusAnchor(ticket.id, INTERVIEW_APPROVAL_FOCUS_EVENT)
 

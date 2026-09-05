@@ -20,6 +20,7 @@ import {
 import { ExecutionSetupPlanEditor } from './ExecutionSetupPlanEditor'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -431,31 +432,36 @@ export function ExecutionSetupPlanApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useEffect(() => {
-    if (restoredDraftRef.current || !plan) return
+  useApprovalDraftRestore({
+    document: plan,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
+      const nextStructuredDraft = persisted?.structuredDraft ?? document
+      const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
+      const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
-    const nextStructuredDraft = persisted?.structuredDraft ?? plan
-    const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
-    const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
+      // `readOnly` gates edit mode on entry but not the snapshot: what is
+      // recorded is the draft the user last had, so leaving read-only does not
+      // read as an unsaved change.
+      setIsEditMode(!readOnly && nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft ?? null)
+      setRawDraft(nextRawDraft)
+      setCommentary(nextCommentary)
 
-    setIsEditMode(!readOnly && nextEditMode && Boolean(plan))
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft ?? null)
-    setRawDraft(nextRawDraft)
-    setCommentary(nextCommentary)
-
-    lastSavedSnapshotRef.current = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      rawDraft: nextRawDraft,
-      structuredDraft: nextStructuredDraft,
-      commentary: nextCommentary,
-    })
-    restoredDraftRef.current = true
-  }, [persistedUiState, plan, rawContent, readOnly, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        rawDraft: nextRawDraft,
+        structuredDraft: nextStructuredDraft,
+        commentary: nextCommentary,
+      }
+    },
+  })
 
   useEffect(() => {
     if (!readOnly) return

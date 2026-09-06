@@ -64,9 +64,12 @@ describe('parseNodeFloor', () => {
     },
   )
 
-  it('reads a prerelease floor, which asks for the prereleases too', () => {
-    expect(parseNodeFloor('>=24.18.1-rc.0')).toEqual({ major: 24, minor: 18, patch: 1, prerelease: true })
-  })
+  it.each(['>=24.18.1-rc.0', '>=24.18.1-nightly.0'])(
+    'throws for a prerelease floor %o rather than splitting the generated copies',
+    (range) => {
+      expect(() => parseNodeFloor(range)).toThrow(/Unreadable Node floor/)
+    },
+  )
 })
 
 describe('satisfiesNodeFloor', () => {

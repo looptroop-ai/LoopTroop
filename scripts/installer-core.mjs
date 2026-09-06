@@ -327,10 +327,18 @@ export function selectRelease(releases, pinned = null, installable = installable
   return candidates[0] ?? null
 }
 
-/** True when `have` satisfies a `>=x.y.z` style floor. */
+/**
+ * True when `have` satisfies a `>=x.y.z` style floor.
+ *
+ * An unreadable floor is not "no floor": stripping `not-a-range` down to
+ * leftover text and treating that as a zero version accepts every runtime.
+ * Same grammar as `parseNodeFloor` — three numeric components, no prerelease
+ * suffix — so a malformed manifest fails the install rather than skipping it.
+ */
 export function satisfiesFloor(have, floor) {
-  const minimum = String(floor).replace(/^[^\d]*/, '')
-  return minimum === '' || compareVersions(have, minimum) >= 0
+  const match = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(floor))
+  if (!match) return false
+  return compareVersions(have, `${match[1]}.${match[2]}.${match[3]}`) >= 0
 }
 
 // --- effects --------------------------------------------------------------

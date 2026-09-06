@@ -53,9 +53,11 @@ const engines = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8
 // Reading the floor component by component is what made `>=24.bad.1` mean
 // `24.0.1` — not a lenient floor but a floor every runtime clears, generated
 // into every channel at once, with each copy agreeing with the others.
-const floorMatch = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?\s*$/.exec(String(engines))
+const floorMatch = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(engines))
 if (!floorMatch) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
-const [, major, minor, patch] = floorMatch.map(Number)
+const major = Number(floorMatch[1])
+const minor = Number(floorMatch[2])
+const patch = Number(floorMatch[3])
 if (major <= 0) fail(`package.json engines.node is unreadable as a floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
 const floorLabel = `${major}.${minor}.${patch}`
 

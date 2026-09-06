@@ -56,15 +56,15 @@ function ghIsInstalled(): boolean {
 }
 
 /**
- * The environment every push needs, exported for the second one.
+ * The environment every remote git call needs, exported for the other ones.
  *
- * `pushSquashedCandidate` runs its own loop in `phases/integration/squash.ts`
- * against the same remote, and it was building its `runCommand` options by
- * hand — so it shared this module's timeout and retry count but not its
- * credentials. On a machine whose only credential is `GH_TOKEN`, a container
- * being the obvious one, that is the difference between a branch push that
- * works and a squashed-candidate push that stops to ask for a password it has
- * no way to request.
+ * `gh` reads `GH_TOKEN`; git does not. Prompting is off here by design, so on
+ * a machine whose only credential is that variable — a container being the
+ * obvious one — every `gh` call works and a `git fetch` or `git push` that
+ * follows fails asking for a password it cannot request. The branch push, the
+ * squashed-candidate push, ticket-setup's origin fetch and delivery's two
+ * remote fetches all have to agree, or the one that does not is the one that
+ * stalls.
  */
 export function gitPushEnv(): NodeJS.ProcessEnv {
   return { ...ghCredentialEnv() }

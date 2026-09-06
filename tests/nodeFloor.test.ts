@@ -90,6 +90,8 @@ describe('the Node floor is stated once', () => {
     // The pair that used to differ, named rather than left to the loop.
     expect(satisfiesFloor(`${FLOOR_LABEL}-rc.1`, engines)).toBe(false)
     expect(satisfiesFloor(FLOOR_LABEL, engines)).toBe(true)
+    expect(satisfiesFloor(FLOOR_LABEL, 'not-a-range')).toBe(false)
+    expect(satisfiesFloor(FLOOR_LABEL, `>=${FLOOR_LABEL}-rc.1`)).toBe(false)
   })
 
   /**

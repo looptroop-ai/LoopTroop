@@ -46,7 +46,10 @@ export function parseNodeVersion(raw: string): NodeVersion {
 
 /**
  * The whole floor grammar, matched in one place: an optional `>=`, an optional
- * `v`, three numeric components, an optional prerelease suffix.
+ * `v`, three numeric components. A prerelease suffix is refused: the floor is
+ * a patch release, and a form like `>=24.18.1-rc.1` is not one we publish.
+ * Accepting it here while the launcher only receives the three integers would
+ * split the copies the moment someone used the form the grammar advertised.
  *
  * A runtime string is read leniently, because an unreadable component there can
  * only under-report and so fails closed. A *floor* is the opposite: a lenient
@@ -55,7 +58,7 @@ export function parseNodeVersion(raw: string): NodeVersion {
  * agree with each other on it. So the floor is matched whole rather than
  * component by component.
  */
-const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?\s*$/
+const NODE_FLOOR_PATTERN = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/
 
 /**
  * `>=24.18.1` and `24.18.1` both read as the same floor.
@@ -72,12 +75,12 @@ export function parseNodeFloor(engines: string): NodeVersion {
   if (!match) {
     throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)
   }
-  const [, major = '0', minor = '0', patch = '0', suffix] = match
+  const [, major = '0', minor = '0', patch = '0'] = match
   const floor: NodeVersion = {
     major: Number(major),
     minor: Number(minor),
     patch: Number(patch),
-    prerelease: suffix !== undefined,
+    prerelease: false,
   }
   if (floor.major <= 0) {
     throw new Error(`Unreadable Node floor: ${JSON.stringify(engines)}. Expected a form like ">=24.18.1".`)

@@ -130,7 +130,7 @@ function makeUIValue(overrides: Partial<UIContextValue['state']> = {}, dispatch 
 function renderShell(uiValue = makeUIValue(), onOpenAbout?: () => void, queryClient?: QueryClient) {
   return renderWithProviders(
     <UIContext.Provider value={uiValue}>
-      <AppShell onOpenAbout={onOpenAbout}>
+      <AppShell onOpenAbout={onOpenAbout} onNavigateHome={() => undefined}>
         <div>Dashboard</div>
       </AppShell>
     </UIContext.Provider>,

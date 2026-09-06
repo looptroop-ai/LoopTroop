@@ -23,9 +23,11 @@ interface AppShellProps {
   /**
    * Returns to the board, closing whatever is open on the way. Supplied by
    * `App`, which owns the URL: the logo used to write `/` itself and so raced
-   * the route effect that derives the pathname from this state.
+   * the route effect that derives the pathname from this state. Required —
+   * a fallback that only deselected the ticket left the open dialog in place
+   * and wrote no URL, which is the race this prop exists to end.
    */
-  onNavigateHome?: () => void
+  onNavigateHome: () => void
   isModalOpen?: boolean
 }
 
@@ -113,13 +115,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
         <div className="flex items-center gap-1">
           <button
             className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => {
-              if (onNavigateHome) {
-                onNavigateHome()
-                return
-              }
-              dispatch({ type: 'SELECT_TICKET', ticketId: null })
-            }}
+            onClick={onNavigateHome}
           >
             <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
             <div className="hidden items-baseline gap-2 sm:flex">

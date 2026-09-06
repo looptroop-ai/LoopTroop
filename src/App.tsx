@@ -52,8 +52,39 @@ type ModalRoute = keyof typeof MODAL_ROUTES
 
 const MODAL_ROUTE_ENTRIES = Object.entries(MODAL_ROUTES) as [ModalRoute, string][]
 
+/**
+ * Trailing slashes are not a different screen. `/config/` is Configuration,
+ * `/ticket/LT-1/` is LT-1. Stripping them here is what lets every matcher
+ * agree, so a copied URL with a slash on the end is not treated as a path
+ * this app has no route for.
+ */
+function canonicalizePathname(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith('/')) {
+    return pathname.replace(/\/+$/, '') || ROUTE_ROOT
+  }
+  return pathname
+}
+
 function modalForPathname(pathname: string): ModalRoute | null {
-  return MODAL_ROUTE_ENTRIES.find(([, route]) => route === pathname)?.[0] ?? null
+  const path = canonicalizePathname(pathname)
+  return MODAL_ROUTE_ENTRIES.find(([, route]) => route === path)?.[0] ?? null
+}
+
+/**
+ * A ticket route names exactly one id. Extra segments are still that ticket
+ * (`/ticket/LT-1/extra` is a sloppy link to LT-1, not a different screen);
+ * `/ticket/new/...` is not New Ticket — that modal is the exact path — and
+ * `/ticket/` names nothing.
+ */
+function parseTicketPath(pathname: string): { externalId: string; extra: boolean } | null {
+  const path = canonicalizePathname(pathname)
+  if (!path.startsWith(TICKET_ROUTE_PREFIX)) return null
+  const rest = path.slice(TICKET_ROUTE_PREFIX.length)
+  if (!rest) return null
+  const segments = rest.split('/')
+  const externalId = segments[0] ?? ''
+  if (!externalId || externalId === 'new') return null
+  return { externalId, extra: segments.length > 1 }
 }
 
 /**
@@ -65,22 +96,17 @@ function modalForPathname(pathname: string): ModalRoute | null {
  * Back would return to only for the app to correct it a second time.
  */
 function isUnownedPathname(pathname: string): boolean {
-  return pathname !== ROUTE_ROOT
-    && pathname !== ''
-    && modalForPathname(pathname) === null
-    && !pathname.startsWith(TICKET_ROUTE_PREFIX)
-}
-
-/** The external id a ticket route names, or null for `/ticket/new` and anything else. */
-function ticketExternalIdForPathname(pathname: string): string | null {
-  if (!pathname.startsWith(TICKET_ROUTE_PREFIX)) return null
-  const externalId = pathname.slice(TICKET_ROUTE_PREFIX.length).split('/')[0] ?? ''
-  return externalId && externalId !== 'new' ? externalId : null
+  const path = canonicalizePathname(pathname)
+  return path !== ROUTE_ROOT
+    && path !== ''
+    && modalForPathname(path) === null
+    && parseTicketPath(path) === null
 }
 
 type TicketRouteMatch =
   | { kind: 'none' }
-  | { kind: 'ticket'; ticketId: string; externalId: string }
+  | { kind: 'pending' }
+  | { kind: 'ticket'; ticketId: string; externalId: string; exact: boolean }
   | { kind: 'unresolved' }
 
 /**
@@ -91,15 +117,50 @@ type TicketRouteMatch =
  * from another machine. Treating that as `none` is what let the previous
  * session's restored selection quietly take the address bar and answer a
  * question the user did not ask.
+ *
+ * `pending` is the list not having arrived yet. Classifying every ticket path
+ * as unresolved while `tickets` is undefined is how Back during the first
+ * load wiped a valid deep link and replaced it with the board.
  */
 function matchTicketRoute(
   pathname: string,
   tickets: { id: string; externalId: string }[] | undefined,
 ): TicketRouteMatch {
-  const externalId = ticketExternalIdForPathname(pathname)
-  if (!externalId) return { kind: 'none' }
-  const ticket = tickets?.find(t => t.externalId === externalId)
-  return ticket ? { kind: 'ticket', ticketId: ticket.id, externalId: ticket.externalId } : { kind: 'unresolved' }
+  const parsed = parseTicketPath(pathname)
+  if (!parsed) return { kind: 'none' }
+  if (tickets === undefined) return { kind: 'pending' }
+  const ticket = tickets.find(t => t.externalId === parsed.externalId)
+  if (!ticket) return { kind: 'unresolved' }
+  return {
+    kind: 'ticket',
+    ticketId: ticket.id,
+    externalId: ticket.externalId,
+    exact: !parsed.extra,
+  }
+}
+
+/**
+ * Until hydration has honoured the entry URL, a restored selection that
+ * disagrees with it must not be on screen. The address bar already names the
+ * deep link; showing the previous ticket's dashboard under it lets the user
+ * edit the wrong ticket, and an error that never hydrates leaves them there.
+ *
+ * `/` with a restored ticket is the session coming back, not a disagreement.
+ * A modal entry keeps the restored ticket underneath, because closing the
+ * dialog returns to it.
+ */
+function shouldHoldRestoredTicket(
+  hasHydratedUrl: boolean,
+  entryPathname: string,
+  selectedExternalId: string | null,
+): boolean {
+  if (hasHydratedUrl) return false
+  const path = canonicalizePathname(entryPathname)
+  if (path === ROUTE_ROOT || path === '') return false
+  if (modalForPathname(path) !== null) return false
+  const parsed = parseTicketPath(path)
+  if (parsed) return parsed.externalId !== selectedExternalId
+  return true
 }
 
 const MODAL_SUSPENSE_FALLBACK = <div className="p-4 text-center text-muted-foreground">Loading…</div>
@@ -130,6 +191,23 @@ function App() {
    * named was never selected and was no longer anywhere to be found.
    */
   const entryPathnameRef = useRef(window.location.pathname)
+  /**
+   * Set by Back/Forward. Hydration used to ignore it and reconcile the
+   * mount-time snapshot anyway, so a Back during the first load was undone
+   * the moment the ticket list arrived.
+   */
+  const popOccurredRef = useRef(false)
+  /**
+   * The current modal was pushed by us, not landed on. Closing then uses
+   * Back so the dialog does not leave a duplicate ticket entry behind.
+   */
+  const modalWasPushedRef = useRef(false)
+  /**
+   * `history.back()` is asynchronous. Until the matching popstate lands, the
+   * route effect must not write — hydration completing in that gap would
+   * push the ticket route on top of a Back that had not finished.
+   */
+  const awaitingOwnBackRef = useRef(false)
   /**
    * Bumped whenever the app learns the pathname now in the bar is not one it
    * can honour, so the route effect overwrites that entry instead of pushing
@@ -225,10 +303,15 @@ function App() {
    */
   useEffect(() => {
     if (hasHydratedUrl || !ticketsQuery.isSuccess) return
-    const entryPathname = entryPathnameRef.current
+    // A pop during the load window is the user's answer to the entry URL.
+    const entryPathname = popOccurredRef.current
+      ? window.location.pathname
+      : entryPathnameRef.current
     const match = matchTicketRoute(entryPathname, tickets)
+    if (match.kind === 'pending') return
     if (match.kind === 'ticket') {
       dispatch({ type: 'SELECT_TICKET', ticketId: match.ticketId, externalId: match.externalId })
+      if (!match.exact) setRouteRepairToken(token => token + 1)
     } else if (match.kind === 'unresolved') {
       // Keeping the restored selection here would rewrite the address bar to a
       // different ticket than the one the link named, which reads as if the app
@@ -237,7 +320,10 @@ function App() {
       setRouteRepairToken(token => token + 1)
     } else if (isUnownedPathname(entryPathname)) {
       // A typo, a stale bookmark, a path from a future version. The board is
-      // what gets shown, and the address bar has to stop claiming otherwise.
+      // what gets shown, and the address bar has to stop claiming otherwise —
+      // including when a previous session left a ticket selected. Leaving that
+      // selection in place is what rewrote `/nowhere` into `/ticket/LT-2`.
+      dispatch({ type: 'CLOSE_TICKET' })
       setRouteRepairToken(token => token + 1)
     }
     setHasHydratedUrl(true)
@@ -261,9 +347,12 @@ function App() {
    *   - repairing a pathname naming a ticket this account does not have, or one
    *     this app has no route for at all, which Back would return to only to be
    *     corrected a second time;
-   *   - closing a routed modal, which restores the route the modal opened over.
-   *     Pushing duplicates that entry, so Back lands back on the modal route and
-   *     reopens the dialog the user just dismissed.
+   *   - closing a routed modal that was landed on (a fresh load of `/config`),
+   *     which restores the route underneath. A modal we pushed is popped
+   *     instead, so closing Configuration on a ticket does not leave
+   *     `/ticket/LT-1` twice and force Back to be pressed twice to leave it.
+   *     Switching one modal for another replaces, so there is only ever one
+   *     dialog entry to pop.
    *
    * Everything else pushes, including the first write. A modal opened while the
    * ticket list is still in flight is a user transition like any other, and
@@ -274,25 +363,79 @@ function App() {
     ? `${TICKET_ROUTE_PREFIX}${state.selectedTicketExternalId ?? state.selectedTicketId}`
     : ROUTE_ROOT
   useEffect(() => {
-    const closedModal = previousModalRef.current !== null && activeModal === null
+    const previousModal = previousModalRef.current
+    const closedModal = previousModal !== null && activeModal === null
+    const openedModal = previousModal === null && activeModal !== null
     previousModalRef.current = activeModal
+
+    if (awaitingOwnBackRef.current) {
+      if (!activeModal) return
+      awaitingOwnBackRef.current = false
+    }
+
     // With no modal and no settled ticket list the pathname is still the user's
     // request rather than anything derived from state, so there is nothing yet
     // to reconcile it against. A modal that just closed is the exception: its
     // route is this effect's own doing and has to come back off either way, or
     // dismissing Configuration while the list is still loading leaves `/config`
     // in the address bar and a refresh reopens the dialog.
+    //
+    // A repair requested before hydration is deliberately left unconsumed; it
+    // applies at the first write after the list arrives.
     if (!activeModal && !closedModal && !hasHydratedUrl) return
-    const repairs = closedModal || routeRepairToken !== repairedRouteTokenRef.current
+    const repairs = routeRepairToken !== repairedRouteTokenRef.current
     repairedRouteTokenRef.current = routeRepairToken
-    const target = activeModal ? MODAL_ROUTES[activeModal] : baseRoute
+
+    if (activeModal) {
+      const target = MODAL_ROUTES[activeModal]
+      const current = canonicalizePathname(window.location.pathname)
+      if (window.location.pathname === target) {
+        if (openedModal) modalWasPushedRef.current = false
+        return
+      }
+      if (openedModal) {
+        // `/config/` is Configuration, already. Repairing it in place is not
+        // an in-app open, so close must not Back over a push we never made.
+        if (canonicalizePathname(window.location.pathname) === target) {
+          window.history.replaceState(null, '', target)
+          modalWasPushedRef.current = false
+          return
+        }
+        window.history.pushState(null, '', target)
+        modalWasPushedRef.current = true
+        return
+      }
+      // Switching dialogs, or repairing `/config/` onto `/config`. Either way
+      // there is one modal history entry, not a stack of them.
+      if (current !== target || window.location.pathname !== target) {
+        window.history.replaceState(null, '', target)
+      }
+      return
+    }
+
+    const target = baseRoute
+    if (closedModal && modalWasPushedRef.current) {
+      modalWasPushedRef.current = false
+      const before = window.location.pathname
+      window.history.back()
+      if (window.location.pathname === before) {
+        window.history.replaceState(null, '', target)
+      } else if (window.location.pathname !== target) {
+        awaitingOwnBackRef.current = true
+      }
+      return
+    }
+
+    if (closedModal) modalWasPushedRef.current = false
     if (window.location.pathname === target) return
-    window.history[repairs ? 'replaceState' : 'pushState'](null, '', target)
+    window.history[(closedModal || repairs) ? 'replaceState' : 'pushState'](null, '', target)
   }, [activeModal, baseRoute, hasHydratedUrl, routeRepairToken])
 
   // Handle back/forward navigation
   useEffect(() => {
     const handlePop = () => {
+      popOccurredRef.current = true
+      awaitingOwnBackRef.current = false
       const pathname = window.location.pathname
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
@@ -301,15 +444,22 @@ function App() {
       setActiveModal(modalForPathname(pathname))
 
       const match = matchTicketRoute(pathname, ticketsRef.current)
+      if (match.kind === 'pending') {
+        // The list has not arrived. Treating this as unresolved would replace a
+        // valid ticket URL with the board, and hydration would then honour the
+        // mount-time snapshot instead of the page Back just landed on.
+        return
+      }
       if (match.kind === 'ticket') {
         dispatch({ type: 'SELECT_TICKET', ticketId: match.ticketId, externalId: match.externalId })
+        if (!match.exact) setRouteRepairToken(token => token + 1)
       } else if (match.kind === 'unresolved') {
         // Back onto a ticket deleted since it was last on screen. The repair is
         // the same as on entry, and the token is what makes the route effect run
         // at all: closing an already-closed ticket changes none of its inputs.
         dispatch({ type: 'CLOSE_TICKET' })
         setRouteRepairToken(token => token + 1)
-      } else if (pathname === ROUTE_ROOT || pathname === '') {
+      } else if (canonicalizePathname(pathname) === ROUTE_ROOT || pathname === '') {
         dispatch({ type: 'CLOSE_TICKET' })
       } else if (isUnownedPathname(pathname)) {
         // Back onto a path this app has no route for. A direct load of one is
@@ -389,6 +539,11 @@ function App() {
             ticket's state, which is how an answer typed for one ticket could be saved to another.
           */}
           {state.activeView === 'ticket' && state.selectedTicketId
+            && !shouldHoldRestoredTicket(
+              hasHydratedUrl,
+              entryPathnameRef.current,
+              state.selectedTicketExternalId,
+            )
             ? <TicketDashboard key={state.selectedTicketId} />
             : <KanbanBoard />}
         </AppShell>

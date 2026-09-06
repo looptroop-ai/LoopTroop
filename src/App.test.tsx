@@ -86,7 +86,7 @@ vi.mock('@/components/shared/KeyboardShortcuts', () => ({
 
 vi.mock('@/hooks/useTickets', () => ({
   useTickets: () => ({
-    data: mockState.tickets,
+    data: mockState.ticketsLoading && !mockState.ticketsFetched ? undefined : mockState.tickets,
     isFetched: mockState.ticketsFetched,
     isLoading: mockState.ticketsLoading,
     // Mirrors TanStack: a query that errored is fetched and settled but not
@@ -308,6 +308,8 @@ describe('App route ownership', () => {
     const { rerender } = renderAppElement(queryClient)
 
     expect(window.location.pathname).toBe('/ticket/LT-1')
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
 
     mockState.ticketsFetched = true
     mockState.ticketsLoading = false
@@ -703,6 +705,135 @@ describe('App route ownership', () => {
     })
     expect(screen.getByText('Kanban Board')).toBeInTheDocument()
     expect(window.location.pathname).toBe('/')
+  })
+
+  it('replaces an unowned entry URL even when a ticket selection is restored', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/nowhere')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  it('repairs a ticket URL with extra segments onto the canonical ticket route', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/ticket/LT-1/extra')
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+    expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  it('treats /ticket/ and /ticket/new/extra as paths the app has no route for', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    window.history.pushState(null, '', '/ticket/')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    renderApp()
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
+
+    window.history.pushState(null, '', '/ticket/new/extra')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+  })
+
+  it('opens Configuration from /config/ and repairs the trailing slash in place', async () => {
+    window.history.pushState(null, '', '/config/')
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const pushState = vi.spyOn(window.history, 'pushState')
+
+    renderApp()
+
+    expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/config')
+    })
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/config')
+    expect(pushState).not.toHaveBeenCalled()
+  })
+
+  it('pops an in-app dialog so one Back after close leaves the ticket', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    const { rerenderApp } = renderAppWithProbe()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/config')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/ticket/LT-1')
+    })
+    expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+
+    await act(async () => {
+      window.history.back()
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/')
+    })
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    rerenderApp()
+  })
+
+  it('honours Back onto a ticket while the list is still loading', async () => {
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+    const replaceState = vi.spyOn(window.history, 'replaceState')
+
+    window.history.pushState(null, '', '/ticket/LT-1')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-1')
+    expect(replaceState).not.toHaveBeenCalled()
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+    })
+    expect(window.location.pathname).toBe('/ticket/LT-1')
   })
 })
 

@@ -145,18 +145,21 @@ function matchTicketRoute(
  * deep link; showing the previous ticket's dashboard under it lets the user
  * edit the wrong ticket, and an error that never hydrates leaves them there.
  *
- * `/` with a restored ticket is the session coming back, not a disagreement.
+ * `/` with a restored ticket is the session coming back, not a disagreement —
+ * unless Back already landed on the board, in which case showing the restored
+ * ticket would undo that Back the moment the list arrives.
  * A modal entry keeps the restored ticket underneath, because closing the
  * dialog returns to it.
  */
 function shouldHoldRestoredTicket(
   hasHydratedUrl: boolean,
-  entryPathname: string,
+  pathname: string,
   selectedExternalId: string | null,
+  popOccurred: boolean,
 ): boolean {
   if (hasHydratedUrl) return false
-  const path = canonicalizePathname(entryPathname)
-  if (path === ROUTE_ROOT || path === '') return false
+  const path = canonicalizePathname(pathname)
+  if (path === ROUTE_ROOT || path === '') return popOccurred
   if (modalForPathname(path) !== null) return false
   const parsed = parseTicketPath(path)
   if (parsed) return parsed.externalId !== selectedExternalId
@@ -325,6 +328,10 @@ function App() {
       // selection in place is what rewrote `/nowhere` into `/ticket/LT-2`.
       dispatch({ type: 'CLOSE_TICKET' })
       setRouteRepairToken(token => token + 1)
+    } else if (popOccurredRef.current && (canonicalizePathname(entryPathname) === ROUTE_ROOT || entryPathname === '')) {
+      // Back to the board during the load window is a decision. Hydration that
+      // then reopened the restored ticket would undo it.
+      dispatch({ type: 'CLOSE_TICKET' })
     }
     setHasHydratedUrl(true)
   }, [dispatch, hasHydratedUrl, tickets, ticketsQuery.isSuccess])
@@ -541,8 +548,9 @@ function App() {
           {state.activeView === 'ticket' && state.selectedTicketId
             && !shouldHoldRestoredTicket(
               hasHydratedUrl,
-              entryPathnameRef.current,
+              popOccurredRef.current ? window.location.pathname : entryPathnameRef.current,
               state.selectedTicketExternalId,
+              popOccurredRef.current,
             )
             ? <TicketDashboard key={state.selectedTicketId} />
             : <KanbanBoard />}

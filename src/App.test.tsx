@@ -835,6 +835,38 @@ describe('App route ownership', () => {
     })
     expect(window.location.pathname).toBe('/ticket/LT-1')
   })
+
+  it('does not reopen the restored ticket when Back reaches the board before the list settles', async () => {
+    persistTicketSelection('ticket-2', 'LT-2')
+    mockState.tickets = [
+      { id: 'ticket-1', externalId: 'LT-1' },
+      { id: 'ticket-2', externalId: 'LT-2' },
+    ]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    const queryClient = createTestQueryClient()
+    const { rerender } = renderAppElement(queryClient)
+
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(window.location.pathname).toBe('/')
+
+    mockState.ticketsFetched = true
+    mockState.ticketsLoading = false
+    rerenderAppElement(rerender, queryClient)
+
+    await waitFor(() => {
+      expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
 })
 
 describe('App startup notices', () => {

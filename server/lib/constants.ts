@@ -39,8 +39,24 @@ export const PROMPT_MAX_TIMEOUT_MS = 30_000
 export const MAX_SSE_BUFFER_SIZE = 1000
 /** Max SSE replay buffer bytes per ticket */
 export const MAX_SSE_BUFFER_BYTES = 8 * 1024 * 1024
+/** How long a buffered SSE event stays replayable to a reconnecting client (5 minutes) */
+export const MAX_SSE_BUFFER_TTL_MS = 300_000
+/** How often the SSE buffer drops events past their TTL */
+export const SSE_BUFFER_CLEANUP_INTERVAL_MS = 60_000
 /** Max UI state payload size in bytes (2MB) */
 export const MAX_UI_STATE_BYTES = 2_097_152
+
+/** How often the SQLite WAL is checkpointed back into the main database */
+export const WAL_CHECKPOINT_INTERVAL_MS = 30_000
+/**
+ * How long a shutdown waits for its own cleanup before exiting anyway.
+ *
+ * The same deadline in the daemon and in the foreground server, on purpose:
+ * both are the same process shutting down the same resources, and a supervisor
+ * that killed one after a different interval than the other would produce two
+ * different post-crash states from the same event.
+ */
+export const SHUTDOWN_FORCE_EXIT_MS = 30_000
 
 /** Max interview questions per batch */
 export const MAX_INTERVIEW_BATCH_SIZE = 3
@@ -70,3 +86,20 @@ export const EXECUTOR_NOTE_TRUNCATION_LENGTH = 600
 export const EXECUTOR_DETAIL_TRUNCATION_LENGTH = 320
 /** Max diff patch length for PR context */
 export const MAX_DIFF_PATCH_LENGTH = 30_000
+/**
+ * How much of a probe or hook command's combined output is kept as the excerpt
+ * shown on its receipt.
+ *
+ * Numerically the same as `MODEL_OUTPUT_PREVIEW_LENGTH` and deliberately not
+ * that constant: one bounds what a build command printed, the other what a
+ * model wrote, and they have no reason to move together.
+ */
+export const COMMAND_OUTPUT_EXCERPT_LENGTH = 2000
+/**
+ * How much of a rejected response is quoted back to the model when asking it to
+ * correct its structured output.
+ *
+ * Large because the point is to show the model its own whole answer; small
+ * enough that a runaway response cannot double the next prompt.
+ */
+export const STRUCTURED_CORRECTION_ECHO_LENGTH = 50_000

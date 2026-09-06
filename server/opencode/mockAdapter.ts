@@ -11,6 +11,7 @@ import type {
   StreamEvent,
 } from './types'
 import type { OpenCodeAdapter } from './adapter'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 
 export class MockOpenCodeAdapter implements OpenCodeAdapter {
   public sessions: Session[] = []
@@ -150,8 +151,12 @@ export class MockOpenCodeAdapter implements OpenCodeAdapter {
       return 'Mock refined response'
     }
 
-    if (promptText.includes('<FINAL_TEST_COMMANDS>') || promptText.includes('FINAL_TEST_COMMANDS')) {
-      return '<FINAL_TEST_COMMANDS>{"commands":["echo mock-final-test"],"summary":"mock final test plan"}</FINAL_TEST_COMMANDS>'
+    if (promptText.includes(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)) {
+      return [
+        openTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS),
+        '{"commands":["echo mock-final-test"],"summary":"mock final test plan"}',
+        closeTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS),
+      ].join('')
     }
 
     if (promptText.includes('reply with exactly OK') || promptText.includes('reply with exactly `OK`')) {

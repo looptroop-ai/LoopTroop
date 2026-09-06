@@ -27,6 +27,13 @@ describe('foreground sign-in line', () => {
 })
 
 describe('daemon OpenCode log mode', () => {
+  /**
+   * The environment variable is spelled out here on purpose, not imported from
+   * `@shared/opencodeLogMode`. That constant is the one definition, but the
+   * string is what operators type into a shell profile and what documentation
+   * names; asserting it against itself would prove nothing and let a rename ship
+   * green. This is the pin.
+   */
   it('accepts the direct foreground option and detached-process environment handoff', () => {
     expect(resolveDaemonOpenCodeLogs({ opencodeLogs: 'all' }, {})).toBe('all')
     expect(resolveDaemonOpenCodeLogs({}, { LOOPTROOP_OPENCODE_LOGS: 'all' })).toBe('all')

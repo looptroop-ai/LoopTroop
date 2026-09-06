@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import {
   mergeStructuredInterventions,
   normalizeStructuredInterventions,
@@ -1525,62 +1526,62 @@ function InterviewDraftDiffView({ content, phase }: { content: string; phase?: s
             const questionDiff = buildQuestionDiffSegments(diff.before, diff.after)
 
             return (
-              <CollapsibleSection
-                key={diff.key}
-                defaultOpen
-                title={(
-                  <span className="flex items-center gap-2">
-                    <span>{diff.id}</span>
-                    {diff.phase ? <span className="text-muted-foreground">{diff.phase}</span> : null}
-                    <span className={diff.changeType === 'added'
-                      ? 'text-green-600 dark:text-green-400'
-                      : diff.changeType === 'removed'
-                        ? 'text-red-600 dark:text-red-400'
-                        : diff.changeType === 'replaced'
-                          ? 'text-amber-600 dark:text-amber-400'
-                          : 'text-blue-600 dark:text-blue-400'}
-                    >
-                      {diff.changeType === 'modified'
-                        ? 'Modified'
-                        : diff.changeType === 'replaced'
-                          ? 'Replaced'
-                          : diff.changeType === 'added'
-                            ? 'Added'
-                            : 'Removed'}
+                <CollapsibleSection
+                  key={diff.key}
+                  defaultOpen
+                  title={(
+                    <span className="flex items-center gap-2">
+                      <span>{diff.id}</span>
+                      {diff.phase ? <span className="text-muted-foreground">{diff.phase}</span> : null}
+                      <span className={diff.changeType === 'added'
+                        ? 'text-green-600 dark:text-green-400'
+                        : diff.changeType === 'removed'
+                          ? 'text-red-600 dark:text-red-400'
+                          : diff.changeType === 'replaced'
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-blue-600 dark:text-blue-400'}
+                      >
+                        {diff.changeType === 'modified'
+                          ? 'Modified'
+                          : diff.changeType === 'replaced'
+                            ? 'Replaced'
+                            : diff.changeType === 'added'
+                              ? 'Added'
+                              : 'Removed'}
+                      </span>
+                      {!hideCoverageAttributionUi && diff.inspiration
+                        ? <InterviewInspirationTooltip inspiration={diff.inspiration} />
+                        : shouldShowChangeAttributionBadge(diff.attributionStatus, hideCoverageAttributionUi)
+                          ? <ChangeAttributionBadge status={diff.attributionStatus} />
+                          : null}
                     </span>
-                    {!hideCoverageAttributionUi && diff.inspiration
-                      ? <InterviewInspirationTooltip inspiration={diff.inspiration} />
-                      : shouldShowChangeAttributionBadge(diff.attributionStatus, hideCoverageAttributionUi)
-                        ? <ChangeAttributionBadge status={diff.attributionStatus} />
-                        : null}
-                  </span>
-                )}
-              >
-                <div className="space-y-3">
-                  {diff.before && (
-                    <div className="group relative rounded-md border border-red-200 bg-red-100/80 px-3 py-2 dark:border-red-800/60 dark:bg-red-900/30">
-                      <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-red-700 dark:text-red-300">
-                        <span>Before</span>
-                        <TextCopyButton content={diff.before} title="Copy before" />
-                      </div>
-                      <div className="text-xs leading-5 text-red-950 dark:text-red-100">
-                        {renderWordDiffSegments(questionDiff.before, 'removed')}
-                      </div>
-                    </div>
                   )}
-                  {diff.after && (
-                    <div className="group relative rounded-md border border-green-200 bg-green-100/80 px-3 py-2 dark:border-green-800/60 dark:bg-green-900/30">
-                      <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-green-700 dark:text-green-300">
-                        <span>After</span>
-                        <TextCopyButton content={diff.after} title="Copy after" />
+                >
+                  <div className="space-y-3">
+                    {diff.before && (
+                      <div className="group relative rounded-md border border-red-200 bg-red-100/80 px-3 py-2 dark:border-red-800/60 dark:bg-red-900/30">
+                        <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-red-700 dark:text-red-300">
+                          <span>Before</span>
+                          <TextCopyButton content={diff.before} title="Copy before" />
+                        </div>
+                        <div className="text-xs leading-5 text-red-950 dark:text-red-100">
+                          {renderWordDiffSegments(questionDiff.before, 'removed')}
+                        </div>
                       </div>
-                      <div className="text-xs leading-5 text-green-950 dark:text-green-100">
-                        {renderWordDiffSegments(questionDiff.after, 'added')}
+                    )}
+                    {diff.after && (
+                      <div className="group relative rounded-md border border-green-200 bg-green-100/80 px-3 py-2 dark:border-green-800/60 dark:bg-green-900/30">
+                        <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-green-700 dark:text-green-300">
+                          <span>After</span>
+                          <TextCopyButton content={diff.after} title="Copy after" />
+                        </div>
+                        <div className="text-xs leading-5 text-green-950 dark:text-green-100">
+                          {renderWordDiffSegments(questionDiff.after, 'added')}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              </CollapsibleSection>
+                    )}
+                  </div>
+                </CollapsibleSection>
             )
           })}
         </div>
@@ -1956,7 +1957,7 @@ function CoverageTransitionDetailsView({
       : []),
     { key: 'diff' as const, label: 'Diff' },
   ]
-  const resolvedTab = tabs.find((tab) => tab.key === activeTab)?.key ?? tabs[0]!.key
+  const resolvedTab = tabs.find((tab) => tab.key === activeTab)?.key ?? tabs[0]?.key ?? 'gaps'
 
   return (
     <div className="space-y-3">
@@ -3410,55 +3411,58 @@ function VotingResultsView({ data, showHeader = true }: { data: CouncilResultDat
       {/* Per-voter breakdown */}
       <CollapsibleSection title={<span>Voter Details <span className="text-muted-foreground">({voterIds.length} voters)</span></span>}>
         <div className="space-y-2">
-          {voterIds.map(voterId => (
-            <div key={voterId} className="space-y-1">
-              <div className="font-medium flex items-center gap-1">
-                <ModelIcon modelId={voterId} className="h-3.5 w-3.5" />
-                {getModelDisplayName(voterId)}
-                <span className="ml-1 flex items-center gap-1 text-[10px] text-muted-foreground">
-                  <CouncilStatusIcon outcome={getVoterOutcome(voterId)} action="scoring" className="h-3 w-3" />
-                  <span>{getCouncilStatusLabel(getVoterOutcome(voterId), 'scoring')}</span>
-                </span>
+          {voterIds.map(voterId => {
+            const presentationOrder = presentationOrders[voterId]
+            return (
+              <div key={voterId} className="space-y-1">
+                <div className="font-medium flex items-center gap-1">
+                  <ModelIcon modelId={voterId} className="h-3.5 w-3.5" />
+                  {getModelDisplayName(voterId)}
+                  <span className="ml-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <CouncilStatusIcon outcome={getVoterOutcome(voterId)} action="scoring" className="h-3 w-3" />
+                    <span>{getCouncilStatusLabel(getVoterOutcome(voterId), 'scoring')}</span>
+                  </span>
+                </div>
+                {votes.filter(v => v.voterId === voterId).length === 0 ? (
+                  <div className="ml-4 text-muted-foreground italic">
+                    {getVoterOutcome(voterId) === 'pending'
+                      ? 'Still scoring drafts.'
+                      : getVoterOutcome(voterId) === 'failed'
+                        ? 'Failed before submitting scores.'
+                        : getVoterOutcome(voterId) === 'timed_out'
+                          ? 'Timed out before submitting scores.'
+                        : getVoterOutcome(voterId) === 'invalid_output'
+                            ? 'Returned malformed scores.'
+                            : 'No scores recorded.'}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {votes.filter(v => v.voterId === voterId).map(v => (
+                      <div key={v.draftId} className="ml-4 flex items-center gap-2 text-muted-foreground">
+                        <span>→ {getModelDisplayName(v.draftId)}</span>
+                        <span className="font-mono">{v.totalScore}pts</span>
+                        {v.draftId === winnerId && <span className="font-bold text-[10px] text-primary bg-primary/10 px-1 rounded">winner</span>}
+                      </div>
+                    ))}
+                    {presentationOrder && (
+                      <div className="ml-4 space-y-1">
+                        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                          Presentation Order <span className="normal-case tracking-normal">seed {presentationOrder.seed.slice(0, 8)}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {presentationOrder.order.map((draftId, index) => (
+                            <span key={`${voterId}:${draftId}:${index}`} className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground">
+                              Draft {index + 1}: {getModelDisplayName(draftId)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              {votes.filter(v => v.voterId === voterId).length === 0 ? (
-                <div className="ml-4 text-muted-foreground italic">
-                  {getVoterOutcome(voterId) === 'pending'
-                    ? 'Still scoring drafts.'
-                    : getVoterOutcome(voterId) === 'failed'
-                      ? 'Failed before submitting scores.'
-                      : getVoterOutcome(voterId) === 'timed_out'
-                        ? 'Timed out before submitting scores.'
-                      : getVoterOutcome(voterId) === 'invalid_output'
-                          ? 'Returned malformed scores.'
-                          : 'No scores recorded.'}
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {votes.filter(v => v.voterId === voterId).map(v => (
-                    <div key={v.draftId} className="ml-4 flex items-center gap-2 text-muted-foreground">
-                      <span>→ {getModelDisplayName(v.draftId)}</span>
-                      <span className="font-mono">{v.totalScore}pts</span>
-                      {v.draftId === winnerId && <span className="font-bold text-[10px] text-primary bg-primary/10 px-1 rounded">winner</span>}
-                    </div>
-                  ))}
-                  {presentationOrders[voterId] && (
-                    <div className="ml-4 space-y-1">
-                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                        Presentation Order <span className="normal-case tracking-normal">seed {presentationOrders[voterId]!.seed.slice(0, 8)}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {presentationOrders[voterId]!.order.map((draftId, index) => (
-                          <span key={`${voterId}:${draftId}:${index}`} className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-foreground">
-                            Draft {index + 1}: {getModelDisplayName(draftId)}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
+            )
+          })}
         </div>
       </CollapsibleSection>
     </div>
@@ -3581,12 +3585,10 @@ function hasRejectedRawAttempt(rawAttempts: ArtifactRawAttemptData[] | undefined
 
 function getRejectedRawAttempt(rawAttempts: ArtifactRawAttemptData[] | undefined): string | undefined {
   if (!rawAttempts) return undefined
-  for (let i = rawAttempts.length - 1; i >= 0; i--) {
-    const attempt = rawAttempts[i]!
-    if (isRejectedRawAttempt(attempt)) {
-      const content = getRawAttemptContent(attempt)
-      if (typeof content === 'string') return content
-    }
+  for (const attempt of [...rawAttempts].reverse()) {
+    if (!isRejectedRawAttempt(attempt)) continue
+    const content = getRawAttemptContent(attempt)
+    if (typeof content === 'string') return content
   }
   return undefined
 }
@@ -3600,8 +3602,8 @@ function getRawAttemptNumber(attempt: ArtifactRawAttemptData, index: number): nu
 function getLatestValidatedRawAttemptNumber(rawAttempts: ArtifactRawAttemptData[] | undefined): number | undefined {
   const attempts = rawAttempts ?? []
   for (let index = attempts.length - 1; index >= 0; index -= 1) {
-    const attempt = attempts[index]!
-    if (isValidatedRawAttemptStatus(getRawAttemptStatus(attempt))) {
+    const attempt = attempts[index]
+    if (attempt && isValidatedRawAttemptStatus(getRawAttemptStatus(attempt))) {
       return getRawAttemptNumber(attempt, index)
     }
   }
@@ -4534,9 +4536,24 @@ function RelevantFilesScanView({ content }: { content: string }) {
   )
 }
 
+/**
+ * The envelope the plan arrives in, built from the tag rather than written out.
+ *
+ * This is the only place in the client that reads the model's wire protocol, and
+ * it had the tag as a literal. A literal is invisible to a rename: every server
+ * parser would follow the constant to the new name and this viewer would go on
+ * matching the old envelope, so the approval pane would show the user a raw
+ * `<TAG>` wrapper instead of the plan inside it — no error, just the wrong text.
+ * Interpolating is safe: the tag names are a closed set of `[A-Z_]` words with
+ * nothing a regex reads as syntax.
+ */
+const EXECUTION_SETUP_PLAN_ENVELOPE = new RegExp(
+  `${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)}\\s*([\\s\\S]*?)\\s*${closeTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)}`,
+)
+
 function extractExecutionSetupPlanPayloadText(value: string): string {
   const trimmed = value.trim()
-  const markerMatch = trimmed.match(/<EXECUTION_SETUP_PLAN>\s*([\s\S]*?)\s*<\/EXECUTION_SETUP_PLAN>/)
+  const markerMatch = EXECUTION_SETUP_PLAN_ENVELOPE.exec(trimmed)
   return markerMatch?.[1]?.trim() ?? trimmed
 }
 
@@ -4656,7 +4673,8 @@ function ExecutionSetupPlanView({
   const errors = report?.errors ?? []
   const notes = report?.notes ?? []
   const failed = report?.ready === false || report?.status === 'failed'
-  const hasModelOutput = Boolean(report?.modelOutput)
+  const modelOutput = report?.modelOutput
+  const hasModelOutput = Boolean(modelOutput)
     && !isExecutionSetupModelOutputEquivalentToRawPlan(content, report?.modelOutput)
     && !failed
   const rawSourceLabel = formatRawAttemptSourceLabel('Execution setup plan', report?.generatedBy)
@@ -4938,10 +4956,10 @@ function ExecutionSetupPlanView({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Model Output</div>
-                    <CopyButton content={report!.modelOutput!} title="Copy model output" />
+                    <CopyButton content={modelOutput ?? ''} title="Copy model output" />
                   </div>
                   <pre className="rounded-md border border-border bg-background p-3 text-[11px] font-mono whitespace-pre-wrap break-all overflow-x-auto overflow-y-hidden">
-                    {report!.modelOutput}
+                    {modelOutput}
                   </pre>
                 </div>
               ) : null}

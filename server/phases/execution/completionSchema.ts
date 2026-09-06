@@ -1,3 +1,5 @@
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
+
 export interface BeadChecks {
   tests: string
   lint: string
@@ -12,8 +14,8 @@ export interface BeadCompletionMarker {
   reason?: string
 }
 
-export const BEAD_STATUS_MARKER = '<BEAD_STATUS>'
-export const BEAD_STATUS_END = '</BEAD_STATUS>'
+export const BEAD_STATUS_MARKER = openTag(PROTOCOL_TAGS.BEAD_STATUS)
+export const BEAD_STATUS_END = closeTag(PROTOCOL_TAGS.BEAD_STATUS)
 export const REQUIRED_GATES: (keyof BeadChecks)[] = ['tests', 'lint', 'typecheck', 'qualitative']
 
 export function buildCompletionInstructions() {

@@ -1,4 +1,4 @@
-import { normalizeString } from '@shared/typeGuards'
+import { normalizeString } from './typeGuards'
 
 /**
  * Why a structured-output attempt failed.

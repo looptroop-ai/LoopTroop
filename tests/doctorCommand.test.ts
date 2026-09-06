@@ -4,6 +4,8 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { doctorCommand, runChecks, isOpenCodeCliLaunchable, judgeOpenCode, runProbe } from '../server/cli/doctorCommand'
+import { NODE_FLOOR as FLOOR } from '../server/lib/nodeFloor'
+import { formatNodeVersion } from '../shared/nodeFloor'
 import type { DaemonState } from '../server/lib/daemonPaths'
 import { APP_VERSION } from '../server/lib/appVersion'
 import { removeTempDir } from '../server/test/tempDir'
@@ -62,6 +64,67 @@ describe('doctor command', () => {
     expect(names).toContain('schema')
     expect(names).toContain('opencode')
     expect(names).toContain('daemon')
+  })
+
+  /**
+   * §11.5's observable change: `doctor` used to accept anything from 24.15
+   * while the launcher refused to start below 24.18.1, so a machine in between
+   * passed every check the product offered and then could not run it.
+   *
+   * `runChecks()` reads the real `process.versions.node`, and CI runs a Node
+   * well above the floor — so reverting `checkNode` to the old major.minor
+   * comparison stayed green here while the behaviour users see changed. The
+   * runtime is stubbed for exactly that reason: the boundary is the case.
+   */
+  describe('the node check', () => {
+    const realVersions = process.versions
+
+    afterEach(() => {
+      Object.defineProperty(process, 'versions', { value: realVersions, configurable: true })
+    })
+
+    function nodeCheckOn(version: string) {
+      Object.defineProperty(process, 'versions', {
+        value: { ...realVersions, node: version },
+        configurable: true,
+      })
+      return runChecks().then((checks) => checks.find((check) => check.name === 'node'))
+    }
+
+    const justBelow = FLOOR.patch > 0
+      ? formatNodeVersion({ ...FLOOR, patch: FLOOR.patch - 1 })
+      : formatNodeVersion({ ...FLOOR, minor: FLOOR.minor - 1, patch: 99 })
+
+    it.each([
+      [formatNodeVersion(FLOOR), 'ok'],
+      [formatNodeVersion({ ...FLOOR, patch: FLOOR.patch + 1 }), 'ok'],
+      [`${FLOOR.major + 1}.0.0`, 'ok'],
+      [justBelow, 'fail'],
+      [`${FLOOR.major}.${FLOOR.minor - 1}.99`, 'fail'],
+      // A prerelease of the floor is *below* it, which is how npm reads
+      // `engines.node` and what the launcher enforces.
+      [`${formatNodeVersion(FLOOR)}-rc.1`, 'fail'],
+      [`${FLOOR.major + 1}.0.0-nightly20260101`, 'ok'],
+    ])('is %s on Node %s', async (version, status) => {
+      useConfigDir()
+
+      const check = await nodeCheckOn(version)
+
+      expect(check?.status).toBe(status)
+      expect(check?.detail).toContain(version)
+    })
+
+    it('names the floor and a way to install it when the runtime is too old', async () => {
+      useConfigDir()
+
+      const check = await nodeCheckOn(justBelow)
+
+      expect(check?.remedy).toContain(`LoopTroop needs Node ${formatNodeVersion(FLOOR)} or newer`)
+      // The platform hint, whichever platform the suite is running on. macOS
+      // names the unversioned formula: `node@<major>` is keg-only, so it
+      // installs Node without putting it on PATH.
+      expect(check?.remedy).toMatch(/brew install node$|winget install OpenJS\.NodeJS\.LTS|nvm install \d+/)
+    })
   })
 
   it('treats a missing database as healthy rather than a fault', async () => {

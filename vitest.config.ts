@@ -4,6 +4,7 @@ import { availableParallelism } from 'node:os'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { getBackendOrigin, getDocsBaseUrl } from './shared/appConfig.ts'
+import { readPackageVersion } from './scripts/package-version.ts'
 
 // Never add tests that hard-code ticket/project-specific fixture ids, refs, shortnames, or worktree names.
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -253,6 +254,7 @@ export default defineConfig({
   define: {
     __LOOPTROOP_DEV_BACKEND_ORIGIN__: JSON.stringify(getBackendOrigin()),
     __LOOPTROOP_DOCS_ORIGIN__: JSON.stringify(getDocsBaseUrl()),
+    __APP_VERSION__: JSON.stringify(readPackageVersion()),
   },
   test: {
     globals: true,

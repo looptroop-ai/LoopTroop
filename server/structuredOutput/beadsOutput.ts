@@ -2,6 +2,7 @@ import * as jsYaml from 'js-yaml'
 import type { RefinementChange, RefinementChangeItem } from '@shared/refinementChanges'
 import type { Bead, BeadStatus, BeadSubset, BeadContextGuidance, BeadDependencies } from '../phases/beads/types'
 import { BEAD_STATUSES, isBeadStatus, resolveBeadStatusAlias } from '../phases/beads/types'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import { looksLikePromptEcho } from '../lib/promptEcho'
 import type { StructuredOutputResult, RelevantFilesOutputEntry, RelevantFilesOutputPayload } from './types'
 import {
@@ -975,7 +976,7 @@ function parsesAsPlainYamlOrJson(content: string): boolean {
 }
 
 export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutputResult<RelevantFilesOutputPayload> {
-  const candidates = collectTaggedCandidates(rawContent, 'RELEVANT_FILES_RESULT')
+  const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.RELEVANT_FILES_RESULT)
 
   // Also try structured candidates as fallback
   const fallbackCandidates = collectStructuredCandidates(rawContent, {
@@ -997,7 +998,7 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
     try {
       if (looksLikePromptEcho(candidate)) {
-        throw new Error('Relevant files output echoed the prompt instead of returning a <RELEVANT_FILES_RESULT> artifact')
+        throw new Error(`Relevant files output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.RELEVANT_FILES_RESULT)} artifact`)
       }
 
       let yamlParsed: unknown
@@ -1072,13 +1073,13 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
         file_count: files.length,
         files,
       }
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'RELEVANT_FILES_RESULT' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.RELEVANT_FILES_RESULT })
 
       return {
         ok: true,
         value: payload,
         normalizedContent: buildYamlDocument(payload),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'RELEVANT_FILES_RESULT' }) || (
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.RELEVANT_FILES_RESULT }) || (
           !parsesAsPlainYamlOrJson(candidate)
         ),
         repairWarnings: candidateWarnings,
@@ -1094,7 +1095,7 @@ export function normalizeRelevantFilesOutput(rawContent: string): StructuredOutp
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Relevant files output echoed the prompt instead of returning a <RELEVANT_FILES_RESULT> artifact'
+      ? `Relevant files output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.RELEVANT_FILES_RESULT)} artifact`
       : lastError,
     { cause: lastErrorCause },
   )

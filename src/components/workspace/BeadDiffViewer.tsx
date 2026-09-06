@@ -6,6 +6,7 @@ import { renderUnifiedDiffLineText } from './diffWordHighlights'
 import { getBeadDiffQueryKey } from '@/lib/beadDiffQuery'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
+import { QUERY_STALE_TIME_30S } from '@/lib/constants'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 
 interface BeadDiffViewerProps {
@@ -95,7 +96,7 @@ export function BeadDiffViewer({ ticketId, beadId }: BeadDiffViewerProps) {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: getBeadDiffQueryKey(ticketId, beadId),
     queryFn: ({ signal }) => fetchBeadDiff(ticketId, beadId, signal),
-    staleTime: 30_000,
+    staleTime: QUERY_STALE_TIME_30S,
   })
 
   if (isLoading) {

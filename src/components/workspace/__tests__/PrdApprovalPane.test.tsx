@@ -32,6 +32,7 @@ vi.mock('@/hooks/useTickets', async () => {
   return {
     ...actual,
     useTicketUIState: () => ({
+      isSuccess: true,
       data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null },
     }),
     useSaveTicketUIState: () => ({ mutate: mockSaveUiState, mutateAsync: mockSaveUiState }),

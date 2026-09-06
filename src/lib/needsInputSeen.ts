@@ -103,10 +103,12 @@ export function markNeedsInputSeen(ticketId: string, signature: string | null): 
 }
 
 export function clearNeedsInputSeen(ticketId: string): void {
-  seenNeedsInputTickets.delete(ticketId)
+  const had = seenNeedsInputTickets.delete(ticketId)
   if (typeof window === 'undefined') return
   try {
-    localStorage.removeItem(getNeedsInputSeenStorageKey(ticketId))
+    const key = getNeedsInputSeenStorageKey(ticketId)
+    if (!had && localStorage.getItem(key) === null) return
+    localStorage.removeItem(key)
   } catch {
     // Ignore storage cleanup failures.
   }

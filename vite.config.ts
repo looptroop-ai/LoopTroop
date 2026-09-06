@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getBackendOrigin, getDocsBaseUrl, getFrontendPort } from './shared/appConfig.ts'
 import { resolveDevHostMode } from './scripts/dev-host-mode.ts'
+import { readPackageVersion } from './scripts/package-version.ts'
 import { resolveWatchPollingDecision } from './shared/wslPerformance.ts'
 import {
   DEV_SERVER_RESOURCE_HEADERS,
@@ -199,6 +200,40 @@ function noServerModulesInClientBundle(): import('vite').Plugin {
   }
 }
 
+/**
+ * Fails the client build if the root `package.json` reaches the browser bundle.
+ *
+ * `AppShell` imported the whole manifest to render one version string, so every
+ * script, devDependency and engines entry shipped to the browser. The version is
+ * now compiled in as `__APP_VERSION__`, and this is what keeps it that way — the
+ * import type-checks, bundles and runs, so nothing else would notice.
+ *
+ * Module-graph rather than text search, and posix-normalised, for the reasons
+ * given on the server-module guard above.
+ */
+const ROOT_MANIFEST_POSIX = `${PROJECT_ROOT_POSIX}/package.json`
+
+function noRootManifestInClientBundle(): import('vite').Plugin {
+  return {
+    name: 'looptroop-no-root-manifest-in-client-bundle',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk') continue
+        for (const id of chunk.moduleIds) {
+          if (id.includes('node_modules')) continue
+          if (toPosixPath(id.split('?')[0] ?? id) !== ROOT_MANIFEST_POSIX) continue
+          this.error(
+            'The client bundle pulls in the root package.json, which ships every '
+            + 'script, devDependency and engines entry to the browser.\n\n'
+            + 'Use the __APP_VERSION__ define instead of importing the manifest.',
+          )
+        }
+      }
+    },
+  }
+}
+
 function isBackendHealthProbe(req: IncomingMessage) {
   if ((req.method ?? 'GET').toUpperCase() !== 'GET') return false
   if (!req.url) return false
@@ -235,6 +270,10 @@ export default defineConfig({
   define: {
     __LOOPTROOP_DEV_BACKEND_ORIGIN__: JSON.stringify(backendOrigin),
     __LOOPTROOP_DOCS_ORIGIN__: JSON.stringify(getDocsBaseUrl()),
+    // The version alone, compiled in. `AppShell` imported the whole root
+    // `package.json` to read it, which pulled every script, devDependency and
+    // engines entry into `dist/client`.
+    __APP_VERSION__: JSON.stringify(readPackageVersion()),
   },
   plugins: [
     react(),
@@ -254,6 +293,7 @@ export default defineConfig({
     },
     bundledPackagesManifest(),
     noServerModulesInClientBundle(),
+    noRootManifestInClientBundle(),
   ],
   resolve: {
     alias: {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { LOOPTROOP_OPENCODE_LOGS, NPM_CONFIG_OPENCODE_LOGS, resolveOpenCodeLogMode } from '../scripts/opencode-log-mode'
+import { NPM_CONFIG_OPENCODE_LOGS, resolveOpenCodeLogMode } from '../scripts/opencode-log-mode'
+import { LOOPTROOP_OPENCODE_LOGS_ENV } from '../shared/opencodeLogMode'
 
 describe('resolveOpenCodeLogMode', () => {
   it('uses full DEBUG OpenCode serve args by default (no console printing)', () => {
@@ -23,7 +24,7 @@ describe('resolveOpenCodeLogMode', () => {
 
   it('supports an environment fallback for direct OpenCode watcher use', () => {
     expect(resolveOpenCodeLogMode({
-      env: { [LOOPTROOP_OPENCODE_LOGS]: 'all' },
+      env: { [LOOPTROOP_OPENCODE_LOGS_ENV]: 'all' },
     })).toEqual({
       mode: 'all',
       requested: true,
@@ -38,7 +39,7 @@ describe('resolveOpenCodeLogMode', () => {
     })).toThrow('Invalid OpenCode log mode "debug". Use npm run dev --opencode-logs=all.')
 
     expect(() => resolveOpenCodeLogMode({
-      env: { [LOOPTROOP_OPENCODE_LOGS]: 'verbose' },
+      env: { [LOOPTROOP_OPENCODE_LOGS_ENV]: 'verbose' },
     })).toThrow('Invalid OpenCode log mode "verbose". Use LOOPTROOP_OPENCODE_LOGS=all.')
   })
 })

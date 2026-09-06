@@ -20,6 +20,7 @@ import {
 import { ExecutionSetupPlanEditor } from './ExecutionSetupPlanEditor'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -332,7 +333,7 @@ export function ExecutionSetupPlanApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
-  const { data: persistedUiState } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -419,6 +420,7 @@ export function ExecutionSetupPlanApprovalPane({
   const [runtimeRewindTarget, setRuntimeRewindTarget] = useState<RuntimeRewindTarget>(null)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const hasStructuredChanges = useMemo(
@@ -431,31 +433,70 @@ export function ExecutionSetupPlanApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
+  // Re-arm the one-shot restore when a read-only view ends.
+  //
+  // Opening an archived attempt renders this same pane with `readOnly`, and it
+  // is not remounted when the attempt clears. The restore below is skipped
+  // while read-only, so without this the pane that comes back is holding the
+  // defaults it was left with and the user's draft is never applied.
+  //
+  // Declared *before* `useApprovalDraftRestore` so it commits first: effects
+  // run in declaration order, and on the render where `readOnly` clears the
+  // restore has to see a latch that is already re-armed. Nothing changes its
+  // inputs afterwards, so a second chance never comes.
+  const wasReadOnlyRef = useRef(readOnly)
   useEffect(() => {
-    if (restoredDraftRef.current || !plan) return
+    if (wasReadOnlyRef.current && !readOnly) {
+      restoredDraftRef.current = false
+    }
+    wasReadOnlyRef.current = readOnly
+  }, [readOnly])
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
-    const nextStructuredDraft = persisted?.structuredDraft ?? plan
-    const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
-    const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
+  const draftRestored = useApprovalDraftRestore({
+    // The fetch result, not `plan`. A failed generation still delivers `raw`
+    // and a saved commentary, and treating `plan === null` as "the document
+    // has not arrived" dropped those drafts on reload.
+    document: fetchedPlan,
+    // `persisted` is undefined both while the UI-state query is in flight and
+    // when there is genuinely no draft, so without this the pane can latch on
+    // defaults and discard the draft that lands a moment later.
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // draft and arm the autosave to write the defaults over the server's copy
+    // — from a request that never read it. Waiting means the retry restores.
+    //
+    // `!readOnly` because an archived attempt shows this pane with editing
+    // disabled. Restoring into it would spend the one-shot on a view that
+    // cannot use the draft; the effect above re-arms it when the attempt ends.
+    ready: isUiStateSuccess && !readOnly,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    skipRestoreRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
+      const nextStructuredDraft = persisted?.structuredDraft ?? document.plan
+      const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : (document.raw ?? '')
+      const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
 
-    setIsEditMode(!readOnly && nextEditMode && Boolean(plan))
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft ?? null)
-    setRawDraft(nextRawDraft)
-    setCommentary(nextCommentary)
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft ?? null)
+      setRawDraft(nextRawDraft)
+      setCommentary(nextCommentary)
 
-    lastSavedSnapshotRef.current = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      rawDraft: nextRawDraft,
-      structuredDraft: nextStructuredDraft,
-      commentary: nextCommentary,
-    })
-    restoredDraftRef.current = true
-  }, [persistedUiState, plan, rawContent, readOnly, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        rawDraft: nextRawDraft,
+        structuredDraft: nextStructuredDraft,
+        commentary: nextCommentary,
+      }
+    },
+  })
+  const canStartEditing = draftRestored || isUiStateError
 
   useEffect(() => {
     if (!readOnly) return
@@ -613,6 +654,7 @@ export function ExecutionSetupPlanApprovalPane({
   }
 
   function openEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('structured')
     setIsEditMode(true)
   }
@@ -782,7 +824,7 @@ export function ExecutionSetupPlanApprovalPane({
                 size="sm"
                 onClick={handleToggleEdit}
                 className="text-xs shrink-0"
-                disabled={!plan}
+                disabled={!plan || (!isEditMode && !canStartEditing)}
               >
                 {isEditMode ? 'View' : 'Edit'}
               </Button>

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { runExplicitGitHookValidation, runGitHookValidationCommand, runGitHookValidationCommands } from '../hookValidation'
 import { createShellCommandSpec } from '@shared/commandSpec'
 import { detectHostContext } from '../../../lib/hostContext'
+import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../../lib/constants'
 
 /** A command spec for whichever shell this machine actually runs. */
 function shellSpec(script: string) {
@@ -65,6 +66,28 @@ describe('runExplicitGitHookValidation', () => {
     expect(result.receipts[0]).toMatchObject({ status: 'failed', exitCode: 4, outputExcerpt: expect.stringContaining('missing prerequisite') })
     expect(result.errors).toEqual([])
     expect(result.warnings[0]).toContain('missing prerequisite')
+  })
+
+  /**
+   * The receipt is stored and rendered, so a hook that prints a whole build log
+   * must not carry it. The bound is `COMMAND_OUTPUT_EXCERPT_LENGTH`, which the
+   * execution-setup receipts share and which is deliberately not the
+   * model-output preview length: one bounds what a command printed, the other
+   * what a model wrote.
+   */
+  it('truncates a receipt excerpt at the command-output bound', async () => {
+    const root = makeRepo()
+    const oversize = COMMAND_OUTPUT_EXCERPT_LENGTH + 500
+    const result = await runExplicitGitHookValidation({
+      profileContent: profile(
+        'validate_advisory',
+        `node -e "process.stdout.write('x'.repeat(${oversize})); process.exit(3)"`,
+      ),
+      worktreePath: root,
+    })
+
+    expect(result.receipts[0]?.status).toBe('failed')
+    expect(result.receipts[0]?.outputExcerpt).toHaveLength(COMMAND_OUTPUT_EXCERPT_LENGTH)
   })
 
   it('returns required validation failure as a blocking error', async () => {

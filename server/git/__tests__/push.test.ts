@@ -156,5 +156,77 @@ describe('server/git/push', () => {
         expect(pushEnv().GIT_TERMINAL_PROMPT).toBe('0')
       })
     })
+
+    /**
+     * The other push to the same remote. `pushSquashedCandidate` builds its own
+     * `runCommand` options, and it took this module's timeout and retry count
+     * but not its credentials — so on a machine whose only credential is
+     * `GH_TOKEN` the branch push worked and the squashed-candidate push stopped
+     * to ask for a password it cannot request.
+     */
+    it('lends the same helper to the squashed-candidate push', async () => {
+      spawnSyncMock.mockReturnValue(makeSpawnResult())
+      await withEnv(
+        { GH_TOKEN: 'token', GITHUB_TOKEN: undefined, GIT_CONFIG_COUNT: undefined },
+        async () => {
+          const { pushSquashedCandidate } = await import('../../phases/integration/squash')
+          await pushSquashedCandidate('/worktree')
+
+          const push = spawnSyncMock.mock.calls.find(
+            call => call[0] === 'git' && (call[1] as string[]).includes('push'),
+          )
+          const env = (push?.[2] as { env: Record<string, string | undefined> }).env
+          expect(env.GIT_CONFIG_VALUE_0).toBe('!gh auth git-credential')
+        },
+      )
+    })
+  })
+
+  /**
+   * The retry count as a count. Every existing case here passes
+   * `maxRetries: 1`, so the default was named but never exercised: reverting it
+   * to any other number left the suite green, and the number is the whole point
+   * of sharing one constant between this module and `pushSquashedCandidate`.
+   */
+  describe('the default retry count', () => {
+    // Read from the module rather than repeated as a literal: a test asserting
+    // three attempts against its own three would go on passing after the
+    // constant changed. It is imported inside the test because the mock above
+    // has to be in place before `runCommand` pulls in `node:child_process`.
+    async function loadPush() {
+      const module = await import('../push')
+      return { pushBranchRef: module.pushBranchRef, maxRetries: module.GIT_PUSH_MAX_RETRIES }
+    }
+
+    function gitPushCalls() {
+      return spawnSyncMock.mock.calls.filter(call => call[0] === 'git' && (call[1] as string[]).includes('push'))
+    }
+
+    it('retries a failing push up to the shared attempt count', async () => {
+      spawnSyncMock.mockReturnValue(makeSpawnResult({ status: 1, stderr: 'remote hung up' }))
+      const { pushBranchRef, maxRetries } = await loadPush()
+
+      const result = await pushBranchRef({ projectPath: '/repo', destinationBranch: 'TEST-1', sourceRef: 'HEAD' })
+
+      expect(maxRetries).toBeGreaterThan(1)
+      expect(gitPushCalls()).toHaveLength(maxRetries)
+      expect(result.pushed).toBe(false)
+      expect(result.error).toContain(`after ${maxRetries} attempts`)
+    })
+
+    it('stops at the attempt that succeeds', async () => {
+      const { pushBranchRef, maxRetries } = await loadPush()
+      let attempt = 0
+      spawnSyncMock.mockImplementation((bin: string, args: string[]) => {
+        if (bin !== 'git' || !args.includes('push')) return makeSpawnResult()
+        attempt += 1
+        return attempt < maxRetries ? makeSpawnResult({ status: 1, stderr: 'remote hung up' }) : makeSpawnResult()
+      })
+
+      const result = await pushBranchRef({ projectPath: '/repo', destinationBranch: 'TEST-1', sourceRef: 'HEAD' })
+
+      expect(result).toEqual({ pushed: true })
+      expect(gitPushCalls()).toHaveLength(maxRetries)
+    })
   })
 })

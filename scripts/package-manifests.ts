@@ -11,7 +11,19 @@
  * Pure, and golden-file tested, because a mistake here is not caught by
  * anything downstream: a formula with a wrong sha256 installs green in CI
  * against the file CI just built and fails for every user.
+ *
+ * The two things read from outside are the Node floor, below, and the install
+ * channel marker filename, which the server reads back. Both are read rather
+ * than restated: raising `engines.node` cannot leave a channel advertising the
+ * old floor, and renaming the marker cannot leave the server looking for a file
+ * no installer writes any more. Both show up as golden-file changes somebody
+ * has to look at.
  */
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { INSTALL_CHANNEL_MARKER } from '../shared/installChannel.ts'
+import { formatNodeVersion, parseNodeFloor } from '../shared/nodeFloor.ts'
 
 export type Channel = 'homebrew' | 'scoop' | 'chocolatey'
 
@@ -33,8 +45,26 @@ export const HOMEPAGE = 'https://www.looptroop.ovh/'
 export const REPOSITORY = 'https://github.com/looptroop-ai/LoopTroop'
 export const LICENSE = 'MIT'
 
-/** Written at the package root so LoopTroop can name the upgrade command. */
-export const CHANNEL_MARKER = '.install-channel'
+/**
+ * The Node floor, from `engines.node`, in the three forms these channels can
+ * express.
+ *
+ * Only Chocolatey can state a patch level. Homebrew pins a keg (`node@24`) and
+ * Arch has no versioned package at all, so both get the major — a translation,
+ * not a second floor: the launcher still refuses anything below the exact one,
+ * and a package manager that installed 24.17 would satisfy its own dependency
+ * and produce a LoopTroop that will not start. Neither channel offers a way to
+ * say more.
+ */
+const NODE_FLOOR = parseNodeFloor(
+  (JSON.parse(
+    readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+  ) as { engines: { node: string } }).engines.node,
+)
+/** `24.18.1` — Chocolatey's `nodejs-lts` dependency. */
+export const NODE_FLOOR_EXACT = formatNodeVersion(NODE_FLOOR)
+/** `24` — the Homebrew keg and the Arch `>=` floor. */
+export const NODE_FLOOR_MAJOR = String(NODE_FLOOR.major)
 
 /** The top-level directory inside the bundle archive. */
 export const BUNDLE_ROOT = 'looptroop'
@@ -83,14 +113,14 @@ class Looptroop < Formula
   end
 
   depends_on "gh"
-  depends_on "node@24"
+  depends_on "node@${NODE_FLOOR_MAJOR}"
   uses_from_macos "git"
 
   def install
     libexec.install Dir["*"]
-    (libexec/"${CHANNEL_MARKER}").write "homebrew"
+    (libexec/"${INSTALL_CHANNEL_MARKER}").write "homebrew"
     (bin/"looptroop").write_env_script libexec/"bin/looptroop",
-                                       PATH: "#{formula_opt_bin("node@24")}:$PATH"
+                                       PATH: "#{formula_opt_bin("node@${NODE_FLOOR_MAJOR}")}:$PATH"
   end
 
   def caveats
@@ -141,7 +171,7 @@ export function renderScoopManifest(inputs: ChannelInputs): string {
     depends: ['nodejs-lts', 'git', 'gh'],
     bin: [['bin\\looptroop.cmd', 'looptroop']],
     post_install: [
-      `Set-Content -LiteralPath "$dir\\${CHANNEL_MARKER}" -Value 'scoop' -NoNewline`,
+      `Set-Content -LiteralPath "$dir\\${INSTALL_CHANNEL_MARKER}" -Value 'scoop' -NoNewline`,
     ],
     notes: [
       'LoopTroop drives OpenCode, which it does not install. Run: looptroop doctor',
@@ -182,7 +212,7 @@ export function renderNuspec(inputs: ChannelInputs): string {
     <summary>${SHORT_DESCRIPTION}</summary>
     <description>${SHORT_DESCRIPTION}. LoopTroop runs as a local background service and drives OpenCode in isolated git worktrees, with human approval gates before anything is delivered.</description>
     <dependencies>
-      <dependency id="nodejs-lts" version="24.18.1" />
+      <dependency id="nodejs-lts" version="${NODE_FLOOR_EXACT}" />
       <dependency id="git" />
       <dependency id="gh" />
     </dependencies>
@@ -362,13 +392,14 @@ export function renderAurPackage(inputs: ChannelInputs): Record<string, string> 
   const fields = {
     pkgdesc: SHORT_DESCRIPTION,
     url: HOMEPAGE,
-    // `nodejs>=24`: the floor the application declares. Arch has no `node@24`
-    // to pin to, and does not want one — a rolling distribution expects the
-    // current runtime, which is why this is a floor rather than an equality.
+    // The major of the floor the application declares. Arch has no versioned
+    // node package to pin to, and does not want one — a rolling distribution
+    // expects the current runtime, which is why this is a floor rather than an
+    // equality, and why it cannot carry the patch level `engines.node` does.
     // `github-cli` is a hard dependency here for the reason given on
     // `renderScoopManifest`: pull-request delivery is the end of the workflow,
     // not an extra.
-    depends: ['nodejs>=24', 'git', 'github-cli'],
+    depends: [`nodejs>=${NODE_FLOOR_MAJOR}`, 'git', 'github-cli'],
     provides: ['looptroop'],
     conflicts: ['looptroop'],
   }
@@ -403,7 +434,7 @@ package() {
   # Says which channel installed this, so \`looptroop doctor\` names the right
   # upgrade command rather than inferring one from a path that several
   # channels could have produced.
-  printf 'aur' > "\${pkgdir}/usr/lib/${AUR_PACKAGE_NAME}/${CHANNEL_MARKER}"
+  printf 'aur' > "\${pkgdir}/usr/lib/${AUR_PACKAGE_NAME}/${INSTALL_CHANNEL_MARKER}"
 
   # A symlink, which the launcher resolves before working out where its own
   # \`dist\` lives — that is what the readlink loop in the wrapper is for.
@@ -456,7 +487,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'package.json'))) {
 
 # So \`looptroop doctor\` names \`choco upgrade looptroop\` and not some other
 # manager's command.
-Set-Content -LiteralPath (Join-Path $packageRoot '${CHANNEL_MARKER}') -Value 'chocolatey' -NoNewline
+Set-Content -LiteralPath (Join-Path $packageRoot '${INSTALL_CHANNEL_MARKER}') -Value 'chocolatey' -NoNewline
 
 Install-BinFile -Name 'looptroop' -Path (Join-Path $packageRoot 'bin\\looptroop.cmd')
 `

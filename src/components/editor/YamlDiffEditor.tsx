@@ -5,6 +5,7 @@ import { MergeView } from '@codemirror/merge'
 import { yaml } from '@codemirror/lang-yaml'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
 import { closeBrackets } from '@codemirror/autocomplete'
+import { yamlEditorTheme } from './yamlEditorTheme'
 
 interface YamlDiffEditorProps {
   /** Left pane: the read-only reference document (the built-in default). */
@@ -15,16 +16,6 @@ interface YamlDiffEditorProps {
   wordWrap?: boolean
   className?: string
 }
-
-const sharedTheme = EditorView.theme({
-  '&': { fontSize: '12px', backgroundColor: 'transparent', color: 'var(--color-foreground)' },
-  '.cm-scroller': { overflow: 'auto' },
-  '.cm-content': { fontFamily: 'var(--font-mono, ui-monospace, monospace)', caretColor: 'var(--color-foreground)' },
-  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--color-foreground)' },
-  '.cm-gutters': { backgroundColor: 'var(--color-muted)', color: 'var(--color-muted-foreground)', borderRight: '1px solid var(--color-border)' },
-  '.cm-activeLine': { backgroundColor: 'var(--color-accent)' },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--color-brand-500)', opacity: '0.3' },
-})
 
 /**
  * The default merge styling only underlines changed text, which reads as noise
@@ -60,7 +51,7 @@ function baseExtensions() {
     closeBrackets(),
     syntaxHighlighting(defaultHighlightStyle),
     yaml(),
-    sharedTheme,
+    yamlEditorTheme,
   ]
 }
 

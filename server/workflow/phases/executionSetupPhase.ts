@@ -69,6 +69,7 @@ import { materializeExecutionSetupWorkspaceInputs } from '../../phases/execution
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { writeExecutionSetupRuntimeLauncher } from '../../phases/executionSetup/runtimeLauncher'
 import { runGitHookValidationCommands } from '../../phases/executionSetup/hookValidation'
+import { COMMAND_OUTPUT_EXCERPT_LENGTH } from '../../lib/constants'
 
 const SETUP_PROBE_TIMEOUT_MS = 30_000
 
@@ -178,7 +179,7 @@ function summarizeSetupCommandFailure(input: {
   const status = input.timedOut
     ? `timed out after ${input.durationMs}ms`
     : `exit code ${input.exitCode ?? 'no exit code'}`
-  const output = [input.stderr.trim(), input.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
+  const output = [input.stderr.trim(), input.stdout.trim()].filter(Boolean).join('\n').slice(0, COMMAND_OUTPUT_EXCERPT_LENGTH)
   return `${input.label}: ${renderCommandSpec(input.command)} (${status})${output ? `\n${output}` : ''}`
 }
 
@@ -201,7 +202,7 @@ function toCommandReceipt(
   command: CommandSpec,
   result: Awaited<ReturnType<typeof executeCommand>>,
 ): ExecutionSetupCommandReceiptPayload {
-  const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, 2000)
+  const outputExcerpt = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n').slice(0, COMMAND_OUTPUT_EXCERPT_LENGTH)
   return {
     id,
     command,

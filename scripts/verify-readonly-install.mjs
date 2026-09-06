@@ -25,9 +25,50 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-/** The floor `dist/server/cli/launcher.cjs` enforces before it loads anything. */
-const REQUIRED_NODE = { major: 24, minor: 15 }
+// The comparison, not a fourth copy of it. `installer-core.mjs` already orders
+// prereleases below the release they precede, which is what `curl | sh` uses to
+// decide the same question, and `tests/installer.test.ts` already holds it to
+// that. A private copy here is how this check came to accept a runtime the
+// launcher refuses.
+import { satisfiesFloor } from './installer-core.mjs'
+
+/**
+ * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
+ * read from `engines.node` rather than restated here, which is how this came to
+ * accept 24.15 while the launcher required 24.18. Patch-level, like every other
+ * consumer of that floor.
+ */
+const NODE_FLOOR_SPEC = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+).engines.node
+const REQUIRED_NODE = parseFloor(NODE_FLOOR_SPEC)
+
+/**
+ * The floor, matched whole. `.mjs` cannot import `shared/nodeFloor.ts`, which is
+ * why this is a copy — the same reason `scripts/sync-installers.mjs` carries
+ * one — so it repeats that module's grammar rather than its own looser reading.
+ * Component-by-component, `>=24.bad.1` was `24.0.1`: a floor every runtime in
+ * the wild clears, quietly turning this check into a no-op.
+ *
+ * The result is the label and the fail-closed check. Whether a runtime clears
+ * the floor is `satisfiesFloor`'s answer, so there is no second comparison here
+ * to drift from the installer's.
+ */
+function parseFloor(spec) {
+  const match = /^\s*(?:>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(String(spec))
+  if (!match) {
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=24.18.1".`)
+  }
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  const patch = Number(match[3])
+  if (major <= 0) {
+    throw new Error(`Unreadable Node floor: ${JSON.stringify(spec)}. Expected a form like ">=24.18.1".`)
+  }
+  return { major, minor, patch, label: `${major}.${minor}.${patch}` }
+}
 
 /**
  * What every child gets on top of this process's own environment.
@@ -330,13 +371,23 @@ async function main() {
     // what `env node` and the Windows `.cmd` shim both do, and because a shell
     // under `sudo` is not the shell this script was started from.
     const childNode = run('node', ['-p', 'process.execPath + " " + process.versions.node'])
-    const [nodePath, version] = childNode.stdout.trim().split(' ')
-    const [major, minor] = (version ?? '').split('.').map((part) => Number.parseInt(part, 10))
-    const meetsFloor = major > REQUIRED_NODE.major
-      || (major === REQUIRED_NODE.major && minor >= REQUIRED_NODE.minor)
+    // Split from the right. The version never contains a space; the path does,
+    // on every default Windows install — `C:\Program Files\nodejs\node.exe`
+    // splitting from the left reported the version as `Files\nodejs\node.exe`,
+    // which parses as 0.0.0 and fails a floor the machine actually met.
+    const printed = childNode.stdout.trim()
+    const separator = printed.lastIndexOf(' ')
+    const nodePath = separator === -1 ? undefined : printed.slice(0, separator)
+    const version = separator === -1 ? undefined : printed.slice(separator + 1)
+    // `satisfiesFloor` rather than a comparison of its own: a prerelease of the
+    // floor is *below* it, and the launcher this check exists to predict
+    // refuses one. A verifier that dropped the suffix would call the PATH Node
+    // fine and let the run fail later, at `start succeeds`, as a launcher
+    // refusal dressed up as a read-only failure.
+    const meetsFloor = version !== undefined && satisfiesFloor(version, NODE_FLOOR_SPEC)
     if (!check('the shim will find a supported Node on PATH', meetsFloor,
       `${nodePath ?? 'no node on PATH'} is ${version ?? 'unreadable'}, ` +
-      `floor is ${REQUIRED_NODE.major}.${REQUIRED_NODE.minor}.0`)) {
+      `floor is ${REQUIRED_NODE.label}`)) {
       return
     }
 

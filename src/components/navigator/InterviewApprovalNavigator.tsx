@@ -1,4 +1,3 @@
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { useInterviewQuestions } from '@/hooks/useTickets'
 import {
@@ -12,7 +11,7 @@ import {
   parseInterviewDocument,
 } from '@/lib/interviewDocument'
 import type { InterviewDocument } from '@shared/interviewArtifact'
-import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
+import { ApprovalOutlineShell } from './ApprovalOutlineShell'
 
 function focusApprovalAnchor(ticketId: string, anchorId: string) {
   window.dispatchEvent(new CustomEvent(INTERVIEW_APPROVAL_FOCUS_EVENT, {
@@ -110,27 +109,19 @@ export function InterviewApprovalNavigator({ ticketId }: { ticketId: string }) {
   const document = normalizeInterviewDocumentLike(data?.document) ?? parseInterviewDocument(data?.raw)
 
   return (
-    <div className="p-2">
-      <div className="px-2 pb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-        Interview Results
-      </div>
-      <ScrollArea className="max-h-[280px]">
-        <div className="space-y-3 pr-2">
-          {isLoading ? (
-            <div className="px-2 py-1 text-xs text-muted-foreground">Loading interview results…</div>
-          ) : isError ? (
-            <QueryErrorNotice
-              title="The interview results could not be loaded."
-              error={error}
-              onRetry={() => void refetch()}
-            />
-          ) : !document ? (
-            <div className="px-2 py-1 text-xs text-muted-foreground">Interview results will appear once the canonical artifact is ready.</div>
-          ) : (
-            <InterviewOutline ticketId={ticketId} document={document} />
-          )}
-        </div>
-      </ScrollArea>
-    </div>
+    <ApprovalOutlineShell
+      title="Interview Results"
+      isLoading={isLoading}
+      isError={isError}
+      error={error}
+      onRetry={() => void refetch()}
+      loadingMessage="Loading interview results…"
+      errorTitle="The interview results could not be loaded."
+      emptyMessage={document ? null : 'Interview results will appear once the canonical artifact is ready.'}
+      maxHeightClass="max-h-[280px]"
+      contentClassName="space-y-3"
+    >
+      {document ? <InterviewOutline ticketId={ticketId} document={document} /> : null}
+    </ApprovalOutlineShell>
   )
 }

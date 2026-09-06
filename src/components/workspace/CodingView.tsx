@@ -2,7 +2,7 @@ import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { useLogs } from '@/context/useLogContext'
 import { getLogEntryIdentity, mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
-import { QUERY_STALE_TIME_5M, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
+import { QUERY_STALE_TIME_5M, QUERY_STALE_TIME_5S, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
 import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { PhaseArtifactsPanel } from './PhaseArtifactsPanel'
 import { CollapsiblePhaseLogSection } from './CollapsiblePhaseLogSection'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { selectedAttemptNumber } from './phaseAttemptSelection'
 import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { BeadDiffViewer } from './BeadDiffViewer'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
@@ -1085,6 +1086,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     shouldShowPhaseVersionSelector ? ticket.id : undefined,
     shouldShowPhaseVersionSelector ? phaseForView : undefined,
   )
+  const attemptNumber = selectedAttemptNumber(selectedAttempt, phaseAttempts)
   const archivedArtifactState = useTicketArtifacts(
     archivedAttemptNumber != null ? ticket.id : undefined,
     archivedAttemptNumber != null
@@ -1179,7 +1181,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     placeholderData: hasBeadControls
       ? (ticket.runtime.beads ?? []).map((bead) => normalizeBead(bead))
       : [],
-    staleTime: 5000,
+    staleTime: QUERY_STALE_TIME_5S,
     refetchOnMount: false,
   })
   const beads = useMemo(
@@ -1434,11 +1436,11 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         </div>
       ) : null}
 
-      {shouldShowPhaseVersionSelector && phaseAttempts.length > 1 ? (
+      {shouldShowPhaseVersionSelector && attemptNumber !== undefined && phaseAttempts.length > 1 ? (
         <div className="px-4 py-2 border-b border-border shrink-0">
           <PhaseAttemptSelector
             attempts={phaseAttempts}
-            value={selectedAttempt?.attemptNumber ?? phaseAttempts[0]!.attemptNumber}
+            value={attemptNumber}
             onChange={setManualSelectedAttemptNumber}
           />
         </div>

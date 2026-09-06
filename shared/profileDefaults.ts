@@ -16,6 +16,14 @@ export const SHARED_PROFILE_DEFAULTS = {
   aiQuestionsEnabled: true,
   aiQuestionWindow: AI_QUESTION_WINDOW_DEFAULT_MS,
   minCouncilQuorum: 2,
+  // Three separate settings that happen to start at twenty minutes, and they
+  // stay three literals on purpose. Each is independently editable per
+  // configuration, project and ticket, and each measures a different thing: how
+  // long one coding iteration may run, how long execution setup may run, and
+  // how long one council member has to answer. Writing two of them as the third
+  // would say they move together, which nothing in the product makes true.
+  // `server/lib/constants.ts` names the last of them `COUNCIL_RESPONSE_TIMEOUT_MS`
+  // because the server needs it as a timeout, not because the other two follow it.
   perIterationTimeout: 1_200_000,
   executionSetupTimeout: 1_200_000,
   councilResponseTimeout: 1_200_000,

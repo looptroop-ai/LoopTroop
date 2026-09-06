@@ -1,4 +1,4 @@
-import { normalizeString } from '@shared/typeGuards'
+import { normalizeString } from './typeGuards'
 
 export type StructuredInterventionStage = 'parse' | 'normalize' | 'semantic_validation' | 'retry'
 export type StructuredInterventionCategory = 'parser_fix' | 'cleanup' | 'synthesized' | 'dropped' | 'attribution' | 'retry'

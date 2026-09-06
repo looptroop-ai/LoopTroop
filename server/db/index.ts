@@ -2,7 +2,7 @@ import { Database } from './sqliteShim'
 import { createDrizzle, type DrizzleDatabase } from './createDrizzle'
 import { dirname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
-import { SQLITE_BUSY_TIMEOUT_MS } from '../lib/constants'
+import { SQLITE_BUSY_TIMEOUT_MS, WAL_CHECKPOINT_INTERVAL_MS } from '../lib/constants'
 import { ensureSecureDir, resolveAppConfigDir, secureFile } from '../lib/appConfigDir'
 import { resolveAppDbPath } from './appDbPath'
 import { getErrorMessage } from '@shared/typeGuards'
@@ -120,7 +120,7 @@ export function startWalCheckpoint() {
       const message = getErrorMessage(error)
       console.error(`[db] WAL checkpoint failed: ${message}`)
     }
-  }, 30000)
+  }, WAL_CHECKPOINT_INTERVAL_MS)
   // Housekeeping should never be the reason the process stays alive.
   checkpointInterval.unref?.()
 }

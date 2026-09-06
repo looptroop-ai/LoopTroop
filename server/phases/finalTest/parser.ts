@@ -1,11 +1,12 @@
 import { normalizeFinalTestCommandsOutput } from '../../structuredOutput'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { unwrapTaggedStructuredOutput } from '../parserTaggedStructuredOutput'
+import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import type { CommandSpec } from '@shared/commandSpec'
 import type { HostContext } from '@shared/hostContext'
 
-export const FINAL_TEST_COMMANDS_MARKER = '<FINAL_TEST_COMMANDS>'
-export const FINAL_TEST_COMMANDS_END = '</FINAL_TEST_COMMANDS>'
+export const FINAL_TEST_COMMANDS_MARKER = openTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)
+export const FINAL_TEST_COMMANDS_END = closeTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)
 
 export interface FinalTestCommandPlan {
   markerFound: boolean

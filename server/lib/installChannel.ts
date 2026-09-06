@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { readSettingsFile, writeSettingsFile } from './appSettings'
 import { isSea } from './isSea'
 
-import type { InstallChannel } from '@shared/installChannel'
+import { INSTALL_CHANNEL_MARKER, type InstallChannel } from '@shared/installChannel'
 export type { InstallChannel }
 
 export interface InstallInfo {
@@ -100,17 +100,6 @@ const UPGRADE_COMMANDS: Record<InstallChannel, string> = {
   source: 'git pull && npm install && npm run build',
   unknown: 'See https://www.looptroop.ovh for upgrade instructions',
 }
-
-/**
- * File an installer may drop at the package root to state the channel outright.
- *
- * Homebrew, Scoop and Chocolatey all extract the same bundle, so nothing about
- * the files themselves distinguishes them; only the manager that unpacked them
- * knows, and this is where it says so. Deliberately at the package root rather
- * than beside this module, because detection runs from `dist/server/lib` and an
- * installer has no business knowing that.
- */
-export const INSTALL_CHANNEL_MARKER = '.install-channel'
 
 /** Depth is bounded so a detached or unusual layout cannot walk to `/` slowly. */
 const PACKAGE_ROOT_SEARCH_DEPTH = 12

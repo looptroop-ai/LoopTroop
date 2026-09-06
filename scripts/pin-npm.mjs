@@ -2,7 +2,7 @@
 /**
  * Installs the npm version this repository declares, and proves it took.
  *
- * `package.json` names npm 11.19.0 in `packageManager` and `engines`, but a
+ * `package.json` names an npm version in `packageManager` and `engines`, but a
  * runner ships whatever npm came bundled with its Node — ubuntu-24.04 images
  * carry 10.9.8 — so every `npm ci` in CI ran on a version the repository does
  * not claim to support. That is the resolver, the lockfile reader and the

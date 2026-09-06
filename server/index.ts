@@ -3,8 +3,7 @@ import { createApp } from './app'
 import { isLoopbackHost } from '../shared/appConfig'
 import { isEntryPoint } from './cli/entryPoint'
 import { getErrorMessage } from '@shared/typeGuards'
-
-const SHUTDOWN_FORCE_EXIT_MS = 30_000
+import { SHUTDOWN_FORCE_EXIT_MS } from './lib/constants'
 
 /**
  * Starts the backend as a process: signal handlers, exit codes, the lot.

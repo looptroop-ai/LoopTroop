@@ -1,5 +1,10 @@
 import type { SSEEventType } from './eventTypes'
-import { MAX_SSE_BUFFER_BYTES, MAX_SSE_BUFFER_SIZE } from '../lib/constants'
+import {
+  MAX_SSE_BUFFER_BYTES,
+  MAX_SSE_BUFFER_SIZE,
+  MAX_SSE_BUFFER_TTL_MS,
+  SSE_BUFFER_CLEANUP_INTERVAL_MS,
+} from '../lib/constants'
 
 interface SSEClient {
   id: string
@@ -37,12 +42,12 @@ class SSEBroadcaster {
   constructor(options: SSEBroadcasterOptions = {}) {
     this.maxBufferSize = options.maxBufferSize ?? MAX_SSE_BUFFER_SIZE
     this.maxBufferBytes = options.maxBufferBytes ?? MAX_SSE_BUFFER_BYTES
-    this.bufferTtlMs = options.bufferTtlMs ?? 300000
+    this.bufferTtlMs = options.bufferTtlMs ?? MAX_SSE_BUFFER_TTL_MS
   }
 
   startAutoCleanup() {
     if (this.cleanupInterval) return
-    this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
+    this.cleanupInterval = setInterval(() => this.cleanup(), SSE_BUFFER_CLEANUP_INTERVAL_MS)
     // Allow the Node process to exit even if the interval is still active
     if (this.cleanupInterval && typeof this.cleanupInterval === 'object' && 'unref' in this.cleanupInterval) {
       this.cleanupInterval.unref()

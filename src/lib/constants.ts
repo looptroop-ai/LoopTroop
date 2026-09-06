@@ -35,6 +35,26 @@ export const DROPDOWN_FOCUS_DELAY_MS = 50
 /** Query stale time for infrequently-changing data (5 minutes) */
 export const QUERY_STALE_TIME_5M = 5 * 60 * 1000
 /**
+ * Stale time for a workflow's own record of what it already did — a bead's
+ * diff, the skip list, a ticket's AI details, an archived attempt's logs.
+ * None of it changes while you are reading it, but all of it changes when the
+ * workflow moves on, so it is cached long enough to survive flipping between
+ * panes and short enough that a finished phase shows up without a reload.
+ */
+export const QUERY_STALE_TIME_30S = 30_000
+/** Default query stale time: long enough to coalesce a burst, short enough to feel live */
+export const QUERY_STALE_TIME_5S = 5 * 1000
+
+/** How often a Manual QA checklist is polled while the model is still writing it */
+export const MANUAL_QA_GENERATING_POLL_MS = 3000
+/** How often the active Manual QA version is polled while a round is open */
+export const MANUAL_QA_ACTIVE_VERSION_POLL_MS = 5000
+
+/** How often a single ticket is refetched while its workflow is running */
+export const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
+/** How often the ticket list is refetched while any ticket's workflow is running */
+export const ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS = 10_000
+/**
  * How the model catalog waits out OpenCode's startup window.
  *
  * The catalog answers HTTP 200 with a `message` while OpenCode is still coming
@@ -54,7 +74,20 @@ export const QUESTION_RECOVERY_INTERVAL_MS = 30_000
 export const GIT_CHECK_DEBOUNCE_MS = 300
 /** Debounce delay for git-check in project form */
 export const PROJECT_GIT_CHECK_DEBOUNCE_MS = 500
-/** Tick interval for the active-bead countdown timer */
+/**
+ * How long a draft waits after the last keystroke before it is saved. Long
+ * enough that typing a paragraph is one write rather than fifty, short enough
+ * that closing the tab shortly after a change still keeps it — the surface
+ * also flushes on unload, which is what covers the rest. One value because it
+ * is one decision: the approval panes and Manual QA both persist a draft the
+ * user is still looking at.
+ */
+export const DRAFT_AUTOSAVE_DEBOUNCE_MS = 5000
+/**
+ * Tick interval for the surfaces that display whole seconds — the active-bead
+ * countdown and the current-activity strip's elapsed time. One value because
+ * one decision: the smallest unit either of them renders.
+ */
 export const COUNTDOWN_TICK_MS = 1_000
 
 /** z-index for absolutely positioned dropdowns above all other UI */

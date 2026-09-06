@@ -5,6 +5,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { clearTicketArtifactsCache } from '@/hooks/useTicketArtifacts'
+import { DRAFT_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
 
 interface SaveTicketUiStateInput<T> {
   ticketId: string
@@ -87,6 +88,103 @@ export function useApprovalDraftReset(
   }, [ticketId, lastSavedSnapshotRef, restoredDraftRef])
 }
 
+interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
+  /**
+   * The document the draft belongs to. Null or undefined means it has not
+   * arrived: restoring then would write a snapshot of empty state and mark the
+   * pane restored, so the real document would never reach the editors.
+   */
+  document: TDocument | null | undefined
+  /**
+   * Anything else that has to be true first.
+   *
+   * The UI-state query belongs here, and not only the document query. `persisted`
+   * is `undefined` both while that query is in flight and when the server holds
+   * no draft, and this hook cannot tell those apart — so a document that arrives
+   * first restores defaults, latches, and the saved draft that lands a moment
+   * later is discarded with no way back.
+   *
+   * Required, and with no default: a default of `true` reads as "ready unless
+   * told otherwise", which is the failure this option exists to prevent. It
+   * also hid the gate from every test whose query mock left the flag out —
+   * `!isLoading && undefined` is `undefined`, and the default made that ready.
+   */
+  ready: boolean
+  /** The persisted UI state for this pane, if the server had any. */
+  persisted: TPersisted | undefined
+  restoredDraftRef: RefObject<boolean>
+  lastSavedSnapshotRef: RefObject<string>
+  /**
+   * Applies the restored values to the pane's state and returns the object they
+   * represent, which becomes the baseline the autosave compares against.
+   */
+  restore: (persisted: TPersisted | undefined, document: TDocument) => unknown
+  /**
+   * When true, the pane already has local edits and must not be overwritten by
+   * a draft that arrives later. The one-shot still latches so autosave can
+   * keep those edits; it just does not call `restore`.
+   */
+  skipRestoreRef?: RefObject<boolean>
+}
+
+/**
+ * Restores one approval pane's draft from persisted UI state, exactly once.
+ *
+ * The interview, PRD and execution-setup panes each wrote this out: the same
+ * guard, the same `JSON.stringify` into `lastSavedSnapshotRef`, the same
+ * `restoredDraftRef` flip, around a `restore` body that is genuinely different
+ * in each — different tabs, different defaults, different fields. Only the
+ * bookkeeping is shared, so only the bookkeeping is here.
+ *
+ * The order matters and is why this is worth centralising: the snapshot has to
+ * be written *before* the pane is marked restored, or the autosave can see a
+ * dirty pane whose baseline is still the empty string and save a draft the user
+ * never touched.
+ */
+export function useApprovalDraftRestore<TPersisted, TDocument>({
+  document,
+  ready,
+  persisted,
+  restoredDraftRef,
+  lastSavedSnapshotRef,
+  restore,
+  skipRestoreRef,
+}: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): boolean {
+  // Held in a ref rather than in the dependency array: this effect is one-shot,
+  // and a `restore` closure that changes identity every render would otherwise
+  // re-run it for no reason. Written in an effect rather than during render —
+  // a render React discards would otherwise leave the ref pointing at a closure
+  // over state that was never committed, and the baseline snapshot below would
+  // be computed from it. Declared first so it commits before that effect runs.
+  const restoreRef = useRef(restore)
+  useEffect(() => {
+    restoreRef.current = restore
+  })
+
+  const [restored, setRestored] = useState(false)
+
+  useEffect(() => {
+    if (restoredDraftRef.current) {
+      if (!restored) setRestored(true)
+      return
+    }
+    if (!ready || !document) {
+      if (restored) setRestored(false)
+      return
+    }
+    if (skipRestoreRef?.current) {
+      restoredDraftRef.current = true
+      setRestored(true)
+      return
+    }
+    lastSavedSnapshotRef.current = JSON.stringify(restoreRef.current(persisted, document))
+    restoredDraftRef.current = true
+    setRestored(true)
+  }, [document, lastSavedSnapshotRef, persisted, ready, restored, restoredDraftRef, skipRestoreRef])
+
+  return restored
+}
+
 export function useApprovalFocusAnchor(ticketId: string, eventName: string) {
   useEffect(() => {
     const handler = (event: Event) => {
@@ -111,7 +209,7 @@ export function useDebouncedApprovalUiState<T>({
   saveUiState,
   lastSavedSnapshotRef,
   initialUpdatedAt = null,
-  delayMs = 5_000,
+  delayMs = DRAFT_AUTOSAVE_DEBOUNCE_MS,
 }: UseDebouncedApprovalUiStateOptions<T>): ApprovalAutosaveStatus {
   const [state, setState] = useState<AutosaveStatusState>('pending')
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(

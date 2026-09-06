@@ -201,6 +201,13 @@ function App() {
    */
   const popOccurredRef = useRef(false)
   /**
+   * The pathname Back/Forward last landed on. A ref alone does not re-render,
+   * and during the load window handlePop often changes no React state (About
+   * already closed, no modal, ticket list still pending), so the dashboard
+   * would keep showing the restored ticket under a bar that already said `/`.
+   */
+  const [popPathname, setPopPathname] = useState<string | null>(null)
+  /**
    * The current modal was pushed by us, not landed on. Closing then uses
    * Back so the dialog does not leave a duplicate ticket entry behind.
    */
@@ -444,6 +451,7 @@ function App() {
       popOccurredRef.current = true
       awaitingOwnBackRef.current = false
       const pathname = window.location.pathname
+      setPopPathname(pathname)
       // About has no route of its own and sits above everything else, so a Back that
       // reconciles the routed overlays would otherwise close Configuration underneath
       // it and leave About floating over the board with nothing behind it.
@@ -548,9 +556,9 @@ function App() {
           {state.activeView === 'ticket' && state.selectedTicketId
             && !shouldHoldRestoredTicket(
               hasHydratedUrl,
-              popOccurredRef.current ? window.location.pathname : entryPathnameRef.current,
+              popPathname ?? entryPathnameRef.current,
               state.selectedTicketExternalId,
-              popOccurredRef.current,
+              popPathname !== null,
             )
             ? <TicketDashboard key={state.selectedTicketId} />
             : <KanbanBoard />}

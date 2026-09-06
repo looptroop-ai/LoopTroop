@@ -867,6 +867,27 @@ describe('App route ownership', () => {
     expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
     expect(window.location.pathname).toBe('/')
   })
+
+  it('hides the restored dashboard as soon as Back reaches the board, even while the list is loading', async () => {
+    persistTicketSelection('ticket-1', 'LT-1')
+    mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
+    mockState.ticketsFetched = false
+    mockState.ticketsLoading = true
+    window.history.pushState(null, '', '/ticket/LT-1')
+
+    renderApp()
+
+    expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
+
+    window.history.pushState(null, '', '/')
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    expect(window.location.pathname).toBe('/')
+    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
+  })
 })
 
 describe('App startup notices', () => {

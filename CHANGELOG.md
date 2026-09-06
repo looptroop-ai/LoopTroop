@@ -198,7 +198,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Fixed a link to a path this app has no screen for — `/nowhere`, `/ticket/`, `/ticket/new/extra` — opening the previous session's ticket instead of the board when a selection was still restored.
 - Fixed `/ticket/LT-1/extra` and `/ticket/LT-1/` being left in the address bar. Extra segments on a ticket that exists are repaired to that ticket; a trailing slash on Configuration is repaired the same way.
 - Fixed a deep link showing the previous ticket's dashboard until the ticket list loaded, so you could edit the wrong ticket while the address bar named the one you asked for.
-- Fixed Back onto a real ticket while the list was still loading being treated as a deleted ticket and replaced with the board, and Back to the board in that same window being undone when the list arrived by reopening the previous session's ticket.
+- Fixed Back onto a real ticket while the list was still loading being treated as a deleted ticket and replaced with the board, and Back to the board in that same window leaving the previous ticket on screen until the list arrived.
 - Fixed closing Configuration before the ticket list loaded writing the previous session's ticket into the address bar instead of the deep link you opened.
 - Fixed the logo leaving an open dialog on screen. It wrote `/` itself, which the part of the app that owns the address immediately overwrote with the dialog's own route.
 - Fixed the welcome and restore overlays sitting under the header, so the logo could be clicked through them and cancel a deep link that had not loaded yet.

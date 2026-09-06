@@ -26,6 +26,7 @@ import {
   type ManualQaSummary,
 } from '@/hooks/useManualQA'
 import { cn } from '@/lib/utils'
+import { DRAFT_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
 import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
 import { ArtifactProcessingNotice, CollapsibleSection } from '@/components/workspace/ArtifactContentViewer'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
@@ -345,7 +346,7 @@ export function ManualQAView({ ticket, readOnly = false }: ManualQAViewProps) {
 
   useEffect(() => {
     if (!dirty || !editable) return
-    const timer = window.setTimeout(() => { void persistDraft() }, 5000)
+    const timer = window.setTimeout(() => { void persistDraft() }, DRAFT_AUTOSAVE_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [dirty, editable, persistDraft])
 

@@ -340,4 +340,25 @@ describe('useApprovalDraftRestore', () => {
     expect(first).not.toHaveBeenCalled()
     expect(result.current.lastSavedSnapshotRef.current).toBe(JSON.stringify({ tab: 'answers' }))
   })
+
+  it('does not overwrite local edits when skipRestoreRef is set', () => {
+    const restore = vi.fn(() => ({ tab: 'yaml' }))
+    const skipRestoreRef = { current: true }
+    const restoredDraftRef = { current: false }
+    const lastSavedSnapshotRef = { current: '' }
+
+    renderHook(() => useApprovalDraftRestore({
+      document: DOCUMENT,
+      ready: true,
+      persisted: { tab: 'yaml' },
+      restoredDraftRef,
+      lastSavedSnapshotRef,
+      skipRestoreRef,
+      restore,
+    }))
+
+    expect(restore).not.toHaveBeenCalled()
+    expect(restoredDraftRef.current).toBe(true)
+    expect(lastSavedSnapshotRef.current).toBe('')
+  })
 })

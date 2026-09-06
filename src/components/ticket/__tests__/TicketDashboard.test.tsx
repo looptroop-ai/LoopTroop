@@ -309,7 +309,10 @@ describe('TicketDashboard', () => {
       expect(saveUiStateMutate).toHaveBeenCalledTimes(2)
     })
     expect(saveUiStateMutate).toHaveBeenLastCalledWith(
-      expect.objectContaining({ scope: 'needs_input_attention' }),
+      expect.objectContaining({
+        scope: 'needs_input_attention',
+        data: expect.objectContaining({ seenSignature: expect.any(String) }),
+      }),
     )
   })
 

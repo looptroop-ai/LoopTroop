@@ -5,7 +5,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { clearTicketArtifactsCache } from '@/hooks/useTicketArtifacts'
-import { APPROVAL_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
+import { DRAFT_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
 
 interface SaveTicketUiStateInput<T> {
   ticketId: string
@@ -119,6 +119,12 @@ interface UseApprovalDraftRestoreOptions<TPersisted, TDocument> {
    * represent, which becomes the baseline the autosave compares against.
    */
   restore: (persisted: TPersisted | undefined, document: TDocument) => unknown
+  /**
+   * When true, the pane already has local edits and must not be overwritten by
+   * a draft that arrives later. The one-shot still latches so autosave can
+   * keep those edits; it just does not call `restore`.
+   */
+  skipRestoreRef?: RefObject<boolean>
 }
 
 /**
@@ -142,7 +148,8 @@ export function useApprovalDraftRestore<TPersisted, TDocument>({
   restoredDraftRef,
   lastSavedSnapshotRef,
   restore,
-}: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): void {
+  skipRestoreRef,
+}: UseApprovalDraftRestoreOptions<TPersisted, TDocument>): boolean {
   // Held in a ref rather than in the dependency array: this effect is one-shot,
   // and a `restore` closure that changes identity every render would otherwise
   // re-run it for no reason. Written in an effect rather than during render —
@@ -154,11 +161,28 @@ export function useApprovalDraftRestore<TPersisted, TDocument>({
     restoreRef.current = restore
   })
 
+  const [restored, setRestored] = useState(false)
+
   useEffect(() => {
-    if (!ready || !document || restoredDraftRef.current) return
+    if (restoredDraftRef.current) {
+      if (!restored) setRestored(true)
+      return
+    }
+    if (!ready || !document) {
+      if (restored) setRestored(false)
+      return
+    }
+    if (skipRestoreRef?.current) {
+      restoredDraftRef.current = true
+      setRestored(true)
+      return
+    }
     lastSavedSnapshotRef.current = JSON.stringify(restoreRef.current(persisted, document))
     restoredDraftRef.current = true
-  }, [document, lastSavedSnapshotRef, persisted, ready, restoredDraftRef])
+    setRestored(true)
+  }, [document, lastSavedSnapshotRef, persisted, ready, restored, restoredDraftRef, skipRestoreRef])
+
+  return restored
 }
 
 export function useApprovalFocusAnchor(ticketId: string, eventName: string) {
@@ -185,7 +209,7 @@ export function useDebouncedApprovalUiState<T>({
   saveUiState,
   lastSavedSnapshotRef,
   initialUpdatedAt = null,
-  delayMs = APPROVAL_AUTOSAVE_DEBOUNCE_MS,
+  delayMs = DRAFT_AUTOSAVE_DEBOUNCE_MS,
 }: UseDebouncedApprovalUiStateOptions<T>): ApprovalAutosaveStatus {
   const [state, setState] = useState<AutosaveStatusState>('pending')
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(

@@ -171,7 +171,7 @@ function BeadsApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_beads'
-  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
   const councilMemberNames = useMemo(
     () => ticket.lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0),
     [ticket.lockedCouncilMembers],
@@ -233,6 +233,7 @@ function BeadsApprovalPane({
   const [discardTarget, setDiscardTarget] = useState<DiscardTarget>(null)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseStructuredDraft = useMemo(
@@ -255,7 +256,7 @@ function BeadsApprovalPane({
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
   // Restore persisted UI state
-  useApprovalDraftRestore({
+  const draftRestored = useApprovalDraftRestore({
     document: fetchedBeads,
     // The UI-state query too, not just the beads one: `persisted` is undefined
     // while it is in flight, and restoring from that latches the pane on
@@ -269,13 +270,17 @@ function BeadsApprovalPane({
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
-    restore: (persisted) => {
+    skipRestoreRef,
+    restore: (persisted, document) => {
+      const documentBeads = Array.isArray(document.beads) ? document.beads : []
+      const documentRaw = documentBeads.length > 0 ? beadsArrayToJsonl(documentBeads) : ''
+      const documentStructured = documentBeads.length > 0 ? parseBeadsForEditor(documentBeads) : null
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
       const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
         ? persisted.structuredDraft
-        : baseStructuredDraft
-      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : rawJsonl
+        : documentStructured
+      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : documentRaw
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -290,6 +295,7 @@ function BeadsApprovalPane({
       }
     },
   })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, BEADS_APPROVAL_FOCUS_EVENT)
 
@@ -319,6 +325,7 @@ function BeadsApprovalPane({
   }
 
   function openEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('structured')
     setIsEditMode(true)
   }
@@ -475,6 +482,7 @@ function BeadsApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
+            disabled={!isEditMode && !canStartEditing}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}

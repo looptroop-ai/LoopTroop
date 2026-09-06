@@ -93,7 +93,7 @@ export function InterviewApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'interview', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
   const {
     data: interviewData,
     isLoading,
@@ -128,6 +128,7 @@ export function InterviewApprovalPane({
   const [isCascadeWarningOpen, setIsCascadeWarningOpen] = useState(false)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseAnswerDrafts = useMemo(
@@ -145,7 +146,7 @@ export function InterviewApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useApprovalDraftRestore({
+  const draftRestored = useApprovalDraftRestore({
     document: interviewDocument,
     // Both queries, not just the document one: `persisted` is undefined while
     // the UI-state query is in flight and restoring from it latches the pane on
@@ -160,6 +161,7 @@ export function InterviewApprovalPane({
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
+    skipRestoreRef,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
@@ -179,6 +181,7 @@ export function InterviewApprovalPane({
       }
     },
   })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, INTERVIEW_APPROVAL_FOCUS_EVENT)
 
@@ -208,6 +211,7 @@ export function InterviewApprovalPane({
   }
 
   function openFriendlyEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('answers')
     setIsEditMode(true)
   }
@@ -382,7 +386,7 @@ export function InterviewApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
-            disabled={isPreparingStructuredInterview}
+            disabled={isPreparingStructuredInterview || (!isEditMode && !canStartEditing)}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}

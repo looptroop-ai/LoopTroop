@@ -150,7 +150,7 @@ export function PrdApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'prd', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
   const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
     queryFn: async ({ signal }) => {
@@ -207,6 +207,7 @@ export function PrdApprovalPane({
   const [gapReason, setGapReason] = useState('')
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseStructuredDraft = useMemo(
@@ -233,7 +234,7 @@ export function PrdApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useApprovalDraftRestore({
+  const draftRestored = useApprovalDraftRestore({
     document: prdDocument,
     // Both queries, not just the document one: `persisted` is undefined while
     // the UI-state query is in flight and restoring from it latches the pane on
@@ -247,6 +248,7 @@ export function PrdApprovalPane({
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
+    skipRestoreRef,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
@@ -266,6 +268,7 @@ export function PrdApprovalPane({
       }
     },
   })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, PRD_APPROVAL_FOCUS_EVENT)
 
@@ -295,6 +298,7 @@ export function PrdApprovalPane({
   }
 
   function openFriendlyEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved(baseStructuredDraft ? 'structured' : 'yaml')
     setIsEditMode(true)
   }
@@ -521,7 +525,7 @@ export function PrdApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
-            disabled={isPreparingStructuredPrd}
+            disabled={isPreparingStructuredPrd || (!isEditMode && !canStartEditing)}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}

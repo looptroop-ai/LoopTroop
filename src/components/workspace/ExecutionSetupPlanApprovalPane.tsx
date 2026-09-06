@@ -333,7 +333,7 @@ export function ExecutionSetupPlanApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_execution_setup'
-  const { data: persistedUiState, isSuccess: isUiStateSuccess } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<ExecutionSetupPlanApprovalUiState>(ticket.id, uiStateScope, true)
   const isArchivedAttempt = phaseAttempt != null
   const effectiveLogMode = logMode ?? (isArchivedAttempt ? 'snapshot' : 'live')
   const isRuntimeSetupRewindMode = !readOnly && !isArchivedAttempt && ticket.status === 'PREPARING_EXECUTION_ENV'
@@ -420,6 +420,7 @@ export function ExecutionSetupPlanApprovalPane({
   const [runtimeRewindTarget, setRuntimeRewindTarget] = useState<RuntimeRewindTarget>(null)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const hasStructuredChanges = useMemo(
@@ -451,8 +452,11 @@ export function ExecutionSetupPlanApprovalPane({
     wasReadOnlyRef.current = readOnly
   }, [readOnly])
 
-  useApprovalDraftRestore({
-    document: plan,
+  const draftRestored = useApprovalDraftRestore({
+    // The fetch result, not `plan`. A failed generation still delivers `raw`
+    // and a saved commentary, and treating `plan === null` as "the document
+    // has not arrived" dropped those drafts on reload.
+    document: fetchedPlan,
     // `persisted` is undefined both while the UI-state query is in flight and
     // when there is genuinely no draft, so without this the pane can latch on
     // defaults and discard the draft that lands a moment later.
@@ -469,11 +473,12 @@ export function ExecutionSetupPlanApprovalPane({
     persisted: persistedUiState?.data,
     restoredDraftRef,
     lastSavedSnapshotRef,
+    skipRestoreRef,
     restore: (persisted, document) => {
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'raw' ? 'raw' : 'structured'
-      const nextStructuredDraft = persisted?.structuredDraft ?? document
-      const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : rawContent
+      const nextStructuredDraft = persisted?.structuredDraft ?? document.plan
+      const nextRawDraft = typeof persisted?.rawDraft === 'string' ? persisted.rawDraft : (document.raw ?? '')
       const nextCommentary = typeof persisted?.commentary === 'string' ? persisted.commentary : ''
 
       setIsEditMode(nextEditMode)
@@ -491,6 +496,7 @@ export function ExecutionSetupPlanApprovalPane({
       }
     },
   })
+  const canStartEditing = draftRestored || isUiStateError
 
   useEffect(() => {
     if (!readOnly) return
@@ -648,6 +654,7 @@ export function ExecutionSetupPlanApprovalPane({
   }
 
   function openEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('structured')
     setIsEditMode(true)
   }
@@ -817,7 +824,7 @@ export function ExecutionSetupPlanApprovalPane({
                 size="sm"
                 onClick={handleToggleEdit}
                 className="text-xs shrink-0"
-                disabled={!plan}
+                disabled={!plan || (!isEditMode && !canStartEditing)}
               >
                 {isEditMode ? 'View' : 'Edit'}
               </Button>

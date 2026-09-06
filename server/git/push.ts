@@ -55,7 +55,18 @@ function ghIsInstalled(): boolean {
   return ghInstalled
 }
 
-function gitEnv(): NodeJS.ProcessEnv {
+/**
+ * The environment every push needs, exported for the second one.
+ *
+ * `pushSquashedCandidate` runs its own loop in `phases/integration/squash.ts`
+ * against the same remote, and it was building its `runCommand` options by
+ * hand — so it shared this module's timeout and retry count but not its
+ * credentials. On a machine whose only credential is `GH_TOKEN`, a container
+ * being the obvious one, that is the difference between a branch push that
+ * works and a squashed-candidate push that stops to ask for a password it has
+ * no way to request.
+ */
+export function gitPushEnv(): NodeJS.ProcessEnv {
   return { ...ghCredentialEnv() }
 }
 
@@ -65,7 +76,7 @@ function gitEnv(): NodeJS.ProcessEnv {
  * full two minutes.
  */
 function runGit(projectPath: string, args: string[]): Promise<string> {
-  return runGitOrThrow(projectPath, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitEnv() })
+  return runGitOrThrow(projectPath, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitPushEnv() })
 }
 
 export interface PushBranchRefResult {

@@ -25,6 +25,7 @@ import { createReadStream, existsSync, mkdtempSync, readFileSync, readdirSync, r
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { removeWorkDirectory } from './smoke-lib.mjs'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -299,9 +300,6 @@ try {
   // Windows executable out of `work`, and Windows does not release the handle
   // the instant the process exits. `force` swallows ENOENT and nothing else,
   // so a plain removal turns a passing smoke into a failed release.
-  try {
-    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-  } catch (error) {
-    process.stderr.write(`\nCould not remove ${work}: ${error.message}\n`)
-  }
+  const leftover = removeWorkDirectory(work)
+  if (leftover) process.stderr.write(`\nCould not remove ${work}: ${leftover.message}\n`)
 }

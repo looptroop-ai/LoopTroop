@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { waitForHealth } from './smoke-lib.mjs'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -34,6 +35,17 @@ const CHILD_ENV = { LOOPTROOP_OPENCODE_MODE: 'mock' }
 
 /** Away from 3000 and the OpenCode default, so a busy runner does not collide. */
 const PORT = 39117
+
+/**
+ * How long the daemon has to answer `/api/health`.
+ *
+ * Stated here rather than defaulted in the shared helper: this drives a daemon
+ * started from a local install on a machine that has just built it, which comes
+ * up in about two seconds. The published-install smoke waits twice as long, on
+ * purpose, and a shared default would silently give one of them the other's
+ * policy.
+ */
+const HEALTH_TIMEOUT_MS = 30_000
 
 const failures = []
 let step = 0
@@ -243,19 +255,6 @@ function firstPackEntry(parsed) {
  * Polls until the port answers. The daemon reports ready before returning, so
  * this is only insurance against a slow runner, not part of the contract.
  */
-async function waitForHealth(baseUrl, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`)
-      if (response.ok) return await response.json()
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((done) => setTimeout(done, 250))
-  }
-  return null
-}
 /**
  * Anything the daemon spawns that is still alive after `stop`.
  *
@@ -444,7 +443,7 @@ try {
   check('start points to full managed OpenCode logs', started.stdout.includes('--opencode-logs=all'),
     'all-log option present')
 
-  const health = await waitForHealth(baseUrl)
+  const health = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
   check('/api/health answers', health?.status === 'ok', `status=${health?.status}`)
   check('health reports an instance id', typeof health?.instanceId === 'string', 'instanceId present')
 
@@ -577,7 +576,7 @@ try {
   // that is no longer recorded. Scoring those as separate findings is what made
   // one bug read as three, and sent three reviews looking for three causes.
   if (restartWorked) {
-    const afterRestart = await waitForHealth(baseUrl)
+    const afterRestart = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
     check('the daemon answers after restart', afterRestart?.status === 'ok', `status=${afterRestart?.status}`)
     check('restart produced a new instance', afterRestart?.instanceId !== health?.instanceId,
       'instance id changed')
@@ -640,7 +639,7 @@ try {
       opened.combined.includes('looptroop logs --follow') && opened.combined.includes('--opencode-logs=all'),
       'logging hints present')
 
-    const afterOpen = await waitForHealth(baseUrl)
+    const afterOpen = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
     check('the daemon open started answers', afterOpen?.status === 'ok', `status=${afterOpen?.status}`)
 
     // Second call: the daemon is up, so it must open rather than start again.
@@ -649,17 +648,21 @@ try {
     check('open does not start a second daemon', !/Starting it/.test(reopened.combined), 'no start')
     check('open offers the link again for the running daemon', /#bootstrap=/.test(reopened.combined),
       'link offered as a fallback')
-    const stillSame = await waitForHealth(baseUrl)
+    const stillSame = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
     check('open did not replace the daemon', stillSame?.instanceId === afterOpen?.instanceId,
       'same instance id')
 
+    // Through `commandDetail`, like every other lifecycle assertion here. An
+    // exit code alone names none of the reasons a stop or a clean fails, and
+    // the command has already printed them — discarding `.combined` throws away
+    // the only account of what went wrong.
     const stopAfterOpen = cli('stop')
-    check('the daemon open started stops again', stopAfterOpen.code === 0, `exit ${stopAfterOpen.code}`)
+    check('the daemon open started stops again', stopAfterOpen.code === 0, commandDetail(stopAfterOpen))
   }
 
   heading('clean runs once the daemon is down')
   const clean = cli('clean')
-  check('clean succeeds with no daemon', clean.code === 0, `exit ${clean.code}`)
+  check('clean succeeds with no daemon', clean.code === 0, commandDetail(clean))
   check('clean removes nothing without --apply', !/^\s*removing\b/m.test(clean.stdout), 'listed only')
 
   heading('No child processes survived')
@@ -683,7 +686,7 @@ try {
     child.stdout.on('data', (chunk) => { output += chunk })
     child.stderr.on('data', (chunk) => { output += chunk })
 
-    const fgHealth = await waitForHealth(`http://127.0.0.1:${PORT + 1}`)
+    const fgHealth = await waitForHealth(`http://127.0.0.1:${PORT + 1}`, HEALTH_TIMEOUT_MS)
     check('the foreground daemon answers', fgHealth?.status === 'ok', `status=${fgHealth?.status}`)
     check('the foreground daemon prints no secret in its output', !/#bootstrap=/.test(output),
       'no sign-in URL on stdout')

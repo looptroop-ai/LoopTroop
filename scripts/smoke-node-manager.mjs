@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { removeWorkDirectory } from './smoke-lib.mjs'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -207,11 +208,10 @@ try {
   rmSync(tarballPath, { force: true })
 } finally {
   for (const dir of [home, empty]) {
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    } catch {
-      // A leftover temp directory is not worth failing a passing smoke over.
-    }
+    // A leftover temp directory is not worth failing a passing smoke over, and
+    // not worth a line either: these two are per-run homes, not the working
+    // directory the other smokes report on.
+    removeWorkDirectory(dir)
   }
 }
 

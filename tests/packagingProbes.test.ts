@@ -1,9 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
+import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
 const scratch: string[] = []
@@ -108,5 +111,68 @@ describe('anonymous Docker configuration', () => {
 
   it('reduces an unreadable config to an empty one rather than passing it through', () => {
     expect(JSON.parse(withoutCredentials('not json at all'))).toEqual({})
+  })
+})
+
+/**
+ * Three smoke scripts had their own `waitForHealth` and four had their own
+ * retry-and-never-throw removal. Sharing them is only safe if the shared one
+ * keeps every property each copy relied on, so those are what is asserted here
+ * rather than that the function exists.
+ */
+describe('shared smoke helpers', () => {
+  it('returns the health payload as soon as the daemon answers', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ status: 'ok', instanceId: 'abc' }))
+    })
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const { port } = server.address() as AddressInfo
+
+    try {
+      expect(await waitForHealth(`http://127.0.0.1:${port}`, 5_000))
+        .toEqual({ status: 'ok', instanceId: 'abc' })
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()))
+    }
+  })
+
+  it('gives up and returns null rather than throwing when nothing is listening', async () => {
+    // Port 1 needs privileges to bind and nothing holds it, so the connection
+    // is refused immediately and this exercises the catch on every attempt.
+    const started = Date.now()
+
+    expect(await waitForHealth('http://127.0.0.1:1', 400)).toBeNull()
+    // Bounded by the timeout it was given, not by a default of its own.
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
+  it('removes a directory and says nothing went wrong', () => {
+    const directory = freshDir()
+    writeFileSync(join(directory, 'inside'), 'x')
+
+    expect(removeWorkDirectory(directory)).toBeNull()
+    expect(existsSync(directory)).toBe(false)
+  })
+
+  it('treats a directory that is already gone as removed', () => {
+    // `force` swallows ENOENT, and every caller runs this from a `finally` that
+    // may have been reached before the directory was ever created.
+    expect(removeWorkDirectory(join(tmpdir(), 'looptroop-never-existed-9f2c1a'))).toBeNull()
+  })
+
+  /**
+   * The contract every caller depends on: this runs from a `finally` in each of
+   * them, so a throw here would replace whatever failure the script was already
+   * reporting with a complaint about a temporary directory.
+   *
+   * Provoked with a NUL byte, which `rmSync` rejects outright. A path under a
+   * file or a path that does not exist will not do it — `force` treats both as
+   * already gone, which is the behaviour the two tests above pin down.
+   */
+  it('returns what stopped it rather than throwing', () => {
+    const failure = removeWorkDirectory(join(tmpdir(), 'looptroop\u0000invalid'))
+
+    expect(failure).toBeInstanceOf(Error)
   })
 })

@@ -536,6 +536,10 @@ describe('npm outdated probe outcomes', () => {
     expect(classifyOutdatedProbe({ status: 1, stdout: '{"vite":{}}', stderr: '' }).outcome).toBe('listed')
   })
 
+  it('does not read whitespace as a report', () => {
+    expect(classifyOutdatedProbe({ status: 0, stdout: '\n', stderr: '' })).toEqual({ outcome: 'current' })
+  })
+
   it('reads a failure with no output as not having checked', () => {
     const probe = classifyOutdatedProbe({ status: 1, stdout: '', stderr: 'npm ERR! network timeout' })
 

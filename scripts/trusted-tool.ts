@@ -21,7 +21,7 @@
  * `PATH`.
  */
 import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path'
 
 /**
  * Directory prefixes a tool may be resolved from.
@@ -30,16 +30,35 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:pa
  * installation root for the tool on that platform. The working directory, the
  * temporary directory and anything under the checkout are deliberately absent —
  * those are the ones a job's own inputs can write to.
+ *
+ * The hosted tool cache is absent for the same reason, and it is worth naming:
+ * `/opt/hostedtoolcache` looks like system infrastructure but is written by
+ * every `setup-*` action, so the job can put files there. Neither tool this
+ * guards comes from it — `gh` is preinstalled at `/usr/bin` or under Program
+ * Files, `choco` under ProgramData — so trusting the cache would have widened
+ * the guard to a writable tree for nothing. A runner that genuinely keeps a
+ * tool there names it through the override.
  */
 export function defaultTrustedPrefixes(env: NodeJS.ProcessEnv = process.env): string[] {
-  // The Windows roots come from the environment rather than a literal `C:\`.
-  // The system drive is not always C on a hosted runner, and a hardcoded letter
-  // would silently refuse every tool on a machine where it is not.
-  const systemRoot = env.SystemRoot ?? 'C:\\Windows'
-  const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
-  const programFilesX86 = env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'
-  const programData = env.ProgramData ?? 'C:\\ProgramData'
-  const systemDrive = env.SystemDrive ?? 'C:'
+  // `??` is not enough: it falls back for null and undefined and *not* for the
+  // empty string, and an unset-but-present variable is exactly what a trimmed
+  // container environment gives. `ProgramFiles: ''` produced the prefix `''`,
+  // which `resolve()` turns into the current working directory — so the entire
+  // checkout became a trusted location and the guard trusted anything the job
+  // could write. Anything not absolute is dropped instead.
+  // `win32.isAbsolute`, not the host's: these are Windows roots whether or not
+  // this is running on Windows, and `isAbsolute('C:\\Program Files')` is false
+  // on POSIX — which would have discarded every real value and kept the
+  // fallbacks, silently, on the platform the tests run on.
+  const root = (value: string | undefined, fallback: string) => {
+    const candidate = value?.trim()
+    return candidate !== undefined && candidate !== '' && win32.isAbsolute(candidate) ? candidate : fallback
+  }
+
+  const programFiles = root(env.ProgramFiles, 'C:\\Program Files')
+  const programFilesX86 = root(env['ProgramFiles(x86)'], 'C:\\Program Files (x86)')
+  const programData = root(env.ProgramData, 'C:\\ProgramData')
+  const systemRoot = root(env.SystemRoot, 'C:\\Windows')
 
   return [
     '/usr/local/bin',
@@ -48,14 +67,12 @@ export function defaultTrustedPrefixes(env: NodeJS.ProcessEnv = process.env): st
     '/usr/sbin',
     '/bin',
     '/sbin',
-    '/opt/hostedtoolcache',
     '/opt/homebrew/bin',
     '/home/linuxbrew/.linuxbrew/bin',
     programFiles,
     programFilesX86,
-    join(programData, 'chocolatey'),
-    join(systemDrive, 'hostedtoolcache'),
-    join(systemRoot, 'system32'),
+    win32.join(programData, 'chocolatey'),
+    win32.join(systemRoot, 'system32'),
   ]
 }
 

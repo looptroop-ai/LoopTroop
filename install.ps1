@@ -1039,31 +1039,59 @@ function withInstallLock(dir, action) {
 }
 
 /**
- * Whether a LoopTroop process is there, or null if the copy cannot say.
+ * What `status --json` says, or null if the copy cannot say it.
  *
- * `running` alone is not that question. `status --json` reports a process that
- * is alive but not answering as `running: false` with a separate
- * `notAnswering: { pid }` — deliberately, and the CLI's own comment says the
- * split exists because "every installer reads `running` as answering, and it
- * must keep meaning exactly that".
- *
- * Reading only `running` therefore called a live process holding the port
- * "stopped": nothing was stopped, nothing was restarted, the executable was
- * replaced underneath it, and the daemon started afterwards could not bind. Both
- * fields are read, and either one means there is something to deal with.
+ * Two questions are asked of this, and they are not the same question — which
+ * is the mistake that made a live-but-unresponsive daemon read as stopped, and
+ * then, in fixing that, made an unresponsive one read as successfully started.
+ * The document is parsed once here and the two questions are asked separately
+ * below.
  */
-function daemonRunning(binary) {
+function daemonStatus(binary) {
   // The exit code is not the answer — `status` reports a stopped daemon by
   // saying so, and how it scores that is its business — so this reads the
   // document and ignores the code.
   const probe = spawnSync(binary, ['status', '--json'], { encoding: 'utf8', timeout: 30_000 })
   try {
     const status = JSON.parse(probe.stdout)
-    return status.running === true || (status.notAnswering ?? null) !== null
+    return {
+      answering: status.running === true,
+      // A process that is alive and not talking. `status --json` reports it as
+      // `running: false` with the pid here, deliberately: the CLI's own comment
+      // says the split exists because "every installer reads `running` as
+      // answering, and it must keep meaning exactly that".
+      present: status.running === true || (status.notAnswering ?? null) !== null,
+    }
   } catch {
     return null
   }
 }
+
+/**
+ * Is there a LoopTroop process at all — answering or not? Null if it cannot say.
+ *
+ * This is the question the *stop* decision asks. Reading only `running` called
+ * a live process holding the port "stopped": nothing was stopped, nothing was
+ * restarted, the executable was replaced underneath it, and the daemon started
+ * afterwards could not bind.
+ */
+function daemonPresent(binary) {
+  return daemonStatus(binary)?.present ?? null
+}
+
+/**
+ * Is the daemon up and answering? Null if it cannot say.
+ *
+ * This is the question the *start* decision asks, and it is deliberately
+ * stricter than `daemonPresent`. A process that came up and never answered is
+ * exactly the failure the restart check exists to catch, so counting it as
+ * started would report a broken upgrade as a successful one and skip the
+ * rollback.
+ */
+function daemonAnswering(binary) {
+  return daemonStatus(binary)?.answering ?? null
+}
+
 
 /** True when the executable at `binary` runs at all. */
 function executableRuns(binary) {
@@ -1078,7 +1106,7 @@ function executableRuns(binary) {
  * swaps the executable under a live daemon leaves a running old version that
  * `--version` will cheerfully misreport as the new one.
  *
- * Confirmed *stopped*, not merely "not confirmed running". `daemonRunning` has
+ * Confirmed *stopped*, not merely "not confirmed running". `daemonPresent` has
  * three answers and this used to accept two of them, so a probe that could not
  * say anything counted as success and the swap went ahead under a daemon nobody
  * had established was down.
@@ -1087,14 +1115,14 @@ function stopDaemon(binary) {
   say('Stopping the running daemon...')
   spawnSync(binary, ['stop'], { stdio: 'inherit', timeout: 60_000 })
 
-  return waitFor(() => daemonRunning(binary) === false, 30_000)
+  return waitFor(() => daemonPresent(binary) === false, 30_000)
 }
 
 /**
  * Brings the installed copy to a state where replacing it is safe, and says
  * whether its daemon has to be running again afterwards.
  *
- * The three answers of `daemonRunning` need three branches, and treating the
+ * The three answers of `daemonPresent` need three branches, and treating the
  * third as "stopped" was the bug: an upgrade could swap the executable under a
  * live daemon and then not restart it, leaving the old version serving while
  * `looptroop --version` reported the new one.
@@ -1109,7 +1137,7 @@ function stopDaemon(binary) {
  * service down.
  */
 function settleDaemon(installed) {
-  const state = daemonRunning(installed)
+  const state = daemonPresent(installed)
 
   if (state === true) {
     if (!stopDaemon(installed)) {
@@ -1149,7 +1177,7 @@ function settleDaemon(installed) {
   // A daemon that says outright it is still running gets the same grace a
   // confirmed-running one does. An unreadable probe satisfies this on the first
   // poll, which is why it cannot be the only check.
-  if (!waitFor(() => daemonRunning(installed) !== true, 30_000)) {
+  if (!waitFor(() => daemonPresent(installed) !== true, 30_000)) {
     fail(
       'The LoopTroop daemon is still running after being asked to stop.',
       'Replacing the executable now would leave the old version serving and reporting the new one\'s version.',
@@ -1161,7 +1189,7 @@ function settleDaemon(installed) {
 
   // Neither source of evidence produced anything: the probe still cannot say,
   // and `stop` reported that it failed. Refuse rather than swap on nothing.
-  if (stopped.status !== 0 && daemonRunning(installed) !== false) {
+  if (stopped.status !== 0 && daemonPresent(installed) !== false) {
     fail(
       'The installed copy will not say whether its daemon is running, and `stop` did not succeed.',
       `\`${basename(installed)} stop\` exited ${String(stopped.status ?? stopped.signal ?? 'without a status')}.`,
@@ -1191,7 +1219,7 @@ function startDaemon(binary) {
   // 30s: a daemon that is coming up answers in about two, so this is already
   // an order of magnitude of headroom. Waiting longer would not rescue a build
   // that is going to fail — it would only make every rollback slower to reach.
-  return waitFor(() => daemonRunning(binary) === true, 30_000)
+  return waitFor(() => daemonAnswering(binary) === true, 30_000)
 }
 
 /** Polls until `condition` holds, or gives up. */
@@ -1262,8 +1290,19 @@ function installBinary(archive, { version, prefix }) {
     //
     // Not fatal if something will not go. A leftover is inert, and refusing an
     // install over one would be worse than leaving it.
+    //
+    // With one exception. A backup is only spare when there is a working
+    // executable beside it; with `installed` missing, that backup *is* the
+    // user's copy of LoopTroop. A rollback whose restore failed leaves exactly
+    // that state and tells them where the backup is — and re-running the
+    // installer, which is what anyone would do next, used to delete it here
+    // before the fresh install had proved anything. Staging and rejected copies
+    // are still swept: neither is anybody's only copy.
+    const nothingInstalled = !existsSync(installed)
     for (const entry of readdirSync(bin)) {
-      if (/^\.looptroop-previous-\d+/.test(entry) || /\.(incoming|rejected)-\d+$/.test(entry)) {
+      const isBackup = /^\.looptroop-previous-\d+/.test(entry)
+      if (isBackup && nothingInstalled) continue
+      if (isBackup || /\.(incoming|rejected)-\d+$/.test(entry)) {
         discard(join(bin, entry))
       }
     }
@@ -1335,17 +1374,28 @@ function installBinary(archive, { version, prefix }) {
         try {
           renameSync(backup, installed)
         } catch (restoreError) {
+          // Put the rejected file back rather than leave nothing installed. It
+          // does not work — that is why this path was reached — but a program
+          // that fails is recoverable, and an absent one is not.
+          let putBack = false
           try {
             renameSync(quarantine, installed)
+            putBack = true
           } catch {
-            // Nothing left to try; the message below says where both copies are.
+            // Nothing left to try; the message says where each copy ended up.
           }
+
           fail(
             reason,
             ...detail,
             `Your previous version could not be put back: ${String(restoreError.message ?? restoreError)}`,
-            `It is at ${backup}, and the version that failed is at ${quarantine}.`,
-            `Move the one you want to ${installed}.`,
+            `It is at ${backup}.`,
+            // Named where it actually is. Saying "at <quarantine>" after a
+            // successful put-back sends the reader to a path with nothing at it.
+            putBack
+              ? `The version that failed is back at ${installed}, so the command runs but does not work.`
+              : `The version that failed is at ${quarantine}, and nothing is installed at ${installed}.`,
+            `Move ${backup} to ${installed} to recover.`,
           )
         }
       }

@@ -38,6 +38,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { renderWingetManifests, WINGET_IDENTIFIER, wingetManifestDir } from './package-manifests.ts'
 import { resolveTrustedTool } from './trusted-tool.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
 const UPSTREAM = 'microsoft/winget-pkgs'
 const FORK = 'looptroop-ai/winget-pkgs'
@@ -52,10 +53,29 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
+const USAGE = 'Usage: node scripts/winget-submit.ts --version X.Y.Z --url <url> --sha256 <hex>'
+
+// The same shared parser the other release scripts use. This one opens a pull
+// request against a repository we do not own, so a malformed invocation is not
+// something to absorb quietly.
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      version: 'value',
+      url: 'value',
+      sha256: 'value',
+    })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
+  }
+})()
+
 function flag(name: string): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
@@ -120,6 +140,8 @@ const sha256 = flag('sha256')
 
 const branch = `looptroop-${version}`
 const work = mkdtempSync(join(tmpdir(), 'looptroop-winget-submit-'))
+/** Set once there is nothing further to do, so the `finally` still runs. */
+let done = false
 
 try {
   // Already open? A release re-run must reconcile rather than duplicate — and
@@ -207,25 +229,31 @@ try {
 
     if (unchanged) {
       log('The open pull request already carries exactly these manifests. Nothing to do.')
-      process.exit(0)
+      // Not `process.exit`: the `finally` below removes a clone whose
+      // `.git/config` holds the remote URL, and that URL embeds the token.
+      // `process.exit` does not run `finally`, so both of this script's early
+      // exits left the credential on disk.
+      done = true
     }
-    log('The manifests have changed; updating the pull request.')
+    if (!done) log('The manifests have changed; updating the pull request.')
   }
 
-  run('git', ['commit', '-m', title], { cwd: repo })
-  run('git', ['push', '--force-with-lease', 'origin', branch], { cwd: repo })
+  if (!done) {
+    run('git', ['commit', '-m', title], { cwd: repo })
+    run('git', ['push', '--force-with-lease', 'origin', branch], { cwd: repo })
+  }
 
   // An open pull request is updated by the push above; all that is left is to
   // make its title right, since a first submission that was opened as
   // `New version:` needs correcting in place.
-  if (open !== null) {
+  if (!done && open !== null) {
     run('gh', ['pr', 'edit', String(open.number), '--repo', UPSTREAM, '--title', title], { allowFailure: true })
     log(`\nUpdated ${open.url}`)
     log('Acceptance is a review queue, not a result. Nothing waits on it.')
-    process.exit(0)
+    done = true
   }
 
-  const pr = run('gh', [
+  const pr = done ? null : run('gh', [
     'pr', 'create',
     '--repo', UPSTREAM,
     '--head', `${FORK.split('/')[0]}:${branch}`,
@@ -241,10 +269,14 @@ try {
       'The installer is a portable executable in a zip; it carries its own Node',
       'runtime, so only git is declared as a dependency.',
     ].join('\n'),
-  ], { cwd: repo }).trim()
+  ], { cwd: repo })?.trim()
 
-  log(`\nSubmitted: ${pr}`)
-  log('Acceptance is a review queue, not a result. Nothing waits on it.')
+  if (pr !== null) {
+    log(`\nSubmitted: ${pr}`)
+    log('Acceptance is a review queue, not a result. Nothing waits on it.')
+  }
 } finally {
+  // The clone's `.git/config` carries the token in its remote URL, so this is
+  // credential cleanup and not only tidiness.
   rmSync(work, { recursive: true, force: true })
 }

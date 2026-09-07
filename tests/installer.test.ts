@@ -679,6 +679,31 @@ describe('installer core', () => {
      * exactly the person who most needs to reinstall.
      */
     /**
+     * The mirror of the `notAnswering` fix, and the regression it caused.
+     *
+     * "Something is there" is the right question for the *stop* decision and
+     * the wrong one for the *start* decision: a daemon that comes up and never
+     * answers is precisely the failure the restart check exists to catch, so
+     * counting it as started reported a broken upgrade as a successful one and
+     * skipped the rollback. One predicate cannot answer both questions.
+     */
+    it.runIf(canInstallBinary)('rolls back when the restarted daemon never answers', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      writeFileSync(stubState, '')
+
+      // Starts, and then only ever reports itself as present-but-not-answering.
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('would not start')
+      expect(result.stderr).toContain('rolled back')
+    }, 90_000)
+
+    /**
      * `running: false` is not "nothing is there". The CLI reports a live but
      * unresponsive daemon that way, with the pid in a separate `notAnswering`
      * field — its own comment says the split exists because every installer
@@ -694,7 +719,12 @@ describe('installer core', () => {
       // Alive, and not answering.
       writeFileSync(stubState, '')
 
-      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      // The version being installed answers normally, so the upgrade should
+      // succeed. Written the other way round first — both copies unresponsive —
+      // this asserted a successful install, and passed only because
+      // `startDaemon` was accepting a present-but-silent daemon as started. The
+      // test was encoding the bug.
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
       const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
 
       expect(result.status).toBe(0)
@@ -784,6 +814,33 @@ describe('installer core', () => {
       expect(result.status).toBe(0)
       expect(existsSync(lock)).toBe(true)
       expect(readFileSync(lock, 'utf8')).toContain('someone-else')
+    })
+
+    /**
+     * The sweep at the top of every install removes leftovers, which is right
+     * while there is a working executable beside them. With `installed`
+     * missing, the backup *is* the user's only copy — the state a rollback
+     * whose restore failed leaves behind, and whose message tells them where
+     * that backup is. Re-running the installer is the obvious next move, and it
+     * used to delete the backup before the fresh install had proved anything.
+     */
+    it.runIf(canInstallBinary)('keeps the backup when nothing is installed beside it', async () => {
+      const prefix = freshPrefix()
+      const bin = join(prefix, 'bin')
+      mkdirSync(bin, { recursive: true })
+      const backup = join(bin, '.looptroop-previous-4242')
+      writeFileSync(backup, 'the only working copy')
+      // Alongside leftovers that are nobody's only copy and should still go.
+      writeFileSync(join(bin, 'looptroop.rejected-4242'), 'rejected')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: join(prefix, 'state'),
+      })
+
+      expect(result.status).toBe(0)
+      expect(readFileSync(backup, 'utf8')).toBe('the only working copy')
+      expect(existsSync(join(bin, 'looptroop.rejected-4242'))).toBe(false)
     })
 
     it.runIf(canInstallBinary)('leaves no staging files behind', async () => {

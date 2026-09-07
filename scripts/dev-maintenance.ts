@@ -1608,7 +1608,9 @@ export type OutdatedProbe =
 export function classifyOutdatedProbe(
   result: { status: number | null, stdout: string, stderr: string },
 ): OutdatedProbe {
-  if (result.stdout) return { outcome: 'listed' }
+  // Trimmed here as well as by `runCommand`, so this reads the same way for a
+  // caller that hands it raw output: a lone newline is not a report.
+  if (result.stdout.trim() !== '') return { outcome: 'listed' }
   if (result.status === 0) return { outcome: 'current' }
   return {
     outcome: 'unavailable',

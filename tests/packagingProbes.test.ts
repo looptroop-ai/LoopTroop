@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, isAbsolute, join, win32 } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
@@ -409,6 +409,42 @@ describe('trusted tool resolution', () => {
         trustedPrefixes: [join(root, 'Program Files')],
       })).toHaveProperty('refusal')
     })
+  })
+
+  /**
+   * `??` falls back for null and undefined and *not* for the empty string, and
+   * an unset-but-present variable is what a trimmed container environment
+   * gives. `ProgramFiles: ''` produced the prefix `''`, which `resolve()` turns
+   * into the current working directory — so the whole checkout became trusted
+   * and the guard trusted anything the job could write.
+   */
+  it('drops an empty or relative root rather than trusting the working directory', () => {
+    const prefixes = defaultTrustedPrefixes({
+      ProgramFiles: '',
+      'ProgramFiles(x86)': '   ',
+      ProgramData: 'relative/path',
+      SystemRoot: '',
+    })
+
+    expect(prefixes).not.toContain('')
+    // Absolute under one convention or the other: the POSIX roots are literals
+    // and the Windows ones are Windows paths whatever this is running on.
+    for (const prefix of prefixes) {
+      const absolute = isAbsolute(prefix) || win32.isAbsolute(prefix)
+      expect(`${prefix}: ${absolute}`).toBe(`${prefix}: true`)
+    }
+    expect(prefixes).not.toContain('relative/path')
+  })
+
+  /**
+   * The hosted tool cache looks like system infrastructure and is written by
+   * every `setup-*` action, so trusting it would have widened the guard to a
+   * tree the job itself can write. Neither tool this guards lives there.
+   */
+  it('does not trust the hosted tool cache', () => {
+    const prefixes = defaultTrustedPrefixes({})
+
+    expect(prefixes.some((prefix) => prefix.toLowerCase().includes('hostedtoolcache'))).toBe(false)
   })
 
   it('reports a tool that is not on PATH at all', () => {

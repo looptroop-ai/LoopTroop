@@ -45,6 +45,21 @@ export type BinaryTarget = { target: string, refusal?: undefined } | { target?: 
 /** C library flavour, which decides whether a standalone executable can run. */
 export type Libc = 'glibc' | 'musl'
 
+/** One option, in the spelling each wrapper takes. */
+export interface InstallOption {
+  /** As the core parses it, and as `install.sh` forwards it. */
+  sh: string
+  /** As `install.ps1` declares it in its `param` block. */
+  ps: string
+  /** The value placeholder, or null for a switch. */
+  value: string | null
+  help: string | (() => string)
+}
+
+export const INSTALL_OPTIONS: InstallOption[]
+
+export function usageLines(style?: 'sh' | 'ps1'): string[]
+
 export function parseArgs(argv: string[]): InstallerOptions
 
 export function binaryTarget(platform: string, arch: string, libc?: Libc): BinaryTarget

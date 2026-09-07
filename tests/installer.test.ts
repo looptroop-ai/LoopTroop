@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath, stallGuard, streamBody,
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, stallGuard,
+  streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1037,5 +1038,203 @@ describe('installer wrappers', () => {
       const closes = (source.match(/\}/g) ?? []).length
       expect(`${wrapper}: ${opens}`).toBe(`${wrapper}: ${closes}`)
     }
+  })
+
+  /**
+   * The handwritten halves, which `installers:check` does not read.
+   *
+   * `--check` compares the generated regions only, and only in the release
+   * workflow at that. Everything a wrapper does *around* the embedded core —
+   * finding Node, forwarding options, refusing a truncated body — is
+   * handwritten, unchecked, and is where the drift that reaches users actually
+   * lives: `install.ps1` forwarded four of the six options the core parses, so
+   * `--dry-run` and `--help` worked on macOS and Linux and did nothing at all on
+   * Windows for as long as both have existed.
+   */
+  it('forward every option the core accepts', () => {
+    const ps1 = readFileSync(join(repoRoot, 'install.ps1'), 'utf8')
+    const sh = readFileSync(join(repoRoot, 'install.sh'), 'utf8')
+
+    for (const option of INSTALL_OPTIONS) {
+      // Declared as a parameter, so PowerShell binds it rather than refusing
+      // the whole invocation as an unknown argument.
+      expect(`${option.ps} declared: ${new RegExp(`^\\s*\\[(?:string|switch)\\]\\$${option.ps.slice(1)},?\\s*$`, 'm').test(ps1)}`)
+        .toBe(`${option.ps} declared: true`)
+      // And mapped onto the spelling the core parses.
+      expect(`${option.ps} forwarded: ${ps1.includes(`'${option.sh}'`)}`)
+        .toBe(`${option.ps} forwarded: true`)
+    }
+
+    // `install.sh` forwards positionally, so it needs no per-option mapping —
+    // but it does have to pass the arguments on at all.
+    expect(sh).toContain('node "$core" "$@"')
+  })
+
+  /**
+   * A truncated body is the one failure both wrappers can detect about
+   * themselves, and the only useful thing to say about it is what to do next.
+   * `install.ps1` had the guard and printed no way out of it.
+   */
+  it('tell the reader how to recover from a truncated download', () => {
+    for (const [wrapper, url] of [
+      ['install.sh', 'https://www.looptroop.ovh/install'],
+      ['install.ps1', 'https://www.looptroop.ovh/install.ps1'],
+    ]) {
+      const source = readFileSync(join(repoRoot, wrapper!), 'utf8')
+      const guard = source.slice(source.indexOf('truncated in transit'))
+
+      expect(`${wrapper}: ${guard.slice(0, 400).includes(url!)}`).toBe(`${wrapper}: true`)
+    }
+  })
+
+  /**
+   * `install.sh` ended in `exec node`, which replaced the shell and so meant
+   * its EXIT trap never ran: every install leaked the temporary directory it
+   * had just written the core into. Removing `exec` means reproducing what
+   * `exec` was doing — signal delivery and the exit status — by hand, and each
+   * of those is a separate way to get this wrong, so all three are exercised
+   * rather than read out of the source.
+   */
+  describe.runIf(process.platform !== 'win32')('install.sh cleans up after itself', () => {
+    const scratch: string[] = []
+
+    afterAll(() => {
+      for (const dir of scratch.splice(0)) removeTempDir(dir)
+    })
+
+    /**
+     * Runs the wrapper with a temporary directory of its own, so what it leaves
+     * behind is the whole content of that directory afterwards.
+     */
+    function runWrapper(args: string[], stubs: Record<string, string> = {}) {
+      const temp = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-tmp-'))
+      const bin = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-bin-'))
+      scratch.push(temp, bin)
+      // `looptroop --version` is probed at the end of a successful install, and
+      // without a stub that reads whatever is on the runner.
+      for (const [name, body] of Object.entries({ looptroop: '#!/bin/sh\necho 9.9.9\n', ...stubs })) {
+        writeFileSync(join(bin, name), body)
+        chmodSync(join(bin, name), 0o755)
+      }
+
+      const child = spawn('sh', [join(repoRoot, 'install.sh'), ...args], {
+        env: { ...process.env, TMPDIR: temp, PATH: `${bin}:${process.env.PATH ?? ''}` },
+        // Its own process group, so a signal aimed at the wrapper's pid is
+        // aimed at the wrapper alone — which is the case `exec` used to cover
+        // and forwarding now has to.
+        detached: true,
+      })
+
+      let output = ''
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
+      child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString() })
+
+      const settled = new Promise<{ status: number | null, signal: string | null }>((done, reject) => {
+        child.on('error', reject)
+        child.on('close', (status, signal) => done({ status, signal }))
+      })
+
+      return { child, temp, output: () => output, settled }
+    }
+
+    /** Everything under `dir`, so "cleaned up" is a claim about the directory. */
+    function leftovers(dir: string) {
+      return readdirSync(dir)
+    }
+
+    it('leaves nothing behind after an install that worked', async () => {
+      const tarball = join(mkdtempSync(join(tmpdir(), 'looptroop-wrapper-pkg-')), 'looptroop-9.9.9.tgz')
+      scratch.push(dirname(tarball))
+      writeFileSync(tarball, 'not really a tarball')
+
+      const run = runWrapper(['--tarball', tarball], {
+        npm: '#!/bin/sh\nexit 0\n',
+      })
+      const { status } = await run.settled
+
+      expect(`${status}: ${run.output()}`).toContain('0: ')
+      expect(leftovers(run.temp)).toEqual([])
+    })
+
+    it('leaves nothing behind after an install that failed, and reports the failure', async () => {
+      const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'])
+      const { status } = await run.settled
+
+      expect(status).toBe(1)
+      expect(run.output()).toContain('No such tarball')
+      expect(leftovers(run.temp)).toEqual([])
+    })
+
+    /** Waits for `marker` to appear in a run's output, or gives up. */
+    async function waitForOutput(run: { output: () => string }, marker: string) {
+      const deadline = Date.now() + 15_000
+      while (!run.output().includes(marker) && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 50))
+      }
+      expect(run.output()).toContain(marker)
+    }
+
+    /**
+     * Ctrl+C mid-install, which is the case `exec` broke.
+     *
+     * The terminal delivers to the whole foreground process group, so the
+     * install stops either way — what `exec` cost was the cleanup, because it
+     * had replaced the shell that owned the trap. Every interrupted install
+     * left a temporary directory holding a copy of the installer.
+     */
+    it('cleans up when the install is interrupted', async () => {
+      const tarball = join(mkdtempSync(join(tmpdir(), 'looptroop-wrapper-pkg-')), 'looptroop-9.9.9.tgz')
+      scratch.push(dirname(tarball))
+      writeFileSync(tarball, 'not really a tarball')
+
+      // An npm that does not come back, so there is an install in progress to
+      // interrupt. It ends on its own if nothing reaches it, rather than
+      // outliving the test run.
+      const run = runWrapper(['--tarball', tarball], {
+        npm: '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 99.9.9; exit 0; fi\nsleep 30\n',
+      })
+      await waitForOutput(run, 'Installing with npm')
+
+      process.kill(-run.child.pid!, 'SIGINT')
+      const { status } = await run.settled
+
+      expect(`${status}`).not.toBe('0')
+      expect(leftovers(run.temp)).toEqual([])
+    }, 40_000)
+
+    /**
+     * The half a process group does not cover: a signal sent to this script's
+     * pid alone, which is how `timeout` and most supervisors stop a process.
+     * With `exec` the signal arrived at node because node *was* this process;
+     * without forwarding it would be handled here and node would keep running.
+     *
+     * Against a stub rather than the real core, deliberately. Node cannot act
+     * on a signal while it is blocked in `spawnSync` waiting for npm, so a real
+     * core would only prove how Node schedules signal handlers. What is being
+     * tested is the wrapper: that it passes the signal on, and that the status
+     * the caller sees is the child's own rather than the shell's.
+     */
+    it('forwards a signal aimed at the wrapper, and passes on the child\'s status', async () => {
+      const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'], {
+        node: [
+          '#!/bin/sh',
+          "trap 'echo CHILD-GOT-TERM; exit 3' TERM",
+          'echo CHILD-RUNNING',
+          // Backgrounded and waited on, because a trap in `sh` cannot interrupt
+          // a foreground command either.
+          'sleep 30 &',
+          'wait',
+          '',
+        ].join('\n'),
+      })
+      await waitForOutput(run, 'CHILD-RUNNING')
+
+      run.child.kill('SIGTERM')
+      const { status } = await run.settled
+
+      expect(run.output()).toContain('CHILD-GOT-TERM')
+      expect(status).toBe(3)
+      expect(leftovers(run.temp)).toEqual([])
+    }, 40_000)
   })
 })

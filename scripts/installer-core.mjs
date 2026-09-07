@@ -115,6 +115,82 @@ function say(message) {
 
 // --- pure decisions -------------------------------------------------------
 
+/**
+ * Every option this installer accepts, in both spellings.
+ *
+ * One table rather than a list per file. The core parses `--version`, the
+ * PowerShell wrapper's `param` block declares `-Version`, its forwarding block
+ * maps one to the other, and the usage text prints whichever the reader typed.
+ * Four places that have to agree about the same set, and they did not: the
+ * wrapper forwarded four of the six, so `--dry-run` and `--help` were reachable
+ * on macOS and Linux and silently absent on Windows. `tests/installer.test.ts`
+ * reads this table and requires the wrapper to carry every row.
+ */
+export const INSTALL_OPTIONS = [
+  {
+    sh: '--version',
+    ps: '-Version',
+    value: 'X.Y.Z',
+    help: 'install exactly this release, prereleases included',
+  },
+  {
+    sh: '--tarball',
+    ps: '-Tarball',
+    value: 'PATH',
+    help: 'install an already-downloaded tarball, skipping the network',
+  },
+  {
+    sh: '--binary',
+    ps: '-Binary',
+    value: null,
+    help: 'install the standalone executable instead of the npm package',
+  },
+  {
+    sh: '--prefix',
+    ps: '-Prefix',
+    value: 'DIR',
+    help: () => `where the standalone executable installs (default ${defaultPrefix()})`,
+  },
+  {
+    sh: '--dry-run',
+    ps: '-DryRun',
+    value: null,
+    help: 'say what would be downloaded and installed, then stop',
+  },
+  {
+    sh: '--help',
+    ps: '-Help',
+    value: null,
+    help: 'show this',
+  },
+]
+
+/**
+ * The usage text, in the dialect the reader actually typed.
+ *
+ * The wrappers take different spellings of one set of options, so a hardcoded
+ * `Usage: install.sh` was wrong for everybody who reached this through
+ * `install.ps1` — and wrong about every flag with it, since PowerShell does not
+ * accept `--version`. The wrapper says which it is through the environment;
+ * running the core directly gets the flags the core itself parses.
+ */
+export function usageLines(style = process.env.LOOPTROOP_INSTALL_STYLE === 'ps1' ? 'ps1' : 'sh') {
+  const ps1 = style === 'ps1'
+  const program = ps1 ? 'install.ps1' : 'install.sh'
+  const spell = (option) => `${ps1 ? option.ps : option.sh}${option.value === null ? '' : ` ${option.value}`}`
+  const find = (sh) => INSTALL_OPTIONS.find((option) => option.sh === sh)
+
+  return [
+    `Usage: ${program} [${spell(find('--version'))}] [${spell(find('--tarball'))}]`,
+    `       ${program} ${spell(find('--binary'))} [${spell(find('--version'))}] [${spell(find('--prefix'))}]`,
+    '',
+    ...INSTALL_OPTIONS.map((option) => {
+      const text = typeof option.help === 'function' ? option.help() : option.help
+      return `  ${spell(option).padEnd(17)}${text}`
+    }),
+  ]
+}
+
 export function parseArgs(argv) {
   const options = { version: null, tarball: null, dryRun: false, binary: false, prefix: null }
 
@@ -135,13 +211,7 @@ export function parseArgs(argv) {
       case '--prefix': options.prefix = takeValue(); break
       case '--help':
       case '-h':
-        say('Usage: install.sh [--version X.Y.Z] [--tarball PATH]')
-        say('       install.sh --binary [--version X.Y.Z] [--prefix DIR]')
-        say('')
-        say('  --version X.Y.Z  install exactly this release, prereleases included')
-        say('  --tarball PATH   install an already-downloaded tarball, skipping the network')
-        say('  --binary         install the standalone executable instead of the npm package')
-        say(`  --prefix DIR     where --binary installs (default ${defaultPrefix()})`)
+        for (const line of usageLines()) say(line)
         process.exit(0)
         break
       default:
@@ -1077,6 +1147,23 @@ function installBinary(archive, { version, prefix }) {
 async function main(argv) {
   const options = parseArgs(argv)
   const workDir = mkdtempSync(resolve(tmpdir(), 'looptroop-install-'))
+
+  // A signal is not an error this can unwind through: the process ends where it
+  // stands, so the `finally` below never runs and an interrupted install leaves
+  // its downloads behind. Every one of these leaks a directory that may hold a
+  // 110 MB archive, and Ctrl+C during a download is the ordinary way somebody
+  // changes their mind.
+  //
+  // Re-raised rather than exited, with the listener removed first so the second
+  // delivery takes the default action. A caller that sent a signal expects the
+  // 128+signal status back, not an ordinary exit code chosen here.
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(signal, () => {
+      discard(workDir)
+      process.removeAllListeners(signal)
+      process.kill(process.pid, signal)
+    })
+  }
   // What we resolved and installed, so the closing message can be checked
   // against it. Stays null for `--tarball`, where a local file is taken on
   // trust and there is no release to name a version.

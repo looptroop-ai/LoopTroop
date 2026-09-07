@@ -19,5 +19,8 @@
     "esModuleInterop": true,
     "ignoreDeprecations": "6.0"
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "eslint.config.js"]
+  // `eslint.config.js` is deliberately absent: neither this config nor the base
+  // sets `allowJs`, so listing it put a file in the `include` that was never in
+  // the program. ESLint lints itself.
+  "include": ["vite.config.ts", "vitest.config.ts"]
 }

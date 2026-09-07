@@ -1,7 +1,14 @@
 import { getErrorMessage } from '@shared/typeGuards'
 import { runCommandSync, runGitOrThrow } from './runCommand'
 
-const GIT_PUSH_TIMEOUT_MS = 120_000
+/**
+ * How long a `git push` is given before it is treated as stalled.
+ *
+ * Shared with `pushSquashedCandidate` for the same reason its retry count is:
+ * both push to the same remote over the same network, so two numbers for it
+ * means one of them is wrong and nothing says which.
+ */
+export const GIT_PUSH_TIMEOUT_MS = 120_000
 
 /**
  * Lets `git push` use the token `gh` was given, when there is nothing else.
@@ -48,7 +55,18 @@ function ghIsInstalled(): boolean {
   return ghInstalled
 }
 
-function gitEnv(): NodeJS.ProcessEnv {
+/**
+ * The environment every remote git call needs, exported for the other ones.
+ *
+ * `gh` reads `GH_TOKEN`; git does not. Prompting is off here by design, so on
+ * a machine whose only credential is that variable — a container being the
+ * obvious one — every `gh` call works and a `git fetch` or `git push` that
+ * follows fails asking for a password it cannot request. The branch push, the
+ * squashed-candidate push, ticket-setup's origin fetch and delivery's two
+ * remote fetches all have to agree, or the one that does not is the one that
+ * stalls.
+ */
+export function gitPushEnv(): NodeJS.ProcessEnv {
   return { ...ghCredentialEnv() }
 }
 
@@ -58,13 +76,23 @@ function gitEnv(): NodeJS.ProcessEnv {
  * full two minutes.
  */
 function runGit(projectPath: string, args: string[]): Promise<string> {
-  return runGitOrThrow(projectPath, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitEnv() })
+  return runGitOrThrow(projectPath, args, { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitPushEnv() })
 }
 
 export interface PushBranchRefResult {
   pushed: boolean
   error?: string
 }
+
+/**
+ * How many times a `git push` is attempted before the failure is reported.
+ *
+ * A push is the one git operation that reaches a network, and the reason it
+ * fails is usually transient. Shared with `pushSquashedCandidate`, which runs
+ * its own loop against the same remote: two retry counts for the same operation
+ * is one of them being wrong.
+ */
+export const GIT_PUSH_MAX_RETRIES = 3
 
 interface PushBranchRefParams {
   projectPath: string
@@ -91,7 +119,7 @@ export async function pushBranchRef({
   sourceRef = 'HEAD',
   remote = 'origin',
   forceWithLease = false,
-  maxRetries = 3,
+  maxRetries = GIT_PUSH_MAX_RETRIES,
   bypassHooks = false,
 }: PushBranchRefParams): Promise<PushBranchRefResult> {
   const refspec = `${sourceRef}:refs/heads/${destinationBranch}`

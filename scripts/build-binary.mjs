@@ -254,6 +254,10 @@ try {
     // Nothing external: there is no `node_modules` beside a single file.
     define: {
       __LOOPTROOP_VERSION__: JSON.stringify(version),
+      // A single file has no `package.json` beside it, and unlike the version
+      // there is no safe placeholder for a floor: without this, `doctor` would
+      // throw rather than pass every runtime.
+      __LOOPTROOP_NODE_FLOOR__: JSON.stringify(pkg.engines.node),
       // CommonJS has no `import.meta`; the banner supplies one from
       // `__filename`, which is what makes the six modules that read it compile
       // unchanged.

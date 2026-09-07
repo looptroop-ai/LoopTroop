@@ -4,6 +4,7 @@ import { MAX_VOTE_CATEGORY_SCORE, MAX_VOTE_TOTAL_SCORE, VOTING_RUBRIC_BEADS, VOT
 import { getGlobalRuleText } from './globalRules'
 import { buildCompletionInstructions } from '../phases/execution/completionSchema'
 import { getCommandSpecPromptExample } from '@shared/commandSpec'
+import { MAX_MULTIPLE_CHOICE_OPTIONS, MAX_SINGLE_CHOICE_OPTIONS } from '../lib/constants'
 
 export interface PromptTemplate {
   id: string
@@ -326,8 +327,8 @@ export const PROM4: PromptTemplate = {
       rationale: (why this question matters)
       answer_type: (REQUIRED — evaluate every question and choose the best type. Default to structured answer types; use free_text only as a last resort:
         - "yes_no" for simple boolean/binary questions (e.g., "Do you need authentication?", "Should there be an admin panel?") — do NOT include options, the system generates Yes/No automatically
-        - "single_choice" for mutually-exclusive choices from a finite set (e.g., "Which database engine?", "What deployment target?") — provide 2-10 options
-        - "multiple_choice" for "select all that apply" from a finite set (e.g., "Which platforms to support?", "Which authentication methods?") — provide 2-15 options
+        - "single_choice" for mutually-exclusive choices from a finite set (e.g., "Which database engine?", "What deployment target?") — provide 2-${MAX_SINGLE_CHOICE_OPTIONS} options
+        - "multiple_choice" for "select all that apply" from a finite set (e.g., "Which platforms to support?", "Which authentication methods?") — provide 2-${MAX_MULTIPLE_CHOICE_OPTIONS} options
         - "free_text" ONLY for genuinely open-ended questions where the answer space cannot be reasonably enumerated into choices (e.g., "Describe the problem you're solving", "What are your performance requirements?")
         IMPORTANT: Prefer structured types (yes_no, single_choice, multiple_choice) as the default. At least 60-70% of questions should use structured types. Most product and technical questions CAN be expressed as choices — think about what the realistic options are and offer them. Use free_text ONLY when the answer is truly creative, narrative, or unbounded. The user always has a free-form text field below the options to add notes or write their own answer, so structured types never limit the user. Do NOT include an "Other" option yourself.)
       options: (required when answer_type is single_choice or multiple_choice; omit for free_text and yes_no — list of choices with id and label, e.g.:)
@@ -363,7 +364,7 @@ export const PROM5: PromptTemplate = {
     'If no gaps exist, confirm that the Interview Results are complete and ready for interview approval, and make clear that PRD generation begins only after that approval step.',
     'Output Envelope: return only YAML with top-level `status`, `gaps`, and `follow_up_questions`.',
     'YAML Validity: Every item in `gaps` must be a double-quoted YAML string, even when the text contains code identifiers, paths, flags, backticks, or punctuation.',
-    `Gap Triggering: Use \`status: gaps\` only when at least one real unresolved gap remains. When \`status: gaps\`, \`follow_up_questions\` must be a YAML list of question objects with these fields: \`id\`, \`question\`, \`phase\`, \`priority\`, \`rationale\`, and \`answer_type\` (REQUIRED — choose the best type for each question: "free_text" for open-ended, "single_choice" for mutually-exclusive finite sets with 2-10 options, "multiple_choice" for select-all-that-apply with 2-15 options, "yes_no" for simple boolean questions without options). When answer_type is single_choice or multiple_choice, include an \`options\` list with \`id\` and \`label\` fields. Do not return plain strings in \`follow_up_questions\`.`,
+    `Gap Triggering: Use \`status: gaps\` only when at least one real unresolved gap remains. When \`status: gaps\`, \`follow_up_questions\` must be a YAML list of question objects with these fields: \`id\`, \`question\`, \`phase\`, \`priority\`, \`rationale\`, and \`answer_type\` (REQUIRED — choose the best type for each question: "free_text" for open-ended, "single_choice" for mutually-exclusive finite sets with 2-${MAX_SINGLE_CHOICE_OPTIONS} options, "multiple_choice" for select-all-that-apply with 2-${MAX_MULTIPLE_CHOICE_OPTIONS} options, "yes_no" for simple boolean questions without options). When answer_type is single_choice or multiple_choice, include an \`options\` list with \`id\` and \`label\` fields. Do not return plain strings in \`follow_up_questions\`.`,
     'Do not output rewritten interview results, summaries, or any extra keys.',
     STRUCTURED_SELF_CHECK,
   ],

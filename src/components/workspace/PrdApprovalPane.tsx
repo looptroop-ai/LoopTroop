@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -32,6 +32,7 @@ import {
 } from '@/lib/prdDocument'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -149,7 +150,7 @@ export function PrdApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'prd', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<PrdApprovalUiState>(ticket.id, uiStateScope, true)
   const { data: fetchedPrd, isLoading, isFetching, isError: isPrdError, error: prdError, refetch: refetchPrd } = useQuery({
     queryKey: ['artifact', ticket.id, 'prd', 'approval'],
     queryFn: async ({ signal }) => {
@@ -206,6 +207,7 @@ export function PrdApprovalPane({
   const [gapReason, setGapReason] = useState('')
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseStructuredDraft = useMemo(
@@ -232,29 +234,41 @@ export function PrdApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || !prdDocument) return
+  const draftRestored = useApprovalDraftRestore({
+    document: prdDocument,
+    // Both queries, not just the document one: `persisted` is undefined while
+    // the UI-state query is in flight and restoring from it latches the pane on
+    // defaults, discarding the saved structured and YAML drafts.
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // draft and arm the autosave to write the defaults over the server's copy
+    // — from a request that never read it. Waiting means the retry restores.
+    ready: !isLoading && isUiStateSuccess,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    skipRestoreRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
+      const nextStructuredDraft = normalizePrdApprovalDraft(persisted?.structuredDraft, document)
+      const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'structured'
-    const nextStructuredDraft = normalizePrdApprovalDraft(persisted?.structuredDraft, prdDocument)
-    const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft)
+      setYamlDraft(nextYamlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft)
-    setYamlDraft(nextYamlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      yamlDraft: nextYamlDraft,
-      structuredDraft: nextStructuredDraft,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [isLoading, persistedUiState, prdDocument, rawContent, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        yamlDraft: nextYamlDraft,
+        structuredDraft: nextStructuredDraft,
+      }
+    },
+  })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, PRD_APPROVAL_FOCUS_EVENT)
 
@@ -284,6 +298,7 @@ export function PrdApprovalPane({
   }
 
   function openFriendlyEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved(baseStructuredDraft ? 'structured' : 'yaml')
     setIsEditMode(true)
   }
@@ -510,7 +525,7 @@ export function PrdApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
-            disabled={isPreparingStructuredPrd}
+            disabled={isPreparingStructuredPrd || (!isEditMode && !canStartEditing)}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}

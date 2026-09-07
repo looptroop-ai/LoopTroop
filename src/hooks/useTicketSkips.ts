@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { SkipEvent, SkipEventCounts } from '@shared/skipReceipt'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { QUERY_STALE_TIME_30S } from '@/lib/constants'
 
 export interface TicketSkips {
   ticketId: string
@@ -27,6 +28,6 @@ export function useTicketSkips(ticketId: string | undefined, enabled: boolean) {
     queryKey: ticketId ? getTicketSkipsQueryKey(ticketId) : ['ticket-skips', '__missing__'] as const,
     queryFn: ({ signal }) => fetchTicketSkips(ticketId!, signal),
     enabled: Boolean(ticketId) && enabled,
-    staleTime: 30_000,
+    staleTime: QUERY_STALE_TIME_30S,
   })
 }

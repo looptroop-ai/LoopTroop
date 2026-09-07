@@ -30,6 +30,7 @@ import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
 import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
+import { useAttentionAck } from '@/hooks/useAttentionAck'
 
 function toDebugJson(data: Record<string, unknown>) {
   if (import.meta.env.PROD) return '[debug]'
@@ -197,6 +198,7 @@ export function TicketDashboard() {
   const ticketId = state.selectedTicketId
   const {
     data: ticket,
+    dataUpdatedAt: ticketDataUpdatedAt,
     isError: isTicketError,
     error: ticketError,
     refetch: refetchTicket,
@@ -242,14 +244,10 @@ export function TicketDashboard() {
     }
   }, [ticket, ticketId])
 
-  const snapshotPreviousStatus = useMemo(
-    () => ticket?.previousStatus ?? undefined,
-    [ticket?.previousStatus],
-  )
-  const snapshotReviewCutoffStatus = useMemo(
-    () => ticket?.reviewCutoffStatus ?? undefined,
-    [ticket?.reviewCutoffStatus],
-  )
+  // Plain reads, not memos: both are primitives, so wrapping them avoided no
+  // work and only added a dependency array to keep correct.
+  const snapshotPreviousStatus = ticket?.previousStatus ?? undefined
+  const snapshotReviewCutoffStatus = ticket?.reviewCutoffStatus ?? undefined
 
   const closeMobileNav = useCallback(() => setIsMobileNavOpen(false), [])
 
@@ -466,54 +464,34 @@ export function TicketDashboard() {
     return () => window.cancelAnimationFrame(frame)
   }, [pendingWorkspaceNavigation, selectedPhaseForWorkspace, ticketId])
 
-  useEffect(() => {
-    if (!ticket) return
-    if (errorSignature) {
-      markErrorTicketSeen(ticket.id, errorSignature)
-      if (ticket.errorSeenSignature !== errorSignature) {
-        saveTicketUiState({
-          ticketId: ticket.id,
-          scope: 'error_attention',
-          data: { seenSignature: errorSignature },
-        })
-      }
-      return
-    }
-    clearErrorTicketSeen(ticket.id)
-    if (ticket.errorSeenSignature !== null) {
-      saveTicketUiState({
-        ticketId: ticket.id,
-        scope: 'error_attention',
-        data: { seenSignature: null },
-      })
-    }
-  }, [ticket, errorSignature, saveTicketUiState])
+  // Both acknowledgments, one implementation. The red error flash and the yellow
+  // needs-input flash differ only in scope and in which local store they touch.
+  useAttentionAck({
+    ticketId: ticket?.id,
+    signature: errorSignature,
+    seenSignature: ticket?.errorSeenSignature,
+    // The query's timestamp, not the ticket's own `updatedAt`: that one only
+    // moves when the record changes, so a poll that re-read an unchanged ticket
+    // retried nothing. `dataUpdatedAt` moves on every successful fetch, which
+    // is what "another chance" was supposed to mean.
+    retryKey: ticketDataUpdatedAt,
+    scope: 'error_attention',
+    mark: markErrorTicketSeen,
+    clear: clearErrorTicketSeen,
+    saveUiState: saveTicketUiState,
+  })
 
-  // Persist the needs-input "seen" acknowledgment so the yellow flashing stops
-  // once the user opens the ticket and stays stopped across reloads/tabs. Mirrors
-  // the error_attention effect above but uses the needs_input_attention scope.
-  useEffect(() => {
-    if (!ticket) return
-    if (needsInputSignature) {
-      markNeedsInputSeen(ticket.id, needsInputSignature)
-      if (ticket.needsInputSeenSignature !== needsInputSignature) {
-        saveTicketUiState({
-          ticketId: ticket.id,
-          scope: 'needs_input_attention',
-          data: { seenSignature: needsInputSignature },
-        })
-      }
-      return
-    }
-    clearNeedsInputSeen(ticket.id)
-    if (ticket.needsInputSeenSignature !== null) {
-      saveTicketUiState({
-        ticketId: ticket.id,
-        scope: 'needs_input_attention',
-        data: { seenSignature: null },
-      })
-    }
-  }, [ticket, needsInputSignature, saveTicketUiState])
+  useAttentionAck({
+    ticketId: ticket?.id,
+    signature: needsInputSignature,
+    seenSignature: ticket?.needsInputSeenSignature,
+    // See above: the query's fetch timestamp, not the record's `updatedAt`.
+    retryKey: ticketDataUpdatedAt,
+    scope: 'needs_input_attention',
+    mark: markNeedsInputSeen,
+    clear: clearNeedsInputSeen,
+    saveUiState: saveTicketUiState,
+  })
 
   // Escape key closes dashboard
   useEffect(() => {

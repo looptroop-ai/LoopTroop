@@ -79,10 +79,12 @@ export function markErrorTicketSeen(ticketId: string, errorSignature: string | n
 }
 
 export function clearErrorTicketSeen(ticketId: string): void {
-  seenErrorTickets.delete(ticketId)
+  const had = seenErrorTickets.delete(ticketId)
   if (typeof window === 'undefined') return
   try {
-    localStorage.removeItem(getErrorSeenStorageKey(ticketId))
+    const key = getErrorSeenStorageKey(ticketId)
+    if (!had && localStorage.getItem(key) === null) return
+    localStorage.removeItem(key)
   } catch {
     // Ignore storage cleanup failures.
   }

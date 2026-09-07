@@ -4,6 +4,7 @@ import { startDaemon, installShutdownHandlers } from '../daemon/startDaemon'
 import { startDaemonLogRotation } from '../lib/daemonLog'
 import { resolveSettings } from '../lib/appSettings'
 import { getErrorMessage } from '@shared/typeGuards'
+import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
 
 export interface DaemonProcessOptions {
   port?: number
@@ -21,7 +22,7 @@ export function resolveDaemonOpenCodeLogs(
   options: DaemonProcessOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): 'all' | undefined {
-  return options.opencodeLogs === 'all' || env.LOOPTROOP_OPENCODE_LOGS === 'all'
+  return options.opencodeLogs === 'all' || env[LOOPTROOP_OPENCODE_LOGS_ENV] === 'all'
     ? 'all'
     : undefined
 }

@@ -1,4 +1,5 @@
-export const LOOPTROOP_OPENCODE_LOGS = 'LOOPTROOP_OPENCODE_LOGS'
+import { LOOPTROOP_OPENCODE_LOGS_ENV } from '../shared/opencodeLogMode.ts'
+
 export const NPM_CONFIG_OPENCODE_LOGS = 'npm_config_opencode_logs'
 
 export type OpenCodeLogMode = 'default' | 'all'
@@ -31,7 +32,7 @@ function assertAllLogsValue(value: string, source: OpenCodeLogModeSource) {
   if (source === 'npm-config') {
     sourceHint = 'npm run dev --opencode-logs=all'
   } else {
-    sourceHint = `${LOOPTROOP_OPENCODE_LOGS}=all`
+    sourceHint = `${LOOPTROOP_OPENCODE_LOGS_ENV}=all`
   }
   throw new Error(`Invalid OpenCode log mode "${value}". Use ${sourceHint}.`)
 }
@@ -50,7 +51,7 @@ export function resolveOpenCodeLogMode({
     }
   }
 
-  const envValue = env[LOOPTROOP_OPENCODE_LOGS]?.trim()
+  const envValue = env[LOOPTROOP_OPENCODE_LOGS_ENV]?.trim()
   if (envValue) {
     assertAllLogsValue(envValue, 'env')
     return {

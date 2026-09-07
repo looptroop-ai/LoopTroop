@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DEFAULT_IGNORE_MODE, type IgnoreMode } from '@shared/ignoreMode'
 import { gitSucceeds, gitSyncSucceeds, runGitSyncOrThrow } from './runCommand'
+import { gitPushEnv } from './push'
 
 /**
  * Every command here is local plumbing except `tryFetchOrigin`, which contacts
@@ -78,7 +79,7 @@ export function resolveBaseBranchRef(projectPath: string, baseBranch: string): s
  * would otherwise hold the daemon thread for the whole timeout.
  */
 export function tryFetchOrigin(projectPath: string): Promise<boolean> {
-  return gitSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'])
+  return gitSucceeds(projectPath, ['fetch', '--no-progress', '--prune', 'origin'], { env: gitPushEnv() })
 }
 
 /**

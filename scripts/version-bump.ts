@@ -59,7 +59,14 @@ export function parseVersion(value: string): ParsedVersion {
     )
   }
 
-  const [, major, minor, patch, prerelease] = match as unknown as [string, string, string, string, string | undefined]
+  const [, major, minor, patch, prerelease] = match
+  if (major === undefined || minor === undefined || patch === undefined) {
+    // `VERSION_PATTERN` has three mandatory groups, so a match always has them.
+    // Saying so is better than asserting it away: if the pattern ever gains an
+    // optional group in front of these, this fails loudly instead of writing
+    // `undefined` into a released version number.
+    throw new Error(`Version "${value}" matched the version pattern without its numeric fields.`)
+  }
 
   for (const [label, field] of [['major', major], ['minor', minor], ['patch', patch]] as const) {
     if (hasLeadingZero(field)) {

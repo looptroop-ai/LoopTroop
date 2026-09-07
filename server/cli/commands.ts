@@ -6,6 +6,7 @@ import { resolveAppConfigDir, ensureSecureDir } from '../lib/appConfigDir'
 import { rotateDaemonLog } from '../lib/daemonLog'
 import { summarizeUpdateStatus, type UpdateStatus } from '../lib/updateCheck'
 import { isDevStackRunning } from '../lib/devStack'
+import { LOOPTROOP_OPENCODE_LOGS_ENV } from '@shared/opencodeLogMode'
 import { clearLockOwnedBy, releaseStaleLock } from '../lib/daemonLock'
 import { matchProcess, readProcessStartToken } from '../lib/processIdentity'
 import { daemonArgv } from './daemonHandoff'
@@ -40,8 +41,6 @@ export interface CliOptions {
   /** Include full DEBUG output from an OpenCode server this daemon starts. */
   opencodeLogs?: 'all'
 }
-
-const OPENCODE_LOG_MODE_ENV = 'LOOPTROOP_OPENCODE_LOGS'
 
 /** How long the health probe waits before it gives up on an answer. */
 const HEALTH_PROBE_MS = 2_000
@@ -201,7 +200,7 @@ async function launchDaemon(configDir: string, options: CliOptions): Promise<Lau
     env: {
       ...process.env,
       ...(options.port === undefined ? {} : { LOOPTROOP_BACKEND_PORT: String(options.port) }),
-      ...(options.opencodeLogs === 'all' ? { [OPENCODE_LOG_MODE_ENV]: 'all' } : {}),
+      ...(options.opencodeLogs === 'all' ? { [LOOPTROOP_OPENCODE_LOGS_ENV]: 'all' } : {}),
     },
   })
   child.unref()

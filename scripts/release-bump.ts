@@ -39,11 +39,23 @@ const args = process.argv.slice(2)
 const dryRun = args.includes('--dry-run')
 const positional = args.filter((value) => !value.startsWith('--'))
 
-if (positional.length !== 1) {
-  fail('Usage: npm run release:bump -- <version> [--dry-run]')
+/**
+ * The one positional argument, or the usage line and exit 1.
+ *
+ * A function rather than an inline check, because the narrowing has to survive
+ * into the hoisted `plan()` below: `positional.length !== 1` does not tell the
+ * compiler that index 0 is present, and a module-scope narrowing does not reach
+ * inside a function declaration. This returns a `string`, so neither does.
+ */
+function requireVersionArgument(values: string[]): string {
+  const [value] = values
+  if (values.length !== 1 || value === undefined) {
+    fail('Usage: npm run release:bump -- <version> [--dry-run]')
+  }
+  return value
 }
 
-const version = positional[0]!
+const version = requireVersionArgument(positional)
 
 const paths = {
   manifest: join(repoRoot, 'package.json'),

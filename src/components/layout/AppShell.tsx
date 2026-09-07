@@ -10,7 +10,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useBackendHealth } from '@/hooks/useBackendHealth'
 import { useUpdateStatus } from '@/hooks/useUpdateStatus'
-import packageJson from '../../../package.json'
 import { DashboardSearch } from './DashboardSearch'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +20,14 @@ interface AppShellProps {
   onOpenProject?: () => void
   onOpenTicket?: () => void
   onOpenAbout?: () => void
+  /**
+   * Returns to the board, closing whatever is open on the way. Supplied by
+   * `App`, which owns the URL: the logo used to write `/` itself and so raced
+   * the route effect that derives the pathname from this state. Required —
+   * a fallback that only deselected the ticket left the open dialog in place
+   * and wrote no URL, which is the race this prop exists to end.
+   */
+  onNavigateHome: () => void
   isModalOpen?: boolean
 }
 
@@ -70,7 +77,7 @@ function getActiveTriageFilterSummaries(filters: UIState['filters']): string[] {
   return summaries
 }
 
-export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, onOpenAbout, isModalOpen = false }: AppShellProps) {
+export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject, onOpenTicket, onOpenAbout, onNavigateHome, isModalOpen = false }: AppShellProps) {
   const { state, dispatch } = useUI()
   const theme = state.theme
   const queryClient = useQueryClient()
@@ -83,7 +90,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
    * agree for a normal install, but a browser tab left open across an upgrade
    * would otherwise keep showing the version it was served with.
    */
-  const version = update?.currentVersion ?? packageJson.version
+  const version = update?.currentVersion ?? __APP_VERSION__
   const activeTriageFilterSummaries = getActiveTriageFilterSummaries(state.filters)
   const activeTriageFilterCount = activeTriageFilterSummaries.length
 
@@ -108,10 +115,7 @@ export function AppShell({ children, onOpenProfile, onOpenPrompts, onOpenProject
         <div className="flex items-center gap-1">
           <button
             className="group flex items-center gap-2.5 cursor-pointer outline-none rounded-lg p-1 -ml-1 transition-all hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => {
-              dispatch({ type: 'SELECT_TICKET', ticketId: null })
-              window.history.pushState({}, '', '/')
-            }}
+            onClick={onNavigateHome}
           >
             <img src="/trans-logo.png" alt="LoopTroop" className="h-7 w-auto transition-transform duration-200 group-hover:scale-105" />
             <div className="hidden items-baseline gap-2 sm:flex">

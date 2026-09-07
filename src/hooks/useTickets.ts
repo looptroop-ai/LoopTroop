@@ -9,6 +9,10 @@ import { clearNeedsInputSeen } from '@/lib/needsInputSeen'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
 import {
+  ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS,
+  ACTIVE_TICKET_REFETCH_INTERVAL_MS,
+} from '@/lib/constants'
+import {
   normalizeTicketListResponse,
   normalizeTicketPatch,
   normalizeTicketResponse,
@@ -245,9 +249,6 @@ interface TicketActionResponse {
   /** The server's own shape, not the view model — it goes through the normaliser. */
   ticket?: RawTicketResponse
 }
-
-const ACTIVE_TICKET_REFETCH_INTERVAL_MS = 5000
-const ACTIVE_TICKET_LIST_REFETCH_INTERVAL_MS = 10000
 
 export function getTicketAutoRefreshInterval(
   ticket: Pick<Ticket, 'status'> | null | undefined,

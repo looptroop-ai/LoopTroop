@@ -43,7 +43,7 @@ const defaultState: UIState = {
   showTriageBar: false,
 }
 
-const VALID_VIEWS: UIState['activeView'][] = ['kanban', 'ticket', 'project', 'config']
+const VALID_VIEWS: UIState['activeView'][] = ['kanban', 'ticket']
 
 function normalizeFilters(value: Record<string, unknown> | undefined): UIState['filters'] {
   const merged = {
@@ -284,8 +284,6 @@ function uiReducer(state: UIState, action: UIAction): UIState {
       return { ...state, selectedTicketId: action.ticketId, selectedTicketExternalId: action.externalId ?? null, activeView: action.ticketId ? 'ticket' : 'kanban' }
     case 'TOGGLE_SIDEBAR':
       return { ...state, sidebarOpen: !state.sidebarOpen }
-    case 'SET_VIEW':
-      return { ...state, activeView: action.view }
     case 'SET_LOG_PANEL_HEIGHT':
       return { ...state, logPanelHeight: action.height }
     case 'SET_FILTER':
@@ -348,23 +346,12 @@ export function UIProvider({ children }: { children: ReactNode }) {
     if (persistMigratedPresets(liveStateRef.current)) retireMigratedLegacyKeys()
   }, [])
 
-  // Sync URL with state
-  useEffect(() => {
-    const currentPath = window.location.pathname
-    let targetPath = '/'
-
-    if (state.activeView === 'ticket' && state.selectedTicketId) {
-      targetPath = `/ticket/${state.selectedTicketExternalId ?? state.selectedTicketId}`
-    } else if (state.activeView === 'config') {
-      targetPath = '/config'
-    } else if (state.activeView === 'project') {
-      targetPath = '/project'
-    }
-
-    if (currentPath !== targetPath) {
-      window.history.pushState(null, '', targetPath)
-    }
-  }, [state.activeView, state.selectedTicketId, state.selectedTicketExternalId])
+  // No history writing here on purpose. `App` is the only owner of the URL: it
+  // routes the modals as well as the ticket, and this provider used to push a
+  // pathname derived from `activeView` underneath it. Refreshing `/config`
+  // with a ticket selected reopened Configuration *and* had this effect rewrite
+  // the pathname to `/ticket/…` beneath it, so Back then had nowhere to go.
+  // This provider keeps persistent view state; `App` keeps the URL.
 
   // Apply theme and listen for system changes
   useEffect(() => {

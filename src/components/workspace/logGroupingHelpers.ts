@@ -22,12 +22,9 @@ const EXECUTING_BEAD_PATTERN = /^(?:\[[A-Z_]+\]\s+)?Executing bead\s+([^:]+):\s+
 
 function parseExecutingBead(entry: LogEntry): { beadId: string; title: string } | null {
   if (!isSystem(entry)) return null
-  const match = entry.line.match(EXECUTING_BEAD_PATTERN)
-  if (!match) return null
-  return {
-    beadId: match[1]!.trim(),
-    title: match[2]!.trim(),
-  }
+  const [, beadId, title] = entry.line.match(EXECUTING_BEAD_PATTERN) ?? []
+  if (beadId === undefined || title === undefined) return null
+  return { beadId: beadId.trim(), title: title.trim() }
 }
 
 function isCompletedBeadStatus(status?: string | null): boolean {

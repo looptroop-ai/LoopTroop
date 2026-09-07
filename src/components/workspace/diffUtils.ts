@@ -225,13 +225,18 @@ function hasChangedSegments(segments: TextDiffSegment[]): boolean {
 }
 
 function applyWordDiffPair(lines: HighlightedDiffLineInfo[], removedIndex: number, addedIndex: number) {
-  const diff = buildTextDiffSegments(lines[removedIndex]?.text.slice(1), lines[addedIndex]?.text.slice(1))
+  // Read once and hold the lines. The reads were already optional-chained while
+  // the writes asserted, so an index past the end computed a diff and then threw
+  // on assigning it; now it writes nothing.
+  const removed = lines[removedIndex]
+  const added = lines[addedIndex]
+  const diff = buildTextDiffSegments(removed?.text.slice(1), added?.text.slice(1))
 
-  if (hasChangedSegments(diff.before)) {
-    lines[removedIndex]!.wordDiffSegments = diff.before
+  if (removed && hasChangedSegments(diff.before)) {
+    removed.wordDiffSegments = diff.before
   }
-  if (hasChangedSegments(diff.after)) {
-    lines[addedIndex]!.wordDiffSegments = diff.after
+  if (added && hasChangedSegments(diff.after)) {
+    added.wordDiffSegments = diff.after
   }
 }
 

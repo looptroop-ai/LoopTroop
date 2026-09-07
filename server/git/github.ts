@@ -10,6 +10,7 @@ import {
   type RunCommandOptions,
   type RunCommandResult,
 } from './runCommand'
+import { gitPushEnv } from './push'
 
 const GIT_PATCH_MAX_BUFFER_BYTES = 2 * 1024 * 1024
 const GITHUB_PERMISSION_CHECK_TIMEOUT_MS = 5_000
@@ -60,12 +61,16 @@ function tryGit(projectPath: string, args: string[], options?: RunCommandOptions
 }
 
 /** Reaches the remote, so it is asynchronous unlike the other git helpers here. */
+function remoteGitOptions(options?: RunCommandOptions): RunCommandOptions {
+  return { ...options, env: { ...gitPushEnv(), ...options?.env } }
+}
+
 async function tryRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
-  return toAttempt(await runCommand('git', ['-C', projectPath, ...args], options))
+  return toAttempt(await runCommand('git', ['-C', projectPath, ...args], remoteGitOptions(options)))
 }
 
 async function runRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
-  const result = await runCommand('git', ['-C', projectPath, ...args], options)
+  const result = await runCommand('git', ['-C', projectPath, ...args], remoteGitOptions(options))
   if (!result.ok) throw new Error(result.errorDetail)
   return result.stdout
 }

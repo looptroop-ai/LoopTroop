@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { useAIQuestions } from '@/context/useAIQuestions'
 import type { AiQuestionInfo, AiQuestionRequest } from '@/context/aiQuestionContextDef'
 import { formatAiQuestionWindow } from '@shared/aiQuestions'
+import { COUNTDOWN_TICK_MS } from '@/lib/constants'
 import { SkipReasonField } from './SkipReasonField'
 
 /** Ticks once a second only while something is counting down. */
@@ -13,7 +14,7 @@ function useCountdown(active: boolean): number {
   const [tick, setTick] = useState(0)
   useEffect(() => {
     if (!active) return
-    const interval = setInterval(() => setTick((value) => value + 1), 1000)
+    const interval = setInterval(() => setTick((value) => value + 1), COUNTDOWN_TICK_MS)
     return () => clearInterval(interval)
   }, [active])
   return tick

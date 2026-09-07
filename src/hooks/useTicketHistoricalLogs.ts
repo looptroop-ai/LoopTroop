@@ -10,6 +10,7 @@ import {
 } from '@/context/logUtils'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { apiTicketPath } from '@/lib/apiPaths'
+import { QUERY_STALE_TIME_30S } from '@/lib/constants'
 
 export type HistoricalLogView = 'overview' | 'system' | 'command' | 'ai' | 'error' | 'debug'
 
@@ -89,7 +90,7 @@ export function useTicketHistoricalLogs(ticketId: string | undefined, scope: His
     // React Query still requires this callback to calculate result metadata.
     getNextPageParam: () => undefined,
     getPreviousPageParam: firstPage => firstPage.hasOlder ? firstPage.olderCursor ?? undefined : undefined,
-    staleTime: 30_000,
+    staleTime: QUERY_STALE_TIME_30S,
   })
 
   const entries = useMemo(() => {

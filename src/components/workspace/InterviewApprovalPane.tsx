@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -23,6 +23,7 @@ import {
 import { getCascadeEditWarningMessage } from '@/lib/workflowMeta'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
@@ -92,7 +93,7 @@ export function InterviewApprovalPane({
     () => getCascadeEditWarningMessage(ticket.status, 'interview', ticket.previousStatus),
     [ticket.status, ticket.previousStatus],
   )
-  const { data: persistedUiState } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<InterviewApprovalUiState>(ticket.id, uiStateScope, true)
   const {
     data: interviewData,
     isLoading,
@@ -127,6 +128,7 @@ export function InterviewApprovalPane({
   const [isCascadeWarningOpen, setIsCascadeWarningOpen] = useState(false)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseAnswerDrafts = useMemo(
@@ -144,29 +146,42 @@ export function InterviewApprovalPane({
 
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || !interviewDocument) return
+  const draftRestored = useApprovalDraftRestore({
+    document: interviewDocument,
+    // Both queries, not just the document one: `persisted` is undefined while
+    // the UI-state query is in flight and restoring from it latches the pane on
+    // defaults, discarding the saved answer drafts that arrive a moment later.
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // answers and arm the autosave to write the empty ones over the server's
+    // copy — from a request that never read it. Waiting means the retry
+    // restores.
+    ready: !isLoading && isUiStateSuccess,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    skipRestoreRef,
+    restore: (persisted, document) => {
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
+      const nextAnswerDrafts = normalizePersistedAnswerDrafts(persisted?.answerDrafts, document)
+      const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'yaml' ? 'yaml' : 'answers'
-    const nextAnswerDrafts = normalizePersistedAnswerDrafts(persisted?.answerDrafts, interviewDocument)
-    const nextYamlDraft = typeof persisted?.yamlDraft === 'string' ? persisted.yamlDraft : rawContent
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setAnswerDrafts(nextAnswerDrafts)
+      setYamlDraft(nextYamlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setAnswerDrafts(nextAnswerDrafts)
-    setYamlDraft(nextYamlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      yamlDraft: nextYamlDraft,
-      answerDrafts: nextAnswerDrafts,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [interviewDocument, isLoading, persistedUiState, rawContent, setIsEditMode])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        yamlDraft: nextYamlDraft,
+        answerDrafts: nextAnswerDrafts,
+      }
+    },
+  })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, INTERVIEW_APPROVAL_FOCUS_EVENT)
 
@@ -196,6 +211,7 @@ export function InterviewApprovalPane({
   }
 
   function openFriendlyEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('answers')
     setIsEditMode(true)
   }
@@ -370,7 +386,7 @@ export function InterviewApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
-            disabled={isPreparingStructuredInterview}
+            disabled={isPreparingStructuredInterview || (!isEditMode && !canStartEditing)}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}

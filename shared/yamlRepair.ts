@@ -43,12 +43,12 @@ export function repairYamlIndentation(yaml: string): string {
     }
 
     // Detect list item start: `  - key: value` or `  - key:`
-    const dashMatch = line.match(/^(\s*)-\s+([a-z_]+\s*:.*)$/i)
-    if (dashMatch) {
-      dashIndent = dashMatch[1]!.length
+    const [, dashPrefix, dashRest] = line.match(/^(\s*)-\s+([a-z_]+\s*:.*)$/i) ?? []
+    if (dashPrefix !== undefined && dashRest !== undefined) {
+      dashIndent = dashPrefix.length
       expectedPropertyIndent = dashIndent + 2
       activeNestedIndent = -1
-      activeBlockScalarIndent = BLOCK_SCALAR_PATTERN.test(dashMatch[2]!.trimEnd()) ? dashIndent : -1
+      activeBlockScalarIndent = BLOCK_SCALAR_PATTERN.test(dashRest.trimEnd()) ? dashIndent : -1
       result.push(line)
       continue
     }

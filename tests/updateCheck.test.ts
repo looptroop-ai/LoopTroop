@@ -5,11 +5,11 @@ import { join } from 'node:path'
 import {
   detectInstallChannel,
   getInstallInfo,
-  INSTALL_CHANNEL_MARKER,
   isNewerVersion,
   readRecordedInstall,
   resolveInstallInfo,
 } from '../server/lib/installChannel'
+import { INSTALL_CHANNEL_MARKER } from '../shared/installChannel'
 import { checkForUpdate, CHECK_INTERVAL_MS, formatUpdateNotice, getUpdateStatus } from '../server/lib/updateCheck'
 import { removeTempDir } from '../server/test/tempDir'
 

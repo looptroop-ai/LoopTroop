@@ -38,6 +38,7 @@ import { buildStructuredOutputMetadata } from '../../structuredOutput/metadata'
 import type { StructuredOutputMetadata } from '../../structuredOutput/types'
 import { resolveStructuredRetryDiagnostic } from '../../lib/structuredRetryDiagnostics'
 import { persistUiArtifactCompanionArtifact } from '../../workflow/artifactCompanions'
+import { STRUCTURED_CORRECTION_ECHO_LENGTH } from '../../lib/constants'
 
 export function resolveManualQaGenerationVersion(ticketDir: string): number {
   const root = resolve(ticketDir, 'manual-qa')
@@ -406,7 +407,7 @@ export async function handleManualQaChecklistGeneration(
       `The previous response was invalid: ${parsed.error}`,
       `Return a corrected response in exactly one <${MANUAL_QA_CHECKLIST_TAG}> tag. Formatting repairs may not invent checklist content, actions, observations, or expected results.`,
       'Previous invalid response (for correction only):',
-      result.response.slice(0, 50_000),
+      result.response.slice(0, STRUCTURED_CORRECTION_ECHO_LENGTH),
     ].join('\n')
   }
   // The failed attempts are worth keeping even when nothing was produced: the

@@ -206,6 +206,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     mockUseTicketArtifacts.mockReset()
     mockCollapsiblePhaseLogSection.mockClear()
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: { scope: 'approval_execution_setup', exists: false, data: null, updatedAt: null },
     })
     mockUseTicketArtifacts.mockReturnValue({
@@ -657,6 +658,7 @@ describe('ExecutionSetupPlanApprovalPane', () => {
 
   it('ignores persisted edit mode while rendering read-only setup plan review', async () => {
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: {
         scope: 'approval_execution_setup',
         exists: true,
@@ -680,5 +682,56 @@ describe('ExecutionSetupPlanApprovalPane', () => {
     expect(screen.queryByTestId('execution-setup-plan-editor')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('YAML editor')).not.toBeInTheDocument()
     expect(screen.queryByText('Unsaved persisted draft.')).not.toBeInTheDocument()
+  })
+
+  /**
+   * Opening an archived attempt renders this same pane read-only, and closing
+   * it again does not remount it. Read-only forces edit mode off, so the draft
+   * the pane restored on the way in is gone by the time it comes back — and the
+   * autosave, still armed against the baseline it recorded then, writes that
+   * loss to the server five seconds later.
+   *
+   * The restore is re-armed when read-only ends, so the draft is applied again
+   * and the baseline matches what the pane is holding.
+   */
+  it('restores the draft again after a read-only archived attempt is closed', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_execution_setup',
+        exists: true,
+        updatedAt: '2026-03-25T10:15:00.000Z',
+        data: {
+          isEditMode: true,
+          editTab: 'raw',
+          rawDraft: buildRawPlan('Draft written before the archived attempt.'),
+          structuredDraft: buildPlan('Draft written before the archived attempt.'),
+          commentary: 'Regenerate this later.',
+        },
+      },
+    })
+
+    const ticket = makeTicket({ status: 'WAITING_EXECUTION_SETUP_APPROVAL' })
+    const { rerender } = renderWithProviders(<ExecutionSetupPlanApprovalPane ticket={ticket} />)
+
+    // The draft is in the editor before the archived attempt is opened.
+    await waitFor(() => {
+      expect(screen.getByLabelText('YAML editor')).toHaveValue(
+        buildRawPlan('Draft written before the archived attempt.'),
+      )
+    })
+
+    rerender(<ExecutionSetupPlanApprovalPane ticket={ticket} readOnly />)
+    expect(screen.queryByLabelText('YAML editor')).not.toBeInTheDocument()
+
+    rerender(<ExecutionSetupPlanApprovalPane ticket={ticket} />)
+
+    // The persisted raw draft, not the plan's own raw content.
+    await waitFor(() => {
+      expect(screen.getByLabelText('YAML editor')).toHaveValue(
+        buildRawPlan('Draft written before the archived attempt.'),
+      )
+    })
+    expect(screen.getByLabelText('YAML editor')).not.toHaveValue(buildRawPlan())
   })
 })

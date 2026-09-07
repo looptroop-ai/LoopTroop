@@ -219,7 +219,6 @@ export async function commitBeadChanges(
     projectPath: worktreePath,
     destinationBranch: currentBranch,
     sourceRef: 'HEAD',
-    maxRetries: 3,
     bypassHooks,
   })
   if (!pushResult.pushed) {

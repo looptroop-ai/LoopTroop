@@ -12,7 +12,7 @@ export function WelcomeDisclaimer({ open, onDismiss, appPathWarning }: WelcomeDi
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
       <div className="bg-card text-card-foreground border border-border rounded-2xl shadow-xl max-w-md w-full p-6">
         <h2 className="text-xl font-bold mb-3 text-foreground">Welcome to LoopTroop</h2>
 

@@ -16,6 +16,7 @@ import {
   readManualQaCoverage,
   reserveManualQaVersion,
 } from '../storage'
+import { MANUAL_QA_CHECKLIST_TAG } from '../parser'
 
 const roots: string[] = []
 afterEach(() => {
@@ -84,6 +85,9 @@ describe('Manual QA generation context', () => {
       diffMetadata: 'M src/filter.ts',
     })
 
+    // The checklist tag is derived from `PROTOCOL_TAGS`, not written into the
+    // prompt as prose, so this is where that derivation is proven end to end.
+    expect(prompt).toContain(`<${MANUAL_QA_CHECKLIST_TAG}>`)
     expect(prompt).toContain('Remember the selected filters between visits.')
     expect(prompt).toContain('Reload persistence regression')
     expect(prompt).toContain('"issueType": "feature"')

@@ -6,6 +6,7 @@ import type {
 } from '@shared/interviewQuestions'
 import { MAX_SINGLE_CHOICE_OPTIONS, MAX_MULTIPLE_CHOICE_OPTIONS } from '../lib/constants'
 import { looksLikePromptEcho } from '../lib/promptEcho'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import type {
   InterviewBatchPayload,
   InterviewBatchPayloadQuestion,
@@ -1233,7 +1234,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
   let lastErrorCause: unknown = null
   let lastCandidateWarnings: string[] = []
 
-  const completeCandidates = collectTaggedCandidates(rawContent, 'INTERVIEW_COMPLETE')
+  const completeCandidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.INTERVIEW_COMPLETE)
   for (const candidate of completeCandidates) {
     const candidateWarnings: string[] = []
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
@@ -1244,7 +1245,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
       })
       const normalizedContent = normalizeInterviewCompletePayload(parsedCandidate, true)
       candidateWarnings.push(...normalizedContent.repairWarnings)
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'INTERVIEW_COMPLETE' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_COMPLETE })
       return {
         ok: true,
         value: {
@@ -1252,7 +1253,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
           finalYaml: normalizedContent.normalizedContent.trim(),
         },
         normalizedContent: normalizedContent.normalizedContent,
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'INTERVIEW_COMPLETE' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_COMPLETE }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1264,7 +1265,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
     }
   }
 
-  const batchCandidates = collectTaggedCandidates(rawContent, 'INTERVIEW_BATCH')
+  const batchCandidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.INTERVIEW_BATCH)
   for (const candidate of batchCandidates) {
     const candidateWarnings: string[] = []
     const releaseAliasConflicts = collectAliasConflictWarnings(candidateWarnings)
@@ -1274,7 +1275,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
         repairWarnings: candidateWarnings,
       }))
       candidateWarnings.push(...normalizedBatch.repairWarnings)
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'INTERVIEW_BATCH' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH })
       return {
         ok: true,
         value: {
@@ -1288,7 +1289,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
           ai_commentary: normalizedBatch.batch.aiCommentary,
           questions: normalizedBatch.batch.questions,
         }),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'INTERVIEW_BATCH' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.INTERVIEW_BATCH }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1369,7 +1370,7 @@ export function normalizeInterviewTurnOutput(rawContent: string): StructuredOutp
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Interview output echoed the prompt instead of returning an <INTERVIEW_BATCH> or <INTERVIEW_COMPLETE> artifact'
+      ? `Interview output echoed the prompt instead of returning an ${openTag(PROTOCOL_TAGS.INTERVIEW_BATCH)} or ${openTag(PROTOCOL_TAGS.INTERVIEW_COMPLETE)} artifact`
       : lastError,
     {
       cause: lastErrorCause,

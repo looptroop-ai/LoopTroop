@@ -188,7 +188,8 @@ interface SizeBreakdown {
 
 function FileTreeNode({ node, depth = 0 }: { node: SizeItem; depth?: number }) {
   const [isOpen, setIsOpen] = useState(false)
-  const hasChildren = node.isDirectory && node.children && node.children.length > 0
+  const children = node.isDirectory ? node.children ?? [] : []
+  const hasChildren = children.length > 0
 
   // A row that expands is a disclosure and gets a real button; a leaf row is text,
   // and giving it a button would put a control in the tab order that does nothing.
@@ -236,7 +237,7 @@ function FileTreeNode({ node, depth = 0 }: { node: SizeItem; depth?: number }) {
 
       {isOpen && hasChildren && (
         <div className="flex flex-col gap-0.5 border-l border-border/10 ml-3.5 mt-0.5 pl-1">
-          {node.children!.map((child, idx) => (
+          {children.map((child, idx) => (
             <FileTreeNode key={idx} node={child} depth={depth + 1} />
           ))}
         </div>

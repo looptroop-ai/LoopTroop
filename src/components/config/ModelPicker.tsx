@@ -325,10 +325,11 @@ export function ModelPicker({ value, onChange, placeholder = 'Search models…',
   const grouped = useMemo(() => {
     const groups = new Map<string, { providerName: string; models: OpenCodeModel[] }>()
     for (const m of filtered) {
-      if (!groups.has(m.providerID)) {
-        groups.set(m.providerID, { providerName: m.providerName, models: [] })
-      }
-      groups.get(m.providerID)!.models.push(m)
+      // Kept from the `set`, rather than set-then-get-then-assert: the map is
+      // built here, so the group is in hand.
+      const group = groups.get(m.providerID) ?? { providerName: m.providerName, models: [] }
+      groups.set(m.providerID, group)
+      group.models.push(m)
     }
     return Array.from(groups.entries())
   }, [filtered])

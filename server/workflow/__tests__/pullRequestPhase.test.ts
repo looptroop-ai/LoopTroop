@@ -46,9 +46,13 @@ vi.mock('../../opencode/factory', () => ({
   isMockOpenCodeMode: () => false,
 }))
 
-vi.mock('../../git/push', () => ({
-  pushBranchRef: mocks.pushBranchRef,
-}))
+vi.mock('../../git/push', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../git/push')>()
+  return {
+    ...actual,
+    pushBranchRef: mocks.pushBranchRef,
+  }
+})
 
 vi.mock('../../git/github', () => ({
   readGitDiff: mocks.readGitDiff,

@@ -21,6 +21,23 @@ function UIStateProbe() {
   )
 }
 
+function TicketSelectionProbe() {
+  const { state, dispatch } = useUI()
+
+  return (
+    <div>
+      <span data-testid="active-view">{state.activeView}</span>
+      <button
+        type="button"
+        onClick={() => dispatch({ type: 'SELECT_TICKET', ticketId: 'ticket-1', externalId: 'LT-1' })}
+      >
+        Select ticket
+      </button>
+      <button type="button" onClick={() => dispatch({ type: 'CLOSE_TICKET' })}>Close ticket</button>
+    </div>
+  )
+}
+
 function PresetDispatchProbe() {
   const { state, dispatch } = useUI()
   const presetNames = Object.keys(state.presetsByProject['looptroop-presets-global'] ?? {})
@@ -447,6 +464,31 @@ describe('UIProvider', () => {
 
       expect(screen.getByTestId('global-presets')).toHaveTextContent('Night ops')
       expect(localStorage.getItem('looptroop-presets-global')).not.toBeNull()
+    })
+  })
+
+  /**
+   * `App` is the sole owner of the URL. This provider used to push a pathname
+   * of its own derived from `activeView`, which rewrote whatever route `App`
+   * had opened. Nothing here may write history again.
+   */
+  describe('URL ownership', () => {
+    it('never writes history, on mount or when the selection changes', () => {
+      const pushState = vi.spyOn(window.history, 'pushState')
+      const replaceState = vi.spyOn(window.history, 'replaceState')
+
+      render(
+        <UIProvider>
+          <TicketSelectionProbe />
+        </UIProvider>,
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Select ticket' }))
+      expect(screen.getByTestId('active-view')).toHaveTextContent('ticket')
+      fireEvent.click(screen.getByRole('button', { name: 'Close ticket' }))
+      expect(screen.getByTestId('active-view')).toHaveTextContent('kanban')
+
+      expect(pushState).not.toHaveBeenCalled()
+      expect(replaceState).not.toHaveBeenCalled()
     })
   })
 })

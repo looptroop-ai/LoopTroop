@@ -63,14 +63,14 @@ interface RenderedPhaseGroup {
 }
 
 function groupByPhaseRuns(entries: LogEntry[]): PhaseGroup[] {
-  if (entries.length === 0) return []
+  const [first, ...rest] = entries
+  if (!first) return []
 
   const groups: PhaseGroup[] = []
-  let currentPhase = entries[0]!.status
-  let currentEntries: LogEntry[] = [entries[0]!]
+  let currentPhase = first.status
+  let currentEntries: LogEntry[] = [first]
 
-  for (let i = 1; i < entries.length; i++) {
-    const entry = entries[i]!
+  for (const entry of rest) {
     if (entry.status !== currentPhase) {
       groups.push({ phase: currentPhase, entries: currentEntries })
       currentPhase = entry.status

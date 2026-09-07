@@ -1,5 +1,6 @@
 import type { BeadChecks } from '../phases/execution/completionSchema'
 import { looksLikePromptEcho } from '../lib/promptEcho'
+import { openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
 import { detectHostContext } from '../lib/hostContext'
 import type { HostContext } from '@shared/hostContext'
 import { hostContextSchema } from '@shared/hostContext'
@@ -181,7 +182,7 @@ function normalizeFinalTestFileEffects(value: unknown, repairWarnings?: string[]
 }
 
 export function normalizeBeadCompletionMarkerOutput(rawContent: string): StructuredOutputResult<BeadCompletionPayload> {
-  const candidates = collectTaggedCandidates(rawContent, 'BEAD_STATUS')
+  const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.BEAD_STATUS)
   let lastError = 'No completion marker found'
   let lastErrorCause: unknown = null
 
@@ -189,7 +190,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
     return buildStructuredOutputFailure(
       rawContent,
       looksLikePromptEcho(rawContent)
-        ? 'Completion marker output echoed the prompt instead of returning a <BEAD_STATUS> artifact'
+        ? `Completion marker output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.BEAD_STATUS)} artifact`
         : lastError,
     )
   }
@@ -228,7 +229,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
       const status = normalizeCompletionStatus(getValueByAliases(parsed, ['status']))
       const checks = normalizeCompletionChecks(getValueByAliases(parsed, ['checks', 'gates', 'qualitygates', 'quality_gates']))
       const reason = toOptionalString(getValueByAliases(parsed, ['reason', 'details', 'message']))
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'BEAD_STATUS' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.BEAD_STATUS })
 
       return {
         ok: true,
@@ -244,7 +245,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
           checks,
           ...(reason ? { reason } : {}),
         }),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'BEAD_STATUS' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.BEAD_STATUS }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -258,7 +259,7 @@ export function normalizeBeadCompletionMarkerOutput(rawContent: string): Structu
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Completion marker output echoed the prompt instead of returning a <BEAD_STATUS> artifact'
+      ? `Completion marker output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.BEAD_STATUS)} artifact`
       : lastError,
     { cause: lastErrorCause },
   )
@@ -268,7 +269,7 @@ export function normalizeFinalTestCommandsOutput(
   rawContent: string,
   hostContext = detectHostContext(),
 ): StructuredOutputResult<FinalTestCommandPayload> {
-  const candidates = collectTaggedCandidates(rawContent, 'FINAL_TEST_COMMANDS')
+  const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.FINAL_TEST_COMMANDS)
   let lastError = 'No final test command marker found'
   let lastErrorCause: unknown = null
 
@@ -276,7 +277,7 @@ export function normalizeFinalTestCommandsOutput(
     return buildStructuredOutputFailure(
       rawContent,
       looksLikePromptEcho(rawContent)
-        ? 'Final test command output echoed the prompt instead of returning a <FINAL_TEST_COMMANDS> artifact'
+        ? `Final test command output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)} artifact`
         : lastError,
     )
   }
@@ -368,7 +369,7 @@ export function normalizeFinalTestCommandsOutput(
       const rawTestsCount = getValueByAliases(parsed, ['tests_count', 'testscount', 'test_count', 'testcount', 'num_tests'])
       const testsCount = toInteger(rawTestsCount)
 
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'FINAL_TEST_COMMANDS' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.FINAL_TEST_COMMANDS })
 
       return {
         ok: true,
@@ -388,7 +389,7 @@ export function normalizeFinalTestCommandsOutput(
           ...(fileEffects.length > 0 ? { fileEffects } : {}),
           ...(testsCount != null ? { testsCount } : {}),
         }),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'FINAL_TEST_COMMANDS' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.FINAL_TEST_COMMANDS }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -402,7 +403,7 @@ export function normalizeFinalTestCommandsOutput(
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Final test command output echoed the prompt instead of returning a <FINAL_TEST_COMMANDS> artifact'
+      ? `Final test command output echoed the prompt instead of returning a ${openTag(PROTOCOL_TAGS.FINAL_TEST_COMMANDS)} artifact`
       : lastError,
     { cause: lastErrorCause },
   )
@@ -1191,7 +1192,7 @@ export function normalizeExecutionSetupPlanOutput(
     authoritativeTicketId?: string
   } = {},
 ): StructuredOutputResult<ExecutionSetupPlanPayload> {
-  const candidates = collectTaggedCandidates(rawContent, 'EXECUTION_SETUP_PLAN')
+  const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)
   let lastError = 'No execution setup plan marker found'
   let lastErrorCause: unknown = null
 
@@ -1199,7 +1200,7 @@ export function normalizeExecutionSetupPlanOutput(
     return buildStructuredOutputFailure(
       rawContent,
       looksLikePromptEcho(rawContent)
-        ? 'Execution setup plan output echoed the prompt instead of returning an <EXECUTION_SETUP_PLAN> artifact'
+        ? `Execution setup plan output echoed the prompt instead of returning an ${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)} artifact`
         : lastError,
     )
   }
@@ -1243,7 +1244,7 @@ export function normalizeExecutionSetupPlanOutput(
         ok: true,
         value,
         normalizedContent: JSON.stringify(toCanonicalExecutionSetupPlanPayload(value)),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'EXECUTION_SETUP_PLAN' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.EXECUTION_SETUP_PLAN }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1257,14 +1258,14 @@ export function normalizeExecutionSetupPlanOutput(
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Execution setup plan output echoed the prompt instead of returning an <EXECUTION_SETUP_PLAN> artifact'
+      ? `Execution setup plan output echoed the prompt instead of returning an ${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)} artifact`
       : lastError,
     { cause: lastErrorCause },
   )
 }
 
 export function normalizeExecutionSetupResultOutput(rawContent: string): StructuredOutputResult<ExecutionSetupResultPayload> {
-  const candidates = collectTaggedCandidates(rawContent, 'EXECUTION_SETUP_RESULT')
+  const candidates = collectTaggedCandidates(rawContent, PROTOCOL_TAGS.EXECUTION_SETUP_RESULT)
   let lastError = 'No execution setup result marker found'
   let lastErrorCause: unknown = null
 
@@ -1272,7 +1273,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
     return buildStructuredOutputFailure(
       rawContent,
       looksLikePromptEcho(rawContent)
-        ? 'Execution setup output echoed the prompt instead of returning an <EXECUTION_SETUP_RESULT> artifact'
+        ? `Execution setup output echoed the prompt instead of returning an ${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_RESULT)} artifact`
         : lastError,
     )
   }
@@ -1319,7 +1320,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
         throw new Error('Execution setup status blocked requires at least one setup check to fail')
       }
 
-      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: 'EXECUTION_SETUP_RESULT' })
+      appendStructuredCandidateRecoveryWarning(candidateWarnings, rawContent, candidate, { tag: PROTOCOL_TAGS.EXECUTION_SETUP_RESULT })
 
       const value = {
         status,
@@ -1332,7 +1333,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
         ok: true,
         value,
         normalizedContent: JSON.stringify(toCanonicalExecutionSetupResultPayload(value)),
-        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: 'EXECUTION_SETUP_RESULT' }),
+        repairApplied: candidateWarnings.length > 0 || shouldRecordStructuredCandidateRecovery(rawContent, candidate, { tag: PROTOCOL_TAGS.EXECUTION_SETUP_RESULT }),
         repairWarnings: candidateWarnings,
       }
     } catch (error) {
@@ -1346,7 +1347,7 @@ export function normalizeExecutionSetupResultOutput(rawContent: string): Structu
   return buildStructuredOutputFailure(
     rawContent,
     looksLikePromptEcho(rawContent)
-      ? 'Execution setup output echoed the prompt instead of returning an <EXECUTION_SETUP_RESULT> artifact'
+      ? `Execution setup output echoed the prompt instead of returning an ${openTag(PROTOCOL_TAGS.EXECUTION_SETUP_RESULT)} artifact`
       : lastError,
     { cause: lastErrorCause },
   )

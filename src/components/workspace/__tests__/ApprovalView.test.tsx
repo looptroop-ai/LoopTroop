@@ -264,6 +264,7 @@ describe('Interview approval UI', () => {
       isLoading: false,
     }))
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: { scope: 'approval_interview', exists: false, data: null, updatedAt: null },
     })
     mockSaveUiState.mockReset()
@@ -333,6 +334,7 @@ describe('Interview approval UI', () => {
   it('strips selected option IDs from skipped answer drafts before saving', async () => {
     let submittedBody: { questions: Array<{ id: string; answer: { skipped: boolean; selected_option_ids: string[]; free_text: string } }> } | null = null
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: {
         scope: 'approval_interview',
         exists: true,
@@ -653,6 +655,7 @@ describe('Interview approval UI', () => {
 
   it('shows draft autosave status and retains Save in beads edit mode', async () => {
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: {
         scope: 'approval_beads',
         exists: true,
@@ -673,6 +676,52 @@ describe('Interview approval UI', () => {
 
     expect(await screen.findByText(/Draft autosave on/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+  })
+
+  /**
+   * The beads pane restored as soon as the beads themselves arrived, without
+   * waiting for the UI-state query. `data` is undefined while that query is in
+   * flight *and* when there is no draft, so the pane latched on defaults and
+   * discarded the draft that landed a moment later — then autosaved those
+   * defaults over it.
+   *
+   * A failed request counts as fetched, so the gate is `isSuccess`: a UI-state
+   * request that errored must not latch the pane either.
+   */
+  it('waits for the beads draft query to succeed before restoring', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: false,
+      data: undefined,
+    })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+        return createJsonResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const ticket = makeTicket({ status: 'WAITING_BEADS_APPROVAL' })
+    const { rerender } = renderApprovalView(ticket, 'beads')
+
+    expect(await screen.findByText('Autosaved bead')).toBeInTheDocument()
+    // Not restored, so the autosave stays disarmed and cannot overwrite the
+    // draft this pane has not read yet.
+    expect(screen.queryByText(/Draft autosave on/)).not.toBeInTheDocument()
+
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'structured' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    rerender(<ApprovalView ticket={ticket} artifactType="beads" />)
+
+    expect(await screen.findByText(/Draft autosave on/)).toBeInTheDocument()
   })
 
   it('shows unresolved beads coverage gaps as a collapsible warning during approval', async () => {
@@ -769,6 +818,7 @@ describe('Read-only approval attempts', () => {
     mockUseInterviewQuestions.mockReset()
     mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: { scope: 'approval_prd', exists: false, data: null, updatedAt: null },
     })
     mockUseTicketArtifacts.mockReset()
@@ -832,6 +882,7 @@ describe('Approval surfaces on a failed request', () => {
     mockUseInterviewQuestions.mockReset()
     mockUseInterviewQuestions.mockImplementation(() => ({ data: undefined, isLoading: false }))
     mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
       data: { scope: 'approval_beads', exists: false, data: null, updatedAt: null },
     })
     mockUseTicketArtifacts.mockReset()

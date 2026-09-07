@@ -1,4 +1,4 @@
-import { startTransition, useMemo, useState, useEffect, useCallback, useRef } from 'react'
+import { startTransition, useMemo, useState, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useInterviewQuestions, useTicketUIState, useSaveTicketUIState } from '@/hooks/useTickets'
@@ -21,11 +21,13 @@ import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
+import { selectedAttemptNumber } from './phaseAttemptSelection'
 import { useSelectedPhaseAttempt } from './useSelectedPhaseAttempt'
 import { parseInterviewDocument, normalizeInterviewDocumentLike } from '@/lib/interviewDocument'
 import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdDocumentContent } from '@/lib/prdDocument'
 import {
   useApprovalDraftReset,
+  useApprovalDraftRestore,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   approveArtifact,
@@ -169,7 +171,7 @@ function BeadsApprovalPane({
   const queryClient = useQueryClient()
   const { mutateAsync: saveUiState } = useSaveTicketUIState()
   const uiStateScope = 'approval_beads'
-  const { data: persistedUiState } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
+  const { data: persistedUiState, isSuccess: isUiStateSuccess, isError: isUiStateError } = useTicketUIState<BeadsApprovalUiState>(ticket.id, uiStateScope, true)
   const councilMemberNames = useMemo(
     () => ticket.lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0),
     [ticket.lockedCouncilMembers],
@@ -231,6 +233,7 @@ function BeadsApprovalPane({
   const [discardTarget, setDiscardTarget] = useState<DiscardTarget>(null)
   const restoredDraftRef = useRef(false)
   const lastSavedSnapshotRef = useRef('')
+  const skipRestoreRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const baseStructuredDraft = useMemo(
@@ -253,31 +256,46 @@ function BeadsApprovalPane({
   useApprovalDraftReset(ticket.id, restoredDraftRef, lastSavedSnapshotRef)
 
   // Restore persisted UI state
-  useEffect(() => {
-    if (isLoading || restoredDraftRef.current || fetchedBeads === undefined) return
+  const draftRestored = useApprovalDraftRestore({
+    document: fetchedBeads,
+    // The UI-state query too, not just the beads one: `persisted` is undefined
+    // while it is in flight, and restoring from that latches the pane on
+    // defaults, discarding the saved structured and JSONL drafts.
+    //
+    // `isSuccess`, not `isFetched`: a request that *failed* counts as fetched,
+    // and `data` is undefined then too. Latching on that would discard the
+    // draft and arm the autosave to write the defaults over the server's copy
+    // — from a request that never read it. Waiting means the retry restores.
+    ready: !isLoading && isUiStateSuccess,
+    persisted: persistedUiState?.data,
+    restoredDraftRef,
+    lastSavedSnapshotRef,
+    skipRestoreRef,
+    restore: (persisted, document) => {
+      const documentBeads = Array.isArray(document.beads) ? document.beads : []
+      const documentRaw = documentBeads.length > 0 ? beadsArrayToJsonl(documentBeads) : ''
+      const documentStructured = documentBeads.length > 0 ? parseBeadsForEditor(documentBeads) : null
+      const nextEditMode = Boolean(persisted?.isEditMode)
+      const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
+      const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
+        ? persisted.structuredDraft
+        : documentStructured
+      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : documentRaw
 
-    const persisted = persistedUiState?.data
-    const nextEditMode = Boolean(persisted?.isEditMode)
-    const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
-    const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
-      ? persisted.structuredDraft
-      : baseStructuredDraft
-    const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : rawJsonl
+      setIsEditMode(nextEditMode)
+      setEditTab(nextEditTab)
+      setStructuredDraft(nextStructuredDraft)
+      setJsonlDraft(nextJsonlDraft)
 
-    setIsEditMode(nextEditMode)
-    setEditTab(nextEditTab)
-    setStructuredDraft(nextStructuredDraft)
-    setJsonlDraft(nextJsonlDraft)
-
-    const snapshot = JSON.stringify({
-      isEditMode: nextEditMode,
-      editTab: nextEditTab,
-      jsonlDraft: nextJsonlDraft,
-      structuredDraft: nextStructuredDraft,
-    })
-    lastSavedSnapshotRef.current = snapshot
-    restoredDraftRef.current = true
-  }, [isLoading, fetchedBeads, persistedUiState, baseStructuredDraft, rawJsonl])
+      return {
+        isEditMode: nextEditMode,
+        editTab: nextEditTab,
+        jsonlDraft: nextJsonlDraft,
+        structuredDraft: nextStructuredDraft,
+      }
+    },
+  })
+  const canStartEditing = draftRestored || isUiStateError
 
   useApprovalFocusAnchor(ticket.id, BEADS_APPROVAL_FOCUS_EVENT)
 
@@ -307,6 +325,7 @@ function BeadsApprovalPane({
   }
 
   function openEditor() {
+    if (!draftRestored) skipRestoreRef.current = true
     resetDraftsFromSaved('structured')
     setIsEditMode(true)
   }
@@ -463,6 +482,7 @@ function BeadsApprovalPane({
             variant="outline"
             size="sm"
             onClick={handleToggleEdit}
+            disabled={!isEditMode && !canStartEditing}
             className="text-xs shrink-0"
           >
             {isEditMode ? 'View' : 'Edit'}
@@ -796,15 +816,16 @@ export function ApprovalView({ ticket, phase, artifactType, readOnly }: Approval
     error: attemptsError,
     refetch: refetchAttempts,
   } = useSelectedPhaseAttempt(ticket.id, resolvedPhase)
+  const attemptNumber = selectedAttemptNumber(selectedAttempt, attempts)
   const selector = isAttemptsError ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptsUnavailable error={attemptsError} onRetry={() => void refetchAttempts()} />
     </div>
-  ) : attempts.length > 1 ? (
+  ) : attemptNumber !== undefined && attempts.length > 1 ? (
     <div className="px-4 pt-4 shrink-0">
       <PhaseAttemptSelector
         attempts={attempts}
-        value={selectedAttempt?.attemptNumber ?? attempts[0]!.attemptNumber}
+        value={attemptNumber}
         onChange={setManualSelectedAttemptNumber}
       />
     </div>

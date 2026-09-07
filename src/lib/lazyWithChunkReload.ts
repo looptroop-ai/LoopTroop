@@ -3,7 +3,21 @@ import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
 const LAZY_RELOAD_KEY_PREFIX = 'looptroop-lazy-reload:'
 
 type ReloadStorage = Pick<Storage, 'getItem' | 'setItem'>
-// React.lazy uses ComponentType<any> so required component props are preserved through inference.
+/**
+ * The constraint React itself imposes, not a shortcut.
+ *
+ * `React.lazy` is declared `lazy<T extends ComponentType<any>>` and
+ * `LazyExoticComponent<T extends ComponentType<any>>`, so anything this wrapper
+ * returns has to satisfy that. The two narrower forms both fail: generic over
+ * the *props* leaves `TProps` inferable only from a contravariant position, so
+ * it collapses to `never` and every call site becomes an error; and
+ * `ComponentType<object>` is not a supertype of `ComponentType<SomeProps>` for
+ * the same contravariance, so no real component satisfies it.
+ *
+ * The `any` is React's. Inference still lands on each component's own type, so
+ * a lazy component keeps its required props and passing the wrong ones is a
+ * compile error.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LazyComponent = ComponentType<any>
 
@@ -60,6 +74,7 @@ function clearLazyImportReloadMarker(label: string): void {
   }
 }
 
+/** `React.lazy` with a one-shot reload when the chunk itself failed to load. */
 export function lazyWithChunkReload<TComponent extends LazyComponent>(
   label: string,
   importer: () => Promise<{ default: TComponent }>,

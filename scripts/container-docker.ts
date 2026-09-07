@@ -111,15 +111,23 @@ const CREDENTIAL_KEYS = ['auths', 'credsStore', 'credHelpers'] as const
 
 /** A Docker config with every way of authenticating removed. */
 export function withoutCredentials(config: string): string {
-  let parsed: Record<string, unknown>
+  let parsed: unknown
   try {
-    parsed = JSON.parse(config) as Record<string, unknown>
+    parsed = JSON.parse(config)
   } catch {
     // Unreadable is as good as empty here: what matters is that the config this
     // check runs under carries no credentials, and one that cannot be parsed
     // carries nothing docker will use either.
     return '{}\n'
   }
-  for (const key of CREDENTIAL_KEYS) delete parsed[key]
-  return `${JSON.stringify(parsed, null, 2)}\n`
+
+  // `null`, an array and a bare scalar are all valid JSON and none of them is a
+  // Docker configuration. `null` in particular used to throw out of `delete`,
+  // taking the whole check down rather than producing a config with no
+  // credentials in it.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return '{}\n'
+
+  const fields = parsed as Record<string, unknown>
+  for (const key of CREDENTIAL_KEYS) delete fields[key]
+  return `${JSON.stringify(fields, null, 2)}\n`
 }

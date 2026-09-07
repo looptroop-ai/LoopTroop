@@ -5,11 +5,11 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
-  stallGuard, streamBody,
+  resolveOnPath, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -426,6 +426,11 @@ describe('installer core', () => {
         ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;'
         // Runs, exits 0, and says nothing a probe can parse.
         : '  status) echo "not json at all" ;;'
+      // A `stop` that reports failure, for the case where nothing at all can be
+      // established: the probe cannot answer and the command did not work.
+      const stopArm = status === 'unparseable-and-stop-fails'
+        ? '  stop) echo "stub cannot stop" >&2; exit 1 ;;'
+        : '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;'
       const startArm = start === 'plain'
         ? '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;'
         // Stands in for another installer claiming the directory while this one
@@ -437,7 +442,7 @@ describe('installer core', () => {
         'case "$1" in',
         `  --version) echo "${version}" ;;`,
         statusArm,
-        '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;',
+        stopArm,
         startArm,
         'esac',
         '',
@@ -649,6 +654,34 @@ describe('installer core', () => {
      * daemon probe either — so refusing on an unreadable state would wedge
      * exactly the person who most needs to reinstall.
      */
+    /**
+     * The other end of the unknown branch. When the probe cannot answer *and*
+     * `stop` reports that it failed, nothing at all has been established — so
+     * the executable is left alone rather than swapped on no information.
+     *
+     * `stop`'s exit code is the evidence here. Before it was read, the check
+     * was `daemonRunning(...) !== true`, which an unreadable probe satisfies on
+     * the first poll: the thirty-second wait proved nothing and the swap went
+     * ahead regardless.
+     */
+    it.runIf(canInstallBinary)('refuses when the state is unreadable and the stop failed', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable-and-stop-fails' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      const installed = join(prefix, 'bin', 'looptroop')
+      const before = readFileSync(installed, 'utf8')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('did not succeed')
+      expect(result.stderr).toContain('Nothing was installed')
+      // The executable it refused to replace is byte-for-byte what it was.
+      expect(readFileSync(installed, 'utf8')).toBe(before)
+    })
+
     it.runIf(canInstallBinary)('installs over an executable that does not run at all', async () => {
       const prefix = freshPrefix()
       const stubState = join(prefix, 'state')
@@ -996,6 +1029,102 @@ describe('bounded transfers', () => {
  * contains a space puts the temporary directory somewhere that breaks under
  * that rule, which is most of them.
  */
+/**
+ * The search `CreateProcess` does, reimplemented so the installer can see
+ * *what* PATH resolved to — a real executable and a batch shim have to be
+ * launched differently, and there is no way to launch either correctly without
+ * knowing which.
+ *
+ * Every case here is a Windows rule, and these run on Linux, so PATH and
+ * PATHEXT are passed in. That is deliberate: the first version of this resolver
+ * tried the extensionless name first, which broke every `npm` call on Windows
+ * and could not fail anywhere else. A rule that only holds on one platform has
+ * to be testable on the others.
+ */
+describe('PATH resolution', () => {
+  const roots: string[] = []
+
+  afterAll(() => {
+    for (const dir of roots.splice(0)) removeTempDir(dir)
+  })
+
+  /** A directory holding each named file, and its path. */
+  function directoryWith(...names: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-path-test-'))
+    roots.push(dir)
+    for (const name of names) writeFileSync(join(dir, name), '')
+    return dir
+  }
+
+  // Lowercase, unlike the real `.COM;.EXE;.BAT;.CMD`. Windows filesystems are
+  // case-insensitive so the real casing never matters there; this test runs on
+  // a filesystem where it does, and what is under test is the precedence and
+  // ordering rules, not the spelling of the environment variable.
+  const PATHEXT = '.com;.exe;.bat;.cmd'
+
+  /**
+   * The regression. A Windows Node install ships `npm` — a POSIX shell script
+   * for Git Bash — in the same directory as `npm.cmd`. Resolving the bare name
+   * first found the script, which is not a `.cmd`, so it was spawned directly;
+   * Windows cannot execute it, and every npm call in the installer failed with
+   * "npm is not on PATH".
+   */
+  it('prefers an executable extension over a file with no extension', () => {
+    const dir = directoryWith('npm', 'npm.cmd')
+
+    expect(resolveOnPath('npm', dir, PATHEXT)).toBe(join(dir, 'npm.cmd'))
+  })
+
+  it('follows PATHEXT order', () => {
+    const dir = directoryWith('tool.cmd', 'tool.exe')
+
+    // `.exe` comes before `.cmd` in PATHEXT, and Windows picks the first match
+    // rather than the best one.
+    expect(resolveOnPath('tool', dir, PATHEXT)).toBe(join(dir, 'tool.exe'))
+  })
+
+  /**
+   * Windows will not execute a file with no extension at all, so one must never
+   * be the answer for a bare command name — not even when nothing else matches.
+   */
+  it('does not resolve a bare name to an extensionless file', () => {
+    const dir = directoryWith('npm')
+
+    expect(resolveOnPath('npm', dir, PATHEXT)).toBeNull()
+  })
+
+  it('uses a command that names its own extension as written', () => {
+    const dir = directoryWith('tool.cmd', 'tool.exe')
+
+    expect(resolveOnPath('tool.cmd', dir, PATHEXT)).toBe(join(dir, 'tool.cmd'))
+  })
+
+  it('searches PATH entries in order', () => {
+    const first = directoryWith('tool.exe')
+    const second = directoryWith('tool.exe')
+
+    expect(resolveOnPath('tool', [first, second].join(delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
+    expect(resolveOnPath('tool', [second, first].join(delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
+  })
+
+  /**
+   * Windows tolerates a quoted PATH entry and `SearchPath` strips the quotes.
+   * `join` does not, so an unstripped entry matches nothing — and quoting is
+   * exactly what a directory containing a space attracts.
+   */
+  it('strips quotes from a PATH entry', () => {
+    const dir = directoryWith('tool.exe')
+
+    expect(resolveOnPath('tool', `"${dir}"`, PATHEXT)).toBe(join(dir, 'tool.exe'))
+  })
+
+  it('skips empty entries and reports nothing found as null', () => {
+    const dir = directoryWith('other.exe')
+
+    expect(resolveOnPath('tool', ['', dir, '""'].join(delimiter), PATHEXT)).toBeNull()
+  })
+})
+
 describe('windows command lines', () => {
   it('makes one token of an argument containing spaces', () => {
     expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))

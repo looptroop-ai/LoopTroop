@@ -23,7 +23,8 @@ import { join, resolve } from 'node:path'
 import type { AssetDigest, ReleaseManifest } from './release-assets.ts'
 import { digestedAssets, manifestDifferences, MANIFEST_ASSET, planDraftAssets, requiredAssets } from './release-assets.ts'
 import { isGhNotFound } from './release-state.ts'
-import { ArgumentError, parseArgs } from './cli-args.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
@@ -41,13 +42,18 @@ const USAGE = 'Usage: node scripts/release-draft.ts --version X.Y.Z --manifest <
 // this ran with the default behaviour and reported success.
 const args = (() => {
   try {
-    return parseArgs(process.argv.slice(2), {
+    const parsed = parseArgs(process.argv.slice(2), {
       version: 'value',
       manifest: 'value',
       dir: 'value',
       notes: 'value',
       prerelease: 'switch',
     })
+    // This script takes options only, and it holds `contents: write`. A stray
+    // bare token was collected and never read, so a malformed invocation still
+    // created or edited a release.
+    requireNoPositional(parsed)
+    return parsed
   } catch (error) {
     if (!(error instanceof ArgumentError)) throw error
     fail(error.message, USAGE)
@@ -67,8 +73,22 @@ const notesPath = resolve(requiredFlag('notes'))
 const prerelease = args.switch('prerelease')
 const tag = `v${version}`
 
+/**
+ * `gh`, resolved once from a directory the runner owns.
+ *
+ * Naming the tool and letting the operating system search `PATH` lets the first
+ * matching directory decide which program receives `contents: write` and the
+ * arguments that create, edit and upload to a release. Resolved and checked
+ * before the first call so a wrong answer is a refusal rather than a release.
+ */
+const ghPath = (() => {
+  const resolved = resolveTrustedTool('gh')
+  if ('refusal' in resolved) fail('Cannot run gh safely.', resolved.refusal)
+  return resolved.path
+})()
+
 function gh(args: string[]): string {
-  return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+  return execFileSync(ghPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
 /**
@@ -88,7 +108,7 @@ function gh(args: string[]): string {
 function draftState(): 'absent' | 'draft' {
   let output: string
   try {
-    output = execFileSync('gh', ['release', 'view', tag, '--json', 'isDraft'], {
+    output = execFileSync(ghPath, ['release', 'view', tag, '--json', 'isDraft'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })

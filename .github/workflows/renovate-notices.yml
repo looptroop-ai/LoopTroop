@@ -19,6 +19,12 @@
 #   `push` never runs the branch's code. It checks out the branch with the
 #   write token, replaces that one file with the artifact, and commits.
 #
+# Both jobs check out the same immutable SHA rather than the branch name. The
+# notices describe one dependency tree, so committing them onto a different
+# commit than the one they were generated from produces a file that disagrees
+# with the `package-lock.json` beside it — which `licenses:check` then fails,
+# leaving the pull request red for the opposite of the reason this exists.
+#
 # Before this split both halves were one job: the token was persisted into
 # `.git/config` by the checkout at the top, and every step after it — including
 # the branch's own install and build scripts — ran with it sitting there.
@@ -58,9 +64,12 @@ jobs:
     steps:
       # No token, and no credentials left in `.git/config` for the branch's own
       # code to find. This job pushes nothing.
+      #
+      # The head SHA, not the branch name: Renovate can push again while this
+      # job runs, and the notices must describe the tree they were built from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -133,7 +142,7 @@ jobs:
       # alongside git itself.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           token: ${{ secrets.RELEASE_PR_TOKEN }}
 
       - name: Download the regenerated notices
@@ -142,8 +151,13 @@ jobs:
           name: third-party-notices
 
       # A no-op push would retrigger this workflow through `synchronize`, so the
-      # commit is conditional here as well as in the job that produced the file:
-      # the branch may have moved between the two jobs.
+      # commit is conditional here as well as in the job that produced the file.
+      #
+      # And the branch has to still be where the artifact came from. Both jobs
+      # check out the pinned head SHA, so this commit is built on the right
+      # tree; what it must not do is *move* a branch that has since advanced,
+      # which would revert whatever Renovate pushed in the meantime. Checked
+      # explicitly, and the push stays non-force as the final guard.
       - name: Commit and push when the notices changed
         run: |
           set -euo pipefail
@@ -151,6 +165,14 @@ jobs:
             echo "THIRD-PARTY-NOTICES.md is already current; nothing to push."
             exit 0
           fi
+
+          remote=$(git ls-remote origin "refs/heads/${HEAD_REF}" | cut -f1)
+          if [ "${remote}" != "${SOURCE_SHA}" ]; then
+            echo "::notice::${HEAD_REF} has moved to ${remote:-(gone)} since ${SOURCE_SHA} was built."
+            echo "::notice::Leaving it alone; the run for that commit will regenerate the notices."
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add THIRD-PARTY-NOTICES.md
@@ -158,4 +180,5 @@ jobs:
           git push origin "HEAD:${HEAD_REF}"
         env:
           HEAD_REF: ${{ github.head_ref }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash

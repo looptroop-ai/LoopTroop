@@ -105,6 +105,13 @@ export interface StallGuard {
   reason: () => string | null
 }
 
+/**
+ * Where PATH resolves `command`, with PATHEXT applied and quotes stripped.
+ * `pathValue` and `pathExt` are injectable so the candidate ordering can be
+ * tested off Windows.
+ */
+export function resolveOnPath(command: string, pathValue?: string, pathExt?: string): string | null
+
 /** One cmd.exe token, whatever the value contains. */
 export function quoteForCmd(value: string): string
 

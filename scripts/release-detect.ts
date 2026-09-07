@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 // Node executes TypeScript directly but does not resolve a missing extension.
 import { distTagFor } from './version-bump.ts'
 import { isGhNotFound, type ReleaseFacts, resolveReleaseState } from './release-state.ts'
-import { ArgumentError, parseArgs } from './cli-args.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -101,12 +101,15 @@ const USAGE = 'Usage: npm run release:detect -- [--expected-integrity sha512-…
  */
 const args = (() => {
   try {
-    return parseArgs(process.argv.slice(2), {
+    const parsed = parseArgs(process.argv.slice(2), {
       'expected-integrity': 'value',
       baseline: 'value',
       version: 'value',
       json: 'switch',
     })
+    // Options only; a stray token was silently ignored.
+    requireNoPositional(parsed)
+    return parsed
   } catch (error) {
     if (!(error instanceof ArgumentError)) throw error
     fail(`${error.message}\n${USAGE}`)

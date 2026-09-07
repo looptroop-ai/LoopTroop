@@ -33,7 +33,7 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, wri
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { waitForHealth } from './smoke-lib.mjs'
+import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -1490,11 +1490,11 @@ async function runChannel(recipe, options) {
         }
       }
     }
-    try {
-      rmSync(scratch, { recursive: true, force: true })
-    } catch {
-      // A held file on Windows is not worth failing a run over.
-    }
+    // Through the shared helper, like every other smoke script: a bare `rmSync`
+    // gives a held Windows handle no chance to be released, so the scratch
+    // directory was silently left behind on the platform that needs the retries.
+    const leftover = removeWorkDirectory(scratch)
+    if (leftover) log(`  (could not remove ${scratch}: ${leftover.message})`)
   }
 }
 

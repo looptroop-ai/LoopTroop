@@ -90,7 +90,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync,
-  readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync,
+  readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
@@ -650,11 +650,33 @@ async function download(url, destination) {
  * looked at: whether what PATH resolves to is a real executable or a batch
  * shim decides how it has to be launched, and there is no way to launch it
  * correctly without knowing which.
+ *
+ * **PATHEXT before the bare name, and the bare name only if the command
+ * already carries an extension.** Windows will not execute a file with no
+ * extension, and Node ships one: `C:\Program Files\nodejs\` contains `npm`, a
+ * POSIX shell script for Git Bash, right beside `npm.cmd`. Trying the bare
+ * name first found that script, which is not a `.cmd`, so it was spawned
+ * directly — and Windows cannot run it. Every `npm` call in the installer
+ * failed instantly with "npm is not on PATH", on every Windows machine.
+ *
+ * PATH entries are unquoted first. Windows tolerates `"C:\Program Files\x"` in
+ * PATH and `SearchPath` strips the quotes; `join` does not, and the result
+ * matches nothing.
  */
-function resolveOnPath(command) {
-  const extensions = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
-  for (const directory of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
-    for (const extension of ['', ...extensions]) {
+export function resolveOnPath(
+  command,
+  pathValue = process.env.PATH ?? process.env.Path ?? '',
+  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+) {
+  // A command that names its own extension is used as written; PATHEXT only
+  // ever supplies a missing one.
+  const named = /\.[^\\/.]+$/.test(command)
+  const extensions = named ? [''] : pathExt.split(';').filter(Boolean)
+
+  for (const entry of pathValue.split(delimiter).filter(Boolean)) {
+    const directory = entry.replace(/^"(.*)"$/, '$1')
+    if (directory === '') continue
+    for (const extension of extensions) {
       const candidate = join(directory, `${command}${extension}`)
       if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate
     }
@@ -740,12 +762,34 @@ function checkRuntime(engines) {
   }
 }
 
+/**
+ * The file on disk against what the release says it should be.
+ *
+ * Read in chunks rather than with `readFileSync`. The download streams to disk
+ * precisely so a 110 MB archive is never held in memory, and hashing it by
+ * reading the whole thing back put it there anyway — undoing the bound a few
+ * lines after establishing it, at the moment the machine is least likely to
+ * have the headroom.
+ */
 function verifyBytes(file, manifest) {
-  const bytes = readFileSync(file)
-  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  const hash = createHash('sha256')
+  const chunk = Buffer.allocUnsafe(1024 * 1024)
+  let size = 0
+  const handle = openSync(file, 'r')
+  try {
+    for (;;) {
+      const read = readSync(handle, chunk, 0, chunk.length, null)
+      if (read === 0) break
+      hash.update(chunk.subarray(0, read))
+      size += read
+    }
+  } finally {
+    closeSync(handle)
+  }
+  const sha256 = hash.digest('hex')
 
-  if (typeof manifest.bytes === 'number' && bytes.length !== manifest.bytes) {
-    fail(`${basename(file)} is ${bytes.length} bytes; the release records ${manifest.bytes}.`, 'Nothing was installed.')
+  if (typeof manifest.bytes === 'number' && size !== manifest.bytes) {
+    fail(`${basename(file)} is ${size} bytes; the release records ${manifest.bytes}.`, 'Nothing was installed.')
   }
   if (sha256 !== manifest.sha256) {
     fail(
@@ -766,11 +810,31 @@ function installGlobally(tarball) {
   })
 
   if (result.status !== 0) {
+    // "npm could not be started" and "npm ran and refused" are different
+    // problems with different remedies, and this reported both as the second.
+    // The Windows resolver regression surfaced as "If that was a permissions
+    // error, point npm at a directory you own" when npm had never launched at
+    // all, which sent the reader looking in the wrong place entirely.
+    if (result.error) {
+      fail(
+        'npm could not be started.',
+        String(result.error.message ?? result.error),
+        result.error.code === 'ENOENT'
+          ? 'It was not found on your PATH. It ships with Node; reinstall Node.'
+          : '',
+        'Nothing was installed.',
+      )
+    }
+
     fail(
       'npm could not install LoopTroop globally.',
-      'If that was a permissions error, point npm at a directory you own rather than using sudo:',
-      '  npm config set prefix ~/.npm-global',
-      '  export PATH="$HOME/.npm-global/bin:$PATH"',
+      process.platform === 'win32'
+        ? 'If that was a permissions error, point npm at a directory you own:'
+        : 'If that was a permissions error, point npm at a directory you own rather than using sudo:',
+      '  npm config set prefix ' + (process.platform === 'win32' ? '%USERPROFILE%\\.npm-global' : '~/.npm-global'),
+      process.platform === 'win32'
+        ? '  then add %USERPROFILE%\\.npm-global to your PATH and open a new terminal'
+        : '  export PATH="$HOME/.npm-global/bin:$PATH"',
     )
   }
 }
@@ -1020,14 +1084,24 @@ function settleDaemon(installed) {
   }
 
   say('The installed copy would not report whether its daemon is running; stopping it to be sure...')
-  spawnSync(installed, ['stop'], { stdio: 'inherit', timeout: 60_000 })
+  const stopped = spawnSync(installed, ['stop'], { stdio: 'inherit', timeout: 60_000 })
 
-  // Not `stopDaemon`, which requires a *confirmed* stopped state. A copy whose
-  // `status` output cannot be read will never confirm anything, so demanding it
-  // here would wedge the upgrade forever rather than once — and the state it
-  // refuses over is the state this branch started in. What can still be
-  // established is the opposite: if it now says outright that it is running,
-  // the swap must not happen.
+  // Not `stopDaemon`, which requires a *confirmed* stopped state from the
+  // status probe. A copy whose `status` output cannot be read will never
+  // confirm anything, so demanding it here would wedge the upgrade forever
+  // rather than once — the state it refuses over is the state this branch
+  // started in.
+  //
+  // But "the probe did not say `true`" is not evidence either: an unreadable
+  // probe returns null, which satisfies that on the first poll, so the wait
+  // proved nothing and the swap went ahead on no information at all. `stop`'s
+  // own exit code is the evidence that was being thrown away. Exit 0 is the
+  // program stating that it stopped, which is as affirmative as this branch can
+  // get; anything else, with a probe that still cannot answer, means nothing was
+  // established and the executable is left alone.
+  // A daemon that says outright it is still running gets the same grace a
+  // confirmed-running one does. An unreadable probe satisfies this on the first
+  // poll, which is why it cannot be the only check.
   if (!waitFor(() => daemonRunning(installed) !== true, 30_000)) {
     fail(
       'The LoopTroop daemon is still running after being asked to stop.',
@@ -1038,8 +1112,22 @@ function settleDaemon(installed) {
     )
   }
 
-  // It was asked to stop from an unknown state, so it may well have been
-  // serving. Starting it again is the outcome that cannot leave an outage.
+  // Neither source of evidence produced anything: the probe still cannot say,
+  // and `stop` reported that it failed. Refuse rather than swap on nothing.
+  if (stopped.status !== 0 && daemonRunning(installed) !== false) {
+    fail(
+      'The installed copy will not say whether its daemon is running, and `stop` did not succeed.',
+      `\`${basename(installed)} stop\` exited ${String(stopped.status ?? stopped.signal ?? 'without a status')}.`,
+      'Replacing the executable now could leave the old version serving and reporting the new one\'s version.',
+      'Stop it yourself and run this again, or remove the install directory and install afresh:',
+      `  ${installed} stop`,
+      'Nothing was installed.',
+    )
+  }
+
+  // It was asked to stop from an unknown state and said it stopped, so it may
+  // well have been serving. Starting it again is the outcome that cannot leave
+  // an outage behind.
   return { wasRunning: true }
 }
 

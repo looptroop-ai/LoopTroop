@@ -369,7 +369,9 @@ if (preflightReport) {
     // up-to-date tree also reports.
     printSummaryBlock('Dependencies', [
       'Could not check for updates; dependencies were left alone.',
-      ...preflightReport.dependencySync.errors,
+      // The report is read back from a file an earlier run wrote, with no
+      // validation, so an older one need not carry this field at all.
+      ...(preflightReport.dependencySync.errors ?? []),
     ])
   } else if (preflightReport.dependencySync.alreadyCurrent) {
     printSummaryLine('Dependencies', 'All direct dependencies already matched npm latest stable')

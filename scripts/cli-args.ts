@@ -67,11 +67,15 @@ export function parseArgs(argv: string[], schema: Record<string, FlagKind>): Par
   const repeated = new Map<string, string[]>()
 
   const kindOf = (name: string): FlagKind => {
-    const kind = schema[name]
-    if (kind === undefined) {
+    // `Object.hasOwn`, not `schema[name] === undefined`. A plain object inherits
+    // `constructor`, `toString`, `hasOwnProperty` and friends, so `--constructor`
+    // and `--__proto__` read back as *defined* and were accepted as known flags
+    // — a malformed argument getting past the check whose only job is to refuse
+    // malformed arguments.
+    if (!Object.hasOwn(schema, name)) {
       throw new ArgumentError(`Unknown option --${name}. Accepted: ${Object.keys(schema).map((known) => `--${known}`).join(', ') || '(none)'}.`)
     }
-    return kind
+    return schema[name]!
   }
 
   const record = (name: string, kind: FlagKind, value: string) => {
@@ -115,6 +119,10 @@ export function parseArgs(argv: string[], schema: Record<string, FlagKind>): Par
     const name = argument.slice(2)
     const kind = kindOf(name)
     if (kind === 'switch') {
+      // Repeated the same way a repeated value flag is: the documented rule is
+      // that nothing but `values` may be given twice, and a caller who passes
+      // `--json --json` believes something this parser cannot honour.
+      if (switches.has(name)) throw new ArgumentError(`--${name} was given more than once.`)
       switches.add(name)
       continue
     }
@@ -125,7 +133,14 @@ export function parseArgs(argv: string[], schema: Record<string, FlagKind>): Par
     // and reading it as the value is how `--out --foo` wrote to a file called
     // `--foo`. `--name=--foo` remains available for a value that really does
     // begin with dashes.
-    if (next.startsWith('--')) throw new ArgumentError(`--${name} needs a value, but is followed by ${next}.`)
+    //
+    // Any dash-led token, not only `--`: `-o` is refused as an unknown option
+    // everywhere else here, so taking it as a *value* was the one place this
+    // parser read a flag as data. A lone `-` is conventionally stdin, and is a
+    // value.
+    if (next.startsWith('-') && next !== '-') {
+      throw new ArgumentError(`--${name} needs a value, but is followed by ${next}.`)
+    }
     record(name, kind, next)
     index += 1
   }
@@ -152,4 +167,22 @@ export function requirePositional(parsed: ParsedArgs, count: number, what: strin
     )
   }
   return parsed.positional
+}
+
+/**
+ * Refuses any positional argument at all.
+ *
+ * For the scripts that take only options. Without it a stray bare token — a
+ * workflow expression that expanded to an extra word, an argument the shell
+ * split — is collected into `positional`, never read, and silently ignored
+ * while the script goes on to do its job. That is the same "a malformed
+ * invocation reads as a valid one" this parser exists to end, and it was still
+ * true of the two scripts that mutate a release.
+ */
+export function requireNoPositional(parsed: ParsedArgs): void {
+  if (parsed.positional.length > 0) {
+    throw new ArgumentError(
+      `Unexpected argument ${JSON.stringify(parsed.positional[0])}; this command takes options only.`,
+    )
+  }
 }

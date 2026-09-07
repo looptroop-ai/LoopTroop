@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ArgumentError, parseArgs, requirePositional } from '../scripts/cli-args.ts'
+import { ArgumentError, parseArgs, requireNoPositional, requirePositional } from '../scripts/cli-args.ts'
 
 /**
  * Each of these was a real shape one of the release scripts accepted and acted
@@ -54,6 +54,39 @@ describe('parseArgs', () => {
 
   it('refuses a non-repeatable flag given twice rather than picking one', () => {
     expect(() => parseArgs(['--out', 'a', '--out', 'b'], schema)).toThrow(/--out was given more than once/)
+  })
+
+  /**
+   * A plain object inherits `constructor`, `toString` and friends, so a
+   * `schema[name] === undefined` check found them *defined* and accepted
+   * `--constructor` as a known flag — a malformed argument walking through the
+   * check that exists to refuse malformed arguments.
+   */
+  it('does not treat an inherited property name as a known flag', () => {
+    for (const inherited of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__']) {
+      expect(() => parseArgs([`--${inherited}`, 'x'], schema)).toThrow(/Unknown option/)
+    }
+  })
+
+  it('refuses a switch given twice, like every other non-repeatable flag', () => {
+    expect(() => parseArgs(['--dry-run', '--dry-run'], schema)).toThrow(/--dry-run was given more than once/)
+  })
+
+  /**
+   * `-o` is refused as an unknown option everywhere else, so taking it as a
+   * *value* was the one place this parser read a flag as data.
+   */
+  it('refuses a single-dash token in value position', () => {
+    expect(() => parseArgs(['--out', '-o'], schema)).toThrow(/--out needs a value, but is followed by -o/)
+  })
+
+  it('still accepts a lone dash as a value, which conventionally means stdin', () => {
+    expect(parseArgs(['--out', '-'], schema).value('out')).toBe('-')
+  })
+
+  it('refuses any positional for a command that takes options only', () => {
+    expect(() => requireNoPositional(parseArgs(['stray'], schema))).toThrow(/Unexpected argument "stray"/)
+    expect(() => requireNoPositional(parseArgs(['--dry-run'], schema))).not.toThrow()
   })
 
   it('accepts the equals form, which is the only way to pass a value starting with dashes', () => {

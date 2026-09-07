@@ -93,14 +93,46 @@ const reference = `${options.image}:${options.version}`
  * nothing to do with visibility. Nothing on the runner is modified.
  */
 const anonymousConfig = mkdtempSync(join(tmpdir(), 'looptroop-anonymous-docker-'))
+
+// Registered before anything is copied into it, not after. Between the copy and
+// the rewrite this directory holds the *real* config, credentials and all, so a
+// failure or a signal in that window used to leave a registry token in the
+// temporary directory of a machine that outlives the job.
+const removeAnonymousConfig = () => rmSync(anonymousConfig, { recursive: true, force: true })
+process.on('exit', removeAnonymousConfig)
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    removeAnonymousConfig()
+    process.removeAllListeners(signal)
+    process.kill(process.pid, signal)
+  })
+}
+
 const realConfig = process.env.DOCKER_CONFIG || join(homedir(), '.docker')
-if (existsSync(realConfig)) cpSync(realConfig, anonymousConfig, { recursive: true })
+try {
+  // `dereference` so a symlinked `config.json` becomes a regular file in the
+  // copy. Without it the later write would follow the link and edit the real
+  // file, which is the one thing this check promises not to do.
+  if (existsSync(realConfig)) cpSync(realConfig, anonymousConfig, { recursive: true, dereference: true })
 
-const configFile = join(anonymousConfig, 'config.json')
-writeFileSync(configFile, withoutCredentials(existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}'))
+  const configFile = join(anonymousConfig, 'config.json')
+  writeFileSync(configFile, withoutCredentials(existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}'))
+} catch (error) {
+  removeAnonymousConfig()
+  fatal('Could not build a credential-free Docker configuration.', String(error))
+}
 
-const ANONYMOUS = { DOCKER_CONFIG: anonymousConfig }
-process.on('exit', () => rmSync(anonymousConfig, { recursive: true, force: true }))
+// `DOCKER_CONFIG` is not the only way credentials or a different endpoint reach
+// the CLI. Everything below is cleared for the probe so "anonymous" means the
+// intended registry with nothing supplied, rather than merely "no config file".
+const ANONYMOUS = {
+  DOCKER_CONFIG: anonymousConfig,
+  DOCKER_AUTH_CONFIG: '',
+  DOCKER_CONTEXT: '',
+  DOCKER_HOST: '',
+  DOCKER_CERT_PATH: '',
+  DOCKER_TLS_VERIFY: '',
+}
 
 let resolved = ''
 for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {

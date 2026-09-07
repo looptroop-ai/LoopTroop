@@ -32,10 +32,17 @@ export async function waitForHealth(baseUrl, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/api/health`)
+      // Bounded by the deadline the caller gave, not merely checked against it
+      // between attempts. A daemon that accepts the connection and then stalls
+      // on headers or on the body leaves an unsignalled `fetch` pending for as
+      // long as it likes, so the loop could not return within its own timeout —
+      // in a change whose whole subject is that transfers must be bounded.
+      // The signal covers `json()` too, since that is still reading the body.
+      const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+      const response = await fetch(`${baseUrl}/api/health`, { signal })
       if (response.ok) return await response.json()
     } catch {
-      // Not listening yet.
+      // Not listening yet, or this attempt ran out of time.
     }
     await new Promise((done) => setTimeout(done, 250))
   }

@@ -180,11 +180,14 @@ jobs:
       # templates is a change to what that release publishes, and it belongs in
       # a reviewed code change rather than behind a dispatch checkbox.
       #
-      # Falling back to the default branch when the manifest records no commit,
-      # which is every manifest written before the field existed. Those releases
-      # carry no bundle either, so `channel-inputs.ts` has already refused them
-      # and this is unreachable — it is here so that a future gap degrades to
-      # today's behaviour rather than to an empty ref.
+      # A manifest that records no commit is refused rather than rendered from
+      # the default branch. That fallback was the one remaining way an
+      # unverified ref could reach the credential-bearing jobs below, and it
+      # produced exactly what the pin exists to prevent: an old release
+      # re-rendered with today's templates, announced as a warning nobody reads.
+      # It is unreachable today — `channel-inputs.ts` refuses a manifest with no
+      # bundle, and manifests predating the commit field carry no bundle either —
+      # so this closes a gap rather than removing a capability.
       #
       # The commit is *verified* rather than trusted. Until this check existed,
       # the only thing established about the manifest was that its version
@@ -203,9 +206,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${COMMIT}" ]; then
-            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-            echo "::warning::This release's manifest records no commit; rendering with the default branch."
-            exit 0
+            echo "::error::v${VERSION}'s manifest records no commit, so the templates that rendered it cannot be identified."
+            echo "::error::Refusing to republish from the default branch: that would change what this release publishes."
+            exit 1
           fi
 
           case "${COMMIT}" in

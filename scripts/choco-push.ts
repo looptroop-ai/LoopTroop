@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { classifyChocoPush } from './channel-state.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 
 const PUSH_SOURCE = 'https://push.chocolatey.org/'
 
@@ -57,9 +58,20 @@ if (apiKey === '') fail('CHOCOLATEY_API_KEY is not set.', 'It lives in the `pack
  * process holding the credential, visible to anything that can list processes,
  * and re-parsed on the way through. `choco` is `choco.exe`, a real executable,
  * so nothing needed a shell to begin with.
+ *
+ * And resolved once, from a directory the runner owns, rather than by name.
+ * `shell: false` settles how the arguments are read; it says nothing about
+ * *which* program reads them, and letting `PATH` decide that is letting
+ * whatever is first on the path receive the API key.
  */
+const chocoPath = (() => {
+  const resolved = resolveTrustedTool('choco')
+  if ('refusal' in resolved) fail('Cannot run choco safely.', resolved.refusal)
+  return resolved.path
+})()
+
 function choco(args: string[]): { status: number | null, output: string } {
-  const result = spawnSync('choco', args, { encoding: 'utf8', shell: false })
+  const result = spawnSync(chocoPath, args, { encoding: 'utf8', shell: false })
   return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 

@@ -286,11 +286,16 @@ describe('trusted tool resolution', () => {
    * The real prefix list, against this machine — the one claim a fully injected
    * test cannot make: that the list matches how a runner is actually laid out.
    *
+   * Only the tools this helper actually resolves. Naming others reads as a
+   * broader claim than the guard makes: `node` lives in the hosted tool cache,
+   * which was deliberately dropped from the list for being writable by the job,
+   * so asserting it must be trusted contradicted the rule on purpose.
+   *
    * "Not on PATH" is an acceptable answer, because which tools exist differs by
    * platform. What must never happen is a tool that *is* found sitting outside
    * every trusted prefix, which is what would silently disable a release job.
    */
-  it.each(['git', 'sh', 'node'])('resolves %s from a trusted location, or not at all', (tool) => {
+  it.each(['gh', 'git', 'choco'])('resolves %s from a trusted location, or not at all', (tool) => {
     const resolved = resolveTrustedTool(tool)
     const verdict = 'path' in resolved
       ? 'trusted'

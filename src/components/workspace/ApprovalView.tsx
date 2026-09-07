@@ -28,6 +28,7 @@ import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdD
 import {
   useApprovalDraftReset,
   useApprovalDraftRestore,
+  useApprovalEditMode,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   approveArtifact,
@@ -417,41 +418,20 @@ function BeadsApprovalPane({
     }
   }, [ticket.id, queryClient])
 
-  function requestTabChange(nextTab: EditTab) {
-    if (nextTab === editTab) return
-    if (hasUnsavedChanges) {
-      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
-      return
-    }
-    resetDraftsFromSaved(nextTab)
-  }
+  const { requestTabChange, handleToggleEdit, handleConfirmDiscard } = useApprovalEditMode<EditTab>({
+    editTab,
+    isEditMode,
+    setIsEditMode,
+    hasUnsavedChanges,
+    discardTarget,
+    setDiscardTarget,
+    clearDiscardTarget: () => setDiscardTarget(null),
+    resetDraftsFromSaved,
+    openEditor,
+    exitTab: 'structured',
+  })
 
-  function handleToggleEdit() {
-    if (isEditMode) {
-      if (hasUnsavedChanges) {
-        setDiscardTarget({ type: 'close' })
-        return
-      }
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-    openEditor()
-  }
 
-  function handleConfirmDiscard() {
-    const target = discardTarget
-    setDiscardTarget(null)
-    if (!target) return
-
-    if (target.type === 'close') {
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-
-    resetDraftsFromSaved(target.tab)
-  }
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">

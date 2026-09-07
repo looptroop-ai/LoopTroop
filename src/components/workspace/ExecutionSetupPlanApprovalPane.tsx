@@ -24,6 +24,7 @@ import {
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
+  useApprovalEditMode,
 } from './approvalHooks'
 import { requestWorkspacePhaseNavigation } from '@/lib/workspaceNavigation'
 import { apiTicketPath } from '@/lib/apiPaths'
@@ -644,14 +645,24 @@ export function ExecutionSetupPlanApprovalPane({
     }
   }
 
-  function requestTabChange(nextTab: EditTab) {
-    if (nextTab === editTab) return
-    if (hasUnsavedChanges) {
-      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
-      return
-    }
-    resetDraftsFromSaved(nextTab)
-  }
+  const { requestTabChange, handleToggleEdit, handleConfirmDiscard } = useApprovalEditMode<EditTab>({
+    editTab,
+    isEditMode,
+    setIsEditMode,
+    hasUnsavedChanges,
+    discardTarget,
+    setDiscardTarget,
+    clearDiscardTarget,
+    resetDraftsFromSaved,
+    openEditor: () => {
+      if (isRuntimeSetupRewindMode) {
+        setRuntimeRewindTarget('edit')
+        return
+      }
+      openEditor()
+    },
+    exitTab: 'structured',
+  })
 
   function openEditor() {
     if (!draftRestored) skipRestoreRef.current = true
@@ -659,22 +670,6 @@ export function ExecutionSetupPlanApprovalPane({
     setIsEditMode(true)
   }
 
-  function handleToggleEdit() {
-    if (isEditMode) {
-      if (hasUnsavedChanges) {
-        setDiscardTarget({ type: 'close' })
-        return
-      }
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-    if (isRuntimeSetupRewindMode) {
-      setRuntimeRewindTarget('edit')
-      return
-    }
-    openEditor()
-  }
 
   function handleOpenRegenerate() {
     setRegenerateError(null)
@@ -698,19 +693,6 @@ export function ExecutionSetupPlanApprovalPane({
     }
   }
 
-  function handleConfirmDiscard() {
-    const target = discardTarget
-    clearDiscardTarget()
-    if (!target) return
-
-    if (target.type === 'close') {
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-
-    resetDraftsFromSaved(target.tab)
-  }
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">

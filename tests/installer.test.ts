@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, stallGuard,
-  streamBody,
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
+  stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -986,6 +986,34 @@ describe('bounded transfers', () => {
     expect(Buffer.concat(written).toString()).toBe('abcde')
     // Once per chunk: the stall deadline restarts on arrival, not on completion.
     expect(touches).toBe(2)
+  })
+})
+
+/**
+ * `shell: true` was how the installer reached `npm.cmd` and `looptroop.cmd` on
+ * Windows, and Node builds that command line by joining the file and arguments
+ * with spaces and quoting none of them. Every Windows account whose name
+ * contains a space puts the temporary directory somewhere that breaks under
+ * that rule, which is most of them.
+ */
+describe('windows command lines', () => {
+  it('makes one token of an argument containing spaces', () => {
+    expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))
+      .toBe(String.raw`"C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz"`)
+  })
+
+  it('makes one token of an argument cmd.exe would otherwise read as an operator', () => {
+    for (const value of ['a&b', 'a|b', 'a>b', 'a<b', 'a^b', 'a(b)']) {
+      expect(quoteForCmd(value)).toBe(`"${value}"`)
+    }
+  })
+
+  /**
+   * A path cannot contain a quote on Windows, so this is about arguments that
+   * are not paths. Doubling is cmd's own escape.
+   */
+  it('doubles an embedded quote rather than ending the token', () => {
+    expect(quoteForCmd('say "hello"')).toBe('"say ""hello"""')
   })
 })
 

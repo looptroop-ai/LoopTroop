@@ -647,8 +647,76 @@ async function download(url, destination) {
   }
 }
 
+/**
+ * Where PATH resolves `command` on Windows, with PATHEXT applied.
+ *
+ * The same search `CreateProcess` would do, done here so the answer can be
+ * looked at: whether what PATH resolves to is a real executable or a batch
+ * shim decides how it has to be launched, and there is no way to launch it
+ * correctly without knowing which.
+ */
+function resolveOnPath(command) {
+  const extensions = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+  for (const directory of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
+    for (const extension of ['', ...extensions]) {
+      const candidate = join(directory, `${command}${extension}`)
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate
+    }
+  }
+  return null
+}
+
+/** Every argument as one cmd.exe token, whatever it contains. */
+export function quoteForCmd(value) {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
+/**
+ * Runs a command without a shell re-reading its arguments.
+ *
+ * `shell: true` on Windows was the previous answer and it is wrong in a way
+ * that bites ordinary machines. Node joins the file and arguments with spaces
+ * and quotes none of them, so `npm install -g C:\Users\Ada Lovelace\AppData\
+ * Local\Temp\looptroop-install-x\looptroop-1.2.3.tgz` reached npm as four
+ * arguments — every account whose name contains a space, which is most of them.
+ * The same re-parsing is what lets a path be read as a shell operator.
+ *
+ * A shell is needed on Windows for one reason only: `npm` and `looptroop` are
+ * `.cmd` shims there, batch files rather than executable images, and Node has
+ * refused to spawn one without a shell since the BatBadBut fix. So the shell is
+ * used only when PATH actually resolves to a shim, and its command line is
+ * built here with explicit quoting rather than by joining on spaces.
+ *
+ * `smoke-published.mjs` carries the same helper. It is repeated rather than
+ * imported because this file is embedded verbatim into `install.sh` and
+ * `install.ps1` and cannot import anything at all.
+ */
+function runTool(command, args, options = {}) {
+  if (process.platform !== 'win32') {
+    return spawnSync(command, args, { ...options, shell: false })
+  }
+
+  const resolved = resolveOnPath(command)
+  // Not found, or a real executable image: spawn it directly. Leaving an
+  // unresolved name to fail as ENOENT is deliberate — the caller's own message
+  // about a missing tool is better than one invented here.
+  if (resolved === null || !/\.(cmd|bat)$/i.test(resolved)) {
+    return spawnSync(resolved ?? command, args, { ...options, shell: false })
+  }
+
+  // `/d` skips AutoRun commands from the registry, `/s` makes cmd strip only
+  // the outermost pair of quotes and take the rest verbatim, and
+  // `windowsVerbatimArguments` stops Node adding a second layer of its own.
+  const line = `"${[resolved, ...args].map(quoteForCmd).join(' ')}"`
+  return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], {
+    ...options,
+    shell: false,
+    windowsVerbatimArguments: true,
+  })
+}
+
 function npmVersion() {
-  const probe = spawnSync('npm', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  const probe = runTool('npm', ['--version'], { encoding: 'utf8' })
   return probe.status === 0 ? String(probe.stdout).trim() : null
 }
 
@@ -697,9 +765,8 @@ function verifyBytes(file, manifest) {
 
 function installGlobally(tarball) {
   say(`Installing with npm...`)
-  const result = spawnSync('npm', ['install', '-g', tarball, '--no-audit', '--no-fund'], {
+  const result = runTool('npm', ['install', '-g', tarball, '--no-audit', '--no-fund'], {
     stdio: 'inherit',
-    shell: process.platform === 'win32',
   })
 
   if (result.status !== 0) {
@@ -1387,7 +1454,7 @@ async function main(argv) {
   // blindly claimed a successful install of whatever version happened to
   // answer — including, when npm's global bin is not on PATH at all, an older
   // copy that the install never touched.
-  const probe = spawnSync('looptroop', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  const probe = runTool('looptroop', ['--version'], { encoding: 'utf8' })
   const reported = probe.status === 0 ? String(probe.stdout).trim() : null
   say('')
   if (reported === null) {

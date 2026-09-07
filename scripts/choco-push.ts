@@ -50,9 +50,16 @@ if (apiKey === '') fail('CHOCOLATEY_API_KEY is not set.', 'It lives in the `pack
  * The API key is an argument — Chocolatey has no environment variable for it —
  * and although Actions masks registered secrets, a script that prints its own
  * argv is one misconfiguration away from publishing a credential.
+ *
+ * `shell: false`, which is what keeps that argument out of a second process.
+ * With `shell: true` Node hands the whole line to `cmd.exe`, so the key
+ * appeared in the command line of a shell this script did not need: an extra
+ * process holding the credential, visible to anything that can list processes,
+ * and re-parsed on the way through. `choco` is `choco.exe`, a real executable,
+ * so nothing needed a shell to begin with.
  */
 function choco(args: string[]): { status: number | null, output: string } {
-  const result = spawnSync('choco', args, { encoding: 'utf8', shell: true })
+  const result = spawnSync('choco', args, { encoding: 'utf8', shell: false })
   return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 

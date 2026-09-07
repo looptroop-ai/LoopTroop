@@ -105,11 +105,16 @@ copyFileSync(bundlePath, join(toolsDir, bundleFileName(version)))
 
 process.stdout.write(`Staged ${stagingDir}\n`)
 
+// `shell: false`. Both paths handed to `choco pack` come from a temporary
+// directory and an `--out` argument, and `shell: true` would have `cmd.exe`
+// re-read them: Node does not quote the line it builds, so a staging directory
+// under a Windows account whose name contains a space arrived as two
+// arguments. `choco` is `choco.exe`, so the shell was buying nothing.
 try {
   execFileSync('choco', ['pack', join(stagingDir, 'looptroop.nuspec'), '--output-directory', outDir], {
     encoding: 'utf8',
     stdio: 'inherit',
-    shell: true,
+    shell: false,
   })
 } catch {
   fail('`choco pack` failed.', 'It needs the Chocolatey CLI, which exists only on the Windows runners.')

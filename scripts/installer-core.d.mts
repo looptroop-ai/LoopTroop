@@ -105,6 +105,9 @@ export interface StallGuard {
   reason: () => string | null
 }
 
+/** One cmd.exe token, whatever the value contains. */
+export function quoteForCmd(value: string): string
+
 export function stallGuard(idleMs: number, what: string): StallGuard
 
 /** Reads a response body to a byte cap, writing chunks out as they arrive. */

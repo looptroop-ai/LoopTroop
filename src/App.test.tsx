@@ -179,6 +179,51 @@ function renderApp() {
   return renderAppElement()
 }
 
+/**
+ * The history spies, as one object with the vocabulary of the question.
+ *
+ * Which of `pushState`/`replaceState` a route write used is the assertion in
+ * fourteen of these cases, and the pathname alone cannot tell them apart — a
+ * repair that pushes leaves the bad entry one Back away, which is the bug half
+ * of them exist for. Written out per case, the spy pair plus its two
+ * expectations was the same six lines every time, and SonarCloud counted 162
+ * duplicated lines in this file for it.
+ *
+ * Install it *after* whatever set the scene: several cases navigate with a real
+ * `pushState` first, and a spy taken before that would count the setup.
+ */
+function watchHistory() {
+  const pushState = vi.spyOn(window.history, 'pushState')
+  const replaceState = vi.spyOn(window.history, 'replaceState')
+  return {
+    pushState,
+    replaceState,
+    /** Repaired in place: the entry is overwritten, never stacked on. */
+    expectReplacedWith(pathname: string) {
+      expect(replaceState).toHaveBeenCalledWith(null, '', pathname)
+      expect(pushState).not.toHaveBeenCalled()
+    },
+    /** Repaired in place, without pinning which pathname it settled on. */
+    expectReplacedOnly() {
+      expect(replaceState).toHaveBeenCalled()
+      expect(pushState).not.toHaveBeenCalled()
+    },
+    /** A place the user chose to be, so Back has to reach what came before. */
+    expectPushedWith(pathname: string) {
+      expect(pushState).toHaveBeenCalledWith(null, '', pathname)
+      expect(replaceState).not.toHaveBeenCalled()
+    },
+  }
+}
+
+/** Waits for the route to settle on `pathname` with the board on screen. */
+async function expectBoardAt(pathname: string) {
+  await waitFor(() => {
+    expect(window.location.pathname).toBe(pathname)
+  })
+  expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+}
+
 /** Drives the selection from outside `App`, the way the board and the shell do. */
 function SelectionProbe() {
   const { dispatch } = useUI()
@@ -331,8 +376,7 @@ describe('App route ownership', () => {
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
 
     renderAppWithProbe()
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     fireEvent.click(screen.getByRole('button', { name: 'Select LT-1' }))
     await waitFor(() => {
@@ -345,8 +389,8 @@ describe('App route ownership', () => {
     })
     // Both are the user's own transitions, so both are undoable. Asserting only
     // the pathname would pass just as happily on a pair of replaces.
-    expect(pushState.mock.calls.map(call => call[2])).toEqual(['/ticket/LT-1', '/'])
-    expect(replaceState).not.toHaveBeenCalled()
+    expect(history.pushState.mock.calls.map((call) => call[2])).toEqual(['/ticket/LT-1', '/'])
+    expect(history.replaceState).not.toHaveBeenCalled()
   })
 
   /**
@@ -367,8 +411,7 @@ describe('App route ownership', () => {
     mockState.ticketsFetched = false
     mockState.ticketsLoading = true
     window.history.pushState(null, '', '/ticket/LT-1')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     const queryClient = createTestQueryClient()
     const { rerender } = renderAppElement(queryClient)
@@ -377,8 +420,7 @@ describe('App route ownership', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/config')
     })
-    expect(pushState).toHaveBeenCalledWith(null, '', '/config')
-    expect(replaceState).not.toHaveBeenCalled()
+    history.expectPushedWith('/config')
 
     mockState.ticketsFetched = true
     mockState.ticketsLoading = false
@@ -401,16 +443,14 @@ describe('App route ownership', () => {
   it('pushes the restored ticket route so Back reaches the board', async () => {
     persistTicketSelection('ticket-1', 'LT-1')
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     renderApp()
 
     await waitFor(() => {
       expect(window.location.pathname).toBe('/ticket/LT-1')
     })
-    expect(pushState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
-    expect(replaceState).not.toHaveBeenCalled()
+    history.expectPushedWith('/ticket/LT-1')
   })
 
   /**
@@ -428,16 +468,14 @@ describe('App route ownership', () => {
       expect(window.location.pathname).toBe('/ticket/LT-1')
     })
 
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
     mockState.tickets = []
     rerenderApp()
 
     await waitFor(() => {
       expect(window.location.pathname).toBe('/')
     })
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/')
   })
 
   /**
@@ -448,17 +486,12 @@ describe('App route ownership', () => {
   it('replaces an entry URL the app has no route for', async () => {
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
     window.history.pushState(null, '', '/nowhere')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     renderApp()
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
-    expect(pushState).not.toHaveBeenCalled()
+    await expectBoardAt('/')
+    history.expectReplacedWith('/')
   })
 
   /**
@@ -476,18 +509,13 @@ describe('App route ownership', () => {
     })
 
     window.history.pushState(null, '', '/nowhere')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
     await act(async () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
-    expect(pushState).not.toHaveBeenCalled()
+    await expectBoardAt('/')
+    history.expectReplacedWith('/')
   })
 
   /**
@@ -596,10 +624,7 @@ describe('App route ownership', () => {
 
     renderApp()
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    await expectBoardAt('/')
   })
 
   /**
@@ -613,17 +638,12 @@ describe('App route ownership', () => {
     persistTicketSelection('ticket-1', 'LT-1')
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
     window.history.pushState(null, '', '/ticket/LT-404')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     renderApp()
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
-    expect(replaceState).toHaveBeenCalled()
-    expect(pushState).not.toHaveBeenCalled()
+    await expectBoardAt('/')
+    history.expectReplacedOnly()
   })
 
   /**
@@ -643,20 +663,15 @@ describe('App route ownership', () => {
     })
 
     window.history.pushState(null, '', '/ticket/LT-404')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
     await act(async () => {
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    await expectBoardAt('/')
     // The pathname alone would read the same after a push, which would leave
     // the dead link one Back away and needing a second repair.
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/')
   })
 
   /**
@@ -673,15 +688,13 @@ describe('App route ownership', () => {
 
     expect(await screen.findByText('Profile Setup')).toBeInTheDocument()
 
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
     fireEvent.click(screen.getByRole('button', { name: 'Close Configuration' }))
 
     await waitFor(() => {
       expect(window.location.pathname).toBe('/ticket/LT-1')
     })
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/ticket/LT-1')
   })
 
   /**
@@ -711,25 +724,19 @@ describe('App route ownership', () => {
     persistTicketSelection('ticket-1', 'LT-1')
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
     window.history.pushState(null, '', '/nowhere')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     renderApp()
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    await expectBoardAt('/')
     expect(screen.queryByText('Ticket Dashboard')).not.toBeInTheDocument()
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/')
   })
 
   it('repairs a ticket URL with extra segments onto the canonical ticket route', async () => {
     mockState.tickets = [{ id: 'ticket-1', externalId: 'LT-1' }]
     window.history.pushState(null, '', '/ticket/LT-1/extra')
-    const pushState = vi.spyOn(window.history, 'pushState')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
+    const history = watchHistory()
 
     renderApp()
 
@@ -737,8 +744,7 @@ describe('App route ownership', () => {
       expect(window.location.pathname).toBe('/ticket/LT-1')
     })
     expect(screen.getByText('Ticket Dashboard')).toBeInTheDocument()
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/ticket/LT-1')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/ticket/LT-1')
   })
 
   it('treats /ticket/ and /ticket/new/extra as paths the app has no route for', async () => {
@@ -748,10 +754,7 @@ describe('App route ownership', () => {
 
     renderApp()
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    await expectBoardAt('/')
     expect(replaceState).toHaveBeenCalledWith(null, '', '/')
 
     window.history.pushState(null, '', '/ticket/new/extra')
@@ -765,8 +768,7 @@ describe('App route ownership', () => {
 
   it('opens Configuration from /config/ and repairs the trailing slash in place', async () => {
     window.history.pushState(null, '', '/config/')
-    const replaceState = vi.spyOn(window.history, 'replaceState')
-    const pushState = vi.spyOn(window.history, 'pushState')
+    const history = watchHistory()
 
     renderApp()
 
@@ -774,8 +776,7 @@ describe('App route ownership', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/config')
     })
-    expect(replaceState).toHaveBeenCalledWith(null, '', '/config')
-    expect(pushState).not.toHaveBeenCalled()
+    history.expectReplacedWith('/config')
   })
 
   it('pops an in-app dialog so one Back after close leaves the ticket', async () => {
@@ -802,10 +803,7 @@ describe('App route ownership', () => {
       window.history.back()
       window.dispatchEvent(new PopStateEvent('popstate'))
     })
-    await waitFor(() => {
-      expect(window.location.pathname).toBe('/')
-    })
-    expect(screen.getByText('Kanban Board')).toBeInTheDocument()
+    await expectBoardAt('/')
     rerenderApp()
   })
 

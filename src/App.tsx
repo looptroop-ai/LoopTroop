@@ -59,10 +59,12 @@ const MODAL_ROUTE_ENTRIES = Object.entries(MODAL_ROUTES) as [ModalRoute, string]
  * this app has no route for.
  */
 function canonicalizePathname(pathname: string): string {
-  if (pathname.length > 1 && pathname.endsWith('/')) {
-    return pathname.replace(/\/+$/, '') || ROUTE_ROOT
-  }
-  return pathname
+  // Trimmed by index rather than with `/\/+$/`: a pathname is whatever the
+  // address bar hands over, and that pattern backtracks quadratically over a
+  // long run of slashes.
+  let end = pathname.length
+  while (end > 0 && pathname[end - 1] === '/') end--
+  return end === pathname.length ? pathname : pathname.slice(0, end) || ROUTE_ROOT
 }
 
 function modalForPathname(pathname: string): ModalRoute | null {

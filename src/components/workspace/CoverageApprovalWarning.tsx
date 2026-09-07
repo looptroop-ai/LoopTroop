@@ -1,4 +1,4 @@
-import { CollapsibleSection } from './ArtifactContentViewer'
+import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import type { CoverageApprovalWarningData } from './coverageApprovalWarningUtils'
 import { Button } from '@/components/ui/button'
 import { SkipReasonField } from './SkipReasonField'

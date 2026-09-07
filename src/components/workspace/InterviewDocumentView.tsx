@@ -9,7 +9,7 @@ import {
   hasInterviewSummaryContent,
   groupInterviewDocumentQuestions,
 } from '@/lib/interviewDocument'
-import { CollapsibleSection } from './ArtifactContentViewer'
+import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 
 function MetaPill({ children, className }: { children: React.ReactNode; className?: string }) {
   return (

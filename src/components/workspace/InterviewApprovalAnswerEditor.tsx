@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ChoiceAnswerInput } from './ChoiceAnswerInput'
-import { CollapsibleSection } from './ArtifactContentViewer'
+import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import type { InterviewDocument } from '@shared/interviewArtifact'
 import type { InterviewAnswerUpdate } from '@shared/interviewArtifact'
 import { groupInterviewDocumentQuestions } from '@/lib/interviewDocument'

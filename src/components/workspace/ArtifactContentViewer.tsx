@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as jsYaml from 'js-yaml'
 import { commandSpecSchema, renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { closeTag, openTag, PROTOCOL_TAGS } from '@shared/protocolTags'
@@ -14,12 +14,11 @@ import {
   mergeStructuredRetryDiagnostics,
   type StructuredRetryDiagnostic,
 } from '@shared/structuredRetryDiagnostics'
-import { ChevronDown, ChevronRight, Trophy, Copy, Check, Lightbulb, CheckCircle2, XCircle, AlertTriangle, FileCode2, ExternalLink, GitPullRequest } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trophy, Lightbulb, CheckCircle2, XCircle, AlertTriangle, FileCode2, ExternalLink, GitPullRequest } from 'lucide-react'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge, ModelIcon } from '@/components/shared/ModelBadge'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/logUtils'
 import { parseExecutionSetupPlanContent } from '@/lib/executionSetupPlan'
@@ -109,6 +108,25 @@ import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from '
 import { getSafeGitHubPullRequestUrl } from '@/lib/githubUrls'
 import { ManualQaOriginBadge, ManualQaOriginCard } from './ManualQaOriginCard'
 import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
+import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
+import { TextCopyButton } from './artifactViewers/TextCopyButton'
+import { ArtifactListSection, MetadataCard } from './artifactViewers/MetadataCard'
+import { formatArtifactTimestampLabel } from './artifactViewers/artifactTimestamp'
+import { WithRawTab } from './artifactViewers/WithRawTab'
+import {
+  useActiveRawVariant,
+  type RawContentSource,
+  type RawContentVariant,
+} from './artifactViewers/rawContentSources'
+import { RawAttemptVariantSelector } from './artifactViewers/WithRawTab'
+import { StatPill, StatPillRow } from './artifactViewers/StatPillRow'
+
+// The primitives above moved into `./artifactViewers/` so the small components
+// that need only one of them stop pulling this module in. They stay re-exported
+// here because `PhaseArtifactsPanel` and the artifact tests import them from
+// this path.
+export { CollapsibleSection, TextCopyButton, WithRawTab }
+export { CopyButton }
 
 const COVERAGE_ATTRIBUTION_HIDDEN_PHASES = new Set([
   'VERIFYING_INTERVIEW_COVERAGE',
@@ -122,432 +140,6 @@ const COVERAGE_ATTRIBUTION_HIDDEN_PHASES = new Set([
 
 function shouldHideCoverageAttributionUi(phase?: string): boolean {
   return phase ? COVERAGE_ATTRIBUTION_HIDDEN_PHASES.has(phase) : false
-}
-
-export function CollapsibleSection({
-  title,
-  defaultOpen = false,
-  children,
-  className,
-  headerActions,
-  headerClassName,
-  triggerClassName,
-  contentClassName,
-  scrollOnOpen = true,
-}: {
-  title: React.ReactNode
-  defaultOpen?: boolean
-  children: React.ReactNode
-  className?: string
-  headerActions?: React.ReactNode
-  headerClassName?: string
-  triggerClassName?: string
-  contentClassName?: string
-  scrollOnOpen?: boolean
-}) {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-  const sectionRef = useRef<HTMLDivElement>(null)
-  const previousOpenRef = useRef(isOpen)
-
-  useEffect(() => {
-    if (scrollOnOpen && !previousOpenRef.current && isOpen) {
-      sectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-    }
-    previousOpenRef.current = isOpen
-  }, [isOpen, scrollOnOpen])
-
-  return (
-    <div
-      ref={sectionRef}
-      className={cn('border border-border/70 rounded-lg overflow-hidden flex flex-col min-w-0 w-full shadow-2xs', className)}
-    >
-      <div className={cn('flex flex-wrap items-start gap-2 min-w-0', headerClassName)}>
-        <button
-          type="button"
-          aria-expanded={isOpen}
-          onClick={() => setIsOpen((current) => !current)}
-          className={cn(
-            'flex items-center gap-1.5 flex-1 min-w-0 px-3 py-2 text-xs font-mono font-medium hover:bg-muted/30 transition-all text-left',
-            triggerClassName,
-          )}
-        >
-          {isOpen ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-          <span className="min-w-0 flex-1 flex items-center">{title}</span>
-        </button>
-        {headerActions ? <div className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2">{headerActions}</div> : null}
-      </div>
-      {isOpen && <div className={cn('px-3 pb-3 text-xs overflow-x-auto w-full', contentClassName)}>{children}</div>}
-    </div>
-  )
-}
-
-export { CopyButton }
-
-export function TextCopyButton({ content, title, className = '' }: { content: string; title: string; className?: string }) {
-  const [copied, copyToClipboard] = useCopyToClipboard()
-
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    e.preventDefault()
-    copyToClipboard(content)
-  }
-
-  return (
-    <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={handleCopy}
-            className={`opacity-0 group-hover:opacity-100 transition-opacity hover:opacity-80 focus:opacity-100 outline-none ${className}`}
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs text-center text-balance">{title}</TooltipContent>
-      </Tooltip>
-  )
-}
-
-interface RawContentSource {
-  id: string
-  label: string
-  content?: string
-  displayContent?: string
-  modelId?: string
-  disabled?: boolean
-  title?: string
-  variants?: RawContentVariant[]
-}
-
-interface RawContentVariant {
-  id: string
-  label: string
-  content?: string
-  displayContent?: string
-  disabled?: boolean
-  title?: string
-  ariaLabel?: string
-  labelClassName?: string
-  skipDedupe?: boolean
-}
-
-interface ActiveRawContentSource {
-  id: string
-  label: string
-  content?: string
-  displayContent?: string
-  modelId?: string
-  disabled?: boolean
-  title?: string
-  parentId: string
-}
-
-function normalizeRawContentSource(source: RawContentSource): ActiveRawContentSource {
-  return {
-    ...source,
-    parentId: source.id,
-  }
-}
-
-function normalizeRawContentVariant(source: RawContentSource, variant: RawContentVariant): ActiveRawContentSource {
-  return {
-    ...variant,
-    modelId: source.modelId,
-    parentId: source.id,
-  }
-}
-
-/** Find the first non-disabled validated variant. Checks variant.id for `:validated`
- *  or variant.label for a case-insensitive "validated" match. */
-function findFirstValidatedVariant(variants: RawContentVariant[]): RawContentVariant | undefined {
-  return variants.find(
-    (v) => !v.disabled && (v.id.includes(':validated') || /validated/i.test(v.label)),
-  )
-}
-
-function getRawSourceDefaultSelection(source: RawContentSource): ActiveRawContentSource | null {
-  if (source.variants?.length) {
-    const validatedVariant = findFirstValidatedVariant(source.variants)
-    if (validatedVariant) return normalizeRawContentVariant(source, validatedVariant)
-    const variant = source.variants.find((entry) => !entry.disabled)
-    return variant ? normalizeRawContentVariant(source, variant) : null
-  }
-  return source.disabled ? null : normalizeRawContentSource(source)
-}
-
-function findRawSourceSelection(sources: RawContentSource[], selectionId: string): ActiveRawContentSource | null {
-  for (const source of sources) {
-    if (source.variants?.length) {
-      const variant = source.variants.find((entry) => entry.id === selectionId && !entry.disabled)
-      if (variant) return normalizeRawContentVariant(source, variant)
-      if (source.id === selectionId) return getRawSourceDefaultSelection(source)
-      continue
-    }
-    if (source.id === selectionId && !source.disabled) return normalizeRawContentSource(source)
-  }
-  return null
-}
-
-function isRawContentSourceSelectable(source: RawContentSource): boolean {
-  return getRawSourceDefaultSelection(source) !== null
-}
-
-function canShowRawSourceSelector(rawSourceOptions: RawContentSource[]): boolean {
-  return rawSourceOptions.length > 1
-    || rawSourceOptions.some((source) => Boolean(source.modelId) || (source.variants?.length ?? 0) > 1)
-}
-
-function shouldOmitAggregateRawSource(rawSources: RawContentSource[] | undefined): boolean {
-  const selectableSources = rawSources?.filter(isRawContentSourceSelectable) ?? []
-  return selectableSources.length === 1 && Boolean(selectableSources[0]?.modelId)
-}
-
-function buildAggregateRawSource(content: string, rawSources: RawContentSource[] | undefined): RawContentSource {
-  const rawSourceCount = rawSources?.length ?? 0
-  const selectableSourceCount = rawSources?.filter(isRawContentSourceSelectable).length ?? 0
-  const hasMultipleSelectableSources = selectableSourceCount > 1 || (selectableSourceCount === 0 && rawSourceCount > 1)
-  return {
-    id: 'all',
-    label: hasMultipleSelectableSources ? 'All Models' : 'Artifact',
-    content,
-    title: hasMultipleSelectableSources ? 'Show raw artifact for all models' : 'Show stored raw artifact',
-  }
-}
-
-function getRawSourceFallbackSelection(sources: RawContentSource[]): ActiveRawContentSource | null {
-  // First pass: prefer a source that has a validated variant
-  for (const source of sources) {
-    if (source.variants?.length) {
-      const validatedVariant = findFirstValidatedVariant(source.variants)
-      if (validatedVariant) return normalizeRawContentVariant(source, validatedVariant)
-    }
-  }
-  // Fallback: first selectable source
-  for (const source of sources) {
-    const selection = getRawSourceDefaultSelection(source)
-    if (selection) return selection
-  }
-  return sources[0] ? normalizeRawContentSource(sources[0]) : null
-}
-
-function RawAttemptVariantSelector({
-  source,
-  activeVariantId,
-  onSelect,
-  ariaLabel,
-}: {
-  source?: RawContentSource
-  activeVariantId?: string
-  onSelect: (variantId: string) => void
-  ariaLabel: string
-}) {
-  if (!source?.variants?.length) return null
-  const label = source.label || (source.modelId ? getModelDisplayName(source.modelId) : source.id)
-
-  return (
-    <div
-      role="group"
-      aria-label={ariaLabel}
-      className="inline-flex min-w-0 max-w-full overflow-hidden rounded-lg border border-border/70 bg-background shadow-2xs"
-    >
-      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 bg-muted/60 px-2.5 py-1 text-[10px] font-mono font-medium text-foreground">
-        {source.modelId ? <ModelIcon modelId={source.modelId} className="h-3 w-3" /> : null}
-        <span className="min-w-0 truncate">{label}</span>
-      </span>
-      {source.variants.map((variant) => {
-        const active = activeVariantId === variant.id
-        const disabled = Boolean(variant.disabled)
-        return (
-          <Tooltip key={variant.id}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                disabled={disabled}
-                aria-pressed={active}
-                aria-label={variant.ariaLabel ?? `${label} ${variant.label}`}
-                onClick={() => onSelect(variant.id)}
-                className={cn(
-                  'inline-flex min-w-0 max-w-full items-center gap-1.5 border-l border-border px-2.5 py-1 text-[10px] font-medium transition-colors',
-                  active
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground',
-                  disabled && 'cursor-not-allowed hover:bg-background hover:text-muted-foreground',
-                )}
-              >
-                <span className={cn('min-w-0 truncate', variant.labelClassName)}>{variant.label}</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs text-center text-balance">{variant.title}</TooltipContent>
-          </Tooltip>
-        )
-      })}
-    </div>
-  )
-}
-
-export function WithRawTab({
-  content,
-  structuredLabel,
-  children,
-  header,
-  notice,
-  rawSources,
-}: {
-  content: string
-  structuredLabel: string
-  children: React.ReactNode
-  header?: React.ReactNode
-  notice?: React.ReactNode
-  rawSources?: RawContentSource[]
-}) {
-  const [activeTab, setActiveTab] = useState<'structured' | 'raw'>('structured')
-  const [activeRawSourceId, setActiveRawSourceId] = useState('all')
-  const rawSourceOptions = useMemo<RawContentSource[]>(() => {
-    if (shouldOmitAggregateRawSource(rawSources)) return rawSources ?? []
-    const aggregateSource = buildAggregateRawSource(content, rawSources)
-    return [aggregateSource, ...(rawSources ?? [])]
-  }, [content, rawSources])
-  const activeRawSource = findRawSourceSelection(rawSourceOptions, activeRawSourceId)
-    ?? getRawSourceFallbackSelection(rawSourceOptions)
-    ?? { id: 'all', label: 'All Models', content, parentId: 'all' }
-  const activeRawContent = activeRawSource.content ?? ''
-  const activeRawDisplayContent = activeRawSource.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  const shouldShowRawSourceSelector = canShowRawSourceSelector(rawSourceOptions)
-
-  useEffect(() => {
-    if (!findRawSourceSelection(rawSourceOptions, activeRawSourceId)) {
-      setActiveRawSourceId(getRawSourceFallbackSelection(rawSourceOptions)?.id ?? 'all')
-    }
-  }, [activeRawSourceId, rawSourceOptions])
-
-  return (
-    <div className="min-w-0 max-w-full space-y-3">
-      <div className="flex items-center gap-2">
-        {header && <div className="flex-1 min-w-0">{header}</div>}
-        <div className={`inline-flex items-center gap-1 rounded-md border border-border bg-background p-1 shrink-0 ${!header ? 'ml-auto' : ''}`}>
-          <button
-            onClick={() => setActiveTab('structured')}
-            className={activeTab === 'structured'
-              ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-              : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-          >
-            {structuredLabel}
-          </button>
-          <button
-            onClick={() => setActiveTab('raw')}
-            className={activeTab === 'raw'
-              ? 'rounded px-2.5 py-1 text-xs font-medium bg-primary text-primary-foreground'
-              : 'rounded px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-accent/70 hover:text-foreground'}
-          >
-            Raw
-          </button>
-          {activeTab === 'raw' && <CopyButton content={activeRawContent} />}
-        </div>
-      </div>
-
-      {activeTab === 'structured' ? notice : null}
-
-      {activeTab === 'raw' && (
-        <>
-          {shouldShowRawSourceSelector && (
-            <div className="flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden" aria-label="Raw vote source">
-              {rawSourceOptions.map((source) => {
-                const label = source.label || (source.modelId ? getModelDisplayName(source.modelId) : source.id)
-                if (source.variants?.length) {
-                  const sourceActive = activeRawSource.parentId === source.id
-                  const enabledVariants = source.variants.filter((variant) => !variant.disabled)
-                  const disabled = enabledVariants.length === 0
-                  return (
-                    <div
-                      key={source.id}
-                      role="group"
-                      aria-label={`${label} raw output`}
-                      className={cn(
-                        'inline-flex min-w-0 max-w-full overflow-hidden rounded-md border bg-background',
-                        sourceActive ? 'border-primary' : 'border-border',
-                        disabled && 'opacity-45',
-                      )}
-                    >
-                      <span
-                        className={cn(
-                          'inline-flex min-w-0 max-w-full items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium',
-                          sourceActive ? 'bg-muted text-foreground' : 'text-muted-foreground',
-                        )}
-                      >
-                        {source.modelId ? <ModelIcon modelId={source.modelId} className="h-3 w-3" /> : null}
-                        <span className="min-w-0 truncate">{label}</span>
-                      </span>
-                      {source.variants.map((variant) => {
-                        const active = activeRawSource.id === variant.id
-                        const variantDisabled = Boolean(variant.disabled)
-                        return (
-                          <Tooltip key={variant.id}>
-                              <TooltipTrigger asChild>
-                                <button
-                                                        type="button"
-                                                        disabled={variantDisabled}
-                                                        aria-pressed={active}
-                                                        aria-label={variant.ariaLabel ?? `${label} ${variant.label}`}
-                                                        onClick={() => setActiveRawSourceId(variant.id)}
-                                                        className={cn(
-                                                          'inline-flex min-w-0 max-w-full items-center gap-1.5 px-2.5 py-1 text-[10px] font-medium transition-colors',
-                                                          'border-l border-border',
-                                                          active
-                                                            ? 'bg-primary text-primary-foreground'
-                                                            : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground',
-                                                          variantDisabled && 'cursor-not-allowed hover:bg-background hover:text-muted-foreground',
-                                                        )}
-                                                      >
-                                                        <span className={cn('min-w-0 truncate', variant.labelClassName)}>{variant.label}</span>
-                                                      </button>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-xs text-center text-balance">{variant.title}</TooltipContent>
-                            </Tooltip>
-                        )
-                      })}
-                    </div>
-                  )
-                }
-                const active = activeRawSource.id === source.id
-                const disabled = Boolean(source.disabled)
-                return (
-                  <Tooltip key={source.id}>
-                      <TooltipTrigger asChild>
-                        <button
-                                        type="button"
-                                        disabled={disabled}
-                                        aria-pressed={active}
-                                        onClick={() => setActiveRawSourceId(source.id)}
-                                        className={cn(
-                                          'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1 text-[10px] font-medium transition-colors',
-                                          active
-                                            ? 'border-primary bg-primary text-primary-foreground'
-                                            : 'border-border bg-background text-muted-foreground hover:bg-accent/70 hover:text-foreground',
-                                          disabled && 'cursor-not-allowed opacity-45 hover:bg-background hover:text-muted-foreground',
-                                        )}
-                                      >
-                                        {source.modelId ? <ModelIcon modelId={source.modelId} className="h-3 w-3" /> : null}
-                                        <span className="min-w-0 truncate">{label}</span>
-                                      </button>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs text-center text-balance">{source.title}</TooltipContent>
-                    </Tooltip>
-                )
-              })}
-            </div>
-          )}
-          <RawDisplayStats content={activeRawDisplayContent} />
-        </>
-      )}
-
-      {activeTab === 'structured' ? (
-        <>
-          {children}
-        </>
-      ) : (
-        <RawDisplayPre content={activeRawDisplayContent} />
-      )}
-    </div>
-  )
 }
 
 function RefinedArtifactTabs({ content, hasChanges, sectionsContent, diffContent, notice, diffLabel = 'Diff', defaultTab, showDiffTab = true }: {
@@ -1408,11 +1000,11 @@ function RefinementDiffView({ content, domain, phase }: { content: string; domai
 
   return (
     <div className="min-w-0 max-w-full space-y-3">
-      <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-wider">
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Modified {modifiedCount}</span>
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Added {addedCount}</span>
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Removed {removedCount}</span>
-      </div>
+      <StatPillRow>
+        <StatPill>Modified {modifiedCount}</StatPill>
+        <StatPill>Added {addedCount}</StatPill>
+        <StatPill>Removed {removedCount}</StatPill>
+      </StatPillRow>
       <div className="space-y-2">
         {diffs.map((diff) => (
           <CollapsibleSection
@@ -1510,12 +1102,12 @@ function InterviewDraftDiffView({ content, phase }: { content: string; phase?: s
       <div className="text-xs text-muted-foreground">
         Comparing winning draft from {winnerLabel} ({parsed?.originalQuestionCount ?? normalizeInterviewDiffQuestions(parsed?.originalContent).length} questions) with the final refined interview ({parsed?.refinedQuestionCount ?? normalizeInterviewDiffQuestions(parsed?.refinedContent).length} questions).
       </div>
-      <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-wider">
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Modified {modifiedCount}</span>
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Replaced {replacedCount}</span>
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Added {addedCount}</span>
-        <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">Removed {removedCount}</span>
-      </div>
+      <StatPillRow>
+        <StatPill>Modified {modifiedCount}</StatPill>
+        <StatPill>Replaced {replacedCount}</StatPill>
+        <StatPill>Added {addedCount}</StatPill>
+        <StatPill>Removed {removedCount}</StatPill>
+      </StatPillRow>
       {diffs.length === 0 ? (
         <div className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
           No differences detected between the winning draft and the final refined interview.
@@ -1711,7 +1303,6 @@ function FinalPrdDraftView({
   phase?: string
 }) {
   const [activeTab, setActiveTab] = useState<'final' | 'diff' | 'raw'>(defaultTab)
-  const [activeRawVariantId, setActiveRawVariantId] = useState('raw-attempts:accepted-latest')
 
   const parsed = parseRefinementArtifact(content)
   const fallbackRawAttempts = useMemo(() => getRawAttemptsFromContent(content), [content])
@@ -1726,18 +1317,9 @@ function FinalPrdDraftView({
     [isBeads, parsed?.winnerId, rawAttempts],
   )
   const rawVariantOptions = useMemo(() => rawAttemptSource?.variants ?? [], [rawAttemptSource])
-  const activeRawVariant = rawVariantOptions.find((variant) => variant.id === activeRawVariantId && !variant.disabled)
-    ?? findFirstValidatedVariant(rawVariantOptions)
-    ?? rawVariantOptions.find((variant) => !variant.disabled)
-    ?? rawVariantOptions[0]
+  const { activeRawVariant, setActiveRawVariantId } = useActiveRawVariant(rawVariantOptions, 'raw-attempts:accepted-latest')
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  useEffect(() => {
-    if (!rawVariantOptions.some((variant) => variant.id === activeRawVariantId && !variant.disabled)) {
-      const validatedVariant = findFirstValidatedVariant(rawVariantOptions)
-      setActiveRawVariantId(validatedVariant?.id ?? rawVariantOptions.find((variant) => !variant.disabled)?.id ?? 'raw-attempts:accepted-latest')
-    }
-  }, [activeRawVariantId, rawVariantOptions])
   const coverageResult = parseCoverageArtifact(content)
   const hasRawTab = rawVariantOptions.length > 0
   const rawVariantSelector = rawAttemptSource && rawVariantOptions.length > 0
@@ -4394,7 +3976,6 @@ function CoverageResultView({
 
 function RelevantFilesScanView({ content }: { content: string }) {
   const [activeTab, setActiveTab] = useState<'files' | 'raw'>('files')
-  const [activeRawVariantId, setActiveRawVariantId] = useState('relevant-files-scan:accepted-latest')
   const rawDisplayContent = useMemo(() => buildReadableRawDisplayContent(content), [content])
   const raw = tryParseStructuredContent(content) as (RelevantFilesScanData & { files: Array<RelevantFileScanEntry & { content_preview?: string }> }) | null
   const rawAttempts = useMemo(() => getRawAttemptsFromContent(content), [content])
@@ -4408,18 +3989,9 @@ function RelevantFilesScanView({ content }: { content: string }) {
     [raw?.modelId, rawAttempts],
   )
   const rawVariantOptions = useMemo(() => rawAttemptSource?.variants ?? [], [rawAttemptSource])
-  const activeRawVariant = rawVariantOptions.find((variant) => variant.id === activeRawVariantId && !variant.disabled)
-    ?? findFirstValidatedVariant(rawVariantOptions)
-    ?? rawVariantOptions.find((variant) => !variant.disabled)
-    ?? rawVariantOptions[0]
+  const { activeRawVariant, setActiveRawVariantId } = useActiveRawVariant(rawVariantOptions, 'relevant-files-scan:accepted-latest')
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  useEffect(() => {
-    if (!rawVariantOptions.some((variant) => variant.id === activeRawVariantId && !variant.disabled)) {
-      const validatedVariant = findFirstValidatedVariant(rawVariantOptions)
-      setActiveRawVariantId(validatedVariant?.id ?? rawVariantOptions.find((variant) => !variant.disabled)?.id ?? 'relevant-files-scan:accepted-latest')
-    }
-  }, [activeRawVariantId, rawVariantOptions])
   if (!raw?.files) return <RawContentWithCopy content={content} />
 
   // Normalize: accept both camelCase (new) and snake_case (legacy DB rows)
@@ -5684,95 +5256,6 @@ function FinalTestResultsView({ content }: { content: string }) {
         )}
       </div>
     </WithRawTab>
-  )
-}
-
-function formatArtifactTimestampLabel(value: string | null | undefined): string | null {
-  if (!value) return null
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
-}
-
-function MetadataCard({
-  label,
-  value,
-  hint,
-  mono = false,
-  tone = 'default',
-}: {
-  label: string
-  value: React.ReactNode
-  hint?: React.ReactNode
-  mono?: boolean
-  tone?: 'default' | 'success' | 'warning' | 'danger' | 'info'
-}) {
-  const toneClassName = tone === 'success'
-    ? 'border-green-300/70 bg-green-50/70 dark:border-green-900/60 dark:bg-green-950/20'
-    : tone === 'warning'
-      ? 'border-amber-300/70 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20'
-      : tone === 'danger'
-        ? 'border-red-300/70 bg-red-50/70 dark:border-red-900/60 dark:bg-red-950/20'
-        : tone === 'info'
-          ? 'border-blue-300/70 bg-blue-50/70 dark:border-blue-900/60 dark:bg-blue-950/20'
-          : 'border-border bg-background'
-
-  return (
-    <div className={cn('rounded-md border px-3 py-2 min-w-0', toneClassName)}>
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className={cn('mt-1 text-sm font-semibold text-foreground break-all', mono && 'font-mono text-[11px] leading-5')}>
-        {value}
-      </div>
-      {hint ? <div className="mt-1 text-[10px] text-muted-foreground leading-4">{hint}</div> : null}
-    </div>
-  )
-}
-
-function ArtifactListSection({
-  title,
-  items,
-  emptyLabel,
-  tone = 'default',
-}: {
-  title: string
-  items: string[]
-  emptyLabel: string
-  tone?: 'default' | 'removed' | 'preserved' | 'warning' | 'error'
-}) {
-  const itemClassName = tone === 'removed'
-    ? 'border-red-200 bg-red-50/70 text-red-950 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-100'
-    : tone === 'preserved'
-      ? 'border-blue-200 bg-blue-50/70 text-blue-950 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-100'
-      : tone === 'warning' || tone === 'error'
-        ? 'border-amber-200 bg-amber-50/80 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-100'
-        : 'border-border bg-background text-foreground'
-
-  return (
-    <CollapsibleSection
-      title={(
-        <span className="flex items-center gap-2">
-          <span>{title}</span>
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            {items.length}
-          </span>
-        </span>
-      )}
-      defaultOpen={items.length > 0}
-    >
-      {items.length > 0 ? (
-        <div className="space-y-2">
-          {items.map((item, index) => (
-            <div
-              key={`${title}:${item}:${index}`}
-              className={cn('rounded-md border px-3 py-2 text-xs font-mono whitespace-pre-wrap break-all', itemClassName)}
-            >
-              {item}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="text-xs text-muted-foreground">{emptyLabel}</div>
-      )}
-    </CollapsibleSection>
   )
 }
 

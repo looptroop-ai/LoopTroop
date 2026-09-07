@@ -7,7 +7,7 @@ import {
   type PrdUserStory,
   PRD_TECHNICAL_SECTION_CONFIG,
 } from '@/lib/prdDocument'
-import { CollapsibleSection } from './ArtifactContentViewer'
+import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import { CommandSpecListEditor } from './CommandSpecListEditor'
 
 interface PrdApprovalEditorProps {

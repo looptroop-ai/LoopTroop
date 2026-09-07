@@ -79,7 +79,12 @@ function flag(name: string): string {
   return value
 }
 
-const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
+// `??` passes an empty string through, and an empty token makes `redact` split
+// every diagnostic into single characters — so a set-but-empty secret would
+// corrupt the message reporting it. Checked for emptiness, not just presence.
+const suppliedToken = process.env.WINGET_TOKEN?.trim()
+if (!suppliedToken) fail('WINGET_TOKEN is not set.')
+const token = suppliedToken
 
 /** Anything that would print the token, with the token taken out. */
 function redact(text: string): string {

@@ -283,13 +283,20 @@ describe('trusted tool resolution', () => {
   })
 
   /**
-   * The real prefix list, against this machine. Not a rule about the list's
-   * contents — it is a claim that the list matches how a runner is actually
-   * laid out, which a fully injected test can never make.
+   * The real prefix list, against this machine — the one claim a fully injected
+   * test cannot make: that the list matches how a runner is actually laid out.
+   *
+   * "Not on PATH" is an acceptable answer, because which tools exist differs by
+   * platform. What must never happen is a tool that *is* found sitting outside
+   * every trusted prefix, which is what would silently disable a release job.
    */
-  it('accepts the tools a runner really provides', () => {
-    expect(resolveTrustedTool('sh')).toHaveProperty('path')
-    expect(resolveTrustedTool('git')).toHaveProperty('path')
+  it.each(['git', 'sh', 'node'])('resolves %s from a trusted location, or not at all', (tool) => {
+    const resolved = resolveTrustedTool(tool)
+    const verdict = 'path' in resolved
+      ? 'trusted'
+      : resolved.refusal.includes('was not found on PATH') ? 'absent' : resolved.refusal
+
+    expect(`${tool}: ${verdict}`).toMatch(new RegExp(`^${tool}: (trusted|absent)$`))
   })
 
   /**
@@ -370,16 +377,18 @@ describe('trusted tool resolution', () => {
 
     it('uses a command that names its own extension as written', () => {
       const trusted = scratchRoot()
+      // `.exe` would win under PATHEXT; naming `.com` proves the extension the
+      // caller wrote is the one used, rather than the one PATHEXT prefers.
       executableIn(trusted, 'gh.exe')
-      const cmd = executableIn(trusted, 'gh.cmd')
+      const com = executableIn(trusted, 'gh.com')
 
-      expect(resolveTrustedTool('gh.cmd', {
+      expect(resolveTrustedTool('gh.com', {
         env: {},
         pathValue: trusted,
         pathExt: PATHEXT,
         platform: 'win32',
         trustedPrefixes: [trusted],
-      })).toEqual({ path: cmd })
+      })).toEqual({ path: com })
     })
 
     /** Windows compares paths case-insensitively, so the prefix check must too. */
@@ -394,6 +403,37 @@ describe('trusted tool resolution', () => {
         platform: 'win32',
         trustedPrefixes: [trusted.toUpperCase()],
       })).toEqual({ path: tool })
+    })
+
+    /**
+     * Every caller hands the resolved path to `execFileSync` without a shell,
+     * and Node cannot spawn a Windows command script that way — it fails with
+     * `EINVAL`, which explains nothing. `.EXE` wins under the default PATHEXT
+     * ordering, so this is a guard rather than a behaviour change, but an
+     * override or an altered PATHEXT can reach it.
+     */
+    it('refuses a command script it cannot spawn, and says what to do', () => {
+      const trusted = scratchRoot()
+      executableIn(trusted, 'gh.cmd')
+
+      const resolved = resolveTrustedTool('gh', {
+        env: {},
+        pathValue: trusted,
+        pathExt: '.cmd',
+        platform: 'win32',
+        trustedPrefixes: [trusted],
+      })
+
+      expect((resolved as { refusal: string }).refusal).toContain('cannot be run without a shell')
+      expect((resolved as { refusal: string }).refusal).toContain('LOOPTROOP_GH_PATH')
+    })
+
+    it('refuses a command script named by the override too', () => {
+      const elsewhere = scratchRoot()
+      const shim = executableIn(elsewhere, 'gh.cmd')
+
+      expect(resolveTrustedTool('gh', { env: { LOOPTROOP_GH_PATH: shim }, pathValue: '', platform: 'win32' }))
+        .toHaveProperty('refusal')
     })
 
     it('still refuses a sibling of a trusted prefix', () => {

@@ -124,7 +124,8 @@ const server = createServer((request, response) => {
  * path has no `Microsoft` in it.
  */
 const linkPath = join(
-  process.env.ProgramFiles ?? 'C:\\Program Files',
+  // `||`, not `??`: a set-but-empty variable would make this a relative path.
+  process.env.ProgramFiles || 'C:\\Program Files',
   'WinGet', 'Links', 'looptroop.exe',
 )
 

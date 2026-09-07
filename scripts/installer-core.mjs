@@ -621,8 +621,11 @@ async function download(url, destination) {
  */
 export function resolveOnPath(
   command,
-  pathValue = process.env.PATH ?? process.env.Path ?? '',
-  pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+  pathValue = process.env.PATH || process.env.Path || '',
+  // `||`, not `??`: an empty PATHEXT leaves no extensions to try, which on
+  // Windows means resolving nothing and falling back to spawning `npm` by name —
+  // the very failure this resolver exists to prevent.
+  pathExt = process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
 ) {
   // A command that names its own extension is used as written; PATHEXT only
   // ever supplies a missing one.

@@ -108,8 +108,9 @@ export function resolveTrustedTool(
   command: string,
   {
     env = process.env,
-    pathValue = process.env.PATH ?? process.env.Path ?? '',
-    pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
+    pathValue = process.env.PATH || process.env.Path || '',
+    // `||`, not `??`: an empty PATHEXT would leave no extensions to try.
+    pathExt = process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD',
     platform = process.platform,
     trustedPrefixes = defaultTrustedPrefixes(env),
   }: {
@@ -127,7 +128,7 @@ export function resolveTrustedTool(
   if (override) {
     if (!isAbsolute(override)) return { refusal: `LOOPTROOP_${command.toUpperCase()}_PATH must be an absolute path, and is '${override}'.` }
     if (!isExecutableFile(override, platform)) return { refusal: `LOOPTROOP_${command.toUpperCase()}_PATH points at '${override}', which is not an executable file.` }
-    return { path: override }
+    return runnable(command, override)
   }
 
   // The same search the operating system would do, so the answer is the file
@@ -141,15 +142,40 @@ export function resolveTrustedTool(
     for (const extension of extensions) {
       const candidate = join(directory, `${command}${extension}`)
       if (!isExecutableFile(candidate, platform)) continue
-      if (withinTrustedPrefix(candidate, platform, trustedPrefixes)) return { path: candidate }
-      return {
-        refusal: `${command} resolves to ${candidate}, which is not in a directory this release trusts.`
-          + ` Set LOOPTROOP_${command.toUpperCase()}_PATH if that location is deliberate.`,
+      if (!withinTrustedPrefix(candidate, platform, trustedPrefixes)) {
+        return {
+          refusal: `${command} resolves to ${candidate}, which is not in a directory this release trusts.`
+            + ` Set LOOPTROOP_${command.toUpperCase()}_PATH if that location is deliberate.`,
+        }
       }
+      return runnable(command, candidate)
     }
   }
 
   return { refusal: `${command} was not found on PATH.` }
+}
+
+/**
+ * A resolution the callers can actually spawn, or the reason they cannot.
+ *
+ * Every caller hands the answer to `execFileSync` without a shell, and Node has
+ * refused to spawn a Windows command script that way since the BatBadBut fix —
+ * it fails with `EINVAL`, which says nothing about why. PATHEXT lists `.BAT` and
+ * `.CMD`, and an operator override can name one outright, so a shim can reach
+ * here even though `.EXE` wins under the default ordering.
+ *
+ * Refused rather than routed through `cmd.exe`: none of the tools this guards
+ * ships as a script on a runner, so a shim here means something unexpected, and
+ * a message naming the override is more use than a shell invocation nobody
+ * asked for. `installer-core.mjs` does route through `cmd.exe`, because `npm`
+ * genuinely is a shim there and it has no choice.
+ */
+function runnable(command: string, path: string): { path: string } | { refusal: string } {
+  if (!/\.(cmd|bat)$/i.test(path)) return { path }
+  return {
+    refusal: `${command} resolves to ${path}, a Windows command script, which cannot be run without a shell.`
+      + ` Point LOOPTROOP_${command.toUpperCase()}_PATH at the executable itself.`,
+  }
 }
 
 function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {

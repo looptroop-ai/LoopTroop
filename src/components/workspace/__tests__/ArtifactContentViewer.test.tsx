@@ -564,6 +564,39 @@ items:
     expect(beadLabels).toEqual(['#1 · bead-2 · Second pass', '#2 · bead-1 · First pass'])
   })
 
+  // §13.5 asked whether `BeadCommitsDiffView`'s content-reset effect was
+  // redundant. It is not, but not for the obvious reason: `effectiveMode`
+  // already falls back when the selected tab is disabled. What the effect adds
+  // is this — a new artifact whose tabs are all still valid starts on its
+  // default anyway, rather than swapping content under the previous
+  // artifact's selection.
+  it('returns to the default tab when a new artifact arrives, even if the old tab still works', () => {
+    const beadDiff = (from: string, to: string) => [
+      'diff --git a/src/a.ts b/src/a.ts',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      `-${from}`,
+      `+${to}`,
+    ].join('\n')
+    const artifact = (label: string) => serializeBeadCommitsDiffContent({
+      netDiff: beadDiff('draft', 'final'),
+      beads: [{ beadId: 'bead-1', label, diff: beadDiff('draft', 'final') }],
+    })
+
+    const { rerender } = render(<ArtifactContent artifactId="bead-commits" content={artifact('First pass')} />)
+    fireEvent.click(screen.getByRole('button', { name: 'By Bead' }))
+    expect(screen.getByText('Per-bead git commits')).toBeInTheDocument()
+
+    // The second artifact has bead diffs too, so "By Bead" stays enabled and
+    // `effectiveMode` would happily keep it selected.
+    rerender(<TooltipProvider><ArtifactContent artifactId="bead-commits" content={artifact('Second pass')} /></TooltipProvider>)
+
+    expect(screen.getByRole('button', { name: 'By Bead' })).toBeEnabled()
+    expect(screen.queryByText('Per-bead git commits')).not.toBeInTheDocument()
+    expect(screen.getByText('Final PR net diff')).toBeInTheDocument()
+  })
+
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {
     render(
       <ArtifactContent

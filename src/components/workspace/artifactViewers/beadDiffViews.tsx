@@ -179,6 +179,22 @@ export function BeadCommitsDiffView({ content }: { content: string }) {
   const beadStats = useMemo(() => parseDiffStats(beadDiff), [beadDiff])
   const fileGroups = useMemo(() => groupFileDiffsByPath(orderedBeads), [orderedBeads])
 
+  /**
+   * A new artifact starts on its default tab, even when the tab you were on
+   * still works.
+   *
+   * This is the effect's *only* job, and it is worth stating because the
+   * obvious reason is already handled elsewhere: `effectiveMode` below falls
+   * back to `defaultMode` whenever the selected tab is disabled, so a viewer
+   * sitting on `By File` who moves to an artifact with no bead diffs is
+   * already shown the net diff without this. What the effect adds is the case
+   * where the old tab is still *valid* — two artifacts that both have bead
+   * diffs — where staying on `By Bead` would silently swap the content under
+   * a selection the viewer made for the previous artifact.
+   *
+   * `content` therefore carries the reset, not `defaultMode`: two artifacts
+   * routinely share a default mode.
+   */
   useEffect(() => {
     setViewMode(defaultMode)
   }, [defaultMode, content])

@@ -4,6 +4,7 @@ import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { LOG_LEGEND_TOOLTIP_CLASS, LOG_LEGEND_TOOLTIP_STACK_CLASS } from './logTooltip'
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
 import type { LogEntry } from '@/context/LogContext'
@@ -520,7 +521,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                     {aiTabLabel}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
+                <TooltipContent side="top" className={LOG_LEGEND_TOOLTIP_CLASS}>
                   <div>{tooltipContent}</div>
                   <div className="mt-1">{singleModelTabId} · Effort: {formatLogModelEffort(effort)}</div>
                 </TooltipContent>
@@ -555,7 +556,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                       />
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
+                  <TooltipContent side="top" className={LOG_LEGEND_TOOLTIP_CLASS}>
                     {tooltipContent}
                   </TooltipContent>
                 </Tooltip>
@@ -600,7 +601,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                       />
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
+                  <TooltipContent side="top" className={LOG_LEGEND_TOOLTIP_CLASS}>
                     {tooltipContent}
                   </TooltipContent>
                 </Tooltip>
@@ -621,7 +622,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                         </ModelBadge>
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
+                    <TooltipContent side="top" className={LOG_LEGEND_TOOLTIP_CLASS}>
                       {TAB_TOOLTIPS.CMD}
                     </TooltipContent>
                   </Tooltip>
@@ -644,7 +645,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                   {tab}
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top" className="text-xs bg-popover text-popover-foreground border border-border shadow-md font-medium max-w-[200px] text-center">
+              <TooltipContent side="top" className={LOG_LEGEND_TOOLTIP_CLASS}>
                 {tooltipContent}
               </TooltipContent>
             </Tooltip>
@@ -693,7 +694,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
                 />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top" align="end" className="flex flex-col gap-1.5 p-2 bg-popover text-popover-foreground border border-border font-medium shadow-md">
+            <TooltipContent side="top" align="end" className={LOG_LEGEND_TOOLTIP_STACK_CLASS}>
               <LogCountTooltip
                 loadedEntries={renderedEntries.length}
                 totalEntries={ticket?.id ? historicalLogs.totalEntries : renderedEntries.length}

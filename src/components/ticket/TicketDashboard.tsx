@@ -13,7 +13,7 @@ import { useAIQuestions } from '@/context/useAIQuestions'
 import { ResizeHandle } from './ResizeHandle'
 import { readNavWidth, writeNavWidth } from './navWidth'
 import { hasTicketRendered, markTicketRendered } from './renderedTickets'
-import { Menu, RefreshCw, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 import { clearErrorTicketSeen, getErrorTicketSignature, markErrorTicketSeen } from '@/lib/errorTicketSeen'
 import { clearNeedsInputSeen, getNeedsInputSignature, markNeedsInputSeen } from '@/lib/needsInputSeen'
 import { MAX_RAW_OUTPUT_LENGTH } from '@/lib/constants'
@@ -23,11 +23,10 @@ import { dispatchInterviewBatchEvent, parseInterviewBatchEventDetail } from '@/l
 import { INTERVIEW_APPROVAL_FOCUS_EVENT } from '@/lib/interviewDocument'
 import { PRD_APPROVAL_FOCUS_EVENT } from '@/lib/prdDocument'
 import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
+import { ReconnectBanner } from './ReconnectBanner'
 import { WORKSPACE_PHASE_NAVIGATE_EVENT, type WorkspacePhaseNavigateDetail } from '@/lib/workspaceNavigation'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DataUnavailableBanner } from '@/components/shared/DataUnavailableBanner'
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRecoveryAutoReload } from '@/hooks/useRecoveryAutoReload'
 import { isEscapeClaimedByNestedOverlay } from '@/lib/overlays'
 import { useAttentionAck } from '@/hooks/useAttentionAck'
@@ -552,29 +551,11 @@ export function TicketDashboard() {
         <div className="h-8 w-8 bg-muted animate-pulse rounded" />
       </div>
 
-      <div
-        className="border-b border-amber-200 bg-amber-50/90 px-3 py-2 dark:border-amber-900/60 dark:bg-amber-950/40"
-        role="status"
-        aria-live="polite"
-      >
-        <div className="flex flex-col gap-1">
-          <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Badge
-                              variant="outline"
-                              className="w-fit gap-1.5 border-amber-300 bg-amber-100/80 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                            >
-                              <RefreshCw className="h-3 w-3 animate-spin" />
-                              Loading ticket...
-                            </Badge>
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs text-center text-balance">Waiting for ticket data from the server.</TooltipContent>
-                  </Tooltip>
-          <p className="text-xs leading-5 text-amber-900/75 dark:text-amber-200/80">
-            LoopTroop is fetching the ticket state. This might take a few seconds on initial load.
-          </p>
-        </div>
-      </div>
+      <ReconnectBanner
+        label="Loading ticket..."
+        tooltip="Waiting for ticket data from the server."
+        description="LoopTroop is fetching the ticket state. This might take a few seconds on initial load."
+      />
 
       <div className="relative flex flex-1 flex-col overflow-hidden">
         <div
@@ -626,29 +607,11 @@ export function TicketDashboard() {
       <div className="fixed inset-0 z-[60] bg-background flex flex-col">
         <DashboardHeader ticket={renderTicket} />
         {isReconnecting && (
-          <div
-            className="border-b border-amber-200 bg-amber-50/90 px-3 py-2 dark:border-amber-900/60 dark:bg-amber-950/40"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="flex flex-col gap-1">
-              <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge
-                                          variant="outline"
-                                          className="w-fit gap-1.5 border-amber-300 bg-amber-100/80 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                                        >
-                                          <RefreshCw className="h-3 w-3 animate-spin" />
-                                          Live updates reconnecting...
-                                        </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-xs text-center text-balance">Realtime updates disconnected. LoopTroop is refetching the ticket and will reconnect automatically.</TooltipContent>
-                          </Tooltip>
-              <p className="text-xs leading-5 text-amber-900/75 dark:text-amber-200/80">
-                LoopTroop is refetching the latest ticket state and will reconnect automatically.
-              </p>
-            </div>
-          </div>
+          <ReconnectBanner
+            label="Live updates reconnecting..."
+            tooltip="Realtime updates disconnected. LoopTroop is refetching the ticket and will reconnect automatically."
+            description="LoopTroop is refetching the latest ticket state and will reconnect automatically."
+          />
         )}
 
         <div className="relative flex flex-1 flex-col overflow-hidden">

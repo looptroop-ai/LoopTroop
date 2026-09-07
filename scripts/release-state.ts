@@ -67,6 +67,21 @@ export interface ReleaseStateResult {
 export const INTEGRITY_MISMATCH = 'published bytes differ from this build'
 export const TAG_COMMIT_MISMATCH = 'tag points at a different commit'
 
+/**
+ * Whether `gh` failed because the thing asked for does not exist.
+ *
+ * The distinction every release lookup turns on. `gh` exits non-zero for a
+ * missing release and for an expired token, a rate limit and a GitHub outage
+ * alike, and only the first of those means "nothing is there yet" — reading the
+ * others that way is how a release gets created twice, or edited on top of a
+ * published one. Here rather than in either caller because both `release-detect`
+ * and `release-draft` decide with it, and a second copy would be a second thing
+ * to get wrong.
+ */
+export function isGhNotFound(stderr: string): boolean {
+  return stderr.includes('not found') || /HTTP 404/.test(stderr)
+}
+
 /** Whether the version carries the dist-tag it is supposed to. */
 export function hasCorrectDistTag(facts: ReleaseFacts): boolean {
   return facts.npmDistTags?.[facts.expectedDistTag] === facts.version

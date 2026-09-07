@@ -19,6 +19,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ArgumentError, parseArgs, requirePositional } from './cli-args.ts'
 import {
   assertForwardBump,
   bumpChangelog,
@@ -35,27 +36,32 @@ function fail(message: string): never {
   process.exit(1)
 }
 
-const args = process.argv.slice(2)
-const dryRun = args.includes('--dry-run')
-const positional = args.filter((value) => !value.startsWith('--'))
+const USAGE = 'Usage: npm run release:bump -- <version> [--dry-run]'
 
 /**
- * The one positional argument, or the usage line and exit 1.
+ * The version to bump to, or the usage line and exit 1.
  *
  * A function rather than an inline check, because the narrowing has to survive
- * into the hoisted `plan()` below: `positional.length !== 1` does not tell the
- * compiler that index 0 is present, and a module-scope narrowing does not reach
- * inside a function declaration. This returns a `string`, so neither does.
+ * into the hoisted `plan()` below: a length check does not tell the compiler
+ * that index 0 is present, and a module-scope narrowing does not reach inside a
+ * function declaration. This returns a `string`, so neither does.
+ *
+ * Unknown flags used to be filtered out rather than refused, so
+ * `npm run release:bump -- 9.9.9 --dry-runn` wrote all four files.
  */
-function requireVersionArgument(values: string[]): string {
-  const [value] = values
-  if (values.length !== 1 || value === undefined) {
-    fail('Usage: npm run release:bump -- <version> [--dry-run]')
+function readArguments(): { version: string, dryRun: boolean } {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), { 'dry-run': 'switch' })
+    const [version] = requirePositional(parsed, 1, 'the version to bump to')
+    if (version === undefined) fail(USAGE)
+    return { version, dryRun: parsed.switch('dry-run') }
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
   }
-  return value
 }
 
-const version = requireVersionArgument(positional)
+const { version, dryRun } = readArguments()
 
 const paths = {
   manifest: join(repoRoot, 'package.json'),

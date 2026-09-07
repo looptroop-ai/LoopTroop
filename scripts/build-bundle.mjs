@@ -31,6 +31,9 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// A `.ts` module from a `.mjs` one: Node strips the types, and these scripts
+// already run under bare `node` rather than tsx for exactly that reason.
+import { ArgumentError, parseArgs } from './cli-args.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -225,9 +228,21 @@ function normalise(stagingDir) {
 
 // --- main -------------------------------------------------------------------
 
-const args = process.argv.slice(2)
-const outIndex = args.indexOf('--out')
-const outDir = resolve(outIndex === -1 ? join(repoRoot, 'dist-bundle') : args[outIndex + 1] ?? fail('--out needs a path'))
+// `--out --foo` used to write the bundle to a directory literally named
+// `--foo`, and an unknown flag was ignored rather than refused. Both are shapes
+// a workflow produces when an expression expands to nothing.
+let parsedArgs
+try {
+  parsedArgs = parseArgs(process.argv.slice(2), { out: 'value' })
+} catch (error) {
+  if (!(error instanceof ArgumentError)) throw error
+  fail(error.message, 'Usage: node scripts/build-bundle.mjs [--out <dir>]')
+}
+if (parsedArgs.positional.length > 0) {
+  fail(`Unexpected argument ${parsedArgs.positional[0]}.`, 'Usage: node scripts/build-bundle.mjs [--out <dir>]')
+}
+
+const outDir = resolve(parsedArgs.value('out') ?? join(repoRoot, 'dist-bundle'))
 
 const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
 const archiveName = `looptroop-${version}-bundle.tar.gz`

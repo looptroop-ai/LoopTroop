@@ -1755,15 +1755,26 @@ fi
 # asynchronous command in a non-interactive shell is /dev/null. Nothing in the
 # install reads stdin, and what it inherited before was the remainder of the
 # `curl … | sh` pipe, which was never useful to it.
-node "$core" "$@" &
-child=$!
-
+# The traps go on before the child starts, not after. A signal arriving in the
+# window between `&` and the first `trap` finds the shell with default
+# dispositions and kills it outright, so the child is orphaned and the status a
+# caller sees is the shell's rather than the child's. That window looks
+# vanishingly small and is not: the child can be running and printing while the
+# parent has yet to reach its next line, which is exactly what a loaded machine
+# produces. `$child` is empty until it is not, and forwarding to nothing is a
+# no-op rather than an error.
+child=
 forward() {
-  kill -"$1" "$child" 2>/dev/null || true
+  if [ -n "$child" ]; then
+    kill -"$1" "$child" 2>/dev/null || true
+  fi
 }
 trap 'forward INT' INT
 trap 'forward TERM' TERM
 trap 'forward HUP' HUP
+
+node "$core" "$@" &
+child=$!
 
 status=0
 while :; do

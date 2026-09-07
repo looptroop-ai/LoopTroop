@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process'
 import type { Channel } from './package-manifests.ts'
 import { DESCRIPTOR_PATH, parseDescriptor, renderDescriptor } from './package-manifests.ts'
 import { decideChannelWrite, writes } from './channel-state.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
@@ -53,9 +54,23 @@ const force = process.argv.includes('--force')
 const dryRun = process.argv.includes('--dry-run')
 const path = DESCRIPTOR_PATH[channel]
 
+/**
+ * `gh`, resolved once from a directory the runner owns.
+ *
+ * This script runs with a token that can write to the Homebrew tap and the
+ * Scoop bucket, so which program receives it is not something to leave to
+ * whichever directory happens to come first on PATH. Same helper, and same
+ * reasoning, as `release-draft.ts`.
+ */
+const ghPath = (() => {
+  const resolved = resolveTrustedTool('gh')
+  if ('refusal' in resolved) fail('Cannot run gh safely.', resolved.refusal)
+  return resolved.path
+})()
+
 function gh(args: string[], allowFailure = false): string {
   try {
-    return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(ghPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     if (allowFailure) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''

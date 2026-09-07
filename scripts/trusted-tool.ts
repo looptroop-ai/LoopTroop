@@ -21,7 +21,7 @@
  * `PATH`.
  */
 import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 /**
  * Directory prefixes a tool may be resolved from.
@@ -31,28 +31,54 @@ import { delimiter, isAbsolute, join } from 'node:path'
  * temporary directory and anything under the checkout are deliberately absent —
  * those are the ones a job's own inputs can write to.
  */
-const TRUSTED_PREFIXES = [
-  '/usr/local/bin',
-  '/usr/local/sbin',
-  '/usr/bin',
-  '/usr/sbin',
-  '/bin',
-  '/sbin',
-  '/opt/hostedtoolcache',
-  '/opt/homebrew/bin',
-  '/home/linuxbrew/.linuxbrew/bin',
-  'C:\\Program Files',
-  'C:\\Program Files (x86)',
-  'C:\\ProgramData\\chocolatey',
-  'C:\\hostedtoolcache',
-  'C:\\Windows\\system32',
-]
+export function defaultTrustedPrefixes(env: NodeJS.ProcessEnv = process.env): string[] {
+  // The Windows roots come from the environment rather than a literal `C:\`.
+  // The system drive is not always C on a hosted runner, and a hardcoded letter
+  // would silently refuse every tool on a machine where it is not.
+  const systemRoot = env.SystemRoot ?? 'C:\\Windows'
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
+  const programFilesX86 = env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'
+  const programData = env.ProgramData ?? 'C:\\ProgramData'
+  const systemDrive = env.SystemDrive ?? 'C:'
 
-/** Windows compares paths case-insensitively; POSIX does not. */
-function withinTrustedPrefix(path: string): boolean {
-  const normalise = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value)
-  const candidate = normalise(path)
-  return TRUSTED_PREFIXES.some((prefix) => candidate.startsWith(normalise(prefix)))
+  return [
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/usr/sbin',
+    '/bin',
+    '/sbin',
+    '/opt/hostedtoolcache',
+    '/opt/homebrew/bin',
+    '/home/linuxbrew/.linuxbrew/bin',
+    programFiles,
+    programFilesX86,
+    join(programData, 'chocolatey'),
+    join(systemDrive, 'hostedtoolcache'),
+    join(systemRoot, 'system32'),
+  ]
+}
+
+/**
+ * Whether `path` is inside one of `prefixes`.
+ *
+ * By path segment, not by string. `startsWith` was the first version and it is
+ * a hole: `/usr/bin-of-mine/gh` starts with `/usr/bin`, so a directory that
+ * merely *shares a prefix* with a trusted one was trusted — which is the whole
+ * check, defeated by naming a directory carefully. `relative()` answers the
+ * question actually being asked: is this under that directory.
+ */
+function withinTrustedPrefix(path: string, platform: NodeJS.Platform, prefixes: readonly string[]): boolean {
+  const normalise = (value: string) => (platform === 'win32' ? value.toLowerCase() : value)
+  const directory = normalise(dirname(resolve(path)))
+
+  return prefixes.some((prefix) => {
+    const root = normalise(resolve(prefix))
+    if (directory === root) return true
+    const step = relative(root, directory)
+    // Inside it, and not reached by climbing out of it first.
+    return step !== '' && !step.startsWith('..') && !isAbsolute(step)
+  })
 }
 
 /**
@@ -68,11 +94,14 @@ export function resolveTrustedTool(
     pathValue = process.env.PATH ?? process.env.Path ?? '',
     pathExt = process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD',
     platform = process.platform,
+    trustedPrefixes = defaultTrustedPrefixes(env),
   }: {
     env?: NodeJS.ProcessEnv
     pathValue?: string
     pathExt?: string
     platform?: NodeJS.Platform
+    /** Injectable so the rules can be exercised without depending on this machine's layout. */
+    trustedPrefixes?: readonly string[]
   } = {},
 ): { path: string } | { refusal: string } {
   // Named outright by an operator. Still has to exist and be executable; what
@@ -80,7 +109,7 @@ export function resolveTrustedTool(
   const override = env[`LOOPTROOP_${command.toUpperCase()}_PATH`]?.trim()
   if (override) {
     if (!isAbsolute(override)) return { refusal: `LOOPTROOP_${command.toUpperCase()}_PATH must be an absolute path, and is '${override}'.` }
-    if (!isExecutableFile(override)) return { refusal: `LOOPTROOP_${command.toUpperCase()}_PATH points at '${override}', which is not an executable file.` }
+    if (!isExecutableFile(override, platform)) return { refusal: `LOOPTROOP_${command.toUpperCase()}_PATH points at '${override}', which is not an executable file.` }
     return { path: override }
   }
 
@@ -94,8 +123,8 @@ export function resolveTrustedTool(
     if (directory === '') continue
     for (const extension of extensions) {
       const candidate = join(directory, `${command}${extension}`)
-      if (!isExecutableFile(candidate)) continue
-      if (withinTrustedPrefix(candidate)) return { path: candidate }
+      if (!isExecutableFile(candidate, platform)) continue
+      if (withinTrustedPrefix(candidate, platform, trustedPrefixes)) return { path: candidate }
       return {
         refusal: `${command} resolves to ${candidate}, which is not in a directory this release trusts.`
           + ` Set LOOPTROOP_${command.toUpperCase()}_PATH if that location is deliberate.`,
@@ -106,11 +135,14 @@ export function resolveTrustedTool(
   return { refusal: `${command} was not found on PATH.` }
 }
 
-function isExecutableFile(path: string): boolean {
+function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
   if (!statSync(path, { throwIfNoEntry: false })?.isFile()) return false
   // Windows has no execute bit; the extension is what decides, and PATHEXT has
-  // already chosen it by the time this runs.
-  if (process.platform === 'win32') return true
+  // already chosen it by the time this runs. Taken from the platform passed in
+  // rather than the real one, so the rules can be exercised off Windows —
+  // reading `process.platform` here made every injected-platform case answer
+  // for the machine running the test instead of the one being described.
+  if (platform === 'win32') return true
   try {
     accessSync(path, constants.X_OK)
     return true

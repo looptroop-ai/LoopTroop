@@ -274,6 +274,26 @@ describe('installer core', () => {
     expect(result.stderr).toContain('no installable assets')
   })
 
+  /**
+   * The same three rules `cli-args.ts` applies to the release scripts. This
+   * parser had only the first, and both gaps were reachable from a shell:
+   * `--prefix "$DIR"` with `DIR` unset installed the standalone executable into
+   * the current working directory, and `--version -h` asked GitHub for a
+   * release called `v-h`.
+   */
+  it.each([
+    [['--prefix', ''], 'was given an empty one'],
+    [['--version', ''], 'was given an empty one'],
+    [['--version', '-h'], 'is followed by -h'],
+    [['--tarball', '--binary'], 'is followed by --binary'],
+    [['--prefix'], 'is the last argument'],
+  ])('refuses %j where a value belongs', async (argv, expected) => {
+    const result = await runInstaller(argv)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(expected)
+  })
+
   it('refuses an unknown option rather than ignoring it', async () => {
     const result = await runInstaller(['--dry-run', '--global'])
 
@@ -424,8 +444,12 @@ describe('installer core', () => {
         // Statefulness via a file, so `stop` is observable and `status` can
         // disagree with itself before and after.
         ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;'
-        // Runs, exits 0, and says nothing a probe can parse.
-        : '  status) echo "not json at all" ;;'
+        // A live process that is not answering. The real CLI reports this as
+        // `running: false` with the pid in `notAnswering`, on purpose.
+        : status === 'not-answering'
+          ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":false,"notAnswering":{"pid":4242}}\'; else echo \'{"running":false,"notAnswering":null}\'; fi ;;'
+          // Runs, exits 0, and says nothing a probe can parse.
+          : '  status) echo "not json at all" ;;'
       // A `stop` that reports failure, for the case where nothing at all can be
       // established: the probe cannot answer and the command did not work.
       const stopArm = status === 'unparseable-and-stop-fails'
@@ -654,6 +678,32 @@ describe('installer core', () => {
      * daemon probe either — so refusing on an unreadable state would wedge
      * exactly the person who most needs to reinstall.
      */
+    /**
+     * `running: false` is not "nothing is there". The CLI reports a live but
+     * unresponsive daemon that way, with the pid in a separate `notAnswering`
+     * field — its own comment says the split exists because every installer
+     * reads `running` as "answering". Reading only `running` called a process
+     * holding the port stopped, so the executable was swapped underneath it and
+     * the daemon started afterwards could not bind.
+     */
+    it.runIf(canInstallBinary)('stops a daemon that is alive but not answering', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      // Alive, and not answering.
+      writeFileSync(stubState, '')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('Stopping the running daemon')
+      // Stopped, and put back: it was serving before the upgrade.
+      expect(result.stdout).toContain('the daemon is running again')
+      expect(existsSync(stubState)).toBe(true)
+    })
+
     /**
      * The other end of the unknown branch. When the probe cannot answer *and*
      * `stop` reports that it failed, nothing at all has been established — so
@@ -1129,6 +1179,19 @@ describe('windows command lines', () => {
   it('makes one token of an argument containing spaces', () => {
     expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))
       .toBe(String.raw`"C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz"`)
+  })
+
+  /**
+   * The other half of the rule, and the one that is easy to get wrong by
+   * quoting everything. `cmd` hands a `.cmd` shim its arguments as written, so
+   * a quoted `install` arrives as `"install"` and a shim comparing
+   * `if "%1"=="--version"` stops matching. Anything that needs no quoting is
+   * passed through exactly as the caller wrote it.
+   */
+  it('leaves an argument that needs no quoting exactly as it was', () => {
+    for (const plain of ['install', '-g', '--no-audit', String.raw`C:\Users\ada\x.tgz`]) {
+      expect(quoteForCmd(plain)).toBe(plain)
+    }
   })
 
   it('makes one token of an argument cmd.exe would otherwise read as an operator', () => {

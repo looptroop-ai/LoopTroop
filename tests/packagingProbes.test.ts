@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
-import { resolveTrustedTool } from '../scripts/trusted-tool.ts'
+import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
 import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
 import { removeTempDir } from '../server/test/tempDir'
@@ -234,9 +234,15 @@ describe('trusted tool resolution', () => {
 
   it('refuses a tool resolved from a directory it does not trust', () => {
     const untrusted = scratchRoot()
+    const trusted = scratchRoot()
     executableIn(untrusted, 'gh')
 
-    const resolved = resolveTrustedTool('gh', { env: {}, pathValue: untrusted, platform: 'linux' })
+    const resolved = resolveTrustedTool('gh', {
+      env: {},
+      pathValue: untrusted,
+      platform: 'linux',
+      trustedPrefixes: [trusted],
+    })
 
     expect(resolved).toHaveProperty('refusal')
     expect((resolved as { refusal: string }).refusal).toContain('not in a directory this release trusts')
@@ -249,26 +255,168 @@ describe('trusted tool resolution', () => {
    */
   it('judges the file that would actually have run, not a later trusted one', () => {
     const untrusted = scratchRoot()
+    const trusted = scratchRoot()
     executableIn(untrusted, 'gh')
+    executableIn(trusted, 'gh')
 
     const resolved = resolveTrustedTool('gh', {
       env: {},
-      pathValue: [untrusted, '/usr/bin'].join(delimiter),
+      // The shadowing copy comes first, so it is the one that would run.
+      pathValue: [untrusted, trusted].join(delimiter),
       platform: 'linux',
+      trustedPrefixes: [trusted],
     })
 
     expect(resolved).toHaveProperty('refusal')
   })
 
   it('accepts a tool from a runner-owned directory', () => {
-    // `sh` is in /bin or /usr/bin on every platform this runs on.
-    const resolved = resolveTrustedTool('sh', { env: {}, pathValue: ['/usr/bin', '/bin'].join(delimiter), platform: 'linux' })
+    const trusted = scratchRoot()
+    const tool = executableIn(trusted, 'gh')
 
-    expect(resolved).toHaveProperty('path')
+    expect(resolveTrustedTool('gh', {
+      env: {},
+      pathValue: trusted,
+      platform: 'linux',
+      trustedPrefixes: [trusted],
+    })).toEqual({ path: tool })
+  })
+
+  /**
+   * The real prefix list, against this machine. Not a rule about the list's
+   * contents — it is a claim that the list matches how a runner is actually
+   * laid out, which a fully injected test can never make.
+   */
+  it('accepts the tools a runner really provides', () => {
+    expect(resolveTrustedTool('sh')).toHaveProperty('path')
+    expect(resolveTrustedTool('git')).toHaveProperty('path')
+  })
+
+  /**
+   * The bypass the first version had. `startsWith` accepts any directory whose
+   * *name* begins with a trusted one, so a `gh` planted in `/usr/bin-of-mine`
+   * was trusted on the strength of the string `/usr/bin` — the check defeated
+   * by naming a directory carefully.
+   */
+  it('does not trust a directory that merely shares a prefix with a trusted one', () => {
+    const root = scratchRoot()
+    const trusted = join(root, 'bin')
+    const lookalike = join(root, 'bin-of-mine')
+    executableIn(lookalike, 'gh')
+
+    const resolved = resolveTrustedTool('gh', {
+      env: {},
+      pathValue: lookalike,
+      platform: 'linux',
+      trustedPrefixes: [trusted],
+    })
+
+    expect(resolved).toHaveProperty('refusal')
+  })
+
+  it('trusts a subdirectory of a trusted prefix', () => {
+    const trusted = scratchRoot()
+    const nested = join(trusted, 'nested')
+    const tool = executableIn(nested, 'gh')
+
+    expect(resolveTrustedTool('gh', {
+      env: {},
+      pathValue: nested,
+      platform: 'linux',
+      trustedPrefixes: [trusted],
+    })).toEqual({ path: tool })
+  })
+
+  /**
+   * The system drive is not always C on a hosted runner, so the Windows roots
+   * are read from the environment rather than written down.
+   */
+  it('takes the Windows roots from the environment', () => {
+    const prefixes = defaultTrustedPrefixes({
+      SystemRoot: 'D:\\Windows',
+      ProgramFiles: 'D:\\Program Files',
+      'ProgramFiles(x86)': 'D:\\Program Files (x86)',
+      ProgramData: 'D:\\ProgramData',
+      SystemDrive: 'D:',
+    })
+
+    expect(prefixes).toContain('D:\\Program Files')
+    expect(prefixes.some((prefix) => prefix.includes('D:') && prefix.includes('chocolatey'))).toBe(true)
+    expect(prefixes.some((prefix) => prefix.startsWith('C:'))).toBe(false)
+  })
+
+  /**
+   * The Windows rules, exercised on whatever this is running on.
+   *
+   * Both helpers take the platform rather than reading `process.platform`,
+   * precisely so these can run here — the lesson from the resolver regression
+   * that shipped because a Windows-only rule could only fail on Windows.
+   */
+  describe('windows rules', () => {
+    const PATHEXT = '.com;.exe;.bat;.cmd'
+
+    it('applies PATHEXT to a bare command name', () => {
+      const trusted = scratchRoot()
+      const tool = executableIn(trusted, 'gh.exe')
+
+      expect(resolveTrustedTool('gh', {
+        env: {},
+        pathValue: trusted,
+        pathExt: PATHEXT,
+        platform: 'win32',
+        trustedPrefixes: [trusted],
+      })).toEqual({ path: tool })
+    })
+
+    it('uses a command that names its own extension as written', () => {
+      const trusted = scratchRoot()
+      executableIn(trusted, 'gh.exe')
+      const cmd = executableIn(trusted, 'gh.cmd')
+
+      expect(resolveTrustedTool('gh.cmd', {
+        env: {},
+        pathValue: trusted,
+        pathExt: PATHEXT,
+        platform: 'win32',
+        trustedPrefixes: [trusted],
+      })).toEqual({ path: cmd })
+    })
+
+    /** Windows compares paths case-insensitively, so the prefix check must too. */
+    it('matches a trusted prefix regardless of case', () => {
+      const trusted = scratchRoot()
+      const tool = executableIn(trusted, 'gh.exe')
+
+      expect(resolveTrustedTool('gh', {
+        env: {},
+        pathValue: trusted,
+        pathExt: PATHEXT,
+        platform: 'win32',
+        trustedPrefixes: [trusted.toUpperCase()],
+      })).toEqual({ path: tool })
+    })
+
+    it('still refuses a sibling of a trusted prefix', () => {
+      const root = scratchRoot()
+      const lookalike = join(root, 'Program Files Evil')
+      executableIn(lookalike, 'gh.exe')
+
+      expect(resolveTrustedTool('gh', {
+        env: {},
+        pathValue: lookalike,
+        pathExt: PATHEXT,
+        platform: 'win32',
+        trustedPrefixes: [join(root, 'Program Files')],
+      })).toHaveProperty('refusal')
+    })
   })
 
   it('reports a tool that is not on PATH at all', () => {
-    const resolved = resolveTrustedTool('definitely-not-installed', { env: {}, pathValue: '/usr/bin', platform: 'linux' })
+    const resolved = resolveTrustedTool('definitely-not-installed', {
+      env: {},
+      pathValue: scratchRoot(),
+      platform: 'linux',
+    })
 
     expect((resolved as { refusal: string }).refusal).toContain('was not found on PATH')
   })
@@ -284,6 +432,9 @@ describe('trusted tool resolution', () => {
 
     expect(resolveTrustedTool('gh', { env: { LOOPTROOP_GH_PATH: tool }, pathValue: '', platform: 'linux' }))
       .toEqual({ path: tool })
+    // Trusted only because an operator named it: it is nowhere near a prefix.
+    expect(resolveTrustedTool('gh', { env: {}, pathValue: elsewhere, platform: 'linux' }))
+      .toHaveProperty('refusal')
   })
 
   it('refuses an override that is relative or is not an executable file', () => {

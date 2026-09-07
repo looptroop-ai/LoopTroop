@@ -196,9 +196,22 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
+    // The same three rules `scripts/cli-args.ts` applies to the release
+    // scripts, because they are the same three mistakes. This parser had only
+    // the first, and the other two were reachable from a shell:
+    //
+    //   `--prefix ""` — what `--prefix "$DIR"` produces with `DIR` unset — took
+    //   the empty string, which `resolve('')` turns into the *current working
+    //   directory*, so the standalone executable was installed into whatever
+    //   directory the user happened to be in.
+    //
+    //   `--version -h` took `-h` as the version and asked GitHub for a release
+    //   called `v-h`.
     const takeValue = () => {
       const value = argv[index + 1]
-      if (value === undefined || value.startsWith('--')) fail(`${arg} needs a value.`)
+      if (value === undefined) fail(`${arg} needs a value, and is the last argument.`)
+      if (value === '') fail(`${arg} needs a value, and was given an empty one.`)
+      if (value.startsWith('-') && value !== '-') fail(`${arg} needs a value, but is followed by ${value}.`)
       index += 1
       return value
     }
@@ -627,9 +640,25 @@ export function resolveOnPath(
   return null
 }
 
-/** Every argument as one cmd.exe token, whatever it contains. */
+/**
+ * One cmd.exe token, quoted only when leaving it bare would change it.
+ *
+ * Quoting everything is the obvious version and it is wrong for a batch file.
+ * `cmd` hands a `.cmd` shim its arguments as written, so `%1` becomes
+ * `"--version"` with the quotes still attached and a shim that compares
+ * `if "%1"=="--version"` stops matching. Real `npm.cmd` only forwards `%*` to
+ * Node, whose own parser strips them, which is why this went unnoticed — but the
+ * next shim need not be so forgiving.
+ *
+ * So: quote what would otherwise be split or interpreted — whitespace, and the
+ * characters `cmd` treats as syntax — and leave everything else exactly as the
+ * caller wrote it. The same rule `dev-preflight.mjs` and `dev-maintenance.ts`
+ * already use.
+ */
 export function quoteForCmd(value) {
-  return `"${String(value).replace(/"/g, '""')}"`
+  const text = String(value)
+  if (!/[\s&|<>^()"]/.test(text)) return text
+  return `"${text.replace(/"/g, '""')}"`
 }
 
 /**
@@ -668,7 +697,11 @@ function runTool(command, args, options = {}) {
   // `/d` skips AutoRun commands from the registry, `/s` makes cmd strip only
   // the outermost pair of quotes and take the rest verbatim, and
   // `windowsVerbatimArguments` stops Node adding a second layer of its own.
-  const line = `"${[resolved, ...args].map(quoteForCmd).join(' ')}"`
+  //
+  // The executable is always quoted — it is a full path, and the usual place
+  // for a Windows tool is under `C:\Program Files`. The arguments are quoted
+  // only where they need it, so a shim reading `%1` sees what the caller wrote.
+  const line = `"${[`"${resolved}"`, ...args.map(quoteForCmd)].join(' ')}"`
   return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], {
     ...options,
     shell: false,
@@ -948,14 +981,28 @@ function withInstallLock(dir, action) {
   }
 }
 
-/** What the installed copy says about the daemon, or null if it cannot say. */
+/**
+ * Whether a LoopTroop process is there, or null if the copy cannot say.
+ *
+ * `running` alone is not that question. `status --json` reports a process that
+ * is alive but not answering as `running: false` with a separate
+ * `notAnswering: { pid }` — deliberately, and the CLI's own comment says the
+ * split exists because "every installer reads `running` as answering, and it
+ * must keep meaning exactly that".
+ *
+ * Reading only `running` therefore called a live process holding the port
+ * "stopped": nothing was stopped, nothing was restarted, the executable was
+ * replaced underneath it, and the daemon started afterwards could not bind. Both
+ * fields are read, and either one means there is something to deal with.
+ */
 function daemonRunning(binary) {
   // The exit code is not the answer — `status` reports a stopped daemon by
   // saying so, and how it scores that is its business — so this reads the
   // document and ignores the code.
   const probe = spawnSync(binary, ['status', '--json'], { encoding: 'utf8', timeout: 30_000 })
   try {
-    return JSON.parse(probe.stdout).running === true
+    const status = JSON.parse(probe.stdout)
+    return status.running === true || (status.notAnswering ?? null) !== null
   } catch {
     return null
   }
@@ -1220,7 +1267,31 @@ function installBinary(archive, { version, prefix }) {
       const quarantine = `${installed}.rejected-${process.pid}`
       discard(quarantine)
       renameSync(installed, quarantine)
-      if (replaced) renameSync(backup, installed)
+
+      // Two renames, and the second one can fail — a Windows lock, a permission
+      // change, a full disk. Unguarded, that left the good executable sitting in
+      // quarantine with nothing at `installed`: no version installed at all,
+      // from the path whose entire purpose is to put the previous one back. If
+      // the restore will not go, the rejected file goes back where it was, so
+      // the user is left with *something* rather than nothing.
+      if (replaced) {
+        try {
+          renameSync(backup, installed)
+        } catch (restoreError) {
+          try {
+            renameSync(quarantine, installed)
+          } catch {
+            // Nothing left to try; the message below says where both copies are.
+          }
+          fail(
+            reason,
+            ...detail,
+            `Your previous version could not be put back: ${String(restoreError.message ?? restoreError)}`,
+            `It is at ${backup}, and the version that failed is at ${quarantine}.`,
+            `Move the one you want to ${installed}.`,
+          )
+        }
+      }
 
       const restored = replaced && wasRunning ? startDaemon(installed) : null
 

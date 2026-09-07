@@ -21,6 +21,8 @@ import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 import {
   bundleFileName,
   renderChocolateyInstall,
@@ -38,10 +40,38 @@ function fail(message: string, ...detail: string[]): never {
   process.exit(1)
 }
 
+const USAGE = 'Usage: node scripts/build-choco.ts --bundle <path> --url <url> [--out <dir>] [--version X.Y.Z] [--expect-sha256 <hex>]'
+
+/**
+ * The arguments, through the shared parser.
+ *
+ * The hand-rolled version this replaces carried every defect §12.6 was written
+ * for, and one of them disabled an integrity check: the presence test was
+ * `process.argv.includes('--expect-sha256')`, which the `--expect-sha256=<hex>`
+ * spelling never matches — so writing it that way skipped the comparison
+ * entirely and packed whatever bytes were on disk. A fail-open integrity gate
+ * is worse than none, because it reports success.
+ */
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      bundle: 'value',
+      url: 'value',
+      out: 'value',
+      version: 'value',
+      'expect-sha256': 'value',
+    })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
+  }
+})()
+
 function flag(name: string, fallback: string | null = null): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? fallback : process.argv[index + 1]
-  if (value === undefined || value === null || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = args.value(name) ?? fallback
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
@@ -77,7 +107,7 @@ if (basename(bundlePath) !== bundleFileName(version)) {
 //
 // Optional, because the release workflow builds the bundle and packs it in one
 // run with no download in between. A repair downloads it, and passes this.
-const expected = process.argv.includes('--expect-sha256') ? flag('expect-sha256') : null
+const expected = args.value('expect-sha256')
 if (expected !== null && expected !== sha256) {
   fail(
     'The bundle does not match the checksum the release recorded for it.',
@@ -110,8 +140,18 @@ process.stdout.write(`Staged ${stagingDir}\n`)
 // re-read them: Node does not quote the line it builds, so a staging directory
 // under a Windows account whose name contains a space arrived as two
 // arguments. `choco` is `choco.exe`, so the shell was buying nothing.
+//
+// Resolved rather than named, like `choco-push.ts`: this is the job that decides
+// which bytes go into the package, so which `choco` packs them matters as much
+// as which one pushes them.
+const chocoPath = (() => {
+  const resolved = resolveTrustedTool('choco')
+  if ('refusal' in resolved) fail('Cannot run choco safely.', resolved.refusal)
+  return resolved.path
+})()
+
 try {
-  execFileSync('choco', ['pack', join(stagingDir, 'looptroop.nuspec'), '--output-directory', outDir], {
+  execFileSync(chocoPath, ['pack', join(stagingDir, 'looptroop.nuspec'), '--output-directory', outDir], {
     encoding: 'utf8',
     stdio: 'inherit',
     shell: false,

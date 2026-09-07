@@ -37,6 +37,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { renderWingetManifests, WINGET_IDENTIFIER, wingetManifestDir } from './package-manifests.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 
 const UPSTREAM = 'microsoft/winget-pkgs'
 const FORK = 'looptroop-ai/winget-pkgs'
@@ -60,6 +61,29 @@ function flag(name: string): string {
 
 const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
 
+/** Anything that would print the token, with the token taken out. */
+function redact(text: string): string {
+  return text.split(token).join('[redacted]').replace(/x-access-token:[^@\s]+@/g, 'x-access-token:[redacted]@')
+}
+
+/**
+ * `gh` and `git`, resolved once each from a directory the runner owns.
+ *
+ * Every child of this script is handed `GH_TOKEN`, and the clone URL carries
+ * the token too, so which program runs is which program receives the
+ * credential. Resolved on first use and remembered, since `run` is called for
+ * both tools many times.
+ */
+const resolvedTools = new Map<string, string>()
+function resolveTool(command: string): string {
+  const cached = resolvedTools.get(command)
+  if (cached !== undefined) return cached
+  const resolved = resolveTrustedTool(command)
+  if ('refusal' in resolved) fail(`Cannot run ${command} safely.`, resolved.refusal)
+  resolvedTools.set(command, resolved.path)
+  return resolved.path
+}
+
 /**
  * `GH_TOKEN` is set from `WINGET_TOKEN` for every child, because `gh` reads
  * that name and this job deliberately does not have the workflow's own token:
@@ -70,7 +94,7 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
 function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean }): string
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true } = {}): string | null {
   try {
-    return execFileSync(command, args, {
+    return execFileSync(resolveTool(command), args, {
       cwd: options.cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -82,7 +106,9 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
     if (options.quiet === true) return null
     if (options.allowFailure === true) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
-    fail(`${command} ${args.join(' ')} failed.`, detail)
+    // Redacted, both halves. The clone URL embeds the token, so the argument
+    // list is a credential and `git` prints the remote back in its own errors.
+    fail(`${command} ${redact(args.join(' '))} failed.`, redact(detail))
   }
 }
 

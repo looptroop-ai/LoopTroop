@@ -78,3 +78,25 @@ export function selectRelease(
 ): Release | null
 
 export function satisfiesFloor(have: string, floor: string): boolean
+
+/** A deadline that restarts every time `touch` is called. */
+export interface StallGuard {
+  signal: AbortSignal
+  /** Restart the deadline; called once per arriving chunk. */
+  touch: () => void
+  /** Stop the deadline, whether or not it fired. */
+  release: () => void
+  /** The abort reason if this guard fired, else null. */
+  reason: () => string | null
+}
+
+export function stallGuard(idleMs: number, what: string): StallGuard
+
+/** Reads a response body to a byte cap, writing chunks out as they arrive. */
+export function streamBody(
+  response: Response,
+  limit: number,
+  what: string,
+  write: (chunk: Buffer) => void,
+  touch: () => void,
+): Promise<number>

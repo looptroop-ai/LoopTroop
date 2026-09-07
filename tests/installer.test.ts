@@ -7,7 +7,9 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath } from '../scripts/installer-core.mjs'
+import {
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath, stallGuard, streamBody,
+} from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -409,31 +411,47 @@ describe('installer core', () => {
    * here. Every test below is about that copy.
    */
   describe('--binary', () => {
-    /** Stands in for the executable. Answers the four things the installer asks. */
-    function stubProgram(version: string) {
+    /**
+     * Stands in for the executable. Answers the four things the installer asks.
+     *
+     * `status` is deliberately overridable. It is the one probe with three
+     * answers rather than two — running, stopped, and "cannot say" — and the
+     * third is what an upgrade used to read as stopped.
+     */
+    function stubProgram(version: string, { status = 'report', start = 'plain' } = {}) {
+      const statusArm = status === 'report'
+        // Statefulness via a file, so `stop` is observable and `status` can
+        // disagree with itself before and after.
+        ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;'
+        // Runs, exits 0, and says nothing a probe can parse.
+        : '  status) echo "not json at all" ;;'
+      const startArm = start === 'plain'
+        ? '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;'
+        // Stands in for another installer claiming the directory while this one
+        // is mid-install, which is the only moment the lock can change hands.
+        : '  start) : > "$LOOPTROOP_STUB_STATE"; [ -n "$LOOPTROOP_STUB_LOCK" ] && echo "someone-else 2000-01-01" > "$LOOPTROOP_STUB_LOCK"; echo "stub started" ;;'
+
       return [
         '#!/bin/sh',
         'case "$1" in',
         `  --version) echo "${version}" ;;`,
-        // Statefulness via a file, so `stop` is observable and `status` can
-        // disagree with itself before and after.
-        '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;',
+        statusArm,
         '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;',
-        '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;',
+        startArm,
         'esac',
         '',
       ].join('\n')
     }
 
     /** A release archive with the layout `build-binary.mjs` produces. */
-    function buildArchive(version: string, program: string) {
+    function buildArchive(version: string, program: string, notice = 'Node.js is MIT licensed.') {
       const dir = mkdtempSync(join(tmpdir(), 'looptroop-archive-'))
       tempDirs.push(dir)
       const name = `looptroop-${version}-${TARGET}`
       mkdirSync(join(dir, name))
       writeFileSync(join(dir, name, 'looptroop'), program)
       chmodSync(join(dir, name, 'looptroop'), 0o755)
-      writeFileSync(join(dir, name, 'LICENSE.node.txt'), 'Node.js is MIT licensed.')
+      writeFileSync(join(dir, name, 'LICENSE.node.txt'), notice)
 
       const out = join(dir, `${name}.tar.gz`)
       const packed = spawnSync('tar', ['-czf', out, '-C', dir, name], { encoding: 'utf8' })
@@ -572,6 +590,116 @@ describe('installer core', () => {
       // somebody's PATH.
       expect(existsSync(join(prefix, 'LICENSE.node.txt'))).toBe(true)
       expect(existsSync(join(prefix, 'bin', 'LICENSE.node.txt'))).toBe(false)
+    })
+
+    /**
+     * The licences are payload, and payload is not transactional.
+     *
+     * They used to be copied into the prefix at the top of the install, before
+     * the daemon check, the swap, the version probe and the restart. So an
+     * upgrade that rolled back restored the executable and then told the user
+     * "your previous version is back in place" — beside the *new* version's
+     * notices. Nothing may be written into the prefix until the one thing with
+     * a rollback has committed.
+     */
+    it.runIf(canInstallBinary)('does not update the licences an upgrade rolled back', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'), 'notice from the installed version')
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n', 'notice from the version that does not run')
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('rolled back')
+      expect(readFileSync(join(prefix, 'LICENSE.node.txt'), 'utf8')).toBe('notice from the installed version')
+    })
+
+    /**
+     * `status` has three answers and the swap used to accept two of them as
+     * "stopped", so an upgrade could replace the executable under a live daemon
+     * and then never start it again — leaving the old version serving while
+     * `looptroop --version` reported the new one.
+     *
+     * Resolved rather than refused: it is asked to stop, has to *confirm* it
+     * stopped, and is started again afterwards, because a probe that cannot
+     * answer may well have been answering for a service that was up.
+     */
+    it.runIf(canInstallBinary)('stops and restarts a daemon whose state it cannot read', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('would not report whether its daemon is running')
+      // Started again, from the copy that is now installed.
+      expect(result.stdout).toContain('the daemon is running again')
+      expect(existsSync(stubState)).toBe(true)
+    })
+
+    /**
+     * The other half of that rule, and the reason it resolves rather than
+     * refuses. An executable that cannot print its own version cannot answer a
+     * daemon probe either — so refusing on an unreadable state would wedge
+     * exactly the person who most needs to reinstall.
+     */
+    it.runIf(canInstallBinary)('installs over an executable that does not run at all', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      // It installs nothing, but it does leave the broken copy quarantined and
+      // no working executable behind, which is the state to recover from.
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      writeFileSync(join(prefix, 'bin', 'looptroop'), '#!/bin/sh\nexit 3\n')
+      chmodSync(join(prefix, 'bin', 'looptroop'), 0o755)
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('does not run, so there is no daemon of its to stop')
+      expect(spawnSync(join(prefix, 'bin', 'looptroop'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+      // Without that escape this would take the "cannot say, so stop it" path,
+      // whose whole point is that it starts the daemon again afterwards — and
+      // there was no daemon here to put back.
+      expect(existsSync(stubState)).toBe(false)
+    })
+
+    /**
+     * A lock is removed by whoever holds it, and only by them.
+     *
+     * The takeover path is where this goes wrong: two installers that both see
+     * one stale lock used to both delete it and both create their own, after
+     * which the second deleted the first's. Injected here from the other end —
+     * the lock changes hands while this install is running — because the
+     * observable consequence is the same and it is reachable without a race.
+     */
+    it.runIf(canInstallBinary)('leaves behind a lock that is no longer its own', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const lock = join(prefix, '.install.lock')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      // Running, so the upgrade below stops it and starts it again — and it is
+      // the restart that stands in for another installer claiming the lock.
+      writeFileSync(stubState, '')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { start: 'takeover' }))
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: stubState,
+        LOOPTROOP_STUB_LOCK: lock,
+      })
+
+      expect(result.status).toBe(0)
+      expect(existsSync(lock)).toBe(true)
+      expect(readFileSync(lock, 'utf8')).toContain('someone-else')
     })
 
     it.runIf(canInstallBinary)('leaves no staging files behind', async () => {
@@ -779,6 +907,84 @@ describe('installer core', () => {
       expect(result.stdout).toContain('stale install lock')
       expect(result.status).toBe(0)
     })
+  })
+})
+
+/**
+ * The two halves of "a transfer this installer will not let run away with it".
+ *
+ * Both used to be absent: metadata and assets were fetched with no timeout at
+ * all, and the body was taken with `arrayBuffer()`, which buffers whatever the
+ * other end sends before the checksum that exists to catch a wrong file has a
+ * chance to object.
+ */
+describe('bounded transfers', () => {
+  it('abandons a transfer that stops making progress', async () => {
+    const guard = stallGuard(20, 'The download')
+
+    await new Promise((done) => setTimeout(done, 60))
+
+    expect(guard.signal.aborted).toBe(true)
+    expect(guard.reason()).toContain('made no progress')
+    guard.release()
+  })
+
+  it('does not fire while bytes keep arriving', async () => {
+    const guard = stallGuard(60, 'The download')
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      await new Promise((done) => setTimeout(done, 20))
+      guard.touch()
+    }
+
+    expect(guard.signal.aborted).toBe(false)
+    expect(guard.reason()).toBeNull()
+    guard.release()
+  })
+
+  it('refuses a body that declares more than the limit, before reading any of it', async () => {
+    let read = 0
+    const response = new Response('0123456789', { headers: { 'content-length': '10' } })
+
+    await expect(streamBody(response, 4, 'The archive', () => { read += 1 }, () => {}))
+      .rejects.toThrow(/declares 10 bytes/)
+    expect(read).toBe(0)
+  })
+
+  /**
+   * A chunked response declares no length at all, so the only bound that always
+   * applies is the running total.
+   */
+  it('refuses a body that grows past the limit while it is being read', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let chunk = 0; chunk < 4; chunk += 1) controller.enqueue(new Uint8Array(8))
+        controller.close()
+      },
+    })
+
+    await expect(streamBody(new Response(body), 10, 'The archive', () => {}, () => {}))
+      .rejects.toThrow(/larger than the 10 bytes/)
+  })
+
+  it('hands every chunk to the writer, and counts them', async () => {
+    const written: Buffer[] = []
+    let touches = 0
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('abc'))
+        controller.enqueue(new TextEncoder().encode('de'))
+        controller.close()
+      },
+    })
+
+    const total = await streamBody(new Response(body), 100, 'The archive',
+      (chunk) => written.push(chunk), () => { touches += 1 })
+
+    expect(total).toBe(5)
+    expect(Buffer.concat(written).toString()).toBe('abcde')
+    // Once per chunk: the stall deadline restarts on arrival, not on completion.
+    expect(touches).toBe(2)
   })
 })
 

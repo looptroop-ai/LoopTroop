@@ -87,10 +87,10 @@ cat > "$core" <<'LOOPTROOP_INSTALLER_CORE'
  * releases page and unpacks it; there is nothing this script can do for them.
  */
 import { spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  realpathSync, renameSync, rmSync, statSync, writeFileSync,
+  chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync,
+  readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync,
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
@@ -101,6 +101,33 @@ const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 const MANIFEST_ASSET = 'release-manifest.json'
 const TARBALL_PATTERN = /^looptroop-.+\.tgz$/
+
+/**
+ * How long a transfer may make no progress before it is abandoned.
+ *
+ * Two numbers rather than one, because the two kinds of request fail
+ * differently. Release metadata is a few hundred kilobytes: it either answers
+ * promptly or something is wrong. An asset is up to ~110 MB and may legitimately
+ * take many minutes on a domestic link, so what is bounded there is *silence*,
+ * not duration — a deadline that restarts on every chunk refuses a connection
+ * that died without putting a ceiling on a slow one that is working.
+ *
+ * Before these existed the installer had no timeout at all, so a stalled
+ * connection was indistinguishable from an install in progress, forever.
+ */
+const METADATA_STALL_MS = 30_000
+const DOWNLOAD_STALL_MS = 60_000
+
+/**
+ * How much of a response is read before it is refused.
+ *
+ * The largest thing a release publishes is a standalone archive of about
+ * 110 MB, so 512 MiB is four times the largest legitimate payload — big enough
+ * that no real release approaches it, small enough that a wrong URL cannot fill
+ * this machine's disk or memory before the checksum gets a chance to object.
+ */
+const MAX_METADATA_BYTES = 32 * 1024 * 1024
+const MAX_ASSET_BYTES = 512 * 1024 * 1024
 
 /**
  * How to get a supported Node.
@@ -400,6 +427,72 @@ export function satisfiesFloor(have, floor) {
 
 // --- effects --------------------------------------------------------------
 
+/**
+ * A deadline that restarts every time bytes arrive.
+ *
+ * `AbortSignal.timeout` would bound the whole request instead, which for a
+ * 110 MB archive means choosing between a limit long enough that a dead
+ * connection hangs for minutes and one short enough to abandon a slow but
+ * working download. What actually goes wrong is a transfer that stops
+ * progressing, and that is what this measures.
+ */
+export function stallGuard(idleMs, what) {
+  const controller = new AbortController()
+  let timer = null
+
+  const arm = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      controller.abort(new Error(`${what} made no progress for ${Math.round(idleMs / 1000)}s.`))
+    }, idleMs)
+    // Nothing should stay alive merely because this timer is pending.
+    timer.unref?.()
+  }
+
+  arm()
+  return {
+    signal: controller.signal,
+    touch: arm,
+    release: () => clearTimeout(timer),
+    /** The abort reason if this guard fired, so the message says "stalled" rather than "aborted". */
+    reason: () => (controller.signal.aborted ? String(controller.signal.reason?.message ?? controller.signal.reason) : null),
+  }
+}
+
+/**
+ * Every byte of a response, up to `limit`, handed to `write` as it arrives.
+ *
+ * `arrayBuffer()` is shorter and is what this used to do, but it buffers
+ * whatever the other end sends before anything can object — so the checksum
+ * that exists to catch a wrong file only ran once the wrong file was entirely
+ * in memory. The declared length is refused up front when there is one, and the
+ * running total is checked either way, because a chunked response declares no
+ * length at all.
+ */
+export async function streamBody(response, limit, what, write, touch) {
+  const declared = Number(response.headers.get('content-length') ?? Number.NaN)
+  if (Number.isFinite(declared) && declared > limit) {
+    fail(`${what} declares ${declared} bytes, and this installer reads at most ${limit}.`, 'Nothing was installed.')
+  }
+
+  const reader = response.body?.getReader()
+  if (reader === undefined) fail(`${what} arrived with no body.`, 'Nothing was installed.')
+
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    touch()
+    total += value.byteLength
+    if (total > limit) {
+      await reader.cancel().catch(() => {})
+      fail(`${what} is larger than the ${limit} bytes this installer reads.`, 'Nothing was installed.')
+    }
+    write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))
+  }
+  return total
+}
+
 async function getJson(url) {
   const headers = { accept: 'application/vnd.github+json', 'user-agent': 'looptroop-installer' }
   // Only to lift the 60-per-hour anonymous rate limit when one happens to be
@@ -407,25 +500,77 @@ async function getJson(url) {
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
   if (token) headers.authorization = `Bearer ${token}`
 
-  let response
+  const guard = stallGuard(METADATA_STALL_MS, 'The request to GitHub')
   try {
-    response = await fetch(url, { headers })
-  } catch (error) {
-    fail('Could not reach GitHub.', String(error.message ?? error), 'Check your network and try again.')
+    let response
+    try {
+      response = await fetch(url, { headers, signal: guard.signal })
+    } catch (error) {
+      fail('Could not reach GitHub.', guard.reason() ?? String(error.message ?? error), 'Check your network and try again.')
+    }
+    if (!response.ok) {
+      fail(
+        `GitHub answered ${response.status} for the release list.`,
+        response.status === 403 ? 'That is usually the anonymous rate limit; try again in a few minutes.' : '',
+      )
+    }
+
+    const chunks = []
+    try {
+      await streamBody(response, MAX_METADATA_BYTES, 'The release list', (chunk) => chunks.push(chunk), guard.touch)
+    } catch (error) {
+      if (error instanceof InstallError) throw error
+      fail('Could not read GitHub\'s answer.', guard.reason() ?? String(error.message ?? error))
+    }
+
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    } catch {
+      fail('GitHub answered with something that is not JSON.', 'Try again in a few minutes.')
+    }
+  } finally {
+    guard.release()
   }
-  if (!response.ok) {
-    fail(
-      `GitHub answered ${response.status} for the release list.`,
-      response.status === 403 ? 'That is usually the anonymous rate limit; try again in a few minutes.' : '',
-    )
-  }
-  return response.json()
 }
 
 async function download(url, destination) {
-  const response = await fetch(url, { headers: { 'user-agent': 'looptroop-installer' }, redirect: 'follow' })
-  if (!response.ok) fail(`Downloading ${basename(destination)} failed with ${response.status}.`)
-  writeFileSync(destination, Buffer.from(await response.arrayBuffer()))
+  const guard = stallGuard(DOWNLOAD_STALL_MS, `Downloading ${basename(destination)}`)
+  let handle = null
+
+  try {
+    let response
+    try {
+      response = await fetch(url, {
+        headers: { 'user-agent': 'looptroop-installer' },
+        redirect: 'follow',
+        signal: guard.signal,
+      })
+    } catch (error) {
+      fail(`Downloading ${basename(destination)} failed.`, guard.reason() ?? String(error.message ?? error))
+    }
+    if (!response.ok) fail(`Downloading ${basename(destination)} failed with ${response.status}.`)
+
+    handle = openSync(destination, 'w')
+    try {
+      await streamBody(response, MAX_ASSET_BYTES, basename(destination), (chunk) => writeSync(handle, chunk), guard.touch)
+    } catch (error) {
+      if (error instanceof InstallError) throw error
+      fail(`Downloading ${basename(destination)} failed.`, guard.reason() ?? String(error.message ?? error))
+    }
+  } catch (error) {
+    // A half-written file is worse than none: the next run would hash it,
+    // reject it against the release's checksum, and report a corrupt release
+    // rather than an interrupted download.
+    if (handle !== null) {
+      closeSync(handle)
+      handle = null
+    }
+    discard(destination)
+    throw error
+  } finally {
+    if (handle !== null) closeSync(handle)
+    guard.release()
+  }
 }
 
 function npmVersion() {
@@ -564,33 +709,98 @@ function extractArchive(archive, into) {
 function withInstallLock(dir, action) {
   const lock = join(dir, '.install.lock')
   const STALE_AFTER = 15 * 60 * 1000
+  // Not the pid: pids are reused, and two installers started a second apart on
+  // a busy machine can hold the same one after a wrap. A token nobody else can
+  // reproduce makes "is this still my lock?" answerable.
+  const token = `${process.pid}-${randomUUID()}`
 
   const take = () => {
-    writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
+    writeFileSync(lock, `${token} ${new Date().toISOString()}\n`, { flag: 'wx' })
+  }
+  const holdsOurs = () => {
+    try {
+      return readFileSync(lock, 'utf8').startsWith(`${token} `)
+    } catch {
+      return false
+    }
   }
 
-  try {
-    take()
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error
-
-    const age = Date.now() - (statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? 0)
-    if (age < STALE_AFTER) {
+  /**
+   * Clears a lock left by a killed run, or refuses.
+   *
+   * The obvious version — see it is old, delete it, create a new one — is not
+   * safe with two installers in the directory: both see the same stale lock,
+   * both delete it, both create one, and the second deletes the first's *new*
+   * lock on its way past. Both then believe they hold it.
+   *
+   * `rename` is the fix, because exactly one process can rename a given file:
+   * whoever wins takes custody of the old lock and the losers get ENOENT and
+   * fall through to `take()`, where `wx` decides between them. Custody also
+   * makes the staleness test sound — the age is read from a file nobody else
+   * can still be touching — and a lock that turns out to be fresh is renamed
+   * back rather than destroyed.
+   */
+  const clearStaleLock = () => {
+    const observed = statSync(lock, { throwIfNoEntry: false })
+    if (observed === undefined) return
+    if (Date.now() - observed.mtimeMs < STALE_AFTER) {
       fail(
         'Another install is already running in this directory.',
         `Its lock is at ${lock}.`,
         'Wait for it to finish, or delete that file if you are sure nothing is running.',
       )
     }
+
+    const aside = `${lock}.stale-${token}`
+    try {
+      renameSync(lock, aside)
+    } catch (error) {
+      // Somebody else got there first. Their `take()` and ours now race on
+      // `wx`, which is exactly the outcome this is trying to reach.
+      if (error.code === 'ENOENT') return
+      throw error
+    }
+
+    const owned = statSync(aside, { throwIfNoEntry: false })
+    const age = Date.now() - (owned?.mtimeMs ?? 0)
+    if (owned !== undefined && age < STALE_AFTER) {
+      // It was refreshed between the check above and the rename, so it belongs
+      // to a live install after all. Put it back before refusing.
+      renameSync(aside, lock)
+      fail(
+        'Another install is already running in this directory.',
+        `Its lock is at ${lock}.`,
+        'Wait for it to finish, or delete that file if you are sure nothing is running.',
+      )
+    }
+
     say(`Clearing a stale install lock (${Math.round(age / 60000)} minutes old).`)
-    discard(lock)
+    discard(aside)
+  }
+
+  try {
     take()
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    clearStaleLock()
+    try {
+      take()
+    } catch (retry) {
+      if (retry.code !== 'EEXIST') throw retry
+      fail(
+        'Another install took the lock in this directory first.',
+        `Its lock is at ${lock}.`,
+        'Wait for it to finish and run this again.',
+      )
+    }
   }
 
   try {
     return action()
   } finally {
-    discard(lock)
+    // Only ours. Removing a lock we do not hold is the same mistake the
+    // takeover above exists to prevent, reached from the other end.
+    if (holdsOurs()) discard(lock)
   }
 }
 
@@ -607,6 +817,11 @@ function daemonRunning(binary) {
   }
 }
 
+/** True when the executable at `binary` runs at all. */
+function executableRuns(binary) {
+  return spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 60_000 }).status === 0
+}
+
 /**
  * Stops the daemon and waits for it to actually be gone.
  *
@@ -614,12 +829,81 @@ function daemonRunning(binary) {
  * replaced while a process holds it open, and on every platform an upgrade that
  * swaps the executable under a live daemon leaves a running old version that
  * `--version` will cheerfully misreport as the new one.
+ *
+ * Confirmed *stopped*, not merely "not confirmed running". `daemonRunning` has
+ * three answers and this used to accept two of them, so a probe that could not
+ * say anything counted as success and the swap went ahead under a daemon nobody
+ * had established was down.
  */
 function stopDaemon(binary) {
   say('Stopping the running daemon...')
   spawnSync(binary, ['stop'], { stdio: 'inherit', timeout: 60_000 })
 
-  return waitFor(() => daemonRunning(binary) !== true, 30_000)
+  return waitFor(() => daemonRunning(binary) === false, 30_000)
+}
+
+/**
+ * Brings the installed copy to a state where replacing it is safe, and says
+ * whether its daemon has to be running again afterwards.
+ *
+ * The three answers of `daemonRunning` need three branches, and treating the
+ * third as "stopped" was the bug: an upgrade could swap the executable under a
+ * live daemon and then not restart it, leaving the old version serving while
+ * `looptroop --version` reported the new one.
+ *
+ * The unknown case is resolved rather than refused. Refusing would be the
+ * strictest reading, but it wedges the one person who most needs to reinstall —
+ * somebody whose installed executable is broken can never make it answer a
+ * probe, and so could never install over it. So: an executable that cannot even
+ * print its own version is not serving anything and is replaced; one that runs
+ * but will not report is asked to stop and must then *confirm* it is stopped,
+ * and is started again afterwards because this may well have taken a live
+ * service down.
+ */
+function settleDaemon(installed) {
+  const state = daemonRunning(installed)
+
+  if (state === true) {
+    if (!stopDaemon(installed)) {
+      fail(
+        'The LoopTroop daemon did not stop, so the executable was left alone.',
+        'Stop it yourself and run this again:',
+        `  ${installed} stop`,
+        'Nothing was installed.',
+      )
+    }
+    return { wasRunning: true }
+  }
+
+  if (state === false) return { wasRunning: false }
+
+  if (!executableRuns(installed)) {
+    say('The installed copy does not run, so there is no daemon of its to stop.')
+    return { wasRunning: false }
+  }
+
+  say('The installed copy would not report whether its daemon is running; stopping it to be sure...')
+  spawnSync(installed, ['stop'], { stdio: 'inherit', timeout: 60_000 })
+
+  // Not `stopDaemon`, which requires a *confirmed* stopped state. A copy whose
+  // `status` output cannot be read will never confirm anything, so demanding it
+  // here would wedge the upgrade forever rather than once — and the state it
+  // refuses over is the state this branch started in. What can still be
+  // established is the opposite: if it now says outright that it is running,
+  // the swap must not happen.
+  if (!waitFor(() => daemonRunning(installed) !== true, 30_000)) {
+    fail(
+      'The LoopTroop daemon is still running after being asked to stop.',
+      'Replacing the executable now would leave the old version serving and reporting the new one\'s version.',
+      'Stop it yourself and run this again:',
+      `  ${installed} stop`,
+      'Nothing was installed.',
+    )
+  }
+
+  // It was asked to stop from an unknown state, so it may well have been
+  // serving. Starting it again is the outcome that cannot leave an outage.
+  return { wasRunning: true }
 }
 
 /**
@@ -721,25 +1005,7 @@ function installBinary(archive, { version, prefix }) {
       fail(`${basename(archive)} does not contain looptroop${EXE} where it should.`, 'Nothing was installed.')
     }
 
-    // Node's licence travels with Node, and this archive carries a copy of Node.
-    // It goes beside the program because that is where it has to be for the
-    // install to be a lawful redistribution, not because anyone will read it.
-    for (const file of readdirSync(root)) {
-      if (file !== `looptroop${EXE}`) copyFileSync(join(root, file), join(prefix, file))
-    }
-
-    let wasRunning = false
-    if (existsSync(installed)) {
-      wasRunning = daemonRunning(installed) === true
-      if (wasRunning && !stopDaemon(installed)) {
-        fail(
-          'The LoopTroop daemon did not stop, so the executable was left alone.',
-          'Stop it yourself and run this again:',
-          `  ${installed} stop`,
-          'Nothing was installed.',
-        )
-      }
-    }
+    const { wasRunning } = existsSync(installed) ? settleDaemon(installed) : { wasRunning: false }
 
     let replaced
     try {
@@ -830,6 +1096,34 @@ function installBinary(archive, { version, prefix }) {
           'The executable runs and reports the right version; it does not stay up.',
         )
       }
+    }
+
+    // Node's licence travels with Node, and this archive carries a copy of Node.
+    // It goes beside the program because that is where it has to be for the
+    // install to be a lawful redistribution, not because anyone will read it.
+    //
+    // Copied here, after the executable transaction has committed, rather than
+    // before it. Copied first, every one of these files landed in the prefix
+    // ahead of the daemon check, the swap, the version probe and the restart —
+    // so a rollback restored the executable and said "your previous version is
+    // back in place" beside the *new* version's licences and notices. The
+    // executable is the only thing with a rollback, so it is the only thing
+    // that may be written before the install is known to have worked.
+    const strays = []
+    for (const file of readdirSync(root)) {
+      if (file === `looptroop${EXE}`) continue
+      try {
+        copyFileSync(join(root, file), join(prefix, file))
+      } catch {
+        strays.push(file)
+      }
+    }
+    if (strays.length > 0) {
+      // Not a rollback. The program is installed, verified and running; what
+      // failed is documentation that travels beside it, and undoing a working
+      // upgrade over that would be the worse outcome. Said out loud so it is
+      // not a silent omission.
+      say(`Note: could not update ${strays.join(', ')} in ${prefix}.`)
     }
 
     discard(backup)

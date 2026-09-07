@@ -185,19 +185,57 @@ jobs:
       # carry no bundle either, so `channel-inputs.ts` has already refused them
       # and this is unreachable — it is here so that a future gap degrades to
       # today's behaviour rather than to an empty ref.
+      #
+      # The commit is *verified* rather than trusted. Until this check existed,
+      # the only thing established about the manifest was that its version
+      # matched the one asked for; its `commit` field then became the checkout
+      # ref for jobs that hold the Docker, Chocolatey and tap credentials.
+      # Resolving the release tag and requiring the two to agree is what ties
+      # that ref to a release GitHub says exists, and the format check is what
+      # stops anything that is not a commit id reaching `actions/checkout` at
+      # all — a ref is not a SHA unless it looks like one.
       - name: Resolve which templates to render with
         id: templates
         env:
+          GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ steps.inputs.outputs.commit }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [ -n "${COMMIT}" ]; then
-            echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
-            echo "Rendering with the templates from ${COMMIT}, the commit this release was built from."
-          else
+          if [ -z "${COMMIT}" ]; then
             echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
             echo "::warning::This release's manifest records no commit; rendering with the default branch."
+            exit 0
           fi
+
+          case "${COMMIT}" in
+            *[!0-9a-f]* | "")
+              echo "::error::The manifest's commit '${COMMIT}' is not a lowercase hexadecimal SHA."
+              exit 1 ;;
+          esac
+          if [ "${#COMMIT}" -ne 40 ]; then
+            echo "::error::The manifest's commit '${COMMIT}' is ${#COMMIT} characters; a full SHA is 40."
+            exit 1
+          fi
+
+          # `^{}` on an annotated tag dereferences it to the commit, so an
+          # annotated and a lightweight tag compare equal. The tag is asked of
+          # the API rather than of a checkout, because this job checks out the
+          # default branch and a shallow clone of it need not contain the tag.
+          tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --jq '.object.sha')
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --jq '.object.type')
+          if [ "${type}" = "tag" ]; then
+            tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tagged}" --jq '.object.sha')
+          fi
+
+          if [ "${COMMIT}" != "${tagged}" ]; then
+            echo "::error::v${VERSION}'s manifest says it was built from ${COMMIT}, but the tag points at ${tagged}."
+            echo "::error::Refusing to check that out. The manifest and the release disagree about what this version is."
+            exit 1
+          fi
+
+          echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "Rendering with the templates from ${COMMIT}, which is what v${VERSION} is tagged at."
 
   # ---------------------------------------------------------------------------
   # Homebrew and Scoop: a file in a git repository, written through the contents

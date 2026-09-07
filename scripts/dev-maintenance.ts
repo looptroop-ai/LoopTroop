@@ -1587,6 +1587,35 @@ function findCompatibleDependencyUpdates(
   }
 }
 
+/** What one `npm outdated --json` run establishes. */
+export type OutdatedProbe =
+  | { outcome: 'current' }
+  | { outcome: 'listed' }
+  | { outcome: 'unavailable', message: string }
+
+/**
+ * Reads an `npm outdated` run, which has three outcomes and used to be given
+ * two.
+ *
+ * The exit code carries half the answer: `npm outdated` exits 1 when it finds
+ * something to report and 0 when it finds nothing, so a *successful* run with
+ * no output is the only thing that means "every dependency is current".
+ * Deciding on empty stdout alone recorded a clean dependency set for a registry
+ * outage, an authentication failure, and an npm that could not be resolved at
+ * all — after which the report said everything was up to date, having checked
+ * nothing.
+ */
+export function classifyOutdatedProbe(
+  result: { status: number | null, stdout: string, stderr: string },
+): OutdatedProbe {
+  if (result.stdout) return { outcome: 'listed' }
+  if (result.status === 0) return { outcome: 'current' }
+  return {
+    outcome: 'unavailable',
+    message: result.stderr || `npm outdated exited ${result.status ?? 'without a status'}`,
+  }
+}
+
 export function syncDirectDependencies(
   { verbose = false, skip = false }: { verbose?: boolean; skip?: boolean } = {},
 ): DependencySyncReport {
@@ -1608,7 +1637,29 @@ export function syncDirectDependencies(
   }
 
   const outdatedResult = runCommand(['outdated', '--json', '--long'], 'npm outdated', { verbose: false })
-  if (!outdatedResult.stdout) {
+  const probe = classifyOutdatedProbe(outdatedResult)
+
+  if (probe.outcome === 'unavailable') {
+    // The same shape the unparseable-output branch below returns: not deferred,
+    // which means "checked recently enough, come back tomorrow", but not
+    // checked either.
+    return {
+      skipped: false,
+      deferred: false,
+      checked: false,
+      alreadyCurrent: false,
+      isForced: false,
+      errors: [`Could not check dependencies for updates: ${probe.message}`],
+      updatedDependencies: [],
+      updatedDevDependencies: [],
+      updatedDependencyDetails: [],
+      updatedDevDependencyDetails: [],
+      heldDependencies: [],
+      heldDevDependencies: [],
+    }
+  }
+
+  if (probe.outcome === 'current') {
     return {
       skipped: false,
       deferred: false,

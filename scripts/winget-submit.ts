@@ -66,7 +66,7 @@ const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
  * the pull request is opened against a repository we do not own, by a
  * credential that exists for exactly that purpose.
  */
-function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true }): string
+function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet: true }): string | null
 function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean }): string
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true } = {}): string | null {
   try {
@@ -101,10 +101,30 @@ try {
   // of an open pull request was wrong: it made every correction to a submitted
   // manifest unreachable. The `Architecture: neutral` mistake was found while
   // #417030 was open, and there was no way to push the fix to it.
-  const existing = JSON.parse(run('gh', [
+  //
+  // The probe must not fail open. With `allowFailure` it returned an empty
+  // string for an auth failure, a rate limit or a network error, which parsed
+  // as an empty list and read as "no pull request is open" — after which this
+  // pushes a branch and opens a *second* pull request in a repository we do not
+  // own, against a queue somebody else has to clean up. `quiet` separates "this
+  // failed" from "this found nothing", which is the whole answer here.
+  const listed = run('gh', [
     'pr', 'list', '--repo', UPSTREAM, '--state', 'open',
     '--head', `${FORK.split('/')[0]}:${branch}`, '--json', 'number,url',
-  ], { allowFailure: true }).trim() || '[]') as { number: number, url: string }[]
+  ], { quiet: true })
+  if (listed === null) {
+    fail(
+      `Could not ask ${UPSTREAM} whether a pull request for ${version} is already open.`,
+      'Submitting without that answer risks opening a second one. Nothing was pushed.',
+    )
+  }
+
+  let existing: { number: number, url: string }[]
+  try {
+    existing = JSON.parse(listed.trim() || '[]') as { number: number, url: string }[]
+  } catch {
+    fail(`gh listed open pull requests as something that is not JSON: ${listed.trim().slice(0, 200)}`)
+  }
 
   const open = existing[0] ?? null
   if (open !== null) log(`A pull request for ${version} is already open: ${open.url}`)

@@ -5,6 +5,7 @@ import type { HostContext } from '@shared/hostContext'
 import type { CommandSpec, RuntimeEnvironment } from '@shared/commandSpec'
 import type { InterviewQuestionOption } from '@shared/interviewSession'
 import type { FinalTestFileEffect, FinalTestFileEffectIntent } from '@shared/finalTestFileEffects'
+import type { PrdDocument, PrdEpic, PrdUserStory, PrdTechnicalRequirementKey } from '@shared/prdDocument'
 
 // Re-exported so the parser modules keep importing their payload pieces from
 // one place, while the definitions themselves live in shared/ next to the
@@ -284,53 +285,10 @@ export interface PrdDraftMetrics {
   userStoryCount: number
 }
 
-export interface PrdDocument {
-  schema_version: number
-  ticket_id: string
-  artifact: 'prd'
-  status: 'draft' | 'approved'
-  source_interview: {
-    content_sha256: string
-  }
-  product: {
-    problem_statement: string
-    target_users: string[]
-  }
-  scope: {
-    in_scope: string[]
-    out_of_scope: string[]
-  }
-  technical_requirements: {
-    architecture_constraints: string[]
-    data_model: string[]
-    api_contracts: string[]
-    security_constraints: string[]
-    performance_constraints: string[]
-    reliability_constraints: string[]
-    error_handling_rules: string[]
-    tooling_assumptions: string[]
-  }
-  epics: Array<{
-    id: string
-    title: string
-    objective: string
-    implementation_steps: string[]
-    user_stories: Array<{
-      id: string
-      title: string
-      acceptance_criteria: string[]
-      implementation_steps: string[]
-      verification: {
-        required_commands: CommandSpec[]
-      }
-    }>
-  }>
-  risks: string[]
-  approval: {
-    approved_by: string
-    approved_at: string
-  }
-}
+// `PrdDocument` used to be declared here and again, structurally identically, in
+// `src/lib/prdDocument.ts`. It now lives in `@shared/prdDocument` and is
+// re-exported here so the parser modules keep importing it from one place.
+export type { PrdDocument, PrdEpic, PrdUserStory, PrdTechnicalRequirementKey }
 
 export interface RelevantFilesOutputEntry {
   path: string

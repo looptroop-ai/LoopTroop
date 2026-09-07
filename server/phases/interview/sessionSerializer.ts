@@ -8,6 +8,7 @@ import type {
 } from '@shared/interviewSession'
 import type { InterviewDocument, InterviewDocumentAnswer, InterviewDocumentQuestion } from '@shared/interviewArtifact'
 import { normalizeSkipReason } from '@shared/skipReceipt'
+import { toTrimmedStringEntries as toStringArray } from '@shared/stringNormalization'
 import { calculateFollowUpLimit } from './followUpBudget'
 import { buildInterviewDocumentYaml, normalizeCoverageFollowUpQuestions } from '../../structuredOutput'
 import { collectAliasConflictWarnings, getValueByAliases, isRecord, parseYamlOrJsonCandidate } from '../../structuredOutput/yamlUtils'
@@ -19,14 +20,6 @@ const INTERVIEW_SESSION_NESTED_MAPPING_CHILDREN = {
   summary: ['goals', 'constraints', 'non_goals', 'final_free_form_answer'],
   approval: ['approved_by', 'approved_at'],
 } as const
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((entry): entry is string => typeof entry === 'string')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0)
-}
 
 export function createInterviewSessionSnapshot(input: {
   winnerId: string

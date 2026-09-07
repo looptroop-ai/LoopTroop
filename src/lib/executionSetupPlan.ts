@@ -1,4 +1,5 @@
 import * as jsYaml from 'js-yaml'
+import { toStringEntries as toStringArray } from '@shared/stringNormalization'
 import {
   normalizeCommandSpec,
   type CommandSpec,
@@ -111,12 +112,6 @@ export interface ExecutionSetupPlanParseResult {
   plan: ExecutionSetupPlan | null
   error: string | null
   warnings: string[]
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === 'string')
-    : []
 }
 
 function normalizeReadinessStatus(value: unknown): ExecutionSetupPlanReadiness['status'] {

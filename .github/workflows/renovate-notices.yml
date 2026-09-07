@@ -6,6 +6,22 @@
 #
 # This regenerates the file on Renovate's own branches and pushes the result
 # back, so those pull requests are green on arrival.
+#
+# Two jobs, and the split is the point. Regenerating means running `npm ci` and
+# `npm run build` from the pull request's branch — install scripts, build
+# scripts, config files, all of it code from the branch. The write credential
+# must not be anywhere that code can reach:
+#
+#   `regenerate` runs the branch's code with no secrets at all and
+#   `persist-credentials: false`, and hands the one file it produces to
+#   `push` as an artifact.
+#
+#   `push` never runs the branch's code. It checks out the branch with the
+#   write token, replaces that one file with the artifact, and commits.
+#
+# Before this split both halves were one job: the token was persisted into
+# `.git/config` by the checkout at the top, and every step after it — including
+# the branch's own install and build scripts — ran with it sitting there.
 name: Renovate notices
 
 on:
@@ -20,35 +36,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  notices:
+  regenerate:
     name: Regenerate third-party notices
-    # Renovate's branches only. Nothing else may be pushed to by a workflow.
-    if: startsWith(github.head_ref, 'renovate/')
+    # Renovate's own pull requests, and nothing else.
+    #
+    # The author is trusted event metadata: GitHub sets it, and a pull request
+    # cannot lie about who opened it. The branch prefix is not — a branch name
+    # is chosen by whoever pushes the branch — so gating on the prefix alone
+    # meant anyone who could push a branch to this repository could name it
+    # `renovate/anything` and have this workflow run their code. The prefix is
+    # kept as well, because it is what makes the concurrency group and the push
+    # target meaningful.
+    if: >-
+      startsWith(github.head_ref, 'renovate/')
+      && (github.event.pull_request.user.login == 'renovate[bot]'
+          || github.event.pull_request.user.login == 'renovate-bot')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.changed.outputs.changed }}
     steps:
-      # RELEASE_PR_TOKEN rather than GITHUB_TOKEN: a push made with
-      # GITHUB_TOKEN does not start workflow runs, so the required checks would
-      # never re-run and the pull request would sit at "expected" forever.
+      # No token, and no credentials left in `.git/config` for the branch's own
+      # code to find. This job pushes nothing.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.head_ref }}
-          token: ${{ secrets.RELEASE_PR_TOKEN }}
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           # Exact floor from engines.node and .nvmrc, not floating "24".
           node-version: 24.18.1
           cache: npm
-
-      - name: Fail early when the token is absent
-        env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
-        run: |
-          if [ -z "${RELEASE_TOKEN}" ]; then
-            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
-            exit 1
-          fi
 
       - name: Pin npm to the declared version
         run: node scripts/pin-npm.mjs
@@ -66,11 +85,68 @@ jobs:
       - name: Regenerate third-party notices
         run: npm run licenses:generate
 
+      # Nothing to push is the common case once the loop has settled, and
+      # deciding it here keeps the push job from starting at all.
+      - name: Did the notices change?
+        id: changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- THIRD-PARTY-NOTICES.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "THIRD-PARTY-NOTICES.md is already current; nothing to push."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
+
+      - name: Upload the regenerated notices
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: third-party-notices
+          path: THIRD-PARTY-NOTICES.md
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: Commit the regenerated notices
+    needs: [regenerate]
+    if: needs.regenerate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fail early when the token is absent
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+        run: |
+          if [ -z "${RELEASE_TOKEN}" ]; then
+            echo "::error::RELEASE_PR_TOKEN is not set. Add it as a repository secret."
+            exit 1
+          fi
+
+      # RELEASE_PR_TOKEN rather than GITHUB_TOKEN: a push made with
+      # GITHUB_TOKEN does not start workflow runs, so the required checks would
+      # never re-run and the pull request would sit at "expected" forever.
+      #
+      # This job runs no code from the branch. It checks it out, overwrites one
+      # file with the artifact, and commits — so the token is only ever present
+      # alongside git itself.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.RELEASE_PR_TOKEN }}
+
+      - name: Download the regenerated notices
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: third-party-notices
+
       # A no-op push would retrigger this workflow through `synchronize`, so the
-      # commit is conditional. With no change there is no push, and the loop
-      # ends on the second run rather than continuing.
+      # commit is conditional here as well as in the job that produced the file:
+      # the branch may have moved between the two jobs.
       - name: Commit and push when the notices changed
         run: |
+          set -euo pipefail
           if git diff --quiet -- THIRD-PARTY-NOTICES.md; then
             echo "THIRD-PARTY-NOTICES.md is already current; nothing to push."
             exit 0

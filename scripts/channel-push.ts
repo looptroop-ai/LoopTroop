@@ -20,6 +20,8 @@ import { execFileSync } from 'node:child_process'
 import type { Channel } from './package-manifests.ts'
 import { DESCRIPTOR_PATH, parseDescriptor, renderDescriptor } from './package-manifests.ts'
 import { decideChannelWrite, writes } from './channel-state.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
@@ -31,31 +33,65 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
-function flag(name: string, required = true): string | null {
-  const index = process.argv.indexOf(`--${name}`)
-  if (index === -1) {
-    if (required) fail(`--${name} is required.`)
-    return null
+const USAGE = 'Usage: node scripts/channel-push.ts --channel <homebrew|scoop> --repo owner/name --version X.Y.Z --url <url> --sha256 <hex> [--force] [--dry-run]'
+
+// Through the shared parser, like every other release script. The hand-rolled
+// version ignored unknown flags, so a typo on a job holding a write token ran
+// the default behaviour — and `--force`, the one power this script is careful
+// about, was read with `includes`, which a misspelling silently turns off.
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      channel: 'value',
+      repo: 'value',
+      version: 'value',
+      url: 'value',
+      sha256: 'value',
+      force: 'switch',
+      'dry-run': 'switch',
+    })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
   }
-  const value = process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} needs a value.`)
+})()
+
+function flag(name: string): string {
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
 const channel = flag('channel') as Channel
 if (!(channel in DESCRIPTOR_PATH)) fail(`--channel must be one of ${Object.keys(DESCRIPTOR_PATH).join(', ')}.`)
 
-const repo = flag('repo')!
-const version = flag('version')!
-const url = flag('url')!
-const sha256 = flag('sha256')!
-const force = process.argv.includes('--force')
-const dryRun = process.argv.includes('--dry-run')
+const repo = flag('repo')
+const version = flag('version')
+const url = flag('url')
+const sha256 = flag('sha256')
+const force = args.switch('force')
+const dryRun = args.switch('dry-run')
 const path = DESCRIPTOR_PATH[channel]
+
+/**
+ * `gh`, resolved once from a directory the runner owns.
+ *
+ * This script runs with a token that can write to the Homebrew tap and the
+ * Scoop bucket, so which program receives it is not something to leave to
+ * whichever directory happens to come first on PATH. Same helper, and same
+ * reasoning, as `release-draft.ts`.
+ */
+const ghPath = (() => {
+  const resolved = resolveTrustedTool('gh')
+  if ('refusal' in resolved) fail('Cannot run gh safely.', resolved.refusal)
+  return resolved.path
+})()
 
 function gh(args: string[], allowFailure = false): string {
   try {
-    return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(ghPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (error) {
     if (allowFailure) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''

@@ -20,36 +20,47 @@ import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { ReleaseManifest } from './release-assets.ts'
 import { digestedAssets } from './release-assets.ts'
+import { ArgumentError, parseArgs, requirePositional } from './cli-args.ts'
 
 function fail(message: string): never {
   process.stderr.write(`::error::${message}\n`)
   process.exit(1)
 }
 
-const args = process.argv.slice(2)
+const USAGE = 'Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json> [--registry-integrity sha512-…] [--assets-dir <dir>]'
 
-// Read before the positional filter, and its value excluded by position: an
-// integrity string does not start with `--`, so filtering on that alone counted
-// it as a third positional and the usage check rejected every invocation using
-// the flag. Same trap as `--out` in release-manifest.ts.
-const registryIndex = args.indexOf('--registry-integrity')
-const registryIntegrity = registryIndex === -1 ? null : args[registryIndex + 1] ?? null
-const consumed = new Set(registryIndex === -1 ? [] : [registryIndex, registryIndex + 1])
+/**
+ * The arguments, or the usage line and exit 1.
+ *
+ * Read by a schema rather than by index. Excluding a flag's value by position
+ * from a "not a flag" filter is what this did before, and it went wrong in both
+ * directions: a missing `--registry-integrity` value read as "not given" and
+ * skipped the registry comparison silently, which is the one gate that catches
+ * a manifest travelling with the wrong tarball.
+ */
+const args = (() => {
+  try {
+    return parseArgs(process.argv.slice(2), {
+      'registry-integrity': 'value',
+      'assets-dir': 'value',
+    })
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
+  }
+})()
 
-const assetsIndex = args.indexOf('--assets-dir')
-const assetsDir = assetsIndex === -1 ? null : args[assetsIndex + 1] ?? null
-if (assetsIndex !== -1) {
-  if (assetsDir === null || assetsDir.startsWith('--')) fail('--assets-dir needs a path.')
-  consumed.add(assetsIndex)
-  consumed.add(assetsIndex + 1)
-}
+const registryIntegrity = args.value('registry-integrity')
+const assetsDir = args.value('assets-dir')
 
-const positional = args.filter((value, index) => !consumed.has(index) && !value.startsWith('--'))
-if (positional.length !== 2) {
-  fail('Usage: npm run release:verify-artifact -- <tarball.tgz> <release-manifest.json> [--registry-integrity sha512-…] [--assets-dir <dir>]')
-}
-
-const [tarballArg, manifestArg] = positional as [string, string]
+const [tarballArg, manifestArg] = (() => {
+  try {
+    return requirePositional(args, 2, 'the tarball and the release manifest') as [string, string]
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
+  }
+})()
 const tarballPath = resolve(tarballArg)
 const manifestPath = resolve(manifestArg)
 

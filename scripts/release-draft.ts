@@ -22,6 +22,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { AssetDigest, ReleaseManifest } from './release-assets.ts'
 import { digestedAssets, manifestDifferences, MANIFEST_ASSET, planDraftAssets, requiredAssets } from './release-assets.ts'
+import { isGhNotFound } from './release-state.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
 
 function fail(message: string, ...detail: string[]): never {
   process.stderr.write(`::error::${message}\n`)
@@ -33,36 +36,106 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
-function flag(name: string, required = true): string | null {
-  const index = process.argv.indexOf(`--${name}`)
-  if (index === -1) {
-    if (required) fail(`--${name} is required.`)
-    return null
+const USAGE = 'Usage: node scripts/release-draft.ts --version X.Y.Z --manifest <path> --dir <dir> --notes <path> [--prerelease]'
+
+// An unknown flag used to be ignored, so a typo in the workflow that invokes
+// this ran with the default behaviour and reported success.
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      version: 'value',
+      manifest: 'value',
+      dir: 'value',
+      notes: 'value',
+      prerelease: 'switch',
+    })
+    // This script takes options only, and it holds `contents: write`. A stray
+    // bare token was collected and never read, so a malformed invocation still
+    // created or edited a release.
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
   }
-  const value = process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} needs a value.`)
+})()
+
+function requiredFlag(name: string): string {
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
-const version = flag('version')!
-const manifestPath = resolve(flag('manifest')!)
-const assetDir = resolve(flag('dir') ?? '.', '')
-const notesPath = resolve(flag('notes')!)
-const prerelease = process.argv.includes('--prerelease')
+const version = requiredFlag('version')
+const manifestPath = resolve(requiredFlag('manifest'))
+const assetDir = resolve(requiredFlag('dir'), '')
+const notesPath = resolve(requiredFlag('notes'))
+const prerelease = args.switch('prerelease')
 const tag = `v${version}`
 
+/**
+ * `gh`, resolved once from a directory the runner owns.
+ *
+ * Naming the tool and letting the operating system search `PATH` lets the first
+ * matching directory decide which program receives `contents: write` and the
+ * arguments that create, edit and upload to a release. Resolved and checked
+ * before the first call so a wrong answer is a refusal rather than a release.
+ */
+const ghPath = (() => {
+  const resolved = resolveTrustedTool('gh')
+  if ('refusal' in resolved) fail('Cannot run gh safely.', resolved.refusal)
+  return resolved.path
+})()
+
 function gh(args: string[]): string {
-  return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
+  return execFileSync(ghPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
 }
 
-/** `gh release view` on a tag that has no release exits non-zero. */
-function releaseExists(): boolean {
+/**
+ * Whether there is a draft for this tag to resume.
+ *
+ * Three answers, and the previous version had two. It wrapped `gh release view`
+ * in a `try`/`catch` and read *every* failure as "no release", so an expired
+ * token, a rate limit or a GitHub outage entered the create path — and if the
+ * release did exist, the script went on to edit it, and could upload over it
+ * with `--clobber`, without ever having established that it was still a draft.
+ * Clobbering a published release replaces bytes somebody may already have
+ * downloaded.
+ *
+ * So: only a confirmed 404 is absence, and the state is read from `isDraft`
+ * rather than inferred from the lookup having succeeded.
+ */
+function draftState(): 'absent' | 'draft' {
+  let output: string
   try {
-    execFileSync('gh', ['release', 'view', tag, '--json', 'id'], { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
+    output = execFileSync(ghPath, ['release', 'view', tag, '--json', 'isDraft'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    const stderr = (error as { stderr?: Buffer | string }).stderr
+    const text = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : (stderr ?? '')
+    if (isGhNotFound(text)) return 'absent'
+    fail(
+      `Could not look up the release for ${tag}, and the reason is not that it is absent.`,
+      text.trim() || String(error),
+      'Nothing was created, edited or uploaded.',
+    )
   }
+
+  let parsed: { isDraft?: unknown }
+  try {
+    parsed = JSON.parse(output) as { isDraft?: unknown }
+  } catch {
+    fail(`gh returned unparseable JSON for ${tag}: ${output.trim()}`)
+  }
+
+  if (parsed.isDraft === true) return 'draft'
+  fail(
+    `${tag} is already published, so this run has nothing to draft.`,
+    'Editing its notes or re-uploading its assets would change a release people can already install.',
+    'Release a new version instead.',
+  )
 }
 
 function digestOf(path: string): AssetDigest {
@@ -113,7 +186,7 @@ log(`Verified ${required.length} local asset(s) against ${MANIFEST_ASSET}.`)
 
 const uploadArgs = required.map((name) => localFiles.get(name)!)
 
-if (!releaseExists()) {
+if (draftState() === 'absent') {
   gh([
     'release', 'create', tag,
     '--draft',

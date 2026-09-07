@@ -180,24 +180,65 @@ jobs:
       # templates is a change to what that release publishes, and it belongs in
       # a reviewed code change rather than behind a dispatch checkbox.
       #
-      # Falling back to the default branch when the manifest records no commit,
-      # which is every manifest written before the field existed. Those releases
-      # carry no bundle either, so `channel-inputs.ts` has already refused them
-      # and this is unreachable — it is here so that a future gap degrades to
-      # today's behaviour rather than to an empty ref.
+      # A manifest that records no commit is refused rather than rendered from
+      # the default branch. That fallback was the one remaining way an
+      # unverified ref could reach the credential-bearing jobs below, and it
+      # produced exactly what the pin exists to prevent: an old release
+      # re-rendered with today's templates, announced as a warning nobody reads.
+      # It is unreachable today — `channel-inputs.ts` refuses a manifest with no
+      # bundle, and manifests predating the commit field carry no bundle either —
+      # so this closes a gap rather than removing a capability.
+      #
+      # The commit is *verified* rather than trusted. Until this check existed,
+      # the only thing established about the manifest was that its version
+      # matched the one asked for; its `commit` field then became the checkout
+      # ref for jobs that hold the Docker, Chocolatey and tap credentials.
+      # Resolving the release tag and requiring the two to agree is what ties
+      # that ref to a release GitHub says exists, and the format check is what
+      # stops anything that is not a commit id reaching `actions/checkout` at
+      # all — a ref is not a SHA unless it looks like one.
       - name: Resolve which templates to render with
         id: templates
         env:
+          GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ steps.inputs.outputs.commit }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [ -n "${COMMIT}" ]; then
-            echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
-            echo "Rendering with the templates from ${COMMIT}, the commit this release was built from."
-          else
-            echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-            echo "::warning::This release's manifest records no commit; rendering with the default branch."
+          if [ -z "${COMMIT}" ]; then
+            echo "::error::v${VERSION}'s manifest records no commit, so the templates that rendered it cannot be identified."
+            echo "::error::Refusing to republish from the default branch: that would change what this release publishes."
+            exit 1
           fi
+
+          case "${COMMIT}" in
+            *[!0-9a-f]* | "")
+              echo "::error::The manifest's commit '${COMMIT}' is not a lowercase hexadecimal SHA."
+              exit 1 ;;
+          esac
+          if [ "${#COMMIT}" -ne 40 ]; then
+            echo "::error::The manifest's commit '${COMMIT}' is ${#COMMIT} characters; a full SHA is 40."
+            exit 1
+          fi
+
+          # `^{}` on an annotated tag dereferences it to the commit, so an
+          # annotated and a lightweight tag compare equal. The tag is asked of
+          # the API rather than of a checkout, because this job checks out the
+          # default branch and a shallow clone of it need not contain the tag.
+          tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --jq '.object.sha')
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --jq '.object.type')
+          if [ "${type}" = "tag" ]; then
+            tagged=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tagged}" --jq '.object.sha')
+          fi
+
+          if [ "${COMMIT}" != "${tagged}" ]; then
+            echo "::error::v${VERSION}'s manifest says it was built from ${COMMIT}, but the tag points at ${tagged}."
+            echo "::error::Refusing to check that out. The manifest and the release disagree about what this version is."
+            exit 1
+          fi
+
+          echo "ref=${COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "Rendering with the templates from ${COMMIT}, which is what v${VERSION} is tagged at."
 
   # ---------------------------------------------------------------------------
   # Homebrew and Scoop: a file in a git repository, written through the contents

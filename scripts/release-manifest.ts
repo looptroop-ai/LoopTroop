@@ -29,6 +29,7 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { ArgumentError, parseArgs, requirePositional } from './cli-args.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -37,36 +38,37 @@ function fail(message: string): never {
   process.exit(1)
 }
 
-const args = process.argv.slice(2)
+const USAGE = 'Usage: npm run release:manifest -- <tarball.tgz> [--asset <path>]... [--out release-manifest.json]'
 
-// `--out` takes a value, and that value is a path, so it does not start with
-// `--`. A plain "not a flag" filter therefore counted it as a second positional
-// and the usage check rejected every invocation that used the flag this script
-// documents. The flag's value is excluded by position instead.
-const outIndex = args.indexOf('--out')
-const outPath = outIndex === -1
-  ? resolve(repoRoot, 'release-manifest.json')
-  : resolve(args[outIndex + 1] ?? fail('--out needs a path'))
-const consumed = new Set(outIndex === -1 ? [] : [outIndex, outIndex + 1])
+/**
+ * The arguments, read by a schema rather than by index.
+ *
+ * Every value here is a path, and a path does not start with `--`, so the
+ * previous "not a flag" filter counted each one as a positional and had to
+ * exclude it by index instead. `--asset` had a guard against taking the next
+ * flag as its value and `--out` did not, so `--out --foo` wrote the release
+ * manifest to a file literally named `--foo`.
+ */
+const args = (() => {
+  try {
+    return parseArgs(process.argv.slice(2), { out: 'value', asset: 'values' })
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
+  }
+})()
 
-// Repeatable, and each value is a path, so the same by-position exclusion the
-// `--out` value needs applies to every one of them.
-const extraAssets: string[] = []
-for (const [index, value] of args.entries()) {
-  if (value !== '--asset') continue
-  const path = args[index + 1]
-  if (path === undefined || path.startsWith('--')) fail('--asset needs a path')
-  extraAssets.push(resolve(path))
-  consumed.add(index)
-  consumed.add(index + 1)
-}
+const outPath = resolve(args.value('out') ?? resolve(repoRoot, 'release-manifest.json'))
+const extraAssets = args.values('asset').map((path) => resolve(path))
 
-const positional = args.filter((value, index) => !consumed.has(index) && !value.startsWith('--'))
-if (positional.length !== 1) {
-  fail('Usage: npm run release:manifest -- <tarball.tgz> [--asset <path>]... [--out release-manifest.json]')
-}
-
-const tarballPath = resolve(positional[0]!)
+const tarballPath = resolve((() => {
+  try {
+    return requirePositional(args, 1, 'the tarball to record')[0]!
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
+  }
+})())
 
 let bytes: Buffer
 try {

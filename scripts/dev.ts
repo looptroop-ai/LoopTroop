@@ -362,6 +362,17 @@ if (preflightReport) {
       'Dependencies',
       `Deferred daily release-age check; last completed today at ${formatMaintenanceTimestamp(preflightReport.dependencySync.lastCompletedAt)}`,
     )
+  } else if (!preflightReport.dependencySync.checked) {
+    // A check that could not run is not a check that found nothing. Without
+    // this branch a failed `npm outdated` fell through to the count line and
+    // reported "Updated 0 runtime and 0 dev packages", which is what a fully
+    // up-to-date tree also reports.
+    printSummaryBlock('Dependencies', [
+      'Could not check for updates; dependencies were left alone.',
+      // The report is read back from a file an earlier run wrote, with no
+      // validation, so an older one need not carry this field at all.
+      ...(preflightReport.dependencySync.errors ?? []),
+    ])
   } else if (preflightReport.dependencySync.alreadyCurrent) {
     printSummaryLine('Dependencies', 'All direct dependencies already matched npm latest stable')
   } else if (

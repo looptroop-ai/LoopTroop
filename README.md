@@ -92,7 +92,8 @@ Resolves the newest release, checks the download against the checksum that
 release published, and hands it to npm. Because it installs through npm,
 `npm install -g looptroop@latest` and `npm uninstall -g looptroop` keep working
 exactly as they would have. Pin a version with `--version X.Y.Z` (`-Version` on
-Windows), or choose a directory with `--prefix`.
+Windows). It installs wherever npm's global prefix points; change that with
+`npm config set prefix`.
 
 **Needs Node and npm already installed.** It never installs Node for you, never
 asks for sudo, and writes nothing outside npm's global prefix.

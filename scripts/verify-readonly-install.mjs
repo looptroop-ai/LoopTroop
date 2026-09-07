@@ -2,6 +2,15 @@
 /**
  * Runs a full session against an install directory that is genuinely read-only.
  *
+ *   sudo -E "$(which node)" scripts/verify-readonly-install.mjs
+ *
+ * With `LOOPTROOP_READONLY_REQUIRED=1`, which is how `ci.yml` and `release.yml`
+ * invoke it and the only invocation that enforces anything. There is no npm
+ * alias on purpose: there used to be a `verify:readonly` that set neither the
+ * variable nor `sudo`, so it skipped the mount check and exited zero. A command
+ * named for a verification that verifies nothing is worse than no command, and
+ * an alias cannot reproduce the two things that make this one real.
+ *
  * A global install belongs to the machine, not the user: /usr/local/lib, a
  * Homebrew cellar, C:\Program Files, a container image layer, a directory an
  * administrator has locked down. The daemon must keep every byte of its own
@@ -33,6 +42,7 @@ import { fileURLToPath } from 'node:url'
 // that. A private copy here is how this check came to accept a runtime the
 // launcher refuses.
 import { satisfiesFloor } from './installer-core.mjs'
+import { waitForHealth } from './smoke-lib.mjs'
 
 /**
  * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
@@ -82,6 +92,15 @@ function parseFloor(spec) {
  * enforces, it exits 1 in about thirty milliseconds, before a line of the daemon
  * runs — a Node-resolution failure wearing the costume of a read-only one.
  */
+/**
+ * How long the daemon has to answer `/api/health`.
+ *
+ * Stated here rather than defaulted in the shared helper, because this one is
+ * starting a daemon out of a read-only mount and each caller's patience is its
+ * own decision.
+ */
+const HEALTH_TIMEOUT_MS = 30_000
+
 const CHILD_ENV = {
   LOOPTROOP_OPENCODE_MODE: 'mock',
   PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ''}`,
@@ -142,19 +161,6 @@ function run(command, args, options = {}) {
   }
 }
 
-async function waitForHealth(baseUrl, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`)
-      if (response.ok) return await response.json()
-    } catch {
-      // Not listening yet.
-    }
-    await new Promise((done) => setTimeout(done, 250))
-  }
-  return null
-}
 
 /**
  * Every file under a directory, with the size and mtime that would betray a
@@ -435,7 +441,7 @@ async function main() {
     }
 
     const state = JSON.parse(readFileSync(join(configDir, 'daemon.json'), 'utf8'))
-    const health = await waitForHealth(baseUrl)
+    const health = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
     // The instance id, not just a 200. This asserted only `status === 'ok'`
     // against a fixed port, and passed on a run where the daemon answering was
     // one left behind by an earlier run — the single failure a verifier must

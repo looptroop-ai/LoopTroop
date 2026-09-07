@@ -37,6 +37,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { renderWingetManifests, WINGET_IDENTIFIER, wingetManifestDir } from './package-manifests.ts'
+import { resolveTrustedTool } from './trusted-tool.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
 const UPSTREAM = 'microsoft/winget-pkgs'
 const FORK = 'looptroop-ai/winget-pkgs'
@@ -51,14 +53,61 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`)
 }
 
+const USAGE = 'Usage: node scripts/winget-submit.ts --version X.Y.Z --url <url> --sha256 <hex>'
+
+// The same shared parser the other release scripts use. This one opens a pull
+// request against a repository we do not own, so a malformed invocation is not
+// something to absorb quietly.
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      version: 'value',
+      url: 'value',
+      sha256: 'value',
+    })
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(error.message, USAGE)
+  }
+})()
+
 function flag(name: string): string {
-  const index = process.argv.indexOf(`--${name}`)
-  const value = index === -1 ? undefined : process.argv[index + 1]
-  if (value === undefined || value.startsWith('--')) fail(`--${name} is required.`)
+  const value = args.value(name)
+  if (value === null) fail(`--${name} is required.`, USAGE)
   return value
 }
 
-const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
+// `??` passes an empty string through, and an empty token makes `redact` split
+// every diagnostic into single characters — so a set-but-empty secret would
+// corrupt the message reporting it. Checked for emptiness, not just presence.
+const suppliedToken = process.env.WINGET_TOKEN?.trim()
+if (!suppliedToken) fail('WINGET_TOKEN is not set.')
+const token = suppliedToken
+
+/** Anything that would print the token, with the token taken out. */
+function redact(text: string): string {
+  return text.split(token).join('[redacted]').replace(/x-access-token:[^@\s]+@/g, 'x-access-token:[redacted]@')
+}
+
+/**
+ * `gh` and `git`, resolved once each from a directory the runner owns.
+ *
+ * Every child of this script is handed `GH_TOKEN`, and the clone URL carries
+ * the token too, so which program runs is which program receives the
+ * credential. Resolved on first use and remembered, since `run` is called for
+ * both tools many times.
+ */
+const resolvedTools = new Map<string, string>()
+function resolveTool(command: string): string {
+  const cached = resolvedTools.get(command)
+  if (cached !== undefined) return cached
+  const resolved = resolveTrustedTool(command)
+  if ('refusal' in resolved) fail(`Cannot run ${command} safely.`, resolved.refusal)
+  resolvedTools.set(command, resolved.path)
+  return resolved.path
+}
 
 /**
  * `GH_TOKEN` is set from `WINGET_TOKEN` for every child, because `gh` reads
@@ -66,11 +115,11 @@ const token = process.env.WINGET_TOKEN ?? fail('WINGET_TOKEN is not set.')
  * the pull request is opened against a repository we do not own, by a
  * credential that exists for exactly that purpose.
  */
-function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true }): string
+function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet: true }): string | null
 function run(command: string, args: string[], options?: { cwd?: string, allowFailure?: boolean }): string
 function run(command: string, args: string[], options: { cwd?: string, allowFailure?: boolean, quiet?: true } = {}): string | null {
   try {
-    return execFileSync(command, args, {
+    return execFileSync(resolveTool(command), args, {
       cwd: options.cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -82,7 +131,9 @@ function run(command: string, args: string[], options: { cwd?: string, allowFail
     if (options.quiet === true) return null
     if (options.allowFailure === true) return ''
     const detail = error instanceof Error && 'stderr' in error ? String((error as { stderr?: unknown }).stderr ?? '') : ''
-    fail(`${command} ${args.join(' ')} failed.`, detail)
+    // Redacted, both halves. The clone URL embeds the token, so the argument
+    // list is a credential and `git` prints the remote back in its own errors.
+    fail(`${command} ${redact(args.join(' '))} failed.`, redact(detail))
   }
 }
 
@@ -94,6 +145,8 @@ const sha256 = flag('sha256')
 
 const branch = `looptroop-${version}`
 const work = mkdtempSync(join(tmpdir(), 'looptroop-winget-submit-'))
+/** Set once there is nothing further to do, so the `finally` still runs. */
+let done = false
 
 try {
   // Already open? A release re-run must reconcile rather than duplicate — and
@@ -101,10 +154,30 @@ try {
   // of an open pull request was wrong: it made every correction to a submitted
   // manifest unreachable. The `Architecture: neutral` mistake was found while
   // #417030 was open, and there was no way to push the fix to it.
-  const existing = JSON.parse(run('gh', [
+  //
+  // The probe must not fail open. With `allowFailure` it returned an empty
+  // string for an auth failure, a rate limit or a network error, which parsed
+  // as an empty list and read as "no pull request is open" — after which this
+  // pushes a branch and opens a *second* pull request in a repository we do not
+  // own, against a queue somebody else has to clean up. `quiet` separates "this
+  // failed" from "this found nothing", which is the whole answer here.
+  const listed = run('gh', [
     'pr', 'list', '--repo', UPSTREAM, '--state', 'open',
     '--head', `${FORK.split('/')[0]}:${branch}`, '--json', 'number,url',
-  ], { allowFailure: true }).trim() || '[]') as { number: number, url: string }[]
+  ], { quiet: true })
+  if (listed === null) {
+    fail(
+      `Could not ask ${UPSTREAM} whether a pull request for ${version} is already open.`,
+      'Submitting without that answer risks opening a second one. Nothing was pushed.',
+    )
+  }
+
+  let existing: { number: number, url: string }[]
+  try {
+    existing = JSON.parse(listed.trim() || '[]') as { number: number, url: string }[]
+  } catch {
+    fail(`gh listed open pull requests as something that is not JSON: ${listed.trim().slice(0, 200)}`)
+  }
 
   const open = existing[0] ?? null
   if (open !== null) log(`A pull request for ${version} is already open: ${open.url}`)
@@ -161,25 +234,31 @@ try {
 
     if (unchanged) {
       log('The open pull request already carries exactly these manifests. Nothing to do.')
-      process.exit(0)
+      // Not `process.exit`: the `finally` below removes a clone whose
+      // `.git/config` holds the remote URL, and that URL embeds the token.
+      // `process.exit` does not run `finally`, so both of this script's early
+      // exits left the credential on disk.
+      done = true
     }
-    log('The manifests have changed; updating the pull request.')
+    if (!done) log('The manifests have changed; updating the pull request.')
   }
 
-  run('git', ['commit', '-m', title], { cwd: repo })
-  run('git', ['push', '--force-with-lease', 'origin', branch], { cwd: repo })
+  if (!done) {
+    run('git', ['commit', '-m', title], { cwd: repo })
+    run('git', ['push', '--force-with-lease', 'origin', branch], { cwd: repo })
+  }
 
   // An open pull request is updated by the push above; all that is left is to
   // make its title right, since a first submission that was opened as
   // `New version:` needs correcting in place.
-  if (open !== null) {
+  if (!done && open !== null) {
     run('gh', ['pr', 'edit', String(open.number), '--repo', UPSTREAM, '--title', title], { allowFailure: true })
     log(`\nUpdated ${open.url}`)
     log('Acceptance is a review queue, not a result. Nothing waits on it.')
-    process.exit(0)
+    done = true
   }
 
-  const pr = run('gh', [
+  const pr = done ? null : run('gh', [
     'pr', 'create',
     '--repo', UPSTREAM,
     '--head', `${FORK.split('/')[0]}:${branch}`,
@@ -195,10 +274,14 @@ try {
       'The installer is a portable executable in a zip; it carries its own Node',
       'runtime, so only git is declared as a dependency.',
     ].join('\n'),
-  ], { cwd: repo }).trim()
+  ], { cwd: repo })?.trim()
 
-  log(`\nSubmitted: ${pr}`)
-  log('Acceptance is a review queue, not a result. Nothing waits on it.')
+  if (pr !== null) {
+    log(`\nSubmitted: ${pr}`)
+    log('Acceptance is a review queue, not a result. Nothing waits on it.')
+  }
 } finally {
+  // The clone's `.git/config` carries the token in its remote URL, so this is
+  // credential cleanup and not only tidiness.
   rmSync(work, { recursive: true, force: true })
 }

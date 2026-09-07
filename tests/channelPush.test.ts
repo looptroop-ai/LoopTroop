@@ -113,6 +113,12 @@ if (joined.includes('.permissions.push')) {
           ...process.env,
           GH_STUB_STATE: statePath,
           PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+          // Named outright, not merely planted first on PATH. The script
+          // resolves `gh` and refuses one that comes from a directory it does
+          // not trust — which is exactly what a stub in a temporary directory
+          // is — so a harness supplying its own has to say so deliberately.
+          // That is the distinction the override exists for.
+          LOOPTROOP_GH_PATH: join(stubBin, 'gh'),
         },
       })
 

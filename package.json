@@ -76,7 +76,6 @@
     "installers:check": "node scripts/sync-installers.mjs --check",
     "build:bundle": "node scripts/build-bundle.mjs",
     "verify:container": "node scripts/smoke-container.mjs",
-    "verify:readonly": "node scripts/verify-readonly-install.mjs",
     "licenses:generate": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "release:notes": "node scripts/print-release-notes.ts",

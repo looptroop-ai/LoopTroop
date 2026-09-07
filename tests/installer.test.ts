@@ -5,9 +5,12 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { binaryAssetName, binaryTarget, defaultPrefix, detectLibc, onPath } from '../scripts/installer-core.mjs'
+import {
+  binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
+  resolveOnPath, stallGuard, streamBody,
+} from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -271,6 +274,26 @@ describe('installer core', () => {
     expect(result.stderr).toContain('no installable assets')
   })
 
+  /**
+   * The same three rules `cli-args.ts` applies to the release scripts. This
+   * parser had only the first, and both gaps were reachable from a shell:
+   * `--prefix "$DIR"` with `DIR` unset installed the standalone executable into
+   * the current working directory, and `--version -h` asked GitHub for a
+   * release called `v-h`.
+   */
+  it.each([
+    [['--prefix', ''], 'was given an empty one'],
+    [['--version', ''], 'was given an empty one'],
+    [['--version', '-h'], 'is followed by -h'],
+    [['--tarball', '--binary'], 'is followed by --binary'],
+    [['--prefix'], 'is the last argument'],
+  ])('refuses %j where a value belongs', async (argv, expected) => {
+    const result = await runInstaller(argv)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(expected)
+  })
+
   it('refuses an unknown option rather than ignoring it', async () => {
     const result = await runInstaller(['--dry-run', '--global'])
 
@@ -409,31 +432,56 @@ describe('installer core', () => {
    * here. Every test below is about that copy.
    */
   describe('--binary', () => {
-    /** Stands in for the executable. Answers the four things the installer asks. */
-    function stubProgram(version: string) {
+    /**
+     * Stands in for the executable. Answers the four things the installer asks.
+     *
+     * `status` is deliberately overridable. It is the one probe with three
+     * answers rather than two — running, stopped, and "cannot say" — and the
+     * third is what an upgrade used to read as stopped.
+     */
+    function stubProgram(version: string, { status = 'report', start = 'plain' } = {}) {
+      const statusArm = status === 'report'
+        // Statefulness via a file, so `stop` is observable and `status` can
+        // disagree with itself before and after.
+        ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;'
+        // A live process that is not answering. The real CLI reports this as
+        // `running: false` with the pid in `notAnswering`, on purpose.
+        : status === 'not-answering'
+          ? '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":false,"notAnswering":{"pid":4242}}\'; else echo \'{"running":false,"notAnswering":null}\'; fi ;;'
+          // Runs, exits 0, and says nothing a probe can parse.
+          : '  status) echo "not json at all" ;;'
+      // A `stop` that reports failure, for the case where nothing at all can be
+      // established: the probe cannot answer and the command did not work.
+      const stopArm = status === 'unparseable-and-stop-fails'
+        ? '  stop) echo "stub cannot stop" >&2; exit 1 ;;'
+        : '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;'
+      const startArm = start === 'plain'
+        ? '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;'
+        // Stands in for another installer claiming the directory while this one
+        // is mid-install, which is the only moment the lock can change hands.
+        : '  start) : > "$LOOPTROOP_STUB_STATE"; [ -n "$LOOPTROOP_STUB_LOCK" ] && echo "someone-else 2000-01-01" > "$LOOPTROOP_STUB_LOCK"; echo "stub started" ;;'
+
       return [
         '#!/bin/sh',
         'case "$1" in',
         `  --version) echo "${version}" ;;`,
-        // Statefulness via a file, so `stop` is observable and `status` can
-        // disagree with itself before and after.
-        '  status) if [ -f "$LOOPTROOP_STUB_STATE" ]; then echo \'{"running":true}\'; else echo \'{"running":false}\'; fi ;;',
-        '  stop) rm -f "$LOOPTROOP_STUB_STATE"; echo "stub stopped" ;;',
-        '  start) : > "$LOOPTROOP_STUB_STATE"; echo "stub started" ;;',
+        statusArm,
+        stopArm,
+        startArm,
         'esac',
         '',
       ].join('\n')
     }
 
     /** A release archive with the layout `build-binary.mjs` produces. */
-    function buildArchive(version: string, program: string) {
+    function buildArchive(version: string, program: string, notice = 'Node.js is MIT licensed.') {
       const dir = mkdtempSync(join(tmpdir(), 'looptroop-archive-'))
       tempDirs.push(dir)
       const name = `looptroop-${version}-${TARGET}`
       mkdirSync(join(dir, name))
       writeFileSync(join(dir, name, 'looptroop'), program)
       chmodSync(join(dir, name, 'looptroop'), 0o755)
-      writeFileSync(join(dir, name, 'LICENSE.node.txt'), 'Node.js is MIT licensed.')
+      writeFileSync(join(dir, name, 'LICENSE.node.txt'), notice)
 
       const out = join(dir, `${name}.tar.gz`)
       const packed = spawnSync('tar', ['-czf', out, '-C', dir, name], { encoding: 'utf8' })
@@ -572,6 +620,227 @@ describe('installer core', () => {
       // somebody's PATH.
       expect(existsSync(join(prefix, 'LICENSE.node.txt'))).toBe(true)
       expect(existsSync(join(prefix, 'bin', 'LICENSE.node.txt'))).toBe(false)
+    })
+
+    /**
+     * The licences are payload, and payload is not transactional.
+     *
+     * They used to be copied into the prefix at the top of the install, before
+     * the daemon check, the swap, the version probe and the restart. So an
+     * upgrade that rolled back restored the executable and then told the user
+     * "your previous version is back in place" — beside the *new* version's
+     * notices. Nothing may be written into the prefix until the one thing with
+     * a rollback has committed.
+     */
+    it.runIf(canInstallBinary)('does not update the licences an upgrade rolled back', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'), 'notice from the installed version')
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n', 'notice from the version that does not run')
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('rolled back')
+      expect(readFileSync(join(prefix, 'LICENSE.node.txt'), 'utf8')).toBe('notice from the installed version')
+    })
+
+    /**
+     * `status` has three answers and the swap used to accept two of them as
+     * "stopped", so an upgrade could replace the executable under a live daemon
+     * and then never start it again — leaving the old version serving while
+     * `looptroop --version` reported the new one.
+     *
+     * Resolved rather than refused: it is asked to stop, has to *confirm* it
+     * stopped, and is started again afterwards, because a probe that cannot
+     * answer may well have been answering for a service that was up.
+     */
+    it.runIf(canInstallBinary)('stops and restarts a daemon whose state it cannot read', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('would not report whether its daemon is running')
+      // Started again, from the copy that is now installed.
+      expect(result.stdout).toContain('the daemon is running again')
+      expect(existsSync(stubState)).toBe(true)
+    })
+
+    /**
+     * The other half of that rule, and the reason it resolves rather than
+     * refuses. An executable that cannot print its own version cannot answer a
+     * daemon probe either — so refusing on an unreadable state would wedge
+     * exactly the person who most needs to reinstall.
+     */
+    /**
+     * The mirror of the `notAnswering` fix, and the regression it caused.
+     *
+     * "Something is there" is the right question for the *stop* decision and
+     * the wrong one for the *start* decision: a daemon that comes up and never
+     * answers is precisely the failure the restart check exists to catch, so
+     * counting it as started reported a broken upgrade as a successful one and
+     * skipped the rollback. One predicate cannot answer both questions.
+     */
+    it.runIf(canInstallBinary)('rolls back when the restarted daemon never answers', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      writeFileSync(stubState, '')
+
+      // Starts, and then only ever reports itself as present-but-not-answering.
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('would not start')
+      expect(result.stderr).toContain('rolled back')
+    }, 90_000)
+
+    /**
+     * `running: false` is not "nothing is there". The CLI reports a live but
+     * unresponsive daemon that way, with the pid in a separate `notAnswering`
+     * field — its own comment says the split exists because every installer
+     * reads `running` as "answering". Reading only `running` called a process
+     * holding the port stopped, so the executable was swapped underneath it and
+     * the daemon started afterwards could not bind.
+     */
+    it.runIf(canInstallBinary)('stops a daemon that is alive but not answering', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'not-answering' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+      // Alive, and not answering.
+      writeFileSync(stubState, '')
+
+      // The version being installed answers normally, so the upgrade should
+      // succeed. Written the other way round first — both copies unresponsive —
+      // this asserted a successful install, and passed only because
+      // `startDaemon` was accepting a present-but-silent daemon as started. The
+      // test was encoding the bug.
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('Stopping the running daemon')
+      // Stopped, and put back: it was serving before the upgrade.
+      expect(result.stdout).toContain('the daemon is running again')
+      expect(existsSync(stubState)).toBe(true)
+    })
+
+    /**
+     * The other end of the unknown branch. When the probe cannot answer *and*
+     * `stop` reports that it failed, nothing at all has been established — so
+     * the executable is left alone rather than swapped on no information.
+     *
+     * `stop`'s exit code is the evidence here. Before it was read, the check
+     * was `daemonRunning(...) !== true`, which an unreadable probe satisfies on
+     * the first poll: the thirty-second wait proved nothing and the swap went
+     * ahead regardless.
+     */
+    it.runIf(canInstallBinary)('refuses when the state is unreadable and the stop failed', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { status: 'unparseable-and-stop-fails' }))
+      expect((await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })).status).toBe(0)
+
+      const installed = join(prefix, 'bin', 'looptroop')
+      const before = readFileSync(installed, 'utf8')
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('did not succeed')
+      expect(result.stderr).toContain('Nothing was installed')
+      // The executable it refused to replace is byte-for-byte what it was.
+      expect(readFileSync(installed, 'utf8')).toBe(before)
+    })
+
+    it.runIf(canInstallBinary)('installs over an executable that does not run at all', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      archive = buildArchive('0.5.9', '#!/bin/sh\nexit 3\n')
+      // It installs nothing, but it does leave the broken copy quarantined and
+      // no working executable behind, which is the state to recover from.
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      mkdirSync(join(prefix, 'bin'), { recursive: true })
+      writeFileSync(join(prefix, 'bin', 'looptroop'), '#!/bin/sh\nexit 3\n')
+      chmodSync(join(prefix, 'bin', 'looptroop'), 0o755)
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('does not run, so there is no daemon of its to stop')
+      expect(spawnSync(join(prefix, 'bin', 'looptroop'), ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.5.9')
+      // Without that escape this would take the "cannot say, so stop it" path,
+      // whose whole point is that it starts the daemon again afterwards — and
+      // there was no daemon here to put back.
+      expect(existsSync(stubState)).toBe(false)
+    })
+
+    /**
+     * A lock is removed by whoever holds it, and only by them.
+     *
+     * The takeover path is where this goes wrong: two installers that both see
+     * one stale lock used to both delete it and both create their own, after
+     * which the second deleted the first's. Injected here from the other end —
+     * the lock changes hands while this install is running — because the
+     * observable consequence is the same and it is reachable without a race.
+     */
+    it.runIf(canInstallBinary)('leaves behind a lock that is no longer its own', async () => {
+      const prefix = freshPrefix()
+      const stubState = join(prefix, 'state')
+      const lock = join(prefix, '.install.lock')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      await runInstaller(['--binary', '--prefix', prefix], { LOOPTROOP_STUB_STATE: stubState })
+      // Running, so the upgrade below stops it and starts it again — and it is
+      // the restart that stands in for another installer claiming the lock.
+      writeFileSync(stubState, '')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9', { start: 'takeover' }))
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: stubState,
+        LOOPTROOP_STUB_LOCK: lock,
+      })
+
+      expect(result.status).toBe(0)
+      expect(existsSync(lock)).toBe(true)
+      expect(readFileSync(lock, 'utf8')).toContain('someone-else')
+    })
+
+    /**
+     * The sweep at the top of every install removes leftovers, which is right
+     * while there is a working executable beside them. With `installed`
+     * missing, the backup *is* the user's only copy — the state a rollback
+     * whose restore failed leaves behind, and whose message tells them where
+     * that backup is. Re-running the installer is the obvious next move, and it
+     * used to delete the backup before the fresh install had proved anything.
+     */
+    it.runIf(canInstallBinary)('keeps the backup when nothing is installed beside it', async () => {
+      const prefix = freshPrefix()
+      const bin = join(prefix, 'bin')
+      mkdirSync(bin, { recursive: true })
+      const backup = join(bin, '.looptroop-previous-4242')
+      writeFileSync(backup, 'the only working copy')
+      // Alongside leftovers that are nobody's only copy and should still go.
+      writeFileSync(join(bin, 'looptroop.rejected-4242'), 'rejected')
+
+      archive = buildArchive('0.5.9', stubProgram('0.5.9'))
+      const result = await runInstaller(['--binary', '--prefix', prefix], {
+        LOOPTROOP_STUB_STATE: join(prefix, 'state'),
+      })
+
+      expect(result.status).toBe(0)
+      expect(readFileSync(backup, 'utf8')).toBe('the only working copy')
+      expect(existsSync(join(bin, 'looptroop.rejected-4242'))).toBe(false)
     })
 
     it.runIf(canInstallBinary)('leaves no staging files behind', async () => {
@@ -782,6 +1051,221 @@ describe('installer core', () => {
   })
 })
 
+/**
+ * The two halves of "a transfer this installer will not let run away with it".
+ *
+ * Both used to be absent: metadata and assets were fetched with no timeout at
+ * all, and the body was taken with `arrayBuffer()`, which buffers whatever the
+ * other end sends before the checksum that exists to catch a wrong file has a
+ * chance to object.
+ */
+describe('bounded transfers', () => {
+  it('abandons a transfer that stops making progress', async () => {
+    const guard = stallGuard(20, 'The download')
+
+    await new Promise((done) => setTimeout(done, 60))
+
+    expect(guard.signal.aborted).toBe(true)
+    expect(guard.reason()).toContain('made no progress')
+    guard.release()
+  })
+
+  it('does not fire while bytes keep arriving', async () => {
+    const guard = stallGuard(60, 'The download')
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      await new Promise((done) => setTimeout(done, 20))
+      guard.touch()
+    }
+
+    expect(guard.signal.aborted).toBe(false)
+    expect(guard.reason()).toBeNull()
+    guard.release()
+  })
+
+  it('refuses a body that declares more than the limit, before reading any of it', async () => {
+    let read = 0
+    const response = new Response('0123456789', { headers: { 'content-length': '10' } })
+
+    await expect(streamBody(response, 4, 'The archive', () => { read += 1 }, () => {}))
+      .rejects.toThrow(/declares 10 bytes/)
+    expect(read).toBe(0)
+  })
+
+  /**
+   * A chunked response declares no length at all, so the only bound that always
+   * applies is the running total.
+   */
+  it('refuses a body that grows past the limit while it is being read', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let chunk = 0; chunk < 4; chunk += 1) controller.enqueue(new Uint8Array(8))
+        controller.close()
+      },
+    })
+
+    await expect(streamBody(new Response(body), 10, 'The archive', () => {}, () => {}))
+      .rejects.toThrow(/larger than the 10 bytes/)
+  })
+
+  it('hands every chunk to the writer, and counts them', async () => {
+    const written: Buffer[] = []
+    let touches = 0
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('abc'))
+        controller.enqueue(new TextEncoder().encode('de'))
+        controller.close()
+      },
+    })
+
+    const total = await streamBody(new Response(body), 100, 'The archive',
+      (chunk) => written.push(chunk), () => { touches += 1 })
+
+    expect(total).toBe(5)
+    expect(Buffer.concat(written).toString()).toBe('abcde')
+    // Once per chunk: the stall deadline restarts on arrival, not on completion.
+    expect(touches).toBe(2)
+  })
+})
+
+/**
+ * `shell: true` was how the installer reached `npm.cmd` and `looptroop.cmd` on
+ * Windows, and Node builds that command line by joining the file and arguments
+ * with spaces and quoting none of them. Every Windows account whose name
+ * contains a space puts the temporary directory somewhere that breaks under
+ * that rule, which is most of them.
+ */
+/**
+ * The search `CreateProcess` does, reimplemented so the installer can see
+ * *what* PATH resolved to — a real executable and a batch shim have to be
+ * launched differently, and there is no way to launch either correctly without
+ * knowing which.
+ *
+ * Every case here is a Windows rule, and these run on Linux, so PATH and
+ * PATHEXT are passed in. That is deliberate: the first version of this resolver
+ * tried the extensionless name first, which broke every `npm` call on Windows
+ * and could not fail anywhere else. A rule that only holds on one platform has
+ * to be testable on the others.
+ */
+describe('PATH resolution', () => {
+  const roots: string[] = []
+
+  afterAll(() => {
+    for (const dir of roots.splice(0)) removeTempDir(dir)
+  })
+
+  /** A directory holding each named file, and its path. */
+  function directoryWith(...names: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), 'looptroop-path-test-'))
+    roots.push(dir)
+    for (const name of names) writeFileSync(join(dir, name), '')
+    return dir
+  }
+
+  // Lowercase, unlike the real `.COM;.EXE;.BAT;.CMD`. Windows filesystems are
+  // case-insensitive so the real casing never matters there; this test runs on
+  // a filesystem where it does, and what is under test is the precedence and
+  // ordering rules, not the spelling of the environment variable.
+  const PATHEXT = '.com;.exe;.bat;.cmd'
+
+  /**
+   * The regression. A Windows Node install ships `npm` — a POSIX shell script
+   * for Git Bash — in the same directory as `npm.cmd`. Resolving the bare name
+   * first found the script, which is not a `.cmd`, so it was spawned directly;
+   * Windows cannot execute it, and every npm call in the installer failed with
+   * "npm is not on PATH".
+   */
+  it('prefers an executable extension over a file with no extension', () => {
+    const dir = directoryWith('npm', 'npm.cmd')
+
+    expect(resolveOnPath('npm', dir, PATHEXT)).toBe(join(dir, 'npm.cmd'))
+  })
+
+  it('follows PATHEXT order', () => {
+    const dir = directoryWith('tool.cmd', 'tool.exe')
+
+    // `.exe` comes before `.cmd` in PATHEXT, and Windows picks the first match
+    // rather than the best one.
+    expect(resolveOnPath('tool', dir, PATHEXT)).toBe(join(dir, 'tool.exe'))
+  })
+
+  /**
+   * Windows will not execute a file with no extension at all, so one must never
+   * be the answer for a bare command name — not even when nothing else matches.
+   */
+  it('does not resolve a bare name to an extensionless file', () => {
+    const dir = directoryWith('npm')
+
+    expect(resolveOnPath('npm', dir, PATHEXT)).toBeNull()
+  })
+
+  it('uses a command that names its own extension as written', () => {
+    const dir = directoryWith('tool.cmd', 'tool.exe')
+
+    expect(resolveOnPath('tool.cmd', dir, PATHEXT)).toBe(join(dir, 'tool.cmd'))
+  })
+
+  it('searches PATH entries in order', () => {
+    const first = directoryWith('tool.exe')
+    const second = directoryWith('tool.exe')
+
+    expect(resolveOnPath('tool', [first, second].join(delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
+    expect(resolveOnPath('tool', [second, first].join(delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
+  })
+
+  /**
+   * Windows tolerates a quoted PATH entry and `SearchPath` strips the quotes.
+   * `join` does not, so an unstripped entry matches nothing — and quoting is
+   * exactly what a directory containing a space attracts.
+   */
+  it('strips quotes from a PATH entry', () => {
+    const dir = directoryWith('tool.exe')
+
+    expect(resolveOnPath('tool', `"${dir}"`, PATHEXT)).toBe(join(dir, 'tool.exe'))
+  })
+
+  it('skips empty entries and reports nothing found as null', () => {
+    const dir = directoryWith('other.exe')
+
+    expect(resolveOnPath('tool', ['', dir, '""'].join(delimiter), PATHEXT)).toBeNull()
+  })
+})
+
+describe('windows command lines', () => {
+  it('makes one token of an argument containing spaces', () => {
+    expect(quoteForCmd(String.raw`C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz`))
+      .toBe(String.raw`"C:\Users\Ada Lovelace\AppData\Local\Temp\looptroop-9.9.9.tgz"`)
+  })
+
+  /**
+   * The other half of the rule, and the one that is easy to get wrong by
+   * quoting everything. `cmd` hands a `.cmd` shim its arguments as written, so
+   * a quoted `install` arrives as `"install"` and a shim comparing
+   * `if "%1"=="--version"` stops matching. Anything that needs no quoting is
+   * passed through exactly as the caller wrote it.
+   */
+  it('leaves an argument that needs no quoting exactly as it was', () => {
+    for (const plain of ['install', '-g', '--no-audit', String.raw`C:\Users\ada\x.tgz`]) {
+      expect(quoteForCmd(plain)).toBe(plain)
+    }
+  })
+
+  it('makes one token of an argument cmd.exe would otherwise read as an operator', () => {
+    for (const value of ['a&b', 'a|b', 'a>b', 'a<b', 'a^b', 'a(b)']) {
+      expect(quoteForCmd(value)).toBe(`"${value}"`)
+    }
+  })
+
+  /**
+   * A path cannot contain a quote on Windows, so this is about arguments that
+   * are not paths. Doubling is cmd's own escape.
+   */
+  it('doubles an embedded quote rather than ending the token', () => {
+    expect(quoteForCmd('say "hello"')).toBe('"say ""hello"""')
+  })
+})
+
 describe('installer wrappers', () => {
   it('carry an exact copy of the installer core', () => {
     const result = spawnSync(process.execPath, [join(repoRoot, 'scripts', 'sync-installers.mjs'), '--check'], {
@@ -831,5 +1315,215 @@ describe('installer wrappers', () => {
       const closes = (source.match(/\}/g) ?? []).length
       expect(`${wrapper}: ${opens}`).toBe(`${wrapper}: ${closes}`)
     }
+  })
+
+  /**
+   * The handwritten halves, which `installers:check` does not read.
+   *
+   * `--check` compares the generated regions only, and only in the release
+   * workflow at that. Everything a wrapper does *around* the embedded core —
+   * finding Node, forwarding options, refusing a truncated body — is
+   * handwritten, unchecked, and is where the drift that reaches users actually
+   * lives: `install.ps1` forwarded four of the six options the core parses, so
+   * `--dry-run` and `--help` worked on macOS and Linux and did nothing at all on
+   * Windows for as long as both have existed.
+   */
+  it('forward every option the core accepts', () => {
+    const ps1 = readFileSync(join(repoRoot, 'install.ps1'), 'utf8')
+    const sh = readFileSync(join(repoRoot, 'install.sh'), 'utf8')
+
+    for (const option of INSTALL_OPTIONS) {
+      // Declared as a parameter, so PowerShell binds it rather than refusing
+      // the whole invocation as an unknown argument.
+      expect(`${option.ps} declared: ${new RegExp(`^\\s*\\[(?:string|switch)\\]\\$${option.ps.slice(1)},?\\s*$`, 'm').test(ps1)}`)
+        .toBe(`${option.ps} declared: true`)
+      // And mapped onto the spelling the core parses.
+      expect(`${option.ps} forwarded: ${ps1.includes(`'${option.sh}'`)}`)
+        .toBe(`${option.ps} forwarded: true`)
+    }
+
+    // `install.sh` forwards positionally, so it needs no per-option mapping —
+    // but it does have to pass the arguments on at all.
+    expect(sh).toContain('node "$core" "$@"')
+  })
+
+  /**
+   * A truncated body is the one failure both wrappers can detect about
+   * themselves, and the only useful thing to say about it is what to do next.
+   * `install.ps1` had the guard and printed no way out of it.
+   */
+  it('tell the reader how to recover from a truncated download', () => {
+    for (const [wrapper, url] of [
+      ['install.sh', 'https://www.looptroop.ovh/install'],
+      ['install.ps1', 'https://www.looptroop.ovh/install.ps1'],
+    ]) {
+      const source = readFileSync(join(repoRoot, wrapper!), 'utf8')
+      const guard = source.slice(source.indexOf('truncated in transit'))
+
+      expect(`${wrapper}: ${guard.slice(0, 400).includes(url!)}`).toBe(`${wrapper}: true`)
+    }
+  })
+
+  /**
+   * `install.sh` ended in `exec node`, which replaced the shell and so meant
+   * its EXIT trap never ran: every install leaked the temporary directory it
+   * had just written the core into. Removing `exec` means reproducing what
+   * `exec` was doing — signal delivery and the exit status — by hand, and each
+   * of those is a separate way to get this wrong, so all three are exercised
+   * rather than read out of the source.
+   */
+  describe.runIf(process.platform !== 'win32')('install.sh cleans up after itself', () => {
+    const scratch: string[] = []
+
+    afterAll(() => {
+      for (const dir of scratch.splice(0)) removeTempDir(dir)
+    })
+
+    /**
+     * Runs the wrapper with a temporary directory of its own, so what it leaves
+     * behind is the whole content of that directory afterwards.
+     */
+    function runWrapper(args: string[], stubs: Record<string, string> = {}) {
+      const temp = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-tmp-'))
+      const bin = mkdtempSync(join(tmpdir(), 'looptroop-wrapper-bin-'))
+      scratch.push(temp, bin)
+      // `looptroop --version` is probed at the end of a successful install, and
+      // without a stub that reads whatever is on the runner.
+      for (const [name, body] of Object.entries({ looptroop: '#!/bin/sh\necho 9.9.9\n', ...stubs })) {
+        writeFileSync(join(bin, name), body)
+        chmodSync(join(bin, name), 0o755)
+      }
+
+      const child = spawn('sh', [join(repoRoot, 'install.sh'), ...args], {
+        env: { ...process.env, TMPDIR: temp, PATH: `${bin}:${process.env.PATH ?? ''}` },
+        // Its own process group, so a signal aimed at the wrapper's pid is
+        // aimed at the wrapper alone — which is the case `exec` used to cover
+        // and forwarding now has to.
+        detached: true,
+      })
+
+      let output = ''
+      child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString() })
+      child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString() })
+
+      const settled = new Promise<{ status: number | null, signal: string | null }>((done, reject) => {
+        child.on('error', reject)
+        child.on('close', (status, signal) => done({ status, signal }))
+      })
+
+      return { child, temp, output: () => output, settled }
+    }
+
+    /** Everything under `dir`, so "cleaned up" is a claim about the directory. */
+    function leftovers(dir: string) {
+      return readdirSync(dir)
+    }
+
+    it('leaves nothing behind after an install that worked', async () => {
+      const tarball = join(mkdtempSync(join(tmpdir(), 'looptroop-wrapper-pkg-')), 'looptroop-9.9.9.tgz')
+      scratch.push(dirname(tarball))
+      writeFileSync(tarball, 'not really a tarball')
+
+      const run = runWrapper(['--tarball', tarball], {
+        npm: '#!/bin/sh\nexit 0\n',
+      })
+      const { status } = await run.settled
+
+      expect(`${status}: ${run.output()}`).toContain('0: ')
+      expect(leftovers(run.temp)).toEqual([])
+    })
+
+    it('leaves nothing behind after an install that failed, and reports the failure', async () => {
+      const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'])
+      const { status } = await run.settled
+
+      expect(status).toBe(1)
+      expect(run.output()).toContain('No such tarball')
+      expect(leftovers(run.temp)).toEqual([])
+    })
+
+    /** Waits for `marker` to appear in a run's output, or gives up. */
+    async function waitForOutput(run: { output: () => string }, marker: string) {
+      const deadline = Date.now() + 15_000
+      while (!run.output().includes(marker) && Date.now() < deadline) {
+        await new Promise((done) => setTimeout(done, 50))
+      }
+      expect(run.output()).toContain(marker)
+    }
+
+    /**
+     * Ctrl+C mid-install, which is the case `exec` broke.
+     *
+     * The terminal delivers to the whole foreground process group, so the
+     * install stops either way — what `exec` cost was the cleanup, because it
+     * had replaced the shell that owned the trap. Every interrupted install
+     * left a temporary directory holding a copy of the installer, and the core
+     * left its own download directory beside it.
+     *
+     * Only the cleanup is asserted, deliberately. The exit status is not a
+     * property of the wrapper here: the signal goes to the group, so it races
+     * the npm the core has just spawned, and an `npm` that returns before the
+     * signal reaches it makes this an install that *succeeded* — after which 0
+     * is the right answer. Measured rather than assumed: across thirty-odd
+     * runs, loaded and idle, the status was 1, 130 or 0 and the temporary
+     * directory was empty every time. The status propagation is proved next
+     * door instead, against a stub that decides its own exit code.
+     */
+    it('leaves nothing behind when the install is interrupted', async () => {
+      const tarball = join(mkdtempSync(join(tmpdir(), 'looptroop-wrapper-pkg-')), 'looptroop-9.9.9.tgz')
+      scratch.push(dirname(tarball))
+      writeFileSync(tarball, 'not really a tarball')
+
+      // An npm that does not come back, so there is an install in progress to
+      // interrupt. It ends on its own if nothing reaches it, rather than
+      // outliving the test run.
+      const run = runWrapper(['--tarball', tarball], {
+        npm: '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 99.9.9; exit 0; fi\nsleep 30\n',
+      })
+      await waitForOutput(run, 'Installing with npm')
+
+      process.kill(-run.child.pid!, 'SIGINT')
+      await run.settled
+
+      // Both directories: the wrapper's own, and the one the core creates
+      // inside it for downloads. `TMPDIR` is this run's, so anything at all
+      // here is something that leaked.
+      expect(leftovers(run.temp)).toEqual([])
+    }, 40_000)
+
+    /**
+     * The half a process group does not cover: a signal sent to this script's
+     * pid alone, which is how `timeout` and most supervisors stop a process.
+     * With `exec` the signal arrived at node because node *was* this process;
+     * without forwarding it would be handled here and node would keep running.
+     *
+     * Against a stub rather than the real core, deliberately. Node cannot act
+     * on a signal while it is blocked in `spawnSync` waiting for npm, so a real
+     * core would only prove how Node schedules signal handlers. What is being
+     * tested is the wrapper: that it passes the signal on, and that the status
+     * the caller sees is the child's own rather than the shell's.
+     */
+    it('forwards a signal aimed at the wrapper, and passes on the child\'s status', async () => {
+      const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'], {
+        node: [
+          '#!/bin/sh',
+          "trap 'echo CHILD-GOT-TERM; exit 3' TERM",
+          'echo CHILD-RUNNING',
+          // Backgrounded and waited on, because a trap in `sh` cannot interrupt
+          // a foreground command either.
+          'sleep 30 &',
+          'wait',
+          '',
+        ].join('\n'),
+      })
+      await waitForOutput(run, 'CHILD-RUNNING')
+
+      run.child.kill('SIGTERM')
+      const { status } = await run.settled
+
+      expect(run.output()).toContain('CHILD-GOT-TERM')
+      expect(status).toBe(3)
+      expect(leftovers(run.temp)).toEqual([])
+    }, 40_000)
   })
 })

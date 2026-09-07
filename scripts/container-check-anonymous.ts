@@ -9,12 +9,17 @@
  * That is the point of it. A private repository is inspectable by the account
  * that pushed to it and by nobody else, so an authenticated check would pass
  * happily on a repository from which every `docker pull` in the README fails.
- * The check runs after an explicit logout from the registry being checked.
+ * The check runs under a Docker configuration built here with every credential
+ * removed, so there is nothing for it to authenticate with.
  *
  * Not the same question as "did the tag get written": container-manifest.ts
  * already proved that, with credentials. This one is about visibility.
  */
-import { docker, fatal, log } from './container-docker.ts'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { docker, fatal, log, withoutCredentials } from './container-docker.ts'
 import { DIGEST_PATTERN, isRateLimited } from './container-tags.ts'
 
 /** Docker Hub rate-limits anonymous requests per IP, and hosted runners share
@@ -71,16 +76,73 @@ try {
 const host = options.image.slice(0, options.image.indexOf('/'))
 const reference = `${options.image}:${options.version}`
 
-// Ignored on purpose: a logout with nothing to log out of is a non-zero exit and
-// exactly the state this check wants to be in.
-docker(['logout', host])
+/**
+ * A Docker configuration this check knows carries no credentials.
+ *
+ * `docker logout <host>` used to stand in for this, with its result ignored —
+ * so a logout that failed left the previous credentials in place and the check
+ * ran authenticated, which is exactly the state that makes a private repository
+ * pass a test about whether it is public. Ignoring the result was deliberate
+ * (a logout with nothing to log out of exits non-zero) but it made a real
+ * failure indistinguishable from the ordinary case.
+ *
+ * Constructed rather than asserted: the config is copied, every way of
+ * authenticating is stripped out of it, and `DOCKER_CONFIG` points here for the
+ * inspect. The copy keeps everything else, `buildx/` above all — an empty
+ * directory would lose the builder configuration and fail for a reason that has
+ * nothing to do with visibility. Nothing on the runner is modified.
+ */
+const anonymousConfig = mkdtempSync(join(tmpdir(), 'looptroop-anonymous-docker-'))
+
+// Registered before anything is copied into it, not after. Between the copy and
+// the rewrite this directory holds the *real* config, credentials and all, so a
+// failure or a signal in that window used to leave a registry token in the
+// temporary directory of a machine that outlives the job.
+const removeAnonymousConfig = () => rmSync(anonymousConfig, { recursive: true, force: true })
+process.on('exit', removeAnonymousConfig)
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    removeAnonymousConfig()
+    process.removeAllListeners(signal)
+    process.kill(process.pid, signal)
+  })
+}
+
+const realConfig = process.env.DOCKER_CONFIG || join(homedir(), '.docker')
+try {
+  // `dereference` so a symlinked `config.json` becomes a regular file in the
+  // copy. Without it the later write would follow the link and edit the real
+  // file, which is the one thing this check promises not to do.
+  if (existsSync(realConfig)) cpSync(realConfig, anonymousConfig, { recursive: true, dereference: true })
+
+  const configFile = join(anonymousConfig, 'config.json')
+  writeFileSync(configFile, withoutCredentials(existsSync(configFile) ? readFileSync(configFile, 'utf8') : '{}'))
+} catch (error) {
+  removeAnonymousConfig()
+  fatal('Could not build a credential-free Docker configuration.', String(error))
+}
+
+// `DOCKER_CONFIG` is not the only way credentials or a different endpoint reach
+// the CLI. Everything below is cleared for the probe so "anonymous" means the
+// intended registry with nothing supplied, rather than merely "no config file".
+const ANONYMOUS = {
+  DOCKER_CONFIG: anonymousConfig,
+  DOCKER_AUTH_CONFIG: '',
+  DOCKER_CONTEXT: '',
+  DOCKER_HOST: '',
+  DOCKER_CERT_PATH: '',
+  DOCKER_TLS_VERIFY: '',
+}
 
 let resolved = ''
 for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
   // `imagetools inspect` rather than `docker manifest inspect`: the latter is
   // still gated behind the experimental CLI flag in some Docker versions and
   // would fail for a reason that has nothing to do with this release.
-  const result = docker(['buildx', 'imagetools', 'inspect', '--format', '{{.Manifest.Digest}}', reference])
+  const result = docker(
+    ['buildx', 'imagetools', 'inspect', '--format', '{{.Manifest.Digest}}', reference],
+    { env: ANONYMOUS },
+  )
   const digest = result.stdout.trim()
   if (result.code === 0 && DIGEST_PATTERN.test(digest)) {
     resolved = digest

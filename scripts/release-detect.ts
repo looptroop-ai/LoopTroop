@@ -33,7 +33,8 @@ import { fileURLToPath } from 'node:url'
 // Extensions are explicit because these scripts run under bare `node`, not tsx.
 // Node executes TypeScript directly but does not resolve a missing extension.
 import { distTagFor } from './version-bump.ts'
-import { type ReleaseFacts, resolveReleaseState } from './release-state.ts'
+import { isGhNotFound, type ReleaseFacts, resolveReleaseState } from './release-state.ts'
+import { ArgumentError, parseArgs, requireNoPositional } from './cli-args.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -69,10 +70,6 @@ function isNpm404(stderr: string): boolean {
   return /E404|404 Not Found/.test(stderr)
 }
 
-/** What `gh` prints when the requested release does not exist. */
-function isGh404(stderr: string): boolean {
-  return stderr.includes('not found') || /HTTP 404/.test(stderr)
-}
 
 function runOrAbsent(
   command: string,
@@ -90,11 +87,36 @@ function runOrAbsent(
   }
 }
 
-const args = process.argv.slice(2)
-function flag(name: string): string | null {
-  const index = args.indexOf(`--${name}`)
-  return index === -1 ? null : args[index + 1] ?? null
-}
+const USAGE = 'Usage: npm run release:detect -- [--expected-integrity sha512-…] [--baseline <sha|auto>] [--version X.Y.Z] [--json]'
+
+/**
+ * The arguments, refused rather than defaulted when they are malformed.
+ *
+ * These come from a workflow that assembles them from expressions, and an
+ * expression that expands to nothing used to leave a value-taking flag with
+ * the next flag as its value or with nothing at all — both of which read as
+ * "not given" and fell through to a default. `--baseline` defaulting is the one
+ * that matters: it decides whether this push counts as the one that changed the
+ * version, and a truncated argument silently moved the run into the other lane.
+ */
+const args = (() => {
+  try {
+    const parsed = parseArgs(process.argv.slice(2), {
+      'expected-integrity': 'value',
+      baseline: 'value',
+      version: 'value',
+      json: 'switch',
+    })
+    // Options only; a stray token was silently ignored.
+    requireNoPositional(parsed)
+    return parsed
+  } catch (error) {
+    if (!(error instanceof ArgumentError)) throw error
+    fail(`${error.message}\n${USAGE}`)
+  }
+})()
+
+const flag = (name: string) => args.value(name)
 
 const expectedIntegrity = flag('expected-integrity')
 
@@ -162,7 +184,7 @@ let releaseIsDraft = false
 const releaseJson = runOrAbsent(
   'gh',
   ['release', 'view', `v${version}`, '--json', 'isDraft,tagName'],
-  isGh404,
+  isGhNotFound,
   `release v${version}`,
 )
 if (releaseJson) {
@@ -220,7 +242,7 @@ const facts: ReleaseFacts = {
 
 const result = resolveReleaseState(facts)
 
-if (args.includes('--json')) {
+if (args.switch('json')) {
   process.stdout.write(`${JSON.stringify({ facts, result }, null, 2)}\n`)
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type ReleaseFacts,
   hasCorrectDistTag,
+  isGhNotFound,
   resolveReleaseState,
 } from '../scripts/release-state'
 
@@ -321,5 +322,29 @@ describe('hasCorrectDistTag', () => {
 
   it('is false when the registry knows nothing', () => {
     expect(hasCorrectDistTag(facts({ npmDistTags: null }))).toBe(false)
+  })
+})
+
+/**
+ * The distinction every release lookup turns on, and the reason it lives in one
+ * place. `gh` exits non-zero for a missing release and for an expired token, a
+ * rate limit and an outage alike; reading the latter as absence is how a release
+ * gets created twice, or edited on top of a published one.
+ */
+describe('isGhNotFound', () => {
+  it('recognises the two shapes gh uses for an absent release', () => {
+    expect(isGhNotFound('release not found')).toBe(true)
+    expect(isGhNotFound('gh: Not Found (HTTP 404)')).toBe(true)
+  })
+
+  it('does not read a credential or transport failure as absence', () => {
+    for (const stderr of [
+      'gh: Bad credentials (HTTP 401)',
+      'gh: API rate limit exceeded (HTTP 403)',
+      'gh: Server Error (HTTP 500)',
+      'dial tcp: lookup api.github.com: no such host',
+    ]) {
+      expect(`${stderr}: ${isGhNotFound(stderr)}`).toBe(`${stderr}: false`)
+    }
   })
 })

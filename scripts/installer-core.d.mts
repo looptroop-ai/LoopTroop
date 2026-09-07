@@ -45,6 +45,21 @@ export type BinaryTarget = { target: string, refusal?: undefined } | { target?: 
 /** C library flavour, which decides whether a standalone executable can run. */
 export type Libc = 'glibc' | 'musl'
 
+/** One option, in the spelling each wrapper takes. */
+export interface InstallOption {
+  /** As the core parses it, and as `install.sh` forwards it. */
+  sh: string
+  /** As `install.ps1` declares it in its `param` block. */
+  ps: string
+  /** The value placeholder, or null for a switch. */
+  value: string | null
+  help: string | (() => string)
+}
+
+export const INSTALL_OPTIONS: InstallOption[]
+
+export function usageLines(style?: 'sh' | 'ps1'): string[]
+
 export function parseArgs(argv: string[]): InstallerOptions
 
 export function binaryTarget(platform: string, arch: string, libc?: Libc): BinaryTarget
@@ -78,3 +93,35 @@ export function selectRelease(
 ): Release | null
 
 export function satisfiesFloor(have: string, floor: string): boolean
+
+/** A deadline that restarts every time `touch` is called. */
+export interface StallGuard {
+  signal: AbortSignal
+  /** Restart the deadline; called once per arriving chunk. */
+  touch: () => void
+  /** Stop the deadline, whether or not it fired. */
+  release: () => void
+  /** The abort reason if this guard fired, else null. */
+  reason: () => string | null
+}
+
+/**
+ * Where PATH resolves `command`, with PATHEXT applied and quotes stripped.
+ * `pathValue` and `pathExt` are injectable so the candidate ordering can be
+ * tested off Windows.
+ */
+export function resolveOnPath(command: string, pathValue?: string, pathExt?: string): string | null
+
+/** One cmd.exe token, whatever the value contains. */
+export function quoteForCmd(value: string): string
+
+export function stallGuard(idleMs: number, what: string): StallGuard
+
+/** Reads a response body to a byte cap, writing chunks out as they arrive. */
+export function streamBody(
+  response: Response,
+  limit: number,
+  what: string,
+  write: (chunk: Buffer) => void,
+  touch: () => void,
+): Promise<number>

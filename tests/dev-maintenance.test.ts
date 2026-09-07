@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
 import {
   classifyAuditMaintenanceFailure,
+  classifyOutdatedProbe,
   chooseAgedDependencyTarget,
   collectLockfilePackageUpdates,
   decideDailyMaintenanceTask,
@@ -516,5 +517,40 @@ describe('held dependency detail formatting', () => {
       'held audit fix beta 2.0.0 -> 2.1.0; because the 7-day release-safety period has not passed; ' +
       'eligible after 2026-05-16T00:00:00.000Z',
     ])
+  })
+})
+
+/**
+ * `npm outdated` exits 1 when it has something to report and 0 when it does
+ * not, so the exit code carries half the answer. Reading empty output alone as
+ * "everything is current" recorded a clean dependency set for a registry
+ * outage, and the report then said so.
+ */
+describe('npm outdated probe outcomes', () => {
+  it('reads a successful run with no output as everything being current', () => {
+    expect(classifyOutdatedProbe({ status: 0, stdout: '', stderr: '' })).toEqual({ outcome: 'current' })
+  })
+
+  it('reads output as something to report, whatever the exit code', () => {
+    // Exit 1 is the ordinary case here: it is how npm says it found updates.
+    expect(classifyOutdatedProbe({ status: 1, stdout: '{"vite":{}}', stderr: '' }).outcome).toBe('listed')
+  })
+
+  it('does not read whitespace as a report', () => {
+    expect(classifyOutdatedProbe({ status: 0, stdout: '\n', stderr: '' })).toEqual({ outcome: 'current' })
+  })
+
+  it('reads a failure with no output as not having checked', () => {
+    const probe = classifyOutdatedProbe({ status: 1, stdout: '', stderr: 'npm ERR! network timeout' })
+
+    expect(probe.outcome).toBe('unavailable')
+    expect(probe).toHaveProperty('message', 'npm ERR! network timeout')
+  })
+
+  it('says something even when the failure was silent', () => {
+    const probe = classifyOutdatedProbe({ status: null, stdout: '', stderr: '' })
+
+    expect(probe.outcome).toBe('unavailable')
+    expect(probe).toHaveProperty('message', 'npm outdated exited without a status')
   })
 })

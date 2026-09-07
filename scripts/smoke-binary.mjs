@@ -20,6 +20,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { removeWorkDirectory } from './smoke-lib.mjs'
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -199,9 +200,6 @@ try {
   // swallows ENOENT and nothing else — so a passing smoke exited 1 and failed
   // a release. `maxRetries` exists for exactly this; the catch is because a
   // temp directory left behind is litter, not a failure.
-  try {
-    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-  } catch (error) {
-    process.stderr.write(`\nCould not remove ${work}: ${error.message}\n`)
-  }
+  const leftover = removeWorkDirectory(work)
+  if (leftover) process.stderr.write(`\nCould not remove ${work}: ${leftover.message}\n`)
 }

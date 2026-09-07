@@ -18,11 +18,12 @@
  */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { removeWorkDirectory } from './smoke-lib.mjs'
 import { renderWingetManifests } from './package-manifests.ts'
 
 class SmokeError extends Error {
@@ -123,7 +124,8 @@ const server = createServer((request, response) => {
  * path has no `Microsoft` in it.
  */
 const linkPath = join(
-  process.env.ProgramFiles ?? 'C:\\Program Files',
+  // `||`, not `??`: a set-but-empty variable would make this a relative path.
+  process.env.ProgramFiles || 'C:\\Program Files',
   'WinGet', 'Links', 'looptroop.exe',
 )
 
@@ -226,9 +228,6 @@ try {
   // Retried, and never allowed to fail the run — see `smoke-binary.mjs`:
   // Windows holds handles briefly after a process exits, and `force` swallows
   // only ENOENT, so cleanup can fail a smoke that has already passed.
-  try {
-    rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-  } catch (error) {
-    process.stderr.write(`\nCould not remove ${work}: ${String(error)}\n`)
-  }
+  const leftover = removeWorkDirectory(work)
+  if (leftover) process.stderr.write(`\nCould not remove ${work}: ${leftover.message}\n`)
 }

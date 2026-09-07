@@ -62,16 +62,53 @@ try {
     fail(`Unknown --shell "${windowsShell}". Expected pwsh or powershell.`)
   }
 
-  const [command, args] = IS_WINDOWS
-    ? [windowsShell, [
-        '-NoProfile',
-        // 5.1 defaults to a policy that refuses to run a script from a file;
-        // pwsh accepts the flag too, so one argument list serves both.
-        '-ExecutionPolicy', 'Bypass',
-        '-File', join(repoRoot, 'install.ps1'),
-        '-Tarball', tarball,
-      ]]
-    : ['sh', [join(repoRoot, 'install.sh'), '--tarball', tarball]]
+  /** The wrapper this platform serves, invoked with the options it takes. */
+  function wrapper(...options) {
+    return IS_WINDOWS
+      ? [windowsShell, [
+          '-NoProfile',
+          // 5.1 defaults to a policy that refuses to run a script from a file;
+          // pwsh accepts the flag too, so one argument list serves both.
+          '-ExecutionPolicy', 'Bypass',
+          '-File', join(repoRoot, 'install.ps1'),
+          ...options,
+        ]]
+      : ['sh', [join(repoRoot, 'install.sh'), ...options]]
+  }
+
+  /**
+   * The two options `install.ps1` did not forward, checked before anything is
+   * installed because both are meant to install nothing.
+   *
+   * On Windows this is the only place they run at all: the wrapper's `param`
+   * block is PowerShell, so a test that reads the source can prove the
+   * declaration exists and nothing else. They were absent for as long as both
+   * wrappers have existed, and every check that could have noticed was reading
+   * `install.sh`.
+   */
+  for (const [label, options, expected] of [
+    ['help', IS_WINDOWS ? ['-Help'] : ['--help'], IS_WINDOWS ? 'install.ps1' : 'install.sh'],
+    ['dry run', IS_WINDOWS ? ['-DryRun', '-Tarball', tarball] : ['--dry-run', '--tarball', tarball], 'would install'],
+  ]) {
+    const [probeCommand, probeArgs] = wrapper(...options)
+    const probe = spawnSync(probeCommand, probeArgs, {
+      encoding: 'utf8',
+      env: { ...process.env, npm_config_prefix: prefix, NPM_CONFIG_PREFIX: prefix },
+    })
+    const output = `${probe.stdout ?? ''}${probe.stderr ?? ''}`
+
+    if (probe.status !== 0) fail(`${label} exited ${probe.status}.`, output.trim())
+    if (!output.includes(expected)) {
+      fail(`${label} did not mention "${expected}".`, output.trim() || '(printed nothing)')
+    }
+    // Both are meant to stop before touching anything.
+    if (readdirSync(prefix).length > 0) {
+      fail(`${label} installed something.`, `prefix contains: ${readdirSync(prefix).join(', ')}`)
+    }
+    process.stdout.write(`  ok  ${label} is forwarded and installs nothing\n`)
+  }
+
+  const [command, args] = wrapper(...(IS_WINDOWS ? ['-Tarball', tarball] : ['--tarball', tarball]))
 
   const install = spawnSync(command, args, {
     encoding: 'utf8',

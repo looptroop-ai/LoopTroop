@@ -25,8 +25,13 @@ export interface DockerResult {
  * `shell: false`, so nothing here can be word-split or glob-expanded; image
  * references and digests are passed as argv entries.
  */
-export function docker(args: string[]): DockerResult {
-  const result = spawnSync('docker', args, { encoding: 'utf8', shell: false, maxBuffer: 32 * 1024 * 1024 })
+export function docker(args: string[], options: { env?: NodeJS.ProcessEnv } = {}): DockerResult {
+  const result = spawnSync('docker', args, {
+    encoding: 'utf8',
+    shell: false,
+    maxBuffer: 32 * 1024 * 1024,
+    env: options.env === undefined ? process.env : { ...process.env, ...options.env },
+  })
   if (result.error) {
     return { code: null, stdout: '', stderr: String(result.error.message) }
   }
@@ -91,4 +96,38 @@ export function requireDigest(reference: string): string {
     fatal(`${reference} does not exist.`)
   }
   return digest
+}
+
+/**
+ * The keys in a Docker config that can authenticate a request.
+ *
+ * `auths` holds credentials directly; `credsStore` and `credHelpers` name
+ * external programs that hand them back on demand, which is why removing
+ * `auths` alone proves nothing. `docker logout` is not a substitute either —
+ * it edits the real config, which is a side effect on the runner, and its
+ * failure was ignored.
+ */
+const CREDENTIAL_KEYS = ['auths', 'credsStore', 'credHelpers'] as const
+
+/** A Docker config with every way of authenticating removed. */
+export function withoutCredentials(config: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(config)
+  } catch {
+    // Unreadable is as good as empty here: what matters is that the config this
+    // check runs under carries no credentials, and one that cannot be parsed
+    // carries nothing docker will use either.
+    return '{}\n'
+  }
+
+  // `null`, an array and a bare scalar are all valid JSON and none of them is a
+  // Docker configuration. `null` in particular used to throw out of `delete`,
+  // taking the whole check down rather than producing a config with no
+  // credentials in it.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return '{}\n'
+
+  const fields = parsed as Record<string, unknown>
+  for (const key of CREDENTIAL_KEYS) delete fields[key]
+  return `${JSON.stringify(fields, null, 2)}\n`
 }

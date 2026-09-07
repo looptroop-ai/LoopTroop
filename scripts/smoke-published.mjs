@@ -33,10 +33,34 @@ import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, wri
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
 
 const IS_WINDOWS = process.platform === 'win32'
 
 /** GitHub's releases feed, for resolving "latest stable" and for asset probes. */
+/**
+ * How long the daemon has to answer `/api/health`.
+ *
+ * Twice what the local install smoke allows, on purpose: this drives a launcher
+ * a package manager has just written, on a filesystem that has never read it,
+ * and the first start pays for that. Stated here rather than defaulted in the
+ * shared helper, which would give one script's patience to the other two.
+ */
+const HEALTH_TIMEOUT_MS = 60_000
+
+/**
+ * What `looptroop doctor` tells somebody on the standalone binary to run.
+ *
+ * Genuinely platform-dependent — a piped script cannot take a parameter, so
+ * Windows gets the scriptblock form — and asserted by three recipes, which is
+ * why it is bound once here. All three had their own copy of both strings, so a
+ * change to what the daemon reports had to be made in three places to be made
+ * at all.
+ */
+const binaryUpgradeCommand = (platform) => (platform === 'win32'
+  ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
+  : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary')
+
 const REPO = process.env.LOOPTROOP_INSTALL_REPO || 'looptroop-ai/LoopTroop'
 const API = process.env.LOOPTROOP_INSTALL_API || 'https://api.github.com'
 
@@ -213,12 +237,7 @@ export const CHANNELS = {
     published: probeReleaseAsset('install.sh'),
     expect: {
       channel: 'binary',
-      // Genuinely platform-dependent: a piped script cannot take a parameter,
-      // so Windows gets the scriptblock form. One string here would fail on one
-      // of the two operating systems.
-      upgradeCommand: (platform) => platform === 'win32'
-        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
-        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      upgradeCommand: binaryUpgradeCommand,
       // No `npm` check: the standalone binary carries its own runtime and a
       // machine using it need not have npm at all, so asserting it would be
       // testing the runner.
@@ -483,9 +502,7 @@ export const CHANNELS = {
     published: probeReleaseAsset('install.ps1'),
     expect: {
       channel: 'binary',
-      upgradeCommand: (platform) => platform === 'win32'
-        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
-        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      upgradeCommand: binaryUpgradeCommand,
       okChecksPre: ['install', 'git', 'opencode cli'],
       okChecksPost: ['opencode', 'daemon', 'port'],
     },
@@ -561,9 +578,7 @@ function binaryChannel(target, os, port, opencodePort) {
     published: probeReleaseAssetNamed(archive),
     expect: {
       channel: 'binary',
-      upgradeCommand: (platform) => platform === 'win32'
-        ? '& ([scriptblock]::Create((irm https://www.looptroop.ovh/install.ps1))) -Binary'
-        : 'curl -fsSL https://www.looptroop.ovh/install | sh -s -- --binary',
+      upgradeCommand: binaryUpgradeCommand,
       // No `npm`: a machine on this channel need not have it at all.
       okChecksPre: ['install', 'git', 'opencode cli'],
       okChecksPost: ['opencode', 'daemon', 'port'],
@@ -834,19 +849,6 @@ async function portIsClosed(port, timeoutMs = 20_000) {
   return false
 }
 
-async function waitForHealth(baseUrl, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${baseUrl}/api/health`)
-      if (response.ok) return await response.json()
-    } catch {
-      // Not listening yet.
-    }
-    await sleep(250)
-  }
-  return null
-}
 
 // ---------------------------------------------------------------------------
 // Feed probes. Read-only. Each returns the version the channel currently
@@ -1085,6 +1087,14 @@ async function runChannel(recipe, options) {
   // both channel-agnostic and what a user's shell does.
   let shimPath = null
   const shim = () => shimPath ?? 'looptroop'
+  // Whether this run started a daemon of its own. The teardown below used to
+  // run `stop` unconditionally through `shim()`, which falls back to a bare
+  // `looptroop` resolved from PATH — right for the assertions, which are about
+  // what a user's shell would run, and wrong for cleanup. A delegated recipe
+  // (the container) never installs a launcher at all, and an install that
+  // failed leaves whatever the machine already had, so the teardown was
+  // stopping somebody else's daemon on the way out.
+  let startedDaemon = false
   const cli = (args, extra = {}) =>
     runShim(shim(), args, { cwd: elsewhere, env: { ...childEnv, ...(extra.env ?? {}) }, ...extra })
 
@@ -1299,12 +1309,16 @@ async function runChannel(recipe, options) {
       return { ok: false, served }
     }
     const started = cli(['start', '--port', String(port)])
+    // Recorded before the check, not after: a `start` that failed may still
+    // have left something half-up holding the port and the lock, which is
+    // exactly what the teardown exists to clear.
+    startedDaemon = true
     if (!check('start', started.code === 0, `exit ${started.code}: ${started.combined.trim().slice(-300)}`, `port ${port}`)) {
       return { ok: false, served }
     }
 
     heading('It answers on the health endpoint')
-    const health = await waitForHealth(baseUrl)
+    const health = await waitForHealth(baseUrl, HEALTH_TIMEOUT_MS)
     check('health status', health?.status === 'ok', `got ${JSON.stringify(health)}`)
     check('health instanceId', typeof health?.instanceId === 'string', 'no instanceId in the health payload')
 
@@ -1452,10 +1466,18 @@ async function runChannel(recipe, options) {
   } finally {
     // Best effort, and never throws. `stop` is attempted even when start failed
     // or timed out: a half-started daemon still holds the port and the lock.
-    try {
-      runShim(shim(), ['stop'], { cwd: elsewhere, env: childEnv, timeout: 30_000 })
-    } catch {
-      // Nothing to stop.
+    //
+    // Only the executable this run resolved and started, though. Both
+    // conditions are needed: `shimPath` is null for a delegated recipe and for
+    // an install that never got far enough, and `startedDaemon` is false when
+    // this leg stopped before the lifecycle began — in either case there is
+    // nothing of ours to stop, and the fallback would stop the machine's own.
+    if (shimPath !== null && startedDaemon) {
+      try {
+        runShim(shimPath, ['stop'], { cwd: elsewhere, env: childEnv, timeout: 30_000 })
+      } catch {
+        // Nothing to stop.
+      }
     }
     if (adopted?.pid) {
       try {
@@ -1468,11 +1490,11 @@ async function runChannel(recipe, options) {
         }
       }
     }
-    try {
-      rmSync(scratch, { recursive: true, force: true })
-    } catch {
-      // A held file on Windows is not worth failing a run over.
-    }
+    // Through the shared helper, like every other smoke script: a bare `rmSync`
+    // gives a held Windows handle no chance to be released, so the scratch
+    // directory was silently left behind on the platform that needs the retries.
+    const leftover = removeWorkDirectory(scratch)
+    if (leftover) log(`  (could not remove ${scratch}: ${leftover.message})`)
   }
 }
 

@@ -1208,9 +1208,19 @@ describe('installer wrappers', () => {
      * The terminal delivers to the whole foreground process group, so the
      * install stops either way — what `exec` cost was the cleanup, because it
      * had replaced the shell that owned the trap. Every interrupted install
-     * left a temporary directory holding a copy of the installer.
+     * left a temporary directory holding a copy of the installer, and the core
+     * left its own download directory beside it.
+     *
+     * Only the cleanup is asserted, deliberately. The exit status is not a
+     * property of the wrapper here: the signal goes to the group, so it races
+     * the npm the core has just spawned, and an `npm` that returns before the
+     * signal reaches it makes this an install that *succeeded* — after which 0
+     * is the right answer. Measured rather than assumed: across thirty-odd
+     * runs, loaded and idle, the status was 1, 130 or 0 and the temporary
+     * directory was empty every time. The status propagation is proved next
+     * door instead, against a stub that decides its own exit code.
      */
-    it('cleans up when the install is interrupted', async () => {
+    it('leaves nothing behind when the install is interrupted', async () => {
       const tarball = join(mkdtempSync(join(tmpdir(), 'looptroop-wrapper-pkg-')), 'looptroop-9.9.9.tgz')
       scratch.push(dirname(tarball))
       writeFileSync(tarball, 'not really a tarball')
@@ -1224,9 +1234,11 @@ describe('installer wrappers', () => {
       await waitForOutput(run, 'Installing with npm')
 
       process.kill(-run.child.pid!, 'SIGINT')
-      const { status } = await run.settled
+      await run.settled
 
-      expect(`${status}`).not.toBe('0')
+      // Both directories: the wrapper's own, and the one the core creates
+      // inside it for downloads. `TMPDIR` is this run's, so anything at all
+      // here is something that leaked.
       expect(leftovers(run.temp)).toEqual([])
     }, 40_000)
 

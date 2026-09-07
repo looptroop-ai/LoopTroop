@@ -51,7 +51,8 @@ import type {
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { ManualQaOriginBadge, ManualQaOriginCard } from './ManualQaOriginCard'
-import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
+import { parsePrdDocument, PRD_TECHNICAL_SECTION_CONFIG } from '@/lib/prdDocument'
+import { parseBeadsArtifact, type ParsedBead } from '@/lib/beadsDocument'
 import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import { TextCopyButton } from './artifactViewers/TextCopyButton'
 import { WithRawTab } from './artifactViewers/WithRawTab'
@@ -1445,131 +1446,6 @@ export function InterviewAnswersView({ content, hideSummary = false, hideAiAnswe
       ))}
     </div>
   )
-}
-
-interface ParsedPrdUserStory {
-  id?: string
-  title?: string
-  acceptance_criteria?: string[]
-}
-
-interface ParsedPrdEpic {
-  id?: string
-  title?: string
-  objective?: string
-  user_stories?: ParsedPrdUserStory[]
-}
-
-interface ParsedPrdDocument {
-  product?: {
-    problem_statement?: string
-    target_users?: string[]
-  }
-  scope?: {
-    in_scope?: string[]
-    out_of_scope?: string[]
-  }
-  technical_requirements?: {
-    architecture_constraints?: string[]
-    data_model?: string[]
-    api_contracts?: string[]
-    security_constraints?: string[]
-    performance_constraints?: string[]
-    reliability_constraints?: string[]
-    error_handling_rules?: string[]
-    tooling_assumptions?: string[]
-  }
-  epics?: ParsedPrdEpic[]
-}
-
-interface ParsedBead {
-  [key: string]: unknown
-  id?: string
-  title?: string
-  prdRefs?: string[]
-  prd_refs?: string[]
-  description?: string
-  contextGuidance?: string | {
-    patterns?: string[]
-    anti_patterns?: string[]
-  }
-  context_guidance?: string | {
-    patterns?: string[]
-    anti_patterns?: string[]
-  }
-  acceptanceCriteria?: string[]
-  acceptance_criteria?: string[]
-  tests?: string[]
-  testCommands?: CommandSpec[]
-  test_commands?: CommandSpec[]
-  testCommandReason?: string
-  test_command_reason?: string
-  priority?: number
-  status?: string
-  issueType?: string
-  issue_type?: string
-  externalRef?: string
-  external_ref?: string
-  labels?: string[]
-  dependencies?: {
-    blocked_by?: string[]
-    blocks?: string[]
-  }
-  targetFiles?: string[]
-  target_files?: string[]
-  notes?: string
-  iteration?: number
-  createdAt?: string
-  created_at?: string
-  updatedAt?: string
-  updated_at?: string
-  completedAt?: string
-  completed_at?: string
-  startedAt?: string
-  started_at?: string
-  beadStartCommit?: string | null
-  bead_start_commit?: string | null
-  qaOrigin?: ManualQaBeadOrigin | null
-  qa_origin?: ManualQaBeadOrigin | null
-}
-
-const PRD_TECHNICAL_SECTION_CONFIG: Array<{
-  key: keyof NonNullable<ParsedPrdDocument['technical_requirements']>
-  label: string
-}> = [
-  { key: 'architecture_constraints', label: 'Architecture Constraints' },
-  { key: 'data_model', label: 'Data Model' },
-  { key: 'api_contracts', label: 'API Contracts' },
-  { key: 'security_constraints', label: 'Security Constraints' },
-  { key: 'performance_constraints', label: 'Performance Constraints' },
-  { key: 'reliability_constraints', label: 'Reliability Constraints' },
-  { key: 'error_handling_rules', label: 'Error Handling Rules' },
-  { key: 'tooling_assumptions', label: 'Tooling Assumptions' },
-]
-
-function parsePrdDocument(content: string): ParsedPrdDocument | null {
-  const parsed = tryParseStructuredContent(content)
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-  const document = parsed as ParsedPrdDocument
-  return Array.isArray(document.epics) ? document : null
-}
-
-function parseBeadsArtifact(content: string): ParsedBead[] | null {
-  const parsed = tryParseStructuredContent(content)
-  if (Array.isArray(parsed)) {
-    return parsed as ParsedBead[]
-  }
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray((parsed as { beads?: ParsedBead[] }).beads)) {
-    return (parsed as { beads: ParsedBead[] }).beads
-  }
-  if (content.trim().startsWith('{')) {
-    try {
-      return content.trim().split('\n').map((line) => JSON.parse(line) as ParsedBead)
-    } catch {
-      return null
-    }
-  }
-  return null
 }
 
 function renderBeadGuidance(guidance: ParsedBead['contextGuidance']): React.ReactNode {

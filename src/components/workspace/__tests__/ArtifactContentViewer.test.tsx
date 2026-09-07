@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render as baseRender, screen, within } from '@
 import type { ReactElement, ReactNode } from 'react'
 import { encode } from 'gpt-tokenizer'
 import { deriveStructuredInterventions } from '@shared/structuredInterventions'
-import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView } from '../ArtifactContentViewer'
+import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView, PrdDraftView } from '../ArtifactContentViewer'
 import { buildArtifactProcessingNoticeCopy } from '../artifactProcessingNotice'
 import { serializeBeadCommitsDiffContent } from '../diffUtils'
 import type { ArtifactStructuredOutputData } from '../phaseArtifactTypes'
@@ -1335,6 +1335,36 @@ items:
     fireEvent.click(screen.getByRole('button', { name: /^Diff(?: \(\d+\))?$/i }))
 
     expect(screen.getByText('No refinement changes recorded.')).toBeInTheDocument()
+  })
+
+  // PR-13 §13.1 pointed `PrdDraftView` at the shared parser in
+  // `src/lib/prdDocument.ts`. It used to accept anything carrying an `epics`
+  // array, so a draft with no `artifact: prd` marker or with untitled epics
+  // still rendered as a structured PRD. These two pin the boundary that moved.
+  it('renders a PRD draft that satisfies the shared parser', () => {
+    render(<PrdDraftView content={buildPrdDocumentContent({ epicTitle: 'Ship the split' })} />)
+
+    expect(screen.getByText('Ship the split')).toBeInTheDocument()
+    expect(screen.getByText('Product')).toBeInTheDocument()
+  })
+
+  it('stops rendering a PRD-shaped draft that is missing the artifact marker', () => {
+    const withoutMarker = buildPrdDocumentContent({ epicTitle: 'Ship the split' })
+      .replace('artifact: prd\n', '')
+
+    render(<PrdDraftView content={withoutMarker} />)
+
+    // The structured view is gone; the untouched text fallback takes over.
+    expect(screen.queryByText('Product')).not.toBeInTheDocument()
+    expect(screen.getByText(/Ship the split/)).toBeInTheDocument()
+  })
+
+  it('stops rendering a PRD draft whose only epic has no title', () => {
+    const untitledEpic = buildPrdDocumentContent({ epicTitle: '' })
+
+    render(<PrdDraftView content={untitledEpic} />)
+
+    expect(screen.queryByText('Product')).not.toBeInTheDocument()
   })
 
   it('shows PRD refinement auto retries as raw attempt variants', () => {

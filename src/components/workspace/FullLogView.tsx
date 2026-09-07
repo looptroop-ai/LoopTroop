@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId } fr
 import { Copy, Check, ScrollText, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle, SkipForward } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
@@ -35,7 +36,6 @@ import { formatLogModelEffort, resolveLogModelEffort } from './logModelEffort'
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
 const FIXED_TABS: LogTab[] = ['ALL', 'SYS', 'AI', 'ERROR', 'DEBUG']
-const BOTTOM_THRESHOLD = 50
 
 function isAiLogTab(tab: string): boolean {
   return tab === 'AI' || (!FIXED_TABS.includes(tab as LogTab) && tab !== 'CMD')
@@ -311,111 +311,35 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     }
   }, [ticket])
 
-  // ── Smart auto-scroll ──────────────────────────────────────────────
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null)
-  const setViewportRef = useCallback((node: HTMLDivElement | null) => {
-    viewportRef.current = node
-    setScrollParent(node)
-  }, [])
-  const contentRef = useRef<HTMLDivElement>(null)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const virtualItemCountRef = useRef(0)
-  const autoScrollEnabledRef = useRef(true)
   const previousVisibleTailRef = useRef<string | null>(null)
   const previousViewRef = useRef<string | null>(null)
-  const scrollFrameRef = useRef<number | null>(null)
-  const olderPageAnchorRef = useRef<{ height: number; top: number } | null>(null)
   const explicitTopNavigationRef = useRef(false)
 
-  const scheduleScrollToBottom = useCallback((behavior: 'auto' | 'smooth') => {
-    const scroll = () => {
+  const {
+    viewportRef, setViewportRef, scrollParent, contentRef,
+    autoScrollEnabledRef, isAutoScroll, isAtTop, scheduleScrollToBottom,
+    enableAutoScroll, disableAutoScroll, clearOlderPageAnchor,
+  } = useLogScrollAnchor({
+    pagination: {
+      enabled: true,
+      hasOlder: historicalLogs.hasOlder,
+      isFetchingOlder: historicalLogs.isFetchingOlder,
+      fetchOlder: () => void historicalLogs.fetchOlder(),
+      shouldAnchor: () => !explicitTopNavigationRef.current && renderedEntries.length <= 200,
+      loadedEntryCount: historicalLogs.entries.length,
+    },
+    // The virtualizer owns the scroll position once it is mounted with rows;
+    // falling through to the viewport would land on whatever slice is rendered.
+    scrollToBottomOverride: (behavior) => {
       const virtualItemCount = virtualItemCountRef.current
-      if (virtuosoRef.current && virtualItemCount > 0) {
-        virtuosoRef.current.scrollToIndex({
-          index: virtualItemCount - 1,
-          align: 'end',
-          behavior,
-        })
-        return
-      }
-      const el = viewportRef.current
-      if (!el) return
-      el.scrollTo({ top: el.scrollHeight, behavior })
-    }
+      if (!virtuosoRef.current || virtualItemCount <= 0) return false
+      virtuosoRef.current.scrollToIndex({ index: virtualItemCount - 1, align: 'end', behavior: behavior as 'auto' | 'smooth' })
+      return true
+    },
+  })
 
-    if (behavior === 'auto') {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-      scroll()
-      return
-    }
-
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      scroll()
-    })
-  }, [])
-
-  const [isAutoScroll, setIsAutoScroll] = useState(true)
-  const [isAtTop, setIsAtTop] = useState(true)
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const updateScrollState = (allowPagination: boolean) => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD
-      autoScrollEnabledRef.current = atBottom
-      setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
-      const atTop = el.scrollTop <= 50
-      setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
-      if (allowPagination && atTop && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
-        if (!explicitTopNavigationRef.current && renderedEntries.length <= 200) {
-          olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
-        }
-        void historicalLogs.fetchOlder()
-      }
-    }
-    updateScrollState(false)
-    const onScroll = () => updateScrollState(true)
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [historicalLogs, renderedEntries.length])
-
-  useEffect(() => {
-    const anchor = olderPageAnchorRef.current
-    const el = viewportRef.current
-    if (!anchor || !el || historicalLogs.isFetchingOlder) return
-    // Older entries are prepended in chronological order. Keep the first row
-    // that was already visible at the same screen position after the resize.
-    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
-    olderPageAnchorRef.current = null
-  }, [historicalLogs.entries.length, historicalLogs.isFetchingOlder])
-
-  useEffect(() => () => {
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    const contentEl = contentRef.current
-    if (!contentEl) return
-
-    const observer = new ResizeObserver(() => {
-      if (!autoScrollEnabledRef.current) return
-      scheduleScrollToBottom('auto')
-    })
-
-    observer.observe(contentEl)
-    return () => observer.disconnect()
-  }, [scheduleScrollToBottom])
 
   const visibleLogTail = useMemo(() => {
     const lastEntry = renderedEntries.at(-1)
@@ -440,7 +364,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
     if (viewChanged) {
       autoScrollEnabledRef.current = true
-      queueMicrotask(() => setIsAutoScroll(true))
+      queueMicrotask(enableAutoScroll)
     }
 
     if (hasLogs && (viewChanged || (visibleTailChanged && autoScrollEnabledRef.current))) {
@@ -450,7 +374,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
 
     previousViewRef.current = currentView
     previousVisibleTailRef.current = visibleLogTail
-  }, [ticket?.id, effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
+  }, [autoScrollEnabledRef, effectiveTab, enableAutoScroll, hasLogs, scheduleScrollToBottom, ticket?.id, visibleLogTail])
 
   // ── Copy all logs ──────────────────────────────────────────────
   const [copied, copyToClipboard] = useCopyToClipboard()
@@ -532,9 +456,8 @@ export function FullLogView({ ticket }: FullLogViewProps) {
     if (isNavigatingToTop) return
     const owner = topNavigationOwnerRef.current
     explicitTopNavigationRef.current = true
-    olderPageAnchorRef.current = null
-    autoScrollEnabledRef.current = false
-    setIsAutoScroll(false)
+    clearOlderPageAnchor()
+    disableAutoScroll()
     setIsNavigatingToTop(true)
     try {
       await historicalLogs.fetchAllOlder(() => owner.cancelled)
@@ -553,17 +476,16 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       explicitTopNavigationRef.current = false
       setIsNavigatingToTop(false)
     }
-  }, [historicalLogs, isNavigatingToTop])
+  }, [clearOlderPageAnchor, disableAutoScroll, historicalLogs, isNavigatingToTop, viewportRef])
   const handleGoToBottom = useCallback(() => {
-    autoScrollEnabledRef.current = true
-    setIsAutoScroll(true)
+    enableAutoScroll()
     const viewport = viewportRef.current
     if (!virtuosoRef.current && viewport) {
       viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
     }
     scheduleScrollToBottom('auto')
     requestAnimationFrame(() => scheduleScrollToBottom('auto'))
-  }, [scheduleScrollToBottom])
+  }, [enableAutoScroll, scheduleScrollToBottom, viewportRef])
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">

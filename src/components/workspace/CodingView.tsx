@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M, QUERY_STALE_TIME_5S, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
 import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card'
 import { Badge } from '@/components/ui/badge'
@@ -1100,50 +1101,10 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const codingPhaseArtifacts = useMemo(() => loadedCodingPhaseArtifacts ?? [], [loadedCodingPhaseArtifacts])
   
   // -- Auto-scroll state for the model log tab --
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const autoScrollEnabledRef = useRef(true)
-  const scrollFrameRef = useRef<number | null>(null)
-  const [isAutoScroll, setIsAutoScroll] = useState(true)
-  const [isAtTop, setIsAtTop] = useState(true)
-
-  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    const scroll = () => {
-      const el = viewportRef.current
-      if (!el) return
-      el.scrollTo({ top: el.scrollHeight, behavior })
-    }
-    if (behavior === 'auto') {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-      scroll()
-      return
-    }
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      scroll()
-    })
-  }, [])
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const onScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const atBottom = distanceFromBottom <= 50
-      autoScrollEnabledRef.current = atBottom
-      setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
-      const atTop = el.scrollTop <= 50
-      setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
-    }
-    onScroll()
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [detailTab]) // re-bind when tab swaps in case the node remounts
+  const {
+    viewportRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
+    scheduleScrollToBottom, enableAutoScroll,
+  } = useLogScrollAnchor({ rebindKey: detailTab })
 
   useEffect(() => {
     if (detailTab === 'model') {
@@ -1151,16 +1112,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         scheduleScrollToBottom('auto')
       }
     }
-  }, [detailTab, scheduleScrollToBottom])
-
-  useEffect(() => {
-    return () => {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-    }
-  }, [])
+  }, [autoScrollEnabledRef, detailTab, scheduleScrollToBottom])
 
   const logCtx = useLogs()
   // The loader is identity-stable and the reader is rebound only when rows change, so
@@ -1393,7 +1345,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     if (detailTab === 'model' && autoScrollEnabledRef.current) {
       scheduleScrollToBottom('smooth')
     }
-  }, [detailTab, scheduleScrollToBottom, visibleBeadLogTail])
+  }, [autoScrollEnabledRef, detailTab, scheduleScrollToBottom, visibleBeadLogTail])
 
   const isViewingOther = viewedBead !== null
 
@@ -1678,8 +1630,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                       <button
                         type="button"
                         onClick={() => {
-                          autoScrollEnabledRef.current = true
-                          setIsAutoScroll(true)
+                          enableAutoScroll()
                           scheduleScrollToBottom('smooth')
                         }}
                         className="absolute bottom-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"

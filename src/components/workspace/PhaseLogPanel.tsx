@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback, Fragment, useId, typ
 import { Copy, Check, ArrowUpToLine, ArrowDownToLine, ChartNoAxesCombined, LoaderCircle } from 'lucide-react'
 import { LogCollapseToggle } from './LogCollapseToggle'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useLogs } from '@/context/useLogContext'
@@ -45,7 +46,6 @@ interface PhaseLogPanelProps {
 type LogTab = 'ALL' | 'SYS' | 'AI' | 'ERROR' | 'DEBUG'
 
 const FIXED_TABS: LogTab[] = ['ALL', 'SYS', 'AI', 'ERROR', 'DEBUG']
-const BOTTOM_THRESHOLD = 50
 
 function isAiLogTab(tab: string): boolean {
   return tab === 'AI' || (!FIXED_TABS.includes(tab as LogTab) && tab !== 'CMD')
@@ -208,102 +208,23 @@ export function PhaseLogPanel({
     return shouldLoadHistoricalLogs || phaseLogs.some((entry) => isSystem(entry) && isCommand(entry))
   }, [phaseLogs, shouldLoadHistoricalLogs])
 
-  // ── Smart auto-scroll ──────────────────────────────────────────────
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null)
-  const setViewportRef = useCallback((node: HTMLDivElement | null) => {
-    viewportRef.current = node
-    setScrollParent(node)
-  }, [])
-  const contentRef = useRef<HTMLDivElement>(null)
+  const {
+    viewportRef, setViewportRef, scrollParent, contentRef,
+    autoScrollEnabledRef, isAutoScroll, isAtTop, scheduleScrollToBottom, enableAutoScroll,
+  } = useLogScrollAnchor({
+    pagination: {
+      enabled: shouldLoadHistoricalLogs,
+      hasOlder: historicalLogs.hasOlder,
+      isFetchingOlder: historicalLogs.isFetchingOlder,
+      fetchOlder: () => void historicalLogs.fetchOlder(),
+      shouldAnchor: () => phaseLogs.length <= 200,
+      loadedEntryCount: historicalLogs.entries.length,
+    },
+  })
   const headerRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
-  const autoScrollEnabledRef = useRef(true)
   const previousViewRef = useRef<string | null>(null)
   const previousVisibleTailRef = useRef<string | null>(null)
-  const scrollFrameRef = useRef<number | null>(null)
-  const olderPageAnchorRef = useRef<{ height: number; top: number } | null>(null)
-
-  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    const scroll = () => {
-      const el = viewportRef.current
-      if (!el) return
-      el.scrollTo({ top: el.scrollHeight, behavior })
-    }
-
-    if (behavior === 'auto') {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-      scroll()
-      return
-    }
-
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      scroll()
-    })
-  }, [])
-
-  const [isAutoScroll, setIsAutoScroll] = useState(true)
-  const [isAtTop, setIsAtTop] = useState(true)
-
-  // Attach scroll listener directly on the viewport (scroll events don't bubble)
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const updateScrollState = (allowPagination: boolean) => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD
-      autoScrollEnabledRef.current = atBottom
-      setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
-      const atTop = el.scrollTop <= 50
-      setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
-      if (allowPagination && atTop && shouldLoadHistoricalLogs && historicalLogs.hasOlder && !historicalLogs.isFetchingOlder) {
-        if (phaseLogs.length <= 200) olderPageAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop }
-        void historicalLogs.fetchOlder()
-      }
-    }
-    // initialize on mount
-    updateScrollState(false)
-    const onScroll = () => updateScrollState(true)
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [historicalLogs, phaseLogs.length, shouldLoadHistoricalLogs])
-
-  useEffect(() => {
-    const anchor = olderPageAnchorRef.current
-    const el = viewportRef.current
-    if (!anchor || !el || historicalLogs.isFetchingOlder) return
-    // Older entries are prepended in chronological order. Keep the first row
-    // that was already visible at the same screen position after the resize.
-    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height)
-    olderPageAnchorRef.current = null
-  }, [historicalLogs.entries.length, historicalLogs.isFetchingOlder])
-
-  useEffect(() => () => {
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    const contentEl = contentRef.current
-    if (!contentEl) return
-
-    const observer = new ResizeObserver(() => {
-      if (!autoScrollEnabledRef.current) return
-      scheduleScrollToBottom('auto')
-    })
-
-    observer.observe(contentEl)
-    return () => observer.disconnect()
-  }, [scheduleScrollToBottom])
 
   const reportNaturalHeight = useCallback(() => {
     if (!onNaturalHeightChange) return
@@ -313,7 +234,7 @@ export function PhaseLogPanel({
     const headerHeight = !hideHeader && !hasToolbarPrefix ? (headerRef.current?.offsetHeight ?? 0) : 0
 
     onNaturalHeightChange(contentHeight + toolbarHeight + headerHeight)
-  }, [hasToolbarPrefix, hideHeader, onNaturalHeightChange])
+  }, [contentRef, hasToolbarPrefix, hideHeader, onNaturalHeightChange])
 
   useEffect(() => {
     if (!onNaturalHeightChange) return
@@ -329,7 +250,7 @@ export function PhaseLogPanel({
     if (contentRef.current) observer.observe(contentRef.current)
 
     return () => observer.disconnect()
-  }, [onNaturalHeightChange, reportNaturalHeight])
+  }, [contentRef, onNaturalHeightChange, reportNaturalHeight])
 
   const configuredModelIds = useMemo(() => {
     return lockedCouncilMembers.filter((memberId) => memberId.trim().length > 0)
@@ -498,7 +419,7 @@ export function PhaseLogPanel({
 
     if (viewChanged) {
       autoScrollEnabledRef.current = true
-      queueMicrotask(() => setIsAutoScroll(true))
+      queueMicrotask(enableAutoScroll)
     }
 
     // An initially empty panel should always reveal its first durable/live
@@ -510,7 +431,7 @@ export function PhaseLogPanel({
 
     previousViewRef.current = currentView
     previousVisibleTailRef.current = visibleLogTail
-  }, [ticket?.id, phase, effectiveTab, hasLogs, visibleLogTail, scheduleScrollToBottom])
+  }, [autoScrollEnabledRef, effectiveTab, enableAutoScroll, hasLogs, phase, scheduleScrollToBottom, ticket?.id, visibleLogTail])
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col">
@@ -858,8 +779,7 @@ export function PhaseLogPanel({
               <button
                 type="button"
                 onClick={() => {
-                  autoScrollEnabledRef.current = true
-                  setIsAutoScroll(true)
+                  enableAutoScroll()
                   scheduleScrollToBottom('smooth')
                 }}
                 className="absolute bottom-4 right-6 p-2 bg-background/30 hover:bg-background/90 backdrop-blur-md border border-border/50 hover:border-border rounded-full shadow-2xs hover:shadow-sm pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-50 hover:opacity-100"

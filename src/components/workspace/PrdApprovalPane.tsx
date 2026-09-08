@@ -52,6 +52,7 @@ import { apiFilePath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 type EditTab = 'structured' | 'yaml'
 
@@ -614,12 +615,8 @@ export function PrdApprovalPane({
             </div>
           ) : prdDocument ? (
             <PrdDocumentView document={prdDocument as PrdDocument} />
-          ) : rawContent ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No PRD artifact available yet.</div>
+            <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No PRD artifact available yet." />
           )}
         </div>
       </div>

@@ -34,6 +34,7 @@ import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -471,12 +472,8 @@ export function InterviewApprovalPane({
           </div>
         ) : interviewDocument ? (
           <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
-        ) : rawContent ? (
-          <div className="raw-content-box">
-            <pre className="raw-content-pre">{rawDisplayContent}</pre>
-          </div>
         ) : (
-          <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No interview artifact available yet.</div>
+          <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No interview artifact available yet." />
         )}
       </div>
 

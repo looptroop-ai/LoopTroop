@@ -39,6 +39,7 @@ import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -738,22 +739,14 @@ function ReadOnlyApprovalAttemptView({
         ) : artifactType === 'interview' ? (
           interviewDocument ? (
             <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
-          ) : content ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No interview artifact available.</div>
+            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No interview artifact available." />
           )
         ) : artifactType === 'prd' ? (
           prdDocument ? (
             <PrdDocumentView document={prdDocument as PrdDocument} />
-          ) : content ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No PRD artifact available.</div>
+            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No PRD artifact available." />
           )
         ) : content ? (
           <BeadsDraftView content={content} />

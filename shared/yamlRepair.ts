@@ -1829,14 +1829,6 @@ function collectMultilineSingleQuotedFreeText(
 }
 
 /**
- * Repair YAML plain scalars that contain `: ` (colon-space).
- *
- * In YAML, a plain scalar value must not contain `: ` because parsers
- * interpret it as a nested mapping entry. Models frequently produce
- * unquoted values like `rationale: some rules: here` which breaks parsing.
- * This function wraps such values in double quotes.
- */
-/**
  * Strip markdown code fences wrapping YAML/JSON content.
  *
  * Models sometimes wrap their entire structured output in ```yaml ... ```
@@ -2420,6 +2412,14 @@ export function repairYamlWrappedPlainListScalars(yaml: string): string {
   return result.join('\n')
 }
 
+/**
+ * Repair YAML plain scalars that contain `: ` (colon-space).
+ *
+ * In YAML, a plain scalar value must not contain `: ` because parsers
+ * interpret it as a nested mapping entry. Models frequently produce
+ * unquoted values like `rationale: some rules: here` which breaks parsing.
+ * This function wraps such values in double quotes.
+ */
 export function repairYamlPlainScalarColons(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
@@ -2565,23 +2565,16 @@ export function repairYamlUnclosedQuotes(yaml: string): string {
       continue
     }
 
-    const quotedMatch = line.match(QUOTED_VALUE_PATTERN)
+    // Mapping values and sequence entries differ only in how the opening quote
+    // is found; what follows it is judged identically. The two matchers are
+    // tried in the same order as before, so a line both could match — there is
+    // none, one requires `key:` and the other a bare `- ` — would still be
+    // handled by the mapping form first.
+    const quotedMatch = line.match(QUOTED_VALUE_PATTERN) ?? line.match(LIST_QUOTED_VALUE_PATTERN)
     if (quotedMatch) {
       const valueAfterOpenQuote = quotedMatch[2]!
       // If the value has an even number of unescaped double-quotes after the
       // opening one, the total is odd — meaning the opening quote is unclosed.
-      if (countUnescapedDoubleQuotes(valueAfterOpenQuote) % 2 === 0) {
-        const nextLine = findNextNonBlankLine(lines, i + 1)
-        if (nextLine === null || looksLikeYamlStructuralLine(nextLine, lineIndent)) {
-          result.push(line + '"')
-          continue
-        }
-      }
-    }
-
-    const listQuotedMatch = line.match(LIST_QUOTED_VALUE_PATTERN)
-    if (listQuotedMatch) {
-      const valueAfterOpenQuote = listQuotedMatch[2]!
       if (countUnescapedDoubleQuotes(valueAfterOpenQuote) % 2 === 0) {
         const nextLine = findNextNonBlankLine(lines, i + 1)
         if (nextLine === null || looksLikeYamlStructuralLine(nextLine, lineIndent)) {

@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { renderCommandSpec } from '@shared/commandSpec'
 import { RawContentWithCopy } from '../RawTextDisplay'
 import { CollapsibleSection } from './CollapsibleSection'
+import { LabeledSubsection } from './LabeledSubsection'
 import { WithRawTab } from './WithRawTab'
 import { ArtifactProcessingNotice } from './ArtifactProcessingNotice'
 import {
@@ -145,28 +146,25 @@ export function FinalTestResultsView({ content }: { content: string }) {
                       {command.setupWrapperApplied ? ' · Setup wrapper applied' : ''}
                     </div>
                     {command.effectiveCommand ? (
-                      <div>
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Effective Command</div>
+                      <LabeledSubsection label="Effective Command">
                         <pre className="text-[11px] font-mono bg-background rounded border border-border p-2 overflow-x-auto whitespace-pre-wrap">
                           {command.effectiveCommand}
                         </pre>
-                      </div>
+                      </LabeledSubsection>
                     ) : null}
                     {command.stdout ? (
-                      <div>
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Stdout</div>
+                      <LabeledSubsection label="Stdout">
                         <pre className="text-[11px] font-mono bg-background rounded border border-border p-2 overflow-x-auto whitespace-pre-wrap">
                           {command.stdout}
                         </pre>
-                      </div>
+                      </LabeledSubsection>
                     ) : null}
                     {command.stderr ? (
-                      <div>
-                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Stderr</div>
+                      <LabeledSubsection label="Stderr">
                         <pre className="text-[11px] font-mono bg-background rounded border border-border p-2 overflow-x-auto whitespace-pre-wrap">
                           {command.stderr}
                         </pre>
-                      </div>
+                      </LabeledSubsection>
                     ) : null}
                   </div>
                 </CollapsibleSection>

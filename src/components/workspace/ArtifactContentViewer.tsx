@@ -63,6 +63,7 @@ import {
 } from './artifactViewers/rawContentSources'
 import { RawAttemptVariantSelector } from './artifactViewers/WithRawTab'
 import { StatPill, StatPillRow } from './artifactViewers/StatPillRow'
+import { LabeledSubsection, SubsectionLabel } from './artifactViewers/LabeledSubsection'
 import {
   buildDraftRawLogFallbacks,
   buildDraftRawLogHistories,
@@ -369,10 +370,10 @@ function RefinementInspirationTooltip({
               <div className="max-h-72 overflow-y-auto pr-1 space-y-2">
                 {blocks.map((block) => (
                   <div key={`${block.kind}:${block.id ?? block.label}`} className="rounded-sm border border-border/80 bg-muted/70 px-2 py-1.5 text-foreground">
-                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <SubsectionLabel>
                       {getRefinementInspirationBlockKindLabel(block.kind)}
                       {block.id ? <span className="ml-1 font-mono normal-case tracking-normal">{block.id}</span> : null}
-                    </div>
+                    </SubsectionLabel>
                     <div className="text-[11px] leading-snug whitespace-pre-wrap break-words">
                       {block.text}
                     </div>
@@ -982,8 +983,7 @@ function CoverageResolutionNotesInner({
         >
           <div className="space-y-3">
             <div className="text-xs leading-5">{resolution.rationale}</div>
-            <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Affected Items</div>
+            <LabeledSubsection label="Affected Items">
               {resolution.affectedItems.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
                   {resolution.affectedItems.map((item) => (
@@ -998,7 +998,7 @@ function CoverageResolutionNotesInner({
               ) : (
                 <div className="text-xs text-muted-foreground">No directly affected items were recorded for this resolution.</div>
               )}
-            </div>
+            </LabeledSubsection>
           </div>
         </CollapsibleSection>
       ))}

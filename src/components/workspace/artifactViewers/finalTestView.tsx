@@ -1,6 +1,6 @@
 import { commandSpecSchema } from '@shared/commandSpec'
 import { isRecord } from '@shared/typeGuards'
-import { hasStringFields, isArrayOf, isOptionalArrayOf, isOptionalString } from '@/lib/artifactFieldShape'
+import { hasStringFields, isArrayOf, isOptionalArrayOf, isNullableNumber, isNullableString, isOptionalNumber, isOptionalString, isOptionalStructuredOutput } from '@/lib/artifactFieldShape'
 import { tryParseStructuredContent } from '../phaseArtifactTypes'
 import type { FinalTestExecutionReportData } from '../phaseArtifactTypes'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
@@ -33,10 +33,19 @@ export function FinalTestResultsView({ content }: { content: string }) {
     || !isOptionalString(parsed.plannedBy)
     || !isOptionalString(parsed.checkedAt)
     || !isArrayOf(parsed.errors, (entry) => typeof entry === 'string')
-    || !isArrayOf(parsed.commands, (entry) => hasStringFields(entry, ['displayCommand', 'stdout', 'stderr', 'effectiveCommand']))
+    || !isArrayOf(parsed.commands, (entry) => (
+      hasStringFields(entry, ['displayCommand', 'stdout', 'stderr', 'effectiveCommand'])
+      // `durationMs` is rendered as a child; `exitCode` and `signal` are read
+      // through `??` and truthiness, and producers write both as `null`.
+      && isRecord(entry) && isOptionalNumber(entry.durationMs)
+      && isNullableNumber(entry.exitCode) && isNullableString(entry.signal)
+    ))
     || !isOptionalArrayOf(parsed.testFiles, (entry) => typeof entry === 'string')
     || !isOptionalArrayOf(parsed.fileEffects, (entry) => hasStringFields(entry, ['path', 'intent', 'reason']))
-    || !isOptionalArrayOf(parsed.rawAttempts, isRecord)
+    // Handed to `buildRawAttemptVariants`, which does `.toLowerCase()` on
+    // `label` and `status` without checking either.
+    || !isOptionalArrayOf(parsed.rawAttempts, (entry) => hasStringFields(entry, ['label', 'status']))
+    || !isOptionalStructuredOutput(parsed.planStructuredOutput)
   ) {
     return <RawContentWithCopy content={content} />
   }

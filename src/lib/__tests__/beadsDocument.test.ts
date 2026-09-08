@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { parseBeadsArtifact } from '../beadsDocument'
+import { countBeadsInContent, parseBeadsArtifact } from '../beadsDocument'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -75,5 +75,33 @@ describe('parseBeadsArtifact', () => {
 
   it('ignores blank lines between entries', () => {
     expect(parseBeadsArtifact('{"id":"B-1"}\n\n{"id":"B-2"}')).toEqual([{ id: 'B-1' }, { id: 'B-2' }])
+  })
+})
+
+describe('countBeadsInContent', () => {
+  // The two copies this replaced disagreed here: one early-returned 0 for
+  // content that parsed to a single JSON object, before reaching its own JSONL
+  // branch, while the other fell through and returned 1.
+  it('counts a single-object JSONL artifact as one bead', () => {
+    expect(countBeadsInContent('{"id":"B-1","title":"Only"}')).toBe(1)
+  })
+
+  it('counts each encoding the way the viewer renders it', () => {
+    expect(countBeadsInContent('[{"id":"B-1"},{"id":"B-2"}]')).toBe(2)
+    expect(countBeadsInContent('{"beads":[{"id":"B-1"}]}')).toBe(1)
+    expect(countBeadsInContent('{"id":"B-1"}\n{"id":"B-2"}')).toBe(2)
+  })
+
+  // The count and the list under it must never disagree.
+  it('does not count entries the parser drops', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const content = '[null, {"id":"B-1"}]'
+
+    expect(countBeadsInContent(content)).toBe(1)
+    expect(parseBeadsArtifact(content)).toHaveLength(1)
+  })
+
+  it('falls back to counting YAML bead ids the parser declines', () => {
+    expect(countBeadsInContent('- id: B-1\n  title: One\n- id: B-2\n  title: Two\n')).toBe(2)
   })
 })

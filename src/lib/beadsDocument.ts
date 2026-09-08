@@ -171,3 +171,22 @@ function parseBeadsJsonl(content: string): RawBead[] | null {
 
   return beads.length > 0 ? beads : null
 }
+
+/**
+ * How many beads a bead artifact holds, counted the way the artifact view
+ * renders it.
+ *
+ * The two copies this replaces had drifted: one early-returned `0` for content
+ * that parsed to a single JSON object, before reaching its own JSONL branch,
+ * while the other fell through and returned `1`. Same stored artifact, a "0
+ * beads" chip beside a viewer showing one card.
+ *
+ * Uses the parser rather than re-deriving the encodings, so a count can never
+ * again disagree with the list underneath it. The regex is the last resort for
+ * YAML the parser declines, where a count is better than nothing.
+ */
+export function countBeadsInContent(content: string): number {
+  const beads = parseBeadsArtifact(content)
+  if (beads) return beads.length
+  return (content.match(/^\s*-\s+id\s*:/gm) ?? []).length
+}

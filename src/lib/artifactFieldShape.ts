@@ -24,6 +24,24 @@ export function isOptionalNumber(value: unknown): boolean {
   return value === undefined || typeof value === 'number'
 }
 
+/**
+ * A number, absent, or `null`.
+ *
+ * `null` is a real stored value, not a malformed one: producers write
+ * `exitCode: null` and `signal: null`, and the renderers guard them with `??`
+ * and truthiness. A guard that rejected `null` would refuse artifacts the app
+ * writes itself — which is how the first version of this rejected every
+ * final-test report carrying `signal: null`.
+ */
+export function isNullableNumber(value: unknown): boolean {
+  return value === null || isOptionalNumber(value)
+}
+
+/** A string, absent, or `null`. See `isNullableNumber` for why `null` counts. */
+export function isNullableString(value: unknown): boolean {
+  return value === null || isOptionalString(value)
+}
+
 /** Absent, or an array whose every entry satisfies `check`. */
 export function isOptionalArrayOf(value: unknown, check: (entry: unknown) => boolean): boolean {
   return value === undefined || (Array.isArray(value) && value.every(check))
@@ -39,9 +57,18 @@ export function hasStringFields(value: unknown, fields: readonly string[]): bool
   return isRecord(value) && fields.every((field) => isOptionalString(value[field]))
 }
 
-/** Every entry is a record whose named fields are strings where present. */
-export function isRecordArrayWithStringFields(value: unknown, fields: readonly string[]): boolean {
-  return Array.isArray(value) && value.every((entry) => hasStringFields(entry, fields))
+/**
+ * Is this safe to hand to `ArtifactProcessingNotice`?
+ *
+ * The notice filters and iterates the intervention, warning and diagnostic
+ * collections without checking them, so a truthy non-array field there throws.
+ * Absent is fine — the notice renders nothing.
+ */
+export function isOptionalStructuredOutput(value: unknown): boolean {
+  if (value === undefined || value === null) return true
+  if (!isRecord(value)) return false
+  return [value.interventions, value.warnings, value.retryDiagnostics, value.sourceMessages]
+    .every((entry) => entry === undefined || Array.isArray(entry))
 }
 
 /**
@@ -55,11 +82,18 @@ export function isRecordArrayWithStringFields(value: unknown, fields: readonly s
  */
 export function isRenderableManualQaOrigin(value: unknown): boolean {
   if (!isRecord(value)) return false
+  // The card renders these three itself: two as children, one through
+  // `.replace`.
+  if (!hasStringFields(value, ['sourceTicketId', 'sourceTicketExternalId', 'imageDelivery'])) return false
+  if (!isOptionalNumber(value.version)) return false
   if (!Array.isArray(value.sourceItems)) return false
   return value.sourceItems.every((item) => (
     isRecord(item)
-    && isArrayOf(item.evidence, () => true)
-    && isOptionalArrayOf(item.links, isRecord)
+    // `evidence` and `links` are both read with `.length` and mapped, so
+    // neither may be absent — the producer defaults them to `[]`, and
+    // `undefined` is precisely the stored legacy shape this guard exists for.
+    && isArrayOf(item.evidence, (entry) => hasStringFields(entry, ['id', 'mediaType', 'originalName']))
+    && isArrayOf(item.links, (entry) => hasStringFields(entry, ['id', 'url', 'label']))
     && hasStringFields(item, ['itemId', 'lineageId', 'behavior', 'observation', 'expectedResult'])
   ))
 }

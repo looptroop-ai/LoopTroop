@@ -1,4 +1,4 @@
-import { hasStringFields, isArrayOf } from '@/lib/artifactFieldShape'
+import { hasStringFields, isArrayOf, isOptionalNumber, isOptionalString, isOptionalStructuredOutput } from '@/lib/artifactFieldShape'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { useMemo, useState } from 'react'
@@ -15,7 +15,32 @@ import { buildRawAttemptSource, getRawAttemptsFromContent } from './rawAttempts'
 export function RelevantFilesScanView({ content }: { content: string }) {
   const [activeTab, setActiveTab] = useState<'files' | 'raw'>('files')
   const rawDisplayContent = useMemo(() => buildReadableRawDisplayContent(content), [content])
-  const raw = tryParseStructuredContent(content) as (RelevantFilesScanData & { files: Array<RelevantFileScanEntry & { content_preview?: string }> }) | null
+  // Validated before anything reads it, not after: `modelId` reaches
+  // `getModelDisplayName` inside the memo below, which calls `.startsWith` on
+  // it, so a late guard never runs. `raw` is null unless the whole payload is
+  // renderable, and the memos then see nothing rather than something malformed.
+  //
+  // The fields checked here are the ones this view renders: each file row's
+  // strings, the file count and model id it prints, and the structured-output
+  // record it hands to the processing notice.
+  const raw = useMemo(() => {
+    const parsed = tryParseStructuredContent(content) as (RelevantFilesScanData & {
+      files: Array<RelevantFileScanEntry & { content_preview?: string }>
+    }) | null
+    const isFileEntry = (entry: unknown) => hasStringFields(entry, [
+      'path', 'rationale', 'relevance', 'likely_action', 'likelyAction', 'contentPreview', 'content_preview',
+    ])
+    if (
+      !parsed
+      || !isArrayOf(parsed.files, isFileEntry)
+      || !isOptionalNumber((parsed as { fileCount?: unknown }).fileCount)
+      || !isOptionalString(parsed.modelId)
+      || !isOptionalStructuredOutput((parsed as { structuredOutput?: unknown }).structuredOutput)
+    ) {
+      return null
+    }
+    return parsed
+  }, [content])
   const rawAttempts = useMemo(() => getRawAttemptsFromContent(content), [content])
   const rawAttemptSource = useMemo(
     () => buildRawAttemptSource(
@@ -30,14 +55,7 @@ export function RelevantFilesScanView({ content }: { content: string }) {
   const { activeRawVariant, setActiveRawVariantId } = useActiveRawVariant(rawVariantOptions, 'relevant-files-scan:accepted-latest')
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  // Truthiness is not enough: `{"files":"oops"}` threw on `raw.files.map`,
-  // `{"files":[null]}` threw on `f.contentPreview`, and a file whose `path` is
-  // an object reaches JSX as an invalid child. These are the fields the rows
-  // below actually render.
-  const isFileEntry = (entry: unknown) => hasStringFields(entry, [
-    'path', 'rationale', 'relevance', 'likely_action', 'likelyAction', 'contentPreview', 'content_preview',
-  ])
-  if (!raw || !isArrayOf(raw.files, isFileEntry)) {
+  if (!raw) {
     return <RawContentWithCopy content={content} />
   }
 

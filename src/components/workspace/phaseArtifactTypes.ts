@@ -1,5 +1,5 @@
 import { tryParseStructuredContent } from '@/lib/structuredContent'
-import { isBeadShaped } from '@/lib/beadsDocument'
+import { countBeadsInContent } from '@/lib/beadsDocument'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -629,35 +629,6 @@ export function extractCompiledInterviewDetail(content: string | null): string {
 // it too, and a lib module must not depend on a components module.
 export { tryParseStructuredContent }
 
-// Counts what the artifact view would actually render, which means counting
-// bead-shaped entries rather than array members: the viewer drops the rest, and
-// a count that disagrees with the list under it is worse than no count.
-// `isBeadShaped` rather than `filterBeadShaped` because a count must not log.
-function countBeadsInContent(content: string): number {
-  const parsed = tryParseStructuredContent(content)
-  if (Array.isArray(parsed)) return parsed.filter(isBeadShaped).length
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray((parsed as { beads?: unknown[] }).beads)) {
-    return (parsed as { beads: unknown[] }).beads.filter(isBeadShaped).length
-  }
-  if (parsed !== null) return 0
-
-  const trimmed = content.trim()
-  if (trimmed.startsWith('{')) {
-    try {
-      return trimmed
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as unknown)
-        .filter(isBeadShaped)
-        .length
-    } catch {
-      // Ignore malformed JSONL and fall back to line-based counting.
-    }
-  }
-
-  return (content.match(/^\s*-\s+id\s*:/gm) ?? []).length
-}
 
 export function extractCanonicalInterviewDetail(content: string | null): string {
   const parsed = tryParseStructuredContent(content)

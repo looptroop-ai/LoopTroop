@@ -636,6 +636,8 @@ items:
     ['files is an object', '{"files":{}}'],
     ['files holds a null element', '{"files":[null]}'],
     ['a file whose path is an object', '{"files":[{"path":{}}]}'],
+    ['modelId is not a string', '{"files":[],"modelId":{}}'],
+    ['fileCount is an object', '{"files":[],"fileCount":{}}'],
   ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
     render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
 
@@ -649,6 +651,9 @@ items:
     ['fileEffects that is a non-empty string', '{"modelOutput":"","errors":[],"commands":[],"fileEffects":"oops"}'],
     ['an errors entry that is an object', '{"modelOutput":"","errors":[{}],"commands":[]}'],
     ['plannedBy that is not a string', '{"modelOutput":"","errors":[],"commands":[],"plannedBy":{}}'],
+    ['a command whose durationMs is an object', '{"modelOutput":"","errors":[],"commands":[{"durationMs":{}}]}'],
+    ['a rawAttempts entry whose status is an object', '{"modelOutput":"","errors":[],"commands":[],"rawAttempts":[{"status":{}}]}'],
+    ['a structuredOutput whose warnings is not an array', '{"modelOutput":"","errors":[],"commands":[],"planStructuredOutput":{"warnings":"oops"}}'],
   ])('falls back to raw content for a final test report with %s', (_label, content) => {
     render(<ArtifactContent artifactId="test-results" content={content} />)
 
@@ -669,6 +674,38 @@ items:
 
     expect(screen.getByText(/Survives a broken origin/)).toBeInTheDocument()
     expect(screen.queryByText(/Manual QA Fix/)).not.toBeInTheDocument()
+  })
+
+  // The card reads `source.links.length` and renders link and evidence fields
+  // as children, none of which the first version of the guard checked.
+  it.each([
+    ['sourceItems with no links array', { schemaVersion: 1, version: 1, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [] }] }],
+    ['a link whose url is an object', { schemaVersion: 1, version: 1, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [], links: [{ id: 'x', url: {} }] }] }],
+    ['a version that is not a number', { schemaVersion: 1, version: {}, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [] }],
+  ])('renders a bead whose Manual QA origin has %s', (_label, qaOrigin) => {
+    render(<BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Still renders', qaOrigin }])} />)
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    expect(screen.getByText(/Still renders/)).toBeInTheDocument()
+    expect(screen.queryByText(/Manual QA Fix/)).not.toBeInTheDocument()
+  })
+
+  it('still renders a Manual QA origin that is complete', () => {
+    const qaOrigin = {
+      schemaVersion: 1,
+      version: 2,
+      actionId: 'a',
+      sourceTicketId: 't',
+      sourceTicketExternalId: 'T-9',
+      sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [], links: [] }],
+    }
+    render(<BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Has an origin', qaOrigin }])} />)
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    // The badge renders in the bead header and again in the expanded card.
+    expect(screen.getAllByText(/Manual QA Fix/).length).toBeGreaterThan(0)
   })
 
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {

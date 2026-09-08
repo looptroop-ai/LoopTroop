@@ -1776,14 +1776,36 @@ trap 'forward HUP' HUP
 node "$core" "$@" &
 child=$!
 
+# A trapped signal interrupts `wait` and makes it report the signal rather than
+# the child, which has not been reaped: the shell sees 128+n while the child is
+# still deciding its own status. Waiting again is what collects the real one,
+# and forwarding the signal is only worth doing if the caller then sees what the
+# child decided.
+#
+# The retry used to be gated on `kill -0`, which asks whether the child is still
+# running. That is the wrong question. A child that has already handled the
+# signal and exited — the common case, since forwarding is what prompted it — is
+# neither running nor reaped, so the gate failed and the shell exited 128+n,
+# discarding the status it had just gone to the trouble of forwarding for. It
+# only ever surfaced when the child finished before this shell was scheduled
+# again, which is why it read as a flaky test rather than a bug.
 status=0
 while :; do
   status=0
   wait "$child" || status=$?
-  if [ "$status" -gt 128 ] && kill -0 "$child" 2>/dev/null; then
-    continue
+  [ "$status" -gt 128 ] || break
+
+  signalled=$status
+  status=0
+  wait "$child" || status=$?
+  # 127 is "not a child of this shell": the status is genuinely unavailable, so
+  # the signal's is the best answer left. Anything else is the child's own, and
+  # another 128+n means a further signal arrived while waiting — go round again.
+  if [ "$status" -eq 127 ]; then
+    status=$signalled
+    break
   fi
-  break
+  [ "$status" -gt 128 ] || break
 done
 
 exit "$status"

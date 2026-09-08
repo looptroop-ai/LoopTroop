@@ -53,6 +53,7 @@ import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from '
 import { ManualQaOriginBadge, ManualQaOriginCard } from './ManualQaOriginCard'
 import { parsePrdDocument, PRD_TECHNICAL_SECTION_CONFIG } from '@/lib/prdDocument'
 import { parseBeadsArtifact, type RawBead } from '@/lib/beadsDocument'
+import { isRenderableManualQaOrigin } from '@/lib/artifactFieldShape'
 import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import { TextCopyButton } from './artifactViewers/TextCopyButton'
 import { WithRawTab } from './artifactViewers/WithRawTab'
@@ -1996,7 +1997,12 @@ export function BeadsDraftView({ content }: { content: string }) {
             const startedAt = getBeadStringValue(bead, ['startedAt', 'started_at'])
             const completedAt = getBeadStringValue(bead, ['completedAt', 'completed_at'])
             const beadStartCommit = getBeadStringValue(bead, ['beadStartCommit', 'bead_start_commit'])
-            const qaOrigin = bead.qaOrigin ?? bead.qa_origin ?? null
+            // A stored origin is whatever was written; `ManualQaOriginCard`
+            // maps `sourceItems` without checking it, so `qaOrigin: {}` took
+            // the whole bead view down. An unrenderable origin reads as no
+            // origin, which is what the ticket-runtime normaliser already does.
+            const storedQaOrigin = bead.qaOrigin ?? bead.qa_origin ?? null
+            const qaOrigin = isRenderableManualQaOrigin(storedQaOrigin) ? storedQaOrigin : null
             const metadataId = getBeadStringValue(bead, ['id'])
             const { blockedBy, blocks } = getBeadDependencies(bead)
             return (

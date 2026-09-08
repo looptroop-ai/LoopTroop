@@ -59,6 +59,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  // `restoreAllMocks` does not undo `stubGlobal`, so the last stubbed
+  // `ResizeObserver` would otherwise outlive its test and quietly replace the
+  // one `src/test/setup.ts` installs.
+  vi.unstubAllGlobals()
 })
 
 describe('useLogScrollAnchor', () => {

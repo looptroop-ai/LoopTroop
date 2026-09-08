@@ -606,6 +606,7 @@ items:
     ['an object with no checks array', '{"status":"pending"}'],
     ['checks present but not an array', '{"checks":"nope","criticalFailures":[],"warnings":[]}'],
     ['a checks array holding a null element', '{"checks":[null],"criticalFailures":[],"warnings":[]}'],
+    ['a check whose message is an object', '{"checks":[{"message":{}}],"criticalFailures":[],"warnings":[]}'],
   ])('falls back to raw content for a pre-flight report that is %s', (_label, content) => {
     render(<ArtifactContent artifactId="diagnostics" content={content} />)
 
@@ -634,10 +635,40 @@ items:
     ['files is a string', '{"files":"oops"}'],
     ['files is an object', '{"files":{}}'],
     ['files holds a null element', '{"files":[null]}'],
+    ['a file whose path is an object', '{"files":[{"path":{}}]}'],
   ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
     render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
 
     expect(screen.getByText(/oops|files|null/)).toBeInTheDocument()
+  })
+
+  // Round 3: the guards checked containers, then elements, but still cast every
+  // field. A wrong field type reaches React as an invalid child and throws.
+  it.each([
+    ['commands holding a null element', '{"modelOutput":"","errors":[],"commands":[null]}'],
+    ['fileEffects that is a non-empty string', '{"modelOutput":"","errors":[],"commands":[],"fileEffects":"oops"}'],
+    ['an errors entry that is an object', '{"modelOutput":"","errors":[{}],"commands":[]}'],
+    ['plannedBy that is not a string', '{"modelOutput":"","errors":[],"commands":[],"plannedBy":{}}'],
+  ])('falls back to raw content for a final test report with %s', (_label, content) => {
+    render(<ArtifactContent artifactId="test-results" content={content} />)
+
+    expect(screen.getByText(content)).toBeInTheDocument()
+  })
+
+  // `ManualQaOriginCard` maps `sourceItems` without checking it, so a bead
+  // carrying `qaOrigin: {}` — valid JSON, wrong shape — used to take the whole
+  // bead view down. An unrenderable origin now reads as no origin.
+  it('renders a bead whose Manual QA origin is malformed', () => {
+    render(
+      <BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Survives a broken origin', qaOrigin: {} }])} />,
+    )
+
+    // The bead body is collapsed by default, and the origin card only mounts
+    // when it opens — asserting on the closed card proves nothing.
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    expect(screen.getByText(/Survives a broken origin/)).toBeInTheDocument()
+    expect(screen.queryByText(/Manual QA Fix/)).not.toBeInTheDocument()
   })
 
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {

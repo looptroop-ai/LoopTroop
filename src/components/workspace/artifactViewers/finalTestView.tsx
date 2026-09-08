@@ -1,4 +1,6 @@
 import { commandSpecSchema } from '@shared/commandSpec'
+import { isRecord } from '@shared/typeGuards'
+import { hasStringFields, isArrayOf, isOptionalArrayOf, isOptionalString } from '@/lib/artifactFieldShape'
 import { tryParseStructuredContent } from '../phaseArtifactTypes'
 import type { FinalTestExecutionReportData } from '../phaseArtifactTypes'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
@@ -20,12 +22,21 @@ import {
 
 export function FinalTestResultsView({ content }: { content: string }) {
   const parsed = tryParseStructuredContent(content) as FinalTestExecutionReportData | null
+  // Every field this view reads, not only the two required arrays. A `commands`
+  // array holding `null`, a `fileEffects` value that is a non-empty string, an
+  // `errors` entry that is an object, or a `plannedBy` that is not a string all
+  // reached a renderer and threw — an invalid React child or a `.map` on a
+  // non-array — instead of falling back to the raw content below.
   if (
-    !parsed
-    || typeof parsed !== 'object'
-    || !Array.isArray(parsed.commands)
-    || !Array.isArray(parsed.errors)
+    !isRecord(parsed)
     || typeof parsed.modelOutput !== 'string'
+    || !isOptionalString(parsed.plannedBy)
+    || !isOptionalString(parsed.checkedAt)
+    || !isArrayOf(parsed.errors, (entry) => typeof entry === 'string')
+    || !isArrayOf(parsed.commands, (entry) => hasStringFields(entry, ['displayCommand', 'stdout', 'stderr', 'effectiveCommand']))
+    || !isOptionalArrayOf(parsed.testFiles, (entry) => typeof entry === 'string')
+    || !isOptionalArrayOf(parsed.fileEffects, (entry) => hasStringFields(entry, ['path', 'intent', 'reason']))
+    || !isOptionalArrayOf(parsed.rawAttempts, isRecord)
   ) {
     return <RawContentWithCopy content={content} />
   }

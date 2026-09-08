@@ -3,6 +3,7 @@ import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { extractInterviewQuestionPreviews } from '@shared/interviewQuestions'
+import { isBeadShaped } from '@/lib/beadsDocument'
 import * as jsYaml from 'js-yaml'
 import {
   findLatestArtifact,
@@ -723,15 +724,19 @@ function countQuestionsInContent(content: string): number {
   return count
 }
 
+// Counts what the artifact view would actually render, which means counting
+// bead-shaped entries rather than array members: the viewer drops the rest, and
+// a count that disagrees with the list under it is worse than no count.
+// `isBeadShaped` rather than `filterBeadShaped` because a count must not log.
 function countBeadsInContent(content: string): number {
   const trimmed = content.trim()
   if (!trimmed) return 0
 
   try {
     const parsed = JSON.parse(trimmed) as unknown
-    if (Array.isArray(parsed)) return parsed.length
+    if (Array.isArray(parsed)) return parsed.filter(isBeadShaped).length
     if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { beads?: unknown[] }).beads)) {
-      return (parsed as { beads: unknown[] }).beads.length
+      return (parsed as { beads: unknown[] }).beads.filter(isBeadShaped).length
     }
   } catch {
     // Ignore and fall back to YAML or line-based parsing.
@@ -739,9 +744,9 @@ function countBeadsInContent(content: string): number {
 
   try {
     const parsed = jsYaml.load(trimmed) as unknown
-    if (Array.isArray(parsed)) return parsed.length
+    if (Array.isArray(parsed)) return parsed.filter(isBeadShaped).length
     if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { beads?: unknown[] }).beads)) {
-      return (parsed as { beads: unknown[] }).beads.length
+      return (parsed as { beads: unknown[] }).beads.filter(isBeadShaped).length
     }
   } catch {
     // Ignore and fall back to JSONL or line-based parsing.
@@ -754,6 +759,7 @@ function countBeadsInContent(content: string): number {
         .map((line) => line.trim())
         .filter(Boolean)
         .map((line) => JSON.parse(line) as unknown)
+        .filter(isBeadShaped)
         .length
     } catch {
       // Ignore malformed JSONL and fall back to line-based counting.

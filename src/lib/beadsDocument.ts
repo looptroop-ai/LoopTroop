@@ -80,27 +80,53 @@ export interface RawBead {
  * viewer's field readers and threw, and `[42]` rendered as a bead with
  * placeholder values.
  */
-function isBeadShaped(entry: unknown): entry is RawBead {
+export function isBeadShaped(entry: unknown): entry is RawBead {
   return isRecord(entry) && typeof entry.id === 'string' && entry.id.trim().length > 0
 }
 
-/** Keep the bead-shaped entries, warn about the rest, and report where they were. */
-function collectBeads(entries: unknown[], describePosition: (index: number) => string): RawBead[] | null {
-  const beads = entries.filter((entry, index) => {
-    if (isBeadShaped(entry)) return true
-    console.warn(`[beads] Ignored ${describePosition(index)} of the bead artifact: no usable id.`)
+/** Why an entry is not usable, worded the way the server words it. */
+function describeBeadShapeProblem(entry: unknown): string | null {
+  if (!isRecord(entry)) return 'entry is not an object'
+  if (typeof entry.id !== 'string' || !entry.id.trim()) return 'no usable id'
+  return null
+}
+
+/**
+ * The bead list every surface must agree on.
+ *
+ * **Every consumer has to use this one.** The artifact view, the approval
+ * outline, the approval editor and the bead counts each index into the result
+ * — the outline's focus anchors are positions in this list — so a surface that
+ * filters differently, or not at all, sends the reader to the wrong bead or
+ * shows a count the detail view contradicts. Filtering in one renderer and not
+ * the others is exactly the skew this replaced.
+ */
+export function filterBeadShaped(entries: unknown[], describePosition: (index: number) => string): RawBead[] {
+  return entries.filter((entry, index) => {
+    const problem = describeBeadShapeProblem(entry)
+    if (!problem) return true
+    console.warn(`[beads] Ignored ${describePosition(index)} of the bead artifact: ${problem}.`)
     return false
-  })
-  return beads.length > 0 ? (beads as RawBead[]) : null
+  }) as RawBead[]
+}
+
+/** Positional wording for the array and envelope encodings. */
+export function describeBeadEntry(index: number): string {
+  return `entry ${index + 1}`
+}
+
+function collectBeads(entries: unknown[], describePosition: (index: number) => string): RawBead[] | null {
+  const beads = filterBeadShaped(entries, describePosition)
+  return beads.length > 0 ? beads : null
 }
 
 export function parseBeadsArtifact(content: string): RawBead[] | null {
   const parsed = tryParseStructuredContent(content)
   if (Array.isArray(parsed)) {
-    return collectBeads(parsed, (index) => `entry ${index + 1}`)
+    return collectBeads(parsed, describeBeadEntry)
   }
   if (isRecord(parsed) && Array.isArray(parsed.beads)) {
-    return collectBeads(parsed.beads, (index) => `entry ${index + 1}`)
+    return collectBeads(parsed.beads, describeBeadEntry)
   }
   if (content.trim().startsWith('{')) {
     return parseBeadsJsonl(content)
@@ -135,11 +161,12 @@ function parseBeadsJsonl(content: string): RawBead[] | null {
       console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: it is not valid JSON.`)
       return
     }
-    if (!isBeadShaped(entry)) {
-      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: no usable id.`)
+    const problem = describeBeadShapeProblem(entry)
+    if (problem) {
+      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: ${problem}.`)
       return
     }
-    beads.push(entry)
+    beads.push(entry as RawBead)
   })
 
   return beads.length > 0 ? beads : null

@@ -1,4 +1,4 @@
-import { isRecord } from '@shared/typeGuards'
+import { hasStringFields, isArrayOf } from '@/lib/artifactFieldShape'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { useMemo, useState } from 'react'
@@ -30,10 +30,14 @@ export function RelevantFilesScanView({ content }: { content: string }) {
   const { activeRawVariant, setActiveRawVariantId } = useActiveRawVariant(rawVariantOptions, 'relevant-files-scan:accepted-latest')
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  // Truthiness is not enough: `{"files":"oops"}` and `{"files":{}}` passed the
-  // old guard and then threw on `raw.files.map`, and `{"files":[null]}` throws
-  // one line later on `f.contentPreview`.
-  if (!raw || !Array.isArray(raw.files) || !raw.files.every(isRecord)) {
+  // Truthiness is not enough: `{"files":"oops"}` threw on `raw.files.map`,
+  // `{"files":[null]}` threw on `f.contentPreview`, and a file whose `path` is
+  // an object reaches JSX as an invalid child. These are the fields the rows
+  // below actually render.
+  const isFileEntry = (entry: unknown) => hasStringFields(entry, [
+    'path', 'rationale', 'relevance', 'likely_action', 'likelyAction', 'contentPreview', 'content_preview',
+  ])
+  if (!raw || !isArrayOf(raw.files, isFileEntry)) {
     return <RawContentWithCopy content={content} />
   }
 

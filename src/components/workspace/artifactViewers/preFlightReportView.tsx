@@ -3,6 +3,7 @@ import { WithRawTab } from './WithRawTab'
 import { CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isRecord } from '@shared/typeGuards'
+import { hasStringFields, isArrayOf } from '@/lib/artifactFieldShape'
 import { RawContentView } from './RawContentView'
 
 interface PreFlightCheck {
@@ -38,15 +39,16 @@ export function PreFlightReportView({ content }: { content: string }) {
     } catch {
       return null
     }
-    // Valid JSON is not a valid report. Without this, `123` or
-    // `{"status":"pending"}` reached `report.checks` and threw inside the memo,
-    // taking the view down instead of falling through to the raw content below.
-    // Valid JSON is not a valid report. Element shape matters as much as the
-    // container: `{"checks":[null]}` passes an `Array.isArray` guard and then
-    // throws on `check.category`.
+    // Valid JSON is not a valid report, and the container's shape is not the
+    // element's, nor the element's its fields'. `123` reached `report.checks`,
+    // `{"checks":[null]}` reached `check.category`, and
+    // `{"checks":[{"message":{}}]}` handed React an object as a child — each
+    // threw inside the memo instead of falling through to the raw content
+    // below. These are the fields this view renders.
     if (!isRecord(parsed)) return null
     const arrays = [parsed.checks, parsed.criticalFailures, parsed.warnings]
-    if (!arrays.every((value) => Array.isArray(value) && value.every(isRecord))) return null
+    const isCheck = (entry: unknown) => hasStringFields(entry, ['name', 'category', 'result', 'message', 'details'])
+    if (!arrays.every((value) => isArrayOf(value, isCheck))) return null
     return parsed as unknown as PreFlightReportData
   }, [content])
 

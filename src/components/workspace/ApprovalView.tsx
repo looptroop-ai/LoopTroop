@@ -18,7 +18,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { BeadsApprovalEditor, type ParsedBead } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
-import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { selectedAttemptNumber } from './phaseAttemptSelection'
@@ -134,8 +134,16 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
   }
 }
 
+/**
+ * The editor's beads, from the same filtered list every other surface uses.
+ *
+ * Without the filter a stored `null` reached `normalizeBeadForEditor`, which
+ * dereferences `bead.dependencies`, and took the structured editor down. The
+ * shared filter also keeps the editor's ordering aligned with the outline's
+ * focus anchors and the artifact view.
+ */
 function parseBeadsForEditor(data: unknown[]): ParsedBead[] {
-  return data.map((item) => normalizeBeadForEditor(item as Record<string, unknown>))
+  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBeadForEditor(bead))
 }
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */

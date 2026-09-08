@@ -1,4 +1,4 @@
-import { STREAMING_LOG_MIN_INTERVAL_MS, buildBeadLogFields, emitDebugLog, emitModelSystemLog, emitPhaseLog, formatDuration, formatTimestamp, getToolLogLimits, normalizeAttachmentMetadata, stringifyToolDetail, type ToolLogLimits } from './logEmission'
+import { STREAMING_LOG_MIN_INTERVAL_MS, buildBeadLogFields, emitDebugLog, emitModelSystemLog, emitPhaseLog, formatStreamEventDuration, formatTimestamp, getToolLogLimits, normalizeAttachmentMetadata, stringifyToolDetail, type ToolLogLimits } from './logEmission'
 import { formatTodoTransitionSummary } from './todoSummary'
 import { broadcaster } from '../../sse/broadcaster'
 import type { LogEventType } from '../../log/types'
@@ -152,7 +152,7 @@ export function formatToolState(
   const error = event.error
   const output = event.output
   const duration = typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0
-    ? ` (${formatDuration(event.durationMs)})`
+    ? ` (${formatStreamEventDuration(event.durationMs)})`
     : ''
   const lines = [`[TOOL] ${tool} ${status}${duration}${title ? `: ${title}` : ''}`]
 

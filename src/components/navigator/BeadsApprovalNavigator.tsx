@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
-import { BEADS_APPROVAL_FOCUS_EVENT, type ParsedBead } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, type RawBead } from '@/lib/beadsDocument'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { ApprovalOutlineShell } from './ApprovalOutlineShell'
@@ -20,7 +20,7 @@ interface BeadOutlineItem {
 }
 
 function parseBeadsOutline(data: unknown[]): BeadOutlineItem[] {
-  return (data as ParsedBead[]).map((bead, index) => {
+  return (data as RawBead[]).map((bead, index) => {
     const id = typeof bead.id === 'string' ? bead.id : `bead-${index}`
     const title = typeof bead.title === 'string' ? bead.title : `Bead ${index + 1}`
     const blockedBy = bead.dependencies?.blocked_by?.length ?? 0

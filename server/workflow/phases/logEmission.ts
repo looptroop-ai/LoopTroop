@@ -232,7 +232,15 @@ export function normalizeAttachmentMetadata(value: string | undefined, maxChars:
   return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars)}…`
 }
 
-export function formatDuration(durationMs: number): string {
+/**
+ * A duration for a stream-event log line: `840ms`, `2.35s`, `1m 30s`.
+ *
+ * Named apart from `formatDurationMs` in `phaseRuntimeSettings.ts`, which
+ * renders the same input differently (`1.5m` where this gives `1m 30s`). Both
+ * were module-private until the split; both reach the `helpers` barrel now, and
+ * two public `formatDuration…` names that disagree is a trap.
+ */
+export function formatStreamEventDuration(durationMs: number): string {
   if (durationMs < 1000) return `${Math.round(durationMs)}ms`
   if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 2 : 1)}s`
   const minutes = Math.floor(durationMs / 60_000)

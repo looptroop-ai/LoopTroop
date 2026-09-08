@@ -28,7 +28,7 @@ import {
 import { cn } from '@/lib/utils'
 import { DRAFT_AUTOSAVE_DEBOUNCE_MS } from '@/lib/constants'
 import { flushTicketUiStateSnapshot } from '@/components/workspace/approvalHooks'
-import { ArtifactProcessingNotice } from '@/components/workspace/ArtifactContentViewer'
+import { ArtifactProcessingNotice } from '@/components/workspace/artifactViewers/ArtifactProcessingNotice'
 import { CollapsibleSection } from '@/components/workspace/artifactViewers/CollapsibleSection'
 import { useTicketArtifacts } from '@/hooks/useTicketArtifacts'
 import { findLatestCompanionArtifact, parseArtifactCompanionPayload } from '@/components/workspace/artifactCompanionUtils'

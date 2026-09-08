@@ -1,4 +1,4 @@
-import * as jsYaml from 'js-yaml'
+import { tryParseStructuredContent } from '@/lib/structuredContent'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import type { CommandSpec } from '@shared/commandSpec'
@@ -623,19 +623,10 @@ export function extractCompiledInterviewDetail(content: string | null): string {
   }
 }
 
-export function tryParseStructuredContent(content: string | null | undefined): unknown {
-  if (!content?.trim()) return null
-
-  try {
-    return JSON.parse(content)
-  } catch {
-    try {
-      return jsYaml.load(content)
-    } catch {
-      return null
-    }
-  }
-}
+// Re-exported so the many artifact parsers in this module keep importing it
+// from here. The definition sits in `@/lib` because `@/lib/beadsDocument` needs
+// it too, and a lib module must not depend on a components module.
+export { tryParseStructuredContent }
 
 function countBeadsInContent(content: string): number {
   const parsed = tryParseStructuredContent(content)

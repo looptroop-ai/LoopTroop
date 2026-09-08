@@ -52,7 +52,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { CopyButton, RawContentWithCopy, RawDisplayPre, RawDisplayStats } from './RawTextDisplay'
 import { ManualQaOriginBadge, ManualQaOriginCard } from './ManualQaOriginCard'
 import { parsePrdDocument, PRD_TECHNICAL_SECTION_CONFIG } from '@/lib/prdDocument'
-import { parseBeadsArtifact, type ParsedBead } from '@/lib/beadsDocument'
+import { parseBeadsArtifact, type RawBead } from '@/lib/beadsDocument'
 import { CollapsibleSection } from './artifactViewers/CollapsibleSection'
 import { TextCopyButton } from './artifactViewers/TextCopyButton'
 import { WithRawTab } from './artifactViewers/WithRawTab'
@@ -1448,7 +1448,7 @@ export function InterviewAnswersView({ content, hideSummary = false, hideAiAnswe
   )
 }
 
-function renderBeadGuidance(guidance: ParsedBead['contextGuidance']): React.ReactNode {
+function renderBeadGuidance(guidance: RawBead['contextGuidance']): React.ReactNode {
   if (!guidance) return null
 
   if (typeof guidance === 'string') {
@@ -1515,7 +1515,7 @@ function renderBeadGuidance(guidance: ParsedBead['contextGuidance']): React.Reac
   )
 }
 
-function getBeadStringArray(bead: ParsedBead, keys: string[]): string[] {
+function getBeadStringArray(bead: RawBead, keys: string[]): string[] {
   for (const key of keys) {
     const value = bead[key]
     if (!Array.isArray(value)) continue
@@ -1527,7 +1527,7 @@ function getBeadStringArray(bead: ParsedBead, keys: string[]): string[] {
   return []
 }
 
-function getBeadCommands(bead: ParsedBead, keys: string[]): CommandSpec[] {
+function getBeadCommands(bead: RawBead, keys: string[]): CommandSpec[] {
   for (const key of keys) {
     const value = bead[key]
     if (!Array.isArray(value)) continue
@@ -1539,7 +1539,7 @@ function getBeadCommands(bead: ParsedBead, keys: string[]): CommandSpec[] {
   return []
 }
 
-function getBeadStringValue(bead: ParsedBead, keys: string[]): string {
+function getBeadStringValue(bead: RawBead, keys: string[]): string {
   for (const key of keys) {
     const value = bead[key]
     if (typeof value === 'string' && value.trim()) {
@@ -1549,7 +1549,7 @@ function getBeadStringValue(bead: ParsedBead, keys: string[]): string {
   return ''
 }
 
-function getBeadNumberValue(bead: ParsedBead, keys: string[]): number | null {
+function getBeadNumberValue(bead: RawBead, keys: string[]): number | null {
   for (const key of keys) {
     const value = bead[key]
     if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -1557,7 +1557,7 @@ function getBeadNumberValue(bead: ParsedBead, keys: string[]): number | null {
   return null
 }
 
-function getBeadDependencies(bead: ParsedBead): { blockedBy: string[]; blocks: string[] } {
+function getBeadDependencies(bead: RawBead): { blockedBy: string[]; blocks: string[] } {
   const raw = bead.dependencies
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { blockedBy: [], blocks: [] }
@@ -1663,7 +1663,7 @@ function makeExpansionArrayField(label: string, values: string[], mono = false):
   return nextValues.length > 0 ? { label, values: nextValues, mono } : null
 }
 
-function buildExpansionAddedGroups(planBead: ParsedBead | undefined, expandedBead: ParsedBead, index: number): ExpansionAddedGroup[] {
+function buildExpansionAddedGroups(planBead: RawBead | undefined, expandedBead: RawBead, index: number): ExpansionAddedGroup[] {
   const planId = planBead ? getBeadStringValue(planBead, ['id']) : ''
   const expandedId = getBeadStringValue(expandedBead, ['id'])
   const { blockedBy, blocks } = getBeadDependencies(expandedBead)
@@ -2081,7 +2081,7 @@ export function BeadsDraftView({ content }: { content: string }) {
                       )}
                     </BeadSection>
                   )}
-                  {renderBeadGuidance((bead.contextGuidance ?? bead.context_guidance) as ParsedBead['contextGuidance'])}
+                  {renderBeadGuidance((bead.contextGuidance ?? bead.context_guidance) as RawBead['contextGuidance'])}
                   {acceptanceCriteria.length > 0 && (
                     <BeadSection title="Acceptance Criteria" accent="border-green-300 dark:border-green-700">
                       <ul className="list-disc pl-4 space-y-0.5">

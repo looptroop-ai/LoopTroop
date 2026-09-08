@@ -54,13 +54,14 @@ function PullRequestBodyPreview({ body }: { body: string }) {
 
   return (
     <div className="space-y-3">
-      {sections.map((section) => (
-        <div key={section.title} className="rounded-md border border-border bg-background px-3 py-2">
+      {/* Model-written PR bodies repeat headings; the index disambiguates. */}
+      {sections.map((section, sectionIndex) => (
+        <div key={`${sectionIndex}:${section.title}`} className="rounded-md border border-border bg-background px-3 py-2">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{section.title}</div>
           {section.lines.length > 0 ? (
             <ul className="mt-2 space-y-1.5 text-xs text-foreground">
               {section.lines.map((line, index) => (
-                <li key={`${section.title}:${index}`} className="flex gap-2 leading-5">
+                <li key={`${sectionIndex}:${section.title}:${index}`} className="flex gap-2 leading-5">
                   <span className="mt-2 h-1 w-1 rounded-full bg-muted-foreground/70 shrink-0" />
                   <span className="min-w-0 whitespace-pre-wrap break-words">{line}</span>
                 </li>

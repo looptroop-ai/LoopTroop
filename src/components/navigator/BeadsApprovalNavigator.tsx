@@ -1,4 +1,5 @@
 import { Badge } from '@/components/ui/badge'
+import { isRecord } from '@shared/typeGuards'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
 import { BEADS_APPROVAL_FOCUS_EVENT, type RawBead } from '@/lib/beadsDocument'
@@ -19,11 +20,20 @@ interface BeadOutlineItem {
   dependencyCount: number
 }
 
+// The route hands back whatever each JSONL line parsed to, with no shape check,
+// so an entry can be `null` or a bare number. `RawBead` describes the shape but
+// asserts nothing at runtime; every field is still read defensively, and
+// `blocked_by` is checked for being an array rather than merely having a
+// `length` — a string would otherwise report its character count as a
+// dependency count.
 function parseBeadsOutline(data: unknown[]): BeadOutlineItem[] {
-  return (data as RawBead[]).map((bead, index) => {
+  return data.map((entry, index) => {
+    const bead: RawBead = isRecord(entry) ? entry : {}
     const id = typeof bead.id === 'string' ? bead.id : `bead-${index}`
     const title = typeof bead.title === 'string' ? bead.title : `Bead ${index + 1}`
-    const blockedBy = bead.dependencies?.blocked_by?.length ?? 0
+    const blockedBy = isRecord(bead.dependencies) && Array.isArray(bead.dependencies.blocked_by)
+      ? bead.dependencies.blocked_by.length
+      : 0
     return { index, id, title, dependencyCount: blockedBy }
   })
 }

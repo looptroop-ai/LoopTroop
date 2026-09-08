@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 /**
  * The scroll anchor behind every log surface.
@@ -101,14 +101,21 @@ export function useLogScrollAnchor({
   const [isAutoScroll, setIsAutoScroll] = useState(true)
   const [isAtTop, setIsAtTop] = useState(true)
 
-  // Kept current on every render so the listener effect below does not have to
-  // depend on it. Writing it during render rather than in an effect matters:
-  // the listener is attached in an effect that runs after this, and a scroll
-  // can arrive before any effect would have committed the new value.
+  // Kept current so the listener effect below does not have to depend on it —
+  // both values are fresh objects every render, which is what made the listener
+  // detach and reattach on every render before it was extracted.
+  //
+  // Written in a layout effect rather than during render. A render can be
+  // started and thrown away, and a ref written in that render would keep a
+  // value that never committed. `useLayoutEffect` runs after commit and before
+  // the browser paints, so no scroll event can be dispatched against the new
+  // DOM while these still hold the previous render's values.
   const paginationRef = useRef(pagination)
-  paginationRef.current = pagination
   const overrideRef = useRef(scrollToBottomOverride)
-  overrideRef.current = scrollToBottomOverride
+  useLayoutEffect(() => {
+    paginationRef.current = pagination
+    overrideRef.current = scrollToBottomOverride
+  })
 
   const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
     const scroll = () => {

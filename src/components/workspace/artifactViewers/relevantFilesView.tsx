@@ -29,7 +29,9 @@ export function RelevantFilesScanView({ content }: { content: string }) {
   const { activeRawVariant, setActiveRawVariantId } = useActiveRawVariant(rawVariantOptions, 'relevant-files-scan:accepted-latest')
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
-  if (!raw?.files) return <RawContentWithCopy content={content} />
+  // Truthiness is not enough: `{"files":"oops"}` and `{"files":{}}` passed the
+  // old guard and then threw on `raw.files.map`.
+  if (!raw || !Array.isArray(raw.files)) return <RawContentWithCopy content={content} />
 
   // Normalize: accept both camelCase (new) and snake_case (legacy DB rows)
   const parsed: RelevantFilesScanData = {

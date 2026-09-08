@@ -1103,7 +1103,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   
   // -- Auto-scroll state for the model log tab --
   const {
-    viewportRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
+    viewportRef, setViewportRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
     scheduleScrollToBottom, enableAutoScroll,
   } = useLogScrollAnchor({ rebindKey: detailTab })
 
@@ -1584,7 +1584,15 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
             {detailTab === 'model' ? (
               <div className="relative flex-1 min-h-0 flex flex-col">
-                <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
+                {/*
+                  Bound through `setViewportRef`, not the object ref: this
+                  `ScrollArea` is keyed by `beadLogViewKey`, so switching bead or
+                  iteration mounts a fresh viewport. The object ref alone left
+                  the scroll listener on the detached node, freezing `isAtTop`
+                  and `isAutoScroll` at the old node's values. The callback tells
+                  the hook the node changed, whatever caused it.
+                */}
+                <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
                   <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
                     {selectedBeadLogEntries.length > 0 ? (
                       selectedBeadLogEntries.map((entry, i) => (

@@ -1,5 +1,6 @@
 import type { ManualQaArtifactChecklist } from './manualQaArtifact'
 import { Badge } from '@/components/ui/badge'
+import { formatArtifactTimestampLabel } from './artifactTimestamp'
 
 export function ManualQaChecklistArtifactView({ parsed }: { parsed: ManualQaArtifactChecklist }) {
   return (
@@ -10,7 +11,7 @@ export function ManualQaChecklistArtifactView({ parsed }: { parsed: ManualQaArti
           {parsed.version !== null && <Badge variant="outline">Round v{parsed.version}</Badge>}
           <Badge variant="secondary">{parsed.items.length} check{parsed.items.length === 1 ? '' : 's'}</Badge>
         </div>
-        {parsed.generatedAt && <p className="mt-1 text-xs text-muted-foreground">Generated {new Date(parsed.generatedAt).toLocaleString()}</p>}
+        {parsed.generatedAt && <p className="mt-1 text-xs text-muted-foreground">Generated {formatArtifactTimestampLabel(parsed.generatedAt)}</p>}
         {parsed.summary && <p className="mt-2 text-sm text-muted-foreground">{parsed.summary}</p>}
       </div>
 

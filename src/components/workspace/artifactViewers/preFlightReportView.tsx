@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { WithRawTab } from './WithRawTab'
 import { CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { isRecord } from '@shared/typeGuards'
 import { RawContentView } from './RawContentView'
 
 interface PreFlightCheck {
@@ -31,11 +32,19 @@ const CATEGORY_ORDER = ['connectivity', 'git', 'artifacts', 'config', 'graph']
 
 export function PreFlightReportView({ content }: { content: string }) {
   const report = useMemo<PreFlightReportData | null>(() => {
+    let parsed: unknown
     try {
-      return JSON.parse(content) as PreFlightReportData
+      parsed = JSON.parse(content)
     } catch {
       return null
     }
+    // Valid JSON is not a valid report. Without this, `123` or
+    // `{"status":"pending"}` reached `report.checks` and threw inside the memo,
+    // taking the view down instead of falling through to the raw content below.
+    if (!isRecord(parsed)) return null
+    if (!Array.isArray(parsed.checks)) return null
+    if (!Array.isArray(parsed.criticalFailures) || !Array.isArray(parsed.warnings)) return null
+    return parsed as unknown as PreFlightReportData
   }, [content])
 
   const grouped = useMemo(() => {

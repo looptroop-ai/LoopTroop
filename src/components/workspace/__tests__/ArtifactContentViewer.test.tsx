@@ -597,6 +597,47 @@ items:
     expect(screen.getByText('Final PR net diff')).toBeInTheDocument()
   })
 
+  // PR-13 review: both viewers cast a successful `JSON.parse` straight to their
+  // payload shape, so valid JSON with the wrong shape threw while rendering
+  // instead of falling through to the raw view. Pre-existing on `main`; these
+  // pin the guards that replaced the casts.
+  it.each([
+    ['a bare number', '123'],
+    ['an object with no checks array', '{"status":"pending"}'],
+    ['checks present but not an array', '{"checks":"nope","criticalFailures":[],"warnings":[]}'],
+  ])('falls back to raw content for a pre-flight report that is %s', (_label, content) => {
+    render(<ArtifactContent artifactId="diagnostics" content={content} />)
+
+    expect(screen.getByText(content)).toBeInTheDocument()
+  })
+
+  it('still renders a well-formed pre-flight report', () => {
+    render(
+      <ArtifactContent
+        artifactId="diagnostics"
+        content={JSON.stringify({
+          passed: true,
+          checks: [{ category: 'git', name: 'Worktree clean', result: 'pass', message: 'No changes' }],
+          criticalFailures: [],
+          warnings: [],
+        })}
+      />,
+    )
+
+    // The structured branch renders the Report/Raw tab pair; the raw fallback
+    // has neither, so this distinguishes the two paths.
+    expect(screen.getByRole('button', { name: 'Report' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['files is a string', '{"files":"oops"}'],
+    ['files is an object', '{"files":{}}'],
+  ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
+    render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
+
+    expect(screen.getByText(/oops|files/)).toBeInTheDocument()
+  })
+
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {
     render(
       <ArtifactContent

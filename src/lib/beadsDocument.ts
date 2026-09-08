@@ -1,4 +1,5 @@
 import type { CommandSpec } from '@shared/commandSpec'
+import { isRecord } from '@shared/typeGuards'
 import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
 import { tryParseStructuredContent } from './structuredContent'
 
@@ -79,11 +80,44 @@ export function parseBeadsArtifact(content: string): RawBead[] | null {
     return (parsed as { beads: RawBead[] }).beads
   }
   if (content.trim().startsWith('{')) {
-    try {
-      return content.trim().split('\n').map((line) => JSON.parse(line) as RawBead)
-    } catch {
-      return null
-    }
+    return parseBeadsJsonl(content)
   }
   return null
+}
+
+/**
+ * Read a JSONL bead tracker the way the server reads one.
+ *
+ * The previous version returned `null` for the whole artifact the moment any
+ * single line failed to parse, so one damaged line hid every intact bead — the
+ * opposite of `server/phases/beads/beadsFile.ts`, which skips the bad entry,
+ * warns with the file's own line number, and keeps the rest. It also accepted
+ * any JSON object as a bead, so a payload like `{"status":"pending"}` rendered
+ * as a fabricated one-bead artifact instead of falling back to raw text.
+ *
+ * Bead shape is judged the same way the server judges it: an object with a
+ * usable `id`. Returning `null` when nothing survives is what sends the caller
+ * to the raw view.
+ */
+function parseBeadsJsonl(content: string): RawBead[] | null {
+  const beads: RawBead[] = []
+  const lines = content.trim().split('\n')
+
+  lines.forEach((line, index) => {
+    if (!line.trim()) return
+    let entry: unknown
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: it is not valid JSON.`)
+      return
+    }
+    if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: no usable id.`)
+      return
+    }
+    beads.push(entry as RawBead)
+  })
+
+  return beads.length > 0 ? beads : null
 }

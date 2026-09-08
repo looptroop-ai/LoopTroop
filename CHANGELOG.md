@@ -191,6 +191,7 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - Three aliases re-exported for a question-diff type that no longer exists, the three helpers behind them, an execution-setup runtime-path list with no reader, and an execution-setup barrel re-exporting three artifact names every caller already imports from their own module.
 
 ### Fixed
+- Fixed the installer wrapper reporting the wrong exit status when it is stopped. `install.sh` forwards an interrupt to the install it started so the caller sees what that install decided; if the install exited before the wrapper looked again, the wrapper reported the signal instead, which is what a supervisor or a CI job reads as "killed" rather than "exited 3".
 - Fixed two artifact views crashing on valid JSON of the wrong shape. The pre-flight report and the relevant-files scan each cast a parsed payload straight to the shape they expected, so content like `{"status":"pending"}` threw while rendering instead of falling through to the raw view sitting right behind it.
 - Fixed the beads approval outline failing to draw when the stored tracker holds a damaged entry, and repeating a bead id confusing the list that renders it.
 - Fixed a bead tracker losing every bead to one damaged entry. The client now skips the bad entry and keeps the rest, which is what the server has always done, whichever of the three ways the artifact is stored; and content that is not bead-shaped falls back to raw text instead of rendering as invented beads.

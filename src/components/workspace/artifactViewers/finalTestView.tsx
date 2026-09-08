@@ -9,6 +9,7 @@ import { renderCommandSpec } from '@shared/commandSpec'
 import { RawContentWithCopy } from '../RawTextDisplay'
 import { CollapsibleSection } from './CollapsibleSection'
 import { LabeledSubsection } from './LabeledSubsection'
+import { formatArtifactTimestampLabel } from './artifactTimestamp'
 import { WithRawTab } from './WithRawTab'
 import { ArtifactProcessingNotice } from './ArtifactProcessingNotice'
 import {
@@ -29,9 +30,7 @@ export function FinalTestResultsView({ content }: { content: string }) {
     return <RawContentWithCopy content={content} />
   }
 
-  const checkedAtLabel = Number.isNaN(Date.parse(parsed.checkedAt))
-    ? parsed.checkedAt
-    : new Date(parsed.checkedAt).toLocaleString()
+  const checkedAtLabel = formatArtifactTimestampLabel(parsed.checkedAt)
   const header = parsed.plannedBy
     ? (
       <ModelBadge modelId={parsed.plannedBy} active className="px-3 py-2 h-auto flex-1 justify-start">

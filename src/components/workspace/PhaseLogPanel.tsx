@@ -210,7 +210,7 @@ export function PhaseLogPanel({
   }, [phaseLogs, shouldLoadHistoricalLogs])
 
   const {
-    viewportRef, setViewportRef, scrollParent, contentRef,
+    viewportRef, setViewportRef, scrollParent, contentRef, setContentRef,
     autoScrollEnabledRef, isAutoScroll, isAtTop, scheduleScrollToBottom, enableAutoScroll,
   } = useLogScrollAnchor({
     pagination: {
@@ -680,7 +680,7 @@ export function PhaseLogPanel({
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
-          <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
+          <div ref={setContentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
             {showAiDetails && isAiDetailsOpen ? (
               <div id={aiDetailsPanelId} className="sticky top-0 z-20 bg-muted">
                 <AiDetailsSummary

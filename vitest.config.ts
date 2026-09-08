@@ -109,6 +109,7 @@ const clientNodeTests = [
   'src/components/workspace/__tests__/phaseArtifactTypes.test.ts',
   'src/hooks/__tests__/ticketStatusCache.test.ts',
   'src/hooks/__tests__/useTickets.test.ts',
+  'src/lib/__tests__/beadsDocument.test.ts',
   'src/lib/__tests__/executionSetupPlan.test.ts',
   'src/lib/__tests__/fetchError.test.ts',
   'src/lib/__tests__/recoveryReload.test.ts',

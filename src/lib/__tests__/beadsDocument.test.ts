@@ -44,6 +44,29 @@ describe('parseBeadsArtifact', () => {
     expect(parseBeadsArtifact('{"status":"pending"}')).toBeNull()
   })
 
+  // The array and envelope forms used to be cast straight through while only
+  // the JSONL path validated, so `[null]` reached the viewer's field readers
+  // and threw, and `[42]` rendered as a bead with placeholder values.
+  it('skips entries that are not bead-shaped in the array form', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(parseBeadsArtifact('[null, 42, "nope", {"id":"B-1"}]')).toEqual([{ id: 'B-1' }])
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('skips entries that are not bead-shaped in the envelope form', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(parseBeadsArtifact('{"beads":[null, {"id":"B-1"}]}')).toEqual([{ id: 'B-1' }])
+  })
+
+  it('falls back to raw when an array holds nothing bead-shaped', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(parseBeadsArtifact('[null, 42]')).toBeNull()
+    expect(parseBeadsArtifact('{"beads":[null]}')).toBeNull()
+  })
+
   it('returns null when nothing survives', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(parseBeadsArtifact('{not json at all')).toBeNull()

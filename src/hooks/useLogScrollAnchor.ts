@@ -50,6 +50,12 @@ export interface LogScrollAnchor {
   setViewportRef: (node: HTMLDivElement | null) => void
   scrollParent: HTMLDivElement | null
   contentRef: React.RefObject<HTMLDivElement | null>
+  /**
+   * Ref callback for the growing content element. Prefer it over `contentRef`:
+   * the observer follows the node it is given, so a surface that remounts its
+   * content keeps its tail-follow behaviour.
+   */
+  setContentRef: (node: HTMLDivElement | null) => void
   /** True while the viewport is pinned to the bottom. Read this in effects; it never lags. */
   autoScrollEnabledRef: React.RefObject<boolean>
   isAutoScroll: boolean
@@ -90,9 +96,14 @@ export function useLogScrollAnchor({
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null)
+  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
   const setViewportRef = useCallback((node: HTMLDivElement | null) => {
     viewportRef.current = node
     setScrollParent(node)
+  }, [])
+  const setContentRef = useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    setContentNode(node)
   }, [])
 
   const autoScrollEnabledRef = useRef(true)
@@ -203,8 +214,13 @@ export function useLogScrollAnchor({
   }, [])
 
   // Growing content scrolls the tail into view, but only while pinned.
+  //
+  // Keyed on the node rather than observed once at mount: a surface that
+  // remounts its content — `CodingView` keys its subtree by bead and iteration —
+  // otherwise leaves the observer watching the detached element, which is the
+  // same hole the scroll listener had before it was bound through a callback.
   useEffect(() => {
-    const contentEl = contentRef.current
+    const contentEl = contentNode ?? contentRef.current
     if (!contentEl) return
     const observer = new ResizeObserver(() => {
       if (!autoScrollEnabledRef.current) return
@@ -212,13 +228,14 @@ export function useLogScrollAnchor({
     })
     observer.observe(contentEl)
     return () => observer.disconnect()
-  }, [scheduleScrollToBottom])
+  }, [contentNode, scheduleScrollToBottom])
 
   return {
     viewportRef,
     setViewportRef,
     scrollParent,
     contentRef,
+    setContentRef,
     autoScrollEnabledRef,
     isAutoScroll,
     isAtTop,

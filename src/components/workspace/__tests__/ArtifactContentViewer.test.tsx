@@ -605,6 +605,7 @@ items:
     ['a bare number', '123'],
     ['an object with no checks array', '{"status":"pending"}'],
     ['checks present but not an array', '{"checks":"nope","criticalFailures":[],"warnings":[]}'],
+    ['a checks array holding a null element', '{"checks":[null],"criticalFailures":[],"warnings":[]}'],
   ])('falls back to raw content for a pre-flight report that is %s', (_label, content) => {
     render(<ArtifactContent artifactId="diagnostics" content={content} />)
 
@@ -632,10 +633,11 @@ items:
   it.each([
     ['files is a string', '{"files":"oops"}'],
     ['files is an object', '{"files":{}}'],
+    ['files holds a null element', '{"files":[null]}'],
   ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
     render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
 
-    expect(screen.getByText(/oops|files/)).toBeInTheDocument()
+    expect(screen.getByText(/oops|files|null/)).toBeInTheDocument()
   })
 
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {

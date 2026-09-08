@@ -44,7 +44,9 @@ function Harness({ pagination, onState, onViewport }: {
         anchor.setViewportRef(node)
         onViewport?.(node)
       }}
-    />
+    >
+      <div data-testid="content" ref={anchor.setContentRef} />
+    </div>
   )
 }
 
@@ -145,6 +147,81 @@ describe('useLogScrollAnchor', () => {
     anchor.unmount()
 
     expect(remove).toHaveBeenCalledWith('scroll', expect.any(Function))
+  })
+
+  /**
+   * §13.5's "appended lines while pinned": content growing under a viewport
+   * that is still pinned to the bottom follows the tail.
+   *
+   * This runs through the `ResizeObserver`, which is why the observer is bound
+   * to the content node through a callback ref — bound once at mount it kept
+   * watching a detached element whenever a surface remounted its content, the
+   * same hole the scroll listener had.
+   */
+  it('follows appended content while pinned, and stops once the user scrolls away', () => {
+    const observed: Element[] = []
+    let trigger: (() => void) | undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { trigger = callback }
+      observe(node: Element) { observed.push(node) }
+      disconnect() {}
+      unobserve() {}
+    })
+
+    const anchor = renderAnchor()
+    const content = anchor.getByTestId('content')
+    expect(observed).toContain(content)
+
+    const scrollTo = vi.spyOn(anchor.viewport, 'scrollTo')
+    geometry.scrollHeight = 2000
+    act(() => { trigger?.() })
+    expect(scrollTo).toHaveBeenCalled()
+
+    // Scroll away, and the same growth must not drag the view back down.
+    geometry.scrollTop = 100
+    anchor.scroll()
+    scrollTo.mockClear()
+    geometry.scrollHeight = 3000
+    act(() => { trigger?.() })
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The remount case that the single-node test above cannot reach.
+   *
+   * `CodingView` keys its log subtree by bead and iteration, so its content
+   * element is replaced without the hook unmounting. Observed once at mount,
+   * the `ResizeObserver` kept watching the detached node and tail-follow
+   * silently stopped working for the new one.
+   */
+  it('follows the content node when the surface remounts it', () => {
+    const observed: Element[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(_callback: () => void) {}
+      observe(node: Element) { observed.push(node) }
+      disconnect() {}
+      unobserve() {}
+    })
+
+    function Remounter() {
+      const [key, setKey] = useState(0)
+      const anchor = useLogScrollAnchor()
+      return (
+        <>
+          <div ref={anchor.setViewportRef}>
+            <div key={key} data-testid={`content-${key}`} ref={anchor.setContentRef} />
+          </div>
+          <button type="button" onClick={() => setKey(key + 1)}>remount {key}</button>
+        </>
+      )
+    }
+
+    const { getByRole, getByTestId } = render(<Remounter />)
+    expect(observed).toContain(getByTestId('content-0'))
+
+    act(() => { getByRole('button').click() })
+
+    expect(observed).toContain(getByTestId('content-1'))
   })
 
   /**

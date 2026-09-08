@@ -283,6 +283,13 @@ export function resolveExecutionSetupRuntimeSettings(context: TicketContext): {
   }
 }
 
+/**
+ * A compact duration: `840ms`, `1.5s`, `1.5m`.
+ *
+ * Not the same as `formatStreamEventDuration` in `logEmission.ts`, which renders
+ * the same input as `1m 30s`. Both reach the `helpers` barrel, so the names are
+ * deliberately unalike.
+ */
 export function formatDurationMs(durationMs: number): string {
   if (durationMs >= 60000) return `${(durationMs / 60000).toFixed(1)}m`
   if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(1)}s`

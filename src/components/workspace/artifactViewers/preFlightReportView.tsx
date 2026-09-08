@@ -41,9 +41,12 @@ export function PreFlightReportView({ content }: { content: string }) {
     // Valid JSON is not a valid report. Without this, `123` or
     // `{"status":"pending"}` reached `report.checks` and threw inside the memo,
     // taking the view down instead of falling through to the raw content below.
+    // Valid JSON is not a valid report. Element shape matters as much as the
+    // container: `{"checks":[null]}` passes an `Array.isArray` guard and then
+    // throws on `check.category`.
     if (!isRecord(parsed)) return null
-    if (!Array.isArray(parsed.checks)) return null
-    if (!Array.isArray(parsed.criticalFailures) || !Array.isArray(parsed.warnings)) return null
+    const arrays = [parsed.checks, parsed.criticalFailures, parsed.warnings]
+    if (!arrays.every((value) => Array.isArray(value) && value.every(isRecord))) return null
     return parsed as unknown as PreFlightReportData
   }, [content])
 

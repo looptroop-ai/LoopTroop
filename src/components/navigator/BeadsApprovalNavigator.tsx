@@ -65,7 +65,9 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
     >
       {outline.map((bead) => (
         <button
-          key={bead.id}
+          // A stored tracker is not deduplicated, so ids can repeat; the position
+          // is what makes the key unique.
+          key={`${bead.index}:${bead.id}`}
           type="button"
           onClick={() => focusBeadAnchor(ticketId, `bead-${bead.index}`)}
           className="w-full text-left rounded-md border border-border/70 bg-background px-2 py-1.5 transition-colors hover:bg-accent/30"

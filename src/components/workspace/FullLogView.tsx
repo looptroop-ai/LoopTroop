@@ -319,7 +319,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
   const explicitTopNavigationRef = useRef(false)
 
   const {
-    viewportRef, setViewportRef, scrollParent, contentRef,
+    viewportRef, setViewportRef, scrollParent, setContentRef,
     autoScrollEnabledRef, isAutoScroll, isAtTop, scheduleScrollToBottom,
     enableAutoScroll, disableAutoScroll, clearOlderPageAnchor,
   } = useLogScrollAnchor({
@@ -742,7 +742,7 @@ export function FullLogView({ ticket }: FullLogViewProps) {
       />
       <div className="relative flex-1 min-h-0 flex flex-col">
         <ScrollArea className="h-full flex-1 min-h-0" viewportRef={setViewportRef} type="always">
-          <div ref={contentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
+          <div ref={setContentRef} className="font-mono text-xs bg-muted/60 rounded-lg border border-border/30 p-3 min-h-[100px] w-full max-w-full">
             {/* One sticky container for both panels: two siblings each claiming
                 `top-0` overlapped whenever the user opened them together. */}
             {isSkipsOpen || (showAiDetails && isAiDetailsOpen) ? (

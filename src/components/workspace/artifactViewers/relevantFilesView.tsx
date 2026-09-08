@@ -1,3 +1,4 @@
+import { isRecord } from '@shared/typeGuards'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { useMemo, useState } from 'react'
@@ -30,8 +31,11 @@ export function RelevantFilesScanView({ content }: { content: string }) {
   const activeRawContent = activeRawVariant?.content ?? content
   const activeRawDisplayContent = activeRawVariant?.displayContent ?? buildReadableRawDisplayContent(activeRawContent)
   // Truthiness is not enough: `{"files":"oops"}` and `{"files":{}}` passed the
-  // old guard and then threw on `raw.files.map`.
-  if (!raw || !Array.isArray(raw.files)) return <RawContentWithCopy content={content} />
+  // old guard and then threw on `raw.files.map`, and `{"files":[null]}` throws
+  // one line later on `f.contentPreview`.
+  if (!raw || !Array.isArray(raw.files) || !raw.files.every(isRecord)) {
+    return <RawContentWithCopy content={content} />
+  }
 
   // Normalize: accept both camelCase (new) and snake_case (legacy DB rows)
   const parsed: RelevantFilesScanData = {

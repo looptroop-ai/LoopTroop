@@ -71,13 +71,36 @@ export interface RawBead {
   qa_origin?: ManualQaBeadOrigin | null
 }
 
+/**
+ * Is this entry usable as a bead?
+ *
+ * The same test the server applies in `describeBeadShapeProblem`: an object
+ * with a usable id. Applied to every encoding, not just JSONL — the array and
+ * envelope forms used to be cast straight through, so `[null]` reached the
+ * viewer's field readers and threw, and `[42]` rendered as a bead with
+ * placeholder values.
+ */
+function isBeadShaped(entry: unknown): entry is RawBead {
+  return isRecord(entry) && typeof entry.id === 'string' && entry.id.trim().length > 0
+}
+
+/** Keep the bead-shaped entries, warn about the rest, and report where they were. */
+function collectBeads(entries: unknown[], describePosition: (index: number) => string): RawBead[] | null {
+  const beads = entries.filter((entry, index) => {
+    if (isBeadShaped(entry)) return true
+    console.warn(`[beads] Ignored ${describePosition(index)} of the bead artifact: no usable id.`)
+    return false
+  })
+  return beads.length > 0 ? (beads as RawBead[]) : null
+}
+
 export function parseBeadsArtifact(content: string): RawBead[] | null {
   const parsed = tryParseStructuredContent(content)
   if (Array.isArray(parsed)) {
-    return parsed as RawBead[]
+    return collectBeads(parsed, (index) => `entry ${index + 1}`)
   }
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray((parsed as { beads?: RawBead[] }).beads)) {
-    return (parsed as { beads: RawBead[] }).beads
+  if (isRecord(parsed) && Array.isArray(parsed.beads)) {
+    return collectBeads(parsed.beads, (index) => `entry ${index + 1}`)
   }
   if (content.trim().startsWith('{')) {
     return parseBeadsJsonl(content)
@@ -112,11 +135,11 @@ function parseBeadsJsonl(content: string): RawBead[] | null {
       console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: it is not valid JSON.`)
       return
     }
-    if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id.trim()) {
+    if (!isBeadShaped(entry)) {
       console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: no usable id.`)
       return
     }
-    beads.push(entry as RawBead)
+    beads.push(entry)
   })
 
   return beads.length > 0 ? beads : null

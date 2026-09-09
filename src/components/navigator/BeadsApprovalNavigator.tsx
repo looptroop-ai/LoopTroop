@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { isRecord } from '@shared/typeGuards'
 import { useQuery } from '@tanstack/react-query'
@@ -50,7 +51,13 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
     staleTime: QUERY_STALE_TIME_5M,
   })
 
-  const outline = Array.isArray(beadsData) ? parseBeadsOutline(beadsData) : []
+  // Memoised for the same reason as the artifact view: the shared filter warns
+  // about every entry it drops, so filtering in the render body repeats those
+  // warnings on each re-render.
+  const outline = useMemo(
+    () => (Array.isArray(beadsData) ? parseBeadsOutline(beadsData) : []),
+    [beadsData],
+  )
 
   return (
     <ApprovalOutlineShell

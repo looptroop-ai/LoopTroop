@@ -1731,16 +1731,27 @@ function ExpansionAddedValue({ values, mono }: { values: string[]; mono?: boolea
 }
 
 function ExpandedPlanDiffView({ content }: { content: string }) {
-  const parsed = parseRefinementArtifact(content)
-  const planBeads = parsed?.semanticPlanContent ? parseBeadsArtifact(parsed.semanticPlanContent) : null
-  const expandedBeads = parsed?.refinedContent ? parseBeadsArtifact(parsed.refinedContent) : null
+  // Memoised because the parser warns about every entry it drops: called from
+  // the render body it repeats those warnings on every re-render, which for a
+  // ticket receiving live updates is a console full of the same line.
+  const parsed = useMemo(() => parseRefinementArtifact(content), [content])
+  const planBeads = useMemo(
+    () => (parsed?.semanticPlanContent ? parseBeadsArtifact(parsed.semanticPlanContent) : null),
+    [parsed?.semanticPlanContent],
+  )
+  const expandedBeads = useMemo(
+    () => (parsed?.refinedContent ? parseBeadsArtifact(parsed.refinedContent) : null),
+    [parsed?.refinedContent],
+  )
+  const addedFieldCount = useMemo(() => countExpansionAddedFields(content), [content])
+  const planBeadsById = useMemo(
+    () => new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, ['id']), bead])),
+    [planBeads],
+  )
 
   if (!planBeads || !expandedBeads) {
     return <RawContentWithCopy content={content} />
   }
-
-  const planBeadsById = new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, ['id']), bead]))
-  const addedFieldCount = countExpansionAddedFields(content)
 
   return (
     <div className="space-y-3">
@@ -1976,7 +1987,9 @@ export function PrdDraftView({ content }: { content: string }) {
 }
 
 export function BeadsDraftView({ content }: { content: string }) {
-  const beadsArray = parseBeadsArtifact(content)
+  // See `ExpandedPlanDiffView`: the parser warns per dropped entry, so parsing
+  // in the render body repeats those warnings on every re-render.
+  const beadsArray = useMemo(() => parseBeadsArtifact(content), [content])
   if (Array.isArray(beadsArray)) {
     return (
       <div className="space-y-2">

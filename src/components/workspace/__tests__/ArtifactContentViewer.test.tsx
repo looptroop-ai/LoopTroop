@@ -712,6 +712,24 @@ items:
     expect(screen.getAllByText(/Manual QA Fix/).length).toBeGreaterThan(0)
   })
 
+  // The parser warns about every entry it drops. Called from a render body it
+  // repeats those warnings on each re-render, which for a ticket receiving live
+  // updates fills the console with the same line.
+  it('warns once about a dropped bead, not once per render', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const content = JSON.stringify([null, { id: 'B-1', title: 'Kept' }])
+
+    const { rerender } = render(<BeadsDraftView content={content} />)
+    const afterFirstRender = warn.mock.calls.length
+    expect(afterFirstRender).toBeGreaterThan(0)
+
+    for (let i = 0; i < 3; i += 1) {
+      rerender(<TooltipProvider><BeadsDraftView content={content} /></TooltipProvider>)
+    }
+
+    expect(warn.mock.calls.length).toBe(afterFirstRender)
+  })
+
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {
     render(
       <ArtifactContent

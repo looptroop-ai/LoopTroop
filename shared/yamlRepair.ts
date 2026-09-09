@@ -1861,6 +1861,7 @@ export function repairYamlInlineKeys(yaml: string, options?: YamlInlineKeyRepair
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
   const nestedMappingChildren = buildNormalizedNestedMappingChildren(options?.nestedMappingChildren)
+  let blockScalarBaseIndent = -1
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -1869,8 +1870,22 @@ export function repairYamlInlineKeys(yaml: string, options?: YamlInlineKeyRepair
       continue
     }
 
+    // A block scalar's body is text, not YAML. Skipping only the header line
+    // left the body tokenized like any other line, so
+    // `description: |` / `  key1: value1 key2: value2` was emitted as two
+    // lines — a newline invented inside a value a model wrote, which is the one
+    // thing a repair must never do.
+    if (blockScalarBaseIndent >= 0) {
+      if (getLineIndent(line) > blockScalarBaseIndent) {
+        result.push(line)
+        continue
+      }
+      blockScalarBaseIndent = -1
+    }
+
     // Skip block scalar indicators
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+      blockScalarBaseIndent = getLineIndent(line)
       result.push(line)
       continue
     }

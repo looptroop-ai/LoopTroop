@@ -1484,6 +1484,18 @@ describe.concurrent('block scalar bodies are left alone', () => {
       ['body: |', '  key: hello world: foo bar', 'key: hello world: foo bar'].join('\n'),
       ['body: |', '  key: hello world: foo bar', 'key: "hello world: foo bar"'].join('\n'),
     ],
+    [
+      'repairYamlMappingKeyColonSpace',
+      repairYamlMappingKeyColonSpace,
+      ['body: |', '  artifact:interview', 'artifact:interview'].join('\n'),
+      ['body: |', '  artifact:interview', 'artifact: interview'].join('\n'),
+    ],
+    [
+      'repairYamlDoubleQuotedInvalidEscapes',
+      repairYamlDoubleQuotedInvalidEscapes,
+      ['body: |', '  pattern: "^\\+(?!\\+\\+)"', 'pattern: "^\\+(?!\\+\\+)"'].join('\n'),
+      ['body: |', '  pattern: "^\\+(?!\\+\\+)"', 'pattern: "^\\\\+(?!\\\\+\\\\+)"'].join('\n'),
+    ],
   ])('%s', (_, repair, input, expected) => {
     expect(repair(input)).toBe(expected)
   })
@@ -1510,6 +1522,23 @@ describe.concurrent('block scalar bodies are left alone', () => {
     expect(repairYamlSequenceEntryIndent(input)).toBe(input)
     expect(repairYamlSequenceEntryIndent(['questions:', '  - id: Q01', '   - id: Q02'].join('\n')))
       .toBe(['questions:', '  - id: Q01', '  - id: Q02'].join('\n'))
+  })
+
+  it('repairYamlInlineKeys does not split a body line into two', () => {
+    // The defect this found: it skipped the block scalar *header* and then
+    // tokenized the body like any other line, so a value a model wrote came
+    // back with a newline in the middle of it.
+    const input = ['description: |', '  key1: value1 key2: value2', 'key1: value1 key2: value2'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(
+      ['description: |', '  key1: value1 key2: value2', 'key1: value1', 'key2: value2'].join('\n'),
+    )
+  })
+
+  it('repairYamlInlineKeys keeps skipping a body across a blank line', () => {
+    const input = ['description: |', '  one', '', '  key1: v1 key2: v2', 'next: 1'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(input)
   })
 
   it('repairYamlSequenceItemPrimaryKeys does not name a bare scalar inside a block scalar', () => {

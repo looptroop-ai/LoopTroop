@@ -413,9 +413,12 @@ function readBeadCollection(content: string, warn: boolean): { recognized: boole
   if (isRecord(parsed) && Array.isArray(parsed.beads)) {
     return { recognized: true, beads: filterBeadShaped(parsed.beads, describeBeadEntry, { warn }) }
   }
-  if (content.trim().startsWith('{')) {
-    return { recognized: true, beads: parseBeadsJsonl(content, warn) ?? [] }
-  }
+  // Recognised by finding a bead line, not by the document's first character:
+  // a tracker whose *first* line is damaged still starts with damage, and
+  // testing that character alone hid every intact bead behind it.
+  const jsonlBeads = parseBeadsJsonl(content, warn)
+  if (jsonlBeads) return { recognized: true, beads: jsonlBeads }
+  if (content.trim().startsWith('{')) return { recognized: true, beads: [] }
   return { recognized: false, beads: [] }
 }
 

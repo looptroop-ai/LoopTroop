@@ -104,9 +104,13 @@ function jsonlToBeadsArray(jsonl: string): unknown[] {
 }
 
 function validateJsonl(jsonl: string): string | null {
-  const lines = jsonl.split('\n').filter((l) => l.trim())
+  // Numbered over the whole draft, blank lines included: the server, the
+  // damaged-line header and this editor all have to name the same line, and
+  // filtering first renumbered everything after a blank one.
+  const lines = jsonl.split('\n')
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
+    if (!line.trim()) continue
     try {
       const parsed = JSON.parse(line)
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -262,6 +266,8 @@ function BeadsApprovalPane({
   // coverage run would be the wrong explanation attached to a new approval.
   const [gapReason, setGapReason] = useState('')
   const [saveError, setSaveError] = useState<string | null>(null)
+  /** A save the server refused because the tracker changed underneath it. */
+  const [staleSave, setStaleSave] = useState(false)
   const [approveError, setApproveError] = useState<string | null>(null)
   const [coverageFixError, setCoverageFixError] = useState<string | null>(null)
   const [isFixingCoverageGaps, setIsFixingCoverageGaps] = useState(false)
@@ -407,6 +413,8 @@ function BeadsApprovalPane({
           // the tracker changed in between, rather than overwriting whatever
           // landed — a repair of the damaged lines, most likely.
           ...(currentContentSha256 ? { 'X-Content-Sha256': currentContentSha256 } : {}),
+          // Which editor produced it, for the edit receipt.
+          'X-Edit-Surface': editTab,
         },
         body: JSON.stringify(beadsToSave),
       })
@@ -435,7 +443,15 @@ function BeadsApprovalPane({
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Save failed')
+      const message = error instanceof Error ? error.message : 'Save failed'
+      // A refused save means the file on disk is not the one this draft was
+      // built on, and the screen is still showing the old one. Saying so, and
+      // offering the way back, is the whole point of refusing rather than
+      // overwriting.
+      setSaveError(message.includes('changed since it was read')
+        ? `${message}. Reload the current file to see what is there now — your draft is kept until you do.`
+        : message)
+      if (message.includes('changed since it was read')) setStaleSave(true)
     } finally {
       setIsSaving(false)
     }
@@ -584,7 +600,26 @@ function BeadsApprovalPane({
           />
         ) : null}
 
-        {saveError ? <p className="text-xs text-red-500">{saveError}</p> : null}
+        {saveError ? (
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-red-500">{saveError}</p>
+            {staleSave ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-xs shrink-0"
+                onClick={() => {
+                  setStaleSave(false)
+                  setSaveError(null)
+                  void refetchBeads()
+                }}
+              >
+                Reload file
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         {approveError ? <p className="text-xs text-red-500">{approveError}</p> : null}
       </div>
 

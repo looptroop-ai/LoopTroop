@@ -74,11 +74,15 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   }
 
   for (const [index, record] of parsedRecords.entries()) {
+    // The file's line, like every other number reported about this file. The
+    // record's position counts only what parsed, so with a blank line above it
+    // approval named a line the operator's editor does not hold that bead on.
+    const line = itemLines[index] ?? index + 1
     if (typeof record.id !== 'string' || !record.id.trim()) {
-      throw new Error(`Bead at line ${index + 1} is missing a valid "id" field`)
+      throw new Error(`Bead at line ${line} is missing a valid "id" field`)
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
-      throw new Error(`Bead at line ${index + 1} is missing a valid "title" field`)
+      throw new Error(`Bead at line ${line} is missing a valid "title" field`)
     }
     if (!Array.isArray(record.testCommands)) {
       throw new Error(`Bead ${record.id} is missing the testCommands list`)

@@ -1443,10 +1443,11 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
  * A block scalar body is text, not YAML, and every repair that walks lines
  * tracks one so it can leave that text alone.
  *
- * Twelve repairs in this file carry that tracking. Disabling the skip in each
- * of them, one at a time, turned only three of these tests red — so nine
- * repairs were free to rewrite the inside of a block scalar with nothing to
- * catch it, which is how a repair invents text rather than reformatting it. Each case below is
+ * Twelve repairs in this file carry that tracking, and `repairYamlDuplicateKeys`
+ * has its own case below. Disabling the skip in each of them, one at a time,
+ * turned only three of these tests red — so nine repairs were free to rewrite
+ * the inside of a block scalar with nothing to catch it, which is how a repair
+ * invents text rather than reformatting it. Each case below is
  * built the same way: the exact line the repair *does* fix, placed once inside
  * a block scalar body and once after it. The body has to survive and the line
  * after it has to be repaired — a case that only checked the body would pass on

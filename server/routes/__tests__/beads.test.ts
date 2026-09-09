@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
@@ -357,6 +357,42 @@ describe('beadsRouter flow validation', () => {
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
 
       expect(response.headers.get('X-Unrepresentable-Lines')).toBe('2')
+    })
+  })
+  describe('the dependency spelling the interface accepts', () => {
+    const camelCaseBead = {
+      id: 'B-1', title: 'One', status: 'pending' as const, priority: 1,
+      dependencies: { blockedBy: ['B-0'], blocks: [] },
+    }
+
+    it('saves a bead written with blockedBy, and stores it as blocked_by', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([camelCaseBead]),
+      })
+
+      expect(response.status).toBe(200)
+      // Written in the spelling the runtime reads: the approval screen renders
+      // both, and a plan that reads correctly there has to run.
+      const stored = JSON.parse(readFileSync(paths.beadsPath, 'utf-8').trim())
+      expect(stored.dependencies).toEqual({ blocked_by: ['B-0'], blocks: [] })
+    })
+
+    it('still refuses a bead with no dependency list at all', async () => {
+      const { ticket } = createBeadsRouteTicket()
+      patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify([{ ...camelCaseBead, dependencies: { blocks: [] } }]),
+      })
+
+      expect(response.status).toBe(400)
     })
   })
 })

@@ -423,3 +423,21 @@ describe('what a structured save writes back', () => {
     expect(saved).not.toHaveProperty('testCommandReason')
   })
 })
+
+describe('a tracker whose damage comes first', () => {
+  it('keeps the beads after a damaged opening line', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // Recognising JSONL by the document's first character hid every intact
+    // bead behind a damaged first line — the failure the whole repair flow
+    // exists to prevent, in the one reader that decides whether there is a
+    // bead artifact at all.
+    expect(parseBeadsArtifact('not json\n{"id":"B-1","title":"Intact"}\n'))
+      .toEqual([expect.objectContaining({ id: 'B-1' })])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('line 1'))
+  })
+
+  it('still reads ordinary text as no bead artifact at all', () => {
+    expect(parseBeadsArtifact('This is a paragraph about beads.\nAnd another line.\n')).toBeNull()
+  })
+})

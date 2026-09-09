@@ -1185,4 +1185,45 @@ describe('Approval surfaces on a failed request', () => {
         .toBeInTheDocument()
     })
   })
+  it('offers a way back when the server refuses a save built on a stale read', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    let reads = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        reads += 1
+        return createBeadsRawResponse([{ id: 'B-1', title: 'One', status: 'pending' }], { contentSha256: 'e'.repeat(64) })
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+        return Promise.resolve(new Response(
+          JSON.stringify({ error: 'Bead plan changed since it was read' }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        ))
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, { target: { value: '{"id":"B-1","title":"Edited","status":"pending"}\n' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    // Refusing the write is only half of it: the screen is still showing the
+    // file the draft was built on, and there was no way to see the other one.
+    expect(await screen.findByText(/Reload the current file to see what is there now/)).toBeInTheDocument()
+    const readsBeforeReload = reads
+    fireEvent.click(screen.getByRole('button', { name: 'Reload file' }))
+
+    await waitFor(() => expect(reads).toBeGreaterThan(readsBeforeReload))
+  })
 })

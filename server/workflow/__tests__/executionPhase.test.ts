@@ -609,6 +609,34 @@ describe('handleCoding', () => {
     expect(executeBeadMock).not.toHaveBeenCalled()
   })
 
+  /**
+   * The third call site that sorts through `compareBeadRecoveryOrder`.
+   *
+   * Its other cases each offer one in-progress bead, which cannot tell a sort
+   * from a first match — the same weakness the checkpoint cases had.
+   */
+  it('resumes the most recently touched interrupted bead when several are in progress', async () => {
+    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+      title: 'Two interrupted beads',
+    })
+    writeTicketBeads(ticket.id, [
+      makePendingBead('older', 1, {
+        status: 'in_progress', updatedAt: '2026-01-01T00:00:00.000Z', beadStartCommit: 'older-sha',
+      }),
+      makePendingBead('newer', 2, {
+        status: 'in_progress', updatedAt: '2026-01-02T00:00:00.000Z', beadStartCommit: 'newer-sha',
+      }),
+    ])
+    const sendEvent = vi.fn()
+    executeBeadMock.mockResolvedValue({ success: true, beadId: 'newer', iteration: 2, output: 'done', errors: [] })
+
+    await handleCoding(ticket.id, context, sendEvent, new AbortController().signal)
+
+    // The reset names the bead it resumed, so it is the unambiguous witness.
+    expect(resetToBeadStartMock).toHaveBeenCalledWith(expect.any(String), 'newer-sha', expect.anything())
+    expect((executeBeadMock.mock.calls[0]![1] as Bead).id).toBe('newer')
+  })
+
   it('recovers an interrupted in-progress bead before selecting runnable work', async () => {
     const { ticket, context } = await createInitializedTestTicket(repoManager, {
       title: 'Recover interrupted in-progress bead',

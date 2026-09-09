@@ -137,6 +137,7 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   failedIterationNotes: isObjectArray,
   userRetryNotes: isObjectArray,
   finalizationFailureNotes: isObjectArray,
+  // Canonicalised before this runs, so only the canonical keys are checked.
   dependencies: (value) => isStringListRecord(value, ['blocked_by', 'blocks']),
   contextGuidance: (value) => isStringListRecord(value, ['patterns', 'anti_patterns']),
   qaOrigin: isQaOrigin,
@@ -171,6 +172,37 @@ function normalizeBeadCollections(bead: Bead): Bead {
   return { ...bead, dependencies, contextGuidance }
 }
 
+/**
+ * Moves the nested spellings a record may carry onto the canonical ones.
+ *
+ * The interface accepts `dependencies.blockedBy` and
+ * `contextGuidance.antiPatterns` — older writers used both — and this reader is
+ * what the scheduler runs on. Without this the two disagree: a plan shows its
+ * dependencies on the approval screen, is approved, and then the bead is
+ * dropped here with a warning nobody is reading. Canonicalising once at the
+ * boundary is what makes the alias real rather than cosmetic.
+ *
+ * Only when the canonical key is absent: a record carrying both keeps the one
+ * the shape check and every reader already use.
+ */
+function canonicalizeNestedAliases(entry: Record<string, unknown>): Record<string, unknown> {
+  const nested: Array<[string, string, string]> = [
+    ['dependencies', 'blocked_by', 'blockedBy'],
+    ['contextGuidance', 'patterns', 'patterns'],
+    ['contextGuidance', 'anti_patterns', 'antiPatterns'],
+  ]
+  let result = entry
+  for (const [field, canonical, alias] of nested) {
+    if (canonical === alias) continue
+    const value = result[field]
+    if (!isRecord(value)) continue
+    if (value[canonical] !== undefined || value[alias] === undefined) continue
+    const { [alias]: aliased, ...rest } = value
+    result = { ...result, [field]: { ...rest, [canonical]: aliased } }
+  }
+  return result
+}
+
 export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}): Bead[] {
   const failClosed = options.malformedEntries === 'fail'
   const { items, itemLines, malformedLines } = readJsonlWithDiagnostics<unknown>(path)
@@ -185,7 +217,8 @@ export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}):
     // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
     // `.status` and took the whole tracker with it, and any other non-object
     // became a `Bead` with no id that later code compared against.
-    const problem = describeBeadShapeProblem(entry)
+    const canonical = isRecord(entry) ? canonicalizeNestedAliases(entry) : entry
+    const problem = describeBeadShapeProblem(canonical)
     if (problem) {
       if (failClosed) {
         throw new Error(`Bead file ${path} has an entry at line ${line} with ${problem}.`)
@@ -193,7 +226,7 @@ export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}):
       console.warn(`[beads] Ignored the entry at line ${line} of ${path}: ${problem}.`)
       return []
     }
-    const bead = normalizeBeadCollections(entry as unknown as Bead)
+    const bead = normalizeBeadCollections(canonical as unknown as Bead)
     const reconciled = reconcileStoredBeadStatus(bead.status, bead.id)
     if (!reconciled.warning) return [bead]
     console.warn(`[beads] ${reconciled.warning}`)

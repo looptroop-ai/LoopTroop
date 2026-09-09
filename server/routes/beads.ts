@@ -20,10 +20,19 @@ const beadItemSchema = z.object({
   title: z.string().min(1),
   status: z.enum(['pending', 'in_progress', 'done', 'error']),
   priority: z.number().int().min(1),
+  // Both spellings in, one spelling out. The interface accepts `blockedBy`
+  // because older trackers carry it; refusing it here made a repair typed in
+  // the JSONL tab fail with "dependencies.blocked_by: Required" on a file the
+  // screen had just rendered as valid.
   dependencies: z.object({
-    blocked_by: z.array(z.string()),
+    blocked_by: z.array(z.string()).optional(),
+    blockedBy: z.array(z.string()).optional(),
     blocks: z.array(z.string()),
-  }),
+  })
+    .refine((value) => value.blocked_by !== undefined || value.blockedBy !== undefined, {
+      message: 'dependencies must include blocked_by',
+    })
+    .transform(({ blocked_by, blockedBy, blocks }) => ({ blocked_by: blocked_by ?? blockedBy ?? [], blocks })),
 })
 
 const beadsRouter = new Hono()
@@ -201,11 +210,17 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
 
   // Validate each bead item has the fields required by the scheduler/execution engine
   const validationErrors: Array<{ index: number; issues: z.ZodIssue[] }> = []
+  // What gets written: the record as sent, with the dependency spelling the
+  // runtime reads. Storing the request verbatim would leave `blockedBy` in the
+  // file for the authoritative reader to canonicalise on every read.
+  const canonicalBeads: unknown[] = []
   for (let i = 0; i < body.length; i++) {
     const result = beadItemSchema.safeParse(body[i])
     if (!result.success) {
       validationErrors.push({ index: i, issues: result.error.issues })
+      continue
     }
+    canonicalBeads.push({ ...(body[i] as Record<string, unknown>), dependencies: result.data.dependencies })
   }
   if (validationErrors.length > 0) {
     return c.json({ error: 'Invalid bead item(s)', details: validationErrors }, 400)
@@ -222,7 +237,16 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
   const { filePath } = resolved
 
-  const beforeRaw = readBeadsContentOrNull(filePath)
+  // Inside the error boundary with the write it guards: the precondition needs
+  // a read, and a read that fails for any reason other than "no file" — a
+  // permission, a path that became a directory — has to become this route's
+  // own 500 rather than an unhandled throw.
+  let beforeRaw: string | null
+  try {
+    beforeRaw = readBeadsContentOrNull(filePath)
+  } catch {
+    return c.json({ error: 'Failed to read the existing bead plan' }, 500)
+  }
 
   // Optimistic concurrency, the same guard approval already applies. Without
   // it a save built on a stale read overwrites whatever landed in between —
@@ -245,7 +269,7 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
 
   try {
     // createdAt is set at approval time, not save time
-    const jsonl = body.map((item: unknown) => JSON.stringify(item)).join('\n') + '\n'
+    const jsonl = canonicalBeads.map((item: unknown) => JSON.stringify(item)).join('\n') + '\n'
     safeAtomicWrite(filePath, jsonl)
     upsertBeadsApprovalSnapshot(ticketId, jsonl)
     const executionSetupInvalidation = clearExecutionSetupState(ticketId)
@@ -254,7 +278,10 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
       artifactType: 'beads',
       phase: 'WAITING_BEADS_APPROVAL',
       action: 'save',
-      editSurface: 'structured',
+      // Which tab the save came from, as the client reports it. Hardcoding
+      // `structured` mislabelled every JSONL repair — the flow this route
+      // now mostly serves.
+      editSurface: c.req.header('X-Edit-Surface') === 'jsonl' ? 'jsonl' : 'structured',
       statusBeforeEdit: ticket.status,
       statusAfterEdit: getTicketByRef(ticketId)?.status ?? null,
       beforeRaw,

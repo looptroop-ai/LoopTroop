@@ -129,11 +129,31 @@ export type BeadField = keyof typeof BEAD_FIELD_ALIASES
 export const SUPERSEDED_BEAD_FIELD_ALIASES: readonly string[] =
   Object.entries(BEAD_FIELD_ALIASES).flatMap(([field, aliases]) => aliases.filter((alias) => alias !== field))
 
-/** Drops every superseded spelling, keeping unknown fields untouched. */
+/**
+ * Drops a superseded spelling only where the canonical one carries the value.
+ *
+ * Dropping them all loses data: `normalizeBead` writes canonical names for the
+ * fields the editor touches, and nothing else — so a bead storing only
+ * `started_at`, `bead_start_commit` or `qa_origin` had them deleted on the next
+ * structured save, and `bead_start_commit` is what a safe reset depends on.
+ *
+ * Unknown fields are untouched, as before.
+ */
 export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
-  const superseded = new Set(SUPERSEDED_BEAD_FIELD_ALIASES)
+  const canonicalFor = new Map<string, BeadField>()
+  for (const [field, aliases] of Object.entries(BEAD_FIELD_ALIASES)) {
+    for (const alias of aliases) {
+      if (alias !== field) canonicalFor.set(alias, field as BeadField)
+    }
+  }
+
   return Object.fromEntries(
-    Object.entries(bead).filter(([key]) => !superseded.has(key)),
+    Object.entries(bead).filter(([key]) => {
+      const canonical = canonicalFor.get(key)
+      // Kept unless the canonical name carries the value: an alias that is the
+      // only copy there is is not superseded by anything.
+      return canonical === undefined || bead[canonical] === undefined
+    }),
   ) as T
 }
 
@@ -275,8 +295,8 @@ export interface NormalizedBead extends RawBead {
   id: string
   title: string
   description: string
-  issueType: string
-  externalRef: string
+  issueType?: string
+  externalRef?: string
   prdRefs: string[]
   acceptanceCriteria: string[]
   tests: string[]
@@ -295,6 +315,8 @@ export interface NormalizedBead extends RawBead {
  */
 export function normalizeBead(bead: RawBead, policy: BeadReadPolicy): NormalizedBead {
   const testCommandReason = readBeadString(bead, 'testCommandReason', policy)
+  const issueType = readBeadString(bead, 'issueType', policy)
+  const externalRef = readBeadString(bead, 'externalRef', policy)
   return {
     ...bead,
     id: readBeadString(bead, 'id', policy),
@@ -302,14 +324,15 @@ export function normalizeBead(bead: RawBead, policy: BeadReadPolicy): Normalized
     description: readBeadString(bead, 'description', policy),
     // Read-only in the editor, but read raw there before this: a bead stored
     // with `issue_type` showed its type in the artifact view and fell back to
-    // the default in the editor.
-    issueType: readBeadString(bead, 'issueType', policy),
-    externalRef: readBeadString(bead, 'externalRef', policy),
+    // the default in the editor. Written only when the bead has one, so a save
+    // does not add empty strings to every record it touches.
+    ...(issueType ? { issueType } : {}),
+    ...(externalRef ? { externalRef } : {}),
     prdRefs: readBeadStringList(bead, 'prdRefs', policy),
     acceptanceCriteria: readBeadStringList(bead, 'acceptanceCriteria', policy),
     tests: readBeadStringList(bead, 'tests', policy),
     testCommands: readBeadCommands(bead, 'testCommands'),
-    ...(testCommandReason ? { testCommandReason } : { testCommandReason: undefined }),
+    ...(testCommandReason ? { testCommandReason } : {}),
     targetFiles: readBeadStringList(bead, 'targetFiles', policy),
     contextGuidance: readBeadGuidance(bead, policy),
     dependencies: readBeadDependencies(bead, policy),

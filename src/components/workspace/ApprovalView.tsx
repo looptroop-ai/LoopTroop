@@ -122,12 +122,12 @@ function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
 function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
   const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
-  return {
-    // Each field once, under the canonical spelling. A record that arrived with
-    // both — `prd_refs` from an older writer, `prdRefs` from a newer one — kept
-    // the superseded copy holding its pre-edit value, so anything reading that
-    // spelling saw the edit undone.
-    ...stripSupersededBeadAliases(rest as NormalizedBead),
+  // Stripped over the *whole* record, canonical fields included. Run over
+  // `rest` alone it saw no canonical `prdRefs`, kept `prd_refs` as though it
+  // were the only copy, and the canonical value was spread back on top — both
+  // spellings again, which is the thing this is here to stop.
+  return stripSupersededBeadAliases({
+    ...rest,
     acceptanceCriteria,
     testCommands,
     ...(testCommands.length === 0 && testCommandReason ? { testCommandReason } : {}),
@@ -141,7 +141,7 @@ function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
       blocked_by: dependencies.blocked_by,
       blocks: dependencies.blocks,
     },
-  }
+  } as NormalizedBead) as Record<string, unknown>
 }
 
 function BeadsApprovalPane({

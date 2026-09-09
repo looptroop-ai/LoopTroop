@@ -17,6 +17,33 @@ export function repairYamlListDashSpace(yaml: string): string {
 }
 
 /**
+ * The block scalar header grammar, once.
+ *
+ * `|` or `>`, then the indicators YAML allows in either order — a chomping
+ * `+`/`-` and an explicit indentation digit — then an optional comment.
+ *
+ * Sixteen copies of this lived in this file in four variants: some accepted a
+ * trailing comment, some a `- ` list form, none an indentation indicator. A
+ * repair whose copy did not match a header never entered its block-scalar
+ * state and went on tokenizing the body as YAML, which is how
+ * `description: |2` / `  key1: v1 key2: v2` came back as two lines — a newline
+ * invented inside a value a model wrote. One grammar, so a header shape is
+ * recognised by all of them or by none.
+ */
+const BLOCK_SCALAR_INDICATOR = String.raw`[>|](?:[+-][1-9]?|[1-9][+-]?)?`
+const BLOCK_SCALAR_TAIL = String.raw`(?:\s+#.*)?\s*$`
+/** `key: |`, at the end of a mapping line. */
+const MAPPING_BLOCK_SCALAR_HEADER = new RegExp(String.raw`:\s*${BLOCK_SCALAR_INDICATOR}${BLOCK_SCALAR_TAIL}`)
+/** `- |`, a block scalar as a sequence entry, which carries no key. */
+const LIST_BLOCK_SCALAR_HEADER = new RegExp(String.raw`^-\s*${BLOCK_SCALAR_INDICATOR}${BLOCK_SCALAR_TAIL}`)
+/** Either form. Most repairs walk lines and need both. */
+const BLOCK_SCALAR_HEADER = new RegExp(
+  `${MAPPING_BLOCK_SCALAR_HEADER.source}|${LIST_BLOCK_SCALAR_HEADER.source}`,
+)
+/** The indicator alone, as a value: `foo:` on one line and `|` on the next. */
+const BLOCK_SCALAR_VALUE = new RegExp(String.raw`^\s*(${BLOCK_SCALAR_INDICATOR})${BLOCK_SCALAR_TAIL}`)
+
+/**
  * Repair YAML indentation for list items produced by model output.
  *
  * Models sometimes emit properties within list items at the wrong indent
@@ -26,7 +53,7 @@ export function repairYamlListDashSpace(yaml: string): string {
 export function repairYamlIndentation(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 
   // Track the expected indent for properties inside the current list item.
   // Set when we see `- key:` and cleared when we leave that indent context.
@@ -234,7 +261,7 @@ function isSequenceItemMappingChildLine(line: string, dashIndent: number): boole
 // The block-scalar detector here is the comment-tolerant one, and stays
 // distinct from the comment-blind detectors elsewhere in this module.
 const SEQUENCE_PRIMARY_KEY_BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w_-]*)\s*:\s*(?:#.*)?$/
-const SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
+const SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 const SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE = /^(\s*)-\s+(.+)$/
 
 /**
@@ -464,7 +491,7 @@ export function repairYamlMappingKeyColonSpace(
 ): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$/
   const normalizedSequenceOptions = normalizeSequenceItemPrimaryKeyOptions(options?.sequenceItemPrimaryKeys)
   const parentStack: YamlSequenceParentContext[] = []
@@ -624,8 +651,8 @@ function isValidYamlDoubleQuotedEscape(value: string, slashIndex: number): boole
 export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const MAPPING_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
-  const LIST_BLOCK_SCALAR_PATTERN = /^-\s*[>|][+-]?(?:\s+#.*)?$/
+  const MAPPING_BLOCK_SCALAR_PATTERN = MAPPING_BLOCK_SCALAR_HEADER
+  const LIST_BLOCK_SCALAR_PATTERN = LIST_BLOCK_SCALAR_HEADER
 
   let insideSingleQuote = false
   let insideDoubleQuote = false
@@ -710,7 +737,7 @@ export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
 export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$|^-\s*[>|][+-]?(?:\s+#.*)?$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   const repairValue = (value: string): string | null => {
@@ -983,7 +1010,7 @@ export function repairYamlNestedMappingChildren(
 export function repairYamlSequenceEntryIndent(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const DASH_LINE = /^(\s*)-(\s+.*)$/
   const BARE_KEY = /^[a-z_][\w_-]*\s*:\s*$/i
   const MAX_SIBLING_DELTA = 3
@@ -1073,7 +1100,7 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
 }
 
 // Hoisted; tested once per line. This detector is deliberately comment-blind.
-const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
 
 /**
  * Remove exact-duplicate mapping keys from YAML.
@@ -1205,8 +1232,8 @@ export function repairYamlDuplicateKeys(yaml: string): string {
 export function repairYamlFreeTextScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
-  const BLOCK_SCALAR_VALUE_PATTERN = /^\s*([>|][+-]?)\s*(?:#.*)?$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
+  const BLOCK_SCALAR_VALUE_PATTERN = BLOCK_SCALAR_VALUE
   const SAFE_VALUE_START = /^["'|>&*!#]/
   let blockScalarBaseIndent = -1
 
@@ -1573,7 +1600,7 @@ function repairQuotedBlockScalarIndicatorMapping(
 export function repairYamlQuotedScalarFragments(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -1643,7 +1670,7 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
 export function repairYamlTypeUnionScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
@@ -1706,8 +1733,8 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
 export function repairYamlReservedIndicatorScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const MAPPING_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
-  const LIST_BLOCK_SCALAR_PATTERN = /^-\s*[>|][+-]?\s*$/
+  const MAPPING_BLOCK_SCALAR_PATTERN = MAPPING_BLOCK_SCALAR_HEADER
+  const LIST_BLOCK_SCALAR_PATTERN = LIST_BLOCK_SCALAR_HEADER
   const SAFE_VALUE_START = /^["'[{>|&*!#]/
   const RESERVED_INDICATOR_START = /^[`@]/
   let blockScalarBaseIndent = -1
@@ -1859,7 +1886,7 @@ interface YamlInlineKeyRepairOptions {
 export function repairYamlInlineKeys(yaml: string, options?: YamlInlineKeyRepairOptions): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   const nestedMappingChildren = buildNormalizedNestedMappingChildren(options?.nestedMappingChildren)
   let blockScalarBaseIndent = -1
 
@@ -2439,7 +2466,7 @@ export function repairYamlPlainScalarColons(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
 
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   // Skip values that are already safe: quoted, block scalar, flow, anchor, tag, or comment
   const SAFE_VALUE_START = /^["'[{>|&*!#]/
   let blockScalarBaseIndent = -1
@@ -2546,7 +2573,7 @@ export function repairYamlPlainScalarColons(yaml: string): string {
 export function repairYamlUnclosedQuotes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+  const BLOCK_SCALAR_PATTERN = BLOCK_SCALAR_HEADER
   // Match `key: "value` with optional leading `- ` for list item first keys
   const QUOTED_VALUE_PATTERN = /^(\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:\s+)"(.*)$/
   const LIST_QUOTED_VALUE_PATTERN = /^(\s*-\s+)"(.*)$/

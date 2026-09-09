@@ -1443,10 +1443,10 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
  * A block scalar body is text, not YAML, and every repair that walks lines
  * tracks one so it can leave that text alone.
  *
- * Eleven repairs carry that tracking. Disabling the skip in each of them, one
- * at a time, turned only three of these tests red — so eight repairs were free
- * to rewrite the inside of a block scalar with nothing to catch it, which is
- * how a repair invents text rather than reformatting it. Each case below is
+ * Twelve repairs in this file carry that tracking. Disabling the skip in each
+ * of them, one at a time, turned only three of these tests red — so nine
+ * repairs were free to rewrite the inside of a block scalar with nothing to
+ * catch it, which is how a repair invents text rather than reformatting it. Each case below is
  * built the same way: the exact line the repair *does* fix, placed once inside
  * a block scalar body and once after it. The body has to survive and the line
  * after it has to be repaired — a case that only checked the body would pass on
@@ -1571,5 +1571,50 @@ describe.concurrent('block scalar bodies are left alone', () => {
     expect(result.repairs).toEqual([
       { parentKey: 'beads', primaryKey: 'id', value: 'config-xml-json-marshalling', line: 7 },
     ])
+  })
+})
+
+/**
+ * The header grammar, which decides whether any of that skipping happens.
+ *
+ * Sixteen copies of the pattern lived in four variants, and a repair whose copy
+ * did not recognise a header simply never entered its block-scalar state. These
+ * are the shapes that were missed everywhere: an explicit indentation
+ * indicator, a trailing comment, and a block scalar as a sequence entry.
+ */
+describe.concurrent('block scalar headers YAML allows', () => {
+  const bodyLine = '  key1: value1 key2: value2'
+
+  it.each([
+    ['a plain indicator', 'description: |'],
+    ['a folded indicator', 'description: >'],
+    ['a chomping indicator', 'description: |-'],
+    ['a keep indicator', 'description: |+'],
+    ['an explicit indentation indicator', 'description: |2'],
+    ['both indicators', 'description: |2-'],
+    ['both indicators the other way round', 'description: >-2'],
+    ['a trailing comment', 'description: | # note'],
+    ['a chomping indicator and a comment', 'description: >- # note'],
+  ])('leaves the body under %s alone', (_, header) => {
+    const input = [header, bodyLine, 'after: 1'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe([header, bodyLine, 'after: 1'].join('\n'))
+  })
+
+  it('leaves the body of a sequence-entry block scalar alone', () => {
+    const input = ['items:', '  - |', '    key1: value1 key2: value2'].join('\n')
+
+    expect(repairYamlInlineKeys(input)).toBe(input)
+  })
+
+  it.each([
+    ['repairYamlPlainScalarColons', repairYamlPlainScalarColons, '   key: a: b', 'key: a: b', 'key: "a: b"'],
+    ['repairYamlReservedIndicatorScalars', repairYamlReservedIndicatorScalars, '   owner: @x', 'owner: @x', 'owner: "@x"'],
+  ])('%s skips a body under an indentation indicator and resumes after it', (_, repair, body, after, repaired) => {
+    // The gap was never one repair's: the pattern family had no `[1-9]` in it,
+    // so every one of them tokenized a body opened with `|2`.
+    const input = ['description: |2', body, after].join('\n')
+
+    expect(repair(input)).toBe(['description: |2', body, repaired].join('\n'))
   })
 })

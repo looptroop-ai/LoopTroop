@@ -10,6 +10,7 @@ import {
   readBeadStringList,
   readBeadValue,
   hasUnstructuredBeadGuidance,
+  type NormalizedBead,
   stripSupersededBeadAliases,
   SUPERSEDED_BEAD_FIELD_ALIASES,
   type RawBead,
@@ -308,13 +309,30 @@ describe('the superseded spellings', () => {
       id: 'B-1',
       prdRefs: ['NEW'],
       prd_refs: ['OLD'],
-      context_guidance: { patterns: [] },
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: { patterns: ['stale'] },
       somethingUnknown: { kept: true },
     } as unknown as RawBead)).toEqual({
       id: 'B-1',
       prdRefs: ['NEW'],
+      contextGuidance: { patterns: [], anti_patterns: [] },
       somethingUnknown: { kept: true },
     })
+  })
+
+  it('keeps a spelling that is the only copy of its value', () => {
+    // The editor normalizes the fields it edits and nothing else, so a record
+    // storing only `started_at`, `bead_start_commit` or `qa_origin` has no
+    // canonical copy to fall back on. Dropping those on save erased the commit
+    // a safe reset depends on.
+    const onlySnakeCase = {
+      id: 'B-1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    } as unknown as RawBead
+
+    expect(stripSupersededBeadAliases(onlySnakeCase)).toEqual(onlySnakeCase)
   })
 })
 
@@ -356,5 +374,52 @@ describe('the client parser numbers lines the way the server does', () => {
     parseBeadsArtifact(['', '', '{"id":"B-1"}', 'not json'].join('\n'))
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('line 4'))
+  })
+})
+
+describe('what a structured save writes back', () => {
+  /** The save path, as `ApprovalView.buildBeadForSave` composes it. */
+  function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
+    const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
+    return stripSupersededBeadAliases({
+      ...rest,
+      acceptanceCriteria,
+      testCommands,
+      ...(testCommands.length === 0 && testCommandReason ? { testCommandReason } : {}),
+      targetFiles,
+      prdRefs,
+      contextGuidance: { patterns: contextGuidance.patterns, anti_patterns: contextGuidance.anti_patterns },
+      dependencies: { blocked_by: dependencies.blocked_by, blocks: dependencies.blocks },
+    } as NormalizedBead) as Record<string, unknown>
+  }
+
+  it('keeps runtime metadata the editor never touches, in whichever spelling it was stored', () => {
+    const saved = buildBeadForSave(normalizeBead({
+      id: 'B-1',
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    } as never, 'verbatim'))
+
+    expect(saved).toMatchObject({
+      started_at: '2026-01-01T00:00:00.000Z',
+      bead_start_commit: 'abc123',
+      qa_origin: { sourceItems: [] },
+    })
+  })
+
+  it('writes an edited field once, dropping the spelling it superseded', () => {
+    const saved = buildBeadForSave(normalizeBead({ id: 'B-1', prd_refs: ['OLD'] } as never, 'verbatim'))
+
+    expect(saved.prdRefs).toEqual(['OLD'])
+    expect(saved).not.toHaveProperty('prd_refs')
+  })
+
+  it('adds no empty metadata to a bead that carried none', () => {
+    const saved = buildBeadForSave(normalizeBead({ id: 'B-1' } as never, 'verbatim'))
+
+    expect(saved).not.toHaveProperty('issueType')
+    expect(saved).not.toHaveProperty('externalRef')
+    expect(saved).not.toHaveProperty('testCommandReason')
   })
 })

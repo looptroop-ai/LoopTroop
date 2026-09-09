@@ -72,6 +72,32 @@ function setMalformedLineHeaders(c: Context, malformedLines: number[]) {
   c.header('X-Malformed-Lines', `${listed.join(',')}${suffix}`)
 }
 
+/**
+ * The tracker's bytes, or `null` when there is no tracker at all.
+ *
+ * Reads and handles "not found" rather than asking whether the path exists: an
+ * existence check on a path built from a request parameter is a filesystem
+ * oracle (`tssecurity:S6549`), and it is also a window — the file can be
+ * created or removed between the check and the read. One call answers both.
+ *
+ * `null` and `''` are different answers: a save needs to tell "no file yet",
+ * which nothing can be lost from, apart from an empty one that another writer
+ * may already own.
+ */
+function readBeadsContentOrNull(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf-8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** As above, with an absent tracker read as an empty one. */
+function readBeadsContent(filePath: string): string {
+  return readBeadsContentOrNull(filePath) ?? ''
+}
+
 function countJsonlItems(content: string | null): number | null {
   if (content == null) return null
   return content.split('\n').filter((line) => line.trim() !== '').length
@@ -86,12 +112,7 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
   const { filePath } = resolved
 
-  if (!fs.existsSync(filePath)) {
-    c.header('X-Content-Sha256', contentSha256(''))
-    return c.json([])
-  }
-
-  const content = fs.readFileSync(filePath, 'utf-8')
+  const content = readBeadsContent(filePath)
   c.header('X-Content-Sha256', contentSha256(content))
   // One line that will not parse used to fail the whole request, so an
   // approval screen lost every bead in the tracker to a single damaged row —
@@ -119,7 +140,7 @@ beadsRouter.get('/tickets/:id/beads/raw', (c) => {
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
   const { filePath } = resolved
 
-  const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : ''
+  const content = readBeadsContent(filePath)
   c.header('X-Content-Sha256', contentSha256(content))
   const { items, malformedLines } = parseJsonlContent(content, filePath)
   setMalformedLineHeaders(c, malformedLines)
@@ -167,7 +188,7 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
   const { filePath } = resolved
 
-  const beforeRaw = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : null
+  const beforeRaw = readBeadsContentOrNull(filePath)
 
   // Optimistic concurrency, the same guard approval already applies. Without
   // it a save built on a stale read overwrites whatever landed in between —

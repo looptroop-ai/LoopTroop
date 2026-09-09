@@ -1,22 +1,4 @@
 /**
- * Repair YAML list items where the dash is not followed by a space.
- *
- * Models sometimes emit `-key: value` instead of `- key: value`.
- * YAML requires a space after the dash for a block sequence entry.
- * This function inserts the missing space.
- */
-export function repairYamlListDashSpace(yaml: string): string {
-  return yaml
-    .split('\n')
-    .map((line) => {
-      const match = line.match(/^(\s*)-([a-zA-Z_]\w*\s*:.*)$/)
-      if (!match) return line
-      return `${match[1]}- ${match[2]}`
-    })
-    .join('\n')
-}
-
-/**
  * The block scalar header grammar, once.
  *
  * `|` or `>`, then the indicators YAML allows in either order — a chomping
@@ -44,6 +26,46 @@ export const LIST_BLOCK_SCALAR_HEADER = /^-\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\
 export const BLOCK_SCALAR_HEADER = /(?::|^-)\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** The indicator alone, as a value: `foo:` on one line and `|` on the next. */
 export const BLOCK_SCALAR_VALUE = /^\s*([>|](?:[+-][1-9]?|[1-9][+-]?)?)(?:\s+#.*)?\s*$/
+
+/**
+ * Repair YAML list items where the dash is not followed by a space.
+ *
+ * Models sometimes emit `-key: value` instead of `- key: value`.
+ * YAML requires a space after the dash for a block sequence entry.
+ * This function inserts the missing space.
+ */
+export function repairYamlListDashSpace(yaml: string): string {
+  const result: string[] = []
+  let blockScalarBaseIndent = -1
+
+  for (const line of yaml.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) {
+      result.push(line)
+      continue
+    }
+
+    // A literal block's body is text: `-key: value` inside one is what the
+    // model wrote, not a sequence entry missing its space.
+    if (blockScalarBaseIndent >= 0) {
+      if (getLineIndent(line) > blockScalarBaseIndent) {
+        result.push(line)
+        continue
+      }
+      blockScalarBaseIndent = -1
+    }
+    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+      blockScalarBaseIndent = getLineIndent(line)
+      result.push(line)
+      continue
+    }
+
+    const match = line.match(/^(\s*)-([a-zA-Z_]\w*\s*:.*)$/)
+    result.push(match ? `${match[1]}- ${match[2]}` : line)
+  }
+
+  return result.join('\n')
+}
 
 /**
  * Repair YAML indentation for list items produced by model output.
@@ -458,8 +480,30 @@ function isLikelyInlineSequenceParentKey(key: string): boolean {
 export function repairYamlInlineSequenceParents(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
+  let blockScalarBaseIndent = -1
 
   for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) {
+      result.push(line)
+      continue
+    }
+
+    // `items: - item` inside a literal block is a sentence, not a mapping whose
+    // sequence needs unfolding onto two lines.
+    if (blockScalarBaseIndent >= 0) {
+      if (getLineIndent(line) > blockScalarBaseIndent) {
+        result.push(line)
+        continue
+      }
+      blockScalarBaseIndent = -1
+    }
+    if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+      blockScalarBaseIndent = getLineIndent(line)
+      result.push(line)
+      continue
+    }
+
     const match = line.match(/^(\s*)([A-Za-z_][\w_-]*)\s*:\s+-\s+(.+)$/)
     if (!match || !isLikelyInlineSequenceParentKey(match[2]!)) {
       result.push(line)
@@ -1083,8 +1127,11 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
         result.push(line)
       }
 
-      // Track block scalar on dash line
-      if (BLOCK_SCALAR_PATTERN.test(rest.trimEnd())) {
+      // Track block scalar on dash line, tested against the whole line rather
+      // than the text after the dash: for a bare `- |` the indicator *is* that
+      // text, so a header test expecting a key before it never matched and the
+      // body was re-indented as sibling sequence entries — a value change.
+      if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
         blockScalarBaseIndent = bestAnchor ?? dashIndent
       }
       continue

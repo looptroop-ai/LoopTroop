@@ -1676,3 +1676,79 @@ describe.concurrent('block scalar headers YAML allows', () => {
     expect(repair(input)).toBe(['description: |2', body, repaired].join('\n'))
   })
 })
+
+/**
+ * Every repair, over every body line, in every header form.
+ *
+ * Four rounds of review found the same defect four times, each time in a
+ * repair the previous round's enumeration had missed: I listed the functions
+ * that already tracked a block scalar, or the header shape one reviewer
+ * reported, instead of the set the rule governs — *every* repair, against
+ * *every* way a body line can look. This table is that set, so the next repair
+ * added to this file is covered by construction rather than by whoever
+ * remembers to add a case.
+ *
+ * The rule: a literal block's body is text. No repair may change a byte of it.
+ */
+describe.concurrent('no repair rewrites a block scalar body', () => {
+  /** Every exported repair, called the way its own signature requires. */
+  const repairs: Array<[string, (yaml: string) => string]> = [
+    ['repairYamlListDashSpace', repairYamlListDashSpace],
+    ['repairYamlIndentation', repairYamlIndentation],
+    ['repairYamlSequenceItemPrimaryKeys', (yaml) => repairYamlSequenceItemPrimaryKeys(yaml, {
+      items: { primaryKey: 'id', childKeys: ['title'] },
+    }).yaml],
+    ['repairYamlInlineSequenceParents', repairYamlInlineSequenceParents],
+    ['repairYamlMappingKeyColonSpace', repairYamlMappingKeyColonSpace],
+    ['repairYamlDoubleQuotedInvalidEscapes', repairYamlDoubleQuotedInvalidEscapes],
+    ['repairYamlDoubleQuotedScalarInnerQuotes', repairYamlDoubleQuotedScalarInnerQuotes],
+    ['repairYamlNestedMappingChildren', (yaml) => repairYamlNestedMappingChildren(yaml, { parent: ['answer'] })],
+    ['repairYamlSequenceEntryIndent', repairYamlSequenceEntryIndent],
+    ['repairYamlDuplicateKeys', repairYamlDuplicateKeys],
+    ['repairYamlFreeTextScalars', repairYamlFreeTextScalars],
+    ['repairYamlQuotedScalarFragments', repairYamlQuotedScalarFragments],
+    ['repairYamlTypeUnionScalars', repairYamlTypeUnionScalars],
+    ['repairYamlReservedIndicatorScalars', repairYamlReservedIndicatorScalars],
+    ['repairYamlInlineKeys', repairYamlInlineKeys],
+    ['repairYamlWrappedPlainListScalars', repairYamlWrappedPlainListScalars],
+    ['repairYamlPlainScalarColons', repairYamlPlainScalarColons],
+    ['repairYamlUnclosedQuotes', repairYamlUnclosedQuotes],
+  ]
+
+  /** Every body line that has been reported rewritten, and its neighbours. */
+  const bodyLines = [
+    'key1: value1 key2: value2',
+    '-key: value',
+    'items: - item',
+    'prose reports value: false',
+    '- not an entry',
+    'owner: @handle',
+    'key: a: b',
+    'answer: text',
+    'question: "unterminated',
+    'type: "epic" | "user_story"',
+    'free_text: Log type: trace',
+    '`backticks` and a trailing colon:',
+  ]
+
+  /** Every header form YAML allows, mapping and sequence. */
+  const headers = ['|', '|-', '|+', '|2', '>', '>-', '>2', '| # note', '>- # note']
+
+  it.each(repairs)('%s leaves every body line alone under a mapping header', (_, repair) => {
+    for (const header of headers) {
+      for (const body of bodyLines) {
+        const input = ['parent:', `  body: ${header}`, `    ${body}`, '  answer: text'].join('\n')
+        expect(repair(input), `${header} / ${body}`).toBe(input)
+      }
+    }
+  })
+
+  it.each(repairs)('%s leaves every body line alone under a sequence header', (_, repair) => {
+    for (const header of headers) {
+      for (const body of bodyLines) {
+        const input = ['items:', `  - ${header}`, `    ${body}`].join('\n')
+        expect(repair(input), `- ${header} / ${body}`).toBe(input)
+      }
+    }
+  })
+})

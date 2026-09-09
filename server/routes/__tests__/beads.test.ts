@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { Hono } from 'hono'
 import { initializeDatabase } from '../../db/init'
 import { sqlite } from '../../db/index'
@@ -118,6 +118,71 @@ describe('beadsRouter flow validation', () => {
         sha256: contentSha256(raw),
         item_count: 1,
       },
+    })
+  })
+  /**
+   * A tracker with one damaged line used to fail the whole request, which took
+   * every other bead on the approval screen with it — the one moment where
+   * seeing the rest is what lets someone repair the file.
+   */
+  describe('reading a tracker with a damaged line', () => {
+    function writeBeadsFile(beadsPath: string, content: string) {
+      mkdirSync(dirname(beadsPath), { recursive: true })
+      writeFileSync(beadsPath, content, 'utf-8')
+    }
+
+    const bead = (id: string) => JSON.stringify({
+      id, title: id, status: 'pending', priority: 1, dependencies: { blocked_by: [], blocks: [] },
+    })
+
+    it('returns the beads that parsed and names the lines that did not', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      const content = [bead('B-1'), '{"id": "B-2", ', bead('B-3'), ''].join('\n')
+      writeBeadsFile(paths.beadsPath, content)
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual([
+        expect.objectContaining({ id: 'B-1' }),
+        expect.objectContaining({ id: 'B-3' }),
+      ])
+      // The line number in the file, not a position among the ones that
+      // survived: an operator opens the file at that line to fix it.
+      expect(response.headers.get('X-Malformed-Lines')).toBe('2')
+      // The hash still covers the file as it is on disk, damage included, so a
+      // save from this screen is still refused if the file changed underneath.
+      expect(response.headers.get('X-Content-Sha256')).toBe(contentSha256(content))
+    })
+
+    it('counts blank lines when numbering the damaged ones', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      writeBeadsFile(paths.beadsPath, [bead('B-1'), '', 'not json', '', 'also not json'].join('\n'))
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(response.headers.get('X-Malformed-Lines')).toBe('3,5')
+    })
+
+    it('says nothing about damaged lines when the tracker is clean', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      writeBeadsFile(paths.beadsPath, `${bead('B-1')}\n`)
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(await response.json()).toEqual([expect.objectContaining({ id: 'B-1' })])
+      expect(response.headers.get('X-Malformed-Lines')).toBeNull()
+    })
+
+    it('returns an empty list, not an error, when no line parses at all', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      writeBeadsFile(paths.beadsPath, ['broken', 'also broken'].join('\n'))
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual([])
+      expect(response.headers.get('X-Malformed-Lines')).toBe('1,2')
     })
   })
 })

@@ -25,7 +25,17 @@ export interface JsonlReadResult<T> {
  */
 export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: string): JsonlReadResult<T> {
   if (!existsSync(filePath)) return { items: [], itemLines: [], malformedLines: [] }
-  const content = readFileSync(filePath, 'utf-8')
+  return parseJsonlContent<T>(readFileSync(filePath, 'utf-8'), filePath)
+}
+
+/**
+ * As `readJsonlWithDiagnostics`, for a caller that already holds the content.
+ *
+ * The beads route reads the file itself to hash it, and parsing through the
+ * path would read it a second time — a second read is also a second chance to
+ * see a different file. `source` names the file in the warning only.
+ */
+export function parseJsonlContent<T = Record<string, unknown>>(content: string, source: string): JsonlReadResult<T> {
   // Blank lines are skipped in place rather than filtered out first: filtering
   // renumbered everything after them, so the reported line number was an index
   // into the surviving lines and pointed an operator at the wrong text.
@@ -42,7 +52,7 @@ export function readJsonlWithDiagnostics<T = Record<string, unknown>>(filePath: 
       itemLines.push(i + 1)
     } catch {
       const preview = line.length > 80 ? line.slice(0, 80) + '…' : line
-      warnIfVerbose(`[jsonl] Skipping malformed line ${i + 1} in ${filePath}: ${preview}`)
+      warnIfVerbose(`[jsonl] Skipping malformed line ${i + 1} in ${source}: ${preview}`)
       malformedLines.push(i + 1)
     }
   }

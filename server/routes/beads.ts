@@ -8,6 +8,7 @@ import { syncTicketRuntimeProjection } from '../storage/ticketRuntimeProjection'
 import { clearExecutionSetupState } from '../phases/executionSetup/storage'
 import { upsertBeadsApprovalSnapshot } from '../phases/beads/document'
 import { contentSha256 } from '../lib/contentHash'
+import { parseJsonlContent } from '../io/jsonl'
 import { writeUserEditReceipt } from '../workflow/artifactEditReceipts'
 
 // Minimum schema for fields required by the scheduler and execution engine.
@@ -70,13 +71,16 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
 
   const content = fs.readFileSync(filePath, 'utf-8')
   c.header('X-Content-Sha256', contentSha256(content))
-  const lines = content.split('\n').filter((line) => line.trim() !== '')
-  try {
-    const beads = lines.map((line) => JSON.parse(line))
-    return c.json(beads)
-  } catch {
-    return c.json({ error: 'Corrupted JSONL data' }, 500)
+  // One line that will not parse used to fail the whole request, so an
+  // approval screen lost every bead in the tracker to a single damaged row —
+  // the one situation where seeing the rest is what lets someone repair it.
+  // The lines that did parse are returned; the ones that did not are named in
+  // a header, by their line number in the file.
+  const { items, malformedLines } = parseJsonlContent(content, filePath)
+  if (malformedLines.length > 0) {
+    c.header('X-Malformed-Lines', malformedLines.join(','))
   }
+  return c.json(items)
 })
 
 beadsRouter.put('/tickets/:id/beads', async (c) => {

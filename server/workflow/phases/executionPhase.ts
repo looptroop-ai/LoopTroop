@@ -4,6 +4,7 @@ import { isMockOpenCodeMode } from '../../opencode/factory'
 import { executeBead, type ExecutionResult } from '../../phases/execution/executor'
 import { getNextBead, isAllComplete } from '../../phases/execution/scheduler'
 import type { Bead } from '../../phases/beads/types'
+import { compareBeadRecoveryOrder } from '../../phases/beads/recoveryOrder'
 import { recordBeadStartCommit, commitBeadChanges, resetToBeadStart, captureBeadDiff, WORKTREE_RESET_PRESERVE_PATHS } from '../../phases/execution/gitOps'
 import { throwIfAborted } from '../../council/types'
 import { broadcaster } from '../../sse/broadcaster'
@@ -86,19 +87,6 @@ async function abandonInterruptedCodingSessions(
       clearOpenCodePromptDispatchCount(session.sessionId)
     }
   }))
-}
-
-function compareBeadRecoveryOrder(left: Bead, right: Bead) {
-  const leftUpdatedAt = Date.parse(left.updatedAt || left.startedAt || left.completedAt || '')
-  const rightUpdatedAt = Date.parse(right.updatedAt || right.startedAt || right.completedAt || '')
-
-  if (!Number.isNaN(leftUpdatedAt) || !Number.isNaN(rightUpdatedAt)) {
-    if (Number.isNaN(leftUpdatedAt)) return 1
-    if (Number.isNaN(rightUpdatedAt)) return -1
-    return rightUpdatedAt - leftUpdatedAt
-  }
-
-  return right.iteration - left.iteration
 }
 
 function getLatestInterruptedInProgressBead(beads: Bead[]): Bead | null {

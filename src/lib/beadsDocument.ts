@@ -118,6 +118,37 @@ export const BEAD_FIELD_ALIASES = {
 
 export type BeadField = keyof typeof BEAD_FIELD_ALIASES
 
+/**
+ * The spellings a canonical field supersedes.
+ *
+ * A record can arrive carrying both — `prd_refs` from an older writer and
+ * `prdRefs` from a newer one — and an editor that writes only the canonical
+ * name leaves the other holding the pre-edit value. Anything a reader takes
+ * from the superseded spelling is then stale, silently.
+ */
+export const SUPERSEDED_BEAD_FIELD_ALIASES: readonly string[] =
+  Object.entries(BEAD_FIELD_ALIASES).flatMap(([field, aliases]) => aliases.filter((alias) => alias !== field))
+
+/** Drops every superseded spelling, keeping unknown fields untouched. */
+export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
+  const superseded = new Set(SUPERSEDED_BEAD_FIELD_ALIASES)
+  return Object.fromEntries(
+    Object.entries(bead).filter(([key]) => !superseded.has(key)),
+  ) as T
+}
+
+/**
+ * Whether the structured editor can represent this bead's guidance.
+ *
+ * Guidance is normally patterns and anti-patterns, but some stored beads carry
+ * free text instead. The editor has no field for that, so it would show empty
+ * lists and write them over the text on save — the same silent replacement the
+ * malformed-line handling exists to prevent.
+ */
+export function hasUnstructuredBeadGuidance(bead: RawBead): boolean {
+  return typeof readBeadValue(bead, 'contextGuidance') === 'string'
+}
+
 /** The nested keys, which carry their own spellings. */
 const DEPENDENCY_ALIASES = {
   blocked_by: ['blocked_by', 'blockedBy'],
@@ -240,6 +271,8 @@ export interface NormalizedBead extends RawBead {
   id: string
   title: string
   description: string
+  issueType: string
+  externalRef: string
   prdRefs: string[]
   acceptanceCriteria: string[]
   tests: string[]
@@ -263,6 +296,11 @@ export function normalizeBead(bead: RawBead, policy: BeadReadPolicy): Normalized
     id: readBeadString(bead, 'id', policy),
     title: readBeadString(bead, 'title', policy),
     description: readBeadString(bead, 'description', policy),
+    // Read-only in the editor, but read raw there before this: a bead stored
+    // with `issue_type` showed its type in the artifact view and fell back to
+    // the default in the editor.
+    issueType: readBeadString(bead, 'issueType', policy),
+    externalRef: readBeadString(bead, 'externalRef', policy),
     prdRefs: readBeadStringList(bead, 'prdRefs', policy),
     acceptanceCriteria: readBeadStringList(bead, 'acceptanceCriteria', policy),
     tests: readBeadStringList(bead, 'tests', policy),

@@ -18,7 +18,16 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { BeadsApprovalEditor } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
-import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped, normalizeBead, type NormalizedBead } from '@/lib/beadsDocument'
+import { isRecord } from '@shared/typeGuards'
+import {
+  BEADS_APPROVAL_FOCUS_EVENT,
+  describeBeadEntry,
+  filterBeadShaped,
+  hasUnstructuredBeadGuidance,
+  normalizeBead,
+  stripSupersededBeadAliases,
+  type NormalizedBead,
+} from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { selectedAttemptNumber } from './phaseAttemptSelection'
@@ -114,7 +123,11 @@ function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
 function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
   const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
   return {
-    ...rest,
+    // Each field once, under the canonical spelling. A record that arrived with
+    // both — `prd_refs` from an older writer, `prdRefs` from a newer one — kept
+    // the superseded copy holding its pre-edit value, so anything reading that
+    // spelling saw the edit undone.
+    ...stripSupersededBeadAliases(rest as NormalizedBead),
     acceptanceCriteria,
     testCommands,
     ...(testCommands.length === 0 && testCommandReason ? { testCommandReason } : {}),
@@ -197,6 +210,17 @@ function BeadsApprovalPane({
   // here; the structured editor is built from the records that parsed.
   const rawJsonl = fetchedBeads?.rawContent ?? ''
   const hasMalformedLines = malformedLines.length > 0
+  // Guidance stored as free text has no field in the structured editor, which
+  // would show empty pattern lists and write them over the text on save.
+  const unstructuredGuidanceBeadIds = useMemo(
+    () => beadsArray
+      .filter((bead): bead is Record<string, unknown> => isRecord(bead))
+      .filter((bead) => hasUnstructuredBeadGuidance(bead))
+      .map((bead, index) => (typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`)),
+    [beadsArray],
+  )
+  const hasUnstructuredGuidance = unstructuredGuidanceBeadIds.length > 0
+  const structuredEditorBlocked = hasMalformedLines || hasUnstructuredGuidance
   const malformedLineSummary = malformedLines.length === 1
     ? `Line ${malformedLines[0]}`
     : `Lines ${malformedLines.slice(0, 10).join(', ')}${malformedLines.length > 10 ? `, +${malformedLines.length - 10} more` : ''}`
@@ -331,6 +355,12 @@ function BeadsApprovalPane({
         + `would drop ${malformedLines.length === 1 ? 'that line' : 'those lines'}.`,
       )
       return
+    } else if (hasUnstructuredGuidance) {
+      setSaveError(
+        `${unstructuredGuidanceBeadIds.join(', ')} store context guidance as free text, which the structured editor `
+        + 'cannot show. Edit them in the JSONL tab instead — saving from here would replace that text with empty lists.',
+      )
+      return
     }
 
     setIsSaving(true)
@@ -380,7 +410,7 @@ function BeadsApprovalPane({
     } finally {
       setIsSaving(false)
     }
-  }, [currentContentSha256, editTab, hasMalformedLines, jsonlDraft, malformedLineSummary, malformedLines.length, structuredDraft, ticket.id, queryClient])
+  }, [currentContentSha256, editTab, hasMalformedLines, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines.length, structuredDraft, ticket.id, unstructuredGuidanceBeadIds, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -570,12 +600,22 @@ function BeadsApprovalPane({
                     </div>
                   )}
                 </div>
-              ) : hasMalformedLines ? (
+              ) : structuredEditorBlocked ? (
                 <div className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-                  The structured editor is unavailable while the tracker holds lines it cannot read: it would contain
-                  only the beads that parsed, and saving it would delete the rest. Repair the file in the JSONL tab
-                  instead — {malformedLineSummary.toLowerCase()} {malformedLines.length === 1 ? 'is' : 'are'} there as
-                  stored.
+                  {hasMalformedLines ? (
+                    <>
+                      The structured editor is unavailable while the tracker holds lines it cannot read: it would
+                      contain only the beads that parsed, and saving it would delete the rest. Repair the file in the
+                      JSONL tab instead — {malformedLineSummary.toLowerCase()}{' '}
+                      {malformedLines.length === 1 ? 'is' : 'are'} there as stored.
+                    </>
+                  ) : (
+                    <>
+                      The structured editor has no field for context guidance written as free text, so saving from it
+                      would replace that text with empty lists. Edit {unstructuredGuidanceBeadIds.join(', ')} in the
+                      JSONL tab instead.
+                    </>
+                  )}
                 </div>
               ) : structuredDraft && structuredDraft.length > 0 ? (
                 <BeadsApprovalEditor

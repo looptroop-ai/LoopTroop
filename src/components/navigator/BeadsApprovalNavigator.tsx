@@ -1,9 +1,8 @@
 import { useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
-import { isRecord } from '@shared/typeGuards'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
-import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped, readBeadDependencies } from '@/lib/beadsDocument'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { ApprovalOutlineShell } from './ApprovalOutlineShell'
@@ -34,9 +33,10 @@ function parseBeadsOutline(data: unknown[]): BeadOutlineItem[] {
     index,
     id: typeof bead.id === 'string' ? bead.id : `bead-${index}`,
     title: typeof bead.title === 'string' ? bead.title : `Bead ${index + 1}`,
-    dependencyCount: isRecord(bead.dependencies) && Array.isArray(bead.dependencies.blocked_by)
-      ? bead.dependencies.blocked_by.length
-      : 0,
+    // Through the shared reader: the outline sits beside the artifact view and
+    // the editor, and a bead stored with `blockedBy` counted zero here while
+    // both of those showed its dependencies.
+    dependencyCount: readBeadDependencies(bead, 'display').blocked_by.length,
   }))
 }
 

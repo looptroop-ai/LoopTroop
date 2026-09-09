@@ -57,6 +57,7 @@ import {
   parseBeadsArtifact,
   readBeadCommands,
   readBeadDependencies,
+  readBeadGuidance,
   readBeadNumber,
   readBeadString,
   readBeadValue,
@@ -1484,12 +1485,15 @@ function renderBeadGuidance(guidance: RawBead['contextGuidance']): React.ReactNo
     )
   }
 
-  const patterns = Array.isArray(guidance.patterns)
-    ? guidance.patterns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-  const antiPatterns = Array.isArray(guidance.anti_patterns)
-    ? guidance.anti_patterns.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
+  // Through the shared reader, which knows `anti_patterns` and `antiPatterns`
+  // are the same field. Reading one spelling here left a bead written the other
+  // way showing its anti-patterns in the approval editor and a JSON dump in
+  // this view — the divergence the alias table exists to end, one field over
+  // from the one it was added for.
+  const { patterns, anti_patterns: antiPatterns } = readBeadGuidance(
+    { contextGuidance: guidance } as RawBead,
+    'display',
+  )
 
   if (patterns.length === 0 && antiPatterns.length === 0) {
     return (

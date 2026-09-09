@@ -9,6 +9,9 @@ import {
   readBeadString,
   readBeadStringList,
   readBeadValue,
+  hasUnstructuredBeadGuidance,
+  stripSupersededBeadAliases,
+  SUPERSEDED_BEAD_FIELD_ALIASES,
   type RawBead,
 } from '../beadsDocument'
 
@@ -285,5 +288,60 @@ describe('normalizeBead', () => {
     expect(normalized.testCommands).toEqual([
       expect.objectContaining({ mode: 'shell', script: 'npm test' }),
     ])
+  })
+})
+
+describe('the superseded spellings', () => {
+  it('lists every alias that is not the canonical name, and no canonical name', () => {
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).toContain('prd_refs')
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).toContain('context_guidance')
+    expect(SUPERSEDED_BEAD_FIELD_ALIASES).not.toContain('prdRefs')
+    for (const field of Object.keys(BEAD_FIELD_ALIASES)) {
+      expect(SUPERSEDED_BEAD_FIELD_ALIASES).not.toContain(field)
+    }
+  })
+
+  it('drops them and keeps everything else', () => {
+    // What a save writes: each field once. The superseded copy held the
+    // pre-edit value, so a reader preferring that spelling saw the edit undone.
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      prdRefs: ['NEW'],
+      prd_refs: ['OLD'],
+      context_guidance: { patterns: [] },
+      somethingUnknown: { kept: true },
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      prdRefs: ['NEW'],
+      somethingUnknown: { kept: true },
+    })
+  })
+})
+
+describe('hasUnstructuredBeadGuidance', () => {
+  it.each([
+    ['guidance written as free text', { contextGuidance: 'Patterns: do X; avoid Y' }],
+    ['the same under the other spelling', { context_guidance: 'Patterns: do X' }],
+  ])('reports %s', (_, bead) => {
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it.each([
+    ['a structured guidance object', { contextGuidance: { patterns: ['p'], anti_patterns: [] } }],
+    ['no guidance at all', {}],
+  ])('does not report %s', (_, bead) => {
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(false)
+  })
+})
+
+describe('normalizeBead reads the read-only metadata fields too', () => {
+  it('resolves issueType and externalRef from either spelling', () => {
+    // The editor renders these straight off the record, so a bead stored with
+    // the snake_case spelling read as a default there while the artifact view
+    // showed the real value.
+    const normalized = normalizeBead({ id: 'B-1', issue_type: 'bug', external_ref: 'LOO-9' } as never, 'display')
+
+    expect(normalized.issueType).toBe('bug')
+    expect(normalized.externalRef).toBe('LOO-9')
   })
 })

@@ -1800,10 +1800,19 @@ child=$!
 # accord. Gating on the number alone re-waits on a status that will never
 # change, which is an infinite loop rather than a wrong exit code.
 status=0
+first=1
 while :; do
   interrupted=
-  status=0
-  wait "$child" || status=$?
+  attempt=0
+  wait "$child" || attempt=$?
+  # 127 means "not a child of this shell" — but only on a retry, where it says
+  # the previous pass already collected the real status and this one has nothing
+  # to add. On the very first wait it is the child's own exit code, and a child
+  # is entitled to exit 127. Without the `first` guard, a legitimate 127 is
+  # discarded and the wrapper reports 0.
+  if [ -z "$first" ] && [ "$attempt" -eq 127 ]; then break; fi
+  first=
+  status=$attempt
   # No signal reached this shell during that wait, so whatever came back is the
   # child's own status, however high it is.
   [ -n "$interrupted" ] || break

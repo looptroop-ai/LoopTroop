@@ -1701,8 +1701,12 @@ function countExpansionAddedFields(content: string): number {
   const expandedBeads = parseBeadsArtifact(parsed.refinedContent)
   if (!planBeads || !expandedBeads) return 0
 
+  // Paired by id, not position. Each side is filtered independently, so one
+  // malformed entry in the plan shifts every later bead against its refinement
+  // and reports another bead's fields as this one's additions.
+  const planById = new Map(planBeads.map((bead) => [bead.id, bead]))
   return expandedBeads.reduce((count, bead, index) => {
-    const groups = buildExpansionAddedGroups(planBeads[index], bead, index)
+    const groups = buildExpansionAddedGroups(planById.get(bead.id), bead, index)
     return count + groups.reduce((sum, group) => sum + group.fields.length, 0)
   }, 0)
 }
@@ -1735,6 +1739,7 @@ function ExpandedPlanDiffView({ content }: { content: string }) {
     return <RawContentWithCopy content={content} />
   }
 
+  const planBeadsById = new Map((planBeads ?? []).map((bead) => [getBeadStringValue(bead, ['id']), bead]))
   const addedFieldCount = countExpansionAddedFields(content)
 
   return (
@@ -1743,7 +1748,9 @@ function ExpandedPlanDiffView({ content }: { content: string }) {
         Expansion added {addedFieldCount} execution field{addedFieldCount === 1 ? '' : 's'} across {expandedBeads.length} bead{expandedBeads.length === 1 ? '' : 's'}.
       </div>
       {expandedBeads.map((expandedBead, index) => {
-        const planBead = planBeads[index]
+        // By id, for the same reason as the count above: the two lists are
+        // filtered independently, so positions do not correspond.
+        const planBead = planBeadsById.get(getBeadStringValue(expandedBead, ['id']))
         const title = getBeadStringValue(expandedBead, ['title']) || getBeadStringValue(planBead ?? {}, ['title']) || `Bead ${index + 1}`
         const planId = getBeadStringValue(planBead ?? {}, ['id'])
         const expandedId = getBeadStringValue(expandedBead, ['id'])
@@ -2188,7 +2195,10 @@ export function BeadsDraftView({ content }: { content: string }) {
     }
   }
   if (current) beads.push(current)
-  if (beads.length === 0) return null
+  // Raw rather than nothing. Returning null drew an empty approval pane for
+  // content that is simply not a bead artifact — and the parser's own contract,
+  // stated where it returns null, is that the caller shows the raw view.
+  if (beads.length === 0) return <RawContentView content={content} />
   return (
     <div className="space-y-2">
       <div className="text-xs text-muted-foreground mb-2">{beads.length} beads</div>

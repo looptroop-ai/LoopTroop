@@ -49,6 +49,10 @@ export function PreFlightReportView({ content }: { content: string }) {
     const arrays = [parsed.checks, parsed.criticalFailures, parsed.warnings]
     const isCheck = (entry: unknown) => hasStringFields(entry, ['name', 'category', 'result', 'message', 'details'])
     if (!arrays.every((value) => isArrayOf(value, isCheck))) return null
+    // `passed` decides between "All checks passed" and the failure state, and it
+    // is read as a plain truthy value — so the string "false" would report a
+    // clean pre-flight for a report that says the opposite.
+    if (typeof parsed.passed !== 'boolean') return null
     return parsed as unknown as PreFlightReportData
   }, [content])
 

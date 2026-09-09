@@ -104,4 +104,22 @@ describe('countBeadsInContent', () => {
   it('falls back to counting YAML bead ids the parser declines', () => {
     expect(countBeadsInContent('- id: B-1\n  title: One\n- id: B-2\n  title: Two\n')).toBe(2)
   })
+
+  // The regex is a last resort for content the parser could not read at all.
+  // Reaching it for a collection the parser *did* read and rejected would
+  // report beads over a viewer showing raw text.
+  it('counts zero when the parser read a collection and rejected every entry', () => {
+    expect(countBeadsInContent('- id: {}\n')).toBe(0)
+    expect(parseBeadsArtifact('- id: {}\n')).toBeNull()
+  })
+
+  // A summary chip is redrawn on every render; parser diagnostics belong to the
+  // one place that actually reads the artifact.
+  it('counts without logging', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    countBeadsInContent('[null, 42, {"id":"B-1"}]')
+
+    expect(warn).not.toHaveBeenCalled()
+  })
 })

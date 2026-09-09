@@ -42,9 +42,10 @@ export function FinalTestResultsView({ content }: { content: string }) {
     ))
     || !isOptionalArrayOf(parsed.testFiles, (entry) => typeof entry === 'string')
     || !isOptionalArrayOf(parsed.fileEffects, (entry) => hasStringFields(entry, ['path', 'intent', 'reason']))
-    // Handed to `buildRawAttemptVariants`, which does `.toLowerCase()` on
-    // `label` and `status` without checking either.
-    || !isOptionalArrayOf(parsed.rawAttempts, (entry) => hasStringFields(entry, ['label', 'status']))
+    // Handed to `buildRawAttemptVariants`, which does `.toLowerCase()` on the
+    // label and on `status ?? outcome` without checking any of them — so
+    // `outcome` belongs here too, as the alias the reader falls back to.
+    || !isOptionalArrayOf(parsed.rawAttempts, (entry) => hasStringFields(entry, ['label', 'status', 'outcome']))
     || !isOptionalStructuredOutput(parsed.planStructuredOutput)
   ) {
     return <RawContentWithCopy content={content} />

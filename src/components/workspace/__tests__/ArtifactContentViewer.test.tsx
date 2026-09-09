@@ -606,7 +606,9 @@ items:
     ['an object with no checks array', '{"status":"pending"}'],
     ['checks present but not an array', '{"checks":"nope","criticalFailures":[],"warnings":[]}'],
     ['a checks array holding a null element', '{"checks":[null],"criticalFailures":[],"warnings":[]}'],
-    ['a check whose message is an object', '{"checks":[{"message":{}}],"criticalFailures":[],"warnings":[]}'],
+    ['a check whose message is an object', '{"passed":true,"checks":[{"message":{}}],"criticalFailures":[],"warnings":[]}'],
+    ['a passed flag that is the string "false"', '{"passed":"false","checks":[],"criticalFailures":[],"warnings":[]}'],
+    ['no passed flag at all', '{"checks":[],"criticalFailures":[],"warnings":[]}'],
   ])('falls back to raw content for a pre-flight report that is %s', (_label, content) => {
     render(<ArtifactContent artifactId="diagnostics" content={content} />)
 
@@ -638,6 +640,7 @@ items:
     ['a file whose path is an object', '{"files":[{"path":{}}]}'],
     ['modelId is not a string', '{"files":[],"modelId":{}}'],
     ['fileCount is an object', '{"files":[],"fileCount":{}}'],
+
   ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
     render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
 
@@ -653,7 +656,8 @@ items:
     ['plannedBy that is not a string', '{"modelOutput":"","errors":[],"commands":[],"plannedBy":{}}'],
     ['a command whose durationMs is an object', '{"modelOutput":"","errors":[],"commands":[{"durationMs":{}}]}'],
     ['a rawAttempts entry whose status is an object', '{"modelOutput":"","errors":[],"commands":[],"rawAttempts":[{"status":{}}]}'],
-    ['a structuredOutput whose warnings is not an array', '{"modelOutput":"","errors":[],"commands":[],"planStructuredOutput":{"warnings":"oops"}}'],
+    ['a structuredOutput whose repairWarnings is not an array', '{"modelOutput":"","errors":[],"commands":[],"planStructuredOutput":{"repairWarnings":"oops"}}'],
+    ['a rawAttempts entry whose outcome is not a string', '{"modelOutput":"","errors":[],"commands":[],"rawAttempts":[{"outcome":42}]}'],
   ])('falls back to raw content for a final test report with %s', (_label, content) => {
     render(<ArtifactContent artifactId="test-results" content={content} />)
 

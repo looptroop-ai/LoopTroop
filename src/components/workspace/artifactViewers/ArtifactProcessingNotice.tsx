@@ -3,6 +3,7 @@ import {
 } from '@shared/structuredInterventions'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import {
+  normalizeStructuredRetryDiagnostics,
   type StructuredRetryDiagnostic,
 } from '@shared/structuredRetryDiagnostics'
 import { cn } from '@/lib/utils'
@@ -317,7 +318,7 @@ function ArtifactInterventionOwnerBreakdown({
             <div className="space-y-3">
               {(() => {
                 const interventions = getStructuredOutputInterventions(owner.structuredOutput)
-                const retryDiagnostics = owner.structuredOutput?.retryDiagnostics ?? []
+                const retryDiagnostics = normalizeStructuredRetryDiagnostics(owner.structuredOutput?.retryDiagnostics)
                 return (
                   <>
                     <ArtifactInterventionBreakdown interventions={interventions} />
@@ -357,13 +358,18 @@ export function ArtifactProcessingNotice({
   }
   const hasOwnerInterventions = Boolean(context?.ownerInterventions?.length)
   const shouldShowOnlyOwnerInterventions = kind === 'vote-aggregate' && hasOwnerInterventions
-  const retryDiagnostics = kind === 'vote-aggregate'
-    ? []
-    : structuredOutput?.retryDiagnostics ?? []
+  // Normalised rather than passed through. A stored artifact's diagnostics are
+  // whatever was written: this component sorts them on `attempt`, trims their
+  // `excerpt` and renders their fields, so a `null` entry or a wrong field type
+  // throws here. `normalizeStructuredRetryDiagnostics` was built for exactly
+  // this shape and was not being used on the display path — only in
+  // `phaseArtifactTypes`' parse path, which not every caller goes through.
+  const normalizedDiagnostics = normalizeStructuredRetryDiagnostics(structuredOutput?.retryDiagnostics)
+  const retryDiagnostics = kind === 'vote-aggregate' ? [] : normalizedDiagnostics
   const sourceMessages = getUndisplayedSourceMessages(
     structuredOutput,
     copy.interventions,
-    structuredOutput?.retryDiagnostics ?? [],
+    normalizedDiagnostics,
   )
 
   return (

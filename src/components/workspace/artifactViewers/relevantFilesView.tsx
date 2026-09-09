@@ -1,4 +1,5 @@
-import { hasStringFields, isArrayOf, isOptionalNumber, isOptionalString, isOptionalStructuredOutput } from '@/lib/artifactFieldShape'
+import { hasStringFields, isArrayOf, isNullableNumber, isOptionalNumber, isOptionalString, isOptionalStructuredOutput } from '@/lib/artifactFieldShape'
+import { isRecord } from '@shared/typeGuards'
 import { getModelDisplayName } from '@/components/shared/modelBadgeUtils'
 import { ModelBadge } from '@/components/shared/ModelBadge'
 import { useMemo, useState } from 'react'
@@ -29,7 +30,12 @@ export function RelevantFilesScanView({ content }: { content: string }) {
     }) | null
     const isFileEntry = (entry: unknown) => hasStringFields(entry, [
       'path', 'rationale', 'relevance', 'likely_action', 'likelyAction', 'contentPreview', 'content_preview',
-    ])
+    // `contentLength` is rendered through `.toLocaleString()`. Not a crash —
+    // an object answers that call with "[object Object]" — so this is here for
+    // consistency with the fields beside it, and has no test of its own:
+    // the row lives inside a per-file expansion, and no assertion I could write
+    // told the two branches apart.
+    ]) && isRecord(entry) && isNullableNumber(entry.contentLength)
     if (
       !parsed
       || !isArrayOf(parsed.files, isFileEntry)

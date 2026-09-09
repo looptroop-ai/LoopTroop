@@ -1103,7 +1103,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   
   // -- Auto-scroll state for the model log tab --
   const {
-    viewportRef, setViewportRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
+    viewportRef, setViewportRef, setContentRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
     scheduleScrollToBottom, enableAutoScroll,
   } = useLogScrollAnchor({ rebindKey: detailTab })
 
@@ -1593,7 +1593,10 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                   the hook the node changed, whatever caused it.
                 */}
                 <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
-                  <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+                  {/* The growing node, not just the viewport: without this the
+                      hook's resize observer has nothing to watch and appended
+                      rows stop following the tail. */}
+                  <div ref={setContentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
                     {selectedBeadLogEntries.length > 0 ? (
                       selectedBeadLogEntries.map((entry, i) => (
                         <LogEntryRow key={getLogEntryIdentity(entry)} entry={entry} index={i} showModelName />

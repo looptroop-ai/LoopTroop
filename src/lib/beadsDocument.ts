@@ -101,11 +101,16 @@ function describeBeadShapeProblem(entry: unknown): string | null {
  * shows a count the detail view contradicts. Filtering in one renderer and not
  * the others is exactly the skew this replaced.
  */
-export function filterBeadShaped(entries: unknown[], describePosition: (index: number) => string): RawBead[] {
+export function filterBeadShaped(
+  entries: unknown[],
+  describePosition: (index: number) => string,
+  options: { warn?: boolean } = {},
+): RawBead[] {
+  const warn = options.warn ?? true
   return entries.filter((entry, index) => {
     const problem = describeBeadShapeProblem(entry)
     if (!problem) return true
-    console.warn(`[beads] Ignored ${describePosition(index)} of the bead artifact: ${problem}.`)
+    if (warn) console.warn(`[beads] Ignored ${describePosition(index)} of the bead artifact: ${problem}.`)
     return false
   }) as RawBead[]
 }
@@ -115,23 +120,31 @@ export function describeBeadEntry(index: number): string {
   return `entry ${index + 1}`
 }
 
-function collectBeads(entries: unknown[], describePosition: (index: number) => string): RawBead[] | null {
-  const beads = filterBeadShaped(entries, describePosition)
-  return beads.length > 0 ? beads : null
+/**
+ * Whether this content holds a bead collection at all, and which beads survived.
+ *
+ * `parseBeadsArtifact` returns `null` both for "this is not a bead artifact" and
+ * for "it is one, and every entry was rejected". The counter needs to tell them
+ * apart: the first should fall back to counting YAML ids, the second must count
+ * zero, or it reports beads over a viewer showing raw text.
+ */
+function readBeadCollection(content: string, warn: boolean): { recognized: boolean; beads: RawBead[] } {
+  const parsed = tryParseStructuredContent(content)
+  if (Array.isArray(parsed)) {
+    return { recognized: true, beads: filterBeadShaped(parsed, describeBeadEntry, { warn }) }
+  }
+  if (isRecord(parsed) && Array.isArray(parsed.beads)) {
+    return { recognized: true, beads: filterBeadShaped(parsed.beads, describeBeadEntry, { warn }) }
+  }
+  if (content.trim().startsWith('{')) {
+    return { recognized: true, beads: parseBeadsJsonl(content, warn) ?? [] }
+  }
+  return { recognized: false, beads: [] }
 }
 
 export function parseBeadsArtifact(content: string): RawBead[] | null {
-  const parsed = tryParseStructuredContent(content)
-  if (Array.isArray(parsed)) {
-    return collectBeads(parsed, describeBeadEntry)
-  }
-  if (isRecord(parsed) && Array.isArray(parsed.beads)) {
-    return collectBeads(parsed.beads, describeBeadEntry)
-  }
-  if (content.trim().startsWith('{')) {
-    return parseBeadsJsonl(content)
-  }
-  return null
+  const { beads } = readBeadCollection(content, true)
+  return beads.length > 0 ? beads : null
 }
 
 /**
@@ -148,7 +161,7 @@ export function parseBeadsArtifact(content: string): RawBead[] | null {
  * usable `id`. Returning `null` when nothing survives is what sends the caller
  * to the raw view.
  */
-function parseBeadsJsonl(content: string): RawBead[] | null {
+function parseBeadsJsonl(content: string, warn = true): RawBead[] | null {
   const beads: RawBead[] = []
   const lines = content.trim().split('\n')
 
@@ -158,12 +171,12 @@ function parseBeadsJsonl(content: string): RawBead[] | null {
     try {
       entry = JSON.parse(line)
     } catch {
-      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: it is not valid JSON.`)
+      if (warn) console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: it is not valid JSON.`)
       return
     }
     const problem = describeBeadShapeProblem(entry)
     if (problem) {
-      console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: ${problem}.`)
+      if (warn) console.warn(`[beads] Ignored line ${index + 1} of the bead artifact: ${problem}.`)
       return
     }
     beads.push(entry as RawBead)
@@ -186,7 +199,12 @@ function parseBeadsJsonl(content: string): RawBead[] | null {
  * YAML the parser declines, where a count is better than nothing.
  */
 export function countBeadsInContent(content: string): number {
-  const beads = parseBeadsArtifact(content)
-  if (beads) return beads.length
+  // Silent: a count is drawn on every render of a summary chip, and the parser's
+  // diagnostics belong to the one place that actually reads the artifact.
+  const { recognized, beads } = readBeadCollection(content, false)
+  // A recognized collection whose entries were all rejected counts zero. Falling
+  // through to the regex here would report beads over a viewer showing raw text
+  // — the count-versus-list disagreement this function exists to prevent.
+  if (recognized) return beads.length
   return (content.match(/^\s*-\s+id\s*:/gm) ?? []).length
 }

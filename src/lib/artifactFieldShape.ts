@@ -60,14 +60,20 @@ export function hasStringFields(value: unknown, fields: readonly string[]): bool
 /**
  * Is this safe to hand to `ArtifactProcessingNotice`?
  *
- * The notice filters and iterates the intervention, warning and diagnostic
- * collections without checking them, so a truthy non-array field there throws.
+ * The three checked here are the arrays the notice actually reads. The first
+ * version of this checked `warnings` and `sourceMessages`, which are not
+ * declared on `ArtifactStructuredOutputData` and which nothing reads, and
+ * missed `repairWarnings` — the notice's primary read, filtered without a
+ * guard, so a truthy non-array threw before any fallback could run.
+ *
+ * Entries are not checked: `interventions` and `retryDiagnostics` are both
+ * normalised by their consumers, which re-validate every entry.
  * Absent is fine — the notice renders nothing.
  */
 export function isOptionalStructuredOutput(value: unknown): boolean {
   if (value === undefined || value === null) return true
   if (!isRecord(value)) return false
-  return [value.interventions, value.warnings, value.retryDiagnostics, value.sourceMessages]
+  return [value.repairWarnings, value.interventions, value.retryDiagnostics]
     .every((entry) => entry === undefined || Array.isArray(entry))
 }
 

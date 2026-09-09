@@ -126,6 +126,18 @@ async function setupBeadsApprovalTicket() {
   return { app, ticket, paths, beadsContent }
 }
 
+/**
+ * A save carries the hash of the file it was built on, the way the approval
+ * screen does: the route refuses a write built on a stale read.
+ */
+function savePayload(raw: string, beads: unknown) {
+  return {
+    method: 'PUT' as const,
+    headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': contentSha256(raw) },
+    body: JSON.stringify(beads),
+  }
+}
+
 function approvalPayload(raw: string) {
   return {
     headers: { 'Content-Type': 'application/json' },
@@ -447,7 +459,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('saves edited beads via PUT endpoint', async () => {
-    const { app, ticket, paths } = await setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     const editedBeads = [
       {
@@ -468,11 +480,10 @@ describe('ticketRouter beads approval routes', () => {
       },
     ]
 
-    const response = await app.request(`/api/tickets/${ticket.id}/beads`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editedBeads),
-    })
+    const response = await app.request(
+      `/api/tickets/${ticket.id}/beads`,
+      savePayload(beadsContent, editedBeads),
+    )
 
     expect(response.status).toBe(200)
 
@@ -487,7 +498,7 @@ describe('ticketRouter beads approval routes', () => {
   })
 
   it('clears execution setup state when beads are edited', async () => {
-    const { app, ticket, paths } = await setupBeadsApprovalTicket()
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
 
     mkdirSync(paths.executionSetupDir, { recursive: true })
     writeFileSync(`${paths.executionSetupDir}/cache.txt`, 'warm\n')
@@ -498,10 +509,7 @@ describe('ticketRouter beads approval routes', () => {
       content: '{"status":"ready"}',
     })
 
-    const response = await app.request(`/api/tickets/${ticket.id}/beads`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify([
+    const response = await app.request(`/api/tickets/${ticket.id}/beads`, savePayload(beadsContent, [
         {
           id: 'bead-001',
           title: 'Retouched bead',
@@ -518,8 +526,7 @@ describe('ticketRouter beads approval routes', () => {
           issueType: 'task',
           labels: [],
         },
-      ]),
-    })
+    ]))
 
     expect(response.status).toBe(200)
     expect(getLatestPhaseArtifact(ticket.id, 'execution_setup_profile', 'PREPARING_EXECUTION_ENV')).toBeUndefined()

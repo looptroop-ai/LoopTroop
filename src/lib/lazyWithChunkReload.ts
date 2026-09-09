@@ -30,13 +30,22 @@ function getErrorMessage(error: unknown): string {
   return ''
 }
 
+/**
+ * The five ways a browser reports a chunk it could not load. Hoisted to module
+ * scope: this runs on every failed import, and none of them carries the `g`
+ * flag, so there is no `lastIndex` to reset between calls.
+ */
+const RECOVERABLE_LAZY_IMPORT_PATTERNS = [
+  /Failed to fetch dynamically imported module/i,
+  /error loading dynamically imported module/i,
+  /Importing a module script failed/i,
+  /Loading chunk \d+ failed/i,
+  /ChunkLoadError/i,
+]
+
 export function isRecoverableLazyImportError(error: unknown): boolean {
   const message = getErrorMessage(error)
-  return /Failed to fetch dynamically imported module/i.test(message)
-    || /error loading dynamically imported module/i.test(message)
-    || /Importing a module script failed/i.test(message)
-    || /Loading chunk \d+ failed/i.test(message)
-    || /ChunkLoadError/i.test(message)
+  return RECOVERABLE_LAZY_IMPORT_PATTERNS.some((pattern) => pattern.test(message))
 }
 
 export function requestLazyImportReload(

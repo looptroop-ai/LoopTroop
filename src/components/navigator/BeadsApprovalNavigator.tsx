@@ -1,7 +1,9 @@
+import { useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { isRecord } from '@shared/typeGuards'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M } from '@/lib/constants'
-import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { ApprovalOutlineShell } from './ApprovalOutlineShell'
@@ -19,15 +21,23 @@ interface BeadOutlineItem {
   dependencyCount: number
 }
 
+/**
+ * The outline rows, taken from the same filtered list the artifact view renders.
+ *
+ * The focus anchors are positions in that list (`bead-<index>`), so this must
+ * filter identically or a click lands on the wrong bead. It briefly did not:
+ * filtering was added to the artifact parser alone, which left the outline
+ * numbering the unfiltered array.
+ */
 function parseBeadsOutline(data: unknown[]): BeadOutlineItem[] {
-  return data.map((bead, index) => {
-    const record = bead as Record<string, unknown>
-    const id = typeof record.id === 'string' ? record.id : `bead-${index}`
-    const title = typeof record.title === 'string' ? record.title : `Bead ${index + 1}`
-    const deps = record.dependencies as Record<string, unknown> | undefined
-    const blockedBy = Array.isArray(deps?.blocked_by) ? deps.blocked_by.length : 0
-    return { index, id, title, dependencyCount: blockedBy }
-  })
+  return filterBeadShaped(data, describeBeadEntry).map((bead, index) => ({
+    index,
+    id: typeof bead.id === 'string' ? bead.id : `bead-${index}`,
+    title: typeof bead.title === 'string' ? bead.title : `Bead ${index + 1}`,
+    dependencyCount: isRecord(bead.dependencies) && Array.isArray(bead.dependencies.blocked_by)
+      ? bead.dependencies.blocked_by.length
+      : 0,
+  }))
 }
 
 export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
@@ -41,7 +51,13 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
     staleTime: QUERY_STALE_TIME_5M,
   })
 
-  const outline = Array.isArray(beadsData) ? parseBeadsOutline(beadsData) : []
+  // Memoised for the same reason as the artifact view: the shared filter warns
+  // about every entry it drops, so filtering in the render body repeats those
+  // warnings on each re-render.
+  const outline = useMemo(
+    () => (Array.isArray(beadsData) ? parseBeadsOutline(beadsData) : []),
+    [beadsData],
+  )
 
   return (
     <ApprovalOutlineShell
@@ -57,7 +73,9 @@ export function BeadsApprovalNavigator({ ticketId }: { ticketId: string }) {
     >
       {outline.map((bead) => (
         <button
-          key={bead.id}
+          // A stored tracker is not deduplicated, so ids can repeat; the position
+          // is what makes the key unique.
+          key={`${bead.index}:${bead.id}`}
           type="button"
           onClick={() => focusBeadAnchor(ticketId, `bead-${bead.index}`)}
           className="w-full text-left rounded-md border border-border/70 bg-background px-2 py-1.5 transition-colors hover:bg-accent/30"

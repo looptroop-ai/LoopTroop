@@ -18,7 +18,7 @@ import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { BeadsApprovalEditor, type ParsedBead } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
-import { BEADS_APPROVAL_FOCUS_EVENT } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { selectedAttemptNumber } from './phaseAttemptSelection'
@@ -28,6 +28,7 @@ import { type PrdDocument, normalizePrdDocumentLike, parsePrdDocument, parsePrdD
 import {
   useApprovalDraftReset,
   useApprovalDraftRestore,
+  useApprovalEditMode,
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   approveArtifact,
@@ -38,6 +39,7 @@ import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 interface ApprovalViewProps {
   ticket: Ticket
@@ -132,8 +134,16 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
   }
 }
 
+/**
+ * The editor's beads, from the same filtered list every other surface uses.
+ *
+ * Without the filter a stored `null` reached `normalizeBeadForEditor`, which
+ * dereferences `bead.dependencies`, and took the structured editor down. The
+ * shared filter also keeps the editor's ordering aligned with the outline's
+ * focus anchors and the artifact view.
+ */
 function parseBeadsForEditor(data: unknown[]): ParsedBead[] {
-  return data.map((item) => normalizeBeadForEditor(item as Record<string, unknown>))
+  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBeadForEditor(bead))
 }
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
@@ -417,41 +427,20 @@ function BeadsApprovalPane({
     }
   }, [ticket.id, queryClient])
 
-  function requestTabChange(nextTab: EditTab) {
-    if (nextTab === editTab) return
-    if (hasUnsavedChanges) {
-      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
-      return
-    }
-    resetDraftsFromSaved(nextTab)
-  }
+  const { requestTabChange, handleToggleEdit, handleConfirmDiscard } = useApprovalEditMode<EditTab>({
+    editTab,
+    isEditMode,
+    setIsEditMode,
+    hasUnsavedChanges,
+    discardTarget,
+    setDiscardTarget,
+    clearDiscardTarget: () => setDiscardTarget(null),
+    resetDraftsFromSaved,
+    openEditor,
+    exitTab: 'structured',
+  })
 
-  function handleToggleEdit() {
-    if (isEditMode) {
-      if (hasUnsavedChanges) {
-        setDiscardTarget({ type: 'close' })
-        return
-      }
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-    openEditor()
-  }
 
-  function handleConfirmDiscard() {
-    const target = discardTarget
-    setDiscardTarget(null)
-    if (!target) return
-
-    if (target.type === 'close') {
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
-
-    resetDraftsFromSaved(target.tab)
-  }
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">
@@ -758,22 +747,14 @@ function ReadOnlyApprovalAttemptView({
         ) : artifactType === 'interview' ? (
           interviewDocument ? (
             <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
-          ) : content ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No interview artifact available.</div>
+            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No interview artifact available." />
           )
         ) : artifactType === 'prd' ? (
           prdDocument ? (
             <PrdDocumentView document={prdDocument as PrdDocument} />
-          ) : content ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No PRD artifact available.</div>
+            <RawArtifactBlock content={content ? rawDisplayContent : ''} emptyLabel="No PRD artifact available." />
           )
         ) : content ? (
           <BeadsDraftView content={content} />

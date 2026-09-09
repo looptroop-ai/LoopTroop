@@ -343,6 +343,96 @@ export function useApprovalPaneState<TEditTab extends string = string>(): Approv
 }
 
 /**
+ * The edit-mode state machine all four approval panes run.
+ *
+ * Switching tabs, leaving edit mode and confirming a discard were written out
+ * in `ApprovalView`, `PrdApprovalPane`, `InterviewApprovalPane` and
+ * `ExecutionSetupPlanApprovalPane` — 84 identical lines, and the largest single
+ * block behind SonarCloud's duplication gate after PR-07 routed the panes
+ * through one error helper.
+ *
+ * The three ways the panes actually differ are parameters, not branches:
+ *
+ * - `openEditor` is where a pane puts its own gate. `PrdApprovalPane` and
+ *   `InterviewApprovalPane` raise a cascade warning first,
+ *   `ExecutionSetupPlanApprovalPane` a runtime-rewind warning, `ApprovalView`
+ *   nothing at all.
+ * - `exitTab` is the tab a pane resets to when edit mode closes.
+ * - `discardExitTab` is the same thing for a confirmed discard, and defaults to
+ *   `exitTab`. Only `PrdApprovalPane` sets it, because it picks between
+ *   `structured` and `yaml` depending on whether a structured draft exists —
+ *   its two close paths genuinely disagreed, and that is preserved rather than
+ *   tidied away.
+ */
+export function useApprovalEditMode<TEditTab extends string>({
+  editTab,
+  isEditMode,
+  setIsEditMode,
+  hasUnsavedChanges,
+  discardTarget,
+  setDiscardTarget,
+  clearDiscardTarget,
+  resetDraftsFromSaved,
+  openEditor,
+  exitTab,
+  discardExitTab = exitTab,
+}: {
+  editTab: TEditTab
+  isEditMode: boolean
+  setIsEditMode: Dispatch<SetStateAction<boolean>>
+  hasUnsavedChanges: boolean
+  discardTarget: ApprovalDiscardTarget<TEditTab>
+  setDiscardTarget: Dispatch<SetStateAction<ApprovalDiscardTarget<TEditTab>>>
+  clearDiscardTarget: () => void
+  resetDraftsFromSaved: (tab: TEditTab) => void
+  openEditor: () => void
+  exitTab: TEditTab
+  discardExitTab?: TEditTab
+}): {
+  requestTabChange: (nextTab: TEditTab) => void
+  handleToggleEdit: () => void
+  handleConfirmDiscard: () => void
+} {
+  function requestTabChange(nextTab: TEditTab) {
+    if (nextTab === editTab) return
+    if (hasUnsavedChanges) {
+      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
+      return
+    }
+    resetDraftsFromSaved(nextTab)
+  }
+
+  function handleToggleEdit() {
+    if (isEditMode) {
+      if (hasUnsavedChanges) {
+        setDiscardTarget({ type: 'close' })
+        return
+      }
+      resetDraftsFromSaved(exitTab)
+      setIsEditMode(false)
+      return
+    }
+    openEditor()
+  }
+
+  function handleConfirmDiscard() {
+    const target = discardTarget
+    clearDiscardTarget()
+    if (!target) return
+
+    if (target.type === 'close') {
+      resetDraftsFromSaved(discardExitTab)
+      setIsEditMode(false)
+      return
+    }
+
+    resetDraftsFromSaved(target.tab)
+  }
+
+  return { requestTabChange, handleToggleEdit, handleConfirmDiscard }
+}
+
+/**
  * The two approval mutations the PRD and beads panes both run.
  *
  * Only four things differ between the panes — the route, the coverage domain,

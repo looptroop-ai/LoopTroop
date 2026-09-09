@@ -27,12 +27,14 @@ import {
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
+  useApprovalEditMode,
 } from './approvalHooks'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
 import { apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 const SKIPPED_QUESTIONS_NOTICE = 'Some interview questions were skipped. That is OK: if you approve this interview with skipped answers, PRD drafting will first create per-model Full Answers artifacts where each council model fills only those skipped answers using the ticket details, relevant files, and the rest of the interview. If you want human-approved answers instead, edit the interview before approving.'
 
@@ -303,52 +305,31 @@ export function InterviewApprovalPane({
     }
   }
 
-  function requestTabChange(nextTab: EditTab) {
-    if (nextTab === editTab) return
-    if (hasUnsavedChanges) {
-      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
-      return
-    }
-    resetDraftsFromSaved(nextTab)
-  }
-
-  function handleToggleEdit() {
-    if (isEditMode) {
-      if (hasUnsavedChanges) {
-        setDiscardTarget({ type: 'close' })
+  const { requestTabChange, handleToggleEdit, handleConfirmDiscard } = useApprovalEditMode<EditTab>({
+    editTab,
+    isEditMode,
+    setIsEditMode,
+    hasUnsavedChanges,
+    discardTarget,
+    setDiscardTarget,
+    clearDiscardTarget,
+    resetDraftsFromSaved,
+    openEditor: () => {
+      if (cascadeWarningMessage) {
+        setIsCascadeWarningOpen(true)
         return
       }
-      resetDraftsFromSaved('answers')
-      setIsEditMode(false)
-      return
-    }
+      openFriendlyEditor()
+    },
+    exitTab: 'answers',
+  })
 
-    if (cascadeWarningMessage) {
-      setIsCascadeWarningOpen(true)
-      return
-    }
-
-    openFriendlyEditor()
-  }
 
   function handleConfirmCascade() {
     setIsCascadeWarningOpen(false)
     openFriendlyEditor()
   }
 
-  function handleConfirmDiscard() {
-    const target = discardTarget
-    clearDiscardTarget()
-    if (!target) return
-
-    if (target.type === 'close') {
-      resetDraftsFromSaved('answers')
-      setIsEditMode(false)
-      return
-    }
-
-    resetDraftsFromSaved(target.tab)
-  }
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">
@@ -491,12 +472,8 @@ export function InterviewApprovalPane({
           </div>
         ) : interviewDocument ? (
           <InterviewDocumentView document={interviewDocument} hideAiAnswerBadge />
-        ) : rawContent ? (
-          <div className="raw-content-box">
-            <pre className="raw-content-pre">{rawDisplayContent}</pre>
-          </div>
         ) : (
-          <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No interview artifact available yet.</div>
+          <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No interview artifact available yet." />
         )}
       </div>
 

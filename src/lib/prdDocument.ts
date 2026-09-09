@@ -1,24 +1,8 @@
 import * as jsYaml from 'js-yaml'
 import { isRecord } from '@shared/typeGuards'
 import { commandSpecSchema, type CommandSpec } from '@shared/commandSpec'
-
-function toStringValue(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
-    : []
-}
-
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
+import { slugify, toStringValue, toTrimmedStringEntries as toStringArray } from '@shared/stringNormalization'
+import type { PrdDocument, PrdEpic, PrdUserStory, PrdTechnicalRequirementKey } from '@shared/prdDocument'
 
 function normalizeVerification(value: unknown): { required_commands: CommandSpec[] } {
   if (!isRecord(value)) {
@@ -35,57 +19,7 @@ function normalizeVerification(value: unknown): { required_commands: CommandSpec
   }
 }
 
-export interface PrdUserStory {
-  id: string
-  title: string
-  acceptance_criteria: string[]
-  implementation_steps: string[]
-  verification: {
-    required_commands: CommandSpec[]
-  }
-}
-
-export interface PrdEpic {
-  id: string
-  title: string
-  objective: string
-  implementation_steps: string[]
-  user_stories: PrdUserStory[]
-}
-
-export interface PrdDocument {
-  schema_version: number
-  ticket_id: string
-  artifact: 'prd'
-  status: 'draft' | 'approved'
-  source_interview: {
-    content_sha256: string
-  }
-  product: {
-    problem_statement: string
-    target_users: string[]
-  }
-  scope: {
-    in_scope: string[]
-    out_of_scope: string[]
-  }
-  technical_requirements: {
-    architecture_constraints: string[]
-    data_model: string[]
-    api_contracts: string[]
-    security_constraints: string[]
-    performance_constraints: string[]
-    reliability_constraints: string[]
-    error_handling_rules: string[]
-    tooling_assumptions: string[]
-  }
-  epics: PrdEpic[]
-  risks: string[]
-  approval: {
-    approved_by: string
-    approved_at: string
-  }
-}
+export type { PrdDocument, PrdEpic, PrdUserStory, PrdTechnicalRequirementKey }
 
 export type PrdApprovalDraft = Pick<PrdDocument, 'product' | 'scope' | 'technical_requirements' | 'epics' | 'risks'>
 
@@ -93,8 +27,6 @@ export interface PrdDocumentParseResult {
   document: PrdDocument | null
   error: string | null
 }
-
-export type PrdTechnicalRequirementKey = keyof PrdDocument['technical_requirements']
 
 export interface PrdTechnicalSectionConfigEntry {
   key: PrdTechnicalRequirementKey

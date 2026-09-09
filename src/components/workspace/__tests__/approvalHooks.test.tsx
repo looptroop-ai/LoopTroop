@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useRef } from 'react'
-import { useApprovalDraftRestore, useDebouncedApprovalUiState } from '../approvalHooks'
+import { useApprovalDraftRestore, useApprovalEditMode, useDebouncedApprovalUiState } from '../approvalHooks'
 
 interface HarnessProps {
   snapshot: { value: string }
@@ -360,5 +360,111 @@ describe('useApprovalDraftRestore', () => {
     expect(restore).not.toHaveBeenCalled()
     expect(restoredDraftRef.current).toBe(true)
     expect(lastSavedSnapshotRef.current).toBe('')
+  })
+})
+
+describe('useApprovalEditMode', () => {
+  type Tab = 'structured' | 'yaml'
+
+  function setup(overrides: Partial<Parameters<typeof useApprovalEditMode<Tab>>[0]> = {}) {
+    const calls = {
+      resetDraftsFromSaved: vi.fn(),
+      setIsEditMode: vi.fn(),
+      setDiscardTarget: vi.fn(),
+      clearDiscardTarget: vi.fn(),
+      openEditor: vi.fn(),
+    }
+    const { result, rerender } = renderHook((props: { hasUnsavedChanges: boolean; isEditMode: boolean }) =>
+      useApprovalEditMode<Tab>({
+        editTab: 'structured',
+        isEditMode: props.isEditMode,
+        hasUnsavedChanges: props.hasUnsavedChanges,
+        discardTarget: null,
+        exitTab: 'structured',
+        ...calls,
+        ...overrides,
+      }),
+    { initialProps: { hasUnsavedChanges: false, isEditMode: false } })
+    return { result, rerender, calls }
+  }
+
+  it('ignores a tab change to the tab already showing', () => {
+    const { result, calls } = setup()
+    act(() => result.current.requestTabChange('structured'))
+    expect(calls.resetDraftsFromSaved).not.toHaveBeenCalled()
+    expect(calls.setDiscardTarget).not.toHaveBeenCalled()
+  })
+
+  it('switches tabs directly when there is nothing to lose', () => {
+    const { result, calls } = setup()
+    act(() => result.current.requestTabChange('yaml'))
+    expect(calls.resetDraftsFromSaved).toHaveBeenCalledWith('yaml')
+    expect(calls.setDiscardTarget).not.toHaveBeenCalled()
+  })
+
+  it('asks before switching tabs away from unsaved edits', () => {
+    const { result, calls } = setup({ hasUnsavedChanges: true })
+    act(() => result.current.requestTabChange('yaml'))
+    expect(calls.setDiscardTarget).toHaveBeenCalledWith({ type: 'switch-tab', tab: 'yaml' })
+    expect(calls.resetDraftsFromSaved).not.toHaveBeenCalled()
+  })
+
+  it('opens the editor through the pane\'s own gate rather than directly', () => {
+    const { result, calls } = setup({ isEditMode: false })
+    act(() => result.current.handleToggleEdit())
+    expect(calls.openEditor).toHaveBeenCalledTimes(1)
+    expect(calls.setIsEditMode).not.toHaveBeenCalled()
+  })
+
+  it('leaves edit mode on the pane\'s exit tab', () => {
+    const { result, calls } = setup({ isEditMode: true, exitTab: 'yaml' })
+    act(() => result.current.handleToggleEdit())
+    expect(calls.resetDraftsFromSaved).toHaveBeenCalledWith('yaml')
+    expect(calls.setIsEditMode).toHaveBeenCalledWith(false)
+  })
+
+  it('asks before leaving edit mode with unsaved edits', () => {
+    const { result, calls } = setup({ isEditMode: true, hasUnsavedChanges: true })
+    act(() => result.current.handleToggleEdit())
+    expect(calls.setDiscardTarget).toHaveBeenCalledWith({ type: 'close' })
+    expect(calls.setIsEditMode).not.toHaveBeenCalled()
+  })
+
+  // `discardExitTab` exists because PrdApprovalPane's two close paths genuinely
+  // disagree: toggling out resets to `structured`, confirming a discard resets
+  // to `structured` or `yaml` depending on the draft. Defaulting it to
+  // `exitTab` would erase that difference silently.
+  it('confirms a close discard on discardExitTab, not exitTab', () => {
+    const { result, calls } = setup({
+      isEditMode: true,
+      discardTarget: { type: 'close' },
+      exitTab: 'structured',
+      discardExitTab: 'yaml',
+    })
+    act(() => result.current.handleConfirmDiscard())
+    expect(calls.clearDiscardTarget).toHaveBeenCalledTimes(1)
+    expect(calls.resetDraftsFromSaved).toHaveBeenCalledWith('yaml')
+    expect(calls.setIsEditMode).toHaveBeenCalledWith(false)
+  })
+
+  it('falls back to exitTab when no discardExitTab is given', () => {
+    const { result, calls } = setup({ isEditMode: true, discardTarget: { type: 'close' }, exitTab: 'yaml' })
+    act(() => result.current.handleConfirmDiscard())
+    expect(calls.resetDraftsFromSaved).toHaveBeenCalledWith('yaml')
+  })
+
+  it('confirms a tab-switch discard on the requested tab and stays in edit mode', () => {
+    const { result, calls } = setup({ isEditMode: true, discardTarget: { type: 'switch-tab', tab: 'yaml' } })
+    act(() => result.current.handleConfirmDiscard())
+    expect(calls.resetDraftsFromSaved).toHaveBeenCalledWith('yaml')
+    expect(calls.setIsEditMode).not.toHaveBeenCalled()
+  })
+
+  it('clears the prompt and does nothing else when there is no target', () => {
+    const { result, calls } = setup({ isEditMode: true, discardTarget: null })
+    act(() => result.current.handleConfirmDiscard())
+    expect(calls.clearDiscardTarget).toHaveBeenCalledTimes(1)
+    expect(calls.resetDraftsFromSaved).not.toHaveBeenCalled()
+    expect(calls.setIsEditMode).not.toHaveBeenCalled()
   })
 })

@@ -4,6 +4,7 @@ import { Check, Copy } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
+import { StatPill, StatPillRow } from './artifactViewers/StatPillRow'
 
 export function CopyButton({ content, className = '', title = 'Copy raw output' }: { content: string; className?: string; title?: string }) {
   const [copied, copyToClipboard] = useCopyToClipboard()
@@ -37,11 +38,11 @@ export function RawDisplayStats({ content }: { content: string }) {
   const charCount = content.length
 
   return (
-    <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-wider">
-      <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">{lineCount.toLocaleString()} Lines</span>
-      <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">{charCount.toLocaleString()} Characters</span>
-      <span className="rounded-full border border-border bg-background px-2 py-1 text-foreground">{tokenCount.toLocaleString()} Tokens (GPT-5 tokenizer)</span>
-    </div>
+    <StatPillRow>
+      <StatPill>{lineCount.toLocaleString()} Lines</StatPill>
+      <StatPill>{charCount.toLocaleString()} Characters</StatPill>
+      <StatPill>{tokenCount.toLocaleString()} Tokens (GPT-5 tokenizer)</StatPill>
+    </StatPillRow>
   )
 }
 

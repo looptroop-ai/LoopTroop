@@ -157,9 +157,21 @@ describe('protocol tag names', () => {
     }
   })
 
-  /** The sweep above passes just as well if the viewer stops unwrapping at all. */
+  /**
+   * The sweep above passes just as well if the viewer stops unwrapping at all.
+   *
+   * PR-13 §13.1 moved the execution-setup views out of
+   * `ArtifactContentViewer.tsx`, so this reads the file they landed in. A
+   * source-text gate names a path, and a path is only as stable as the last
+   * refactor — the `readFileSync` is asserted to have found something first,
+   * so a future move fails here loudly instead of passing on an empty read.
+   */
   it('derives the client envelope from the constant', () => {
-    const viewer = readFileSync(resolve(repoRoot, 'src/components/workspace/ArtifactContentViewer.tsx'), 'utf8')
+    const viewer = readFileSync(
+      resolve(repoRoot, 'src/components/workspace/artifactViewers/executionSetupViews.tsx'),
+      'utf8',
+    )
+    expect(viewer.length).toBeGreaterThan(0)
     expect(viewer).toContain('openTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)')
     expect(viewer).toContain('closeTag(PROTOCOL_TAGS.EXECUTION_SETUP_PLAN)')
   })

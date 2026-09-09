@@ -1,4 +1,5 @@
 import * as jsYaml from 'js-yaml'
+import { slugify, toStringValue, toNonBlankStringEntries as toStringArray } from '@shared/stringNormalization'
 import type {
   InterviewAnsweredBy,
   InterviewAnswerUpdate,
@@ -29,24 +30,6 @@ interface InterviewDocumentGroup {
   questions: InterviewDocumentQuestion[]
 }
 
-function toStringValue(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    : []
-}
-
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
 function normalizeAnswerType(value: unknown): InterviewQuestionAnswerType {
   if (value === 'single_choice' || value === 'multiple_choice' || value === 'free_text') {
     return value
@@ -61,6 +44,13 @@ function normalizeQuestionSource(value: unknown): InterviewQuestionSource {
   return 'compiled'
 }
 
+/**
+ * Deliberately not shared with `server/structuredOutput/interviewDocument.ts`.
+ * That one is a parser: it accepts a wider alias set, records warnings, and
+ * throws on an unsupported `answer_type`. This one is a display normaliser for
+ * an artifact the server has already validated, and must never throw. They
+ * carry the same name and different contracts.
+ */
 function normalizeOption(value: unknown, index: number): InterviewQuestionOption | null {
   if (typeof value === 'string' && value.trim()) {
     return {

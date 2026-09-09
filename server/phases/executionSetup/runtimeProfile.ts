@@ -4,6 +4,7 @@ import { accessSync, constants, lstatSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { renderCommandSpec, type CommandSpec } from '@shared/commandSpec'
 import { getValueByExactAlias, isRecord } from '@shared/typeGuards'
+import { toNonBlankStringEntries as toStringArray } from '@shared/stringNormalization'
 
 export const EXECUTION_SETUP_RUN_WRAPPER = `${EXECUTION_SETUP_RUNTIME_DIR}/run`
 
@@ -128,11 +129,6 @@ export function hasExecutionSetupProjectCommands(profile: ExecutionSetupProfile 
     profile.projectCommands.lintFull,
     profile.projectCommands.typecheckFull,
   ].some((commands) => commands.length > 0)
-}
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
 }
 
 function getRawProjectCommands(record: Record<string, unknown>): string[] {

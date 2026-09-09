@@ -3,7 +3,7 @@ import type { TicketArtifact } from '@/hooks/useTicketArtifacts'
 import type { StructuredIntervention } from '@shared/structuredInterventions'
 import type { StructuredRetryDiagnostic } from '@shared/structuredRetryDiagnostics'
 import { extractInterviewQuestionPreviews } from '@shared/interviewQuestions'
-import * as jsYaml from 'js-yaml'
+import { countBeadsInContent } from '@/lib/beadsDocument'
 import {
   findLatestArtifact,
   findLatestCompanionArtifact,
@@ -723,42 +723,3 @@ function countQuestionsInContent(content: string): number {
   return count
 }
 
-function countBeadsInContent(content: string): number {
-  const trimmed = content.trim()
-  if (!trimmed) return 0
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown
-    if (Array.isArray(parsed)) return parsed.length
-    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { beads?: unknown[] }).beads)) {
-      return (parsed as { beads: unknown[] }).beads.length
-    }
-  } catch {
-    // Ignore and fall back to YAML or line-based parsing.
-  }
-
-  try {
-    const parsed = jsYaml.load(trimmed) as unknown
-    if (Array.isArray(parsed)) return parsed.length
-    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { beads?: unknown[] }).beads)) {
-      return (parsed as { beads: unknown[] }).beads.length
-    }
-  } catch {
-    // Ignore and fall back to JSONL or line-based parsing.
-  }
-
-  if (trimmed.startsWith('{')) {
-    try {
-      return trimmed
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as unknown)
-        .length
-    } catch {
-      // Ignore malformed JSONL and fall back to line-based counting.
-    }
-  }
-
-  return (content.match(/^\s*-\s+id\s*:/gm) ?? []).length
-}

@@ -3,8 +3,10 @@ import { useLogs } from '@/context/useLogContext'
 import { getLogEntryIdentity, mergeEntriesBatch, type LogEntry } from '@/context/logUtils'
 import { useQuery } from '@tanstack/react-query'
 import { QUERY_STALE_TIME_5M, QUERY_STALE_TIME_5S, COPY_SUCCESS_DISPLAY_SHORT_MS } from '@/lib/constants'
-import { Loader2, CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
+import { CheckCircle2, Circle, Play, Eye, FileCode2, List, Brain, Clock, GitCommit, Tag, Link2, ArrowRight, ArrowUpToLine, ArrowDownToLine, Copy, Check, FileInput, FileOutput } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { useLogScrollAnchor } from '@/hooks/useLogScrollAnchor'
+import { CodingProgressHeader } from './CodingProgressHeader'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { HoverCard, HoverCardTrigger, HoverCardContent } from '@/components/ui/hover-card'
 import { Badge } from '@/components/ui/badge'
@@ -1100,50 +1102,10 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
   const codingPhaseArtifacts = useMemo(() => loadedCodingPhaseArtifacts ?? [], [loadedCodingPhaseArtifacts])
   
   // -- Auto-scroll state for the model log tab --
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const autoScrollEnabledRef = useRef(true)
-  const scrollFrameRef = useRef<number | null>(null)
-  const [isAutoScroll, setIsAutoScroll] = useState(true)
-  const [isAtTop, setIsAtTop] = useState(true)
-
-  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    const scroll = () => {
-      const el = viewportRef.current
-      if (!el) return
-      el.scrollTo({ top: el.scrollHeight, behavior })
-    }
-    if (behavior === 'auto') {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-      scroll()
-      return
-    }
-    if (scrollFrameRef.current !== null) {
-      cancelAnimationFrame(scrollFrameRef.current)
-    }
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null
-      scroll()
-    })
-  }, [])
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const onScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      const atBottom = distanceFromBottom <= 50
-      autoScrollEnabledRef.current = atBottom
-      setIsAutoScroll((prev) => (prev !== atBottom ? atBottom : prev))
-      const atTop = el.scrollTop <= 50
-      setIsAtTop((prev) => (prev !== atTop ? atTop : prev))
-    }
-    onScroll()
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [detailTab]) // re-bind when tab swaps in case the node remounts
+  const {
+    viewportRef, setViewportRef, setContentRef, autoScrollEnabledRef, isAutoScroll, isAtTop,
+    scheduleScrollToBottom, enableAutoScroll,
+  } = useLogScrollAnchor({ rebindKey: detailTab })
 
   useEffect(() => {
     if (detailTab === 'model') {
@@ -1151,16 +1113,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
         scheduleScrollToBottom('auto')
       }
     }
-  }, [detailTab, scheduleScrollToBottom])
-
-  useEffect(() => {
-    return () => {
-      if (scrollFrameRef.current !== null) {
-        cancelAnimationFrame(scrollFrameRef.current)
-        scrollFrameRef.current = null
-      }
-    }
-  }, [])
+  }, [autoScrollEnabledRef, detailTab, scheduleScrollToBottom])
 
   const logCtx = useLogs()
   // The loader is identity-stable and the reader is rebound only when rows change, so
@@ -1393,39 +1346,23 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
     if (detailTab === 'model' && autoScrollEnabledRef.current) {
       scheduleScrollToBottom('smooth')
     }
-  }, [detailTab, scheduleScrollToBottom, visibleBeadLogTail])
+  }, [autoScrollEnabledRef, detailTab, scheduleScrollToBottom, visibleBeadLogTail])
 
   const isViewingOther = viewedBead !== null
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <div className="px-4 py-2 border-b border-border flex items-center gap-3 shrink-0">
-        {isCompleted
-          ? <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
-          : <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />}
-        <span className="text-sm font-medium">
-          {isCompleted ? 'Completed Successfully' : phaseLabel}
-        </span>
-        {hasBeadControls && (
-          <>
-            <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-              <div
-                className={cn('h-full transition-all duration-500', isCompleted ? 'bg-green-600' : 'bg-primary')}
-                style={{ width: `${isCompleted ? 100 : percent}%` }}
-              />
-            </div>
-            <span className="text-xs font-mono text-muted-foreground shrink-0">
-              {isCompleted ? `${Math.max(total, 0)}/${Math.max(total, 0)}` : `${current}/${Math.max(total, 0)}`}
-            </span>
-          </>
-        )}
-        {hasBeadControls && activeIteration && activeIteration > 0 && (
-          <span className="text-[11px] text-muted-foreground shrink-0">
-            {activeBead?.title ?? ticket.runtime.activeBeadId ?? 'Bead'} · Iteration {activeIteration}
-            {maxIterationsPerBead && maxIterationsPerBead > 0 ? `/${maxIterationsPerBead}` : ''}
-          </span>
-        )}
-      </div>
+      <CodingProgressHeader
+        isCompleted={isCompleted}
+        phaseLabel={phaseLabel}
+        hasBeadControls={hasBeadControls}
+        percent={percent}
+        current={current}
+        total={total}
+        activeIteration={activeIteration}
+        maxIterationsPerBead={maxIterationsPerBead}
+        beadLabel={activeBead?.title ?? ticket.runtime.activeBeadId ?? 'Bead'}
+      />
 
       {shouldShowPhaseVersionSelector && isPhaseAttemptsError ? (
         <div className="px-4 border-b border-border shrink-0">
@@ -1647,8 +1584,19 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
 
             {detailTab === 'model' ? (
               <div className="relative flex-1 min-h-0 flex flex-col">
-                <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={viewportRef}>
-                  <div className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
+                {/*
+                  Bound through `setViewportRef`, not the object ref: this
+                  `ScrollArea` is keyed by `beadLogViewKey`, so switching bead or
+                  iteration mounts a fresh viewport. The object ref alone left
+                  the scroll listener on the detached node, freezing `isAtTop`
+                  and `isAutoScroll` at the old node's values. The callback tells
+                  the hook the node changed, whatever caused it.
+                */}
+                <ScrollArea key={beadLogViewKey} className="flex-1 min-h-0 h-full" viewportRef={setViewportRef}>
+                  {/* The growing node, not just the viewport: without this the
+                      hook's resize observer has nothing to watch and appended
+                      rows stop following the tail. */}
+                  <div ref={setContentRef} className="font-mono text-xs bg-muted rounded-md p-3 min-h-[100px] w-full max-w-full">
                     {selectedBeadLogEntries.length > 0 ? (
                       selectedBeadLogEntries.map((entry, i) => (
                         <LogEntryRow key={getLogEntryIdentity(entry)} entry={entry} index={i} showModelName />
@@ -1678,8 +1626,7 @@ export function CodingView({ ticket, readOnly }: CodingViewProps) {
                       <button
                         type="button"
                         onClick={() => {
-                          autoScrollEnabledRef.current = true
-                          setIsAutoScroll(true)
+                          enableAutoScroll()
                           scheduleScrollToBottom('smooth')
                         }}
                         className="absolute bottom-4 right-6 p-2 bg-background/20 hover:bg-background backdrop-blur-sm border border-border/40 hover:border-border rounded-full shadow-sm hover:shadow pointer-events-auto text-muted-foreground hover:text-foreground transition-all z-10 opacity-40 hover:opacity-100"

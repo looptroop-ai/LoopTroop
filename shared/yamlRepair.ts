@@ -229,6 +229,14 @@ function isSequenceItemMappingChildLine(line: string, dashIndent: number): boole
   return match[1]!.length > dashIndent
 }
 
+// Hoisted out of the function body: these are tested once per line of every
+// candidate. None carries the `g` flag, so there is no `lastIndex` to reset.
+// The block-scalar detector here is the comment-tolerant one, and stays
+// distinct from the comment-blind detectors elsewhere in this module.
+const SEQUENCE_PRIMARY_KEY_BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w_-]*)\s*:\s*(?:#.*)?$/
+const SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
+const SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE = /^(\s*)-\s+(.+)$/
+
 /**
  * Repair structured YAML list entries that emit the primary key as a bare item.
  *
@@ -254,9 +262,6 @@ export function repairYamlSequenceItemPrimaryKeys(
   const result: string[] = []
   const repairs: YamlSequenceItemPrimaryKeyRepair[] = []
   const parentStack: YamlSequenceParentContext[] = []
-  const BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w_-]*)\s*:\s*(?:#.*)?$/
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$/
-  const DASH_SCALAR_LINE = /^(\s*)-\s+(.+)$/
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -281,7 +286,7 @@ export function repairYamlSequenceItemPrimaryKeys(
       parentStack.pop()
     }
 
-    const dashMatch = line.match(DASH_SCALAR_LINE)
+    const dashMatch = line.match(SEQUENCE_PRIMARY_KEY_DASH_SCALAR_LINE)
     if (dashMatch) {
       const dashIndent = dashMatch[1]!.length
       const immediateParent = parentStack[parentStack.length - 1]
@@ -311,7 +316,7 @@ export function repairYamlSequenceItemPrimaryKeys(
       continue
     }
 
-    const parentMatch = line.match(BARE_COLLECTION_KEY)
+    const parentMatch = line.match(SEQUENCE_PRIMARY_KEY_BARE_COLLECTION_KEY)
     if (parentMatch) {
       parentStack.push({
         key: parentMatch[2]!,
@@ -323,7 +328,7 @@ export function repairYamlSequenceItemPrimaryKeys(
     }
 
     result.push(line)
-    if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+    if (SEQUENCE_PRIMARY_KEY_BLOCK_SCALAR_PATTERN.test(trimmed)) {
       blockScalarBaseIndent = indent
     }
   }
@@ -463,8 +468,6 @@ export function repairYamlMappingKeyColonSpace(
   const BARE_COLLECTION_KEY = /^(\s*)([A-Za-z_][\w-]*)\s*:\s*(?:#.*)?$/
   const normalizedSequenceOptions = normalizeSequenceItemPrimaryKeyOptions(options?.sequenceItemPrimaryKeys)
   const parentStack: YamlSequenceParentContext[] = []
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -477,12 +480,14 @@ export function repairYamlMappingKeyColonSpace(
       continue
     }
 
-    if (insideBlockScalar) {
+    // A base indent of -1 means "not inside a block scalar"; every entry sets a
+    // real indent and every exit resets it to -1.
+
+    if (blockScalarBaseIndent >= 0) {
       if (!trimmed || indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
@@ -519,7 +524,6 @@ export function repairYamlMappingKeyColonSpace(
         const repaired = `${match[1]}${match[2]}: ${match[3]}`
         result.push(repaired)
         if (BLOCK_SCALAR_PATTERN.test(repaired.trimEnd())) {
-          insideBlockScalar = true
           blockScalarBaseIndent = indent
         }
         continue
@@ -536,7 +540,6 @@ export function repairYamlMappingKeyColonSpace(
       })
     }
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
     }
   }
@@ -626,19 +629,17 @@ export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
 
   let insideSingleQuote = false
   let insideDoubleQuote = false
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
     const trimmed = line.trim()
     const indent = getLineIndent(line)
 
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (!trimmed || indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
@@ -686,7 +687,6 @@ export function repairYamlDoubleQuotedInvalidEscapes(yaml: string): string {
     if (!reachedComment && !insideSingleQuote && !insideDoubleQuote) {
       const repairedTrimmed = repairedLine.trim()
       if (MAPPING_BLOCK_SCALAR_PATTERN.test(repairedTrimmed) || LIST_BLOCK_SCALAR_PATTERN.test(repairedTrimmed)) {
-        insideBlockScalar = true
         blockScalarBaseIndent = indent
       }
     }
@@ -711,8 +711,6 @@ export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?(?:\s+#.*)?$|^-\s*[>|][+-]?(?:\s+#.*)?$/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   const repairValue = (value: string): string | null => {
@@ -750,19 +748,17 @@ export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
     }
 
     const indent = getLineIndent(line)
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
     const mappingMatch = line.match(/^(\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:\s*)(.+)$/)
     if (mappingMatch) {
       if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-        insideBlockScalar = true
         blockScalarBaseIndent = indent
         result.push(line)
         continue
@@ -785,7 +781,6 @@ export function repairYamlDoubleQuotedScalarInnerQuotes(yaml: string): string {
     }
 
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
     }
 
@@ -1017,7 +1012,9 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
     }
 
     // Bare mapping key (e.g. "questions:") — reset deeper anchors
-    if (BARE_KEY.test(trimmed) && !DASH_LINE.test(line)) {
+    // No DASH_LINE guard: BARE_KEY is tested against the trimmed line, and a
+    // sequence entry trims to a leading '-', which BARE_KEY cannot match.
+    if (BARE_KEY.test(trimmed)) {
       while (anchors.length > 0 && anchors[anchors.length - 1]! > actualIndent) {
         anchors.pop()
       }
@@ -1075,6 +1072,9 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
   return result.join('\n')
 }
 
+// Hoisted; tested once per line. This detector is deliberately comment-blind.
+const DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
+
 /**
  * Remove exact-duplicate mapping keys from YAML.
  *
@@ -1089,7 +1089,6 @@ export function repairYamlSequenceEntryIndent(yaml: string): string {
 export function repairYamlDuplicateKeys(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
 
   // Map from effective indent level → Map<key_name, full_line_text>
   const seenByIndent = new Map<number, Map<string, string>>()
@@ -1144,8 +1143,8 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       const effectiveIndent = dashIndent + 2
       const key = listItemKeyMatch[2]!
 
-      // New list item → fresh mapping context
-      seenByIndent.delete(effectiveIndent)
+      // New list item → fresh mapping context. This level needs no delete: the
+      // `set` below replaces it outright.
       for (const level of [...seenByIndent.keys()]) {
         if (level > effectiveIndent) {
           seenByIndent.delete(level)
@@ -1171,9 +1170,9 @@ export function repairYamlDuplicateKeys(yaml: string): string {
       const seenAtLevel = seenByIndent.get(lineIndent)!
 
       const previousLine = seenAtLevel.get(key)
-      if (previousLine !== undefined && previousLine === line) {
+      if (previousLine === line) {
         // Exact duplicate — skip this line
-        if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
+        if (DUPLICATE_KEYS_BLOCK_SCALAR_PATTERN.test(trimmed)) {
           skipBlockScalarIndent = lineIndent
         } else {
           const valuePortion = keyMatch[3]?.trim() ?? ''
@@ -1209,8 +1208,6 @@ export function repairYamlFreeTextScalars(yaml: string): string {
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
   const BLOCK_SCALAR_VALUE_PATTERN = /^\s*([>|][+-]?)\s*(?:#.*)?$/
   const SAFE_VALUE_START = /^["'|>&*!#]/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -1223,18 +1220,16 @@ export function repairYamlFreeTextScalars(yaml: string): string {
     }
 
     const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
     const freeTextMatch = line.match(/^(\s*(?:-\s+)?free_text\s*:\s*)(.+)$/)
     if (!freeTextMatch && BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
       result.push(line)
       continue
@@ -1258,7 +1253,6 @@ export function repairYamlFreeTextScalars(yaml: string): string {
       }
 
       result.push(line)
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
       continue
     }
@@ -1324,8 +1318,10 @@ function collectMalformedFreeTextBlockScalar(
   if (nextNonEmptyIndex === null) return null
 
   const nextLine = lines[nextNonEmptyIndex]!
+  // `nextTrimmed` is non-empty by construction: findNextNonEmptyLineIndex only
+  // returns lines whose trim has length.
   const nextTrimmed = nextLine.trim()
-  if (!nextTrimmed || isFreeTextAnswerSibling(nextTrimmed)) return null
+  if (isFreeTextAnswerSibling(nextTrimmed)) return null
 
   const nextIndent = getLineIndent(nextLine)
   if (nextIndent > parentIndent) return null
@@ -1375,9 +1371,10 @@ function collectPlainMultilineFreeText(
   if (nextNonEmptyIndex === null) return null
 
   const nextLine = lines[nextNonEmptyIndex]!
+  // Non-empty by construction; see findNextNonEmptyLineIndex.
   const nextTrimmed = nextLine.trim()
   const nextIndent = getLineIndent(nextLine)
-  if (!nextTrimmed || nextIndent <= parentIndent || isFreeTextAnswerSibling(nextTrimmed)) {
+  if (nextIndent <= parentIndent || isFreeTextAnswerSibling(nextTrimmed)) {
     return null
   }
 
@@ -1402,7 +1399,9 @@ function collectPlainMultilineFreeText(
     endIndex = index
   }
 
-  if (continuationLines.length === 0 || endIndex === startIndex) return null
+  // `endIndex === startIndex` is not checked separately: every push into
+  // `continuationLines` advances `endIndex` in the same iteration.
+  if (continuationLines.length === 0) return null
 
   const contentIndent = ' '.repeat(parentIndent + 2)
   return {
@@ -1575,8 +1574,6 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -1589,12 +1586,11 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
     }
 
     const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
@@ -1604,7 +1600,6 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
       const repairedBlockScalarIndicator = repairQuotedBlockScalarIndicatorMapping(lines, index, indent, mappingMatch[2]!)
       if (repairedBlockScalarIndicator !== null) {
         result.push(`${prefix}${repairedBlockScalarIndicator}`)
-        insideBlockScalar = true
         blockScalarBaseIndent = indent
         continue
       }
@@ -1627,7 +1622,6 @@ export function repairYamlQuotedScalarFragments(yaml: string): string {
     }
 
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
     }
 
@@ -1650,8 +1644,6 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
@@ -1663,12 +1655,11 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
     }
 
     const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
@@ -1693,7 +1684,6 @@ export function repairYamlTypeUnionScalars(yaml: string): string {
     }
 
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
     }
 
@@ -1720,8 +1710,6 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
   const LIST_BLOCK_SCALAR_PATTERN = /^-\s*[>|][+-]?\s*$/
   const SAFE_VALUE_START = /^["'[{>|&*!#]/
   const RESERVED_INDICATOR_START = /^[`@]/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
@@ -1733,17 +1721,15 @@ export function repairYamlReservedIndicatorScalars(yaml: string): string {
     }
 
     const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
     if (MAPPING_BLOCK_SCALAR_PATTERN.test(trimmed) || LIST_BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = indent
       result.push(line)
       continue
@@ -1842,14 +1828,6 @@ function collectMultilineSingleQuotedFreeText(
   }
 }
 
-/**
- * Repair YAML plain scalars that contain `: ` (colon-space).
- *
- * In YAML, a plain scalar value must not contain `: ` because parsers
- * interpret it as a nested mapping entry. Models frequently produce
- * unquoted values like `rationale: some rules: here` which breaks parsing.
- * This function wraps such values in double quotes.
- */
 /**
  * Strip markdown code fences wrapping YAML/JSON content.
  *
@@ -2355,6 +2333,13 @@ function looksLikeHeaderStyleListScalar(value: string): boolean {
   return /^[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+:\s+\S/.test(value)
 }
 
+// Hoisted; tested once per line. `SAFE_VALUE_START` keeps its own name here
+// rather than being shared: §13.7 records that the three constants spelled
+// `SAFE_VALUE_START` in this module are not the same contract.
+const WRAPPED_LIST_SCALAR_PATTERN = /^(\s*)-\s+(.+)$/
+const WRAPPED_LIST_SCALAR_STRUCTURAL_CONTINUATION_PATTERN = /^(?:-\s+|[A-Za-z_][\w-]*\s*:|[>|][+-]?\s*$)/
+const WRAPPED_LIST_SCALAR_SAFE_VALUE_START = /^["'[{>|&*!#]/
+
 /**
  * Repair prose list scalars that contain colon-space and wrap onto deeper lines.
  *
@@ -2372,13 +2357,10 @@ function looksLikeHeaderStyleListScalar(value: string): boolean {
 export function repairYamlWrappedPlainListScalars(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
-  const LIST_SCALAR_PATTERN = /^(\s*)-\s+(.+)$/
-  const STRUCTURAL_CONTINUATION_PATTERN = /^(?:-\s+|[A-Za-z_][\w-]*\s*:|[>|][+-]?\s*$)/
-  const SAFE_VALUE_START = /^["'[{>|&*!#]/
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!
-    const match = line.match(LIST_SCALAR_PATTERN)
+    const match = line.match(WRAPPED_LIST_SCALAR_PATTERN)
     if (!match) {
       result.push(line)
       continue
@@ -2388,7 +2370,7 @@ export function repairYamlWrappedPlainListScalars(yaml: string): string {
     const value = match[2]!
     const looksLikeListItemMapping = /^[A-Za-z_][\w-]*\s*:\s+/.test(value)
     if (
-      SAFE_VALUE_START.test(value)
+      WRAPPED_LIST_SCALAR_SAFE_VALUE_START.test(value)
       || !/:\s/.test(value)
       || (looksLikeListItemMapping && !looksLikeHeaderStyleListScalar(value))
     ) {
@@ -2409,7 +2391,7 @@ export function repairYamlWrappedPlainListScalars(yaml: string): string {
 
       const continuationIndent = continuation.match(/^(\s*)/)?.[1]?.length ?? 0
       if (continuationIndent <= dashIndent) break
-      if (trimmed.startsWith('#') || STRUCTURAL_CONTINUATION_PATTERN.test(trimmed)) {
+      if (trimmed.startsWith('#') || WRAPPED_LIST_SCALAR_STRUCTURAL_CONTINUATION_PATTERN.test(trimmed)) {
         ambiguous = true
         break
       }
@@ -2430,6 +2412,14 @@ export function repairYamlWrappedPlainListScalars(yaml: string): string {
   return result.join('\n')
 }
 
+/**
+ * Repair YAML plain scalars that contain `: ` (colon-space).
+ *
+ * In YAML, a plain scalar value must not contain `: ` because parsers
+ * interpret it as a nested mapping entry. Models frequently produce
+ * unquoted values like `rationale: some rules: here` which breaks parsing.
+ * This function wraps such values in double quotes.
+ */
 export function repairYamlPlainScalarColons(yaml: string): string {
   const lines = yaml.split('\n')
   const result: string[] = []
@@ -2437,8 +2427,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
   const BLOCK_SCALAR_PATTERN = /:\s*[>|][+-]?\s*$/
   // Skip values that are already safe: quoted, block scalar, flow, anchor, tag, or comment
   const SAFE_VALUE_START = /^["'[{>|&*!#]/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (const line of lines) {
@@ -2451,14 +2439,13 @@ export function repairYamlPlainScalarColons(yaml: string): string {
     }
 
     // Track block-scalar continuation: any line indented deeper than the key
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0
       if (indent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
       // Left the block scalar
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
@@ -2471,7 +2458,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
 
       // Detect block scalar indicator on this line
       if (BLOCK_SCALAR_PATTERN.test(line.trimEnd())) {
-        insideBlockScalar = true
         blockScalarBaseIndent = (line.match(/^(\s*)/)?.[1]?.length ?? 0)
         result.push(line)
         continue
@@ -2523,7 +2509,6 @@ export function repairYamlPlainScalarColons(yaml: string): string {
 
     // Bare `key:` with block scalar on next line
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = (line.match(/^(\s*)/)?.[1]?.length ?? 0)
     }
 
@@ -2550,8 +2535,6 @@ export function repairYamlUnclosedQuotes(yaml: string): string {
   // Match `key: "value` with optional leading `- ` for list item first keys
   const QUOTED_VALUE_PATTERN = /^(\s*(?:-\s+)?[A-Za-z_][\w_-]*\s*:\s+)"(.*)$/
   const LIST_QUOTED_VALUE_PATTERN = /^(\s*-\s+)"(.*)$/
-
-  let insideBlockScalar = false
   let blockScalarBaseIndent = -1
 
   for (let i = 0; i < lines.length; i++) {
@@ -2567,40 +2550,31 @@ export function repairYamlUnclosedQuotes(yaml: string): string {
     const lineIndent = (line.match(/^(\s*)/) ?? [''])[0].length
 
     // Block-scalar continuation tracking
-    if (insideBlockScalar) {
+    if (blockScalarBaseIndent >= 0) {
       if (lineIndent > blockScalarBaseIndent) {
         result.push(line)
         continue
       }
-      insideBlockScalar = false
       blockScalarBaseIndent = -1
     }
 
     // Detect block scalar indicator — skip these lines from quote repair
     if (BLOCK_SCALAR_PATTERN.test(trimmed)) {
-      insideBlockScalar = true
       blockScalarBaseIndent = lineIndent
       result.push(line)
       continue
     }
 
-    const quotedMatch = line.match(QUOTED_VALUE_PATTERN)
+    // Mapping values and sequence entries differ only in how the opening quote
+    // is found; what follows it is judged identically. The two matchers are
+    // tried in the same order as before, so a line both could match — there is
+    // none, one requires `key:` and the other a bare `- ` — would still be
+    // handled by the mapping form first.
+    const quotedMatch = line.match(QUOTED_VALUE_PATTERN) ?? line.match(LIST_QUOTED_VALUE_PATTERN)
     if (quotedMatch) {
       const valueAfterOpenQuote = quotedMatch[2]!
       // If the value has an even number of unescaped double-quotes after the
       // opening one, the total is odd — meaning the opening quote is unclosed.
-      if (countUnescapedDoubleQuotes(valueAfterOpenQuote) % 2 === 0) {
-        const nextLine = findNextNonBlankLine(lines, i + 1)
-        if (nextLine === null || looksLikeYamlStructuralLine(nextLine, lineIndent)) {
-          result.push(line + '"')
-          continue
-        }
-      }
-    }
-
-    const listQuotedMatch = line.match(LIST_QUOTED_VALUE_PATTERN)
-    if (listQuotedMatch) {
-      const valueAfterOpenQuote = listQuotedMatch[2]!
       if (countUnescapedDoubleQuotes(valueAfterOpenQuote) % 2 === 0) {
         const nextLine = findNextNonBlankLine(lines, i + 1)
         if (nextLine === null || looksLikeYamlStructuralLine(nextLine, lineIndent)) {

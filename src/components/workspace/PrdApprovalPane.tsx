@@ -36,6 +36,7 @@ import {
   useApprovalFocusAnchor,
   useDebouncedApprovalUiState,
   useApprovalPaneState,
+  useApprovalEditMode,
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
@@ -51,6 +52,7 @@ import { apiFilePath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
 import { ApprovalEditToolbar } from './ApprovalEditToolbar'
+import { RawArtifactBlock } from './artifactViewers/RawArtifactBlock'
 
 type EditTab = 'structured' | 'yaml'
 
@@ -390,52 +392,32 @@ export function PrdApprovalPane({
     }
   }
 
-  function requestTabChange(nextTab: EditTab) {
-    if (nextTab === editTab) return
-    if (hasUnsavedChanges) {
-      setDiscardTarget({ type: 'switch-tab', tab: nextTab })
-      return
-    }
-    resetDraftsFromSaved(nextTab)
-  }
-
-  function handleToggleEdit() {
-    if (isEditMode) {
-      if (hasUnsavedChanges) {
-        setDiscardTarget({ type: 'close' })
+  const { requestTabChange, handleToggleEdit, handleConfirmDiscard } = useApprovalEditMode<EditTab>({
+    editTab,
+    isEditMode,
+    setIsEditMode,
+    hasUnsavedChanges,
+    discardTarget,
+    setDiscardTarget,
+    clearDiscardTarget,
+    resetDraftsFromSaved,
+    openEditor: () => {
+      if (cascadeWarningMessage) {
+        setIsCascadeWarningOpen(true)
         return
       }
-      resetDraftsFromSaved('structured')
-      setIsEditMode(false)
-      return
-    }
+      openFriendlyEditor()
+    },
+    exitTab: 'structured',
+    discardExitTab: baseStructuredDraft ? 'structured' : 'yaml',
+  })
 
-    if (cascadeWarningMessage) {
-      setIsCascadeWarningOpen(true)
-      return
-    }
-
-    openFriendlyEditor()
-  }
 
   function handleConfirmCascade() {
     setIsCascadeWarningOpen(false)
     openFriendlyEditor()
   }
 
-  function handleConfirmDiscard() {
-    const target = discardTarget
-    clearDiscardTarget()
-    if (!target) return
-
-    if (target.type === 'close') {
-      resetDraftsFromSaved(baseStructuredDraft ? 'structured' : 'yaml')
-      setIsEditMode(false)
-      return
-    }
-
-    resetDraftsFromSaved(target.tab)
-  }
 
   return (
     <div ref={containerRef} className="h-full flex flex-col overflow-hidden">
@@ -633,12 +615,8 @@ export function PrdApprovalPane({
             </div>
           ) : prdDocument ? (
             <PrdDocumentView document={prdDocument as PrdDocument} />
-          ) : rawContent ? (
-            <div className="raw-content-box">
-              <pre className="raw-content-pre">{rawDisplayContent}</pre>
-            </div>
           ) : (
-            <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">No PRD artifact available yet.</div>
+            <RawArtifactBlock content={rawContent ? rawDisplayContent : ''} emptyLabel="No PRD artifact available yet." />
           )}
         </div>
       </div>

@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render as baseRender, screen, within } from '@
 import type { ReactElement, ReactNode } from 'react'
 import { encode } from 'gpt-tokenizer'
 import { deriveStructuredInterventions } from '@shared/structuredInterventions'
-import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView } from '../ArtifactContentViewer'
+import { ArtifactContent, BeadsDraftView, CollapsibleSection, InterviewAnswersView, PrdDraftView } from '../ArtifactContentViewer'
 import { buildArtifactProcessingNoticeCopy } from '../artifactProcessingNotice'
 import { serializeBeadCommitsDiffContent } from '../diffUtils'
 import type { ArtifactStructuredOutputData } from '../phaseArtifactTypes'
@@ -562,6 +562,172 @@ items:
     fireEvent.click(screen.getByRole('button', { name: /src\/final\.ts/i }))
     const beadLabels = screen.getAllByText(/#\d · bead-\d · .+ pass/).map((element) => element.textContent)
     expect(beadLabels).toEqual(['#1 · bead-2 · Second pass', '#2 · bead-1 · First pass'])
+  })
+
+  // §13.5 asked whether `BeadCommitsDiffView`'s content-reset effect was
+  // redundant. It is not, but not for the obvious reason: `effectiveMode`
+  // already falls back when the selected tab is disabled. What the effect adds
+  // is this — a new artifact whose tabs are all still valid starts on its
+  // default anyway, rather than swapping content under the previous
+  // artifact's selection.
+  it('returns to the default tab when a new artifact arrives, even if the old tab still works', () => {
+    const beadDiff = (from: string, to: string) => [
+      'diff --git a/src/a.ts b/src/a.ts',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      `-${from}`,
+      `+${to}`,
+    ].join('\n')
+    const artifact = (label: string) => serializeBeadCommitsDiffContent({
+      netDiff: beadDiff('draft', 'final'),
+      beads: [{ beadId: 'bead-1', label, diff: beadDiff('draft', 'final') }],
+    })
+
+    const { rerender } = render(<ArtifactContent artifactId="bead-commits" content={artifact('First pass')} />)
+    fireEvent.click(screen.getByRole('button', { name: 'By Bead' }))
+    expect(screen.getByText('Per-bead git commits')).toBeInTheDocument()
+
+    // The second artifact has bead diffs too, so "By Bead" stays enabled and
+    // `effectiveMode` would happily keep it selected.
+    rerender(<TooltipProvider><ArtifactContent artifactId="bead-commits" content={artifact('Second pass')} /></TooltipProvider>)
+
+    expect(screen.getByRole('button', { name: 'By Bead' })).toBeEnabled()
+    expect(screen.queryByText('Per-bead git commits')).not.toBeInTheDocument()
+    expect(screen.getByText('Final PR net diff')).toBeInTheDocument()
+  })
+
+  // PR-13 review: both viewers cast a successful `JSON.parse` straight to their
+  // payload shape, so valid JSON with the wrong shape threw while rendering
+  // instead of falling through to the raw view. Pre-existing on `main`; these
+  // pin the guards that replaced the casts.
+  it.each([
+    ['a bare number', '123'],
+    ['an object with no checks array', '{"status":"pending"}'],
+    ['checks present but not an array', '{"checks":"nope","criticalFailures":[],"warnings":[]}'],
+    ['a checks array holding a null element', '{"checks":[null],"criticalFailures":[],"warnings":[]}'],
+    ['a check whose message is an object', '{"passed":true,"checks":[{"message":{}}],"criticalFailures":[],"warnings":[]}'],
+    ['a passed flag that is the string "false"', '{"passed":"false","checks":[],"criticalFailures":[],"warnings":[]}'],
+    ['no passed flag at all', '{"checks":[],"criticalFailures":[],"warnings":[]}'],
+  ])('falls back to raw content for a pre-flight report that is %s', (_label, content) => {
+    render(<ArtifactContent artifactId="diagnostics" content={content} />)
+
+    expect(screen.getByText(content)).toBeInTheDocument()
+  })
+
+  it('still renders a well-formed pre-flight report', () => {
+    render(
+      <ArtifactContent
+        artifactId="diagnostics"
+        content={JSON.stringify({
+          passed: true,
+          checks: [{ category: 'git', name: 'Worktree clean', result: 'pass', message: 'No changes' }],
+          criticalFailures: [],
+          warnings: [],
+        })}
+      />,
+    )
+
+    // The structured branch renders the Report/Raw tab pair; the raw fallback
+    // has neither, so this distinguishes the two paths.
+    expect(screen.getByRole('button', { name: 'Report' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['files is a string', '{"files":"oops"}'],
+    ['files is an object', '{"files":{}}'],
+    ['files holds a null element', '{"files":[null]}'],
+    ['a file whose path is an object', '{"files":[{"path":{}}]}'],
+    ['modelId is not a string', '{"files":[],"modelId":{}}'],
+    ['fileCount is an object', '{"files":[],"fileCount":{}}'],
+
+  ])('falls back to raw content for a relevant-files scan where %s', (_label, content) => {
+    render(<ArtifactContent artifactId="relevant-files-scan" content={content} />)
+
+    expect(screen.getByText(/oops|files|null/)).toBeInTheDocument()
+  })
+
+  // Round 3: the guards checked containers, then elements, but still cast every
+  // field. A wrong field type reaches React as an invalid child and throws.
+  it.each([
+    ['commands holding a null element', '{"modelOutput":"","errors":[],"commands":[null]}'],
+    ['fileEffects that is a non-empty string', '{"modelOutput":"","errors":[],"commands":[],"fileEffects":"oops"}'],
+    ['an errors entry that is an object', '{"modelOutput":"","errors":[{}],"commands":[]}'],
+    ['plannedBy that is not a string', '{"modelOutput":"","errors":[],"commands":[],"plannedBy":{}}'],
+    ['a command whose durationMs is an object', '{"modelOutput":"","errors":[],"commands":[{"durationMs":{}}]}'],
+    ['a rawAttempts entry whose status is an object', '{"modelOutput":"","errors":[],"commands":[],"rawAttempts":[{"status":{}}]}'],
+    ['a structuredOutput whose repairWarnings is not an array', '{"modelOutput":"","errors":[],"commands":[],"planStructuredOutput":{"repairWarnings":"oops"}}'],
+    ['a rawAttempts entry whose outcome is not a string', '{"modelOutput":"","errors":[],"commands":[],"rawAttempts":[{"outcome":42}]}'],
+  ])('falls back to raw content for a final test report with %s', (_label, content) => {
+    render(<ArtifactContent artifactId="test-results" content={content} />)
+
+    expect(screen.getByText(content)).toBeInTheDocument()
+  })
+
+  // `ManualQaOriginCard` maps `sourceItems` without checking it, so a bead
+  // carrying `qaOrigin: {}` — valid JSON, wrong shape — used to take the whole
+  // bead view down. An unrenderable origin now reads as no origin.
+  it('renders a bead whose Manual QA origin is malformed', () => {
+    render(
+      <BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Survives a broken origin', qaOrigin: {} }])} />,
+    )
+
+    // The bead body is collapsed by default, and the origin card only mounts
+    // when it opens — asserting on the closed card proves nothing.
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    expect(screen.getByText(/Survives a broken origin/)).toBeInTheDocument()
+    expect(screen.queryByText(/Manual QA Fix/)).not.toBeInTheDocument()
+  })
+
+  // The card reads `source.links.length` and renders link and evidence fields
+  // as children, none of which the first version of the guard checked.
+  it.each([
+    ['sourceItems with no links array', { schemaVersion: 1, version: 1, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [] }] }],
+    ['a link whose url is an object', { schemaVersion: 1, version: 1, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [], links: [{ id: 'x', url: {} }] }] }],
+    ['a version that is not a number', { schemaVersion: 1, version: {}, sourceTicketId: 't', sourceTicketExternalId: 'T-1', sourceItems: [] }],
+  ])('renders a bead whose Manual QA origin has %s', (_label, qaOrigin) => {
+    render(<BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Still renders', qaOrigin }])} />)
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    expect(screen.getByText(/Still renders/)).toBeInTheDocument()
+    expect(screen.queryByText(/Manual QA Fix/)).not.toBeInTheDocument()
+  })
+
+  it('still renders a Manual QA origin that is complete', () => {
+    const qaOrigin = {
+      schemaVersion: 1,
+      version: 2,
+      actionId: 'a',
+      sourceTicketId: 't',
+      sourceTicketExternalId: 'T-9',
+      sourceItems: [{ itemId: 'i', lineageId: 'l', behavior: 'b', observation: 'o', expectedResult: 'e', evidence: [], links: [] }],
+    }
+    render(<BeadsDraftView content={JSON.stringify([{ id: 'B-1', title: 'Has an origin', qaOrigin }])} />)
+
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+
+    // The badge renders in the bead header and again in the expanded card.
+    expect(screen.getAllByText(/Manual QA Fix/).length).toBeGreaterThan(0)
+  })
+
+  // The parser warns about every entry it drops. Called from a render body it
+  // repeats those warnings on each re-render, which for a ticket receiving live
+  // updates fills the console with the same line.
+  it('warns once about a dropped bead, not once per render', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const content = JSON.stringify([null, { id: 'B-1', title: 'Kept' }])
+
+    const { rerender } = render(<BeadsDraftView content={content} />)
+    const afterFirstRender = warn.mock.calls.length
+    expect(afterFirstRender).toBeGreaterThan(0)
+
+    for (let i = 0; i < 3; i += 1) {
+      rerender(<TooltipProvider><BeadsDraftView content={content} /></TooltipProvider>)
+    }
+
+    expect(warn.mock.calls.length).toBe(afterFirstRender)
   })
 
   it('displays tooltip on Net Diff button when net diff is not yet available', () => {
@@ -1335,6 +1501,36 @@ items:
     fireEvent.click(screen.getByRole('button', { name: /^Diff(?: \(\d+\))?$/i }))
 
     expect(screen.getByText('No refinement changes recorded.')).toBeInTheDocument()
+  })
+
+  // PR-13 §13.1 pointed `PrdDraftView` at the shared parser in
+  // `src/lib/prdDocument.ts`. It used to accept anything carrying an `epics`
+  // array, so a draft with no `artifact: prd` marker or with untitled epics
+  // still rendered as a structured PRD. These two pin the boundary that moved.
+  it('renders a PRD draft that satisfies the shared parser', () => {
+    render(<PrdDraftView content={buildPrdDocumentContent({ epicTitle: 'Ship the split' })} />)
+
+    expect(screen.getByText('Ship the split')).toBeInTheDocument()
+    expect(screen.getByText('Product')).toBeInTheDocument()
+  })
+
+  it('stops rendering a PRD-shaped draft that is missing the artifact marker', () => {
+    const withoutMarker = buildPrdDocumentContent({ epicTitle: 'Ship the split' })
+      .replace('artifact: prd\n', '')
+
+    render(<PrdDraftView content={withoutMarker} />)
+
+    // The structured view is gone; the untouched text fallback takes over.
+    expect(screen.queryByText('Product')).not.toBeInTheDocument()
+    expect(screen.getByText(/Ship the split/)).toBeInTheDocument()
+  })
+
+  it('stops rendering a PRD draft whose only epic has no title', () => {
+    const untitledEpic = buildPrdDocumentContent({ epicTitle: '' })
+
+    render(<PrdDraftView content={untitledEpic} />)
+
+    expect(screen.queryByText('Product')).not.toBeInTheDocument()
   })
 
   it('shows PRD refinement auto retries as raw attempt variants', () => {

@@ -7,10 +7,15 @@ import {
   formatDraftRoundSummary,
   summarizeDraftOutcomes,
 } from '../councilDrafts'
-import type { DraftResult, MemberOutcome } from '../../../council/types'
+import type { DraftResult, DraftStructuredOutputMeta, MemberOutcome } from '../../../council/types'
+import type { StructuredFailureClass } from '../../../lib/structuredOutputRetry'
 
 function draft(outcome: DraftResult['outcome'], memberId = 'model'): DraftResult {
   return { memberId, content: '', outcome, duration: 0 }
+}
+
+function structuredOutput(failureClass: StructuredFailureClass): DraftStructuredOutputMeta {
+  return { repairApplied: false, repairWarnings: [], autoRetryCount: 0, failureClass }
 }
 
 /**
@@ -60,8 +65,8 @@ describe('formatDraftFailureDetail', () => {
     ['timed_out', undefined, undefined, 'timed out'],
     ['invalid_output', undefined, undefined, 'invalid output (malformed response)'],
     ['invalid_output', 'no closing brace', undefined, 'invalid output (no closing brace)'],
-    ['invalid_output', undefined, 'schema_invalid', 'invalid output (schema_invalid)'],
-    ['invalid_output', 'missing epic', 'schema_invalid', 'invalid output (schema_invalid: missing epic)'],
+    ['invalid_output', undefined, 'validation_error', 'invalid output (validation_error)'],
+    ['invalid_output', 'missing epic', 'validation_error', 'invalid output (validation_error: missing epic)'],
     ['failed', undefined, undefined, 'failed'],
     ['failed', 'connection reset', undefined, 'failed (connection reset)'],
     ['failed', 'ran out of tokens', 'output_truncated', 'failed (output_truncated: ran out of tokens)'],
@@ -78,7 +83,7 @@ describe('formatDraftFailureDetail', () => {
 describe('buildCouncilQuorumErrorWithDiagnostics', () => {
   it('returns a plain error when nothing was truncated', () => {
     const error = buildCouncilQuorumErrorWithDiagnostics('quorum not met', [
-      { memberId: 'a', outcome: 'failed', structuredOutput: { failureClass: 'schema_invalid' } },
+      { memberId: 'a', outcome: 'failed', structuredOutput: structuredOutput('validation_error') },
     ])
 
     expect(error.message).toBe('quorum not met')
@@ -88,7 +93,7 @@ describe('buildCouncilQuorumErrorWithDiagnostics', () => {
   it('attaches truncation diagnostics naming the model that ran out of room', () => {
     const error = buildCouncilQuorumErrorWithDiagnostics('quorum not met', [
       { memberId: 'a', outcome: 'completed' },
-      { memberId: 'b', outcome: 'failed', structuredOutput: { failureClass: 'output_truncated' } },
+      { memberId: 'b', outcome: 'failed', structuredOutput: structuredOutput('output_truncated') },
     ]) as Error & { blockedErrorDiagnostics?: { kind?: string; modelId?: string } }
 
     expect(error.message).toBe('quorum not met')
@@ -102,7 +107,7 @@ describe('buildCouncilQuorumErrorWithDiagnostics', () => {
         voterId: 'v1',
         outcome: 'invalid_output',
         rawAttempts: [
-          { attempt: 1, failureClass: 'schema_invalid' },
+          { attempt: 1, failureClass: 'validation_error' },
           { attempt: 2, failureClass: 'output_truncated' },
         ] as never,
       },
@@ -115,7 +120,7 @@ describe('buildCouncilQuorumErrorWithDiagnostics', () => {
   it('ignores a truncation on a member that completed anyway', () => {
     // A retry that succeeded is not what blocked the round.
     const error = buildCouncilQuorumErrorWithDiagnostics('quorum not met', [
-      { memberId: 'a', outcome: 'completed', structuredOutput: { failureClass: 'output_truncated' } },
+      { memberId: 'a', outcome: 'completed', structuredOutput: structuredOutput('output_truncated') },
     ])
 
     expect(error).not.toHaveProperty('blockedErrorDiagnostics')

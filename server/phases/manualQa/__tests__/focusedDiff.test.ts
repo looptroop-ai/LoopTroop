@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { REPO_SCOPE_PATHSPECS } from '../../../git/pathspecs'
+import { DIFF_METADATA_LIMIT } from '../focusedDiff'
 
 const runGitSyncMock = vi.fn()
 
@@ -9,7 +10,6 @@ vi.mock('../../../git/runCommand', () => ({
 
 const { focusedDiffMetadata } = await import('../focusedDiff')
 
-const DIFF_METADATA_LIMIT = 80_000
 const UNAVAILABLE = 'Focused diff metadata unavailable.'
 const EMPTY = 'No candidate file metadata was reported.'
 
@@ -77,7 +77,6 @@ describe('focusedDiffMetadata', () => {
     // checklist generated from "nothing changed" is a different artifact from
     // one generated blind.
     expect(focusedDiffMetadata('/worktree', 'main')).toBe(EMPTY)
-    expect(EMPTY).not.toBe(UNAVAILABLE)
   })
 
   it('truncates a diff larger than the prompt budget', () => {

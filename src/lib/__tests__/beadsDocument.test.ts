@@ -345,3 +345,16 @@ describe('normalizeBead reads the read-only metadata fields too', () => {
     expect(normalized.externalRef).toBe('LOO-9')
   })
 })
+
+describe('the client parser numbers lines the way the server does', () => {
+  it('reports a damaged line at its position in the file, blank lines counted', () => {
+    // The server reports these numbers in `X-Malformed-Lines`, and an operator
+    // opens the file at them. A client warning naming a different line for the
+    // same content sends them to the wrong place.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    parseBeadsArtifact(['', '', '{"id":"B-1"}', 'not json'].join('\n'))
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('line 4'))
+  })
+})

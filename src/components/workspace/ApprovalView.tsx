@@ -108,7 +108,7 @@ function validateJsonl(jsonl: string): string | null {
 /**
  * The editor's beads, from the same filtered list every other surface uses.
  *
- * Without the filter a stored `null` reached `normalizeBeadForEditor`, which
+ * Without the filter a stored `null` reached `normalizeBead`, which
  * dereferences `bead.dependencies`, and took the structured editor down. The
  * shared filter also keeps the editor's ordering aligned with the outline's
  * focus anchors and the artifact view.

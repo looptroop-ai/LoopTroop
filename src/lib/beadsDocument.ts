@@ -10,10 +10,10 @@ export const BEADS_APPROVAL_FOCUS_EVENT = 'beads-approval-focus'
  * snake_case spellings the artifact has carried over time and every field
  * optional.
  *
- * Named `RawBead`, not `ParsedBead`: `BeadsApprovalEditor` exports a different
- * `ParsedBead` — the normalized shape its editor requires, with those fields
- * mandatory. Two contracts under one name would let a field added to either
- * side look interchangeable with the other.
+ * This is the wire shape. `NormalizedBead` below is what it becomes once read,
+ * with the fields an editor writes to present and single-spelled. Keeping the
+ * two named apart is what stops a field added to one from looking
+ * interchangeable with the other.
  *
  * The artifact viewer declared this and its parser locally, and
  * `BeadsApprovalNavigator` reached for the same records through a bare
@@ -221,6 +221,11 @@ export function readBeadNumber(bead: RawBead, field: BeadField): number | null {
   return null
 }
 
+/**
+ * No policy argument: a command is validated by its schema, not read as text,
+ * and the schema trims and defaults whichever way it was stored. Trimming is
+ * not this reader's decision to make.
+ */
 export function readBeadCommands(bead: RawBead, field: BeadField): CommandSpec[] {
   for (const value of candidates(bead, field)) {
     if (!Array.isArray(value)) continue
@@ -263,9 +268,8 @@ export function readBeadGuidance(bead: RawBead, policy: BeadReadPolicy): { patte
  *
  * `RawBead` is the wire shape — every field optional, both spellings, whatever
  * else the row carried. This is what it becomes once read: the same record,
- * with the fields the approval editor writes to normalized onto it. It was
- * declared inside `BeadsApprovalEditor` as `ParsedBead`, one module away from
- * the wire type it is derived from and from the alias table above.
+ * with the fields the approval editor writes to normalized onto it. It lives
+ * beside the wire type it is derived from and the alias table that derives it.
  */
 export interface NormalizedBead extends RawBead {
   id: string
@@ -404,7 +408,10 @@ export function parseBeadsArtifact(content: string): RawBead[] | null {
  */
 function parseBeadsJsonl(content: string, warn = true): RawBead[] | null {
   const beads: RawBead[] = []
-  const lines = content.trim().split('\n')
+  // Not `content.trim().split(…)`: trimming first renumbers everything after a
+  // leading blank line, so a warning pointed at a different line from the one
+  // the server reports for the same content. Blank lines are skipped in place.
+  const lines = content.split('\n')
 
   lines.forEach((line, index) => {
     if (!line.trim()) return

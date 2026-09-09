@@ -1,7 +1,8 @@
 import { REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { runGitSync } from '../../git/runCommand'
 
-const DIFF_METADATA_LIMIT = 80_000
+/** The prompt budget for this metadata. Exported so its tests assert the real number. */
+export const DIFF_METADATA_LIMIT = 80_000
 
 const UNAVAILABLE = 'Focused diff metadata unavailable.'
 const EMPTY = 'No candidate file metadata was reported.'

@@ -64,32 +64,46 @@ const RELEASES: FixtureRelease[] = [
 interface InstallerRun {
   status: number | null
   /** Non-null when the installer was killed rather than allowed to exit. */
-  signal: NodeJS.Signals | null
-  stdout: string
-  stderr: string
+  signal?: NodeJS.Signals | string | null
+  stdout?: string
+  stderr?: string
+  /**
+   * The wrapper harness accumulates both streams into one.
+   *
+   * Named apart from `stdout`/`stderr` because a `spawnSync` result also has an
+   * `output` — an array of the streams — and the two must not be confused.
+   */
+  outputText?: () => string
 }
 
 /**
- * Asserts the installer's exit status, and says what happened when it is not
- * the expected one.
+ * Asserts an exit status, and says what happened when it is not the one asked
+ * for.
  *
  * A killed process reports `status: null`, and `expected null to be 1` names
  * neither the signal nor a line of the output — which is all a CI log had to
  * offer when `rolls back a version that runs but whose daemon will not start`
- * failed this way on PR #148, three times, each time passing in the sibling
- * run on the same commit. The next occurrence has to arrive diagnosable.
+ * failed this way on PR #148, three times, each time passing in the sibling run
+ * on the same commit. The next occurrence has to arrive diagnosable.
+ *
+ * One helper for both harnesses: the wrapper's had drifted to its own copy that
+ * did not normalise the signal, and the two together were one of SonarCloud's
+ * duplicated blocks.
  */
-function expectExit(
-  run: { status: number | null, signal?: NodeJS.Signals | null, stdout?: string, stderr?: string },
-  status: number,
-) {
+function expectExit(run: InstallerRun, status: number) {
+  // `spawnSync` reports no signal as `undefined`; a spawned child's `close`
+  // reports it as `null`. Both mean "exited normally", and these cases run the
+  // installer each way.
+  const signal = run.signal ?? null
+  const output = run.outputText ? run.outputText() : `${run.stdout ?? ''}${run.stderr ?? ''}`
+  // Attached whenever anything is wrong, the signal included: a run killed
+  // *after* producing the expected status is exactly the case where the trailing
+  // output says why.
+  const mismatch = run.status !== status || signal !== null
   expect({
     status: run.status,
-    // `spawnSync` reports no signal as `undefined` and a spawned child's
-    // `close` reports it as `null`; both are "exited normally", and some of
-    // these cases run the installer each way.
-    signal: run.signal ?? null,
-    ...(run.status === status ? {} : { output: `${run.stdout ?? ''}${run.stderr ?? ''}`.slice(-2000) }),
+    signal,
+    ...(mismatch ? { output: output.slice(-2000) } : {}),
   }).toEqual({ status, signal: null })
 }
 
@@ -437,11 +451,11 @@ describe('installer core', () => {
     copyFileSync(CORE, join(dir, 'real', 'installer-core.mjs'))
     symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')
 
-    const result = await new Promise<{ status: number | null, stdout: string }>((done) => {
+    const result = await new Promise<InstallerRun & { stdout: string }>((done) => {
       const child = spawn(process.execPath, [join(dir, 'link', 'installer-core.mjs'), '--help'])
       let stdout = ''
       child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-      child.on('close', (status) => done({ status, stdout }))
+      child.on('close', (status, signal) => done({ status, signal, stdout }))
     })
 
     expectExit(result, 0)
@@ -1446,21 +1460,6 @@ describe('installer wrappers', () => {
       return { child, temp, output: () => output, settled }
     }
 
-    /**
-     * The wrapper's exit status, with the signal and its output when it is not
-     * what was expected — `expected null to be 3` on a CI runner names neither.
-     */
-    function expectWrapperExit(
-      settled: { status: number | null, signal: string | null },
-      status: number,
-      output: () => string,
-    ) {
-      expect({
-        ...settled,
-        ...(settled.status === status ? {} : { output: output().slice(-2000) }),
-      }).toEqual({ status, signal: null })
-    }
-
     /** Everything under `dir`, so "cleaned up" is a claim about the directory. */
     function leftovers(dir: string) {
       return readdirSync(dir)
@@ -1482,7 +1481,7 @@ describe('installer wrappers', () => {
 
     it('leaves nothing behind after an install that failed, and reports the failure', async () => {
       const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'])
-      expectWrapperExit(await run.settled, 1, run.output)
+      expectExit({ ...await run.settled, outputText: run.output }, 1)
       expect(run.output()).toContain('No such tarball')
       expect(leftovers(run.temp)).toEqual([])
     })
@@ -1531,7 +1530,13 @@ describe('installer wrappers', () => {
       // the group id, which is the same number — can belong to something else,
       // and this would deliver a SIGINT to whatever inherited it.
       expect(run.child.exitCode).toBeNull()
-      process.kill(-run.child.pid!, 'SIGINT')
+      try {
+        process.kill(-run.child.pid!, 'SIGINT')
+      } catch (error) {
+        // It exited between the check above and this line. Nothing to
+        // interrupt, and nothing to fail: what this asserts is the cleanup.
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+      }
       await run.settled
 
       // Both directories: the wrapper's own, and the one the core creates
@@ -1571,7 +1576,7 @@ describe('installer wrappers', () => {
         node: `#!/bin/sh\nexit ${code}\n`,
       })
 
-      expectWrapperExit(await run.settled, code, run.output)
+      expectExit({ ...await run.settled, outputText: run.output }, code)
       expect(leftovers(run.temp)).toEqual([])
     }, 20_000)
 
@@ -1594,7 +1599,7 @@ describe('installer wrappers', () => {
       const settled = await run.settled
 
       expect(run.output()).toContain('CHILD-GOT-TERM')
-      expectWrapperExit(settled, 3, run.output)
+      expectExit({ ...settled, outputText: run.output }, 3)
       expect(leftovers(run.temp)).toEqual([])
     }, 40_000)
   })

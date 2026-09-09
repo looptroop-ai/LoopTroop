@@ -865,7 +865,7 @@ export async function handleBeadsRefine(
   sendEvent({ type: 'REFINED' })
 }
 
-export function getBeadsPath(ticketId: string): string {
+function getBeadsPath(ticketId: string): string {
   const paths = getTicketPaths(ticketId)
   if (!paths) throw new Error(`Ticket workspace not initialized: missing ticket paths for ${ticketId}`)
   return paths.beadsPath
@@ -895,20 +895,6 @@ function compareErroredBeads(left: Bead, right: Bead) {
   }
 
   return right.iteration - left.iteration
-}
-
-export function recoverFailedCodingBead(ticketId: string): Bead | null {
-  const beads = readTicketBeads(ticketId)
-  const failedBead = [...beads]
-    .filter((bead) => bead.status === 'error')
-    .sort(compareErroredBeads)[0]
-    ?? [...beads]
-      .filter((bead) => bead.status === 'in_progress')
-      .sort(compareErroredBeads)[0]
-
-  if (!failedBead) return null
-
-  return recoverCodingBead(ticketId, beads, failedBead)
 }
 
 export function recoverCodingBeadWithReset(

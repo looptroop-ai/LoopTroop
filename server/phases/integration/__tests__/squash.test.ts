@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createFixtureRepoManager } from '../../../test/fixtureRepo'
-import { prepareSquashCandidate, pushSquashedCandidate, rewriteCandidateCommitWithFiles } from '../squash'
+import { prepareSquashCandidate, rewriteCandidateCommitWithFiles } from '../squash'
 import { TEST } from '../../../test/factories'
 
 const BRANCH = TEST.externalId
@@ -339,16 +339,5 @@ describe('prepareSquashCandidate', () => {
     expect(showFiles).toContain('generated.js')
     expect(showFiles).not.toContain('tmp.log')
     expect(git(repoDir, ['status', '--porcelain'])).toBe('')
-  })
-})
-
-describe('pushSquashedCandidate', () => {
-  it('returns failure when no remote is configured', async () => {
-    const repoDir = repoManager.createRepo()
-
-    const result = await pushSquashedCandidate(repoDir)
-
-    expect(result.pushed).toBe(false)
-    expect(result.error).toMatch(/push failed/i)
   })
 })

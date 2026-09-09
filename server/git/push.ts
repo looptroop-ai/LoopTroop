@@ -4,9 +4,9 @@ import { runCommandSync, runGitOrThrow } from './runCommand'
 /**
  * How long a `git push` is given before it is treated as stalled.
  *
- * Shared with `pushSquashedCandidate` for the same reason its retry count is:
- * both push to the same remote over the same network, so two numbers for it
- * means one of them is wrong and nothing says which.
+ * One number for the whole codebase: every push goes to the same remote over
+ * the same network, so a second timeout would mean one of the two is wrong and
+ * nothing saying which.
  */
 export const GIT_PUSH_TIMEOUT_MS = 120_000
 
@@ -88,9 +88,8 @@ export interface PushBranchRefResult {
  * How many times a `git push` is attempted before the failure is reported.
  *
  * A push is the one git operation that reaches a network, and the reason it
- * fails is usually transient. Shared with `pushSquashedCandidate`, which runs
- * its own loop against the same remote: two retry counts for the same operation
- * is one of them being wrong.
+ * fails is usually transient. One count for the whole codebase, for the same
+ * reason as the timeout above.
  */
 export const GIT_PUSH_MAX_RETRIES = 3
 

@@ -3,8 +3,7 @@ import { literalPathspec, REPO_SCOPE_PATHSPECS } from '../../git/pathspecs'
 import { resolveBaseBranchRef } from '../../git/repository'
 import { readWorktreeGitHookPolicy, shouldBypassGitHooks } from '../../git/hookPolicy'
 import { uniqueRepoScopedPaths } from '../../git/repoScopedPath'
-import { GIT_PUSH_MAX_RETRIES, GIT_PUSH_TIMEOUT_MS, gitPushEnv } from '../../git/push'
-import { runCommand, runGitSyncOrThrow } from '../../git/runCommand'
+import { runGitSyncOrThrow } from '../../git/runCommand'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /**
@@ -286,24 +285,4 @@ export function rewriteCandidateCommitWithFiles(
       preSquashHead: preRewriteHead,
     }
   }
-}
-
-export interface PushResult {
-  pushed: boolean
-  error?: string
-}
-
-/** Asynchronous: it reaches the remote, and the remote is what stalls. */
-export async function pushSquashedCandidate(worktreePath: string): Promise<PushResult> {
-  const bypassHooks = shouldBypassGitHooks(readWorktreeGitHookPolicy(worktreePath))
-  for (let attempt = 1; attempt <= GIT_PUSH_MAX_RETRIES; attempt++) {
-    const result = await runCommand('git', [
-      '-C', worktreePath, 'push', ...(bypassHooks ? ['--no-verify'] : []),
-    ], { timeoutMs: GIT_PUSH_TIMEOUT_MS, env: gitPushEnv() })
-    if (result.ok) return { pushed: true }
-    if (attempt === GIT_PUSH_MAX_RETRIES) {
-      return { pushed: false, error: `git push failed after ${GIT_PUSH_MAX_RETRIES} attempts: ${result.errorDetail}` }
-    }
-  }
-  return { pushed: false, error: 'push failed' }
 }

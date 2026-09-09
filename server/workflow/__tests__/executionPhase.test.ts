@@ -11,7 +11,6 @@ import { listOpenCodeSessionsForTicket } from '../../opencode/sessionManager'
 import {
   readTicketBeads,
   recoverCodingBeadWithReset,
-  recoverFailedCodingBead,
   writeTicketBeads,
 } from '../phases/beadsPhase'
 import { phaseIntermediate } from '../phases/state'
@@ -512,7 +511,7 @@ describe('handleCoding', () => {
   })
 
   it('preserves retry notes and iteration when resetToBeadStart fails during context wipe', async () => {
-    const { ticket, context } = await createInitializedTestTicket(repoManager, {
+    const { ticket, context, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Reset failure preserves retry metadata',
     })
     writeTicketBeads(ticket.id, [makePendingBead('bead-1', 1, { iteration: 1 })])
@@ -566,7 +565,11 @@ describe('handleCoding', () => {
     expect(executedBead?.iteration).toBe(2)
     expect(executedBead?.failedIterationNotes).toEqual([makeNote('retry note after timeout')])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    // The reset that failed during the wipe is the same one the retry performs,
+    // so let it succeed here: what this asserts is that the notes and iteration
+    // the failed wipe left behind are what a retry picks up.
+    resetToBeadStartMock.mockImplementation(() => {})
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
     expect(recoveredBead?.iteration).toBe(2)
@@ -1162,7 +1165,7 @@ describe('handleCoding', () => {
   })
 
   it('requeues the latest failed bead for retry without clearing notes or iteration', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Retry failed coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1177,7 +1180,7 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')
@@ -1246,7 +1249,7 @@ describe('handleCoding', () => {
   })
 
   it('requeues the latest in-progress bead when coding blocked before status flipped to error', async () => {
-    const { ticket } = await createInitializedTestTicket(repoManager, {
+    const { ticket, paths } = await createInitializedTestTicket(repoManager, {
       title: 'Retry blocked in-progress coding bead',
     })
     writeTicketBeads(ticket.id, [
@@ -1258,7 +1261,7 @@ describe('handleCoding', () => {
       }),
     ])
 
-    const recoveredBead = recoverFailedCodingBead(ticket.id)
+    const recoveredBead = recoverCodingBeadWithReset(ticket.id, { worktreePath: paths.worktreePath })
 
     expect(recoveredBead?.id).toBe('bead-1')
     expect(recoveredBead?.status).toBe('pending')

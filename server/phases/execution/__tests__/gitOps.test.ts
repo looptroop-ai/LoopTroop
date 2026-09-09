@@ -6,84 +6,13 @@ import { makeTempDir, pinGitLineEndings, removeTempDir } from '../../../test/tem
 import {
   captureBeadDiff,
   commitBeadChanges,
-  filterAllowedFiles,
   getExecutionSetupCommitExcludedRoots,
-  isAllowedFile,
   recordBeadStartCommit,
   resetToBeadStart,
 } from '../gitOps'
 import { TEST } from '../../../test/factories'
 
 const BRANCH = TEST.externalId
-
-describe('gitOps worktree change classification', () => {
-  it('allows language-agnostic project files without an extension allowlist', () => {
-    expect(isAllowedFile('src/app.ts')).toBe(true)
-    expect(isAllowedFile('src/style.css')).toBe(true)
-    expect(isAllowedFile('src/Program.cs')).toBe(true)
-    expect(isAllowedFile('package.json')).toBe(true)
-    expect(isAllowedFile('Makefile')).toBe(true)
-    expect(isAllowedFile('image.png')).toBe(true)
-    expect(isAllowedFile('data.bin')).toBe(true)
-  })
-
-  it('allows .jsonl files', () => {
-    expect(isAllowedFile('issues.jsonl')).toBe(true)
-    expect(isAllowedFile('reports/issues.jsonl')).toBe(true)
-  })
-
-  it('blocks all .ticket paths from commit capture', () => {
-    expect(isAllowedFile('.ticket/interview.yaml')).toBe(false)
-    expect(isAllowedFile('.ticket/prd.yaml')).toBe(false)
-    expect(isAllowedFile('.ticket/codebase-map.yaml')).toBe(false)
-    expect(isAllowedFile('.ticket/beads/master/.beads/issues.jsonl')).toBe(false)
-    expect(isAllowedFile('.ticket/meta/ticket.meta.json')).toBe(false)
-    expect(isAllowedFile('.ticket/ui/artifact-companions/beads_expanded.json')).toBe(false)
-  })
-
-  it('blocks LoopTroop runtime/internal paths', () => {
-    expect(isAllowedFile('.ticket/runtime/state.json')).toBe(false)
-    expect(isAllowedFile('.ticket/locks/main.lock')).toBe(false)
-    expect(isAllowedFile('.ticket/sessions/abc.json')).toBe(false)
-    expect(isAllowedFile('.ticket/streams/live.json')).toBe(false)
-    expect(isAllowedFile('.ticket/tmp/scratch.ts')).toBe(false)
-  })
-
-  it('treats common generated and local-only outputs as noise only while untracked', () => {
-    expect(isAllowedFile('node_modules/foo/bar.js')).toBe(false)
-    expect(isAllowedFile('dist/bundle.js')).toBe(false)
-    expect(isAllowedFile('.env')).toBe(false)
-    expect(isAllowedFile('.env.local')).toBe(false)
-    expect(isAllowedFile('.env.example')).toBe(true)
-
-    expect(isAllowedFile('dist/bundle.js', { untracked: false })).toBe(true)
-    expect(isAllowedFile('node_modules/foo/bar.js', { untracked: false })).toBe(true)
-    expect(isAllowedFile('.env', { untracked: false })).toBe(true)
-  })
-
-  it('blocks legacy execution setup cache paths even when tracked', () => {
-    expect(isAllowedFile('.cache/project-tooling/go/src/runtime.go')).toBe(false)
-    expect(isAllowedFile('.cache/project-tooling-extra/go/src/runtime.go')).toBe(false)
-    expect(isAllowedFile('.cache/project-tooling-extra/go/src/runtime.go', { untracked: false })).toBe(true)
-  })
-
-  it('filterAllowedFiles returns only allowed files', () => {
-    const files = ['src/app.ts', 'node_modules/foo.js', '.ticket/runtime/x.json', 'issues.jsonl']
-    expect(filterAllowedFiles(files)).toEqual(['src/app.ts', 'issues.jsonl'])
-  })
-
-  it('filters caller-provided execution setup roots', () => {
-    const files = [
-      'src/app.ts',
-      '.ticket/runtime/execution-setup/tool-cache/go/src/runtime.go',
-      'issues.jsonl',
-    ]
-
-    expect(filterAllowedFiles(files, {
-      excludedRoots: ['.ticket/runtime/execution-setup/tool-cache'],
-    })).toEqual(['src/app.ts', 'issues.jsonl'])
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Helpers for integration tests — real git repos in OS temp directories

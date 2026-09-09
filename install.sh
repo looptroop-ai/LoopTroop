@@ -1764,7 +1764,13 @@ fi
 # produces. `$child` is empty until it is not, and forwarding to nothing is a
 # no-op rather than an error.
 child=
+# Set by the trap so the wait loop below can tell "a signal reached this shell"
+# from "the child exited with a status that happens to be above 128". `wait`
+# reports both the same way, and guessing from the number alone is what makes a
+# legitimate `exit 130` indistinguishable from an interrupted wait.
+interrupted=
 forward() {
+  interrupted=1
   if [ -n "$child" ]; then
     kill -"$1" "$child" 2>/dev/null || true
   fi
@@ -1784,27 +1790,23 @@ child=$!
 #
 # The retry used to be gated on `kill -0`, which asks whether the child is still
 # running. That is the wrong question. A child that has already handled the
-# signal and exited — the common case, since forwarding is what prompted it — is
-# neither running nor reaped, so the gate failed and the shell exited 128+n,
-# discarding the status it had just gone to the trouble of forwarding for. It
-# only ever surfaced when the child finished before this shell was scheduled
-# again, which is why it read as a flaky test rather than a bug.
+# signal and exited is neither running nor reaped, so the gate failed and the
+# shell exited 128+n, discarding the status it had just gone to the trouble of
+# forwarding for. It only ever surfaced when the child finished before this
+# shell was scheduled again, which is why it read as a flaky test.
+#
+# The retry is gated on the trap having fired instead, because a status above
+# 128 does not mean the wait was interrupted: a child may exit 130 of its own
+# accord. Gating on the number alone re-waits on a status that will never
+# change, which is an infinite loop rather than a wrong exit code.
 status=0
 while :; do
+  interrupted=
   status=0
   wait "$child" || status=$?
-  [ "$status" -gt 128 ] || break
-
-  signalled=$status
-  status=0
-  wait "$child" || status=$?
-  # 127 is "not a child of this shell": the status is genuinely unavailable, so
-  # the signal's is the best answer left. Anything else is the child's own, and
-  # another 128+n means a further signal arrived while waiting — go round again.
-  if [ "$status" -eq 127 ]; then
-    status=$signalled
-    break
-  fi
+  # No signal reached this shell during that wait, so whatever came back is the
+  # child's own status, however high it is.
+  [ -n "$interrupted" ] || break
   [ "$status" -gt 128 ] || break
 done
 

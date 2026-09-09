@@ -1503,6 +1503,27 @@ describe('installer wrappers', () => {
      * tested is the wrapper: that it passes the signal on, and that the status
      * the caller sees is the child's own rather than the shell's.
      */
+    /**
+     * A child may exit above 128 without any signal reaching the wrapper —
+     * `exit 130` is a perfectly ordinary thing for a build tool to do. `wait`
+     * reports that identically to an interrupted wait, so a retry keyed on the
+     * number alone re-waits on a status that will never change: the wrapper
+     * hangs instead of exiting. The retry is keyed on the trap having fired.
+     *
+     * This one is deterministic, unlike the signal race it sits beside: no
+     * signal is sent, so there is nothing to lose.
+     */
+    it.each([129, 130, 137, 255])('passes on a child that exits %i of its own accord', async (code) => {
+      const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'], {
+        node: `#!/bin/sh\nexit ${code}\n`,
+      })
+
+      const { status } = await run.settled
+
+      expect(status).toBe(code)
+      expect(leftovers(run.temp)).toEqual([])
+    }, 20_000)
+
     it('forwards a signal aimed at the wrapper, and passes on the child\'s status', async () => {
       const run = runWrapper(['--tarball', '/nonexistent/looptroop.tgz'], {
         node: [

@@ -1438,3 +1438,109 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
     expect(jsYaml.load(repairYamlDuplicateKeys(input))).toEqual({ t: 'one\n\ntwo\n\ntwo\n', z: 9 })
   })
 })
+
+/**
+ * A block scalar body is text, not YAML, and every repair that walks lines
+ * tracks one so it can leave that text alone.
+ *
+ * Eleven repairs carry that tracking. Disabling the skip in each of them, one
+ * at a time, turned only three of these tests red — so eight repairs were free
+ * to rewrite the inside of a block scalar with nothing to catch it, which is
+ * how a repair invents text rather than reformatting it. Each case below is
+ * built the same way: the exact line the repair *does* fix, placed once inside
+ * a block scalar body and once after it. The body has to survive and the line
+ * after it has to be repaired — a case that only checked the body would pass on
+ * a repair that had stopped working altogether.
+ */
+describe.concurrent('block scalar bodies are left alone', () => {
+  it.each([
+    [
+      'repairYamlDoubleQuotedScalarInnerQuotes',
+      repairYamlDoubleQuotedScalarInnerQuotes,
+      ['body: |', '  note: "he said "hi" today"', 'note: "he said "hi" today"'].join('\n'),
+      ['body: |', '  note: "he said "hi" today"', 'note: "he said \\"hi\\" today"'].join('\n'),
+    ],
+    [
+      'repairYamlFreeTextScalars',
+      repairYamlFreeTextScalars,
+      ['body: |', '  free_text: Log type: structured trace', 'free_text: Log type: structured trace'].join('\n'),
+      ['body: |', '  free_text: Log type: structured trace', 'free_text: "Log type: structured trace"'].join('\n'),
+    ],
+    [
+      'repairYamlQuotedScalarFragments',
+      repairYamlQuotedScalarFragments,
+      ['body: |', '  description: "pink" remains supported.', 'description: "pink" remains supported.'].join('\n'),
+      ['body: |', '  description: "pink" remains supported.', 'description: "\\"pink\\" remains supported."'].join('\n'),
+    ],
+    [
+      'repairYamlReservedIndicatorScalars',
+      repairYamlReservedIndicatorScalars,
+      ['body: |', '  owner: @loop-troop', 'owner: @loop-troop'].join('\n'),
+      ['body: |', '  owner: @loop-troop', 'owner: "@loop-troop"'].join('\n'),
+    ],
+    [
+      'repairYamlPlainScalarColons',
+      repairYamlPlainScalarColons,
+      ['body: |', '  key: hello world: foo bar', 'key: hello world: foo bar'].join('\n'),
+      ['body: |', '  key: hello world: foo bar', 'key: "hello world: foo bar"'].join('\n'),
+    ],
+  ])('%s', (_, repair, input, expected) => {
+    expect(repair(input)).toBe(expected)
+  })
+
+  it('repairYamlUnclosedQuotes does not close a quote inside a block scalar', () => {
+    // No "after" line here: the repair closes a quote by looking at the line
+    // that follows, so the body's own successor is what has to be ignored.
+    const input = [
+      'items:', '  - id: Q01', '    question: |',
+      '      answer: "unterminated', '      phase: foundation', '  - id: Q02',
+    ].join('\n')
+
+    expect(repairYamlUnclosedQuotes(input)).toBe(input)
+    expect(repairYamlUnclosedQuotes(['  - id: Q04', '    question: "unterminated', '    phase: foundation'].join('\n')))
+      .toBe(['  - id: Q04', '    question: "unterminated"', '    phase: foundation'].join('\n'))
+  })
+
+  it('repairYamlSequenceEntryIndent does not straighten dashes inside a block scalar', () => {
+    const input = [
+      'questions:', '  - id: Q01', '    question: |',
+      '      - id: Q02', '       - id: Q03', '  - id: Q04',
+    ].join('\n')
+
+    expect(repairYamlSequenceEntryIndent(input)).toBe(input)
+    expect(repairYamlSequenceEntryIndent(['questions:', '  - id: Q01', '   - id: Q02'].join('\n')))
+      .toBe(['questions:', '  - id: Q01', '  - id: Q02'].join('\n'))
+  })
+
+  it('repairYamlSequenceItemPrimaryKeys does not name a bare scalar inside a block scalar', () => {
+    const options = { beads: { primaryKey: 'id', childKeys: ['title', 'description'] } }
+    const input = [
+      'beads:',
+      '  - id: b1',
+      '    description: |',
+      '      beads:',
+      '        - config-xml-json-marshalling',
+      '          title: Implement XML/JSON unmarshalling',
+      '  - config-xml-json-marshalling',
+      '    title: Implement XML/JSON unmarshalling',
+    ].join('\n')
+
+    const result = repairYamlSequenceItemPrimaryKeys(input, options)
+
+    expect(result.yaml).toBe([
+      'beads:',
+      '  - id: b1',
+      '    description: |',
+      '      beads:',
+      '        - config-xml-json-marshalling',
+      '          title: Implement XML/JSON unmarshalling',
+      '  - id: config-xml-json-marshalling',
+      '    title: Implement XML/JSON unmarshalling',
+    ].join('\n'))
+    // The reported repair is the real one, on the line after the body: a repair
+    // reported for a line inside the body would be reported to the user too.
+    expect(result.repairs).toEqual([
+      { parentKey: 'beads', primaryKey: 'id', value: 'config-xml-json-marshalling', line: 7 },
+    ])
+  })
+})

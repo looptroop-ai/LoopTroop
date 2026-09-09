@@ -179,6 +179,8 @@ Unreleased changes appear first and represent commits that have not yet been inc
 - The deprecated `MutableRefObject` is replaced by `RefObject` in the approval hooks, the question list and the answer editor. React 19's `RefObject` is mutable, so assignment behaviour is unchanged.
 - `dist-binary/`, the default output of `scripts/build-binary.mjs`, is now gitignored.
 - `DETACHABLE_TICKET_STATUSES` is renamed `INACTIVE_TICKET_STATUSES`, since detachment is gone and its remaining readers ask whether a project still has live work.
+- Eight more interface tests that touch no DOM now run in the pure-logic project instead of the jsdom one, which drops a browser environment, a forked worker and per-file isolation from each. Test names and commands are unchanged. The membership list was re-derived from file content rather than extended by hand, so a sibling that renders stays where it is.
+- `server/validation/__tests__/edgeCases.test.ts` moves to `server/phases/execution/__tests__/`, next to the module it covers, and the `server/validation` tree — which held nothing but that one test — is gone.
 
 ### Removed
 - Three modules with no production importer. `server/lib/shellCommand.ts` was superseded by `commandExecutor`, which resolves the shell from the command spec rather than from the host alone; `server/council/pipeline.ts` sequenced a council round that the interview, PRD and beads phases each sequence themselves, and the council tests that ran through it now drive the same primitives directly; `server/phases/interview/types.ts` held three interfaces that only the deleted interview helpers referenced. The interview-question preview formatter went with them, its only caller having been one of those helpers.

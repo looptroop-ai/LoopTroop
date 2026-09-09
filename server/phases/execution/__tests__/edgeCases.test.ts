@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isAllowedFile } from '../../phases/execution/gitOps'
+import { isAllowedFile } from '../gitOps'
 
 describe('File Change Classification Edge Cases', () => {
   it('treats untracked .env files as local noise', () => expect(isAllowedFile('.env')).toBe(false))

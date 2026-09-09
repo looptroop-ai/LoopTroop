@@ -29,19 +29,21 @@ export function repairYamlListDashSpace(yaml: string): string {
  * `description: |2` / `  key1: v1 key2: v2` came back as two lines — a newline
  * invented inside a value a model wrote. One grammar, so a header shape is
  * recognised by all of them or by none.
+ *
+ * Written out four times rather than composed from one source string: a
+ * `new RegExp` built from a variable is a non-literal constructor, which is a
+ * security-scanner finding in its own right. The four spell the same indicator
+ * — `[>|](?:[+-][1-9]?|[1-9][+-]?)?` — and the same optional-comment tail, and
+ * `yamlRepair.test.ts` holds them to that rather than the compiler.
  */
-const BLOCK_SCALAR_INDICATOR = String.raw`[>|](?:[+-][1-9]?|[1-9][+-]?)?`
-const BLOCK_SCALAR_TAIL = String.raw`(?:\s+#.*)?\s*$`
 /** `key: |`, at the end of a mapping line. */
-const MAPPING_BLOCK_SCALAR_HEADER = new RegExp(String.raw`:\s*${BLOCK_SCALAR_INDICATOR}${BLOCK_SCALAR_TAIL}`)
+export const MAPPING_BLOCK_SCALAR_HEADER = /:\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** `- |`, a block scalar as a sequence entry, which carries no key. */
-const LIST_BLOCK_SCALAR_HEADER = new RegExp(String.raw`^-\s*${BLOCK_SCALAR_INDICATOR}${BLOCK_SCALAR_TAIL}`)
+export const LIST_BLOCK_SCALAR_HEADER = /^-\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** Either form. Most repairs walk lines and need both. */
-const BLOCK_SCALAR_HEADER = new RegExp(
-  `${MAPPING_BLOCK_SCALAR_HEADER.source}|${LIST_BLOCK_SCALAR_HEADER.source}`,
-)
+export const BLOCK_SCALAR_HEADER = /(?::|^-)\s*[>|](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 /** The indicator alone, as a value: `foo:` on one line and `|` on the next. */
-const BLOCK_SCALAR_VALUE = new RegExp(String.raw`^\s*(${BLOCK_SCALAR_INDICATOR})${BLOCK_SCALAR_TAIL}`)
+export const BLOCK_SCALAR_VALUE = /^\s*([>|](?:[+-][1-9]?|[1-9][+-]?)?)(?:\s+#.*)?\s*$/
 
 /**
  * Repair YAML indentation for list items produced by model output.
@@ -2527,6 +2529,16 @@ export function repairYamlPlainScalarColons(yaml: string): string {
       const prefix = listScalarMatch[1]!
       const value = listScalarMatch[2]!
       const looksLikeListItemMapping = /^[A-Za-z_][\w_-]*\s*:\s+/.test(value)
+
+      // A block scalar opened as a sequence entry. `|` is a safe value start,
+      // so this line was pushed and skipped — and the arming at the bottom of
+      // the loop was skipped with it, leaving the body to be quoted line by
+      // line. Recognising the header was not enough; it has to arm here too.
+      if (BLOCK_SCALAR_HEADER.test(trimmed)) {
+        blockScalarBaseIndent = getLineIndent(line)
+        result.push(line)
+        continue
+      }
 
       if (SAFE_VALUE_START.test(value)) {
         result.push(line)

@@ -324,20 +324,37 @@ describe('beadsRouter flow validation', () => {
     it('names the lines the editor cannot represent, beside the ones that did not parse', async () => {
       const { ticket, paths } = createBeadsRouteTicket()
       // All valid JSON; none of them a bead. The editor's list drops each one,
-      // so a save built from that list writes them out of the file.
+      // so a save built from that list writes them out of the file. The last
+      // has an id and a field of the wrong type — checking the id alone let it
+      // past the banner and out of the file on the next save.
       writeBeadsFile(paths.beadsPath, [
         bead('B-1'), 'null', '[1,2]', '{"title":"no id"}', '{"id":"  "}', 'not json',
+        '{"id":"B-9","priority":"high"}',
       ].join('\n'))
 
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
 
       expect(await response.json()).toMatchObject({
-        items: [expect.objectContaining({ id: 'B-1' }), null, [1, 2], { title: 'no id' }, { id: '  ' }],
         malformedLines: [6],
-        unrepresentableLines: [2, 3, 4, 5],
+        unrepresentableLines: [2, 3, 4, 5, 7],
       })
-      expect(response.headers.get('X-Unrepresentable-Lines')).toBe('2,3,4,5')
-      expect(response.headers.get('X-Unrepresentable-Line-Count')).toBe('4')
+      expect(response.headers.get('X-Unrepresentable-Lines')).toBe('2,3,4,5,7')
+      expect(response.headers.get('X-Unrepresentable-Line-Count')).toBe('5')
+    })
+
+    it('accepts a row written in the spellings the reader canonicalises', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      // Judged on the fields the reader will find, not the names on the line:
+      // a record storing accepted spellings is not an unusable row.
+      writeBeadsFile(paths.beadsPath, `${JSON.stringify({
+        id: 'B-1', title: 'One', status: 'pending', priority: 1,
+        dependencies: { blockedBy: [], blocks: [] },
+        acceptance_criteria: ['AC-1'],
+      })}\n`)
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+
+      expect(await response.json()).toMatchObject({ unrepresentableLines: [] })
     })
 
     it('says nothing about them when every row is a bead', async () => {
@@ -393,6 +410,34 @@ describe('beadsRouter flow validation', () => {
       })
 
       expect(response.status).toBe(400)
+    })
+  })
+  describe('the edit receipt records which editor saved', () => {
+    const bead = { id: 'B-1', title: 'One', status: 'pending' as const, priority: 1, dependencies: { blocked_by: [], blocks: [] } }
+
+    async function saveFrom(editSurface?: string) {
+      const { ticket } = createBeadsRouteTicket()
+      patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...(editSurface ? { 'X-Edit-Surface': editSurface } : {}) },
+        body: JSON.stringify([bead]),
+      })
+      expect(response.status).toBe(200)
+      const receipt = getLatestPhaseArtifact(ticket.id, 'user_edit_receipt:beads', 'WAITING_BEADS_APPROVAL')
+      return JSON.parse(receipt!.content) as { edit_surface: string }
+    }
+
+    it.each([
+      ['jsonl', 'jsonl'],
+      ['structured', 'structured'],
+      // A header value is an interface: anything the client did not send has to
+      // fall back to the surface that has always been recorded, not to a value
+      // no reader knows.
+      [undefined, 'structured'],
+      ['something-else', 'structured'],
+    ])('records %s as %s', async (sent, recorded) => {
+      expect((await saveFrom(sent)).edit_surface).toBe(recorded)
     })
   })
 })

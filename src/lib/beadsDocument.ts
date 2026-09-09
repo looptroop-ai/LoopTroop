@@ -151,8 +151,11 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
     Object.entries(bead).filter(([key]) => {
       const canonical = canonicalFor.get(key)
       // Kept unless the canonical name carries the value: an alias that is the
-      // only copy there is is not superseded by anything.
-      return canonical === undefined || bead[canonical] === undefined
+      // only copy there is is not superseded by anything. `null` carries
+      // nothing — it is what a writer leaves when it clears a field, and every
+      // reader treats it as absent — so `qaOrigin: null` must not delete the
+      // origin stored under the other spelling.
+      return canonical === undefined || !carriesValue(bead[canonical])
     }),
   ) as T
 }
@@ -171,10 +174,20 @@ export function hasUnstructuredBeadGuidance(bead: RawBead): boolean {
   // structured, and the save then deleted the text.
   return BEAD_FIELD_ALIASES.contextGuidance.some((key) => {
     const value = bead[key]
-    if (value === undefined || value === null) return false
-    // Anything that is not a patterns/anti-patterns object: free text, but also
-    // a list of guidance strings, which reads as empty lists and saves as them.
-    return !isRecord(value)
+    if (!carriesValue(value)) return false
+    // Free text, or a list of guidance strings: both read as empty lists and
+    // save as them.
+    if (!isRecord(value)) return true
+    // A record is only representable if the editor's two fields are all it
+    // holds and both are lists of strings. `{ patterns: 'text' }` and
+    // `{ rationale: '…' }` are read as empty and written back as empty, which
+    // is the same silent replacement one shape deeper.
+    return Object.entries(value).some(([nested, nestedValue]) => {
+      const known = GUIDANCE_ALIASES.patterns.includes(nested as never)
+        || GUIDANCE_ALIASES.anti_patterns.includes(nested as never)
+      if (!known) return true
+      return !Array.isArray(nestedValue) || nestedValue.some((item) => typeof item !== 'string')
+    })
   })
 }
 
@@ -200,6 +213,11 @@ const GUIDANCE_ALIASES = {
  * read the same fields and must not agree about whitespace.
  */
 export type BeadReadPolicy = 'display' | 'verbatim'
+
+/** Present, in the sense every reader means it: `null` is not a value. */
+function carriesValue(value: unknown): boolean {
+  return value !== undefined && value !== null
+}
 
 function candidates(bead: RawBead, field: BeadField): unknown[] {
   return BEAD_FIELD_ALIASES[field].map((key) => bead[key])

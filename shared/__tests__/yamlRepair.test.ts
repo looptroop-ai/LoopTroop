@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as jsYaml from 'js-yaml'
-import { repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
+import { BLOCK_SCALAR_HEADER, BLOCK_SCALAR_VALUE, LIST_BLOCK_SCALAR_HEADER, MAPPING_BLOCK_SCALAR_HEADER, repairYamlDoubleQuotedInvalidEscapes, repairYamlDoubleQuotedScalarInnerQuotes, repairYamlDuplicateKeys, repairYamlFreeTextScalars, repairYamlIndentation, repairYamlInlineKeys, repairYamlInlineSequenceParents, repairYamlListDashSpace, repairYamlMappingKeyColonSpace, repairYamlNestedMappingChildren, repairYamlPlainScalarColons, repairYamlQuotedScalarFragments, repairYamlReservedIndicatorScalars, repairYamlSequenceEntryIndent, repairYamlSequenceItemPrimaryKeys, repairYamlTypeUnionScalars, repairYamlUnclosedQuotes, repairYamlWrappedPlainListScalars, stripCodeFences } from '../yamlRepair'
 
 describe.concurrent('repairYamlListDashSpace', () => {
   it.each([
@@ -1586,6 +1586,41 @@ describe.concurrent('block scalar bodies are left alone', () => {
 describe.concurrent('block scalar headers YAML allows', () => {
   const bodyLine = '  key1: value1 key2: value2'
 
+  /**
+   * The four patterns are written out rather than composed, so nothing but this
+   * holds them to the same grammar. A `new RegExp` over a shared string would
+   * have been the compiler's job — and a non-literal constructor, which the
+   * security scanner reads as a finding.
+   */
+  it('spells the same indicator and tail in all four patterns', () => {
+    const indicator = '[>|](?:[+-][1-9]?|[1-9][+-]?)?'
+    const tail = String.raw`(?:\s+#.*)?\s*$`
+
+    for (const pattern of [
+      MAPPING_BLOCK_SCALAR_HEADER,
+      LIST_BLOCK_SCALAR_HEADER,
+      BLOCK_SCALAR_HEADER,
+      BLOCK_SCALAR_VALUE,
+    ]) {
+      expect(pattern.source).toContain(indicator)
+      expect(pattern.source.endsWith(tail)).toBe(true)
+    }
+  })
+
+  it.each([
+    ['a mapping header', MAPPING_BLOCK_SCALAR_HEADER, 'description: |2', '- |2'],
+    ['a sequence header', LIST_BLOCK_SCALAR_HEADER, '- |2', 'description: |2'],
+  ])('%s matches its own form and not the other', (_, pattern, matches, doesNot) => {
+    expect(pattern.test(matches)).toBe(true)
+    expect(pattern.test(doesNot)).toBe(false)
+  })
+
+  it('matches either form through the combined pattern', () => {
+    expect(BLOCK_SCALAR_HEADER.test('description: |2')).toBe(true)
+    expect(BLOCK_SCALAR_HEADER.test('- |2')).toBe(true)
+    expect(BLOCK_SCALAR_HEADER.test('description: not a block')).toBe(false)
+  })
+
   it.each([
     ['a plain indicator', 'description: |'],
     ['a folded indicator', 'description: >'],
@@ -1606,6 +1641,28 @@ describe.concurrent('block scalar headers YAML allows', () => {
     const input = ['items:', '  - |', '    key1: value1 key2: value2'].join('\n')
 
     expect(repairYamlInlineKeys(input)).toBe(input)
+  })
+
+  it.each([
+    ['|', 'a plain indicator'],
+    ['|2', 'an indentation indicator'],
+    ['>', 'a folded indicator'],
+    ['| # note', 'a trailing comment'],
+  ])('repairYamlPlainScalarColons leaves an indented list body under %s alone', (header) => {
+    // Recognising the header was not enough here: `|` is a safe value start, so
+    // the line was pushed and skipped before the loop's arming ran, and the
+    // body was quoted line by line.
+    const input = ['key:', `  - ${header}`, '    key1: v1 key2: v2'].join('\n')
+
+    expect(repairYamlPlainScalarColons(input)).toBe(input)
+  })
+
+  it('repairYamlPlainScalarColons resumes after an indented list block scalar', () => {
+    const input = ['key:', '  - |', '    text', 'after: a: b'].join('\n')
+
+    expect(repairYamlPlainScalarColons(input)).toBe(
+      ['key:', '  - |', '    text', 'after: "a: b"'].join('\n'),
+    )
   })
 
   it.each([

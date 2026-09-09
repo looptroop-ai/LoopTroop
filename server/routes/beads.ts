@@ -8,6 +8,7 @@ import { safeAtomicWrite } from '../io/atomicWrite'
 import { syncTicketRuntimeProjection } from '../storage/ticketRuntimeProjection'
 import { clearExecutionSetupState } from '../phases/executionSetup/storage'
 import { upsertBeadsApprovalSnapshot } from '../phases/beads/document'
+import { canonicalizeBeadAliases, describeBeadShapeProblem } from '../phases/beads/beadsFile'
 import { contentSha256 } from '../lib/contentHash'
 import { parseJsonlContent } from '../io/jsonl'
 import { isRecord } from '@shared/typeGuards'
@@ -67,17 +68,22 @@ const MALFORMED_LINE_HEADER_LIMIT = 50
 /**
  * The lines holding a record the approval editor cannot represent.
  *
- * A line that parses is not yet a bead: `null`, an array, or an object with no
- * usable `id` are all valid JSON that the editor's list drops. Protecting only
- * the lines that fail to *parse* left those droppable in exactly the way this
- * route stopped dropping the others — the structured editor is built from the
- * records it can read, and saving it writes the rest out of the file.
+ * A line that parses is not yet a bead: `null`, an array, an object with no
+ * usable `id`, or one whose fields hold the wrong kind of value. Protecting
+ * only the lines that fail to *parse* left those droppable in exactly the way
+ * this route stopped dropping the others — the structured editor is built from
+ * the records it can read, and saving it writes the rest out of the file.
  *
- * The test is the one the server's own bead reader applies.
+ * Literally the reader's own test, not a paraphrase of it: checking the id
+ * alone let `{"id":"B-1","priority":"high"}` past the banner, out of the
+ * editor, and out of the file on the next save — and past approval, into a
+ * scheduler that drops it with a warning nobody reads. Aliases are
+ * canonicalised first, so a record storing accepted spellings is judged on the
+ * fields the reader will actually find.
  */
 function findUnrepresentableLines(items: unknown[], itemLines: number[]): number[] {
   return items.flatMap((item, index) => (
-    isRecord(item) && typeof item.id === 'string' && item.id.trim()
+    describeBeadShapeProblem(isRecord(item) ? canonicalizeBeadAliases(item) : item) === null
       ? []
       : [itemLines[index] ?? index + 1]
   ))

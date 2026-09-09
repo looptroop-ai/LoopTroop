@@ -114,9 +114,15 @@ function validateJsonl(jsonl: string): string | null {
     const line = lines[i]!
     if (!line.trim()) continue
     try {
-      const parsed = JSON.parse(line)
+      const parsed: unknown = JSON.parse(line)
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return `Line ${i + 1}: expected a JSON object, got ${Array.isArray(parsed) ? 'array' : typeof parsed}`
+      }
+      // Checked here so the number the operator is given is the line they are
+      // looking at. The route rejects this too, but by the row's position in
+      // the parsed array — which is not the file line once blanks are in play.
+      if (!isRecord(parsed) || typeof parsed.id !== 'string' || !parsed.id.trim()) {
+        return `Line ${i + 1}: every bead needs a non-empty "id"`
       }
     } catch {
       return `Line ${i + 1}: invalid JSON — ${line.substring(0, 60)}…`
@@ -470,7 +476,7 @@ function BeadsApprovalPane({
       // offering the way back, is the whole point of refusing rather than
       // overwriting.
       setSaveError(message.includes('changed since it was read')
-        ? `${message}. Reload the current file to see what is there now — your draft is kept until you do.`
+        ? `${message}. Reload to work from the file that is there now — reloading replaces your draft with it.`
         : message)
       if (message.includes('changed since it was read')) setStaleSave(true)
     } finally {
@@ -595,8 +601,7 @@ function BeadsApprovalPane({
               </div>
             ) : null}
             <div>
-              Open the JSONL tab to repair the file — the text is there as stored. Approving is blocked until every line
-              reads as a bead.
+              Open the JSONL tab to repair the file. Approving is blocked until every line reads as a bead.
             </div>
           </div>
         ) : null}
@@ -633,7 +638,17 @@ function BeadsApprovalPane({
                 onClick={() => {
                   setStaleSave(false)
                   setSaveError(null)
-                  void refetchBeads()
+                  // Rebased onto what lands, not merely refetched. The restore
+                  // effect runs once, so the drafts would otherwise keep the
+                  // refused bytes while the autosave re-anchored them to the
+                  // *new* hash — after which the next save passes the guard and
+                  // overwrites the file this reload just fetched.
+                  void refetchBeads().then((result) => {
+                    const next = result.data
+                    if (!next) return
+                    setJsonlDraft(next.rawContent)
+                    setStructuredDraft(next.beads.length > 0 ? parseBeadsForEditor(next.beads) : null)
+                  })
                 }}
               >
                 Reload file
@@ -705,9 +720,7 @@ function BeadsApprovalPane({
                     <>
                       The structured editor is unavailable while the tracker holds rows it cannot represent: it would
                       contain only the beads it could read, and saving it would delete the rest. Repair the file in the
-                      JSONL tab instead — {(hasMalformedLines ? malformedLineSummary : unrepresentableLineSummary).toLowerCase()}{' '}
-                      {(hasMalformedLines ? malformedLines : unrepresentableLines).length === 1 ? 'is' : 'are'} there as
-                      stored.
+                      JSONL tab instead, which opens on the file as stored.
                     </>
                   ) : (
                     <>

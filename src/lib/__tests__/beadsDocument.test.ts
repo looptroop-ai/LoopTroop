@@ -320,6 +320,21 @@ describe('the superseded spellings', () => {
     })
   })
 
+  it('treats a canonical null as carrying nothing, so the other spelling survives', () => {
+    // `null` is what a writer leaves when it clears a field, and every reader
+    // reads it as absent. Counting it as "the canonical name has this" deleted
+    // the value the record actually holds.
+    expect(stripSupersededBeadAliases({
+      id: 'B-1',
+      qaOrigin: null,
+      qa_origin: { sourceItems: [] },
+    } as unknown as RawBead)).toEqual({
+      id: 'B-1',
+      qaOrigin: null,
+      qa_origin: { sourceItems: [] },
+    })
+  })
+
   it('keeps a spelling that is the only copy of its value', () => {
     // The editor normalizes the fields it edits and nothing else, so a record
     // storing only `started_at`, `bead_start_commit` or `qa_origin` has no
@@ -345,7 +360,26 @@ describe('hasUnstructuredBeadGuidance', () => {
   })
 
   it.each([
+    ['a list of guidance strings', { contextGuidance: ['a', 'b'] }],
+    ['a record whose lists are not lists', { contextGuidance: { patterns: 'do X' } }],
+    ['a record holding a key the editor has no field for', { contextGuidance: { rationale: 'because' } }],
+    ['a list holding something that is not a string', { contextGuidance: { patterns: [1] } }],
+    ['free text under the other spelling of a structured record', {
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      context_guidance: 'free text',
+    }],
+  ])('reports %s', (_, bead) => {
+    // Everything here reads as empty pattern lists in the editor and is written
+    // back as empty lists on save: the same silent replacement, one shape deeper
+    // each time.
+    expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(true)
+  })
+
+  it.each([
     ['a structured guidance object', { contextGuidance: { patterns: ['p'], anti_patterns: [] } }],
+    ['the same under the camelCase anti-pattern spelling', { contextGuidance: { antiPatterns: ['a'] } }],
+    ['an empty guidance object', { contextGuidance: {} }],
+    ['guidance explicitly cleared', { contextGuidance: null }],
     ['no guidance at all', {}],
   ])('does not report %s', (_, bead) => {
     expect(hasUnstructuredBeadGuidance(bead as RawBead)).toBe(false)

@@ -1200,7 +1200,10 @@ describe('Approval surfaces on a failed request', () => {
       const url = String(input)
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
         reads += 1
-        return createBeadsRawResponse([{ id: 'B-1', title: 'One', status: 'pending' }], { contentSha256: 'e'.repeat(64) })
+        // The second read is the file that won the race.
+        return reads === 1
+          ? createBeadsRawResponse([{ id: 'B-1', title: 'One', status: 'pending' }], { contentSha256: 'e'.repeat(64) })
+          : createBeadsRawResponse([{ id: 'B-1', title: 'Repaired by someone else', status: 'pending' }], { contentSha256: 'f'.repeat(64) })
       }
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       if (url.endsWith('/attempts')) return createJsonResponse([])
@@ -1220,11 +1223,18 @@ describe('Approval surfaces on a failed request', () => {
 
     // Refusing the write is only half of it: the screen is still showing the
     // file the draft was built on, and there was no way to see the other one.
-    expect(await screen.findByText(/Reload the current file to see what is there now/)).toBeInTheDocument()
+    expect(await screen.findByText(/Reload to work from the file that is there now/)).toBeInTheDocument()
     const readsBeforeReload = reads
     fireEvent.click(screen.getByRole('button', { name: 'Reload file' }))
 
     await waitFor(() => expect(reads).toBeGreaterThan(readsBeforeReload))
+    // Rebased, not merely refetched: left holding the refused bytes, the
+    // autosave re-anchors them to the new hash and the next save passes the
+    // guard and overwrites the file this reload just fetched.
+    await waitFor(() => {
+      expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value)
+        .toContain('Repaired by someone else')
+    })
   })
   /**
    * A draft belongs to the file it was typed against.

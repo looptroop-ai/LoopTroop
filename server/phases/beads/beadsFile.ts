@@ -143,8 +143,16 @@ const BEAD_FIELD_CHECKS: Record<string, (value: unknown) => boolean> = {
   qaOrigin: isQaOrigin,
 }
 
-/** The first thing wrong with an entry's shape, or null when nothing is. */
-function describeBeadShapeProblem(entry: unknown): string | null {
+/**
+ * The first thing wrong with an entry's shape, or null when nothing is.
+ *
+ * Exported so the route that reports unusable rows can apply the *same* test:
+ * a row this rejects is one the scheduler drops and the approval editor cannot
+ * hold, and reporting a narrower set left those rows silently droppable.
+ * Canonicalise first — `canonicalizeBeadAliases` — or a record storing only
+ * accepted spellings is judged on fields it does not have under those names.
+ */
+export function describeBeadShapeProblem(entry: unknown): string | null {
   if (!isRecord(entry)) return 'entry is not an object'
   if (typeof entry.id !== 'string' || !entry.id.trim()) return 'no usable id'
   for (const [field, isValid] of Object.entries(BEAD_FIELD_CHECKS)) {
@@ -173,30 +181,69 @@ function normalizeBeadCollections(bead: Bead): Bead {
 }
 
 /**
- * Moves the nested spellings a record may carry onto the canonical ones.
+ * Every spelling a stored bead may carry, mapped to the name readers use.
  *
- * The interface accepts `dependencies.blockedBy` and
- * `contextGuidance.antiPatterns` — older writers used both — and this reader is
- * what the scheduler runs on. Without this the two disagree: a plan shows its
- * dependencies on the approval screen, is approved, and then the bead is
- * dropped here with a warning nobody is reading. Canonicalising once at the
- * boundary is what makes the alias real rather than cosmetic.
+ * The interface accepts both spellings of every field — older writers used
+ * snake_case throughout — and this reader is what the scheduler and the coding
+ * prompt run on. Without this the two disagree, and not gently: `formatBeadContext`
+ * dereferences `acceptanceCriteria`, `targetFiles`, `tests` and `testCommands`
+ * unguarded, so a bead stored with `acceptance_criteria` and nothing else
+ * reached the prompt as `undefined` and threw there. The quieter ones are
+ * worse: an alias-only `bead_start_commit` blocks a retry with a false cause,
+ * alias-only timestamps resume the wrong bead, and an alias-only `qa_origin`
+ * drops the Manual QA evidence with no warning at all.
  *
- * Only when the canonical key is absent: a record carrying both keeps the one
- * the shape check and every reader already use.
+ * Kept in step with the interface's own table in `src/lib/beadsDocument.ts`,
+ * which `beadsFile.test.ts` asserts.
  */
-function canonicalizeNestedAliases(entry: Record<string, unknown>): Record<string, unknown> {
-  const nested: Array<[string, string, string]> = [
-    ['dependencies', 'blocked_by', 'blockedBy'],
-    ['contextGuidance', 'patterns', 'patterns'],
-    ['contextGuidance', 'anti_patterns', 'antiPatterns'],
-  ]
+export const BEAD_FIELD_ALIASES: Record<string, string> = {
+  prd_refs: 'prdRefs',
+  prd_references: 'prdRefs',
+  acceptance_criteria: 'acceptanceCriteria',
+  test_commands: 'testCommands',
+  test_command_reason: 'testCommandReason',
+  target_files: 'targetFiles',
+  issue_type: 'issueType',
+  external_ref: 'externalRef',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt',
+  completed_at: 'completedAt',
+  started_at: 'startedAt',
+  bead_start_commit: 'beadStartCommit',
+  context_guidance: 'contextGuidance',
+  qa_origin: 'qaOrigin',
+}
+
+/** The nested keys, which carry spellings of their own. */
+export const NESTED_BEAD_FIELD_ALIASES: Array<[field: string, canonical: string, alias: string]> = [
+  ['dependencies', 'blocked_by', 'blockedBy'],
+  ['contextGuidance', 'anti_patterns', 'antiPatterns'],
+]
+
+/** Present, in the sense the readers mean: `null` is not a value either. */
+function carriesValue(value: unknown): boolean {
+  return value !== undefined && value !== null
+}
+
+/**
+ * Moves the spellings a record may carry onto the canonical ones.
+ *
+ * Only where the canonical key holds nothing: a record carrying both keeps the
+ * one every reader already uses. Runs before the shape check, so a bead is
+ * judged on the fields readers will actually find.
+ */
+export function canonicalizeBeadAliases(entry: Record<string, unknown>): Record<string, unknown> {
   let result = entry
-  for (const [field, canonical, alias] of nested) {
-    if (canonical === alias) continue
+  for (const [alias, canonical] of Object.entries(BEAD_FIELD_ALIASES)) {
+    if (!carriesValue(result[alias]) || carriesValue(result[canonical])) continue
+    const { [alias]: aliased, ...rest } = result
+    result = { ...rest, [canonical]: aliased }
+  }
+
+  for (const [field, canonical, alias] of NESTED_BEAD_FIELD_ALIASES) {
     const value = result[field]
     if (!isRecord(value)) continue
-    if (value[canonical] !== undefined || value[alias] === undefined) continue
+    if (!carriesValue(value[alias]) || carriesValue(value[canonical])) continue
     const { [alias]: aliased, ...rest } = value
     result = { ...result, [field]: { ...rest, [canonical]: aliased } }
   }
@@ -217,7 +264,7 @@ export function readBeadsFile(path: string, options: ReadBeadsFileOptions = {}):
     // `readJsonl<Bead>` casts rather than checks, so a `null` line threw on
     // `.status` and took the whole tracker with it, and any other non-object
     // became a `Bead` with no id that later code compared against.
-    const canonical = isRecord(entry) ? canonicalizeNestedAliases(entry) : entry
+    const canonical = isRecord(entry) ? canonicalizeBeadAliases(entry) : entry
     const problem = describeBeadShapeProblem(canonical)
     if (problem) {
       if (failClosed) {

@@ -60,6 +60,16 @@ interface BeadsApprovalUiState {
 interface BeadsArtifactResponse {
   beads: unknown[]
   contentSha256: string | null
+  /**
+   * The tracker as stored, damaged lines included.
+   *
+   * Not rebuilt from `beads`: a line that did not parse is not in that array,
+   * so a JSONL tab reconstructed from it shows a file the operator does not
+   * have — and saving it deletes the damage instead of repairing it.
+   */
+  rawContent: string
+  /** 1-based line numbers in the file that did not parse. */
+  malformedLines: number[]
 }
 
 function beadsArrayToJsonl(beads: unknown[]): string {
@@ -162,15 +172,19 @@ function BeadsApprovalPane({
   } = useQuery({
     queryKey: ['artifact', ticket.id, 'beads', 'approval'],
     queryFn: async ({ signal }) => {
-      const r = await fetch(apiTicketPath(ticket.id, 'beads'), { signal })
+      const r = await fetch(apiTicketPath(ticket.id, 'beads', 'raw'), { signal })
       await throwIfNotOk(r, 'Failed to load beads')
       const contentSha256 = typeof r.headers?.get === 'function'
         ? r.headers.get('X-Content-Sha256')
         : null
-      const data = await r.json()
+      const data = await r.json() as Partial<{ content: string; items: unknown[]; malformedLines: number[] }>
       return {
-        beads: Array.isArray(data) ? data as unknown[] : [],
+        beads: Array.isArray(data.items) ? data.items : [],
         contentSha256,
+        rawContent: typeof data.content === 'string' ? data.content : '',
+        malformedLines: Array.isArray(data.malformedLines)
+          ? data.malformedLines.filter((line): line is number => typeof line === 'number')
+          : [],
       } satisfies BeadsArtifactResponse
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -178,7 +192,14 @@ function BeadsApprovalPane({
 
   const beadsArray = useMemo(() => fetchedBeads?.beads ?? [], [fetchedBeads])
   const currentContentSha256 = fetchedBeads?.contentSha256 ?? null
-  const rawJsonl = useMemo(() => beadsArray.length > 0 ? beadsArrayToJsonl(beadsArray) : '', [beadsArray])
+  const malformedLines = useMemo(() => fetchedBeads?.malformedLines ?? [], [fetchedBeads])
+  // The file as stored. A damaged line is only visible — and only repairable —
+  // here; the structured editor is built from the records that parsed.
+  const rawJsonl = fetchedBeads?.rawContent ?? ''
+  const hasMalformedLines = malformedLines.length > 0
+  const malformedLineSummary = malformedLines.length === 1
+    ? `Line ${malformedLines[0]}`
+    : `Lines ${malformedLines.slice(0, 10).join(', ')}${malformedLines.length > 10 ? `, +${malformedLines.length - 10} more` : ''}`
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [editTab, setEditTab] = useState<EditTab>('structured')
@@ -237,7 +258,7 @@ function BeadsApprovalPane({
     skipRestoreRef,
     restore: (persisted, document) => {
       const documentBeads = Array.isArray(document.beads) ? document.beads : []
-      const documentRaw = documentBeads.length > 0 ? beadsArrayToJsonl(documentBeads) : ''
+      const documentRaw = typeof document.rawContent === 'string' ? document.rawContent : ''
       const documentStructured = documentBeads.length > 0 ? parseBeadsForEditor(documentBeads) : null
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
@@ -301,6 +322,15 @@ function BeadsApprovalPane({
         setSaveError(error)
         return
       }
+    } else if (hasMalformedLines) {
+      // The structured editor holds only the records that parsed, so saving it
+      // over the file is a deletion of everything else in it.
+      setSaveError(
+        `${malformedLineSummary} could not be read, and the structured editor does not contain `
+        + `${malformedLines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead — saving from here `
+        + `would drop ${malformedLines.length === 1 ? 'that line' : 'those lines'}.`,
+      )
+      return
     }
 
     setIsSaving(true)
@@ -313,7 +343,13 @@ function BeadsApprovalPane({
 
       const response = await fetch(apiTicketPath(ticket.id, 'beads'), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // The file this draft was built on. The route refuses the write if
+          // the tracker changed in between, rather than overwriting whatever
+          // landed — a repair of the damaged lines, most likely.
+          ...(currentContentSha256 ? { 'X-Content-Sha256': currentContentSha256 } : {}),
+        },
         body: JSON.stringify(beadsToSave),
       })
 
@@ -326,6 +362,10 @@ function BeadsApprovalPane({
       queryClient.setQueryData(['artifact', ticket.id, 'beads', 'approval'], {
         beads: beadsToSave,
         contentSha256: nextContentSha256,
+        // What was just written is the file now, and it parses by construction:
+        // the save is what repairs a tracker that had damaged lines.
+        rawContent: beadsArrayToJsonl(beadsToSave),
+        malformedLines: [],
       } satisfies BeadsArtifactResponse)
       queryClient.setQueryData(['artifact', ticket.id, 'beads'], beadsToSave)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
@@ -340,7 +380,7 @@ function BeadsApprovalPane({
     } finally {
       setIsSaving(false)
     }
-  }, [editTab, jsonlDraft, structuredDraft, ticket.id, queryClient])
+  }, [currentContentSha256, editTab, hasMalformedLines, jsonlDraft, malformedLineSummary, malformedLines.length, structuredDraft, ticket.id, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -433,12 +473,23 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || hasMalformedLines || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
           </Button>
         </div>
+
+        {hasMalformedLines ? (
+          <div
+            role="status"
+            className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
+          >
+            {malformedLineSummary} could not be read as JSON and {malformedLines.length === 1 ? 'is' : 'are'} not in the
+            structured editor. Open the JSONL tab to repair {malformedLines.length === 1 ? 'it' : 'them'} — the text is
+            there as stored. Approving is blocked until the whole file parses.
+          </div>
+        ) : null}
 
         <PhaseArtifactsPanel
           phase={phase}
@@ -518,6 +569,13 @@ function BeadsApprovalPane({
                       JSONL looks structurally valid.
                     </div>
                   )}
+                </div>
+              ) : hasMalformedLines ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+                  The structured editor is unavailable while the tracker holds lines it cannot read: it would contain
+                  only the beads that parsed, and saving it would delete the rest. Repair the file in the JSONL tab
+                  instead — {malformedLineSummary.toLowerCase()} {malformedLines.length === 1 ? 'is' : 'are'} there as
+                  stored.
                 </div>
               ) : structuredDraft && structuredDraft.length > 0 ? (
                 <BeadsApprovalEditor

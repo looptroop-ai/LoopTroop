@@ -5,6 +5,7 @@ import { assertExpectedContentSha256 } from '../../lib/artifactApproval'
 import { contentSha256 } from '../../lib/contentHash'
 import { nowIso } from '../../lib/dateUtils'
 import { commandSpecSchema } from '@shared/commandSpec'
+import { parseJsonlContent } from '../../io/jsonl'
 
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
@@ -45,25 +46,29 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     currentContent: content,
     expectedContentSha256,
   })
-  const lines = content.split('\n').filter((line) => line.trim() !== '')
-  const beadCount = lines.length
+  // Parsed through the shared reader so the line numbers reported here are the
+  // ones in the file — the same numbers `GET /beads` reports as damaged, and
+  // the same ones an operator opens their editor at. Filtering blank lines
+  // first and numbering what survived made approval name a different line from
+  // the read that sent them there.
+  const { items, itemLines, malformedLines } = parseJsonlContent<unknown>(content, beadsPath)
 
+  // Parse the complete JSONL document before semantic validation so a
+  // malformed later line remains the primary error.
+  if (malformedLines.length > 0) {
+    throw new Error(`Invalid JSON at bead line ${malformedLines[0]}`)
+  }
+
+  const beadCount = items.length
   if (beadCount === 0) {
     throw new Error('Beads artifact is empty')
   }
 
-  // Parse the complete JSONL document before semantic validation so a
-  // malformed later line remains the primary error.
   const parsedRecords: Array<Record<string, unknown>> = []
-  for (const [index, line] of lines.entries()) {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      throw new Error(`Invalid JSON at bead line ${index + 1}`)
-    }
+  for (const [index, parsed] of items.entries()) {
+    const line = itemLines[index] ?? index + 1
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      throw new Error(`Bead at line ${index + 1} is not a JSON object`)
+      throw new Error(`Bead at line ${line} is not a JSON object`)
     }
     parsedRecords.push(parsed as Record<string, unknown>)
   }
@@ -97,11 +102,10 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
 
   // Stamp createdAt on all beads at approval time
   const approvedAt = nowIso()
-  const updatedLines = lines.map((line) => {
-    const parsed = JSON.parse(line) as Record<string, unknown>
-    parsed.createdAt = approvedAt
-    return JSON.stringify(parsed)
-  })
+  // Rewritten from the records already parsed above rather than re-parsing the
+  // text: two passes over the same lines is two chances to disagree about what
+  // the file holds.
+  const updatedLines = parsedRecords.map((record) => JSON.stringify({ ...record, createdAt: approvedAt }))
 
   const updatedContent = updatedLines.join('\n') + '\n'
   writeFileSync(beadsPath, updatedContent, 'utf-8')

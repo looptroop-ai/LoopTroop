@@ -100,6 +100,28 @@ vi.mock('@/components/editor/YamlEditor', () => ({
   ),
 }))
 
+/**
+ * The beads approval pane reads `/beads/raw`: the file as stored, the records
+ * that parsed, and the lines that did not. Rebuilding the file from the records
+ * is what the route stopped doing, so the fixture keeps them separate too.
+ */
+function createBeadsRawResponse(
+  items: unknown[],
+  options: { content?: string; malformedLines?: number[]; contentSha256?: string } = {},
+) {
+  const content = options.content ?? (items.length > 0 ? `${items.map((item) => JSON.stringify(item)).join('\n')}\n` : '')
+  return Promise.resolve(new Response(
+    JSON.stringify({ content, items, malformedLines: options.malformedLines ?? [] }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Content-Sha256': options.contentSha256 ?? 'sha-for-tests',
+      },
+    },
+  ))
+}
+
 function renderApprovalView(ticket: Ticket, artifactType: 'interview' | 'prd' | 'beads' | 'execution_setup_plan' = 'interview') {
   return renderWithProviders(<ApprovalView ticket={ticket} artifactType={artifactType} />)
 }
@@ -618,8 +640,8 @@ describe('Interview approval UI', () => {
   it('uses the shared bead renderer with nested metadata in beads approval view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
-        return createJsonResponse([
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([
           {
             id: 'proj-1-review-approval-metadata',
             title: 'Review approval metadata',
@@ -665,8 +687,8 @@ describe('Interview approval UI', () => {
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
-        return createJsonResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
       }
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       throw new Error(`Unexpected fetch: ${url}`)
@@ -695,8 +717,8 @@ describe('Interview approval UI', () => {
     })
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
-        return createJsonResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse([{ id: 'bead-1', title: 'Autosaved bead', status: 'pending' }])
       }
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       throw new Error(`Unexpected fetch: ${url}`)
@@ -751,20 +773,10 @@ describe('Interview approval UI', () => {
 
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input)
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
-        return Promise.resolve(
-          new Response(JSON.stringify([
-            {
-              id: 'proj-1-coverage-warning',
-              title: 'Render coverage warning state',
-            },
-          ]), {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Content-Sha256': 'a'.repeat(64),
-            },
-          }),
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse(
+          [{ id: 'proj-1-coverage-warning', title: 'Render coverage warning state' }],
+          { contentSha256: 'a'.repeat(64) },
         )
       }
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) {
@@ -905,7 +917,7 @@ describe('Approval surfaces on a failed request', () => {
           headers: { 'Content-Type': 'application/json' },
         }))
       }
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) return createBeadsRawResponse([])
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -921,9 +933,9 @@ describe('Approval surfaces on a failed request', () => {
       const url = String(input)
       if (url.endsWith('/attempts')) return createJsonResponse([])
       if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
-        return Promise.resolve(new Response(JSON.stringify({ error: 'Corrupted JSONL data' }), {
-          status: 500,
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Ticket not found' }), {
+          status: 404,
           headers: { 'Content-Type': 'application/json' },
         }))
       }
@@ -933,7 +945,7 @@ describe('Approval surfaces on a failed request', () => {
     renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
 
     expect(await screen.findByText('The beads artifact could not be loaded.')).toBeInTheDocument()
-    expect(screen.getByText('Failed to load beads (HTTP 500: Corrupted JSONL data)')).toBeInTheDocument()
+    expect(screen.getByText('Failed to load beads (HTTP 404: Ticket not found)')).toBeInTheDocument()
     expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument()
   })
 
@@ -951,13 +963,13 @@ describe('Approval surfaces on a failed request', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input)
       if (url.endsWith('/attempts')) return createJsonResponse([])
-      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads`) {
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
         // With the content hash present the button would otherwise be enabled,
         // so the assertion below is about coverage and nothing else.
-        return Promise.resolve(new Response(
-          JSON.stringify([{ id: 'b1', title: 'One', status: 'pending', iteration: 0 }]),
-          { status: 200, headers: { 'Content-Type': 'application/json', 'X-Content-Sha256': 'abc' } },
-        ))
+        return createBeadsRawResponse(
+          [{ id: 'b1', title: 'One', status: 'pending', iteration: 0 }],
+          { contentSha256: 'abc' },
+        )
       }
       throw new Error(`Unexpected fetch: ${url}`)
     })
@@ -971,5 +983,143 @@ describe('Approval surfaces on a failed request', () => {
     await waitFor(() => expect(screen.queryByText('No beads artifact available yet.')).not.toBeInTheDocument())
     await waitFor(() => expect(screen.queryByText('Loading beads…')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: /^Approve/ })).toBeDisabled()
+  })
+  /**
+   * A tracker with a line nobody could read.
+   *
+   * The route stopped rejecting the whole file, which is what made this screen
+   * work again — and made it dangerous: the structured editor holds only the
+   * records that parsed, so writing it back deletes the rest. The damaged text
+   * has to be visible, the save that would drop it has to be refused, and
+   * approval has to wait until the file parses.
+   */
+  describe('a beads tracker with damaged lines', () => {
+    const DAMAGED = ['{"id":"B-1","title":"Intact","status":"pending"}', '{"id": "B-2", ', ''].join('\n')
+
+    function stubDamagedTracker(init: { malformedLines?: number[] } = {}) {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, requestInit) => {
+        const url = String(input)
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+          return createBeadsRawResponse(
+            [{ id: 'B-1', title: 'Intact', status: 'pending' }],
+            { content: DAMAGED, malformedLines: init.malformedLines ?? [2], contentSha256: 'b'.repeat(64) },
+          )
+        }
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+        if (url.endsWith('/attempts')) return createJsonResponse([])
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && requestInit?.method === 'PUT') {
+          return createJsonResponse({ success: true })
+        }
+        throw new Error(`Unexpected fetch: ${url}`)
+      })
+      renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+      return fetchSpy
+    }
+
+    it('names the damaged lines and blocks approval until the file parses', async () => {
+      stubDamagedTracker()
+
+      expect(await screen.findByText(/Line 2 could not be read as JSON/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled()
+    })
+
+    it('keeps the damaged text in the JSONL editor rather than the beads it could parse', async () => {
+      stubDamagedTracker()
+
+      // Opened the way a person opens it — Edit, then the JSONL tab — so the
+      // draft comes from the file the pane read, not from a persisted draft.
+      // The Edit button stays disabled until the draft state has been restored.
+      await screen.findByText(/Line 2 could not be read as JSON/)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeEnabled())
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'JSONL' }))
+
+      // The line the parser rejected: only here can anyone repair it, and a tab
+      // rebuilt from the parsed records would not contain it at all.
+      await waitFor(() => {
+        expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value).toContain('{"id": "B-2", ')
+      })
+    })
+
+    it('restores a saved draft from the file too, not from the parsed records', async () => {
+      // The other way in: the pane restores an interrupted edit from its
+      // persisted UI state, and that path builds its own copy of the draft.
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: { isEditMode: true, editTab: 'jsonl' },
+          updatedAt: TEST.timestamp,
+        },
+      })
+      stubDamagedTracker()
+
+      await waitFor(() => {
+        expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value).toContain('{"id": "B-2", ')
+      })
+    })
+
+    it('does not offer the structured editor, whose save would be a deletion', async () => {
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: { isEditMode: true, editTab: 'structured' },
+          updatedAt: TEST.timestamp,
+        },
+      })
+      const fetchSpy = stubDamagedTracker()
+
+      expect(await screen.findByText(/The structured editor is unavailable while the tracker holds lines it cannot read/))
+        .toBeInTheDocument()
+      // And nothing wrote: the previous behaviour was a PUT of the parsed
+      // subset over the whole file.
+      expect(fetchSpy.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+    })
+  })
+
+  it('sends the hash of the file a save was built on', async () => {
+    mockUseTicketUIState.mockReturnValue({
+      isSuccess: true,
+      data: {
+        scope: 'approval_beads',
+        exists: true,
+        data: { isEditMode: true, editTab: 'jsonl' },
+        updatedAt: TEST.timestamp,
+      },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = String(input)
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+        return createBeadsRawResponse(
+          [{ id: 'B-1', title: 'One', status: 'pending' }],
+          { contentSha256: 'c'.repeat(64) },
+        )
+      }
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+      if (url.endsWith('/attempts')) return createJsonResponse([])
+      if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads` && init?.method === 'PUT') {
+        return createJsonResponse({ success: true })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+    renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+    // Save stays disabled until the draft differs from the file.
+    const editor = await screen.findByLabelText('YAML editor')
+    fireEvent.change(editor, {
+      target: { value: '{"id":"B-1","title":"Edited","status":"pending"}\n' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }))
+
+    await waitFor(() => {
+      const put = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+      expect(put).toBeDefined()
+      // Without it the route refuses the write: a save built on a stale read
+      // would otherwise overwrite whatever landed in between.
+      expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Content-Sha256': 'c'.repeat(64) })
+    })
   })
 })

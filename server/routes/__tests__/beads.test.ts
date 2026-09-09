@@ -185,4 +185,125 @@ describe('beadsRouter flow validation', () => {
       expect(response.headers.get('X-Malformed-Lines')).toBe('1,2')
     })
   })
+  describe('the raw tracker read', () => {
+    function writeBeadsFile(beadsPath: string, content: string) {
+      mkdirSync(dirname(beadsPath), { recursive: true })
+      writeFileSync(beadsPath, content, 'utf-8')
+    }
+
+    const bead = (id: string) => JSON.stringify({
+      id, title: id, status: 'pending', priority: 1, dependencies: { blocked_by: [], blocks: [] },
+    })
+
+    it('returns the file as stored beside the records that parsed', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      const content = [bead('B-1'), '{"id": "B-2", ', bead('B-3'), ''].join('\n')
+      writeBeadsFile(paths.beadsPath, content)
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+
+      expect(response.status).toBe(200)
+      // The bytes, damage included: the array form cannot carry a line that did
+      // not parse, so a client rebuilding the file from it writes the damage
+      // away. This is what the editor repairs.
+      expect(await response.json()).toEqual({
+        content,
+        items: [expect.objectContaining({ id: 'B-1' }), expect.objectContaining({ id: 'B-3' })],
+        malformedLines: [2],
+      })
+      expect(response.headers.get('X-Content-Sha256')).toBe(contentSha256(content))
+      expect(response.headers.get('X-Malformed-Lines')).toBe('2')
+      expect(response.headers.get('X-Malformed-Line-Count')).toBe('1')
+    })
+
+    it('reports an absent tracker as empty rather than missing', async () => {
+      const { ticket } = createBeadsRouteTicket()
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ content: '', items: [], malformedLines: [] })
+      expect(response.headers.get('X-Content-Sha256')).toBe(contentSha256(''))
+    })
+
+    it('rejects a traversal flow the way the array read does', async () => {
+      const { ticket } = createBeadsRouteTicket()
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw?flow=../escape`)
+
+      expect(response.status).toBe(400)
+    })
+
+    it('summarises the damaged lines rather than listing thousands of them', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      // A header of tens of kilobytes is dropped or truncated by proxies, which
+      // would fail the request for exactly the file this exists to rescue.
+      writeBeadsFile(paths.beadsPath, Array.from({ length: 120 }, () => 'broken').join('\n'))
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(response.headers.get('X-Malformed-Line-Count')).toBe('120')
+      const header = response.headers.get('X-Malformed-Lines') ?? ''
+      expect(header.endsWith(',+70 more')).toBe(true)
+      expect(header.startsWith('1,2,3,')).toBe(true)
+      expect((await response.json())).toEqual([])
+    })
+  })
+
+  describe('saving over a tracker that changed underneath', () => {
+    const bead = (id: string) => ({
+      id, title: id, status: 'pending' as const, priority: 1, dependencies: { blocked_by: [], blocks: [] },
+    })
+
+    async function save(ticketId: string, body: unknown, headers: Record<string, string> = {}) {
+      return app.request(`/api/tickets/${encodeURIComponent(ticketId)}/beads`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      })
+    }
+
+    async function seed() {
+      const { ticket } = createBeadsRouteTicket()
+      patchTicket(ticket.id, { status: 'WAITING_BEADS_APPROVAL' })
+      // A first write has nothing to overwrite, so it needs no hash.
+      const created = await save(ticket.id, [bead('B-1')])
+      expect(created.status).toBe(200)
+      const current = created.headers.get('X-Content-Sha256')!
+      return { ticket, current }
+    }
+
+    it('accepts a save carrying the hash of the file it was built on', async () => {
+      const { ticket, current } = await seed()
+
+      const response = await save(ticket.id, [bead('B-1'), bead('B-2')], { 'X-Content-Sha256': current })
+
+      expect(response.status).toBe(200)
+    })
+
+    it('refuses a save built on a stale read, and says which hash it saw', async () => {
+      const { ticket, current } = await seed()
+      // Someone else — or the operator repairing a damaged line by hand.
+      await save(ticket.id, [bead('B-9')], { 'X-Content-Sha256': current })
+
+      const response = await save(ticket.id, [bead('B-1'), bead('B-2')], { 'X-Content-Sha256': current })
+
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({
+        error: 'Bead plan changed since it was read',
+        expectedContentSha256: current,
+      })
+      // And left the other save's work in place.
+      const after = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+      expect(await after.json()).toEqual([expect.objectContaining({ id: 'B-9' })])
+    })
+
+    it('refuses a save that names no hash at all once there is a file to lose', async () => {
+      const { ticket } = await seed()
+
+      const response = await save(ticket.id, [bead('B-2')])
+
+      expect(response.status).toBe(428)
+    })
+  })
 })

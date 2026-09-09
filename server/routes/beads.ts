@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { z } from 'zod'
@@ -50,6 +51,27 @@ function resolveBeadsPath(ticketId: string, flow?: string): { filePath: string }
   return { filePath }
 }
 
+/** How many damaged line numbers the header carries before it summarises. */
+const MALFORMED_LINE_HEADER_LIMIT = 50
+
+/**
+ * Names the damaged lines in a header, bounded.
+ *
+ * A tracker damaged at thousands of lines would otherwise build a header of
+ * tens of kilobytes, which proxies drop or truncate — failing the request for
+ * exactly the file this route exists to rescue. The count is always exact even
+ * when the list is cut short.
+ */
+function setMalformedLineHeaders(c: Context, malformedLines: number[]) {
+  if (malformedLines.length === 0) return
+  c.header('X-Malformed-Line-Count', String(malformedLines.length))
+  const listed = malformedLines.slice(0, MALFORMED_LINE_HEADER_LIMIT)
+  const suffix = malformedLines.length > listed.length
+    ? `,+${malformedLines.length - listed.length} more`
+    : ''
+  c.header('X-Malformed-Lines', `${listed.join(',')}${suffix}`)
+}
+
 function countJsonlItems(content: string | null): number | null {
   if (content == null) return null
   return content.split('\n').filter((line) => line.trim() !== '').length
@@ -77,10 +99,32 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
   // The lines that did parse are returned; the ones that did not are named in
   // a header, by their line number in the file.
   const { items, malformedLines } = parseJsonlContent(content, filePath)
-  if (malformedLines.length > 0) {
-    c.header('X-Malformed-Lines', malformedLines.join(','))
-  }
+  setMalformedLineHeaders(c, malformedLines)
   return c.json(items)
+})
+
+/**
+ * The same tracker as bytes, for the screen that has to repair it.
+ *
+ * The array above cannot carry a line that did not parse, so a client that
+ * rebuilds the file from it writes the damage away. This returns the file as
+ * stored, the records that parsed, and the lines that did not, so the editor
+ * can show the damaged text in place and save a repair rather than a deletion.
+ */
+beadsRouter.get('/tickets/:id/beads/raw', (c) => {
+  const ticketId = c.req.param('id')
+  if (!getTicketByRef(ticketId)) return c.json({ error: 'Ticket not found' }, 404)
+
+  const resolved = resolveBeadsPath(ticketId, c.req.query('flow'))
+  if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
+  const { filePath } = resolved
+
+  const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : ''
+  c.header('X-Content-Sha256', contentSha256(content))
+  const { items, malformedLines } = parseJsonlContent(content, filePath)
+  setMalformedLineHeaders(c, malformedLines)
+
+  return c.json({ content, items, malformedLines })
 })
 
 beadsRouter.put('/tickets/:id/beads', async (c) => {
@@ -123,8 +167,28 @@ beadsRouter.put('/tickets/:id/beads', async (c) => {
   if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status)
   const { filePath } = resolved
 
+  const beforeRaw = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : null
+
+  // Optimistic concurrency, the same guard approval already applies. Without
+  // it a save built on a stale read overwrites whatever landed in between —
+  // including a repair of the very lines the reader could not parse. Required
+  // whenever there is a file to overwrite; a first write has nothing to lose.
+  if (beforeRaw !== null) {
+    const expectedContentSha256 = c.req.header('X-Content-Sha256')
+    if (!expectedContentSha256) {
+      return c.json({ error: 'Missing X-Content-Sha256 header for an existing bead plan' }, 428)
+    }
+    const currentContentSha256 = contentSha256(beforeRaw)
+    if (expectedContentSha256 !== currentContentSha256) {
+      return c.json({
+        error: 'Bead plan changed since it was read',
+        expectedContentSha256,
+        currentContentSha256,
+      }, 409)
+    }
+  }
+
   try {
-    const beforeRaw = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : null
     // createdAt is set at approval time, not save time
     const jsonl = body.map((item: unknown) => JSON.stringify(item)).join('\n') + '\n'
     safeAtomicWrite(filePath, jsonl)

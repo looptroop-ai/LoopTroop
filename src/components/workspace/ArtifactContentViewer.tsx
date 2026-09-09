@@ -1496,6 +1496,16 @@ function renderBeadGuidance(guidance: RawBead['contextGuidance']): React.ReactNo
   )
 
   if (patterns.length === 0 && antiPatterns.length === 0) {
+    // Guidance the reader understands and that is simply empty renders as
+    // nothing, like an empty criteria list. The JSON dump is for a value the
+    // reader could not make sense of — and every structured save writes
+    // `{ patterns: [], anti_patterns: [] }`, so dumping that showed the
+    // artifact view an empty object for a bead with no guidance at all.
+    const knownKeys = ['patterns', 'anti_patterns', 'antiPatterns']
+    const isEmptyGuidanceRecord = Object.entries(guidance)
+      .every(([key, value]) => knownKeys.includes(key) && Array.isArray(value) && value.length === 0)
+    if (isEmptyGuidanceRecord) return null
+
     return (
       <div className="text-xs">
         <strong className="text-muted-foreground font-medium">Context Guidance:</strong>{' '}

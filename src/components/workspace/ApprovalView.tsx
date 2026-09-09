@@ -79,6 +79,20 @@ interface BeadsArtifactResponse {
   rawContent: string
   /** 1-based line numbers in the file that did not parse. */
   malformedLines: number[]
+  /** 1-based line numbers that parsed but do not describe a bead. */
+  unrepresentableLines: number[]
+}
+
+/** `Line 4` or `Lines 4, 9, 12`, capped so a badly damaged file stays readable. */
+function describeLines(lines: number[]): string {
+  if (lines.length === 1) return `Line ${lines[0]}`
+  const listed = lines.slice(0, 10).join(', ')
+  return `Lines ${listed}${lines.length > 10 ? `, +${lines.length - 10} more` : ''}`
+}
+
+/** A line-number list from a payload, keeping only what is one. */
+function numberList(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((line): line is number => typeof line === 'number') : []
 }
 
 function beadsArrayToJsonl(beads: unknown[]): string {
@@ -190,14 +204,18 @@ function BeadsApprovalPane({
       const contentSha256 = typeof r.headers?.get === 'function'
         ? r.headers.get('X-Content-Sha256')
         : null
-      const data = await r.json() as Partial<{ content: string; items: unknown[]; malformedLines: number[] }>
+      const data = await r.json() as Partial<{
+        content: string
+        items: unknown[]
+        malformedLines: number[]
+        unrepresentableLines: number[]
+      }>
       return {
         beads: Array.isArray(data.items) ? data.items : [],
         contentSha256,
         rawContent: typeof data.content === 'string' ? data.content : '',
-        malformedLines: Array.isArray(data.malformedLines)
-          ? data.malformedLines.filter((line): line is number => typeof line === 'number')
-          : [],
+        malformedLines: numberList(data.malformedLines),
+        unrepresentableLines: numberList(data.unrepresentableLines),
       } satisfies BeadsArtifactResponse
     },
     staleTime: QUERY_STALE_TIME_5M,
@@ -206,24 +224,32 @@ function BeadsApprovalPane({
   const beadsArray = useMemo(() => fetchedBeads?.beads ?? [], [fetchedBeads])
   const currentContentSha256 = fetchedBeads?.contentSha256 ?? null
   const malformedLines = useMemo(() => fetchedBeads?.malformedLines ?? [], [fetchedBeads])
+  // Rows that parsed and are not beads. The structured editor is built from the
+  // records it can read, so saving it writes these out of the file — the same
+  // loss the damaged lines had, one step further along.
+  const unrepresentableLines = useMemo(() => fetchedBeads?.unrepresentableLines ?? [], [fetchedBeads])
   // The file as stored. A damaged line is only visible — and only repairable —
   // here; the structured editor is built from the records that parsed.
   const rawJsonl = fetchedBeads?.rawContent ?? ''
   const hasMalformedLines = malformedLines.length > 0
-  // Guidance stored as free text has no field in the structured editor, which
-  // would show empty pattern lists and write them over the text on save.
+  const hasUnrepresentableLines = unrepresentableLines.length > 0
+  // Guidance the structured editor has no field for — free text, or a list of
+  // guidance strings — which it would show as empty pattern lists and write
+  // over that value on save.
   const unstructuredGuidanceBeadIds = useMemo(
-    () => beadsArray
-      .filter((bead): bead is Record<string, unknown> => isRecord(bead))
-      .filter((bead) => hasUnstructuredBeadGuidance(bead))
-      .map((bead, index) => (typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`)),
+    // The position is taken before filtering: named from the surviving list, a
+    // bead with no id was announced under a place it does not occupy.
+    () => beadsArray.flatMap((bead, index) => (
+      isRecord(bead) && hasUnstructuredBeadGuidance(bead)
+        ? [typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`]
+        : []
+    )),
     [beadsArray],
   )
   const hasUnstructuredGuidance = unstructuredGuidanceBeadIds.length > 0
-  const structuredEditorBlocked = hasMalformedLines || hasUnstructuredGuidance
-  const malformedLineSummary = malformedLines.length === 1
-    ? `Line ${malformedLines[0]}`
-    : `Lines ${malformedLines.slice(0, 10).join(', ')}${malformedLines.length > 10 ? `, +${malformedLines.length - 10} more` : ''}`
+  const structuredEditorBlocked = hasMalformedLines || hasUnrepresentableLines || hasUnstructuredGuidance
+  const malformedLineSummary = describeLines(malformedLines)
+  const unrepresentableLineSummary = describeLines(unrepresentableLines)
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [editTab, setEditTab] = useState<EditTab>('structured')
@@ -346,13 +372,15 @@ function BeadsApprovalPane({
         setSaveError(error)
         return
       }
-    } else if (hasMalformedLines) {
+    } else if (hasMalformedLines || hasUnrepresentableLines) {
       // The structured editor holds only the records that parsed, so saving it
       // over the file is a deletion of everything else in it.
+      const lines = hasMalformedLines ? malformedLines : unrepresentableLines
+      const summary = hasMalformedLines ? malformedLineSummary : unrepresentableLineSummary
       setSaveError(
-        `${malformedLineSummary} could not be read, and the structured editor does not contain `
-        + `${malformedLines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead — saving from here `
-        + `would drop ${malformedLines.length === 1 ? 'that line' : 'those lines'}.`,
+        `${summary} ${hasMalformedLines ? 'could not be read' : 'does not describe a bead'}, and the structured editor `
+        + `does not contain ${lines.length === 1 ? 'it' : 'them'}. Repair the file in the JSONL tab instead — saving `
+        + `from here would drop ${lines.length === 1 ? 'that line' : 'those lines'}.`,
       )
       return
     } else if (hasUnstructuredGuidance) {
@@ -396,6 +424,7 @@ function BeadsApprovalPane({
         // the save is what repairs a tracker that had damaged lines.
         rawContent: beadsArrayToJsonl(beadsToSave),
         malformedLines: [],
+        unrepresentableLines: [],
       } satisfies BeadsArtifactResponse)
       queryClient.setQueryData(['artifact', ticket.id, 'beads'], beadsToSave)
       queryClient.invalidateQueries({ queryKey: ['artifact', ticket.id, 'beads', 'approval'] })
@@ -410,7 +439,7 @@ function BeadsApprovalPane({
     } finally {
       setIsSaving(false)
     }
-  }, [currentContentSha256, editTab, hasMalformedLines, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines.length, structuredDraft, ticket.id, unstructuredGuidanceBeadIds, queryClient])
+  }, [currentContentSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -503,21 +532,35 @@ function BeadsApprovalPane({
           <Button
             size="sm"
             onClick={handleApprove}
-            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || hasMalformedLines || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
+            disabled={isApproving || isSaving || isFixingCoverageGaps || isCoverageUnknown || (isEditMode && hasUnsavedChanges) || beadsArray.length === 0 || hasMalformedLines || hasUnrepresentableLines || !currentContentSha256 || ticket.status !== 'WAITING_BEADS_APPROVAL'}
             className="text-xs shrink-0"
           >
             {isApproving ? 'Approving...' : coverageWarning?.gaps.length ? 'Approve with gaps' : 'Approve'}
           </Button>
         </div>
 
-        {hasMalformedLines ? (
+        {hasMalformedLines || hasUnrepresentableLines ? (
           <div
             role="status"
             className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200"
           >
-            {malformedLineSummary} could not be read as JSON and {malformedLines.length === 1 ? 'is' : 'are'} not in the
-            structured editor. Open the JSONL tab to repair {malformedLines.length === 1 ? 'it' : 'them'} — the text is
-            there as stored. Approving is blocked until the whole file parses.
+            {hasMalformedLines ? (
+              <div>
+                {malformedLineSummary} could not be read as JSON and {malformedLines.length === 1 ? 'is' : 'are'} not in
+                the structured editor.
+              </div>
+            ) : null}
+            {hasUnrepresentableLines ? (
+              <div>
+                {unrepresentableLineSummary} {unrepresentableLines.length === 1 ? 'holds' : 'hold'} valid JSON that is
+                not a bead, so {unrepresentableLines.length === 1 ? 'it is' : 'they are'} not in the structured editor
+                either.
+              </div>
+            ) : null}
+            <div>
+              Open the JSONL tab to repair the file — the text is there as stored. Approving is blocked until every line
+              reads as a bead.
+            </div>
           </div>
         ) : null}
 
@@ -602,12 +645,13 @@ function BeadsApprovalPane({
                 </div>
               ) : structuredEditorBlocked ? (
                 <div className="rounded-md border border-amber-300 bg-amber-50/70 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-                  {hasMalformedLines ? (
+                  {hasMalformedLines || hasUnrepresentableLines ? (
                     <>
-                      The structured editor is unavailable while the tracker holds lines it cannot read: it would
-                      contain only the beads that parsed, and saving it would delete the rest. Repair the file in the
-                      JSONL tab instead — {malformedLineSummary.toLowerCase()}{' '}
-                      {malformedLines.length === 1 ? 'is' : 'are'} there as stored.
+                      The structured editor is unavailable while the tracker holds rows it cannot represent: it would
+                      contain only the beads it could read, and saving it would delete the rest. Repair the file in the
+                      JSONL tab instead — {(hasMalformedLines ? malformedLineSummary : unrepresentableLineSummary).toLowerCase()}{' '}
+                      {(hasMalformedLines ? malformedLines : unrepresentableLines).length === 1 ? 'is' : 'are'} there as
+                      stored.
                     </>
                   ) : (
                     <>

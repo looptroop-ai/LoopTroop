@@ -10,6 +10,7 @@ import { clearExecutionSetupState } from '../phases/executionSetup/storage'
 import { upsertBeadsApprovalSnapshot } from '../phases/beads/document'
 import { contentSha256 } from '../lib/contentHash'
 import { parseJsonlContent } from '../io/jsonl'
+import { isRecord } from '@shared/typeGuards'
 import { writeUserEditReceipt } from '../workflow/artifactEditReceipts'
 
 // Minimum schema for fields required by the scheduler and execution engine.
@@ -55,6 +56,25 @@ function resolveBeadsPath(ticketId: string, flow?: string): { filePath: string }
 const MALFORMED_LINE_HEADER_LIMIT = 50
 
 /**
+ * The lines holding a record the approval editor cannot represent.
+ *
+ * A line that parses is not yet a bead: `null`, an array, or an object with no
+ * usable `id` are all valid JSON that the editor's list drops. Protecting only
+ * the lines that fail to *parse* left those droppable in exactly the way this
+ * route stopped dropping the others — the structured editor is built from the
+ * records it can read, and saving it writes the rest out of the file.
+ *
+ * The test is the one the server's own bead reader applies.
+ */
+function findUnrepresentableLines(items: unknown[], itemLines: number[]): number[] {
+  return items.flatMap((item, index) => (
+    isRecord(item) && typeof item.id === 'string' && item.id.trim()
+      ? []
+      : [itemLines[index] ?? index + 1]
+  ))
+}
+
+/**
  * Names the damaged lines in a header, bounded.
  *
  * A tracker damaged at thousands of lines would otherwise build a header of
@@ -62,14 +82,27 @@ const MALFORMED_LINE_HEADER_LIMIT = 50
  * exactly the file this route exists to rescue. The count is always exact even
  * when the list is cut short.
  */
-function setMalformedLineHeaders(c: Context, malformedLines: number[]) {
-  if (malformedLines.length === 0) return
-  c.header('X-Malformed-Line-Count', String(malformedLines.length))
-  const listed = malformedLines.slice(0, MALFORMED_LINE_HEADER_LIMIT)
-  const suffix = malformedLines.length > listed.length
-    ? `,+${malformedLines.length - listed.length} more`
-    : ''
-  c.header('X-Malformed-Lines', `${listed.join(',')}${suffix}`)
+function setMalformedLineHeaders(c: Context, malformedLines: number[], unrepresentableLines: number[] = []) {
+  if (malformedLines.length > 0) {
+    c.header('X-Malformed-Line-Count', String(malformedLines.length))
+    c.header('X-Malformed-Lines', formatLineList(malformedLines))
+  }
+  if (unrepresentableLines.length > 0) {
+    c.header('X-Unrepresentable-Line-Count', String(unrepresentableLines.length))
+    c.header('X-Unrepresentable-Lines', formatLineList(unrepresentableLines))
+  }
+}
+
+/**
+ * The line numbers, capped, and still only line numbers.
+ *
+ * Every token stays an integer: a `+N more` tail in a comma-separated list is
+ * an element that is not a line, and the first caller to split on the comma
+ * would read it as one. The `…-Count` header beside it is exact and always
+ * parseable, so the truncation is reported without corrupting the list.
+ */
+function formatLineList(lines: number[]): string {
+  return lines.slice(0, MALFORMED_LINE_HEADER_LIMIT).join(',')
 }
 
 /**
@@ -119,8 +152,8 @@ beadsRouter.get('/tickets/:id/beads', (c) => {
   // the one situation where seeing the rest is what lets someone repair it.
   // The lines that did parse are returned; the ones that did not are named in
   // a header, by their line number in the file.
-  const { items, malformedLines } = parseJsonlContent(content, filePath)
-  setMalformedLineHeaders(c, malformedLines)
+  const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
+  setMalformedLineHeaders(c, malformedLines, findUnrepresentableLines(items, itemLines))
   return c.json(items)
 })
 
@@ -142,10 +175,11 @@ beadsRouter.get('/tickets/:id/beads/raw', (c) => {
 
   const content = readBeadsContent(filePath)
   c.header('X-Content-Sha256', contentSha256(content))
-  const { items, malformedLines } = parseJsonlContent(content, filePath)
-  setMalformedLineHeaders(c, malformedLines)
+  const { items, itemLines, malformedLines } = parseJsonlContent(content, filePath)
+  const unrepresentableLines = findUnrepresentableLines(items, itemLines)
+  setMalformedLineHeaders(c, malformedLines, unrepresentableLines)
 
-  return c.json({ content, items, malformedLines })
+  return c.json({ content, items, malformedLines, unrepresentableLines })
 })
 
 beadsRouter.put('/tickets/:id/beads', async (c) => {

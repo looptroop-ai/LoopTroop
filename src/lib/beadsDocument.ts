@@ -166,7 +166,16 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
  * malformed-line handling exists to prevent.
  */
 export function hasUnstructuredBeadGuidance(bead: RawBead): boolean {
-  return typeof readBeadValue(bead, 'contextGuidance') === 'string'
+  // Every spelling, not the first one present: a record carrying a structured
+  // `contextGuidance` and free text under `context_guidance` reported
+  // structured, and the save then deleted the text.
+  return BEAD_FIELD_ALIASES.contextGuidance.some((key) => {
+    const value = bead[key]
+    if (value === undefined || value === null) return false
+    // Anything that is not a patterns/anti-patterns object: free text, but also
+    // a list of guidance strings, which reads as empty lists and saves as them.
+    return !isRecord(value)
+  })
 }
 
 /** The nested keys, which carry their own spellings. */

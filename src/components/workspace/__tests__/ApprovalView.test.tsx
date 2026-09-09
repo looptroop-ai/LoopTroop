@@ -107,11 +107,21 @@ vi.mock('@/components/editor/YamlEditor', () => ({
  */
 function createBeadsRawResponse(
   items: unknown[],
-  options: { content?: string; malformedLines?: number[]; contentSha256?: string } = {},
+  options: {
+    content?: string
+    malformedLines?: number[]
+    unrepresentableLines?: number[]
+    contentSha256?: string
+  } = {},
 ) {
   const content = options.content ?? (items.length > 0 ? `${items.map((item) => JSON.stringify(item)).join('\n')}\n` : '')
   return Promise.resolve(new Response(
-    JSON.stringify({ content, items, malformedLines: options.malformedLines ?? [] }),
+    JSON.stringify({
+      content,
+      items,
+      malformedLines: options.malformedLines ?? [],
+      unrepresentableLines: options.unrepresentableLines ?? [],
+    }),
     {
       status: 200,
       headers: {
@@ -1072,7 +1082,7 @@ describe('Approval surfaces on a failed request', () => {
       })
       const fetchSpy = stubDamagedTracker()
 
-      expect(await screen.findByText(/The structured editor is unavailable while the tracker holds lines it cannot read/))
+      expect(await screen.findByText(/The structured editor is unavailable while the tracker holds rows it cannot represent/))
         .toBeInTheDocument()
       // And nothing wrote: the previous behaviour was a PUT of the parsed
       // subset over the whole file.
@@ -1120,6 +1130,59 @@ describe('Approval surfaces on a failed request', () => {
       // Without it the route refuses the write: a save built on a stale read
       // would otherwise overwrite whatever landed in between.
       expect((put![1] as RequestInit).headers).toMatchObject({ 'X-Content-Sha256': 'c'.repeat(64) })
+    })
+  })
+  /**
+   * The other two shapes the structured editor cannot hold.
+   *
+   * A row that *parses* and is not a bead, and guidance stored as something
+   * other than pattern lists: both are dropped by the editor's own readers, so
+   * saving from it writes them out of the file exactly the way an unparseable
+   * line was.
+   */
+  describe('a tracker the structured editor cannot represent', () => {
+    function stub(payload: Parameters<typeof createBeadsRawResponse>[1], items: unknown[]) {
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+        const url = String(input)
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+          return createBeadsRawResponse(items, { contentSha256: 'd'.repeat(64), ...payload })
+        }
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+        if (url.endsWith('/attempts')) return createJsonResponse([])
+        throw new Error(`Unexpected fetch: ${url}`)
+      })
+      renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+    }
+
+    it('names a row that parsed but is not a bead, and blocks approval', async () => {
+      stub(
+        { content: '{"id":"B-1"}\nnull\n', unrepresentableLines: [2] },
+        [{ id: 'B-1', title: 'Intact', status: 'pending' }],
+      )
+
+      expect(await screen.findByText(/Line 2 holds valid JSON that is not a bead/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled()
+    })
+
+    it.each([
+      ['free text', 'Patterns: do X; avoid Y'],
+      ['a list of strings', ['do X', 'avoid Y']],
+    ])('refuses the structured editor for guidance stored as %s', async (_, guidance) => {
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: { isEditMode: true, editTab: 'structured' },
+          updatedAt: TEST.timestamp,
+        },
+      })
+      stub({}, [{ id: 'B-1', title: 'Guided', status: 'pending', contextGuidance: guidance }])
+
+      // Without this the editor shows empty pattern lists and the save writes
+      // them over the stored value.
+      expect(await screen.findByText(/The structured editor has no field for context guidance/))
+        .toBeInTheDocument()
     })
   })
 })

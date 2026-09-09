@@ -210,6 +210,7 @@ describe('beadsRouter flow validation', () => {
         content,
         items: [expect.objectContaining({ id: 'B-1' }), expect.objectContaining({ id: 'B-3' })],
         malformedLines: [2],
+        unrepresentableLines: [],
       })
       expect(response.headers.get('X-Content-Sha256')).toBe(contentSha256(content))
       expect(response.headers.get('X-Malformed-Lines')).toBe('2')
@@ -222,7 +223,7 @@ describe('beadsRouter flow validation', () => {
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
 
       expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({ content: '', items: [], malformedLines: [] })
+      expect(await response.json()).toEqual({ content: '', items: [], malformedLines: [], unrepresentableLines: [] })
       expect(response.headers.get('X-Content-Sha256')).toBe(contentSha256(''))
     })
 
@@ -242,9 +243,13 @@ describe('beadsRouter flow validation', () => {
 
       const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
 
+      // The count is exact; the list is capped and stays a list of integers —
+      // a `+70 more` tail is an element a caller splitting on commas would read
+      // as a line number.
       expect(response.headers.get('X-Malformed-Line-Count')).toBe('120')
       const header = response.headers.get('X-Malformed-Lines') ?? ''
-      expect(header.endsWith(',+70 more')).toBe(true)
+      expect(header.split(',')).toHaveLength(50)
+      expect(header.split(',').every((token) => Number.isInteger(Number(token)))).toBe(true)
       expect(header.startsWith('1,2,3,')).toBe(true)
       expect((await response.json())).toEqual([])
     })
@@ -304,6 +309,54 @@ describe('beadsRouter flow validation', () => {
       const response = await save(ticket.id, [bead('B-2')])
 
       expect(response.status).toBe(428)
+    })
+  })
+  describe('rows that parse but are not beads', () => {
+    function writeBeadsFile(beadsPath: string, content: string) {
+      mkdirSync(dirname(beadsPath), { recursive: true })
+      writeFileSync(beadsPath, content, 'utf-8')
+    }
+
+    const bead = (id: string) => JSON.stringify({
+      id, title: id, status: 'pending', priority: 1, dependencies: { blocked_by: [], blocks: [] },
+    })
+
+    it('names the lines the editor cannot represent, beside the ones that did not parse', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      // All valid JSON; none of them a bead. The editor's list drops each one,
+      // so a save built from that list writes them out of the file.
+      writeBeadsFile(paths.beadsPath, [
+        bead('B-1'), 'null', '[1,2]', '{"title":"no id"}', '{"id":"  "}', 'not json',
+      ].join('\n'))
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+
+      expect(await response.json()).toMatchObject({
+        items: [expect.objectContaining({ id: 'B-1' }), null, [1, 2], { title: 'no id' }, { id: '  ' }],
+        malformedLines: [6],
+        unrepresentableLines: [2, 3, 4, 5],
+      })
+      expect(response.headers.get('X-Unrepresentable-Lines')).toBe('2,3,4,5')
+      expect(response.headers.get('X-Unrepresentable-Line-Count')).toBe('4')
+    })
+
+    it('says nothing about them when every row is a bead', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      writeBeadsFile(paths.beadsPath, `${bead('B-1')}\n`)
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads/raw`)
+
+      expect(await response.json()).toMatchObject({ malformedLines: [], unrepresentableLines: [] })
+      expect(response.headers.get('X-Unrepresentable-Lines')).toBeNull()
+    })
+
+    it('reports them on the array read too, where the row is simply absent', async () => {
+      const { ticket, paths } = createBeadsRouteTicket()
+      writeBeadsFile(paths.beadsPath, [bead('B-1'), 'null'].join('\n'))
+
+      const response = await app.request(`/api/tickets/${encodeURIComponent(ticket.id)}/beads`)
+
+      expect(response.headers.get('X-Unrepresentable-Lines')).toBe('2')
     })
   })
 })

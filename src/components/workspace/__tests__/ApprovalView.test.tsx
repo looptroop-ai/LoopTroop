@@ -1226,4 +1226,70 @@ describe('Approval surfaces on a failed request', () => {
 
     await waitFor(() => expect(reads).toBeGreaterThan(readsBeforeReload))
   })
+  /**
+   * A draft belongs to the file it was typed against.
+   *
+   * The tracker can change between one visit and the next — damaged by another
+   * writer, or repaired by one. Restoring a draft over those bytes shows the
+   * old file as "stored", and saving it sends the hash of a read the draft
+   * never saw, so the concurrency guard passes and the change is overwritten.
+   */
+  describe('restoring a draft after the file changed', () => {
+    function stubFile(contentSha256: string) {
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+        const url = String(input)
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/beads/raw`) {
+          return createBeadsRawResponse(
+            [{ id: 'B-1', title: 'On disk', status: 'pending' }],
+            { content: '{"id":"B-1","title":"On disk","status":"pending"}\n', contentSha256 },
+          )
+        }
+        if (url === `/api/tickets/${encodeURIComponent(TEST.ticketId)}/artifacts`) return createJsonResponse([])
+        if (url.endsWith('/attempts')) return createJsonResponse([])
+        throw new Error(`Unexpected fetch: ${url}`)
+      })
+    }
+
+    function persistDraft(contentSha256: string | undefined) {
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: {
+            isEditMode: true,
+            editTab: 'jsonl',
+            jsonlDraft: '{"id":"B-1","title":"From an older visit","status":"pending"}\n',
+            ...(contentSha256 ? { contentSha256 } : {}),
+          },
+          updatedAt: TEST.timestamp,
+        },
+      })
+    }
+
+    it('restores a draft typed against the file that is there now', async () => {
+      persistDraft('f'.repeat(64))
+      stubFile('f'.repeat(64))
+      renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+      await waitFor(() => {
+        expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value).toContain('From an older visit')
+      })
+    })
+
+    it.each([
+      ['the file has changed since', 'a'.repeat(64)],
+      ['the draft does not say which file it belongs to', undefined],
+    ])('shows the file instead when %s', async (_, persistedSha) => {
+      persistDraft(persistedSha)
+      stubFile('f'.repeat(64))
+      renderApprovalView(makeTicket({ status: 'WAITING_BEADS_APPROVAL' }), 'beads')
+
+      await waitFor(() => {
+        expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value).toContain('On disk')
+      })
+      expect((screen.getByLabelText('YAML editor') as HTMLTextAreaElement).value)
+        .not.toContain('From an older visit')
+    })
+  })
 })

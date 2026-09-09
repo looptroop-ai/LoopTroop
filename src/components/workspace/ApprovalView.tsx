@@ -64,6 +64,8 @@ interface BeadsApprovalUiState {
   editTab?: EditTab
   jsonlDraft?: string
   structuredDraft?: NormalizedBead[]
+  /** The hash of the file the draft was typed against, if it was recorded. */
+  contentSha256?: string | null
 }
 
 interface BeadsArtifactResponse {
@@ -318,10 +320,20 @@ function BeadsApprovalPane({
       const documentStructured = documentBeads.length > 0 ? parseBeadsForEditor(documentBeads) : null
       const nextEditMode = Boolean(persisted?.isEditMode)
       const nextEditTab: EditTab = persisted?.editTab === 'jsonl' ? 'jsonl' : 'structured'
-      const nextStructuredDraft = Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
+      // A draft is only a draft *of* the file it was typed against. Saved
+      // before the tracker changed — damaged by another writer, or repaired by
+      // one — it would otherwise be restored over the new bytes, shown as "the
+      // file as stored", and saved back with the hash of a read it never saw.
+      const draftMatchesFile = typeof persisted?.contentSha256 === 'string'
+        ? persisted.contentSha256 === document.contentSha256
+        : false
+      const nextStructuredDraft = draftMatchesFile
+        && Array.isArray(persisted?.structuredDraft) && persisted.structuredDraft.length > 0
         ? persisted.structuredDraft
         : documentStructured
-      const nextJsonlDraft = typeof persisted?.jsonlDraft === 'string' ? persisted.jsonlDraft : documentRaw
+      const nextJsonlDraft = draftMatchesFile && typeof persisted?.jsonlDraft === 'string'
+        ? persisted.jsonlDraft
+        : documentRaw
 
       setIsEditMode(nextEditMode)
       setEditTab(nextEditTab)
@@ -333,6 +345,7 @@ function BeadsApprovalPane({
         editTab: nextEditTab,
         jsonlDraft: nextJsonlDraft,
         structuredDraft: nextStructuredDraft,
+        contentSha256: document.contentSha256,
       }
     },
   })
@@ -347,6 +360,9 @@ function BeadsApprovalPane({
       editTab,
       jsonlDraft,
       structuredDraft,
+      // The file the draft belongs to, so a restore can tell whether it still
+      // does.
+      contentSha256: currentContentSha256,
     },
     ticketId: ticket.id,
     scope: uiStateScope,
@@ -440,6 +456,11 @@ function BeadsApprovalPane({
       queryClient.invalidateQueries({ queryKey: ['ticket', ticket.id] })
       clearTicketArtifactsCache(queryClient, ticket.id)
 
+      // What was just written is the file now. Left as they were, the drafts
+      // are autosaved again a moment later and a reload restores them as
+      // "unsaved changes" against a file that already has them.
+      setJsonlDraft(beadsArrayToJsonl(beadsToSave))
+      setStructuredDraft(null)
       setIsEditMode(false)
       setEditTab('structured')
     } catch (error) {

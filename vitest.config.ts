@@ -153,6 +153,7 @@ const serverIntegrationTests = [
   'server/phases/finalTest/__tests__/generator.test.ts',
   'server/phases/integration/__tests__/squash.test.ts',
   'server/phases/interview/__tests__/qa.test.ts',
+  'server/phases/manualQa/__tests__/focusedDiff.test.ts',
   'server/routes/__tests__/*.test.ts',
   'server/storage/__tests__/ticketRuntimeProjection.test.ts',
   'server/storage/__tests__/tickets.test.ts',

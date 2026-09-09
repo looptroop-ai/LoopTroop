@@ -1270,6 +1270,141 @@ describe('handleCoding', () => {
     expect(recoveredBead?.beadStartCommit).toBe('abc123')
   })
 
+  /**
+   * Which failed bead a retry picks up.
+   *
+   * The comparator behind this used to exist twice, here and in the beads
+   * phase, and was deduplicated on the two copies reading alike. These cases
+   * pin the order itself: it decides which bead a retry resumes, and getting it
+   * wrong resumes the wrong work with the wrong notes. Driven through
+   * `recoverCodingBeadWithReset` rather than the comparator, which is private —
+   * the choice is only observable through the recovery that makes it.
+   */
+  describe('failed bead recovery order', () => {
+    async function recoverFrom(
+      title: string,
+      beads: Bead[],
+      options: { onlyInProgress?: boolean } = {},
+    ) {
+      const { ticket, paths } = await createInitializedTestTicket(repoManager, { title })
+      writeTicketBeads(ticket.id, beads)
+      return recoverCodingBeadWithReset(ticket.id, {
+        worktreePath: paths.worktreePath,
+        ...options,
+      })
+    }
+
+    it('recovers nothing when no bead failed', async () => {
+      expect(await recoverFrom('No failed bead', [
+        makePendingBead('bead-1', 1, { status: 'done', beadStartCommit: 'abc123' }),
+        makePendingBead('bead-2', 2),
+      ])).toBeNull()
+    })
+
+    it('recovers nothing from an empty tracker', async () => {
+      expect(await recoverFrom('Empty tracker', [])).toBeNull()
+    })
+
+    it('takes the most recently updated of several failed beads', async () => {
+      const recovered = await recoverFrom('Latest failure wins', [
+        makePendingBead('older', 1, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        makePendingBead('newer', 2, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2026-01-02T00:00:00.000Z',
+        }),
+      ])
+
+      expect(recovered?.id).toBe('newer')
+    })
+
+    it('falls back to startedAt, and then to completedAt, for a bead with no updatedAt', async () => {
+      const recovered = await recoverFrom('Timestamp fallbacks', [
+        makePendingBead('completed-early', 1, {
+          status: 'error', beadStartCommit: 'abc123',
+          updatedAt: '', completedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        makePendingBead('started-late', 2, {
+          status: 'error', beadStartCommit: 'abc123',
+          updatedAt: '', startedAt: '2026-01-03T00:00:00.000Z',
+        }),
+      ])
+
+      expect(recovered?.id).toBe('started-late')
+    })
+
+    it('puts a bead with no usable timestamp behind one that has any', async () => {
+      const recovered = await recoverFrom('Undated bead loses', [
+        makePendingBead('undated', 1, {
+          status: 'error', beadStartCommit: 'abc123', iteration: 9,
+          updatedAt: '', startedAt: '', completedAt: '',
+        }),
+        makePendingBead('dated', 2, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2026-01-01T00:00:00.000Z', iteration: 1,
+        }),
+      ])
+
+      // Even against a much higher iteration: a timestamp is the stronger
+      // signal, and iteration is only the tie-break when neither bead has one.
+      expect(recovered?.id).toBe('dated')
+    })
+
+    it('falls back to the higher iteration when no bead carries a timestamp', async () => {
+      const recovered = await recoverFrom('Iteration tie-break', [
+        makePendingBead('first-attempt', 1, {
+          status: 'error', beadStartCommit: 'abc123', iteration: 1, updatedAt: '',
+        }),
+        makePendingBead('third-attempt', 2, {
+          status: 'error', beadStartCommit: 'abc123', iteration: 3, updatedAt: '',
+        }),
+      ])
+
+      expect(recovered?.id).toBe('third-attempt')
+    })
+
+    it('ignores an unparsable timestamp rather than ordering on it', async () => {
+      const recovered = await recoverFrom('Unparsable timestamp', [
+        makePendingBead('garbled', 1, {
+          status: 'error', beadStartCommit: 'abc123', iteration: 5,
+          updatedAt: 'not a date', startedAt: '', completedAt: '',
+        }),
+        makePendingBead('dated', 2, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2020-01-01T00:00:00.000Z', iteration: 1,
+        }),
+      ])
+
+      expect(recovered?.id).toBe('dated')
+    })
+
+    it('considers in-progress beads alongside failed ones by default', async () => {
+      const recovered = await recoverFrom('In-progress considered', [
+        makePendingBead('errored', 1, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        makePendingBead('running', 2, {
+          status: 'in_progress', beadStartCommit: 'abc123', updatedAt: '2026-01-02T00:00:00.000Z',
+        }),
+      ])
+
+      // Recency decides, not the status: an in-progress bead the run abandoned
+      // more recently than an older failure is the one to resume.
+      expect(recovered?.id).toBe('running')
+    })
+
+    it('recovers only in-progress beads when asked to', async () => {
+      const recovered = await recoverFrom('Only in progress', [
+        makePendingBead('errored', 1, {
+          status: 'error', beadStartCommit: 'abc123', updatedAt: '2026-01-02T00:00:00.000Z',
+        }),
+        makePendingBead('running', 2, {
+          status: 'in_progress', beadStartCommit: 'abc123', updatedAt: '2026-01-01T00:00:00.000Z',
+        }),
+      ], { onlyInProgress: true })
+
+      expect(recovered?.id).toBe('running')
+    })
+  })
+
   describe('the OpenCode step cap', () => {
     function setStepCap(steps: number) {
       appDatabase.insert(profiles).values({

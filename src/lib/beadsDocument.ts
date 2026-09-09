@@ -1,4 +1,4 @@
-import type { CommandSpec } from '@shared/commandSpec'
+import { commandSpecSchema, type CommandSpec } from '@shared/commandSpec'
 import { isRecord } from '@shared/typeGuards'
 import type { ManualQaBeadOrigin } from '@/hooks/useTickets'
 import { tryParseStructuredContent } from './structuredContent'
@@ -30,10 +30,12 @@ export interface RawBead {
   contextGuidance?: string | {
     patterns?: string[]
     anti_patterns?: string[]
+    antiPatterns?: string[]
   }
   context_guidance?: string | {
     patterns?: string[]
     anti_patterns?: string[]
+    antiPatterns?: string[]
   }
   acceptanceCriteria?: string[]
   acceptance_criteria?: string[]
@@ -49,8 +51,11 @@ export interface RawBead {
   externalRef?: string
   external_ref?: string
   labels?: string[]
+  // Both spellings, like every other field: `BEAD_FIELD_ALIASES` reads them
+  // and a stored row can carry either.
   dependencies?: {
     blocked_by?: string[]
+    blockedBy?: string[]
     blocks?: string[]
   }
   targetFiles?: string[]
@@ -69,6 +74,204 @@ export interface RawBead {
   bead_start_commit?: string | null
   qaOrigin?: ManualQaBeadOrigin | null
   qa_origin?: ManualQaBeadOrigin | null
+}
+
+/**
+ * Every spelling each bead field has been written under, most preferred first.
+ *
+ * A bead reaches the interface from three places — the JSONL tracker, a stored
+ * artifact, and a model's structured output — and those have used camelCase and
+ * snake_case at different times. The alias list used to be typed out at each
+ * read: about twenty of them in the artifact viewer and a dozen more in the
+ * approval editor's normalizer. They had already drifted — the editor accepted
+ * `blockedBy` beside `blocked_by`, the viewer did not, so the same bead showed
+ * dependencies on one screen and none on the other.
+ *
+ * One table, so adding a spelling is one line and reaches every reader.
+ */
+export const BEAD_FIELD_ALIASES = {
+  id: ['id'],
+  title: ['title'],
+  description: ['description'],
+  status: ['status'],
+  notes: ['notes'],
+  labels: ['labels'],
+  priority: ['priority'],
+  iteration: ['iteration'],
+  tests: ['tests'],
+  dependencies: ['dependencies'],
+  prdRefs: ['prdRefs', 'prd_refs', 'prd_references'],
+  acceptanceCriteria: ['acceptanceCriteria', 'acceptance_criteria'],
+  testCommands: ['testCommands', 'test_commands'],
+  testCommandReason: ['testCommandReason', 'test_command_reason'],
+  targetFiles: ['targetFiles', 'target_files'],
+  issueType: ['issueType', 'issue_type'],
+  externalRef: ['externalRef', 'external_ref'],
+  createdAt: ['createdAt', 'created_at'],
+  updatedAt: ['updatedAt', 'updated_at'],
+  completedAt: ['completedAt', 'completed_at'],
+  startedAt: ['startedAt', 'started_at'],
+  beadStartCommit: ['beadStartCommit', 'bead_start_commit'],
+  contextGuidance: ['contextGuidance', 'context_guidance'],
+  qaOrigin: ['qaOrigin', 'qa_origin'],
+} as const satisfies Record<string, readonly string[]>
+
+export type BeadField = keyof typeof BEAD_FIELD_ALIASES
+
+/** The nested keys, which carry their own spellings. */
+const DEPENDENCY_ALIASES = {
+  blocked_by: ['blocked_by', 'blockedBy'],
+  blocks: ['blocks'],
+} as const
+const GUIDANCE_ALIASES = {
+  patterns: ['patterns'],
+  anti_patterns: ['anti_patterns', 'antiPatterns'],
+} as const
+
+/**
+ * What a reader does with the text it finds.
+ *
+ * `display` trims and drops what is left empty, which is what every view wants:
+ * a criterion that is three spaces is not a criterion. `verbatim` keeps the
+ * text exactly as stored, which is what the approval editor needs — an editor
+ * that silently reformats what someone typed loses their work on the next save.
+ *
+ * The two policies are the reason there is no single "the bead shape": they
+ * read the same fields and must not agree about whitespace.
+ */
+export type BeadReadPolicy = 'display' | 'verbatim'
+
+function candidates(bead: RawBead, field: BeadField): unknown[] {
+  return BEAD_FIELD_ALIASES[field].map((key) => bead[key])
+}
+
+function readStringList(values: unknown[], policy: BeadReadPolicy): string[] {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue
+    const strings = value.filter((item): item is string => typeof item === 'string')
+    return policy === 'verbatim'
+      ? strings
+      : strings.map((item) => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+/**
+ * The first value present under any of a field's spellings, whatever its type.
+ *
+ * For the two fields a view reads as a whole object rather than through a
+ * typed reader: the Manual QA origin and the guidance block, which both have a
+ * renderer of their own that decides what an unusable value looks like.
+ */
+export function readBeadValue(bead: RawBead, field: BeadField): unknown {
+  for (const value of candidates(bead, field)) {
+    if (value !== undefined && value !== null) return value
+  }
+  return undefined
+}
+
+export function readBeadStringList(bead: RawBead, field: BeadField, policy: BeadReadPolicy): string[] {
+  return readStringList(candidates(bead, field), policy)
+}
+
+export function readBeadString(bead: RawBead, field: BeadField, policy: BeadReadPolicy): string {
+  for (const value of candidates(bead, field)) {
+    if (typeof value !== 'string') continue
+    if (policy === 'verbatim') return value
+    if (value.trim()) return value.trim()
+  }
+  return ''
+}
+
+export function readBeadNumber(bead: RawBead, field: BeadField): number | null {
+  for (const value of candidates(bead, field)) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+export function readBeadCommands(bead: RawBead, field: BeadField): CommandSpec[] {
+  for (const value of candidates(bead, field)) {
+    if (!Array.isArray(value)) continue
+    return value.flatMap((command) => {
+      const parsed = commandSpecSchema.safeParse(command)
+      return parsed.success ? [parsed.data] : []
+    })
+  }
+  return []
+}
+
+function readNested(
+  source: unknown,
+  aliases: Record<string, readonly string[]>,
+  policy: BeadReadPolicy,
+): Record<string, string[]> {
+  const record = isRecord(source) && !Array.isArray(source) ? source : {}
+  const result: Record<string, string[]> = {}
+  for (const [key, keyAliases] of Object.entries(aliases)) {
+    result[key] = readStringList(keyAliases.map((alias) => record[alias]), policy)
+  }
+  return result
+}
+
+export function readBeadDependencies(bead: RawBead, policy: BeadReadPolicy): { blocked_by: string[]; blocks: string[] } {
+  const read = readNested(bead.dependencies, DEPENDENCY_ALIASES, policy)
+  return { blocked_by: read.blocked_by ?? [], blocks: read.blocks ?? [] }
+}
+
+export function readBeadGuidance(bead: RawBead, policy: BeadReadPolicy): { patterns: string[]; anti_patterns: string[] } {
+  const source = BEAD_FIELD_ALIASES.contextGuidance
+    .map((key) => bead[key])
+    .find((value) => isRecord(value))
+  const read = readNested(source, GUIDANCE_ALIASES, policy)
+  return { patterns: read.patterns ?? [], anti_patterns: read.anti_patterns ?? [] }
+}
+
+/**
+ * A bead with the fields an editor requires present and single-spelled.
+ *
+ * `RawBead` is the wire shape — every field optional, both spellings, whatever
+ * else the row carried. This is what it becomes once read: the same record,
+ * with the fields the approval editor writes to normalized onto it. It was
+ * declared inside `BeadsApprovalEditor` as `ParsedBead`, one module away from
+ * the wire type it is derived from and from the alias table above.
+ */
+export interface NormalizedBead extends RawBead {
+  id: string
+  title: string
+  description: string
+  prdRefs: string[]
+  acceptanceCriteria: string[]
+  tests: string[]
+  testCommands: CommandSpec[]
+  testCommandReason?: string
+  targetFiles: string[]
+  contextGuidance: { patterns: string[]; anti_patterns: string[] }
+  dependencies: { blocked_by: string[]; blocks: string[] }
+}
+
+/**
+ * Reads every aliased field once, onto the canonical spelling.
+ *
+ * Unknown fields are kept: a bead carries more than the editor shows, and the
+ * save path writes the whole record back.
+ */
+export function normalizeBead(bead: RawBead, policy: BeadReadPolicy): NormalizedBead {
+  const testCommandReason = readBeadString(bead, 'testCommandReason', policy)
+  return {
+    ...bead,
+    id: readBeadString(bead, 'id', policy),
+    title: readBeadString(bead, 'title', policy),
+    description: readBeadString(bead, 'description', policy),
+    prdRefs: readBeadStringList(bead, 'prdRefs', policy),
+    acceptanceCriteria: readBeadStringList(bead, 'acceptanceCriteria', policy),
+    tests: readBeadStringList(bead, 'tests', policy),
+    testCommands: readBeadCommands(bead, 'testCommands'),
+    ...(testCommandReason ? { testCommandReason } : { testCommandReason: undefined }),
+    targetFiles: readBeadStringList(bead, 'targetFiles', policy),
+    contextGuidance: readBeadGuidance(bead, policy),
+    dependencies: readBeadDependencies(bead, policy),
+  }
 }
 
 /**

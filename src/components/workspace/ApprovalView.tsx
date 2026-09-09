@@ -15,10 +15,10 @@ import { PrdApprovalPane } from './PrdApprovalPane'
 import { PrdDocumentView } from './PrdDocumentView'
 import { BeadsDraftView } from './ArtifactContentViewer'
 import { buildReadableRawDisplayContent } from './rawDisplayContent'
-import { BeadsApprovalEditor, type ParsedBead } from './BeadsApprovalEditor'
+import { BeadsApprovalEditor } from './BeadsApprovalEditor'
 import { CoverageApprovalWarning } from './CoverageApprovalWarning'
 import { resolveCoverageApprovalWarning } from './coverageApprovalWarningUtils'
-import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped } from '@/lib/beadsDocument'
+import { BEADS_APPROVAL_FOCUS_EVENT, describeBeadEntry, filterBeadShaped, normalizeBead, type NormalizedBead } from '@/lib/beadsDocument'
 import { ExecutionSetupPlanApprovalPane } from './ExecutionSetupPlanApprovalPane'
 import { PhaseAttemptSelector, PhaseAttemptsUnavailable } from './PhaseAttemptSelector'
 import { selectedAttemptNumber } from './phaseAttemptSelection'
@@ -34,7 +34,6 @@ import {
   approveArtifact,
   fixCoverageGaps,
 } from './approvalHooks'
-import { commandSpecSchema } from '@shared/commandSpec'
 import { apiFilePath, apiTicketPath } from '@/lib/apiPaths'
 import { throwIfNotOk } from '@/lib/fetchError'
 import { QueryErrorNotice } from '@/components/shared/QueryErrorNotice'
@@ -55,7 +54,7 @@ interface BeadsApprovalUiState {
   isEditMode?: boolean
   editTab?: EditTab
   jsonlDraft?: string
-  structuredDraft?: ParsedBead[]
+  structuredDraft?: NormalizedBead[]
 }
 
 interface BeadsArtifactResponse {
@@ -87,53 +86,6 @@ function validateJsonl(jsonl: string): string | null {
   return null
 }
 
-function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
-  const getStringArray = (record: Record<string, unknown>, keys: string[]): string[] => {
-    for (const key of keys) {
-      if (Array.isArray(record[key])) return (record[key] as unknown[]).filter((v): v is string => typeof v === 'string')
-    }
-    return []
-  }
-  const getString = (record: Record<string, unknown>, keys: string[]): string => {
-    for (const key of keys) {
-      if (typeof record[key] === 'string') return record[key] as string
-    }
-    return ''
-  }
-  const getCommands = (record: Record<string, unknown>, keys: string[]) => {
-    for (const key of keys) {
-      if (!Array.isArray(record[key])) continue
-      return (record[key] as unknown[]).flatMap((value) => {
-        const parsed = commandSpecSchema.safeParse(value)
-        return parsed.success ? [parsed.data] : []
-      })
-    }
-    return []
-  }
-  const deps = (bead.dependencies ?? {}) as Record<string, unknown>
-  const guidance = (bead.contextGuidance ?? bead.context_guidance ?? {}) as Record<string, unknown>
-  return {
-    ...bead,
-    id: getString(bead, ['id']),
-    title: getString(bead, ['title']),
-    description: getString(bead, ['description']),
-    prdRefs: getStringArray(bead, ['prdRefs', 'prd_refs', 'prd_references']),
-    acceptanceCriteria: getStringArray(bead, ['acceptanceCriteria', 'acceptance_criteria']),
-    tests: getStringArray(bead, ['tests']),
-    testCommands: getCommands(bead, ['testCommands', 'test_commands']),
-    testCommandReason: getString(bead, ['testCommandReason', 'test_command_reason']) || undefined,
-    targetFiles: getStringArray(bead, ['targetFiles', 'target_files']),
-    contextGuidance: {
-      patterns: getStringArray(guidance, ['patterns']),
-      anti_patterns: getStringArray(guidance, ['anti_patterns', 'antiPatterns']),
-    },
-    dependencies: {
-      blocked_by: getStringArray(deps, ['blocked_by', 'blockedBy']),
-      blocks: getStringArray(deps, ['blocks']),
-    },
-  }
-}
-
 /**
  * The editor's beads, from the same filtered list every other surface uses.
  *
@@ -142,12 +94,14 @@ function normalizeBeadForEditor(bead: Record<string, unknown>): ParsedBead {
  * shared filter also keeps the editor's ordering aligned with the outline's
  * focus anchors and the artifact view.
  */
-function parseBeadsForEditor(data: unknown[]): ParsedBead[] {
-  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBeadForEditor(bead))
+function parseBeadsForEditor(data: unknown[]): NormalizedBead[] {
+  // `verbatim`: an editor must give back exactly what is stored. The artifact
+  // views read the same fields with `display`, which trims and drops blanks.
+  return filterBeadShaped(data, describeBeadEntry).map((bead) => normalizeBead(bead, 'verbatim'))
 }
 
 /** Build a canonical bead object for isSaving — merges editor fields back into the original, keeping read-only fields intact. */
-function buildBeadForSave(bead: ParsedBead): Record<string, unknown> {
+function buildBeadForSave(bead: NormalizedBead): Record<string, unknown> {
   const { contextGuidance, dependencies, acceptanceCriteria, testCommands, testCommandReason, targetFiles, prdRefs, ...rest } = bead
   return {
     ...rest,
@@ -228,7 +182,7 @@ function BeadsApprovalPane({
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [editTab, setEditTab] = useState<EditTab>('structured')
-  const [structuredDraft, setStructuredDraft] = useState<ParsedBead[] | null>(null)
+  const [structuredDraft, setStructuredDraft] = useState<NormalizedBead[] | null>(null)
   const [jsonlDraft, setJsonlDraft] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isApproving, setIsApproving] = useState(false)

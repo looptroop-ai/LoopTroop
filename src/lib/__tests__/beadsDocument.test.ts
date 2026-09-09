@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { countBeadsInContent, parseBeadsArtifact } from '../beadsDocument'
+import {
+  BEAD_FIELD_ALIASES,
+  countBeadsInContent,
+  normalizeBead,
+  parseBeadsArtifact,
+  readBeadDependencies,
+  readBeadNumber,
+  readBeadString,
+  readBeadStringList,
+  readBeadValue,
+  type RawBead,
+} from '../beadsDocument'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -121,5 +132,158 @@ describe('countBeadsInContent', () => {
     countBeadsInContent('[null, 42, {"id":"B-1"}]')
 
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * One alias table, two reading policies.
+ *
+ * The alias lists used to be written out at every call site — about twenty in
+ * the artifact viewer, a dozen more in the approval editor's normalizer — and
+ * had already drifted apart. What the two sides must *not* share is the
+ * whitespace policy: a view trims, an editor gives back what is stored.
+ */
+describe('the bead field readers', () => {
+  it('prefers the first spelling and falls back through the rest', () => {
+    expect(readBeadString({ prd_refs: [] , title: 'camel' }, 'title', 'display')).toBe('camel')
+    expect(readBeadStringList({ prdRefs: ['a'], prd_refs: ['b'], prd_references: ['c'] }, 'prdRefs', 'display'))
+      .toEqual(['a'])
+    expect(readBeadStringList({ prd_refs: ['b'], prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['b'])
+    expect(readBeadStringList({ prd_references: ['c'] }, 'prdRefs', 'display')).toEqual(['c'])
+  })
+
+  it('reads the camelCase dependency spelling, which only the editor used to accept', () => {
+    // The divergence this table exists to end: a bead written with `blockedBy`
+    // showed its dependencies on the approval screen and none in the artifact
+    // view.
+    expect(readBeadDependencies({ dependencies: { blockedBy: ['B-1'], blocks: ['B-2'] } }, 'display'))
+      .toEqual({ blocked_by: ['B-1'], blocks: ['B-2'] })
+    expect(readBeadDependencies({ dependencies: { blocked_by: ['B-1'] } }, 'display'))
+      .toEqual({ blocked_by: ['B-1'], blocks: [] })
+  })
+
+  it.each([
+    ['a dependencies field that is not an object', { dependencies: 'none' } as unknown as RawBead],
+    ['a dependencies array', { dependencies: [] } as unknown as RawBead],
+    ['no dependencies at all', {} as RawBead],
+  ])('reads empty lists from %s', (_, bead) => {
+    expect(readBeadDependencies(bead, 'display')).toEqual({ blocked_by: [], blocks: [] })
+  })
+
+  it('trims for display and keeps the text exactly for an editor', () => {
+    const bead = { title: '  spaced  ', tests: ['  a  ', '   ', 'b'] }
+
+    expect(readBeadString(bead, 'title', 'display')).toBe('spaced')
+    expect(readBeadString(bead, 'title', 'verbatim')).toBe('  spaced  ')
+    expect(readBeadStringList(bead, 'tests', 'display')).toEqual(['a', 'b'])
+    expect(readBeadStringList(bead, 'tests', 'verbatim')).toEqual(['  a  ', '   ', 'b'])
+  })
+
+  it('skips a blank value for display but not for an editor', () => {
+    // A stored `title: "  "` is not a title on screen; in the editor it is
+    // what the person typed and has to come back unchanged.
+    const bead = { title: '   ', description: 42 } as unknown as RawBead
+
+    expect(readBeadString(bead, 'title', 'display')).toBe('')
+    expect(readBeadString(bead, 'title', 'verbatim')).toBe('   ')
+    expect(readBeadString(bead, 'description', 'display')).toBe('')
+  })
+
+  it('drops list entries that are not strings, under either policy', () => {
+    const bead = { tests: ['a', null, 7, 'b'] } as unknown as RawBead
+
+    expect(readBeadStringList(bead, 'tests', 'display')).toEqual(['a', 'b'])
+    expect(readBeadStringList(bead, 'tests', 'verbatim')).toEqual(['a', 'b'])
+  })
+
+  it('reads a finite number and nothing else', () => {
+    expect(readBeadNumber({ priority: 3 }, 'priority')).toBe(3)
+    expect(readBeadNumber({ priority: 0 }, 'priority')).toBe(0)
+    expect(readBeadNumber({ priority: Number.NaN }, 'priority')).toBeNull()
+    expect(readBeadNumber({ priority: '3' } as unknown as RawBead, 'priority')).toBeNull()
+    expect(readBeadNumber({}, 'priority')).toBeNull()
+  })
+
+  it('hands the whole value back for the fields a renderer judges itself', () => {
+    const origin = { sourceItems: [] } as unknown as NonNullable<RawBead['qaOrigin']>
+
+    expect(readBeadValue({ qa_origin: origin }, 'qaOrigin')).toBe(origin)
+    // A stored `null` is not a value: the next spelling has to be tried.
+    expect(readBeadValue({ qaOrigin: null, qa_origin: origin }, 'qaOrigin')).toBe(origin)
+    expect(readBeadValue({}, 'qaOrigin')).toBeUndefined()
+  })
+
+  it('lists the canonical spelling first for every field', () => {
+    // The canonical name is the key, so a table whose first alias was not the
+    // key would make the readers and the normalized shape disagree.
+    for (const [field, aliases] of Object.entries(BEAD_FIELD_ALIASES)) {
+      expect(aliases[0]).toBe(field)
+    }
+  })
+})
+
+describe('normalizeBead', () => {
+  it('reads every aliased field onto its canonical name', () => {
+    const normalized = normalizeBead({
+      id: 'B-1',
+      title: 'Title',
+      prd_refs: ['PRD-1'],
+      acceptance_criteria: ['AC-1'],
+      test_commands: [{ mode: 'shell', shell: 'posix', script: 'npm test' }],
+      test_command_reason: 'why',
+      target_files: ['src/app.ts'],
+      context_guidance: { patterns: ['p'], antiPatterns: ['a'] },
+      dependencies: { blockedBy: ['B-0'], blocks: [] },
+    } as never, 'display')
+
+    expect(normalized).toMatchObject({
+      id: 'B-1',
+      prdRefs: ['PRD-1'],
+      acceptanceCriteria: ['AC-1'],
+      testCommandReason: 'why',
+      targetFiles: ['src/app.ts'],
+      contextGuidance: { patterns: ['p'], anti_patterns: ['a'] },
+      dependencies: { blocked_by: ['B-0'], blocks: [] },
+    })
+    expect(normalized.testCommands).toHaveLength(1)
+  })
+
+  it('fills in every field the editor writes to, even for a bare bead', () => {
+    const normalized = normalizeBead({ id: 'B-1' }, 'verbatim')
+
+    expect(normalized).toMatchObject({
+      title: '',
+      description: '',
+      prdRefs: [],
+      acceptanceCriteria: [],
+      tests: [],
+      testCommands: [],
+      targetFiles: [],
+      contextGuidance: { patterns: [], anti_patterns: [] },
+      dependencies: { blocked_by: [], blocks: [] },
+    })
+  })
+
+  it('keeps fields it does not know, which the save path writes back', () => {
+    const normalized = normalizeBead({ id: 'B-1', somethingNew: { kept: true } }, 'verbatim')
+
+    expect(normalized.somethingNew).toEqual({ kept: true })
+  })
+
+  it('omits a test command reason that is not there', () => {
+    expect(normalizeBead({ id: 'B-1' }, 'display').testCommandReason).toBeUndefined()
+  })
+
+  it('drops every command entry that is not a command spec, bare strings included', () => {
+    // The schema is the contract the command runner reads; a bare string is
+    // an older shape it cannot execute, so it is dropped rather than guessed at.
+    const normalized = normalizeBead({
+      id: 'B-1',
+      testCommands: ['npm test', null, { mode: 'nonsense' }, { mode: 'shell', shell: 'posix', script: 'npm test' }],
+    } as never, 'display')
+
+    expect(normalized.testCommands).toEqual([
+      expect.objectContaining({ mode: 'shell', script: 'npm test' }),
+    ])
   })
 })

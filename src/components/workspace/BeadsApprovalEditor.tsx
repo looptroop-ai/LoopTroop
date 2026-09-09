@@ -1,28 +1,14 @@
 import { useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import type { CommandSpec } from '@shared/commandSpec'
+import type { NormalizedBead } from '@/lib/beadsDocument'
 import { CommandSpecListEditor } from './CommandSpecListEditor'
 
-export interface ParsedBead {
-  id: string
-  title: string
-  prdRefs: string[]
-  description: string
-  contextGuidance: { patterns: string[]; anti_patterns: string[] }
-  acceptanceCriteria: string[]
-  tests: string[]
-  testCommands: CommandSpec[]
-  testCommandReason?: string
-  targetFiles: string[]
-  dependencies: { blocked_by: string[]; blocks: string[] }
-  [key: string]: unknown
-}
 
 interface BeadsApprovalEditorProps {
-  beads: ParsedBead[]
+  beads: NormalizedBead[]
   disabled?: boolean
-  onChange: (beads: ParsedBead[]) => void
+  onChange: (beads: NormalizedBead[]) => void
 }
 
 function StringListEditor({
@@ -81,7 +67,7 @@ function StringListEditor({
 export function BeadsApprovalEditor({ beads, disabled, onChange }: BeadsApprovalEditorProps) {
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
 
-  const updateBead = useCallback((index: number, update: Partial<ParsedBead>) => {
+  const updateBead = useCallback((index: number, update: Partial<NormalizedBead>) => {
     const next = beads.map((bead, i) => {
       if (i !== index) return bead
       const merged = { ...bead }

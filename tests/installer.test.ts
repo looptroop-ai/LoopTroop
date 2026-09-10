@@ -1,11 +1,11 @@
 import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
@@ -1205,34 +1205,29 @@ describe('PATH resolution', () => {
   })
 
   /** A directory holding each named file, and its path. */
+  /**
+   * Canonicalised, because the resolver answers with the real path and macOS
+   * keeps its temp directory behind a symlink (`/var` is `/private/var`). A raw
+   * `tmpdir()` here failed five cases on the macOS lane and nowhere else.
+   */
   function directoryWith(...names: string[]) {
-    const dir = mkdtempSync(join(tmpdir(), 'looptroop-path-test-'))
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-path-test-')))
     roots.push(dir)
     for (const name of names) writeFileSync(join(dir, name), '')
     return dir
   }
 
   /**
-   * The Windows search, against directories the operator named.
+   * The Windows search, by Windows rules, on whatever host runs the suite.
    *
-   * A temp directory is in no Windows system root and under no user profile, so
-   * the trust rule would refuse it — and on Windows the override is the only
-   * thing that can vouch for a location, because NTFS reports mode 0777 for
-   * everything and there is no permission check to fall back on. Naming the
-   * directory here is the same thing an operator does for a tool the list does
-   * not know about.
-   *
-   * The override is *this case's* PATH rather than every directory the file has
-   * made. Listing them all vouched for a `tool.exe` an earlier case had created
-   * somewhere else, and the case that asserts nothing is found found it.
+   * `platform: 'win32'` makes the generated resolver split PATH on `;` and apply
+   * PATHEXT, so these cases join their PATH with `win32.delimiter`. No override
+   * is needed: Windows has no ownership signal for the resolver to judge, so a
+   * directory is searched wherever it is.
    */
   function resolveOnPath(command: string, pathValue: string, pathExt: string): string | null {
     return findTrustedExecutablePath(command, {
-      env: {
-        PATH: pathValue,
-        PATHEXT: pathExt,
-        LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: pathValue,
-      },
+      env: { PATH: pathValue, PATHEXT: pathExt },
       platform: 'win32',
       cache: null,
     })
@@ -1285,8 +1280,8 @@ describe('PATH resolution', () => {
     const first = directoryWith('tool.exe')
     const second = directoryWith('tool.exe')
 
-    expect(resolveOnPath('tool', [first, second].join(delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
-    expect(resolveOnPath('tool', [second, first].join(delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
+    expect(resolveOnPath('tool', [first, second].join(win32.delimiter), PATHEXT)).toBe(join(first, 'tool.exe'))
+    expect(resolveOnPath('tool', [second, first].join(win32.delimiter), PATHEXT)).toBe(join(second, 'tool.exe'))
   })
 
   /**
@@ -1303,7 +1298,7 @@ describe('PATH resolution', () => {
   it('skips empty entries and reports nothing found as null', () => {
     const dir = directoryWith('other.exe')
 
-    expect(resolveOnPath('tool', ['', dir, '""'].join(delimiter), PATHEXT)).toBeNull()
+    expect(resolveOnPath('tool', ['', dir, '""'].join(win32.delimiter), PATHEXT)).toBeNull()
   })
 })
 

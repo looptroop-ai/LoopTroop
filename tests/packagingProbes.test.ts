@@ -1,5 +1,5 @@
-import { describe, it, expect, afterAll, afterEach } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -577,12 +577,26 @@ describe('spawnProgram', () => {
       .toBe('definitely-not-installed-anywhere')
   })
 
-  it.runIf(process.platform !== 'win32')('throws rather than spawning one found in a world-writable directory', () => {
-    const open = scratch()
-    executable(open, 'looptool')
-    chmodSync(open, 0o777)
-
-    expect(() => withPath(open, () => spawnProgram('looptool'))).toThrow(/writable by any user/)
+  it.runIf(process.platform !== 'win32')('throws rather than spawning one found in a directory somebody else owns', () => {
+    const foreign = scratch()
+    const tool = executable(foreign, 'looptool')
+    // Root can hand the files to another uid; anyone else stubs `getuid` so
+    // that every file looks foreign, which is enough for a single-directory case.
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) {
+      chownSync(foreign, 4242, 4242)
+      chownSync(tool, 4242, 4242)
+    }
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    try {
+      expect(() => withPath(foreign, () => spawnProgram('looptool'))).toThrow(/neither root nor you/)
+    } finally {
+      spy?.mockRestore()
+      if (asRoot) {
+        chownSync(tool, 0, 0)
+        chownSync(foreign, 0, 0)
+      }
+    }
   })
 
   it.runIf(process.platform !== 'win32')('quotes a resolved path for a shell, and leaves it bare otherwise', () => {

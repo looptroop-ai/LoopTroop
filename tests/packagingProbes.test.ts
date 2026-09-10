@@ -589,10 +589,15 @@ describe('spawnProgram', () => {
       chownSync(tool, 4242, 4242)
     }
     const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    // The running Node's owner is trusted too — on a CI runner that is the very
+    // uid being made to look foreign — so it is taken out of the case.
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
     try {
-      expect(() => withPath(foreign, () => spawnProgram('looptool'))).toThrow(/neither root nor you/)
+      expect(() => withPath(foreign, () => spawnProgram('looptool'))).toThrow(/neither root, you, nor the owner of the Node/)
     } finally {
       spy?.mockRestore()
+      process.execPath = execPath
       if (asRoot) {
         chownSync(tool, 0, 0)
         chownSync(foreign, 0, 0)

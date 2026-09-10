@@ -7,6 +7,7 @@ import {
   requireTrustedExecutablePath,
   resolveTrustedExecutable,
   resolveTrustedProgram,
+  searchListHasRelativeEntry,
   trustedSearchDirectories,
   TRUSTED_EXECUTABLE_DIRS_ENV,
   type CachedResolution,
@@ -61,9 +62,18 @@ function ownedBySomeoneElse(...paths: string[]): () => void {
       for (const path of paths) chownSync(path, 0, 0)
     }
   }
+  // The owner of the running Node is trusted too, and on a CI runner that is the
+  // runner user — the very uid being made to look foreign. Pointing execPath at
+  // nothing takes that rule out of the case, or it would pass for the wrong
+  // reason on exactly the machines that matter.
   const uid = process.getuid?.() ?? 0
   const spy = vi.spyOn(process, 'getuid').mockReturnValue(uid + 1)
-  return () => spy.mockRestore()
+  const execPath = process.execPath
+  process.execPath = '/nonexistent/looptroop-test/node'
+  return () => {
+    spy.mockRestore()
+    process.execPath = execPath
+  }
 }
 
 const posix = process.platform !== 'win32'
@@ -75,7 +85,10 @@ const itAsRoot = posix && process.getuid?.() === 0 ? it : it.skip
 describe('trustedSearchDirectories', () => {
   it('prepends the override, and does not use it to filter PATH', () => {
     const directories = trustedSearchDirectories({
-      env: { PATH: ['/usr/bin', '/usr/local/bin'].join(delimiter), [TRUSTED_EXECUTABLE_DIRS_ENV]: '/opt/tools' },
+      env: { PATH: ['/usr/bin', '/usr/local/bin'].join(':'), [TRUSTED_EXECUTABLE_DIRS_ENV]: '/opt/tools' },
+      // POSIX rules, named: on a Windows host the default platform would seed
+      // the real system directories and split on `;`.
+      platform: 'linux',
     })
 
     // Prepended: an operator naming a directory is answering "the tool is not
@@ -85,7 +98,10 @@ describe('trustedSearchDirectories', () => {
 
   it('drops the empty segment, the current directory and relative entries', () => {
     const directories = trustedSearchDirectories({
-      env: { PATH: ['', '.', '..', 'relative/bin', '/usr/bin'].join(delimiter) },
+      env: { PATH: ['', '.', '..', 'relative/bin', '/usr/bin'].join(':') },
+      // POSIX rules, named: on a Windows host the default platform would seed
+      // the real system directories and split on `;`.
+      platform: 'linux',
     })
 
     expect(directories).toEqual(['/usr/bin'])
@@ -93,7 +109,10 @@ describe('trustedSearchDirectories', () => {
 
   it('keeps the first occurrence of a directory named twice', () => {
     const directories = trustedSearchDirectories({
-      env: { PATH: ['/usr/bin', '/usr/local/bin', '/usr/bin/'].join(delimiter) },
+      env: { PATH: ['/usr/bin', '/usr/local/bin', '/usr/bin/'].join(':') },
+      // POSIX rules, named: on a Windows host the default platform would seed
+      // the real system directories and split on `;`.
+      platform: 'linux',
     })
 
     expect(directories).toEqual(['/usr/bin', '/usr/local/bin'])
@@ -109,7 +128,7 @@ describe('the trust-policy matrix', () => {
       env: { PATH: join(root, 'bin') },
       platform: 'linux',
       cache: freshCache(),
-    })).toEqual({ path: tool })
+    })).toEqual({ path: tool, target: tool })
   })
 
   itPosix('resolves a project-local tool that is nowhere near a system directory', () => {
@@ -171,7 +190,7 @@ describe('the trust-policy matrix', () => {
       })
 
       expect(resolution.path).toBeUndefined()
-      expect(resolution.reason).toContain('neither root nor you')
+      expect(resolution.reason).toContain('which is neither root, you, nor the owner of the Node')
       expect(resolution.reason).toContain(TRUSTED_EXECUTABLE_DIRS_ENV)
       expect(resolution.refusedAt).toBe(join(foreign, 'looptool'))
     } finally {
@@ -295,10 +314,13 @@ describe('the trust-policy matrix', () => {
 })
 
 describe('symlink indirection', () => {
-  itPosix('trusts the directory the link is in, not the store it points at', () => {
+  itPosix('spawns the link it found, and judges the store it points at', () => {
     // Homebrew and Nix both put a link in a trusted directory pointing into a
-    // store that no trust list would ever name. Checking the target's directory
-    // would refuse both.
+    // store no trust list would ever name — so the store is judged by ownership,
+    // not by location. What is *spawned* is the link: Homebrew takes its prefix
+    // from `$0`, and `brew` started by its real path decided it lived in
+    // `.linuxbrew/Homebrew`, found no bottles and compiled Node for forty
+    // minutes. Rustup, mise and Volta shims dispatch on the name the same way.
     const root = tempRoot()
     const store = join(root, 'nix', 'store', 'abcdef-git-2.51.0', 'bin')
     const target = makeExecutable(store, 'git')
@@ -306,11 +328,11 @@ describe('symlink indirection', () => {
     mkdirSync(bin, { recursive: true })
     symlinkSync(target, join(bin, 'git'))
 
-    expect(findTrustedExecutablePath('git', {
+    expect(resolveTrustedExecutable('git', {
       env: { PATH: bin },
       platform: 'linux',
       cache: freshCache(),
-    })).toBe(target)
+    })).toEqual({ path: join(bin, 'git'), target })
   })
 
   itPosix('resolves a shim to the shim, because the shim is the program', () => {
@@ -328,8 +350,14 @@ describe('symlink indirection', () => {
 })
 
 describe('Windows resolution', () => {
+  /**
+   * `SystemRoot` names nothing: the system directories are searched ahead of
+   * PATH, and on a real Windows runner they exist — so without this the host's
+   * own `powershell.exe` answered before the test's.
+   */
+  const NO_WINDOWS = '/nonexistent-windows-root'
   function windowsEnv(root: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-    return { PATH: join(root, 'bin'), USERPROFILE: root, ...extra }
+    return { PATH: join(root, 'bin'), USERPROFILE: root, SystemRoot: NO_WINDOWS, ...extra }
   }
 
   it('applies PATHEXT to a bare name', () => {
@@ -379,7 +407,7 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'hostedtoolcache', 'node', 'x64'), 'npm.CMD')
 
     expect(findTrustedExecutablePath('npm', {
-      env: { PATH: join(root, 'hostedtoolcache', 'node', 'x64'), PATHEXT: '.EXE;.CMD' },
+      env: { PATH: join(root, 'hostedtoolcache', 'node', 'x64'), PATHEXT: '.EXE;.CMD', SystemRoot: NO_WINDOWS },
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
@@ -417,7 +445,7 @@ describe('Windows resolution', () => {
     const exe = makeExecutable(join(root, 'bin'), 'tool.EXE')
 
     expect(findTrustedExecutablePath('tool', {
-      env: { PATH: `"${join(root, 'bin')}"`, USERPROFILE: root, PATHEXT: '.EXE' },
+      env: { PATH: `"${join(root, 'bin')}"`, USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: NO_WINDOWS },
       platform: 'win32',
       cache: freshCache(),
     })).toBe(exe)
@@ -458,7 +486,7 @@ describe('the WSL drive-mount exception', () => {
         platform: 'linux',
         readMountTable: () => `C:\\ ${root} drvfs rw 0 0\n/dev/sdb1 ${join(root, 'inner')} ext4 rw 0 0\n`,
         cache: freshCache(),
-      }).reason).toContain('neither root nor you')
+      }).reason).toContain('which is neither root, you, nor the owner of the Node')
     } finally {
       restore()
     }
@@ -475,15 +503,18 @@ describe('the WSL drive-mount exception', () => {
         platform: 'linux',
         readMountTable: () => '',
         cache: freshCache(),
-      }).reason).toContain('neither root nor you')
+      }).reason).toContain('which is neither root, you, nor the owner of the Node')
     } finally {
       restore()
     }
   })
 
   itPosix('decodes the octal escapes /proc/mounts uses for a space', () => {
-    const root = tempRoot()
-    const mountPoint = join(root, 'my drive')
+    // The mount point sits directly under the temp root, not below a directory
+    // this test made: every directory above a tool is judged now, and the test's
+    // own directories look foreign to the unprivileged branch of the helper.
+    const mountPoint = makeTempDir('executable path ')
+    roots.push(mountPoint)
     const tool = makeExecutable(mountPoint, 'git.exe')
     const restore = ownedBySomeoneElse(mountPoint, tool)
     try {
@@ -551,7 +582,7 @@ describe('the resolution cache', () => {
   itPosix('re-resolves when a link is retargeted and the old version is kept', () => {
     // Homebrew kegs and the Nix store both keep the previous version on disk.
     // The first test of this deleted the old target, which forced a miss and hid
-    // that a cache watching only the target kept spawning version 1.0 forever.
+    // that a cache watching only the target kept serving version 1.0 forever.
     const root = tempRoot()
     const bin = join(root, 'bin')
     mkdirSync(bin, { recursive: true })
@@ -560,14 +591,45 @@ describe('the resolution cache', () => {
     const cache = freshCache()
     const options = { env: { PATH: bin }, platform: 'linux' as const, cache }
 
-    expect(findTrustedExecutablePath('git', options)).toBe(oldTarget)
+    expect(resolveTrustedExecutable('git', options).target).toBe(oldTarget)
 
     const newTarget = makeExecutable(join(root, 'store', '2.0'), 'git')
     symlinkSync(newTarget, join(bin, 'git.new'))
     renameSync(join(bin, 'git.new'), join(bin, 'git'))
 
-    expect(findTrustedExecutablePath('git', options)).toBe(newTarget)
+    expect(resolveTrustedExecutable('git', options).target).toBe(newTarget)
     expect(statSync(oldTarget).isFile()).toBe(true)
+  })
+
+  itPosix('notices a candidate that appeared earlier on PATH after the first lookup', () => {
+    // A newer git installed into ~/.local/bin, ahead of /usr/bin, is what the
+    // operating system would now run. A cache that only re-checked its own entry
+    // kept serving the old one until the daemon restarted.
+    const root = tempRoot()
+    const early = join(root, 'early')
+    mkdirSync(early, { recursive: true })
+    const late = makeExecutable(join(root, 'late'), 'looptool')
+    const cache = freshCache()
+    const options = { env: { PATH: [early, join(root, 'late')].join(delimiter) }, platform: 'linux' as const, cache }
+
+    expect(findTrustedExecutablePath('looptool', options)).toBe(late)
+    const earlier = makeExecutable(early, 'looptool')
+
+    expect(findTrustedExecutablePath('looptool', options)).toBe(earlier)
+  })
+
+  itPosix('drops a cached tool that is no longer executable', () => {
+    const root = tempRoot()
+    const tool = makeExecutable(join(root, 'bin'), 'looptool')
+    const cache = freshCache()
+    const options = { env: { PATH: join(root, 'bin') }, platform: 'linux' as const, cache }
+
+    expect(findTrustedExecutablePath('looptool', options)).toBe(tool)
+    chmodSync(tool, 0o644)
+
+    // Root can execute anything with an execute bit and nothing without one, so
+    // this holds whoever runs the suite.
+    expect(findTrustedExecutablePath('looptool', options)).toBeNull()
   })
 
   itPosix('re-checks trust on a hit, not only on the first lookup', () => {
@@ -582,7 +644,7 @@ describe('the resolution cache', () => {
     expect(findTrustedExecutablePath('looptool', options)).toBe(tool)
     const restore = ownedBySomeoneElse(bin, tool)
     try {
-      expect(resolveTrustedExecutable('looptool', options).reason).toContain('neither root nor you')
+      expect(resolveTrustedExecutable('looptool', options).reason).toContain('which is neither root, you, nor the owner of the Node')
     } finally {
       restore()
     }
@@ -610,7 +672,7 @@ describe('the resolution cache', () => {
     // Windows would look for looptool.EXE and find nothing, and the trust rule
     // is a different one; a shared key would hand it the POSIX answer.
     expect(findTrustedExecutablePath('looptool', {
-      env: { PATH: join(root, 'bin'), USERPROFILE: root, PATHEXT: '.EXE' },
+      env: { PATH: join(root, 'bin'), USERPROFILE: root, PATHEXT: '.EXE', SystemRoot: '/nonexistent-windows-root' },
       platform: 'win32',
       cache,
     })).toBeNull()
@@ -659,6 +721,130 @@ describe('resolveTrustedProgram', () => {
     const root = tempRoot()
     const tool = makeExecutable(join(root, 'bin'), 'looptool')
 
-    expect(resolveTrustedProgram(tool, { platform: 'linux' })).toEqual({ path: tool })
+    expect(resolveTrustedProgram(tool, { platform: 'linux' })).toEqual({ path: tool, target: tool })
+  })
+})
+
+describe('round-2 trust rules', () => {
+  itPosix('trusts whoever owns the Node running LoopTroop', () => {
+    // Under `sudo "$(which node)"` this process is root and the toolchain
+    // belongs to the invoking user; root refusing it refused the Node it was
+    // itself running from. Whoever owns the interpreter already controls every
+    // line this process runs, so trusting that owner widens nothing.
+    const root = tempRoot()
+    const tool = makeExecutable(join(root, 'bin'), 'looptool')
+    const fakeNode = makeExecutable(join(root, 'node-home'), 'node')
+    const execPath = process.execPath
+    const asRoot = process.getuid?.() === 0
+    // Root hands the tool and the fake Node to one other user; anyone else
+    // makes their own files look foreign and leaves the fake Node theirs.
+    if (asRoot) for (const path of [root, join(root, 'bin'), tool, join(root, 'node-home'), fakeNode]) chownSync(path, FOREIGN_UID, FOREIGN_UID)
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    try {
+      process.execPath = fakeNode
+      expect(findTrustedExecutablePath('looptool', { env: { PATH: join(root, 'bin') }, platform: 'linux', cache: freshCache() })).toBe(tool)
+
+      // And only that owner: with the interpreter somewhere else, the same
+      // tool is refused.
+      process.execPath = '/nonexistent/looptroop-test/node'
+      expect(resolveTrustedExecutable('looptool', { env: { PATH: join(root, 'bin') }, platform: 'linux', cache: freshCache() }).reason)
+        .toContain('neither root, you, nor the owner of the Node')
+    } finally {
+      process.execPath = execPath
+      spy?.mockRestore()
+      if (asRoot) for (const path of [root, join(root, 'bin'), tool, join(root, 'node-home'), fakeNode]) chownSync(path, 0, 0)
+    }
+  })
+
+  itAsRoot('refuses a tool whose parent directory somebody else owns', () => {
+    // Ownership is the only control now mode bits are not read, and whoever
+    // owns a directory's parent can rename it out from under the tool.
+    const root = tempRoot()
+    const parent = join(root, 'parent')
+    const tool = makeExecutable(join(parent, 'bin'), 'looptool')
+    const restore = ownedBySomeoneElse(parent)
+    try {
+      const resolution = resolveTrustedExecutable('looptool', { env: { PATH: join(parent, 'bin') }, platform: 'linux', cache: freshCache() })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.reason).toContain(`${parent}, above its directory,`)
+      expect(tool).toBeDefined()
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('accepts a WSL 9p drive mount only when the mount says it is a Windows drive', () => {
+    // `9p` and `virtiofs` are also QEMU shares and Docker Desktop volumes. Only
+    // a Windows-drive source or WSL's `aname=drvfs` option earns the exemption.
+    const root = tempRoot()
+    const bin = join(root, 'bin')
+    const tool = makeExecutable(bin, 'git.exe')
+    const restore = ownedBySomeoneElse(bin, tool)
+    try {
+      const lookup = (table: string) => resolveTrustedExecutable('git.exe', {
+        env: { PATH: bin },
+        platform: 'linux',
+        readMountTable: () => table,
+        cache: freshCache(),
+      })
+
+      expect(lookup(`drvfs ${root} 9p rw,aname=drvfs;path=C:\\;uid=1000 0 0\n`).path).toBe(tool)
+      expect(lookup(`C:\\134 ${root} virtiofs rw 0 0\n`).path).toBe(tool)
+      expect(lookup(`share ${root} 9p rw,trans=virtio 0 0\n`).reason).toContain('neither root, you')
+      expect(lookup(`myfs / virtiofs rw 0 0\n`).reason).toContain('neither root, you')
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('reads the override from the policy environment, not from the child\'s', () => {
+    // A command that could set its own LOOPTROOP_TRUSTED_EXECUTABLE_DIRS could
+    // vouch for any directory it liked.
+    const root = tempRoot()
+    const shared = join(root, 'shared')
+    const tool = makeExecutable(shared, 'looptool')
+    const restore = ownedBySomeoneElse(shared, tool)
+    try {
+      const childSaysSo = resolveTrustedExecutable('looptool', {
+        env: { PATH: shared, [TRUSTED_EXECUTABLE_DIRS_ENV]: shared },
+        policyEnv: { PATH: '' },
+        platform: 'linux',
+        cache: freshCache(),
+      })
+      expect(childSaysSo.path).toBeUndefined()
+
+      expect(findTrustedExecutablePath('looptool', {
+        env: { PATH: shared },
+        policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: shared },
+        platform: 'linux',
+        cache: freshCache(),
+      })).toBe(tool)
+    } finally {
+      restore()
+    }
+  })
+
+  itPosix('lets the override vouch for a program named by absolute path, too', () => {
+    const root = tempRoot()
+    const shared = join(root, 'shared')
+    const tool = makeExecutable(shared, 'looptool')
+    const restore = ownedBySomeoneElse(shared, tool)
+    try {
+      expect(resolveTrustedProgram(tool, { platform: 'linux' }).refusedAt).toBe(tool)
+      expect(resolveTrustedProgram(tool, { platform: 'linux', policyEnv: { [TRUSTED_EXECUTABLE_DIRS_ENV]: shared } }).path).toBe(tool)
+    } finally {
+      restore()
+    }
+  })
+
+  it('spots a search list the operating system would read as the current directory', () => {
+    // A bare-name fallback is only safe when the OS search cannot reach the
+    // working directory — and a trailing colon, the everyday result of
+    // `PATH=$PATH:`, is enough to reach it.
+    expect(searchListHasRelativeEntry({ PATH: '/usr/bin:/bin' }, 'linux')).toBe(false)
+    expect(searchListHasRelativeEntry({ PATH: '/usr/bin:' }, 'linux')).toBe(true)
+    expect(searchListHasRelativeEntry({ PATH: '.:/usr/bin' }, 'linux')).toBe(true)
+    expect(searchListHasRelativeEntry({ PATH: 'C:\\Windows;tools' }, 'win32')).toBe(true)
+    expect(searchListHasRelativeEntry({ PATH: 'C:\\Windows;"C:\\Program Files\\x"' }, 'win32')).toBe(false)
   })
 })

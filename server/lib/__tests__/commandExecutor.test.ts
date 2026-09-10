@@ -61,7 +61,7 @@ describe('resolveCommandProgram', () => {
       env: { PATH: join(repository, 'node_modules', '.bin') },
       cwd: repository,
       repoRoot: repository,
-    })).toEqual({ path: tool })
+    })).toEqual({ path: tool, target: tool })
   })
 
   it.runIf(process.platform !== 'win32')('resolves a relative program against the command directory', () => {
@@ -72,7 +72,7 @@ describe('resolveCommandProgram', () => {
       env: { PATH: '' },
       cwd: join(repository, 'tools'),
       repoRoot: repository,
-    })).toEqual({ path: tool })
+    })).toEqual({ path: tool, target: tool })
   })
 
   it.runIf(process.platform !== 'win32')('refuses a relative program whose link leads out of the repository', () => {
@@ -102,11 +102,12 @@ describe('resolveCommandProgram', () => {
     mkdirSync(join(repository, 'tools'), { recursive: true })
     symlinkSync(target, join(repository, 'tools', 'check'))
 
+    // Spawned by the link, judged — and contained — by where it leads.
     expect(resolveCommandProgram('./check', {
       env: { PATH: '' },
       cwd: join(repository, 'tools'),
       repoRoot: repository,
-    })).toEqual({ path: target })
+    })).toEqual({ path: join(repository, 'tools', 'check'), target })
   })
 
   it('refuses a relative program that climbs out of the repository', () => {

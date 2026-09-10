@@ -8,27 +8,38 @@
  * it does not control — so "whatever answered to the name" is a decision worth
  * taking away from the environment.
  *
- * **What this does and does not promise.** The guarantee is that the *file* is
- * chosen once, here, and spawned by path — `PATH` never gets to decide at spawn
- * time, and the current directory never wins. On POSIX there is one further
- * check: the directory, and the file it resolves to, must be owned by root or
- * by this user, so a directory belonging to somebody else cannot supply the
- * tool.
+ * **What this does and does not promise.** The *file* is chosen once, here,
+ * and `PATH` never gets to choose at spawn time; the current directory never
+ * wins. On POSIX there is one further check: the directory a tool was found in,
+ * the real file behind it, and every directory above both, must belong to root,
+ * to this user, or to whoever owns the Node binary running LoopTroop — so a
+ * directory somebody else controls cannot supply the tool.
+ *
+ * What gets *spawned* is the `PATH` entry, not the real file behind it. The
+ * real file is what is judged; the entry is what runs. A tool that works out
+ * where it lives from how it was invoked breaks otherwise: Homebrew takes its
+ * prefix from `$0`, so `brew` run by its real path decided it lived in
+ * `.linuxbrew/Homebrew`, found no bottles, and compiled Node from source for
+ * forty minutes. Rustup's `cargo`, mise and Volta shims and busybox all dispatch
+ * on the name they were started by, for the same reason.
  *
  * It deliberately does **not** judge permission bits. That rule was here and it
  * was wrong in practice: GitHub's Ubuntu runners ship a world-writable
  * `/usr/local/bin`, so LoopTroop refused its own `npm` inside a container, and
  * every hosted Windows runner keeps npm in `C:\hostedtoolcache`, which no
  * location list was going to predict. A control that refuses the standard
- * layout of the platforms we ship on is not a control, it is an outage. If a
- * machine's `/usr/local/bin` is world-writable, the resolver refusing to run is
- * not what saves it.
+ * layout of the platforms we ship on is not a control, it is an outage.
  *
- * On Windows there is no equivalent check at all, and pretending otherwise was
- * the second mistake: `fs.stat` reports mode `0777` and uid `0` for everything
- * on NTFS, so neither the mode nor the owner means anything. Windows gets
- * `PATHEXT` handling and the structural rules; an operator who wants the search
- * narrowed uses the override.
+ * On Windows there is no ownership check either: `fs.stat` reports mode `0777`
+ * and uid `0` for everything on NTFS, so neither means anything. Windows gets
+ * `PATHEXT` handling, the system directories searched first as `CreateProcess`
+ * searches them, and the structural rules. The override adds directories to
+ * search; it cannot narrow the search, on Windows or anywhere else.
+ *
+ * The policy inputs — the override and the Windows system root — are read from
+ * the environment the *caller* controls (`policyEnv`), never from the one a
+ * child is being given. A command that could set its own
+ * `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` could vouch for any directory it liked.
  *
  * `scripts/trusted-tool.ts` answers the same question with a *stricter* policy,
  * and the two are separate on purpose: it guards release jobs that hold
@@ -42,11 +53,11 @@
  * attacker who can already set this process's environment, and nothing here
  * pretends otherwise.
  *
- * Erasable TypeScript only, and no relative imports. `scripts` modules import
+ * Erasable TypeScript only, and `node:` imports only. `scripts` modules import
  * this file under Node's type stripping, which rejects `enum`, `namespace` and
  * parameter properties, and `scripts/sync-installers.mjs` strips it into
  * `scripts/installer-core.mjs`, which runs with no repository around it.
- * Neither `tsc` nor vitest catches a violation of either constraint.
+ * `installers:check` refuses a violation of either.
  */
 import * as trustedFs from 'node:fs'
 import * as trustedPath from 'node:path'
@@ -59,18 +70,28 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
 /**
  * A resolution, or the reason there is not one. Never both.
  *
+ * `path` is what to spawn: the entry `PATH` offered, or the absolute path the
+ * caller named. `target` is the real file behind it — the one that was judged,
+ * and the one to check containment against.
+ *
  * `refusedAt` separates the two failures that must not be treated alike: a tool
- * that is *not installed*, where falling back to the bare name only reproduces
- * the ENOENT a caller already reports, and a tool that *is* there in a directory
- * this machine will not run from, where falling back would spawn the very file
- * this module exists to refuse.
+ * that is *not installed*, and a tool that *is* there somewhere this machine
+ * will not run it from. Falling back to the bare name after a refusal would
+ * spawn the very file this module exists to refuse.
  */
 export type TrustedExecutableResolution =
-  | { path: string; reason?: undefined; refusedAt?: undefined }
-  | { path?: undefined; reason: string; refusedAt?: string }
+  | { path: string; target?: string; reason?: undefined; refusedAt?: undefined }
+  | { path?: undefined; target?: undefined; reason: string; refusedAt?: string }
 
 export interface TrustedExecutableOptions {
+  /** The environment whose `PATH` and `PATHEXT` are searched: the child's. */
   env?: NodeJS.ProcessEnv
+  /**
+   * Where the trust policy comes from — the override and the Windows system
+   * root. Defaults to `env`. A caller resolving for a child whose environment
+   * it did not write passes its own, so the child cannot vouch for itself.
+   */
+  policyEnv?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   /** Test seam: the mount table consulted to recognise a Windows drive mount under WSL. */
   readMountTable?: () => string
@@ -86,40 +107,43 @@ export interface FileIdentity {
 }
 
 /**
- * A resolved path, and enough about how it was reached to notice it moved.
+ * A resolution, and enough about how it was reached to notice it moved.
  *
- * Caching the path alone survives `brew upgrade git`: the daemon keeps spawning
- * a path whose file is now a different program, or on Windows one that no
- * longer exists. So the entry keeps the file's identity, the `PATH` candidate
- * that led to it with the link's own identity — a retargeted link leaves the
- * old target untouched — and the search directory, so the ownership rule can be
- * re-run on a hit. A handful of `stat`s is noise beside the `spawn` they
- * precede.
+ * The file's identity catches an in-place upgrade. The candidate's own lstat
+ * identity catches a link retargeted while the old version stayed on disk. The
+ * directory and extension let a hit prove that nothing earlier in the search
+ * now answers first, and let the ownership rule be re-run. A handful of `stat`s
+ * is noise beside the `spawn` they precede.
  */
 export interface CachedResolution extends FileIdentity {
+  /** The real file. */
   path: string
   size: number
-  /** The `PATH` entry that was found — a link, often, rather than the file. */
+  /** The `PATH` entry that was found and is what gets spawned. */
   candidate: string
   candidateIdentity: FileIdentity
   directory: string
+  extension: string
 }
 
 /**
  * Lives as long as the process does, and starts empty, so there is nothing to
- * clear on daemon start. There used to be a reset function whose comment said
- * it was called then; nothing called it, and the tests inject their own map.
+ * clear on daemon start. Keyed per name, platform, extensions, override and
+ * search list, so it grows with the number of distinct tools asked for.
  */
 const processCache = new Map<string, CachedResolution>()
+
+/** `node:path` for the platform being *described*, not the one running. */
+function pathFor(platform: NodeJS.Platform): trustedPath.PlatformPath {
+  return platform === 'win32' ? trustedPath.win32 : trustedPath.posix
+}
 
 /**
  * The directories a tool may be resolved from, in search order.
  *
  * The override is *prepended*, not used to filter `PATH`: an operator naming a
  * directory is telling the daemon where a tool is, and a tool that is not on
- * `PATH` at all is exactly the case they are answering. Filtering `PATH` by the
- * override — the shape this had when it was first written — resolves nothing
- * for the person who set it.
+ * `PATH` at all is exactly the case they are answering.
  *
  * Relative entries are dropped rather than resolved. `PATH` conventionally
  * carries `.` and empty segments, both of which mean the current directory, and
@@ -128,16 +152,34 @@ const processCache = new Map<string, CachedResolution>()
  */
 export function trustedSearchDirectories(options: TrustedExecutableOptions = {}): string[] {
   const env = options.env ?? process.env
+  const policyEnv = options.policyEnv ?? env
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const pathValue = env.PATH ?? env.Path ?? ''
-  const entries = [
-    ...(env[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
-    ...windowsSystemDirectories(platform, env),
+  return searchEntries([
+    ...(policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(p.delimiter),
+    ...windowsSystemDirectories(platform, policyEnv),
     ...pathValue.split(p.delimiter),
-  ]
+  ], platform)
+}
 
-  return searchEntries(entries, platform)
+/**
+ * Whether a search list contains an entry the operating system would read as
+ * the current directory — `.`, an empty segment, or any relative path.
+ *
+ * The resolver skips those entries. A caller that falls back to spawning a bare
+ * name after "not found" does not get that protection: the operating system
+ * searches the same list and does not skip them, so `PATH=/usr/bin:` — a
+ * trailing colon, the everyday result of `PATH=$PATH:` — ran `./tool` from the
+ * working directory. Callers use this to know when a fallback is safe.
+ */
+export function searchListHasRelativeEntry(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  const p = pathFor(platform)
+  const pathValue = env.PATH ?? env.Path ?? ''
+  return pathValue.split(p.delimiter).some((entry) => {
+    const directory = entry.trim().replace(/^"(.*)"$/, '$1')
+    return directory === '' || !p.isAbsolute(directory)
+  })
 }
 
 /**
@@ -145,25 +187,25 @@ export function trustedSearchDirectories(options: TrustedExecutableOptions = {})
  *
  * Parsing follows the platform being described — its separator, what counts as
  * absolute, whether case matters when deciding two entries are the same — but
- * the value is only trimmed, never rewritten. `path.win32.normalize` turns
- * `/tmp/x` into `\\tmp\\x`, which is correct for Windows and names nothing on
- * the Linux host the Windows rules are tested from; the file lookup is always
- * the host's.
+ * the value is only trimmed, never rewritten: `path.win32.normalize` turns
+ * `/tmp/x` into `\tmp\x`, which is correct for Windows and names nothing on the
+ * Linux host the Windows rules are tested from. The file lookup is always the
+ * host's.
  */
 function searchEntries(entries: readonly string[], platform: NodeJS.Platform): string[] {
   const p = pathFor(platform)
   const seen = new Set<string>()
   const directories: string[] = []
   for (const entry of entries) {
-    // Windows tolerates `"C:\\Program Files\\x"` in PATH and strips the quotes
+    // Windows tolerates `"C:\Program Files\x"` in PATH and strips the quotes
     // itself; `join` does not, and the quoted form resolves to nothing.
     let directory = entry.trim().replace(/^"(.*)"$/, '$1')
-    // Relative entries are dropped, never resolved: `.` and an empty segment
-    // both mean the current directory, which for a daemon is a checkout.
     if (directory === '' || !p.isAbsolute(directory)) continue
     const root = p.parse(directory).root
     while (directory.length > root.length && /[\\/]$/.test(directory)) directory = directory.slice(0, -1)
-    const key = platform === 'win32' ? directory.toLowerCase() : directory
+    // Windows treats `/` and `\` alike, so `C:/Tools` and `C:\Tools` are one
+    // directory there and should be searched once.
+    const key = platform === 'win32' ? directory.toLowerCase().replace(/\//g, '\\') : directory
     if (seen.has(key)) continue
     seen.add(key)
     directories.push(directory)
@@ -176,10 +218,9 @@ function searchEntries(entries: readonly string[], platform: NodeJS.Platform): s
  *
  * `CreateProcess` looks in the system directories first, which is why
  * `taskkill`, `explorer.exe`, `rundll32.exe` and `powershell.exe` work from a
- * shell whose `PATH` never mentions them. Searching `PATH` alone made those
- * built-ins disappear on any machine with a trimmed `PATH` — a resolver that is
- * *narrower* than the OS it replaces, which is a regression rather than a
- * hardening. Empty on every other platform.
+ * shell whose `PATH` never mentions them. Read from the policy environment: a
+ * child that could set `SystemRoot` could point the "system directories" at
+ * anything. Empty on every other platform.
  */
 function windowsSystemDirectories(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
   if (platform !== 'win32') return []
@@ -194,27 +235,11 @@ function windowsSystemDirectories(platform: NodeJS.Platform, env: NodeJS.Process
 }
 
 /**
- * `node:path` for the platform being *described*, not the one running.
- *
- * `platform` is a test seam, and it was only half a seam: PATHEXT and the trust
- * branch honoured it while `delimiter`, `isAbsolute`, `resolve` and `relative`
- * came from the host. A `platform: 'win32'` case on Linux therefore split PATH
- * on `:` and compared `C:\...` with POSIX rules, so the Windows semantics were
- * never actually exercised — the exact defect class `scripts/trusted-tool.ts`
- * takes `platform` to avoid.
- */
-function pathFor(platform: NodeJS.Platform): trustedPath.PlatformPath {
-  return platform === 'win32' ? trustedPath.win32 : trustedPath.posix
-}
-
-/**
  * `statSync` that answers `null` for every reason a path cannot be inspected.
  *
- * `throwIfNoEntry: false` suppresses ENOENT and nothing else. An unreadable
- * `PATH` entry — EACCES, a dead network mount, EPERM under a sandbox — still
- * threw, out of a function whose entire contract is to return a resolution or a
- * reason. One bad directory on `PATH` crashed the lookup instead of being
- * skipped, which is neither of the two answers this module is allowed to give.
+ * `throwIfNoEntry: false` suppresses ENOENT and ENOTDIR and nothing else. An
+ * unreadable `PATH` entry — EACCES, ELOOP, a dead network mount — threw out of a
+ * function whose contract is to return a resolution or a reason.
  */
 function statOrNull(path: string): trustedFs.Stats | null {
   try {
@@ -228,6 +253,14 @@ function statOrNull(path: string): trustedFs.Stats | null {
 function lstatOrNull(path: string): trustedFs.Stats | null {
   try {
     return trustedFs.lstatSync(path, { throwIfNoEntry: false }) ?? null
+  } catch {
+    return null
+  }
+}
+
+function realpathOrNull(path: string): string | null {
+  try {
+    return trustedFs.realpathSync(path)
   } catch {
     return null
   }
@@ -251,8 +284,7 @@ function candidateExtensions(name: string, platform: NodeJS.Platform, env: NodeJ
 function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
   if (!statOrNull(path)?.isFile()) return false
   // Windows has no execute bit and PATHEXT has already chosen the extension by
-  // the time this runs. Read from the platform passed in rather than the real
-  // one, so the rules can be exercised off the platform they describe.
+  // the time this runs.
   if (platform === 'win32') return true
   try {
     trustedFs.accessSync(path, trustedFs.constants.X_OK)
@@ -266,34 +298,38 @@ function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
  * Whether `path` sits on a Windows drive mounted into WSL.
  *
  * DrvFs invents its ownership: every file shows the uid the mount was made
- * with, which is this user by default but `root` for an elevated mount and
- * whatever `uid=` said for a custom one. The owner there describes a mount
- * option, not a person, so the ownership check is skipped on these mounts and
- * only on these.
+ * with — this user by default, root for an elevated mount, anything for a
+ * custom `uid=`. The owner there describes a mount option, not a person, so the
+ * ownership check is skipped on these mounts and only on these.
  *
- * Decided from the mount table rather than by matching `/mnt/`, because `/mnt`
- * is an ordinary directory that anything may be mounted under, and a rule that
- * trusts a path prefix is a rule anyone can satisfy with a `mkdir`. The longest
+ * Positively identified, not guessed from the filesystem type. `drvfs` is
+ * unambiguous. WSL2 has also shown the same drives as `9p` and `virtiofs`, but
+ * those types are QEMU shares and Docker Desktop volumes too — so for them the
+ * mount must also say it is a Windows drive: a source like `C:\`, or the
+ * `aname=drvfs` option WSL gives its 9p drive mounts. A `virtiofs` root that is
+ * not a Windows drive is not exempt.
+ *
+ * Decided from the mount table rather than by matching `/mnt/`, and the longest
  * matching mount point wins, as the kernel would resolve it.
  */
 function isWindowsDriveMount(path: string, mountTable: string): boolean {
-  let bestPoint = ''
-  let bestType = ''
+  const decode = (value: string): string => value.replace(/\\(\d{3})/g, (_, code: string) => String.fromCharCode(Number.parseInt(code, 8)))
+  let best: { point: string; source: string; type: string; options: string } | null = null
   for (const line of mountTable.split('\n')) {
-    const fields = line.split(' ')
-    const point = fields[1]
-    const type = fields[2]
-    if (point === undefined || type === undefined) continue
-    // /proc/mounts octal-escapes spaces and tabs in mount points.
-    const decoded = point.replace(/\\(\d{3})/g, (_, code: string) => String.fromCharCode(Number.parseInt(code, 8)))
+    const [source, point, type, options] = line.split(' ')
+    if (source === undefined || point === undefined || type === undefined) continue
+    const decoded = decode(point)
     const covers = decoded === '/' || path === decoded || path.startsWith(`${decoded}/`)
-    if (!covers || decoded.length < bestPoint.length) continue
-    bestPoint = decoded
-    bestType = type
+    if (!covers || (best !== null && decoded.length < best.point.length)) continue
+    best = { point: decoded, source: decode(source), type, options: options ?? '' }
   }
-  // `drvfs` is WSL1 and WSL2's default; `9p` and `virtiofs` are what WSL2 has
-  // used for the same mounts across builds.
-  return bestType === 'drvfs' || bestType === '9p' || bestType === 'virtiofs'
+  if (best === null) return false
+  if (best.type === 'drvfs') return true
+  if (best.type !== '9p' && best.type !== 'virtiofs') return false
+  // WSL writes the 9p option as `aname=drvfs;path=C:\;uid=1000;…` — one
+  // comma-separated field with its own semicolons — so it is matched as a prefix.
+  return /^[A-Za-z]:/.test(best.source)
+    || best.options.split(',').some((option) => option === 'aname=drvfs' || option.startsWith('aname=drvfs;'))
 }
 
 function readMountTableFromProc(): string {
@@ -306,6 +342,26 @@ function readMountTableFromProc(): string {
   }
 }
 
+/**
+ * The uids whose files LoopTroop may run: root, this process, and whoever owns
+ * the Node binary running it.
+ *
+ * The third is what makes `sudo "$(which node)" …` work with a toolchain that
+ * belongs to the invoking user — under sudo this process is root, and root
+ * refusing the user's `/opt/hostedtoolcache/.../npm` refused the Node it was
+ * itself running from. Trusting that owner widens nothing that matters: whoever
+ * can replace the interpreter already controls every line this process runs.
+ */
+function trustedOwners(): Set<number> {
+  const owners = new Set<number>([0])
+  const uid = process.getuid?.()
+  if (uid !== undefined) owners.add(uid)
+  const interpreter = realpathOrNull(process.execPath)
+  const interpreterOwner = interpreter === null ? undefined : statOrNull(interpreter)?.uid
+  if (interpreterOwner !== undefined) owners.add(interpreterOwner)
+  return owners
+}
+
 /** What the ownership rule needs to know about the call it is judging. */
 interface TrustContext {
   platform: NodeJS.Platform
@@ -315,47 +371,51 @@ interface TrustContext {
 }
 
 /**
- * Why `path` fails the ownership rule, or `null` when it passes.
+ * Why `path` or a directory above it fails the ownership rule, or `null`.
  *
- * Owned by root or by this user, and nothing else. Permission bits are not
- * consulted — see the module comment for why that rule was withdrawn. Windows
- * answers `null` because NTFS ownership is invisible to `fs.stat`, which
- * reports uid 0 for every file. A directory the operator named is excused: the
- * override is exactly how someone says "this directory belongs to a service
- * account and that is deliberate".
+ * Every directory up to the root, not only the last one: ownership is the only
+ * control now that mode bits are not read, and a directory can be renamed out
+ * from under a tool by whoever owns its *parent*. A root-owned `bin/tool` inside
+ * somebody else's directory is theirs to replace.
+ *
+ * Windows answers `null` because NTFS ownership is invisible to `fs.stat`. A
+ * directory the operator named is excused, with everything above it — the
+ * override is exactly how someone says "this belongs to a service account and
+ * that is deliberate".
  */
 function ownershipRefusal(path: string, what: string, context: TrustContext): string | null {
   if (context.platform === 'win32' || context.namedByOperator) return null
-  const stats = statOrNull(path)
-  if (stats === null) return `its ${what} could not be inspected`
-  const uid = process.getuid?.()
-  if (uid === undefined || stats.uid === 0 || stats.uid === uid) return null
-  if (isWindowsDriveMount(path, context.readMountTable())) return null
-  return `its ${what} is owned by uid ${stats.uid}, which is neither root nor you`
+  const owners = trustedOwners()
+  const real = realpathOrNull(path)
+  if (real === null) return `its ${what} could not be inspected`
+  let current = real
+  for (;;) {
+    const stats = statOrNull(current)
+    if (stats === null) return `its ${what} could not be inspected`
+    if (!owners.has(stats.uid) && !isWindowsDriveMount(current, context.readMountTable())) {
+      const whose = current === real ? `its ${what}` : `${current}, above its ${what},`
+      return `${whose} is owned by uid ${stats.uid}, which is neither root, you, nor the owner of the Node running LoopTroop`
+    }
+    const parent = trustedPath.dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
 }
 
 /**
- * Why the file behind `directory` may not be run, or `null` when it may.
+ * Why the file behind `candidate` may not be run, or `null` when it may.
  *
  * Judged on both sides of the link: the search directory, which is what `PATH`
  * offered, and the real file with its own directory. Checking only the first
- * was the gap — a link in a trusted directory could point into a tree someone
- * else owns, and the resolver returned the file there. Homebrew and Nix still
- * pass, because their stores belong to the user who installed them or to root.
+ * was a gap — a link in a trusted directory could point into a tree someone else
+ * owns. Homebrew and Nix still pass, because their stores belong to the user who
+ * installed them or to root.
  */
-function candidateRefusal(directory: string, resolved: string, context: TrustContext): string | null {
+function candidateRefusal(directory: string, target: string, context: TrustContext): string | null {
   if (!statOrNull(directory)?.isDirectory()) return 'its directory is not a directory'
   return ownershipRefusal(directory, 'directory', context)
-    ?? ownershipRefusal(trustedPath.dirname(resolved), 'target directory', context)
-    ?? ownershipRefusal(resolved, 'file', context)
-}
-
-function realpathOrNull(path: string): string | null {
-  try {
-    return trustedFs.realpathSync(path)
-  } catch {
-    return null
-  }
+    ?? ownershipRefusal(trustedPath.dirname(target), 'target directory', context)
+    ?? ownershipRefusal(target, 'file', context)
 }
 
 function identityMatches(stats: trustedFs.Stats | null, entry: FileIdentity & { size?: number }): boolean {
@@ -369,20 +429,37 @@ function identityMatches(stats: trustedFs.Stats | null, entry: FileIdentity & { 
 /**
  * Whether a cached answer still describes what `PATH` would pick, now.
  *
- * Three things can move under a long-lived daemon, and the first version of
- * this cache watched only the last of them:
+ * Everything that can move under a long-lived daemon is checked, because each
+ * of these was a way the first versions of this cache kept serving a stale
+ * answer:
  *
- * - **The link.** An upgrade that retargets `bin/git` from `store/1.0` to
- *   `store/2.0` while keeping the old version on disk left the old target
- *   untouched, so a cache that stat'ed only the target kept spawning the old
- *   program. The link is compared with `lstat` and resolved again.
- * - **The trust.** A directory that changed owner after the first lookup kept
- *   serving the cached answer. The ownership rule is re-run on every hit.
- * - **The file.** Replaced in place — `brew upgrade` writing a new file at the
- *   same path — which dev/ino/mtime/size catch.
+ * - **Something earlier now answers first.** A newer `git` installed into
+ *   `~/.local/bin`, ahead of `/usr/bin`, or a `tool.EXE` appearing beside a
+ *   cached `tool.CMD`. Every earlier directory and extension is checked for a
+ *   candidate before the hit is served.
+ * - **The link.** Retargeted from `store/1.0` to `store/2.0` with the old
+ *   version kept on disk. Compared with `lstat` and resolved again.
+ * - **The file.** Replaced in place, or no longer executable.
+ * - **The trust.** A directory that changed owner. The rule is re-run.
  */
-function cachedResolutionHolds(entry: CachedResolution, context: TrustContext): boolean {
+function cachedResolutionHolds(
+  entry: CachedResolution,
+  name: string,
+  directories: readonly string[],
+  extensions: readonly string[],
+  platform: NodeJS.Platform,
+  context: TrustContext,
+): boolean {
+  const position = directories.indexOf(entry.directory)
+  if (position === -1) return false
+  for (const directory of directories.slice(0, position + 1)) {
+    for (const extension of extensions) {
+      if (directory === entry.directory && extension === entry.extension) break
+      if (isExecutableFile(trustedPath.join(directory, `${name}${extension}`), platform)) return false
+    }
+  }
   if (!identityMatches(lstatOrNull(entry.candidate), entry.candidateIdentity)) return false
+  if (!isExecutableFile(entry.candidate, platform)) return false
   if (realpathOrNull(entry.candidate) !== entry.path) return false
   const stats = statOrNull(entry.path)
   if (!stats?.isFile() || !identityMatches(stats, entry)) return false
@@ -402,6 +479,7 @@ export function resolveTrustedExecutable(
   options: TrustedExecutableOptions = {},
 ): TrustedExecutableResolution {
   const env = options.env ?? process.env
+  const policyEnv = options.policyEnv ?? env
   const platform = options.platform ?? process.platform
   const p = pathFor(platform)
   const readMountTable = options.readMountTable ?? readMountTableFromProc
@@ -411,23 +489,21 @@ export function resolveTrustedExecutable(
     return { reason: `'${name}' is a path, not a program name; resolve it against its intended root instead.` }
   }
 
-  const override = env[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
-  const directories = trustedSearchDirectories({ env, platform })
+  const override = policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? ''
+  const directories = trustedSearchDirectories({ env, policyEnv, platform })
   const namedByOperator = new Set(searchEntries(override.split(p.delimiter), platform))
   const extensions = candidateExtensions(name, platform, env)
   const cache = options.cache === undefined ? processCache : options.cache
   // The override is in the key as well as in the directory list, because a
-  // directory can be on both and only the override excuses the ownership rule:
-  // without it, an answer trusted *because* the operator named a directory
-  // outlived the operator un-naming it.
+  // directory can be on both and only the override excuses the ownership rule.
   const cacheKey = [platform, name, extensions.join(';'), override, directories.join(p.delimiter)].join('\u0000')
 
   const cached = cache?.get(cacheKey)
   if (cached) {
     const context = { platform, readMountTable, namedByOperator: namedByOperator.has(cached.directory) }
-    if (cachedResolutionHolds(cached, context)) return { path: cached.path }
-    // Moved, retargeted, replaced or no longer trusted. Resolve again rather
-    // than reporting any of those.
+    if (cachedResolutionHolds(cached, name, directories, extensions, platform, context)) {
+      return { path: cached.candidate, target: cached.path }
+    }
     cache?.delete(cacheKey)
   }
 
@@ -438,24 +514,22 @@ export function resolveTrustedExecutable(
       // looked up on the filesystem this process is running on.
       const candidate = trustedPath.join(directory, `${name}${extension}`)
       if (!isExecutableFile(candidate, platform)) continue
-      // `realpath` before judging, so what is judged is the file that will run
-      // and the cache can tell when an upgrade replaced it.
-      const resolved = realpathOrNull(candidate)
-      const refusal = resolved === null
+      const target = realpathOrNull(candidate)
+      const refusal = target === null
         ? 'it could not be resolved to a real file'
-        : candidateRefusal(directory, resolved, context)
-      if (resolved === null || refusal !== null) {
+        : candidateRefusal(directory, target, context)
+      if (target === null || refusal !== null) {
         return {
           reason: `${name} resolves to ${candidate}, which this daemon will not run: ${refusal}.`
             + ` Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to the directory holding it if that location is deliberate.`,
           refusedAt: candidate,
         }
       }
-      const stats = statOrNull(resolved)
+      const stats = statOrNull(target)
       const candidateStats = lstatOrNull(candidate)
       if (!stats?.isFile() || candidateStats === null) continue
       cache?.set(cacheKey, {
-        path: resolved,
+        path: target,
         dev: stats.dev,
         ino: stats.ino,
         mtimeMs: stats.mtimeMs,
@@ -463,8 +537,9 @@ export function resolveTrustedExecutable(
         candidate,
         candidateIdentity: { dev: candidateStats.dev, ino: candidateStats.ino, mtimeMs: candidateStats.mtimeMs },
         directory,
+        extension,
       })
-      return { path: resolved }
+      return { path: candidate, target }
     }
   }
 
@@ -477,10 +552,8 @@ export function resolveTrustedExecutable(
 /**
  * The path to `name`, or `null` if there is not a trusted one.
  *
- * Callers pass the result straight to `spawn`, and a `null` means the tool is
- * unavailable — the same condition as it not being installed, reported through
- * whatever the caller already does about that. Nothing that used to degrade
- * becomes fatal because of this module.
+ * A `null` means the tool is unavailable — the same condition as it not being
+ * installed, reported through whatever the caller already does about that.
  */
 export function findTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}): string | null {
   return resolveTrustedExecutable(name, options).path ?? null
@@ -490,17 +563,17 @@ export function findTrustedExecutablePath(name: string, options: TrustedExecutab
  * As `resolveTrustedExecutable`, but accepting a program a caller named by
  * absolute path.
  *
- * The trust question is about `PATH` choosing the file. An absolute path is the
- * caller choosing it — `process.execPath`, a plan that names a tool outright —
- * and there is no search to hijack, so what is checked is only that the path
- * names an executable file. It is still `realpath`ed, so the spawn and any
- * later diagnostic agree on which file ran.
+ * The trust question is mostly about `PATH` choosing the file. An absolute path
+ * is the caller choosing it — `process.execPath`, a plan that names a tool
+ * outright — so there is no search to hijack, but the ownership rule still
+ * applies to the file and where it really lives, and so does the override.
+ * The path is returned as named, for the same reason a `PATH` entry is: a tool
+ * may work out where it lives from how it was started.
  *
  * A *relative* path is refused rather than resolved. Which directory it is
  * relative to is the caller's decision and differs per call site: the daemon's
  * working directory is a checkout, and quietly picking that would be the
- * current-directory hole in a different shape. Callers that have an intended
- * root resolve against it and pass the absolute result.
+ * current-directory hole in a different shape.
  */
 export function resolveTrustedProgram(
   program: string,
@@ -509,17 +582,23 @@ export function resolveTrustedProgram(
   const platform = options.platform ?? process.platform
   if (!trustedPath.isAbsolute(program)) return resolveTrustedExecutable(program, options)
   if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
-  const resolved = realpathOrNull(program)
-  if (resolved === null) return { reason: `${program} could not be resolved to a real path.` }
-  // No search to hijack, but the ownership rule still applies to the file and
-  // where it really lives: a program named outright is no more trustworthy for
-  // sitting in somebody else's directory than one `PATH` found there. Refused
-  // with `refusedAt`, so a caller that falls back on "not found" does not fall
-  // back onto this.
-  const context = { platform, readMountTable: options.readMountTable ?? readMountTableFromProc, namedByOperator: false }
-  const refusal = ownershipRefusal(trustedPath.dirname(resolved), 'directory', context) ?? ownershipRefusal(resolved, 'file', context)
-  if (refusal !== null) return { reason: `${program} will not be run: ${refusal}.`, refusedAt: program }
-  return { path: resolved }
+  const target = realpathOrNull(program)
+  if (target === null) return { reason: `${program} could not be resolved to a real path.` }
+  const policyEnv = options.policyEnv ?? options.env ?? process.env
+  const named = new Set(searchEntries((policyEnv[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '').split(pathFor(platform).delimiter), platform))
+  const context = {
+    platform,
+    readMountTable: options.readMountTable ?? readMountTableFromProc,
+    namedByOperator: named.has(trustedPath.dirname(program)),
+  }
+  const refusal = ownershipRefusal(trustedPath.dirname(target), 'directory', context) ?? ownershipRefusal(target, 'file', context)
+  if (refusal !== null) {
+    return {
+      reason: `${program} will not be run: ${refusal}. Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to its directory if that location is deliberate.`,
+      refusedAt: program,
+    }
+  }
+  return { path: program, target }
 }
 
 /** The path to `name`, or an error saying why there is not one. */

@@ -169,9 +169,13 @@ export function resolveCommandProgram(
   // canonicalised too, or a repository reached through a symlinked parent (the
   // macOS `/var` → `/private/var` case) would reject its own files.
   const root = realpathOrSelf(context.repoRoot)
-  const step = relative(root, resolution.path)
+  // `target`, not `path`: the resolver spawns the entry it found — a tool may
+  // work out where it lives from how it was started — so `path` is the link and
+  // only `target` says where it leads.
+  const leadsTo = resolution.target ?? resolution.path
+  const step = relative(root, leadsTo)
   if (step === '' || step.startsWith('..') || isAbsolute(step)) {
-    return { reason: `Command program must stay within the repository root: ${program} leads to ${resolution.path}`, refusedAt: contained }
+    return { reason: `Command program must stay within the repository root: ${program} leads to ${leadsTo}`, refusedAt: contained }
   }
   return resolution
 }

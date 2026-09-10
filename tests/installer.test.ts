@@ -1648,11 +1648,16 @@ describe('runTool', () => {
     const asRoot = process.getuid?.() === 0
     if (asRoot) chownSync(dir, 4242, 4242)
     const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    // The running Node's owner is trusted too — on a CI runner that is the very
+    // uid being made to look foreign — so it is taken out of the case.
+    const execPath = process.execPath
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
     try {
-      expect(() => runTool('looptool', [])).toThrow(/neither root nor you/)
+      expect(() => runTool('looptool', [])).toThrow(/neither root, you, nor the owner of the Node/)
       expect(existsSync(marker)).toBe(false)
     } finally {
       spy?.mockRestore()
+      process.execPath = execPath
       if (asRoot) chownSync(dir, 0, 0)
       process.env.PATH = previousPath
       removeTempDir(dir)

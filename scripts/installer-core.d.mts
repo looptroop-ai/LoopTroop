@@ -106,11 +106,23 @@ export interface StallGuard {
 }
 
 /**
- * Where PATH resolves `command`, with PATHEXT applied and quotes stripped.
- * `pathValue` and `pathExt` are injectable so the candidate ordering can be
+ * The resolver generated into the core from `server/lib/executablePath.ts`.
+ *
+ * Declared here rather than re-exported from the source module on purpose: what
+ * these types describe is the *generated copy*, and a test that imports it is
+ * exercising the code that ships inside `install.sh` rather than the code it was
+ * made from. `env` and `platform` are injectable so the Windows rules can be
  * tested off Windows.
  */
-export function resolveOnPath(command: string, pathValue?: string, pathExt?: string): string | null
+export function findTrustedExecutablePath(
+  name: string,
+  options?: {
+    env?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    readMountTable?: () => string
+    cache?: Map<string, unknown> | null
+  },
+): string | null
 
 /** One cmd.exe token, whatever the value contains. */
 export function quoteForCmd(value: string): string

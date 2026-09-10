@@ -9,7 +9,7 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
-  resolveOnPath, stallGuard, streamBody,
+  findTrustedExecutablePath, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1183,16 +1183,19 @@ describe('bounded transfers', () => {
  * that rule, which is most of them.
  */
 /**
- * The search `CreateProcess` does, reimplemented so the installer can see
- * *what* PATH resolved to — a real executable and a batch shim have to be
- * launched differently, and there is no way to launch either correctly without
- * knowing which.
+ * The resolver **as it is generated into the installer**, not as it is written.
  *
- * Every case here is a Windows rule, and these run on Linux, so PATH and
- * PATHEXT are passed in. That is deliberate: the first version of this resolver
- * tried the extensionless name first, which broke every `npm` call on Windows
- * and could not fail anywhere else. A rule that only holds on one platform has
- * to be testable on the others.
+ * `scripts/sync-installers.mjs` strips `server/lib/executablePath.ts` into
+ * `scripts/installer-core.mjs`, which then goes verbatim into `install.sh` and
+ * `install.ps1`. These import from the core, so what is exercised is the copy
+ * that ships — the previous hand-written copy passed its own tests for four
+ * releases while disagreeing with the daemon about which `npm` to run.
+ *
+ * Every case here is a Windows rule, and these run on Linux, so PATH, PATHEXT
+ * and the platform are passed in. That is deliberate: the first version of this
+ * resolver tried the extensionless name first, which broke every `npm` call on
+ * Windows and could not fail anywhere else. A rule that only holds on one
+ * platform has to be testable on the others.
  */
 describe('PATH resolution', () => {
   const roots: string[] = []
@@ -1207,6 +1210,32 @@ describe('PATH resolution', () => {
     roots.push(dir)
     for (const name of names) writeFileSync(join(dir, name), '')
     return dir
+  }
+
+  /**
+   * The Windows search, against directories the operator named.
+   *
+   * A temp directory is in no Windows system root and under no user profile, so
+   * the trust rule would refuse it — and on Windows the override is the only
+   * thing that can vouch for a location, because NTFS reports mode 0777 for
+   * everything and there is no permission check to fall back on. Naming the
+   * directory here is the same thing an operator does for a tool the list does
+   * not know about.
+   *
+   * The override is *this case's* PATH rather than every directory the file has
+   * made. Listing them all vouched for a `tool.exe` an earlier case had created
+   * somewhere else, and the case that asserts nothing is found found it.
+   */
+  function resolveOnPath(command: string, pathValue: string, pathExt: string): string | null {
+    return findTrustedExecutablePath(command, {
+      env: {
+        PATH: pathValue,
+        PATHEXT: pathExt,
+        LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: pathValue,
+      },
+      platform: 'win32',
+      cache: null,
+    })
   }
 
   // Lowercase, unlike the real `.COM;.EXE;.BAT;.CMD`. Windows filesystems are

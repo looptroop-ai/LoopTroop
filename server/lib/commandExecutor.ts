@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
-import { findTrustedExecutablePath, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
+import { resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
@@ -50,11 +50,47 @@ export function resolveCommandCwd(repoRoot: string, cwd: string): string {
   }
   const root = resolve(repoRoot)
   const resolved = resolve(root, cwd)
-  const relativePath = relative(root, resolved)
-  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+  if (!isInside(root, resolved)) {
+    throw new Error('Command working directory must stay within the repository root')
+  }
+  // Lexically inside is not inside. `vendor/pkg` can be a link to `/tmp/work`,
+  // and the kernel follows it: the command then runs, writes and reads there
+  // while every check here saw a path in the repository. So the nearest part of
+  // the path that exists is followed to where it really is, and that has to be
+  // inside the repository's own real path too. Round 1 fixed this for a
+  // relative *program* and left the working directory and `pathPrepend` —
+  // which come through here — as they were.
+  if (!isInside(realpathOrSelf(root), realpathOfNearestExisting(resolved))) {
     throw new Error('Command working directory must stay within the repository root')
   }
   return resolved
+}
+
+function isInside(root: string, path: string): boolean {
+  const step = relative(root, path)
+  return step === '' || (!step.startsWith('..') && !isAbsolute(step))
+}
+
+/**
+ * The real path of `path`, or of the nearest directory above it that exists.
+ *
+ * A working directory the command is about to create does not exist yet, but a
+ * directory above it can still be a link that leads out — `link/new-dir` with
+ * `link -> /tmp/outside` — so the part that exists is what is followed.
+ */
+function realpathOfNearestExisting(path: string): string {
+  let current = path
+  const missing: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...missing.reverse())
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return path
+      missing.push(basename(current))
+      current = parent
+    }
+  }
 }
 
 function resolvePowerShell(
@@ -106,6 +142,13 @@ export function buildCommandInvocation(
 export interface ProgramResolutionContext {
   /** The child's environment, PATH prepends included. */
   env: NodeJS.ProcessEnv
+  /**
+   * The daemon's own environment, where the trust policy is read: the override
+   * and the Windows system root. Never the child's — a plan's `command.env`
+   * could otherwise set `LOOPTROOP_TRUSTED_EXECUTABLE_DIRS` and vouch for any
+   * directory it liked.
+   */
+  policyEnv?: NodeJS.ProcessEnv
   /** The command's working directory, already proven to be inside the repository. */
   cwd: string
   repoRoot: string
@@ -149,8 +192,9 @@ export function resolveCommandProgram(
   context: ProgramResolutionContext,
 ): TrustedExecutableResolution {
   const hasSeparator = /[\\/]/.test(program)
-  if (!hasSeparator) return resolveTrustedExecutable(program, { env: context.env })
-  if (isAbsolute(program)) return resolveTrustedProgram(program)
+  const trust = { env: context.env, policyEnv: context.policyEnv ?? context.env }
+  if (!hasSeparator) return resolveTrustedExecutable(program, trust)
+  if (isAbsolute(program)) return resolveTrustedProgram(program, trust)
 
   let contained: string
   try {
@@ -158,9 +202,11 @@ export function resolveCommandProgram(
     // "inside the repository" means; it throws with that same message.
     contained = resolveCommandCwd(context.repoRoot, relative(context.repoRoot, resolve(context.cwd, program)))
   } catch {
-    return { reason: `Command program must stay within the repository root: ${program}` }
+    // Refused, not missing: a caller that falls back on "not found" must not
+    // fall back onto a program that points out of the repository.
+    return { reason: `Command program must stay within the repository root: ${program}`, refusedAt: program }
   }
-  const resolution = resolveTrustedProgram(contained)
+  const resolution = resolveTrustedProgram(contained, trust)
   if (resolution.path === undefined) return resolution
   // Checked again *after* `realpath`, against the repository's own real path.
   // The lexical check above passes `tools/check`, and `resolveTrustedProgram`
@@ -197,6 +243,8 @@ function realpathOrSelf(path: string): string {
  * `scripts/installer-core.mjs` uses for the same job.
  */
 function quoteForCmd(value: string): string {
+  // An empty argument is still an argument; left bare it vanished from the line.
+  if (value === '') return '""'
   if (!/[\s&|<>^()"]/.test(value)) return value
   return `"${value.replace(/"/g, '""')}"`
 }
@@ -216,19 +264,34 @@ function launchPlan(
   program: string,
   args: string[],
   platform: HostPlatform,
-  env: NodeJS.ProcessEnv,
-): { file: string; args: string[]; windowsVerbatimArguments: boolean } {
+  interpreter: () => TrustedExecutableResolution,
+): { file: string; args: string[]; windowsVerbatimArguments: boolean } | { error: string } {
   if (platform !== 'windows' || !/\.(cmd|bat)$/i.test(program)) {
     return { file: program, args, windowsVerbatimArguments: false }
   }
+  const shell = interpreter()
+  if (shell.path === undefined) return { error: `A Windows command script needs cmd.exe to run, and it could not be used: ${shell.reason}` }
   const line = `"${[`"${program}"`, ...args.map(quoteForCmd)].join(' ')}"`
-  // The interpreter is resolved too: `ComSpec` names it by absolute path when
-  // Windows set it, and otherwise `cmd.exe` is found the way every other tool
-  // is, rather than left to a bare-name lookup. Falls back to the name only if
-  // it genuinely cannot be found, so the spawn fails with the ENOENT a missing
-  // interpreter would have given anyway.
-  const interpreter = env.ComSpec || env.COMSPEC || findTrustedExecutablePath('cmd.exe', { env }) || 'cmd.exe'
-  return { file: interpreter, args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
+  return { file: shell.path, args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
+}
+
+/**
+ * The command interpreter a Windows command script is run with.
+ *
+ * Resolved like any other program, and from the daemon's environment: `ComSpec`
+ * names it when Windows set it, and is held to the same rules as a program a
+ * plan names by path; otherwise `cmd.exe` is found through the system
+ * directories. There is no bare-name fallback — handing `cmd.exe` to the
+ * operating system's own search after the resolver declined is the one lookup
+ * this module exists to avoid — and a plan's `command.env` cannot choose it.
+ */
+function commandInterpreter(
+  resolveProgram: (program: string, context: ProgramResolutionContext) => TrustedExecutableResolution,
+  context: ProgramResolutionContext,
+): TrustedExecutableResolution {
+  const policyEnv = context.policyEnv ?? context.env
+  const named = policyEnv.ComSpec?.trim() || policyEnv.COMSPEC?.trim()
+  return resolveProgram(named || 'cmd.exe', { ...context, env: policyEnv })
 }
 
 export async function executeCommand(
@@ -268,7 +331,10 @@ export async function executeCommand(
   // exit code null with the reason on stderr, which is byte-for-byte the shape
   // a spawn error already produced for a missing tool.
   const resolveProgram = input.resolveProgram ?? resolveCommandProgram
-  const resolvedProgram = resolveProgram(invocation.bin, { env: environment, cwd, repoRoot: input.repoRoot })
+  // The daemon's environment, before the plan's variables are merged in: that
+  // is where the trust policy is read.
+  const context = { env: environment, policyEnv: baseEnvironment, cwd, repoRoot: input.repoRoot }
+  const resolvedProgram = resolveProgram(invocation.bin, context)
   if (resolvedProgram.path === undefined) {
     return {
       command,
@@ -283,7 +349,20 @@ export async function executeCommand(
     }
   }
 
-  const launch = launchPlan(resolvedProgram.path, invocation.args, platform, environment)
+  const launch = launchPlan(resolvedProgram.path, invocation.args, platform, () => commandInterpreter(resolveProgram, context))
+  if ('error' in launch) {
+    return {
+      command,
+      cwd,
+      ...invocation,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: launch.error,
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+    }
+  }
 
   return await new Promise<CommandExecutionResult>((resolveExecution) => {
     const child = spawnProcess(launch.file, launch.args, {

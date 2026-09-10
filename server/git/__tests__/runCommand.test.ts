@@ -181,4 +181,18 @@ describe('server/git/runCommand', () => {
       }
     }
   })
+
+  it('says a missing working directory is missing, instead of reporting git as not installed', async () => {
+    // The directory is git's working directory now, not a `-C` argument, and a
+    // spawn into a directory that is not there fails with ENOENT — the same code
+    // as a missing git. It is reported the way `git -C` itself reports it.
+    const missing = '/nonexistent/looptroop-project'
+    const sync = runGitSync(missing, ['status'], { log: false })
+    const async = await runGit(missing, ['status'], { log: false })
+
+    for (const result of [sync, async]) {
+      expect(result.ok).toBe(false)
+      expect(result.errorDetail).toBe(`cannot change to '${missing}': No such file or directory`)
+    }
+  })
 })

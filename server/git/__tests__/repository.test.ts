@@ -48,14 +48,15 @@ describe('server/git/repository', () => {
 
     expect(ref).toBe('origin/main')
     expect(spawnSyncMock).toHaveBeenCalledTimes(1)
+    // The directory is git's working directory, not an argument: a caller's
+    // path never enters git's argv.
     expect(spawnSyncMock.mock.calls[0]?.[1]).toEqual([
-      '-C',
-      '/repo',
       'show-ref',
       '--verify',
       '--quiet',
       'refs/remotes/origin/main',
     ])
+    expect(spawnSyncMock.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ cwd: '/repo' }))
   })
 
   it('falls back to a local base branch when the origin ref is unavailable', async () => {
@@ -67,13 +68,14 @@ describe('server/git/repository', () => {
     const ref = resolveBaseBranchRef('/repo', 'main')
 
     expect(ref).toBe('main')
+    // The directory is git's working directory, not an argument: a caller's
+    // path never enters git's argv.
     expect(spawnSyncMock.mock.calls[1]?.[1]).toEqual([
-      '-C',
-      '/repo',
       'show-ref',
       '--verify',
       '--quiet',
       'refs/heads/main',
     ])
+    expect(spawnSyncMock.mock.calls[1]?.[2]).toEqual(expect.objectContaining({ cwd: '/repo' }))
   })
 })

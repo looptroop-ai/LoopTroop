@@ -612,3 +612,23 @@ describe('OpenCodeMissingError', () => {
     expect(refused.message).not.toContain('Install it from')
   })
 })
+
+describe('the address OpenCode is started on', () => {
+  it('refuses a host name that would be shell syntax, before anything is spawned', async () => {
+    // `new URL('http://foo&bar:4096').hostname` is `foo&bar`, and an npm-installed
+    // OpenCode on Windows starts through cmd.exe, where `&` runs a second command.
+    let spawned = false
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: 'http://foo&bar:4096',
+      resolveProgram: () => 'C:\\npm\\opencode.cmd',
+      spawnProcess: (() => {
+        spawned = true
+        throw new Error('should not spawn')
+      }) as never,
+      probe: async () => false,
+    })
+
+    await expect(supervisor.start()).rejects.toThrow(/will not start a server for: "foo&bar"/)
+    expect(spawned).toBe(false)
+  })
+})

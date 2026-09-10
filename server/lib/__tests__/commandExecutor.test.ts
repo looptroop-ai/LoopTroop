@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { spawn } from 'node:child_process'
@@ -41,15 +41,15 @@ function makeRepo(): string {
   return repository
 }
 
-describe('resolveCommandProgram', () => {
-  function makeExecutable(directory: string, name: string): string {
-    mkdirSync(directory, { recursive: true })
-    const path = join(directory, name)
-    writeFileSync(path, '#!/bin/sh\nexit 0\n')
-    chmodSync(path, 0o755)
-    return path
-  }
+function makeExecutable(directory: string, name: string): string {
+  mkdirSync(directory, { recursive: true })
+  const path = join(directory, name)
+  writeFileSync(path, '#!/bin/sh\nexit 0\n')
+  chmodSync(path, 0o755)
+  return path
+}
 
+describe('resolveCommandProgram', () => {
   it.runIf(process.platform !== 'win32')('resolves a bare name against the child\'s PATH, not the daemon\'s', () => {
     // `pathPrepend` puts a project's own `node_modules/.bin` on the child's
     // PATH. Resolving against `process.env` would refuse every project-local
@@ -354,14 +354,16 @@ describe('executeCommand', () => {
     await executeCommand({
       mode: 'process',
       program: 'npm',
-      args: ['run', 'test:unit', 'a b', 'x&y'],
+      args: ['run', 'test:unit', 'a b', 'x&y', ''],
       cwd: '.',
       env: {},
     }, {
       repoRoot: makeRepo(),
       platform: 'windows',
       env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
-      resolveProgram: () => ({ path: 'C:\\Program Files\\nodejs\\npm.cmd' }),
+      // The interpreter is resolved through the same seam: npm answers as its
+      // shim, and the ComSpec the daemon's environment names answers as itself.
+      resolveProgram: (program) => ({ path: program === 'npm' ? 'C:\\Program Files\\nodejs\\npm.cmd' : program }),
       spawnProcess: ((file: string, args: string[], options: { windowsVerbatimArguments?: boolean }) => {
         seen = { file, args, verbatim: options.windowsVerbatimArguments }
         const child = makeUnkillableChild()
@@ -372,7 +374,8 @@ describe('executeCommand', () => {
 
     expect(seen).toEqual({
       file: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" run test:unit "a b" "x&y""'],
+      // The empty argument survives as `""`; left bare it vanished from the line.
+      args: ['/d', '/s', '/c', '""C:\\Program Files\\nodejs\\npm.cmd" run test:unit "a b" "x&y" """'],
       verbatim: true,
     })
   })
@@ -398,6 +401,134 @@ describe('executeCommand', () => {
     })
 
     expect(seen).toEqual({ file: 'C:\\Program Files\\Git\\cmd\\git.exe', args: ['status'], verbatim: false })
+  })
+
+  it('takes the interpreter from the daemon, not from the plan', async () => {
+    // A plan's `command.env` reaches the child. It must not choose the program
+    // that runs the child's command script.
+    const asked: string[] = []
+    let spawned: string | undefined
+    await executeCommand({
+      mode: 'process',
+      program: 'npm',
+      args: ['test'],
+      cwd: '.',
+      env: { ComSpec: 'C:\\plan-chose-this.exe' },
+    }, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+      resolveProgram: (program) => {
+        asked.push(program)
+        return { path: program === 'npm' ? 'C:\\nodejs\\npm.cmd' : program }
+      },
+      spawnProcess: ((file: string) => {
+        spawned = file
+        const child = makeUnkillableChild()
+        setImmediate(() => child.emit('close', 0, null))
+        return child
+      }) as unknown as typeof spawn,
+    })
+
+    expect(asked).toEqual(['npm', 'C:\\Windows\\System32\\cmd.exe'])
+    expect(spawned).toBe('C:\\Windows\\System32\\cmd.exe')
+  })
+
+  it('does not start a command script when no trusted interpreter can be found', async () => {
+    // No bare `cmd.exe` fallback: handing the name to the operating system's
+    // own search after the resolver declined is the lookup this avoids.
+    let started = false
+    const result = await executeCommand({
+      mode: 'process',
+      program: 'npm',
+      args: ['test'],
+      cwd: '.',
+      env: {},
+    }, {
+      repoRoot: makeRepo(),
+      platform: 'windows',
+      env: {},
+      resolveProgram: (program) => (program === 'npm'
+        ? { path: 'C:\\nodejs\\npm.cmd' }
+        : { reason: 'cmd.exe was not found in any trusted directory on PATH.' }),
+      spawnProcess: (() => {
+        started = true
+        return makeUnkillableChild()
+      }) as unknown as typeof spawn,
+    })
+
+    expect(started).toBe(false)
+    expect(result.exitCode).toBeNull()
+    expect(result.stderr).toContain('needs cmd.exe to run')
+  })
+
+  it.runIf(process.platform !== 'win32')('does not let a plan vouch for a directory through its own environment', () => {
+    // `command.env` is the child's. LOOPTROOP_TRUSTED_EXECUTABLE_DIRS set there
+    // is not the operator speaking.
+    const repository = makeRepo()
+    const shared = makeRepo()
+    const tool = makeExecutable(shared, 'plan-tool')
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) {
+      chownSync(shared, 4242, 4242)
+      chownSync(tool, 4242, 4242)
+    }
+    const execPath = process.execPath
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    if (!asRoot) process.execPath = '/nonexistent/looptroop-test/node'
+    try {
+      const resolution = resolveCommandProgram('plan-tool', {
+        env: { PATH: shared, LOOPTROOP_TRUSTED_EXECUTABLE_DIRS: shared },
+        policyEnv: { PATH: '' },
+        cwd: repository,
+        repoRoot: repository,
+      })
+      expect(resolution.path).toBeUndefined()
+      expect(resolution.refusedAt).toBeDefined()
+    } finally {
+      spy?.mockRestore()
+      process.execPath = execPath
+      if (asRoot) {
+        chownSync(tool, 0, 0)
+        chownSync(shared, 0, 0)
+      }
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a working directory that is a link out of the repository', () => {
+    // Lexically inside is not inside: the kernel follows the link, and the
+    // command would run, read and write outside while every check saw a path
+    // in the repository.
+    const repository = makeRepo()
+    const outside = makeRepo()
+    symlinkSync(outside, join(repository, 'vendor'))
+
+    expect(() => resolveCommandCwd(repository, 'vendor')).toThrow(/must stay within the repository root/)
+    // A directory not created yet under that link leads out just the same.
+    expect(() => resolveCommandCwd(repository, 'vendor/not-yet')).toThrow(/must stay within the repository root/)
+  })
+
+  it.runIf(process.platform !== 'win32')('accepts a working directory linked to somewhere else inside the repository', () => {
+    const repository = makeRepo()
+    mkdirSync(join(repository, 'packages', 'real'), { recursive: true })
+    symlinkSync(join(repository, 'packages', 'real'), join(repository, 'app'))
+
+    expect(resolveCommandCwd(repository, 'app')).toBe(join(repository, 'app'))
+    expect(resolveCommandCwd(repository, 'app/not-yet')).toBe(join(repository, 'app', 'not-yet'))
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses a pathPrepend entry that is a link out of the repository', async () => {
+    // The same helper checks `pathPrepend`, which would otherwise put a
+    // directory outside the repository at the front of the child's PATH.
+    const repository = makeRepo()
+    symlinkSync(makeRepo(), join(repository, 'bin'))
+
+    await expect(executeCommand({ mode: 'process', program: 'tool', args: [], cwd: '.', env: {} }, {
+      repoRoot: repository,
+      runtimeEnvironment: { pathPrepend: ['bin'], variables: {} },
+      resolveProgram: () => ({ path: '/usr/bin/tool' }),
+      spawnProcess: (() => makeUnkillableChild()) as unknown as typeof spawn,
+    })).rejects.toThrow(/must stay within the repository root/)
   })
 
   it('rejects traversal before starting a process', async () => {

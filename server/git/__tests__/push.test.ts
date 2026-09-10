@@ -64,12 +64,10 @@ describe('server/git/push', () => {
     // The push runs asynchronously now, so the options carry cwd and env only;
     // `encoding` belonged to the synchronous call this replaced.
     expect(spawnSyncMock).toHaveBeenCalledWith('git', [
-      '-C',
-      '/repo',
       'push',
       'origin',
       'HEAD:refs/heads/TEST-1',
-    ], expect.objectContaining({ env: expect.any(Object) }))
+    ], expect.objectContaining({ env: expect.any(Object), cwd: '/repo' }))
     expect(spawnSyncMock.mock.calls[0]?.[1]).not.toContain('--progress')
   })
 

@@ -5,6 +5,7 @@ import { EXCLUDE_LOOPTROOP_DIR, literalPathspec, REPO_SCOPE_PATHSPECS } from './
 import {
   runCommand,
   runCommandSync,
+  runGit as runGitAsync,
   runGitSync,
   runGitSyncOrThrow,
   type RunCommandOptions,
@@ -65,12 +66,16 @@ function remoteGitOptions(options?: RunCommandOptions): RunCommandOptions {
   return { ...options, env: { ...gitPushEnv(), ...options?.env } }
 }
 
+// Through `runGit`, like every other git call here: it validates the working
+// directory and keeps the caller's path out of git's argument vector. These two
+// built `-C <path>` by hand, so the network-bound calls — the ones a request is
+// most likely to reach — were the ones that skipped the check.
 async function tryRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<CommandAttempt> {
-  return toAttempt(await runCommand('git', ['-C', projectPath, ...args], remoteGitOptions(options)))
+  return toAttempt(await runGitAsync(projectPath, args, remoteGitOptions(options)))
 }
 
 async function runRemoteGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<string> {
-  const result = await runCommand('git', ['-C', projectPath, ...args], remoteGitOptions(options))
+  const result = await runGitAsync(projectPath, args, remoteGitOptions(options))
   if (!result.ok) throw new Error(result.errorDetail)
   return result.stdout
 }

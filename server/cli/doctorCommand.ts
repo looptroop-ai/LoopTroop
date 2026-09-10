@@ -361,8 +361,10 @@ function checkGitHubAuth(): Check {
   return {
     name: 'gh auth',
     status: 'warn',
-    detail: 'not authenticated',
-    remedy: 'Run `gh auth login`. Only needed for pull-request delivery.',
+    // A refused `gh` is not a logged-out one: `gh auth login` cannot help a tool
+    // this machine will not run, and saying so was the confusion `unavailable`
+    // exists to remove for every other probe.
+    ...unavailable(probe, 'not authenticated', 'Run `gh auth login`. Only needed for pull-request delivery.'),
   }
 }
 

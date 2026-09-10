@@ -203,6 +203,13 @@ export class OpenCodeSupervisor {
     const url = new URL(this.options.baseUrl)
     const host = url.hostname === 'localhost' ? '127.0.0.1' : url.hostname
     const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    // A parsed URL does not make a hostname safe: `new URL('http://foo&bar:1')`
+    // has the hostname `foo&bar`, and on Windows an npm-installed OpenCode is
+    // started through cmd.exe, which reads `&` as "and then run". A host name,
+    // an IPv4 address or a bracketed IPv6 one is all this can be.
+    if (!/^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])$/.test(host)) {
+      throw new Error(`OpenCode's address has a host name LoopTroop will not start a server for: ${JSON.stringify(host)}. Check LOOPTROOP_OPENCODE_BASE_URL.`)
+    }
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
@@ -246,9 +253,8 @@ export class OpenCodeSupervisor {
         // rather than orphaning children of OpenCode.
         detached: process.platform !== 'win32',
         // Only for the shim, and only ever over a path this process just
-        // resolved plus a hostname and port that came from a parsed URL — a
-        // hostname cannot contain a space or a shell metacharacter, and a port
-        // is digits.
+        // resolved plus a host name checked above to hold no shell syntax and a
+        // port that is digits.
         shell: shim,
       },
     )

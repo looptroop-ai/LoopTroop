@@ -26,7 +26,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { isAbsolute, resolve } from 'node:path'
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
 
@@ -264,11 +265,52 @@ function gitWorkingDirectory(projectPath: string): { path: string; failure?: und
   if (!isAbsolute(projectPath)) {
     return { failure: new Error(`A git working directory must be an absolute path, and '${projectPath}' is not.`) }
   }
-  return { path: resolve(projectPath) }
+  // Validated, not rewritten. `resolve('/repo')` on Windows is `D:\repo`, and
+  // handing git a different string than the caller passed was a behaviour
+  // change dressed as a check.
+  return { path: projectPath }
 }
 
 /**
- * Runs `git -C <projectPath> <args>` synchronously.
+ * How a `runGit*` call reaches git: the directory as the working directory,
+ * and the familiar `-C <dir>` form only in what is shown.
+ *
+ * The directory is not put in git's argument vector at all. `git -C <dir>` and
+ * running git *in* `<dir>` are the same to git, and a caller's path that never
+ * enters argv cannot be read as an option or an argument by anything — which is
+ * what SonarCloud's S6350 was tracing from a request into `git -C`. The command
+ * log and the error text keep showing `git -C <dir> …`, so nothing a person
+ * reads changes.
+ */
+function gitInvocation(directory: string, args: string[], options: RunCommandOptions | undefined): {
+  args: string[]
+  displayArgs: string[]
+  options: RunCommandOptions
+} {
+  return { args, displayArgs: ['-C', directory, ...args], options: { ...options, cwd: directory } }
+}
+
+/**
+ * A spawn that failed because the working directory is not there reads as
+ * `spawnSync git ENOENT` — indistinguishable from git not being installed.
+ * Said the way git itself says it when `-C` names a missing directory.
+ */
+function explainMissingDirectory<TOut>(raw: RawOutcome<TOut>, directory: string): RawOutcome<TOut> {
+  const code = (raw.spawnError as NodeJS.ErrnoException | undefined)?.code
+  if ((code !== 'ENOENT' && code !== 'ENOTDIR') || isDirectory(directory)) return raw
+  return { ...raw, spawnError: new Error(`cannot change to '${directory}': No such file or directory`) }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Runs git in `projectPath` synchronously, shown as `git -C <projectPath> <args>`.
  *
  * Never throws on a non-zero exit — each call site keeps its own contract for
  * that, and they differ on purpose (`hookDiscovery` returns null where
@@ -277,14 +319,17 @@ function gitWorkingDirectory(projectPath: string): { path: string; failure?: und
 export function runGitSync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandResult {
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, ''), 'git', args, options)
-  return runCommandSync('git', ['-C', directory.path, ...args], options)
+  const call = gitInvocation(directory.path, args, options)
+  const raw = explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path)
+  return finish({ ...raw, stdout: decode(raw.stdout, options) }, 'git', call.displayArgs, options)
 }
 
 /** As `runGitSync`, with stdout left undecoded. */
 export function runGitBinarySync(projectPath: string, args: string[], options?: RunCommandOptions): RunCommandBinaryResult {
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return finish(unresolvedOutcome(directory.failure, Buffer.alloc(0)), 'git', args, options)
-  return runCommandBinarySync('git', ['-C', directory.path, ...args], options)
+  const call = gitInvocation(directory.path, args, options)
+  return finish(explainMissingDirectory(runSyncRaw('git', call.args, call.options), directory.path), 'git', call.displayArgs, options)
 }
 
 /** Throwing wrapper for the callers whose contract is "throw on failure". */
@@ -459,11 +504,13 @@ export async function runCommand(bin: string, args: string[], options?: RunComma
   return finish(await runAsyncRaw(bin, args, options), bin, args, options)
 }
 
-/** Runs `git -C <projectPath> <args>` without blocking the event loop. */
+/** Runs git in `projectPath` without blocking the event loop. */
 export function runGit(projectPath: string, args: string[], options?: RunCommandOptions): Promise<RunCommandResult> {
   const directory = gitWorkingDirectory(projectPath)
   if (directory.path === undefined) return Promise.resolve(finish(unresolvedOutcome(directory.failure, ''), 'git', args, options))
-  return runCommand('git', ['-C', directory.path, ...args], options)
+  const call = gitInvocation(directory.path, args, options)
+  return runAsyncRaw('git', call.args, call.options)
+    .then((raw) => finish(explainMissingDirectory(raw, directory.path), 'git', call.displayArgs, options))
 }
 
 /** Throwing wrapper for the async callers whose contract is "throw on failure". */

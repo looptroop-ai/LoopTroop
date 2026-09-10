@@ -59,6 +59,14 @@
  * an attacker who can already set this process's environment, and nothing here
  * pretends otherwise.
  *
+ * Nor does it choose the Node that runs it. `looptroop` starts through
+ * `#!/usr/bin/env node`, the bundle's wrappers call `node`, and the install
+ * scripts look `node` up before any of this code exists — the one lookup this
+ * module cannot make, because its answer is what runs the module. The install
+ * scripts drop empty and relative `PATH` entries before theirs; beyond that, the
+ * interpreter is whichever one the user's shell finds, and it is the root every
+ * later decision here trusts.
+ *
  * Erasable TypeScript only, and `node:` imports only. `scripts` modules import
  * this file under Node's type stripping, which rejects `enum`, `namespace` and
  * parameter properties, and `scripts/sync-installers.mjs` strips it into

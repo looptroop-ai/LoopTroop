@@ -1443,11 +1443,13 @@ describe.concurrent('repairYamlDuplicateKeys — block scalars', () => {
  * A block scalar body is text, not YAML, and every repair that walks lines
  * tracks one so it can leave that text alone.
  *
- * Twelve repairs in this file carry that tracking, and `repairYamlDuplicateKeys`
+ * Most repairs in this file carry that tracking, and `repairYamlDuplicateKeys`
  * has its own case below. Disabling the skip in each of them, one at a time,
- * turned only three of these tests red — so nine repairs were free to rewrite
- * the inside of a block scalar with nothing to catch it, which is how a repair
- * invents text rather than reformatting it. Each case below is
+ * turned only three of these tests red — so the rest were free to rewrite the
+ * inside of a block scalar with nothing to catch it, which is how a repair
+ * invents text rather than reformatting it. How many carry it is not the point
+ * and keeps changing; "no repair rewrites a block scalar body" at the end of
+ * this file is the check that does not go stale. Each case below is
  * built the same way: the exact line the repair *does* fix, placed once inside
  * a block scalar body and once after it. The body has to survive and the line
  * after it has to be repaired — a case that only checked the body would pass on
@@ -1733,6 +1735,18 @@ describe.concurrent('no repair rewrites a block scalar body', () => {
 
   /** Every header form YAML allows, mapping and sequence. */
   const headers = ['|', '|-', '|+', '|2', '>', '>-', '>2', '| # note', '>- # note']
+
+  it('covers every repair this module exports', async () => {
+    // The table above is a list, and a list is exactly what kept going stale:
+    // four rounds of review, four repairs missed. A repair added to the module
+    // and not to the table would otherwise be untested for this rule.
+    const module = await import('../yamlRepair')
+    const exported = Object.entries(module)
+      .filter(([name, value]) => name.startsWith('repairYaml') && typeof value === 'function')
+      .map(([name]) => name)
+
+    expect(repairs.map(([name]) => name).sort()).toEqual(exported.sort())
+  })
 
   it.each(repairs)('%s leaves every body line alone under a mapping header', (_, repair) => {
     for (const header of headers) {

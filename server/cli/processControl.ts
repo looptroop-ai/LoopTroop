@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { findTrustedExecutablePath } from '../lib/executablePath'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /**
@@ -82,8 +83,16 @@ export async function killProcessTree(pid: number): Promise<void> {
 const TASKKILL_TIMEOUT_MS = 10_000
 
 function runTaskkill(pid: number): Promise<void> {
+  // Resolved rather than taken from `PATH`: `stop` runs as whoever started the
+  // CLI, and the process it is about to force-kill is named by pid. An
+  // unresolvable `taskkill` settles immediately and leaves the process running,
+  // which is what a missing one already did — the caller reports it from its
+  // own liveness check either way.
+  const taskkill = findTrustedExecutablePath('taskkill')
+  if (taskkill === null) return Promise.resolve()
+
   return new Promise<void>((done) => {
-    const child = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    const child = spawn(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
     const timer = setTimeout(() => child.kill(), TASKKILL_TIMEOUT_MS)
     const finish = (): void => {
       clearTimeout(timer)

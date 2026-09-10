@@ -1,24 +1,37 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const execFileSync = vi.hoisted(() => vi.fn())
+const resolveTrustedProgram = vi.hoisted(() => vi.fn())
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFileSync }
 })
 
+// Resolution is stubbed so these cases describe the *probe*, not this machine's
+// tool layout: a Linux runner has no `npm.cmd` to find, and a real resolution
+// would decide the branch under test.
+vi.mock('../server/lib/executablePath', () => ({ resolveTrustedProgram }))
+
+/** An npm-installed shim: what Node refuses to launch directly. */
+const NPM_SHIM = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\npm.cmd'
+/** A real program, which needs no interpreter on any platform. */
+const GH_EXE = 'C:\\Program Files\\GitHub CLI\\gh.exe'
+
 const { runProbe } = await import('../server/cli/doctorCommand')
 
 /**
- * Doctor probes have to go through a shell on Windows, and the reason is not
- * cosmetic: `npm` is `npm.cmd` there, `CreateProcess` appends only `.exe` and
- * never reads `PATHEXT`, and Node has refused to launch `.cmd` files directly
- * since the BatBadBut hardening. Without a shell, `doctor` told users npm was
+ * A doctor probe resolves the tool's name to a file and then decides how to
+ * launch it, and the second half is not cosmetic: `npm` is `npm.cmd` on
+ * Windows, and Node has refused to launch a `.cmd` directly since the BatBadBut
+ * hardening. Without cmd.exe for that one case, `doctor` told users npm was
  * missing on machines where `npm --version` answered instantly — and would have
- * said the same about an OpenCode installed from npm.
+ * said the same about an OpenCode installed from npm. What changed with the
+ * trusted-path work is that the shell is no longer used to *find* the tool, so
+ * it is now applied to the shim alone and handed the resolved path.
  *
- * The spawn is mocked because this has to be asserted from Linux CI, where the
- * Windows branch can otherwise never run.
+ * The spawn and the resolution are both mocked because this has to be asserted
+ * from Linux CI, where the Windows branch can otherwise never run.
  */
 describe('probing external commands on Windows', () => {
   function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
@@ -34,17 +47,35 @@ describe('probing external commands on Windows', () => {
   beforeEach(() => {
     execFileSync.mockReset()
     execFileSync.mockReturnValue('11.12.1\n')
+    resolveTrustedProgram.mockReset()
+    resolveTrustedProgram.mockImplementation((command: string) => {
+      if (command === 'npm') return { path: NPM_SHIM }
+      if (command === 'gh') return { path: GH_EXE }
+      return { path: command }
+    })
   })
 
-  it('runs the probe through a shell on Windows', () => {
+  it('runs a resolved command script through a shell, by path', () => {
     const result = withPlatform('win32', () => runProbe('npm', ['--version'], 5_000))
 
     expect(result).toEqual({ kind: 'ok', output: '11.12.1\n' })
+    // The *path*, quoted — not the name. cmd.exe searches PATH for a name, so
+    // handing it one would have put the choice of file back where this work
+    // took it from.
     expect(execFileSync).toHaveBeenCalledWith(
-      'npm --version',
+      `"${NPM_SHIM}" --version`,
       [],
       expect.objectContaining({ shell: true }),
     )
+  })
+
+  it('reports a tool the resolver refuses as unavailable', () => {
+    // The same answer `doctor` already gives for a tool that is not installed,
+    // which is what the report has to keep saying: nothing here becomes fatal.
+    resolveTrustedProgram.mockReturnValue({ reason: 'npm resolves to /tmp/npm, in a directory this daemon does not trust' })
+
+    expect(withPlatform('win32', () => runProbe('npm', ['--version'], 5_000))).toEqual({ kind: 'unavailable' })
+    expect(execFileSync).not.toHaveBeenCalled()
   })
 
   /**
@@ -57,22 +88,23 @@ describe('probing external commands on Windows', () => {
    * argument here is a literal.
    */
   it('passes no argument array under the shell, so Node does not warn', () => {
-    withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 5_000))
+    resolveTrustedProgram.mockReturnValue({ path: NPM_SHIM })
+    withPlatform('win32', () => runProbe('npm', ['auth', 'status'], 5_000))
 
     const [file, args] = execFileSync.mock.calls[0] as [string, string[]]
-    expect(file).toBe('gh auth status')
+    expect(file).toBe(`"${NPM_SHIM}" auth status`)
     expect(args).toEqual([])
   })
 
-  it('spawns an absolute path directly, even on Windows', () => {
-    // The shell exists to resolve a name through PATHEXT. A resolved path needs
-    // none of that, and cmd.exe would re-parse the arguments — where a `>` in a
-    // value is a redirection and `()` are syntax.
-    withPlatform('win32', () => runProbe('C:\\tools\\node.exe', ['--version'], 5_000))
+  it('spawns a resolved program directly, even on Windows', () => {
+    // The shell is only for what Node cannot launch. A real program needs none
+    // of it, and cmd.exe would re-parse the arguments — where a `>` in a value
+    // is a redirection and `()` are syntax.
+    withPlatform('win32', () => runProbe('gh', ['auth', 'status'], 5_000))
 
     expect(execFileSync).toHaveBeenCalledWith(
-      'C:\\tools\\node.exe',
-      ['--version'],
+      GH_EXE,
+      ['auth', 'status'],
       expect.objectContaining({ shell: false }),
     )
   })
@@ -80,10 +112,11 @@ describe('probing external commands on Windows', () => {
   it('leaves every other platform spawning directly', () => {
     for (const platform of ['linux', 'darwin'] as const) {
       execFileSync.mockClear()
+      resolveTrustedProgram.mockReturnValue({ path: '/usr/bin/npm' })
       withPlatform(platform, () => runProbe('npm', ['--version'], 5_000))
 
       expect(execFileSync).toHaveBeenCalledWith(
-        'npm',
+        '/usr/bin/npm',
         ['--version'],
         expect.objectContaining({ shell: false }),
       )

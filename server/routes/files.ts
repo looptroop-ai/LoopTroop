@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as readline from 'node:readline'
 import { execFile } from 'node:child_process'
+import { resolveTrustedExecutable } from '../lib/executablePath'
 import { promisify } from 'node:util'
 import { getTicketByRef, getTicketPaths } from '../storage/tickets'
 import { resolvePhaseAttempt } from '../storage/ticketPhaseAttempts'
@@ -279,6 +280,25 @@ filesRouter.put('/files/:ticketId/:file', async (c) => {
 
 const execFileAsync = promisify(execFile)
 
+/**
+ * Runs one of the platform openers, by path rather than by name.
+ *
+ * These are the most attacker-facing spawns in the daemon: an HTTP request
+ * decides which directory is revealed, and until now the *program* that
+ * revealed it was whatever `PATH` offered first. Jailing the path while leaving
+ * the opener ambient would have fixed half of it.
+ *
+ * An unresolvable opener throws, which the route already turns into a 500 with
+ * the reason attached — the same shape an ENOENT from a missing opener
+ * produced, and the reason now names the override instead of a syscall.
+ */
+async function runOpener(name: string, args: string[]): Promise<{ stdout: string }> {
+  const resolution = resolveTrustedExecutable(name)
+  if (resolution.path === undefined) throw new Error(resolution.reason)
+  const { stdout } = await execFileAsync(resolution.path, args)
+  return { stdout }
+}
+
 async function revealFolderInExplorer(targetPath: string) {
   let resolvedPath = path.resolve(targetPath)
   try {
@@ -299,18 +319,18 @@ async function revealFolderInExplorer(targetPath: string) {
 
   if (isWsl) {
     try {
-      const { stdout } = await execFileAsync('wslpath', ['-w', resolvedPath])
+      const { stdout } = await runOpener('wslpath', ['-w', resolvedPath])
       const winPath = stdout.trim()
-      await execFileAsync('powershell.exe', ['-NoProfile', '-Command', `Invoke-Item '${winPath.replace(/'/g, "''")}'`])
+      await runOpener('powershell.exe', ['-NoProfile', '-Command', `Invoke-Item '${winPath.replace(/'/g, "''")}'`])
     } catch {
-      await execFileAsync('explorer.exe', [resolvedPath])
+      await runOpener('explorer.exe', [resolvedPath])
     }
   } else if (process.platform === 'win32') {
-    await execFileAsync('explorer.exe', [resolvedPath])
+    await runOpener('explorer.exe', [resolvedPath])
   } else if (process.platform === 'darwin') {
-    await execFileAsync('open', [resolvedPath])
+    await runOpener('open', [resolvedPath])
   } else {
-    await execFileAsync('xdg-open', [resolvedPath])
+    await runOpener('xdg-open', [resolvedPath])
   }
 }
 

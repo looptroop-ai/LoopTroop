@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { resolveTrustedProgram } from '../lib/executablePath'
 import { existsSync, accessSync, constants } from 'node:fs'
 import { resolveAppConfigDir } from '../lib/appConfigDir'
 import { resolveSettings, getSettingsPath } from '../lib/appSettings'
@@ -149,33 +150,43 @@ export type ProbeResult =
  * output and nothing to interrupt — execFileSync blocks the whole process, so
  * there is no later point at which this could be given up on.
  *
- * Through a shell on Windows, because half the tools doctor asks about are not
- * `.exe` files. `CreateProcess` appends only `.exe` and never reads `PATHEXT`,
- * so a bare `npm` — which ships as `npm.cmd` — is invisible to it, and naming
- * the shim outright does not help either: Node has refused to launch `.cmd` and
- * `.bat` directly since the BatBadBut hardening (18.20.2/20.12.2/21+) and
- * throws `EINVAL`. That is why doctor called npm missing on a machine where npm
- * works, and it would have said the same about an npm-installed OpenCode.
+ * The name is resolved to a file before anything is spawned, so a probe reports
+ * on the tool this machine trusts rather than on whatever `PATH` offered first.
+ * The resolver applies `PATHEXT`, which is what half of these tools need:
+ * `CreateProcess` appends only `.exe` and never reads it, so a bare `npm` —
+ * which ships as `npm.cmd` — is invisible to a direct spawn. That is why doctor
+ * called npm missing on a machine where npm works, and it would have said the
+ * same about an npm-installed OpenCode.
  *
- * Only ever called with literal arguments, which is what makes routing through
- * cmd.exe safe: it re-parses the command line, so anything derived from a path
- * or from user input would have to be quoted first.
+ * A resolved `.cmd` or `.bat` still needs cmd.exe, because Node has refused to
+ * launch one directly since the BatBadBut hardening (18.20.2/20.12.2/21+) and
+ * throws `EINVAL`. Only the shim goes that way, and only ever with literal
+ * arguments — which is what makes cmd's re-parsing safe, since anything derived
+ * from a path or from user input would have to be quoted first.
  */
 export function runProbe(command: string, args: string[], timeoutMs: number): ProbeResult {
-  // The shell is here to resolve a *name* — `npm` to `npm.cmd` — so it is used
-  // only for names. An absolute path is already resolved, and handing one to
-  // cmd.exe would buy nothing while exposing its arguments to re-parsing, where
-  // a `>` or a `(` in a value means something. That is not hypothetical: the
-  // suite probes `process.execPath` with an inline script, and cmd read the `>`
-  // of an arrow function as a redirection.
-  const needsShell = process.platform === 'win32' && !/[\\/]/.test(command)
+  // Resolved first, so the file that answers is one this machine trusts rather
+  // than whatever `PATH` offers. Failing to resolve is reported as unavailable,
+  // which is what `doctor` already says about a tool that is not installed —
+  // with the reason now naming the directory instead of a syscall.
+  const resolution = resolveTrustedProgram(command)
+  if (resolution.path === undefined) return { kind: 'unavailable' }
+  const program = resolution.path
+
+  // The shell used to be here to resolve a *name* — `npm` to `npm.cmd` — which
+  // the resolver now does itself through PATHEXT. What is left is that Node has
+  // refused to launch a `.cmd` or `.bat` directly since the BatBadBut
+  // hardening, so a shim still needs cmd.exe. It is handed the resolved path,
+  // quoted, so the shell performs no search of its own; the arguments are
+  // literals at every call site, which is what makes cmd's re-parsing safe.
+  const needsShell = /\.(cmd|bat)$/i.test(program)
   // Under a shell, the command line is joined here rather than handed over as an
   // array. Node concatenates the two itself and, since DEP0190 (Node 22), prints
   // a deprecation warning about doing so — which landed at the top of every
   // `doctor` run on Windows, above the report it was asked for. Joining the
   // literals ourselves is the same command line without the warning; it is safe
   // for exactly the reason above, that nothing here comes from user input.
-  const file = needsShell ? [command, ...args].join(' ') : command
+  const file = needsShell ? [`"${program}"`, ...args].join(' ') : program
   const fileArgs = needsShell ? [] : args
   const started = Date.now()
   try {

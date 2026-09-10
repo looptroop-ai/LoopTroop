@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
+import { resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
@@ -35,6 +36,11 @@ export interface CommandExecutorOptions {
   shellBinaries?: Partial<Record<CommandShellKind, string>>
   pathExists?: (path: string) => boolean
   spawnProcess?: typeof spawn
+  /**
+   * Injected by tests, which describe what a command *does* rather than which
+   * tools the machine running the suite happens to have installed.
+   */
+  resolveProgram?: (program: string, context: ProgramResolutionContext) => TrustedExecutableResolution
   runtimeEnvironment?: RuntimeEnvironment
 }
 
@@ -97,6 +103,57 @@ export function buildCommandInvocation(
   }
 }
 
+export interface ProgramResolutionContext {
+  /** The child's environment, PATH prepends included. */
+  env: NodeJS.ProcessEnv
+  /** The command's working directory, already proven to be inside the repository. */
+  cwd: string
+  repoRoot: string
+}
+
+/**
+ * Which file a command's program names.
+ *
+ * Three shapes, and the middle one is the reason this is not a single call:
+ *
+ * - **A bare name** (`npm`, `pre-commit`) is resolved through the trusted
+ *   directory list against *the child's* environment, not the daemon's — the
+ *   plan's `pathPrepend` puts a project's own `node_modules/.bin` on that PATH,
+ *   and resolving against `process.env` would refuse every project-local tool
+ *   while claiming to support them.
+ * - **A relative path** (`./tools/check`, `tools\check.exe`) is resolved
+ *   against the command's working directory and required to stay inside the
+ *   repository. Letting it resolve against whatever the daemon's current
+ *   directory happens to be is how the path-separator exception turns into a
+ *   second injection route — the containment check is the point, not a
+ *   formality.
+ * - **An absolute path** is taken as an executable file, if it is one. No
+ *   containment check: a plan naming `/usr/bin/make` is naming a tool, not
+ *   escaping a root, and a repository-containment rule would refuse every one
+ *   of them. This is a deliberate departure from the plan's text, which reads
+ *   the containment requirement onto every path-shaped program; nothing is
+ *   gained by it, because `mode: 'shell'` runs an arbitrary script from the
+ *   same source.
+ */
+export function resolveCommandProgram(
+  program: string,
+  context: ProgramResolutionContext,
+): TrustedExecutableResolution {
+  const hasSeparator = /[\\/]/.test(program)
+  if (!hasSeparator) return resolveTrustedExecutable(program, { env: context.env })
+  if (isAbsolute(program)) return resolveTrustedProgram(program)
+
+  let contained: string
+  try {
+    // Reuses the working-directory rule so the two cannot disagree about what
+    // "inside the repository" means; it throws with that same message.
+    contained = resolveCommandCwd(context.repoRoot, relative(context.repoRoot, resolve(context.cwd, program)))
+  } catch {
+    return { reason: `Command program must stay within the repository root: ${program}` }
+  }
+  return resolveTrustedProgram(contained)
+}
+
 export async function executeCommand(
   command: CommandSpec,
   input: CommandExecutorOptions & { repoRoot: string },
@@ -125,8 +182,29 @@ export async function executeCommand(
     ].filter(Boolean).join(pathSeparator)
   }
 
+  // Resolved after the environment is built, so a project-local tool put on the
+  // child's PATH by `pathPrepend` is found the way the child would find it.
+  // A program that cannot be resolved ends as a run that could not start:
+  // exit code null with the reason on stderr, which is byte-for-byte the shape
+  // a spawn error already produced for a missing tool.
+  const resolveProgram = input.resolveProgram ?? resolveCommandProgram
+  const resolvedProgram = resolveProgram(invocation.bin, { env: environment, cwd, repoRoot: input.repoRoot })
+  if (resolvedProgram.path === undefined) {
+    return {
+      command,
+      cwd,
+      ...invocation,
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: resolvedProgram.reason,
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+    }
+  }
+
   return await new Promise<CommandExecutionResult>((resolveExecution) => {
-    const child = spawnProcess(invocation.bin, invocation.args, {
+    const child = spawnProcess(resolvedProgram.path, invocation.args, {
       cwd,
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],

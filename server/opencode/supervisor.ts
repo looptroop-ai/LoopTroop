@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isProcessAlive, killProcessTree } from '../cli/processControl'
+import { findTrustedExecutablePath } from '../lib/executablePath'
 import { getErrorMessage } from '@shared/typeGuards'
 
 /** Attempts after a crash before the daemon stops trying and reports degraded. */
@@ -90,6 +91,13 @@ export interface OpenCodeSupervisorOptions {
   printLogs?: boolean
   /** Injected by tests so no real process is spawned. */
   spawnProcess?: typeof spawn
+  /**
+   * Where `opencode` is, injected by tests alongside `spawnProcess`.
+   *
+   * The suite describes what a launch does; it must not also require OpenCode
+   * to be installed on the machine running it, which resolving for real would.
+   */
+  resolveProgram?: (name: string) => string | null
   probe?: (baseUrl: string) => Promise<boolean>
   /**
    * Injected by tests, which hold fake children carrying invented pids. Real
@@ -191,29 +199,45 @@ export class OpenCodeSupervisor {
     const spawnProcess = this.options.spawnProcess ?? spawn
 
     const logArgs = this.options.printLogs ? ['--print-logs', '--log-level', 'DEBUG'] : []
-    const useShell = process.platform === 'win32'
     const argv = ['serve', ...logArgs, '--hostname', host, '--port', port]
-    // Under the Windows shell the command line is joined here rather than passed
-    // as an array: Node would join it identically and, since DEP0190 (Node 22),
-    // print a deprecation warning about doing so on top of our own output.
-    const child = spawnProcess(useShell ? ['opencode', ...argv].join(' ') : 'opencode', useShell ? [] : argv, {
-      stdio: ['ignore', 'inherit', 'inherit'],
-      // Its own group, so terminating the daemon can take the whole tree down
-      // rather than orphaning children of OpenCode.
-      detached: process.platform !== 'win32',
-      // Through a shell on Windows, because `opencode` is only an `.exe` when it
-      // came from the official installer or Scoop. Installed with npm, bun or
-      // pnpm it is `opencode.cmd`, which `CreateProcess` cannot find — it
-      // appends `.exe` and ignores `PATHEXT` — and which Node refuses to launch
-      // directly since the BatBadBut hardening. Without this, every Windows user
-      // who installed OpenCode from npm gets `OpenCodeMissingError` for a server
-      // that is sitting on their PATH.
-      //
-      // cmd.exe re-parses the command line, which is safe here only because both
-      // interpolations come from a parsed URL: a hostname cannot contain a space
-      // or a shell metacharacter, and a port is digits.
-      shell: useShell,
-    })
+
+    // Resolved rather than left to `PATH`. The resolver applies PATHEXT itself,
+    // which is what the Windows shell used to be here for: `opencode` is only
+    // an `.exe` when it came from the official installer or Scoop, and installed
+    // with npm, bun or pnpm it is `opencode.cmd`, which `CreateProcess` cannot
+    // find because it appends `.exe` and ignores PATHEXT. Every Windows user who
+    // installed OpenCode from npm used to get `OpenCodeMissingError` for a
+    // server sitting on their PATH.
+    //
+    // An unresolvable `opencode` raises the same error a missing one already
+    // does, so nothing that used to degrade becomes a new kind of failure.
+    const resolveProgram = this.options.resolveProgram ?? findTrustedExecutablePath
+    const program = resolveProgram('opencode')
+    if (program === null) throw new OpenCodeMissingError(this.options.baseUrl)
+
+    // Node has refused to launch a `.cmd` or `.bat` directly since the BatBadBut
+    // hardening, so an npm-installed OpenCode still needs a shell. What changed
+    // is what the shell is given: the *resolved path*, quoted, instead of a bare
+    // name. cmd.exe does no PATH search on a path, so the shell no longer
+    // chooses the file — it only runs the shim. The command line is joined here
+    // rather than passed as an array because Node would join it identically and,
+    // since DEP0190 (Node 22), warn about doing so on top of our own output.
+    const shim = /\.(cmd|bat)$/i.test(program)
+    const child = spawnProcess(
+      shim ? `"${program}" ${argv.join(' ')}` : program,
+      shim ? [] : argv,
+      {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        // Its own group, so terminating the daemon can take the whole tree down
+        // rather than orphaning children of OpenCode.
+        detached: process.platform !== 'win32',
+        // Only for the shim, and only ever over a path this process just
+        // resolved plus a hostname and port that came from a parsed URL — a
+        // hostname cannot contain a space or a shell metacharacter, and a port
+        // is digits.
+        shell: shim,
+      },
+    )
 
     const spawnFailed = new Promise<never>((_, reject) => {
       child.once('error', () => reject(new OpenCodeMissingError(this.options.baseUrl)))

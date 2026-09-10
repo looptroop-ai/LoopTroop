@@ -14,6 +14,17 @@ import {
  */
 describe('OpenCode supervision', () => {
   /**
+   * Where these cases pretend OpenCode is installed.
+   *
+   * The supervisor resolves `opencode` to a real file before spawning it, and
+   * the suite describes what a launch *does* — it must not also require OpenCode
+   * to be installed on the machine running it, which resolving for real would.
+   */
+  const OPENCODE_BIN = '/usr/local/bin/opencode'
+  /** The npm/bun/pnpm install, which is a command script rather than a program. */
+  const OPENCODE_SHIM = 'C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd'
+
+  /**
    * Waits for a condition instead of for a duration.
    *
    * These tests drive the restart budget with a millisecond backoff, so the
@@ -81,6 +92,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         spawned.push('spawned')
@@ -102,6 +114,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         spawned += 1
         return child as never
@@ -123,7 +136,7 @@ describe('OpenCode supervision', () => {
    * that Node refuses to launch directly. Without a shell the daemon reported
    * OpenCode as missing for every user who installed it that way.
    */
-  it('launches OpenCode through a shell on Windows and directly elsewhere', async () => {
+  it('uses a shell only for a command-script shim, and hands it the resolved path', async () => {
     const original = Object.getOwnPropertyDescriptor(process, 'platform')
     const seen: {
       command: unknown
@@ -132,7 +145,12 @@ describe('OpenCode supervision', () => {
       options: { shell?: boolean; detached?: boolean }
     }[] = []
 
-    for (const platform of ['win32', 'linux'] as const) {
+    // The shell used to be applied to the whole of Windows, to make PATH find
+    // `opencode.cmd`. The resolver applies PATHEXT itself, so the shell is now
+    // needed only for what Node refuses to launch directly — a `.cmd` or `.bat`
+    // — and what it is handed is the path this process resolved, quoted, rather
+    // than a name for cmd.exe to look up again.
+    for (const [platform, program] of [['win32', OPENCODE_SHIM], ['linux', OPENCODE_BIN]] as const) {
       Object.defineProperty(process, 'platform', { value: platform, configurable: true })
       try {
         const child = makeChild()
@@ -145,6 +163,7 @@ describe('OpenCode supervision', () => {
         const port = new URL(baseUrl).port
         const supervisor = new OpenCodeSupervisor({
           baseUrl,
+          resolveProgram: () => program,
           spawnProcess: ((command: unknown, args: unknown, options: { shell?: boolean }) => {
             spawned = true
             seen.push({ command, args, port, options })
@@ -161,16 +180,59 @@ describe('OpenCode supervision', () => {
     // Under the shell the command line is joined here rather than handed over as
     // a separate array: Node joins the two identically and, since DEP0190, warns
     // about doing so — a security-flavoured notice about our own internals.
-    expect(seen[0]?.command).toBe(`opencode serve --hostname 127.0.0.1 --port ${seen[0]?.port}`)
+    expect(seen[0]?.command).toBe(`"${OPENCODE_SHIM}" serve --hostname 127.0.0.1 --port ${seen[0]?.port}`)
     expect(seen[0]?.args).toEqual([])
     expect(seen[0]?.options.shell).toBe(true)
     // Windows has no process groups to lead, and the shell does not change that.
     expect(seen[0]?.options.detached).toBe(false)
-    // Off the shell there is nothing to join, so the argument array stays.
-    expect(seen[1]?.command).toBe('opencode')
+    // A real program needs no shell on either platform, and gets none.
+    expect(seen[1]?.command).toBe(OPENCODE_BIN)
     expect(seen[1]?.args).toEqual(['serve', '--hostname', '127.0.0.1', '--port', seen[1]?.port])
     expect(seen[1]?.options.shell).toBe(false)
     expect(seen[1]?.options.detached).toBe(true)
+  })
+
+  it('does not spawn a shell for a resolved .exe on Windows', async () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      const child = makeChild()
+      let spawned = false
+      let seenShell: boolean | undefined
+      let seenCommand = ''
+      const supervisor = new OpenCodeSupervisor({
+        baseUrl: makeBaseUrl(),
+        resolveProgram: () => 'C:\\Program Files\\opencode\\opencode.exe',
+        spawnProcess: ((command: string, _args: unknown, options: { shell?: boolean }) => {
+          spawned = true
+          seenCommand = command
+          seenShell = options.shell
+          return child as never
+        }) as never,
+        probe: async () => spawned,
+      })
+      await supervisor.start()
+
+      expect(seenCommand).toBe('C:\\Program Files\\opencode\\opencode.exe')
+      expect(seenShell).toBe(false)
+    } finally {
+      if (original) Object.defineProperty(process, 'platform', original)
+    }
+  })
+
+  it('reports an unresolvable opencode as a missing binary', async () => {
+    // A tool the resolver refuses degrades exactly as one that is not installed:
+    // the same error, at the same point, with the same recovery advice.
+    const supervisor = new OpenCodeSupervisor({
+      baseUrl: makeBaseUrl(),
+      resolveProgram: () => null,
+      spawnProcess: (() => {
+        throw new Error('nothing should be spawned')
+      }) as never,
+      probe: async () => false,
+    })
+
+    await expect(supervisor.start()).rejects.toBeInstanceOf(OpenCodeMissingError)
   })
 
   it('fails loudly when a shell reports the binary missing by exit code', async () => {
@@ -178,6 +240,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         // What cmd.exe does for a command it cannot find: it starts, prints
@@ -202,6 +265,7 @@ describe('OpenCode supervision', () => {
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
       printLogs: true,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: ((spawnCommand: string, commandArgs: string[]) => {
         command = spawnCommand
         args = commandArgs
@@ -213,15 +277,14 @@ describe('OpenCode supervision', () => {
 
     await supervisor.start()
 
-    // This test is about the log flags, not about how the launch is spawned,
-    // and unlike its neighbour it does not pin `process.platform` -- so on a
-    // real Windows runner it sees the shell form, where the arguments are
-    // joined into the command line and the array is empty. Asserting the
-    // effective command line covers the contract on either platform.
+    // This test is about the log flags, not about how the launch is spawned.
+    // The resolved program is injected, so it is the same on every platform and
+    // the shim branch is never taken; asserting the effective command line still
+    // covers the contract either way.
     const argv = args.length > 0 ? [command, ...args] : command.split(' ')
 
     expect(argv).toEqual([
-      'opencode',
+      OPENCODE_BIN,
       'serve',
       '--print-logs',
       '--log-level',
@@ -238,6 +301,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         // Simulate spawn emitting the error event for a missing executable.
@@ -256,6 +320,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         spawned += 1
@@ -296,6 +361,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         launches += 1
@@ -330,6 +396,7 @@ describe('OpenCode supervision', () => {
 
     const adopted = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => adoptedChild) as never,
       probe: async () => true,
       termination: adoptedTermination.termination,
@@ -347,6 +414,7 @@ describe('OpenCode supervision', () => {
     let spawnedManaged = false
     const managed = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         spawnedManaged = true
         return managedChild as never
@@ -388,6 +456,7 @@ describe('OpenCode supervision', () => {
     let spawned = false
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         spawned = true
         return child as never
@@ -415,6 +484,7 @@ describe('OpenCode supervision', () => {
     let spawned = false
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         spawned = true
         return child as never
@@ -447,6 +517,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => child as never) as never,
       // Never reachable: it spawns, and then it just sits there.
       probe: async () => false,
@@ -479,6 +550,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => child as never) as never,
       probe: async () => false,
       termination: recorder.termination,
@@ -503,6 +575,7 @@ describe('OpenCode supervision', () => {
 
     const supervisor = new OpenCodeSupervisor({
       baseUrl,
+      resolveProgram: () => OPENCODE_BIN,
       spawnProcess: (() => {
         const child = makeChild()
         spawned += 1

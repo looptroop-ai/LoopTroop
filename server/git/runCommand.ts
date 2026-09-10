@@ -26,6 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
+import { resolveTrustedProgram } from '../lib/executablePath'
 import * as commandLogger from '../log/commandLogger'
 
 /** Matches the timeout `server/git/repository.ts` has always used. */
@@ -173,8 +174,30 @@ function isTimeoutError(error: Error | undefined): boolean {
   return Boolean(error && (error as NodeJS.ErrnoException).code === 'ETIMEDOUT')
 }
 
+/**
+ * The file `bin` names, or the outcome shape that says why it could not run.
+ *
+ * A tool that cannot be resolved has to look exactly like a tool that is not
+ * installed, because to every caller here it is the same condition: `git` is
+ * missing, `gh` is missing, and the call site's own fallback applies. Reporting
+ * it as a spawn error does that — `finish` already turns one into
+ * `ok: false` with the message in `errorDetail`, and the message here names the
+ * directory and the override rather than saying ENOENT.
+ */
+function resolveBin(bin: string): { path: string; failure?: undefined } | { path?: undefined; failure: Error } {
+  const resolution = resolveTrustedProgram(bin)
+  return resolution.path === undefined ? { failure: new Error(resolution.reason) } : { path: resolution.path }
+}
+
+function unresolvedOutcome<TOut>(failure: Error, empty: TOut): RawOutcome<TOut> {
+  return { status: null, signal: null, timedOut: false, stdout: empty, stderr: '', spawnError: failure }
+}
+
 function runSyncRaw(bin: string, args: string[], options: RunCommandOptions | undefined): RawOutcome<Buffer> {
-  const spawned = spawnSync(bin, args, {
+  const resolved = resolveBin(bin)
+  if (resolved.path === undefined) return unresolvedOutcome(resolved.failure, Buffer.alloc(0))
+
+  const spawned = spawnSync(resolved.path, args, {
     cwd: options?.cwd,
     input: options?.input,
     env: buildEnv(options?.env),
@@ -246,10 +269,13 @@ function runAsyncRaw(bin: string, args: string[], options: RunCommandOptions | u
   const timeoutMs = options?.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS
   const maxBuffer = options?.maxBuffer ?? GIT_MAX_BUFFER_BYTES
 
+  const resolved = resolveBin(bin)
+  if (resolved.path === undefined) return Promise.resolve(unresolvedOutcome(resolved.failure, ''))
+
   return new Promise((settleWith) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(bin, args, { cwd: options?.cwd, env: buildEnv(options?.env) })
+      child = spawn(resolved.path, args, { cwd: options?.cwd, env: buildEnv(options?.env) })
     } catch (error) {
       settleWith({
         status: null,

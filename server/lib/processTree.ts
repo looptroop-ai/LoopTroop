@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { HostPlatform } from '@shared/hostContext'
 import { FORCE_KILL_DELAY_MS } from './constants'
+import { findTrustedExecutablePath } from './executablePath'
 
 function currentPlatform(): HostPlatform {
   if (process.platform === 'win32') return 'windows'
@@ -25,8 +26,18 @@ export function terminateProcessTree(
   if (!child.pid) return
 
   if (platform === 'windows') {
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-      .on('error', () => undefined)
+    // `taskkill` lives in `%SystemRoot%\system32`; resolving it means the tree
+    // is killed by that file rather than by whatever `PATH` offers first. If it
+    // cannot be resolved this falls through to `child.kill`, which is the same
+    // degradation as `taskkill` failing to spawn — the tree survives, and the
+    // caller's own liveness check is what reports that.
+    const taskkill = findTrustedExecutablePath('taskkill')
+    if (taskkill !== null) {
+      spawn(taskkill, ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+        .on('error', () => undefined)
+      return
+    }
+    child.kill(signal)
     return
   }
 

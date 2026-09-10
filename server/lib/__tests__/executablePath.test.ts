@@ -297,6 +297,26 @@ describe('Windows resolution', () => {
     })).toBe(exe)
   })
 
+  it('trusts a directory the operator named outright', () => {
+    // On Windows the override is the *only* signal available for a tool in an
+    // unusual place: NTFS reports mode 0777 for everything, so there is no
+    // permission check to fall back on. On POSIX there is, and the override does
+    // not excuse it — the case above proves that half.
+    const root = tempRoot()
+    const exe = makeExecutable(join(root, 'tools'), 'gh.EXE')
+
+    expect(findTrustedExecutablePath('gh', {
+      env: {
+        PATH: '',
+        [TRUSTED_EXECUTABLE_DIRS_ENV]: join(root, 'tools'),
+        USERPROFILE: join(root, 'profile'),
+        PATHEXT: '.EXE',
+      },
+      platform: 'win32',
+      cache: freshCache(),
+    })).toBe(exe)
+  })
+
   it('does not treat a sibling of a trusted root as inside it', () => {
     // `C:\Users\bob-scratch` starts with `C:\Users\bob`, and a startsWith test
     // is the whole check defeated by naming a directory carefully.

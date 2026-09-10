@@ -7,6 +7,15 @@ const spawnMock = vi.fn((...args: unknown[]) => spawnFromSyncResult(
   spawnSyncMock(...args) as ReturnType<typeof import('node:child_process').spawnSync>,
 ))
 
+// The runner resolves `git`, `gh` and `ssh` to a real file before spawning
+// them. These cases describe what a command *returns*, so they stub the
+// resolution to the name itself: otherwise every argv assertion would carry
+// whichever directory this machine keeps its tools in, and a runner without
+// `gh` installed would never reach the stub at all.
+vi.mock('../../lib/executablePath', () => ({
+  resolveTrustedProgram: (program: string) => ({ path: program }),
+}))
+
 vi.mock('node:child_process', async () => {
   const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process')
   return {

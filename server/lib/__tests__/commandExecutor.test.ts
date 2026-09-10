@@ -1,10 +1,10 @@
-import { mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import type { spawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandSpec } from '../../../shared/commandSpec'
-import { buildCommandInvocation, executeCommand, resolveCommandCwd } from '../commandExecutor'
+import { buildCommandInvocation, executeCommand, resolveCommandCwd, resolveCommandProgram } from '../commandExecutor'
 import { makeTempDir, removeTempDir } from '../../test/tempDir'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from '../constants'
 
@@ -40,6 +40,74 @@ function makeRepo(): string {
   tempDirectories.push(repository)
   return repository
 }
+
+describe('resolveCommandProgram', () => {
+  function makeExecutable(directory: string, name: string): string {
+    mkdirSync(directory, { recursive: true })
+    const path = join(directory, name)
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  it.runIf(process.platform !== 'win32')('resolves a bare name against the child\'s PATH, not the daemon\'s', () => {
+    // `pathPrepend` puts a project's own `node_modules/.bin` on the child's
+    // PATH. Resolving against `process.env` would refuse every project-local
+    // tool while the plan claims to support them.
+    const repository = makeRepo()
+    const tool = makeExecutable(join(repository, 'node_modules', '.bin'), 'project-linter')
+
+    expect(resolveCommandProgram('project-linter', {
+      env: { PATH: join(repository, 'node_modules', '.bin') },
+      cwd: repository,
+      repoRoot: repository,
+    })).toEqual({ path: tool })
+  })
+
+  it.runIf(process.platform !== 'win32')('resolves a relative program against the command directory', () => {
+    const repository = makeRepo()
+    const tool = makeExecutable(join(repository, 'tools'), 'check')
+
+    expect(resolveCommandProgram('./check', {
+      env: { PATH: '' },
+      cwd: join(repository, 'tools'),
+      repoRoot: repository,
+    })).toEqual({ path: tool })
+  })
+
+  it('refuses a relative program that climbs out of the repository', () => {
+    // The containment check is the point of the path-separator branch, not a
+    // formality: without it, a program is resolved against whatever directory
+    // happens to be current and the exception becomes an injection route.
+    const repository = makeRepo()
+
+    expect(resolveCommandProgram('../../usr/bin/whatever', {
+      env: { PATH: '' },
+      cwd: repository,
+      repoRoot: repository,
+    }).reason).toContain('must stay within the repository root')
+  })
+
+  it('accepts an absolute program that names an executable file', () => {
+    // A plan naming `/usr/bin/make` is naming a tool, not escaping a root, and
+    // `process.execPath` reaches here from the test runner itself.
+    expect(resolveCommandProgram(process.execPath, {
+      env: { PATH: '' },
+      cwd: makeRepo(),
+      repoRoot: makeRepo(),
+    }).path).toBeDefined()
+  })
+
+  it('refuses an absolute path that is not an executable file', () => {
+    const repository = makeRepo()
+
+    expect(resolveCommandProgram(join(repository, 'nothing-here'), {
+      env: { PATH: '' },
+      cwd: repository,
+      repoRoot: repository,
+    }).reason).toContain('is not an executable file')
+  })
+})
 
 describe('buildCommandInvocation', () => {
   it('does not invoke a shell for direct process commands', () => {
@@ -184,6 +252,9 @@ describe('executeCommand', () => {
       // The overload set on `spawn` cannot be satisfied by a stub, and the
       // executor only ever uses the pipes, the pid and `unref`.
       spawnProcess: (() => child) as unknown as typeof spawn,
+      // This case is about the timeout, not about the program: resolving
+      // `irrelevant` for real would end the run before a child was ever made.
+      resolveProgram: () => ({ path: 'irrelevant' }),
     })
 
     await vi.advanceTimersByTimeAsync(200 + FORCE_KILL_DELAY_MS + PROCESS_ABANDON_GRACE_MS + 1)
@@ -192,6 +263,23 @@ describe('executeCommand', () => {
     expect(result.timedOut).toBe(true)
     expect(result.exitCode).toBeNull()
     expect(result.signal).toBe('SIGKILL')
+  })
+
+  it('reports an unresolvable program as a run that never started', async () => {
+    // Byte-for-byte the shape a spawn error already produced for a missing
+    // tool: no exit code, the reason on stderr. Nothing that used to degrade
+    // becomes a throw.
+    const result = await executeCommand({
+      mode: 'process',
+      program: 'definitely-not-installed',
+      args: [],
+      cwd: '.',
+      env: {},
+    }, { repoRoot: makeRepo(), env: { PATH: makeRepo() } })
+
+    expect(result.exitCode).toBeNull()
+    expect(result.signal).toBeNull()
+    expect(result.stderr).toContain('was not found in any trusted directory')
   })
 
   it('rejects traversal before starting a process', async () => {

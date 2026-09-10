@@ -244,11 +244,19 @@ function directoryRefusal(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
   readMountTable: () => string,
+  namedByOperator: boolean,
 ): string | null {
   const stats = trustedFs.statSync(directory, { throwIfNoEntry: false })
   if (!stats?.isDirectory()) return 'it is not a directory'
 
   if (platform === 'win32') {
+    // "A known-safe *or explicitly configured* directory" — and on Windows the
+    // second half carries real weight, because there is no permission check to
+    // fall back on. `fs.stat` mode is 0777 for everything on NTFS, so an
+    // operator naming a directory is the only signal available for a tool that
+    // lives somewhere this list does not know about. On POSIX the override is
+    // *not* excused the mode check, because there the mode means something.
+    if (namedByOperator) return null
     return windowsTrustedRoots(env).some((root) => isWithin(root, directory, platform))
       ? null
       : 'it is outside the system and user-profile directories'
@@ -286,6 +294,9 @@ export function resolveTrustedExecutable(
   }
 
   const directories = trustedSearchDirectories({ env })
+  const namedByOperator = new Set(
+    trustedSearchDirectories({ env: { [TRUSTED_EXECUTABLE_DIRS_ENV]: env[TRUSTED_EXECUTABLE_DIRS_ENV] ?? '', PATH: '' } }),
+  )
   const extensions = candidateExtensions(name, platform, env)
   const cache = options.cache === undefined ? processCache : options.cache
   const cacheKey = `${platform}\u0000${name}\u0000${extensions.join(';')}\u0000${directories.join(trustedPath.delimiter)}`
@@ -307,7 +318,7 @@ export function resolveTrustedExecutable(
   }
 
   for (const directory of directories) {
-    const refusal = directoryRefusal(directory, platform, env, readMountTable)
+    const refusal = directoryRefusal(directory, platform, env, readMountTable, namedByOperator.has(directory))
     for (const extension of extensions) {
       const candidate = trustedPath.join(directory, `${name}${extension}`)
       if (!isExecutableFile(candidate, platform)) continue
@@ -357,6 +368,36 @@ export function resolveTrustedExecutable(
  */
 export function findTrustedExecutablePath(name: string, options: TrustedExecutableOptions = {}): string | null {
   return resolveTrustedExecutable(name, options).path ?? null
+}
+
+/**
+ * As `resolveTrustedExecutable`, but accepting a program a caller named by
+ * absolute path.
+ *
+ * The trust question is about `PATH` choosing the file. An absolute path is the
+ * caller choosing it — `process.execPath`, a plan that names a tool outright —
+ * and there is no search to hijack, so what is checked is only that the path
+ * names an executable file. It is still `realpath`ed, so the spawn and any
+ * later diagnostic agree on which file ran.
+ *
+ * A *relative* path is refused rather than resolved. Which directory it is
+ * relative to is the caller's decision and differs per call site: the daemon's
+ * working directory is a checkout, and quietly picking that would be the
+ * current-directory hole in a different shape. Callers that have an intended
+ * root resolve against it and pass the absolute result.
+ */
+export function resolveTrustedProgram(
+  program: string,
+  options: TrustedExecutableOptions = {},
+): TrustedExecutableResolution {
+  const platform = options.platform ?? process.platform
+  if (!trustedPath.isAbsolute(program)) return resolveTrustedExecutable(program, options)
+  if (!isExecutableFile(program, platform)) return { reason: `${program} is not an executable file.` }
+  try {
+    return { path: trustedFs.realpathSync(program) }
+  } catch {
+    return { reason: `${program} could not be resolved to a real path.` }
+  }
 }
 
 /** The path to `name`, or an error saying why there is not one. */

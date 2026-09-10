@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url'
 // launcher refuses.
 import { satisfiesFloor } from './installer-core.mjs'
 import { waitForHealth } from './smoke-lib.mjs'
-import { spawnProgram } from './tool-path.ts'
+import { shellCommandLine, spawnProgram } from './tool-path.ts'
 
 /**
  * The floor `dist/server/cli/launcher.cjs` enforces before it loads anything —
@@ -150,10 +150,15 @@ function check(name, condition, detail) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
+  // Resolved against the environment the child gets, and — when a shell will
+  // read it — joined into one command line with every token quoted, because
+  // Node joins an argument array for `shell: true` without quoting any of it.
+  const env = { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) }
+  const program = spawnProgram(command, { env })
+  const result = spawnSync(options.shell ? shellCommandLine(program, args) : program, options.shell ? [] : args, {
     encoding: 'utf8',
     ...options,
-    env: { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) },
+    env,
   })
   return {
     code: result.status,

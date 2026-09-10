@@ -7,6 +7,7 @@ import { Database } from '../server/db/sqliteShim'
 import { getErrorMessage } from '../shared/typeGuards'
 import { TERMINAL_WORKFLOW_STATUSES } from '../shared/workflowMeta'
 import { findToolPath } from './tool-path.ts'
+import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 interface CliOptions {
   backendPort?: number
@@ -30,6 +31,13 @@ interface CommandResult {
   stderr: string
   timedOut: boolean
   error?: string
+  /**
+   * The program is not installed. Kept apart from `error` so an optional tool —
+   * PowerShell on Linux — can be left out of a report instead of appearing as a
+   * failed probe; a tool that was *found and refused* is not missing, and is
+   * reported with the resolver's reason.
+   */
+  missing?: boolean
 }
 
 interface HttpProbeResult {
@@ -746,8 +754,8 @@ function runShell(command: string, timeoutMs = 5000): CommandResult {
 
 function runProcess(command: string, args: string[], timeoutMs = 3000): CommandResult {
   const start = Date.now()
-  const program = findToolPath(command)
-  if (program === null) {
+  const resolution = resolveTrustedProgram(command)
+  if (resolution.path === undefined) {
     return {
       command: `${command} ${args.join(' ')}`.trim(),
       shell: 'direct',
@@ -757,9 +765,11 @@ function runProcess(command: string, args: string[], timeoutMs = 3000): CommandR
       stdout: '',
       stderr: '',
       timedOut: false,
-      error: `${command} was not found in any trusted directory on PATH.`,
+      error: resolution.reason,
+      missing: resolution.refusedAt === undefined,
     }
   }
+  const program = resolution.path
   const result = spawnSync(program, args, {
     cwd: process.cwd(),
     encoding: 'utf8',
@@ -811,7 +821,9 @@ function collectShellLatencyBaselines(): SpawnLatencyBaseline[] {
   }
 
   const psResult = runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], 5000)
-  if (!psResult.error?.includes('ENOENT')) {
+  // Left out when PowerShell simply is not there — a Linux machine without it
+  // has no symptom to report — but kept when it was found and refused, which is.
+  if (!psResult.missing && !psResult.error?.includes('ENOENT')) {
     baselines.push({ label: 'powershell.exe -NoProfile -Command exit 0', result: psResult })
   }
 

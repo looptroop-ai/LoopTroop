@@ -60,33 +60,75 @@ const sharedHelperRedeclarationRules = Object.entries(SHARED_HELPER_HOMES).flatM
  * *resolved path* is still allowed — Node has refused to launch a Windows `.cmd`
  * directly since the BatBadBut hardening, and there is no other way to run one.
  */
-const SPAWN_CALLEES = 'spawn|spawnSync|exec|execSync|execFile|execFileSync'
 /**
- * `exec` is left out when it is a *method*.
+ * The call names that start a process.
+ *
+ * `execFileAsync` and `execAsync` are here because `promisify(execFile)` is how
+ * this codebase spells the async form, and a promisified alias is otherwise a
+ * name the rule has never heard of. Aliasing an import under any *other* name is
+ * refused outright, below, so a new alias cannot quietly re-open the hole.
+ */
+const SPAWN_CALLEES = 'spawn|spawnSync|exec|execSync|execFile|execFileSync|execFileAsync|execAsync'
+/**
+ * `exec` is left out when it is a method on an arbitrary object.
  *
  * `db.exec('BEGIN')` and `/re/.exec('text')` are both a bare-string first
- * argument on a member call named `exec`, and neither starts a process. The
- * `child_process` member form is not used here; the bare-identifier form still
- * is, and that clause keeps it.
+ * argument on a member call named `exec`, and neither starts a process. On an
+ * object that *is* `child_process` — imported as a namespace — `exec` and
+ * `execSync` are covered by their own clause.
  */
 const SPAWN_METHODS = 'spawn|spawnSync|execFile|execFileSync'
-/** A literal with no `/` or `\\` in it: a name, not a path. */
+const CHILD_PROCESS_NAMESPACES = 'childProcess|child_process|cp'
+/** A string with no `/` or `\\` in it: a name, not a path. */
 const BARE_NAME = String.raw`/^[^\\/]+$/`
 
+const RESOLVE_MESSAGE =
+  'Resolve the program before spawning it: findTrustedExecutablePath from server/lib/executablePath,'
+  + ' toolPath from scripts/tool-path, or resolveTrustedTool from scripts/trusted-tool for a release job.'
+  + ' A bare name lets the first directory on PATH decide which file runs.'
+
+/**
+ * Every spelling of "a bare name in the program position" this codebase has
+ * actually used or been caught using, as selector tails on a matched call.
+ *
+ * - a plain string: `spawn('git')`
+ * - a template with no interpolation: `` spawn(`git`) ``
+ * - the fallback of an `||` / `??`: `spawn(process.env.ComSpec || 'cmd.exe')`
+ * - either branch of a conditional: `spawn(IS_WINDOWS ? 'npm.cmd' : 'npm')`
+ *
+ * A template *with* an interpolation is left alone — `${bin}/git` is how a
+ * resolved directory is joined — and so is anything that is not a literal at
+ * all, because a variable may hold a resolved path and the rule cannot tell.
+ * That last gap is the one this rule cannot close: a local `run(command)`
+ * helper hides the literal from it entirely.
+ */
+const BARE_PROGRAM_SHAPES = [
+  `[arguments.0.type='Literal'][arguments.0.value=${BARE_NAME}]`,
+  `[arguments.0.type='TemplateLiteral'][arguments.0.expressions.length=0][arguments.0.quasis.0.value.cooked=${BARE_NAME}]`,
+  `[arguments.0.type='LogicalExpression'][arguments.0.right.type='Literal'][arguments.0.right.value=${BARE_NAME}]`,
+  `[arguments.0.type='ConditionalExpression'][arguments.0.consequent.type='Literal'][arguments.0.consequent.value=${BARE_NAME}]`,
+  `[arguments.0.type='ConditionalExpression'][arguments.0.alternate.type='Literal'][arguments.0.alternate.value=${BARE_NAME}]`,
+]
+
 const ambientProgramRules = [
+  ...BARE_PROGRAM_SHAPES.flatMap((shape) => [
+    { selector: `CallExpression[callee.name=/^(${SPAWN_CALLEES})$/]${shape}`, message: RESOLVE_MESSAGE },
+    { selector: `CallExpression[callee.property.name=/^(${SPAWN_METHODS})$/]${shape}`, message: RESOLVE_MESSAGE },
+    {
+      selector: `CallExpression[callee.object.name=/^(${CHILD_PROCESS_NAMESPACES})$/][callee.property.name=/^(exec|execSync)$/]${shape}`,
+      message: RESOLVE_MESSAGE,
+    },
+  ]),
   {
-    selector: `CallExpression[callee.name=/^(${SPAWN_CALLEES})$/][arguments.0.type='Literal'][arguments.0.value=${BARE_NAME}]`,
+    // `import { spawn as launch }` gives the rule a callee name it cannot
+    // know. Nothing here needs the alias, so it is refused rather than tracked.
+    selector:
+      "ImportDeclaration[source.value=/^(node:)?child_process$/] > ImportSpecifier"
+      + `[imported.name=/^(spawn|spawnSync|exec|execSync|execFile|execFileSync)$/]`
+      + `[local.name!=/^(spawn|spawnSync|exec|execSync|execFile|execFileSync)$/]`,
     message:
-      'Resolve the program before spawning it: findTrustedExecutablePath from server/lib/executablePath,'
-      + ' toolPath from scripts/tool-path, or resolveTrustedTool from scripts/trusted-tool for a release job.'
-      + ' A bare name lets the first directory on PATH decide which file runs.',
-  },
-  {
-    selector: `CallExpression[callee.property.name=/^(${SPAWN_METHODS})$/][arguments.0.type='Literal'][arguments.0.value=${BARE_NAME}]`,
-    message:
-      'Resolve the program before spawning it: findTrustedExecutablePath from server/lib/executablePath,'
-      + ' toolPath from scripts/tool-path, or resolveTrustedTool from scripts/trusted-tool for a release job.'
-      + ' A bare name lets the first directory on PATH decide which file runs.',
+      'Import child_process functions under their own names. An alias hides every call made through it from the'
+      + ' rule that requires programs to be resolved before they are spawned.',
   },
   {
     selector:
@@ -145,6 +187,11 @@ export default tseslint.config(
       globals: { ...globals.node },
     },
     rules: {
+      // Neither tsc nor vitest reads these files, so an import that was never
+      // written is found by the first run that reaches it. That is how
+      // `smoke-binary.mjs` called a helper it did not import and broke every
+      // binary lane after local lint and typecheck both passed.
+      'no-undef': 'error',
       'no-restricted-syntax': ['error', ...ambientProgramRules],
     },
   },

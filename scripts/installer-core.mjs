@@ -682,25 +682,25 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * this machine will not run from, where falling back would spawn the very file
  * this module exists to refuse.
  */
-                                         
-                                                               
-                                                            
 
-                                           
-                         
-                            
-                                                                                           
-                               
-                                                                    
-                                              
- 
+
+
+
+
+
+
+
+
+
+
+
 
 /** The fields that tell one file apart from another at the same path. */
-                               
-             
-             
-                 
- 
+
+
+
+
+
 
 /**
  * A resolved path, and enough about how it was reached to notice it moved.
@@ -713,14 +713,14 @@ const DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD'
  * re-run on a hit. A handful of `stat`s is noise beside the `spawn` they
  * precede.
  */
-                                                        
-              
-              
-                                                                               
-                   
-                                 
-                   
- 
+
+
+
+
+
+
+
+
 
 /**
  * Lives as long as the process does, and starts empty, so there is nothing to
@@ -924,12 +924,12 @@ function readMountTableFromProc()         {
 }
 
 /** What the ownership rule needs to know about the call it is judging. */
-                        
-                           
-                              
-                                                                
-                          
- 
+
+
+
+
+
+
 
 /**
  * Why `path` fails the ownership rule, or `null` when it passes.
@@ -1192,11 +1192,18 @@ export function quoteForCmd(value) {
  * imported because this file is embedded verbatim into `install.sh` and
  * `install.ps1` and cannot import anything at all.
  */
-function runTool(command, args, options = {}) {
-  const resolved = findTrustedExecutablePath(command)
-  // Leaving an unresolved name to fail as ENOENT is deliberate: the caller's own
-  // message about a missing tool is better advice than one invented here, and
-  // every caller of this has one.
+export function runTool(command, args, options = {}) {
+  const resolution = resolveTrustedExecutable(command)
+  // Found and refused stops here, with the reason. Falling through to a bare
+  // name — which this did — made the child search the same PATH and run the
+  // exact file the resolver had just refused.
+  if (resolution.refusedAt !== undefined) {
+    fail(resolution.reason, `Set ${TRUSTED_EXECUTABLE_DIRS_ENV} to that directory if the tool is meant to be there.`)
+  }
+  // Not installed at all is left to fail as ENOENT, deliberately: the caller's
+  // own message about a missing tool is better advice than one invented here,
+  // and every caller of this has one.
+  const resolved = resolution.path ?? null
   if (resolved === null) {
     return spawnSync(command, args, { ...options, shell: false })
   }
@@ -1214,7 +1221,13 @@ function runTool(command, args, options = {}) {
   // for a Windows tool is under `C:\Program Files`. The arguments are quoted
   // only where they need it, so a shim reading `%1` sees what the caller wrote.
   const line = `"${[`"${resolved}"`, ...args.map(quoteForCmd)].join(' ')}"`
-  return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], {
+  // The interpreter is a program too. `ComSpec` names it by absolute path when
+  // Windows set it; otherwise `cmd.exe` is resolved like any other tool — from
+  // the system directories the resolver searches first — rather than handed to
+  // a bare-name spawn, which is the one lookup this whole file exists to avoid.
+  const interpreter = process.env.ComSpec || findTrustedExecutablePath('cmd.exe')
+  if (!interpreter) fail('cmd.exe could not be found, and it is needed to run command scripts on Windows.')
+  return spawnSync(interpreter, ['/d', '/s', '/c', line], {
     ...options,
     shell: false,
     windowsVerbatimArguments: true,

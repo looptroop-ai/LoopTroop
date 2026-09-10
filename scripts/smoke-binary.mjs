@@ -21,7 +21,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
-import { toolPath } from './tool-path.ts'
+import { spawnProgram, toolPath } from './tool-path.ts'
 
 function fail(message, ...detail) {
   process.stderr.write(`\nFAIL: ${message}\n`)
@@ -46,7 +46,9 @@ const IS_WINDOWS = process.platform === 'win32'
 /** Always async: a synchronous child would block the checks that follow it. */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
-    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, { env })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })

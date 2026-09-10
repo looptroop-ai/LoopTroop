@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { toolPath } from './tool-path.ts'
+import { shellCommandLine, toolPath } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -24,11 +24,18 @@ function fail(message) {
   process.exit(1)
 }
 
-/** npm on Windows is a .cmd shim, which needs a shell to be executable. */
+/**
+ * npm on Windows is a .cmd shim, which needs a shell to be executable — and a
+ * shell re-parses what it is given, so the resolved path and every argument go
+ * to it as one quoted command line rather than as an array Node would join
+ * unquoted. `C:\\Program Files\\nodejs\\npm.cmd` split at the space otherwise.
+ */
 function npm(args) {
-  return execFileSync(toolPath('npm'), args, {
+  const program = toolPath('npm')
+  const shell = process.platform === 'win32'
+  return execFileSync(shell ? shellCommandLine(program, args) : program, shell ? [] : args, {
     encoding: 'utf8',
-    shell: process.platform === 'win32',
+    shell,
   }).trim()
 }
 

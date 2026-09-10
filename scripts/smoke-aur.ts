@@ -82,9 +82,11 @@ interface RunResult { code: number | null, stdout: string, stderr: string }
  */
 function invoke(command: string, args: string[], options: { allowFailure?: boolean, cwd?: string, env?: NodeJS.ProcessEnv } = {}): Promise<RunResult> {
   return new Promise((settle, reject) => {
-    const child = spawn(spawnProgram(command), args, {
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      env: { ...process.env, ...options.env },
+      env,
     })
     let stdout = ''
     let stderr = ''

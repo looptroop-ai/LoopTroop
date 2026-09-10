@@ -64,7 +64,9 @@ function flag(name) {
  */
 function invoke(command, args, options = {}) {
   return new Promise((settle, reject) => {
-    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, { env })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk.toString() })

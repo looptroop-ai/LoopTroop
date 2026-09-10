@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } fr
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { waitForHealth } from './smoke-lib.mjs'
-import { spawnProgram } from './tool-path.ts'
+import { shellCommandLine, spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -117,11 +117,16 @@ function heading(title) {
  * than being interrupted by them.
  */
 function run(command, args, options = {}) {
-  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
+  // Resolved against the environment the child gets, and — when a shell will
+  // read it — joined into one command line with every token quoted, because
+  // Node joins an argument array for `shell: true` without quoting any of it.
+  const env = { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) }
+  const program = spawnProgram(command, { env })
+  const result = spawnSync(options.shell ? shellCommandLine(program, args) : program, options.shell ? [] : args, {
     encoding: 'utf8',
     shell: false,
     ...options,
-    env: { ...process.env, ...CHILD_ENV, ...(options.env ?? {}) },
+    env,
   })
   return {
     code: result.status,

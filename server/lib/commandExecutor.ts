@@ -4,7 +4,7 @@ import { isAbsolute, relative, resolve } from 'node:path'
 import type { CommandSpec, RuntimeEnvironment } from '../../shared/commandSpec'
 import type { CommandShellKind, HostPlatform } from '../../shared/hostContext'
 import { createBoundedOutputCollector } from './commandOutput'
-import { resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
+import { findTrustedExecutablePath, resolveTrustedExecutable, resolveTrustedProgram, type TrustedExecutableResolution } from './executablePath'
 import { FORCE_KILL_DELAY_MS, PROCESS_ABANDON_GRACE_MS } from './constants'
 import { terminateProcessTreeWithEscalation } from './processTree'
 
@@ -209,7 +209,13 @@ function launchPlan(
     return { file: program, args, windowsVerbatimArguments: false }
   }
   const line = `"${[`"${program}"`, ...args.map(quoteForCmd)].join(' ')}"`
-  return { file: env.ComSpec || env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
+  // The interpreter is resolved too: `ComSpec` names it by absolute path when
+  // Windows set it, and otherwise `cmd.exe` is found the way every other tool
+  // is, rather than left to a bare-name lookup. Falls back to the name only if
+  // it genuinely cannot be found, so the spawn fails with the ENOENT a missing
+  // interpreter would have given anyway.
+  const interpreter = env.ComSpec || env.COMSPEC || findTrustedExecutablePath('cmd.exe', { env }) || 'cmd.exe'
+  return { file: interpreter, args: ['/d', '/s', '/c', line], windowsVerbatimArguments: true }
 }
 
 export async function executeCommand(

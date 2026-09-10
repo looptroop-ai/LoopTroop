@@ -11,7 +11,7 @@
 import { spawnSync } from 'node:child_process'
 
 import { DIGEST_PATTERN, classifyRegistryFailure } from './container-tags.ts'
-import { toolPath } from './tool-path.ts'
+import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
 export interface DockerResult {
   /** null when docker could not be executed at all. */
@@ -27,11 +27,18 @@ export interface DockerResult {
  * references and digests are passed as argv entries.
  */
 export function docker(args: string[], options: { env?: NodeJS.ProcessEnv } = {}): DockerResult {
-  const result = spawnSync(toolPath('docker'), args, {
+  const env = options.env === undefined ? process.env : { ...process.env, ...options.env }
+  // "Without throwing" holds for the resolver too: a docker that is missing or
+  // refused comes back in the same shape as one that failed to start, with the
+  // reason in `stderr`, rather than as an exception out of a function whose
+  // callers classify a `code: null` result.
+  const resolution = resolveTrustedProgram('docker', { env })
+  if (resolution.path === undefined) return { code: null, stdout: '', stderr: resolution.reason }
+  const result = spawnSync(resolution.path, args, {
     encoding: 'utf8',
     shell: false,
     maxBuffer: 32 * 1024 * 1024,
-    env: options.env === undefined ? process.env : { ...process.env, ...options.env },
+    env,
   })
   if (result.error) {
     return { code: null, stdout: '', stderr: String(result.error.message) }

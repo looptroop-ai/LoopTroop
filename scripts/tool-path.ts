@@ -19,16 +19,40 @@
  */
 import { resolveTrustedProgram } from '../server/lib/executablePath.ts'
 
+export interface ToolLookup {
+  /**
+   * The environment the child will be started with. Resolve against *that*, not
+   * this process's: a smoke that puts a freshly installed `looptroop` at the
+   * front of the child's PATH resolved against the parent's and exercised
+   * whichever older one the runner already had.
+   */
+  env?: NodeJS.ProcessEnv
+}
+
 /** The file `name` runs as. Throws with the reason if there is no trusted one. */
-export function toolPath(name: string): string {
-  const resolution = resolveTrustedProgram(name)
+export function toolPath(name: string, lookup: ToolLookup = {}): string {
+  const resolution = resolveTrustedProgram(name, { env: lookup.env })
   if (resolution.path === undefined) throw new Error(resolution.reason)
   return resolution.path
 }
 
 /** As `toolPath`, but `null` for a probe whose whole question is whether the tool is there. */
-export function findToolPath(name: string): string | null {
-  return resolveTrustedProgram(name).path ?? null
+export function findToolPath(name: string, lookup: ToolLookup = {}): string | null {
+  return resolveTrustedProgram(name, { env: lookup.env }).path ?? null
+}
+
+/**
+ * The resolved path as one token of a shell command line.
+ *
+ * Always quoted, not only when it holds a space: `C:\Tools&CI` has no space and
+ * is two commands to cmd.exe, and a POSIX path with `$` or a backtick expands
+ * inside double quotes. cmd.exe gets double quotes, which it does not re-parse
+ * inside and which no Windows path can contain; `sh` gets single quotes, inside
+ * which nothing is special, with any `'` in the path closed and re-opened.
+ */
+export function quoteProgramForShell(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return `"${path}"`
+  return `'${path.replace(/'/g, `'\\''`)}'`
 }
 
 /**
@@ -41,19 +65,47 @@ export function findToolPath(name: string): string | null {
  *   reports a missing tool from the spawn's own `ENOENT`, often as the thing
  *   being tested — `smoke-published.mjs` probes whether `yarn` exists — and
  *   turning that into a throw would change what those scripts measure.
- * - **Found, in a directory this machine will not run from** throws. Falling
- *   back there would spawn the exact file this is meant to refuse.
+ * - **Found, and refused** throws. Falling back there would spawn the exact file
+ *   this is meant to refuse.
  *
- * `shell` quotes the result, because a resolved path is usually longer than the
- * name it replaced and `C:\Program Files\nodejs\npm.cmd` handed to a shell
- * unquoted stops at the first space.
+ * `shell` quotes the result with `quoteProgramForShell`. Pass the raw path, not
+ * one that is already quoted: a quoted string is neither a name nor an absolute
+ * path, so it used to fall through to the not-found branch and reach the shell
+ * unresolved.
  */
-export function spawnProgram(command: string, options: { shell?: boolean | string } = {}): string {
-  const resolution = resolveTrustedProgram(command)
+export function spawnProgram(command: string, options: ToolLookup & { shell?: boolean | string } = {}): string {
+  const resolution = resolveTrustedProgram(command, { env: options.env })
   if (resolution.path === undefined) {
     if (resolution.refusedAt !== undefined) throw new Error(resolution.reason)
     return command
   }
-  const quoted = options.shell && /\s/.test(resolution.path) ? `"${resolution.path}"` : resolution.path
-  return quoted
+  return options.shell ? quoteProgramForShell(resolution.path) : resolution.path
+}
+
+/**
+ * One argument as a token of a shell command line, quoted only when leaving it
+ * bare would change it.
+ *
+ * Quoting everything is wrong for cmd.exe: it hands a `.cmd` shim its arguments
+ * with the quotes still on, so a shim comparing `%1` stops matching. So cmd gets
+ * the same rule `installer-core.mjs` uses — quote what would split or be read as
+ * syntax — and `sh` gets single quotes for anything outside a conservative safe
+ * set.
+ */
+export function quoteArgForShell(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return /[\s&|<>^()"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The whole command line for a `shell: true` spawn.
+ *
+ * Handing Node an argument array with `shell: true` makes it join them with
+ * spaces and quote none of them — so a tarball under a directory with a space
+ * arrived as two arguments, and since DEP0190 Node also warns about doing it.
+ * Built here instead, with the program and every argument quoted for the shell
+ * that will read them.
+ */
+export function shellCommandLine(program: string, args: readonly string[], platform: NodeJS.Platform = process.platform): string {
+  return [quoteProgramForShell(program, platform), ...args.map((arg) => quoteArgForShell(arg, platform))].join(' ')
 }

@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { removeWorkDirectory } from './smoke-lib.mjs'
-import { spawnProgram } from './tool-path.ts'
+import { shellCommandLine, spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -65,11 +65,18 @@ function check(ok, message) {
 
 function run(command, args, options = {}) {
   const shell = options.shell ?? IS_WINDOWS
-  const result = spawnSync(spawnProgram(command, { shell }), args, {
+  // Resolved against the child's environment: the freshly installed shim is in
+  // `binDir` at the front of `childEnv.PATH`, and resolving against this
+  // process's PATH instead let a `looptroop` the runner already had win over
+  // the one this smoke had just installed. Joined into one quoted command line
+  // under a shell, because Node joins an argument array without quoting it.
+  const env = { ...process.env, ...options.env }
+  const program = spawnProgram(command, { env })
+  const result = spawnSync(shell ? shellCommandLine(program, args) : program, shell ? [] : args, {
     encoding: 'utf8',
-    shell,
     ...options,
-    env: { ...process.env, ...options.env },
+    shell,
+    env,
   })
   return {
     status: result.status,

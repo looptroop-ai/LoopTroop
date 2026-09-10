@@ -89,7 +89,9 @@ interface RunResult { status: number | null, stdout: string, stderr: string }
  */
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): Promise<RunResult> {
   return new Promise((done, reject) => {
-    const child = spawn(spawnProgram(command), args, { env: { ...process.env, ...options.env } })
+    // Resolved against the environment the child gets, not this process's.
+    const env = { ...process.env, ...options.env }
+    const child = spawn(spawnProgram(command, { env }), args, { env })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })

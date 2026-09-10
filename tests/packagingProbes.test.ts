@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, win32 } from 'node:path'
 import { claimTapDirectory, isOwnedTap } from '../scripts/brew-local-tap.ts'
 import { defaultTrustedPrefixes, resolveTrustedTool } from '../scripts/trusted-tool.ts'
-import { spawnProgram } from '../scripts/tool-path.ts'
+import { quoteArgForShell, quoteProgramForShell, shellCommandLine, spawnProgram } from '../scripts/tool-path.ts'
 import { withoutCredentials } from '../scripts/container-docker.ts'
 import { removeWorkDirectory, waitForHealth } from '../scripts/smoke-lib.mjs'
 import { makeTempDir, removeTempDir } from '../server/test/tempDir'
@@ -599,14 +600,62 @@ describe('spawnProgram', () => {
     }
   })
 
-  it.runIf(process.platform !== 'win32')('quotes a resolved path for a shell, and leaves it bare otherwise', () => {
+  it.runIf(process.platform !== 'win32')('quotes a resolved path for the shell that will read it, and leaves it bare otherwise', () => {
     const spaced = join(scratch(), 'Program Files')
     const tool = executable(spaced, 'looptool')
 
     withPath(spaced, () => {
-      // Unquoted through a shell, a path with a space stops at the space.
-      expect(spawnProgram('looptool', { shell: true })).toBe(`"${tool}"`)
+      // `sh` reads it here, so single quotes — inside which nothing expands.
+      expect(spawnProgram('looptool', { shell: true })).toBe(`'${tool}'`)
       expect(spawnProgram('looptool')).toBe(tool)
     })
+  })
+
+  it.runIf(process.platform !== 'win32')('resolves against the environment the child gets, not this process\'s', () => {
+    // A smoke that puts a freshly installed tool at the front of the child's
+    // PATH resolved against the parent's, and exercised whichever older copy
+    // the runner already had.
+    const parent = scratch()
+    const child = scratch()
+    executable(parent, 'looptool')
+    const wanted = executable(child, 'looptool')
+
+    withPath(parent, () => {
+      expect(spawnProgram('looptool', { env: { PATH: child } })).toBe(wanted)
+    })
+  })
+})
+
+describe('shell command lines', () => {
+  it('quotes the program always, and not only when it holds a space', () => {
+    // `C:\Tools&CI` has no space and is two commands to cmd.exe; a POSIX path
+    // with `$` expands inside double quotes.
+    expect(quoteProgramForShell('C:\\Tools&CI\\npm.cmd', 'win32')).toBe('"C:\\Tools&CI\\npm.cmd"')
+    expect(quoteProgramForShell('/opt/$HOME/bin/tool', 'linux')).toBe("'/opt/$HOME/bin/tool'")
+    expect(quoteProgramForShell("/opt/it's/tool", 'linux')).toBe("'/opt/it'\\''s/tool'")
+  })
+
+  it('quotes an argument only when leaving it bare would change it', () => {
+    // Quoting every argument breaks a cmd shim comparing `%1`: cmd hands it over
+    // with the quotes still on.
+    expect(quoteArgForShell('--version', 'win32')).toBe('--version')
+    expect(quoteArgForShell('C:\\Users\\Ada Lovelace\\x.tgz', 'win32')).toBe('"C:\\Users\\Ada Lovelace\\x.tgz"')
+    expect(quoteArgForShell('a&b', 'win32')).toBe('"a&b"')
+    expect(quoteArgForShell('say "hi"', 'win32')).toBe('"say ""hi"""')
+    expect(quoteArgForShell('--prefix=/tmp/x', 'linux')).toBe('--prefix=/tmp/x')
+    expect(quoteArgForShell('a b;rm -rf', 'linux')).toBe("'a b;rm -rf'")
+  })
+
+  it('builds one line, so Node never joins an argument array unquoted', () => {
+    expect(shellCommandLine('C:\\Program Files\\nodejs\\npm.cmd', ['install', '-g', 'C:\\a b\\x.tgz'], 'win32'))
+      .toBe('"C:\\Program Files\\nodejs\\npm.cmd" install -g "C:\\a b\\x.tgz"')
+  })
+
+  it.runIf(process.platform !== 'win32')('survives a real shell with spaces and metacharacters in the arguments', () => {
+    // The claim that matters, checked against /bin/sh rather than against a
+    // string: three arguments go in, three come out, and nothing runs.
+    const line = shellCommandLine(process.execPath, ['-e', 'console.log(JSON.stringify(process.argv.slice(1)))', 'a b', 'c&d', '$(touch x)'])
+    const output = execFileSync('/bin/sh', ['-c', line], { encoding: 'utf8' })
+    expect(JSON.parse(output)).toEqual(['a b', 'c&d', '$(touch x)'])
   })
 })

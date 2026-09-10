@@ -1,7 +1,7 @@
-import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, chownSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -9,7 +9,7 @@ import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   binaryAssetName, binaryTarget, defaultPrefix, detectLibc, INSTALL_OPTIONS, onPath, quoteForCmd,
-  findTrustedExecutablePath, stallGuard, streamBody,
+  findTrustedExecutablePath, runTool, stallGuard, streamBody,
 } from '../scripts/installer-core.mjs'
 import { removeTempDir } from '../server/test/tempDir'
 
@@ -1626,5 +1626,36 @@ describe('installer wrappers', () => {
       expectExit({ ...settled, outputText: run.output }, 3)
       expect(leftovers(run.temp)).toEqual([])
     }, 40_000)
+  })
+})
+
+/**
+ * `runTool` used to take "no trusted answer" as one case and spawn the bare
+ * name for it — so a tool found and *refused* was run anyway, by the child's
+ * own search of the same PATH. A refusal now stops the install with the reason.
+ */
+describe('runTool', () => {
+  it.runIf(process.platform !== 'win32')('stops on a refused tool instead of spawning it by name', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'looptroop-runtool-')))
+    const marker = join(dir, 'ran')
+    const tool = join(dir, 'looptool')
+    writeFileSync(tool, `#!/bin/sh\ntouch '${marker}'\n`)
+    chmodSync(tool, 0o755)
+    const previousPath = process.env.PATH
+    process.env.PATH = dir
+    // Root can give the directory away; anyone else makes every file look
+    // foreign by stubbing getuid, which is enough for one directory.
+    const asRoot = process.getuid?.() === 0
+    if (asRoot) chownSync(dir, 4242, 4242)
+    const spy = asRoot ? null : vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1)
+    try {
+      expect(() => runTool('looptool', [])).toThrow(/neither root nor you/)
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      spy?.mockRestore()
+      if (asRoot) chownSync(dir, 0, 0)
+      process.env.PATH = previousPath
+      removeTempDir(dir)
+    }
   })
 })

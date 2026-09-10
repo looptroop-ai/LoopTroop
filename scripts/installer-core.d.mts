@@ -127,6 +127,19 @@ export function findTrustedExecutablePath(
 /** One cmd.exe token, whatever the value contains. */
 export function quoteForCmd(value: string): string
 
+/**
+ * Runs a tool the installer needs, by the path the generated resolver chose.
+ *
+ * Exported for the test that proves a *refused* tool stops the install with the
+ * reason instead of being spawned by bare name. Throws the installer's own
+ * error for a refusal; a tool that is simply missing is left to fail as ENOENT.
+ */
+export function runTool(
+  command: string,
+  args: string[],
+  options?: import('node:child_process').SpawnSyncOptions,
+): import('node:child_process').SpawnSyncReturns<string | Buffer>
+
 export function stallGuard(idleMs: number, what: string): StallGuard
 
 /** Reads a response body to a byte cap, writing chunks out as they arrive. */

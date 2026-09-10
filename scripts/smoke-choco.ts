@@ -32,7 +32,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnProgram } from './tool-path.ts'
+import { shellCommandLine, spawnProgram } from './tool-path.ts'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -57,9 +57,12 @@ function flag(name: string, fallback: string | null = null): string {
 interface RunResult { status: number | null, stdout: string, stderr: string }
 
 function run(command: string, args: string[], options: { env?: NodeJS.ProcessEnv, allowFailure?: boolean } = {}): RunResult {
-  const result = spawnSync(spawnProgram(command, { shell: true }), args, {
+  // Always a shell here: `choco` and its shims are command scripts. Resolved
+  // against the child's environment and joined into one quoted line.
+  const env = { ...process.env, ...options.env }
+  const result = spawnSync(shellCommandLine(spawnProgram(command, { env }), args), [], {
     encoding: 'utf8',
-    env: { ...process.env, ...options.env },
+    env,
     shell: true,
   })
   const output = { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
@@ -101,7 +104,7 @@ try {
   if (!existsSync(chocoBin)) fail(`The package installed without producing a shim at ${chocoBin}.`)
   log(`  shim created at ${chocoBin}`)
 
-  const reported = run(`"${chocoBin}"`, ['--version'], { env: childEnv }).stdout.trim()
+  const reported = run(chocoBin, ['--version'], { env: childEnv }).stdout.trim()
   if (reported !== version) fail(`The installed command reports ${reported || '(nothing)'}, expected ${version}.`)
   log(`  runs, and reports ${version}`)
 
@@ -110,7 +113,7 @@ try {
   //
   // `doctor` exits non-zero on any failing check and a fresh machine has
   // plenty, so its status is not the assertion; the install check's detail is.
-  const doctor = run(`"${chocoBin}"`, ['doctor', '--json'], { env: childEnv, allowFailure: true })
+  const doctor = run(chocoBin, ['doctor', '--json'], { env: childEnv, allowFailure: true })
   const report = `${doctor.stdout}${doctor.stderr}`
 
   let checks: { name?: string, detail?: string }[]

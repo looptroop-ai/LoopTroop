@@ -34,7 +34,7 @@ import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { removeWorkDirectory, waitForHealth } from './smoke-lib.mjs'
-import { spawnProgram } from './tool-path.ts'
+import { shellCommandLine, spawnProgram } from './tool-path.ts'
 
 const IS_WINDOWS = process.platform === 'win32'
 
@@ -700,11 +700,16 @@ function redact(text) {
 // ---------------------------------------------------------------------------
 
 function run(command, args, options = {}) {
-  const result = spawnSync(spawnProgram(command, { shell: options.shell }), args, {
+  // Resolved against the environment the child gets, and — when a shell will
+  // read it — joined into one command line with every token quoted, because
+  // Node joins an argument array for `shell: true` without quoting any of it.
+  const env = { ...process.env, ...(options.env ?? {}) }
+  const program = spawnProgram(command, { env })
+  const result = spawnSync(options.shell ? shellCommandLine(program, args) : program, options.shell ? [] : args, {
     encoding: 'utf8',
     shell: false,
     ...options,
-    env: { ...process.env, ...(options.env ?? {}) },
+    env,
   })
   // A null status means the process never started — almost always because the
   // command is not on PATH. Left as `exit null: ` with empty output it reads as
@@ -1285,8 +1290,8 @@ async function runChannel(recipe, options) {
       // start otherwise reports itself as "nothing is listening", which says
       // what happened but nothing about why, and this is a detached process
       // whose stderr is gone the moment it exits.
-      const opencodeBin = spawnProgram('opencode', { shell: true })
-      adopted = spawn(`${opencodeBin} serve --hostname 127.0.0.1 --port ${opencodePort}`, [], {
+      const opencodeLine = shellCommandLine(spawnProgram('opencode'), ['serve', '--hostname', '127.0.0.1', '--port', String(opencodePort)])
+      adopted = spawn(opencodeLine, [], {
         stdio: ['ignore', logFd, logFd],
         detached: !IS_WINDOWS,
         shell: true,

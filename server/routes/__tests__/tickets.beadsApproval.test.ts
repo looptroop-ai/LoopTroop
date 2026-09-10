@@ -189,6 +189,48 @@ describe('ticketRouter beads approval routes', () => {
     expect(receiptData.content_sha256).toBe(contentSha256(beadsContent))
   })
 
+  /**
+   * A plan that needs editing is not a server fault.
+   *
+   * This one is reachable from the screen: the save route requires neither
+   * `testCommands` nor a reason for having none, so a bead can be saved,
+   * offered for approval, and refused here. Answering 500 sent the operator to
+   * the logs for something the screen could have told them.
+   */
+  it('answers 422 for a plan that cannot be approved as written', async () => {
+    const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
+    const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    beads[0]!.testCommands = []
+    delete beads[0]!.testCommandReason
+    const noReasonContent = `${beads.map((bead) => JSON.stringify(bead)).join('\n')}\n`
+    writeFileSync(paths.beadsPath, noReasonContent)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      ...approvalPayload(noReasonContent),
+    })
+
+    expect(response.status).toBe(422)
+    const payload = (await response.json()) as { error?: string; details?: string }
+    expect(payload.error).toBe('Bead plan cannot be approved as written')
+    // Naming the bead is the point: it is what the operator has to go and edit.
+    expect(payload.details).toContain('requires testCommandReason')
+  })
+
+  it('answers 422 for a tracker whose JSON is damaged, naming the line', async () => {
+    const { app, ticket, paths } = await setupBeadsApprovalTicket()
+    const damaged = '{"id":"B-1", \n'
+    writeFileSync(paths.beadsPath, damaged)
+
+    const response = await app.request(`/api/tickets/${ticket.id}/approve-beads`, {
+      method: 'POST',
+      ...approvalPayload(damaged),
+    })
+
+    expect(response.status).toBe(422)
+    expect((await response.json() as { details?: string }).details).toContain('line 1')
+  })
+
   it('approves a bead with no planned command when its reason is visible', async () => {
     const { app, ticket, paths, beadsContent } = await setupBeadsApprovalTicket()
     const beads = beadsContent.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
@@ -361,7 +403,7 @@ describe('ticketRouter beads approval routes', () => {
     expect(payload.error).toBe('Invalid bead ID')
   })
 
-  it('returns 500 when beads file contains invalid JSON', async () => {
+  it('refuses a beads file whose JSON is invalid, naming the line', async () => {
     const { app, ticket, paths } = await setupBeadsApprovalTicket()
 
     // Write invalid JSON — first line has valid id+title, second has bad JSON
@@ -373,7 +415,9 @@ describe('ticketRouter beads approval routes', () => {
       ...approvalPayload(invalidContent),
     })
 
-    expect(response.status).toBe(500)
+    // A damaged file is the operator's to repair, so it reads as a request
+    // problem rather than a server fault.
+    expect(response.status).toBe(422)
     const payload = (await response.json()) as { error: string; details: string }
     expect(payload.details).toContain('Invalid JSON at bead line 2')
   })
@@ -409,7 +453,7 @@ describe('ticketRouter beads approval routes', () => {
       ...approvalPayload(emptyContent),
     })
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(422)
     const payload = (await response.json()) as { error: string; details: string }
     expect(payload.details).toContain('empty')
   })

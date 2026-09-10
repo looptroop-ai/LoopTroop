@@ -1164,6 +1164,23 @@ describe('Approval surfaces on a failed request', () => {
       expect(screen.getByRole('button', { name: /^Approve$/ })).toBeDisabled()
     })
 
+    it('refuses the structured editor for a command it cannot read', async () => {
+      mockUseTicketUIState.mockReturnValue({
+        isSuccess: true,
+        data: {
+          scope: 'approval_beads',
+          exists: true,
+          data: { isEditMode: true, editTab: 'structured' },
+          updatedAt: TEST.timestamp,
+        },
+      })
+      // The bare-string form older trackers carry. The runtime accepts it; the
+      // editor's reader drops it, so a save from there would delete it.
+      stub({}, [{ id: 'B-1', title: 'Legacy commands', status: 'pending', testCommands: ['npm test'] }])
+
+      expect(await screen.findByText(/cannot read every test command on B-1/)).toBeInTheDocument()
+    })
+
     it.each([
       ['free text', 'Patterns: do X; avoid Y'],
       ['a list of strings', ['do X', 'avoid Y']],

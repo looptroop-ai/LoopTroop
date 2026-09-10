@@ -70,21 +70,27 @@ describe('compareBeadRecoveryOrder', () => {
   })
 
   /**
-   * Current behaviour, and a defect: a non-empty `updatedAt` that does not
-   * parse hides a `startedAt` that would.
+   * A field that cannot be read is not an answer.
    *
-   * The fallback chain picks the candidate *before* parsing it, so a bead
-   * carrying `updatedAt: "not a date"` and a valid `startedAt` is treated as
-   * undated instead of using the timestamp it has. Asserted as it stands so a
-   * fix is a visible edit here rather than a silent change to which bead a
-   * retry resumes; it belongs with whoever next owns bead recovery, not with a
-   * test-hygiene stage.
+   * The chain used to pick the candidate *before* parsing it, so a bead
+   * carrying `updatedAt: "not a date"` beside a valid `startedAt` was treated
+   * as undated and resumed by iteration count instead of by when the work
+   * happened.
    */
-  it('lets an unparsable updatedAt hide a valid startedAt', () => {
+  it('falls past an unparsable updatedAt to a startedAt that reads', () => {
     expect(resumes([
       bead('garbled-with-fallback', { updatedAt: 'not a date', startedAt: '2026-01-09T00:00:00.000Z' }),
       bead('dated', { updatedAt: '2020-01-01T00:00:00.000Z' }),
-    ])).toBe('dated')
+    ])).toBe('garbled-with-fallback')
+  })
+
+  it('falls past two unreadable fields to the one that reads', () => {
+    expect(resumes([
+      bead('third-candidate', {
+        updatedAt: 'not a date', startedAt: 'also not', completedAt: '2026-01-09T00:00:00.000Z',
+      }),
+      bead('dated', { updatedAt: '2020-01-01T00:00:00.000Z' }),
+    ])).toBe('third-candidate')
   })
 
   it('falls back to the highest iteration when no bead carries a timestamp', () => {

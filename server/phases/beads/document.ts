@@ -7,6 +7,16 @@ import { nowIso } from '../../lib/dateUtils'
 import { commandSpecSchema } from '@shared/commandSpec'
 import { parseJsonlContent } from '../../io/jsonl'
 
+/**
+ * The plan cannot be approved as written, and a person has to edit it.
+ *
+ * Distinct from a failure to read or write the file: this one is an answer
+ * about the operator's own content, so the route reports it as a request
+ * problem rather than a server fault. Typed rather than matched on the message,
+ * which is what would drift the next time one of these is reworded.
+ */
+export class BeadPlanValidationError extends Error {}
+
 const BEADS_APPROVAL_SNAPSHOT_ARTIFACT = 'approval_snapshot:beads'
 
 function resolveBeadsPath(ticketId: string): string {
@@ -56,19 +66,19 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
   // Parse the complete JSONL document before semantic validation so a
   // malformed later line remains the primary error.
   if (malformedLines.length > 0) {
-    throw new Error(`Invalid JSON at bead line ${malformedLines[0]}`)
+    throw new BeadPlanValidationError(`Invalid JSON at bead line ${malformedLines[0]}`)
   }
 
   const beadCount = items.length
   if (beadCount === 0) {
-    throw new Error('Beads artifact is empty')
+    throw new BeadPlanValidationError('Beads artifact is empty')
   }
 
   const parsedRecords: Array<Record<string, unknown>> = []
   for (const [index, parsed] of items.entries()) {
     const line = itemLines[index] ?? index + 1
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      throw new Error(`Bead at line ${line} is not a JSON object`)
+      throw new BeadPlanValidationError(`Bead at line ${line} is not a JSON object`)
     }
     parsedRecords.push(parsed as Record<string, unknown>)
   }
@@ -79,28 +89,28 @@ export function approveBeadsDocument(ticketId: string, expectedContentSha256: st
     // approval named a line the operator's editor does not hold that bead on.
     const line = itemLines[index] ?? index + 1
     if (typeof record.id !== 'string' || !record.id.trim()) {
-      throw new Error(`Bead at line ${line} is missing a valid "id" field`)
+      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "id" field`)
     }
     if (typeof record.title !== 'string' || !record.title.trim()) {
-      throw new Error(`Bead at line ${line} is missing a valid "title" field`)
+      throw new BeadPlanValidationError(`Bead at line ${line} is missing a valid "title" field`)
     }
     if (!Array.isArray(record.testCommands)) {
-      throw new Error(`Bead ${record.id} is missing the testCommands list`)
+      throw new BeadPlanValidationError(`Bead ${record.id} is missing the testCommands list`)
     }
     for (const command of record.testCommands) {
       if (!commandSpecSchema.safeParse(command).success) {
-        throw new Error(`Bead ${record.id} contains an invalid test command`)
+        throw new BeadPlanValidationError(`Bead ${record.id} contains an invalid test command`)
       }
     }
     if (record.testCommandReason !== undefined && (typeof record.testCommandReason !== 'string' || !record.testCommandReason.trim())) {
-      throw new Error(`Bead ${record.id} contains an invalid testCommandReason`)
+      throw new BeadPlanValidationError(`Bead ${record.id} contains an invalid testCommandReason`)
     }
     const testCommandReason = typeof record.testCommandReason === 'string' ? record.testCommandReason.trim() : ''
     if (record.testCommands.length === 0 && !testCommandReason) {
-      throw new Error(`Bead ${record.id} requires testCommandReason when testCommands is empty`)
+      throw new BeadPlanValidationError(`Bead ${record.id} requires testCommandReason when testCommands is empty`)
     }
     if (record.testCommands.length > 0 && testCommandReason) {
-      throw new Error(`Bead ${record.id} may include testCommandReason only when testCommands is empty`)
+      throw new BeadPlanValidationError(`Bead ${record.id} may include testCommandReason only when testCommands is empty`)
     }
   }
 

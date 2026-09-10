@@ -161,6 +161,25 @@ export function stripSupersededBeadAliases<T extends RawBead>(bead: T): T {
 }
 
 /**
+ * Whether the structured editor can represent this bead's test commands.
+ *
+ * The editor reads them through the command schema and drops whatever it
+ * refuses — including the bare-string form older trackers carry, which the
+ * runtime still accepts and migrates when it knows the host's shell. Saving
+ * from the editor then wrote the bead back without commands the operator never
+ * touched. The browser cannot pick a shell for them, so it declines to edit
+ * the bead rather than guessing or deleting.
+ */
+export function hasUnrepresentableBeadCommands(bead: RawBead): boolean {
+  return BEAD_FIELD_ALIASES.testCommands.some((key) => {
+    const value = bead[key]
+    if (!carriesValue(value)) return false
+    if (!Array.isArray(value)) return true
+    return value.some((command) => !commandSpecSchema.safeParse(command).success)
+  })
+}
+
+/**
  * Whether the structured editor can represent this bead's guidance.
  *
  * Guidance is normally patterns and anti-patterns, but some stored beads carry

@@ -23,6 +23,7 @@ import {
   BEADS_APPROVAL_FOCUS_EVENT,
   describeBeadEntry,
   filterBeadShaped,
+  hasUnrepresentableBeadCommands,
   hasUnstructuredBeadGuidance,
   normalizeBead,
   stripSupersededBeadAliases,
@@ -259,7 +260,20 @@ function BeadsApprovalPane({
     [beadsArray],
   )
   const hasUnstructuredGuidance = unstructuredGuidanceBeadIds.length > 0
+  // Commands the editor's own reader refuses — the bare-string form older
+  // trackers carry, most of them. It drops what it cannot parse, so a save
+  // would write the bead back without them.
+  const unrepresentableCommandBeadIds = useMemo(
+    () => beadsArray.flatMap((bead, index) => (
+      isRecord(bead) && hasUnrepresentableBeadCommands(bead)
+        ? [typeof bead.id === 'string' && bead.id ? bead.id : `bead ${index + 1}`]
+        : []
+    )),
+    [beadsArray],
+  )
+  const hasUnrepresentableCommands = unrepresentableCommandBeadIds.length > 0
   const structuredEditorBlocked = hasMalformedLines || hasUnrepresentableLines || hasUnstructuredGuidance
+    || hasUnrepresentableCommands
   const malformedLineSummary = describeLines(malformedLines)
   const unrepresentableLineSummary = describeLines(unrepresentableLines)
 
@@ -411,6 +425,12 @@ function BeadsApprovalPane({
         + `from here would drop ${lines.length === 1 ? 'that line' : 'those lines'}.`,
       )
       return
+    } else if (hasUnrepresentableCommands) {
+      setSaveError(
+        `${unrepresentableCommandBeadIds.join(', ')} store a test command the structured editor cannot read, and `
+        + 'saving from here would drop it. Edit them in the JSONL tab instead.',
+      )
+      return
     } else if (hasUnstructuredGuidance) {
       setSaveError(
         `${unstructuredGuidanceBeadIds.join(', ')} store context guidance as free text, which the structured editor `
@@ -482,7 +502,7 @@ function BeadsApprovalPane({
     } finally {
       setIsSaving(false)
     }
-  }, [currentContentSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
+  }, [currentContentSha256, editTab, hasMalformedLines, hasUnrepresentableLines, hasUnrepresentableCommands, hasUnstructuredGuidance, jsonlDraft, malformedLineSummary, malformedLines, structuredDraft, ticket.id, unrepresentableCommandBeadIds, unrepresentableLineSummary, unrepresentableLines, unstructuredGuidanceBeadIds, queryClient])
 
   const handleApprove = useCallback(async () => {
     setIsApproving(true)
@@ -722,11 +742,17 @@ function BeadsApprovalPane({
                       contain only the beads it could read, and saving it would delete the rest. Repair the file in the
                       JSONL tab instead, which opens on the file as stored.
                     </>
-                  ) : (
+                  ) : hasUnstructuredGuidance ? (
                     <>
                       The structured editor has no field for context guidance written as free text, so saving from it
                       would replace that text with empty lists. Edit {unstructuredGuidanceBeadIds.join(', ')} in the
                       JSONL tab instead.
+                    </>
+                  ) : (
+                    <>
+                      The structured editor cannot read every test command on {unrepresentableCommandBeadIds.join(', ')}
+                      {' '}— an older form it does not model — and saving from it would drop them. Edit those beads in
+                      the JSONL tab instead.
                     </>
                   )}
                 </div>

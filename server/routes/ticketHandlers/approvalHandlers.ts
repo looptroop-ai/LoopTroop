@@ -16,7 +16,7 @@ import {
   saveApprovedPrdDocument,
   savePrdDocument,
 } from '../../phases/prd/document'
-import { approveBeadsDocument } from '../../phases/beads/document'
+import { approveBeadsDocument, BeadPlanValidationError } from '../../phases/beads/document'
 import {
   approveExecutionSetupPlan,
   readExecutionSetupPlan,
@@ -484,6 +484,17 @@ function approveBeadsForRoute(c: Context, ticketId: string, expectedContentSha25
     sendTicketEvent(ticketId, { type: 'APPROVE' })
   } catch (err) {
     if (err instanceof StaleArtifactApprovalError) return staleApprovalResponse(c, err)
+    // "Your plan needs editing" is not a server fault, and answering 500 sent
+    // an operator to the logs for something the screen could have told them.
+    // The reachable one is a bead with no test commands and no reason for it:
+    // the save route does not require either, so the screen offers Approve and
+    // the file is refused here.
+    if (err instanceof BeadPlanValidationError) {
+      return c.json({
+        error: 'Bead plan cannot be approved as written',
+        details: getErrorMessage(err),
+      }, 422)
+    }
     logTicketOperationError(ticketId, 'Failed to approve beads for', err)
     return c.json({
       error: 'Failed to approve beads',

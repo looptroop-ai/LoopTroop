@@ -9,6 +9,7 @@ import {
   readBeadString,
   readBeadStringList,
   readBeadValue,
+  hasUnrepresentableBeadCommands,
   hasUnstructuredBeadGuidance,
   type NormalizedBead,
   stripSupersededBeadAliases,
@@ -473,5 +474,33 @@ describe('a tracker whose damage comes first', () => {
 
   it('still reads ordinary text as no bead artifact at all', () => {
     expect(parseBeadsArtifact('This is a paragraph about beads.\nAnd another line.\n')).toBeNull()
+  })
+})
+
+describe('hasUnrepresentableBeadCommands', () => {
+  const shellCommand = { mode: 'shell', shell: 'posix', script: 'npm test' }
+
+  it.each([
+    ['a bare-string command, the form older trackers carry', ['npm test']],
+    ['one legacy command beside a modelled one', [shellCommand, 'npm test']],
+    ['a command that is not a command at all', [null]],
+    ['a commands field that is not a list', 'npm test'],
+  ])('reports %s', (_, testCommands) => {
+    // The editor reads commands through the schema and drops what it refuses.
+    // The runtime still accepts the bare-string form and migrates it once it
+    // knows the host's shell — the browser cannot, so it must not delete them.
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', testCommands } as never)).toBe(true)
+  })
+
+  it.each([
+    ['commands the schema accepts', [shellCommand]],
+    ['an empty command list', []],
+    ['no commands at all', undefined],
+  ])('does not report %s', (_, testCommands) => {
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', testCommands } as never)).toBe(false)
+  })
+
+  it('looks under the older spelling too', () => {
+    expect(hasUnrepresentableBeadCommands({ id: 'B-1', test_commands: ['npm test'] } as never)).toBe(true)
   })
 })
